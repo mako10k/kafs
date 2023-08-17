@@ -562,10 +562,10 @@ kafs_preadi (struct kafs_context *restrict ctx, uint32_t ino, void *buf,
 	  int ret = kafs_readib (ctx, inode, oblkid, buf2);
 	  if (ret < 0)
 	    return ret;
-	  memcpy (buf, buf2, size - size_read);
+	  memcpy (buf + size_read, buf2, size - size_read);
 	  return size;
 	}
-      int ret = kafs_readib (ctx, inode, oblkid, buf);
+      int ret = kafs_readib (ctx, inode, oblkid, buf + size_read);
       if (ret < 0)
 	return ret;
       size_read += blksize;
@@ -634,12 +634,19 @@ kafs_pwritei (struct kafs_context *restrict ctx, uint32_t ino,
 	return ret;
       if (size < blksize - oblk_off)
 	{
-	  memcpy (buf, buf2 + oblk_off, size);
+	  memcpy (buf2 + oblk_off, buf, size);
+	  ret = kafs_writeib (ctx, inode, offset >> log_blksize, buf2);
+	  if (ret < 0)
+	    return ret;
 	  return size;
 	}
-      memcpy (buf, buf2 + oblk_off, blksize - oblk_off);
+      memcpy (buf2 + oblk_off, buf, blksize - oblk_off);
+      ret = kafs_writeib (ctx, inode, offset >> log_blksize, buf2);
+      if (ret < 0)
+	return ret;
       size_written += blksize - oblk_off;
     }
+
   while (size_written < size)
     {
       blkcnt_t oblkid = (offset + size_written) >> log_blksize;
@@ -649,10 +656,13 @@ kafs_pwritei (struct kafs_context *restrict ctx, uint32_t ino,
 	  int ret = kafs_readib (ctx, inode, oblkid, buf2);
 	  if (ret < 0)
 	    return ret;
-	  memcpy (buf, buf2, size - size_written);
+	  memcpy (buf2, buf + size_written, size - size_written);
+	  ret = kafs_writeib (ctx, inode, oblkid, buf2);
+	  if (ret < 0)
+	    return ret;
 	  return size;
 	}
-      int ret = kafs_readib (ctx, inode, oblkid, buf);
+      int ret = kafs_writeib (ctx, inode, oblkid, buf + size_written);
       if (ret < 0)
 	return ret;
       size_written += blksize;
