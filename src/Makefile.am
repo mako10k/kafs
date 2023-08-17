@@ -1,0 +1,6 @@
+bin_PROGRAMS = kafs
+
+kafs_CFLAGS = $(KAFS_CFLAGS)
+kafs_LDADD = $(KAFS_LIBS)
+
+CFLAGS = -Wall -Werror -g -O3 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64
