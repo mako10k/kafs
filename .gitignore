@@ -1,1 +1,23 @@
+# files
+Makefile
+Makefile.in
+
+/aclocal.m4
+/compile
+/config.h
+/config.h.in
+/config.status
+/configure
+/depcomp
+/install-sh
+/missing
+/stamp-h1
+
+# directories
+.deps/
+
+/autom4te.cache/
+
+# patterns
 *~
+*.log
