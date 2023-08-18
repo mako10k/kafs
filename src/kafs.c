@@ -63,7 +63,7 @@ struct kafs_context
 /// @param ino inode 番号
 /// @return inode 構造体の参照
 static struct kafs_inode *
-kafs_iget (struct kafs_context *restrict ctx, kafs_inocnt_t ino)
+kafs_get_inode (struct kafs_context *ctx, kafs_inocnt_t ino)
 {
   assert (ctx != NULL);
   assert (ino < ctx->sb->s_inodes_count);
@@ -74,8 +74,8 @@ kafs_iget (struct kafs_context *restrict ctx, kafs_inocnt_t ino)
 /// @param ctx コンテキスト
 /// @param ino inode 番号
 /// @return inode 構造体の参照
-static const struct kafs_inode *restrict
-kafs_iget_const (const struct kafs_context *restrict ctx, kafs_inocnt_t ino)
+static const struct kafs_inode *
+kafs_get_const_inode (const struct kafs_context *ctx, kafs_inocnt_t ino)
 {
   assert (ctx != NULL);
   assert (ino < ctx->sb->s_inodes_count);
@@ -87,14 +87,14 @@ kafs_iget_const (const struct kafs_context *restrict ctx, kafs_inocnt_t ino)
 /// @param ino 見つかった inode 番号
 /// @return 0: 成功、 < 0: 失敗 (-errno)
 static int
-kafs_ialloc (struct kafs_context *restrict ctx, kafs_inocnt_t * pino)
+kafs_alloc_inode (struct kafs_context *ctx, kafs_inocnt_t * pino)
 {
   assert (ctx != NULL);
   assert (pino != NULL);
   kafs_inocnt_t ino_count = ctx->sb->s_inodes_count;
   kafs_inocnt_t ino_search = ctx->ino_search;
   kafs_inocnt_t ino = ino_search + 1;
-  struct kafs_inode *restrict inode = kafs_iget (ctx, 0);
+  struct kafs_inode *inode = kafs_get_inode (ctx, 0);
   while (ino_search != ino)
     {
       if (ino >= ino_count)
@@ -115,7 +115,7 @@ kafs_ialloc (struct kafs_context *restrict ctx, kafs_inocnt_t * pino)
 /// @param blo ブロック番号
 /// @return 0: 未使用, != 0: 使用中
 static int
-kafs_bmget (const struct kafs_context *restrict ctx, kafs_blkcnt_t blo)
+kafs_get_blkmask (const struct kafs_context *ctx, kafs_blkcnt_t blo)
 {
   assert (ctx != NULL);
   assert (blo < ctx->sb->s_blocks_count);
@@ -130,7 +130,7 @@ kafs_bmget (const struct kafs_context *restrict ctx, kafs_blkcnt_t blo)
 /// @param val 0: フラグをクリア, != 0: フラグをセット
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
-kafs_bmset (struct kafs_context *restrict ctx, kafs_blkcnt_t blo, int val)
+kafs_set_blkmask (struct kafs_context *ctx, kafs_blkcnt_t blo, int val)
 {
   assert (ctx != NULL);
   assert (blo < ctx->sb->s_blocks_count);
@@ -145,16 +145,16 @@ kafs_bmset (struct kafs_context *restrict ctx, kafs_blkcnt_t blo, int val)
 
 /// @brief 未使用のブロック番号を取得し、使用中フラグをつける
 /// @param ctx コンテキスト
-/// @param blo ブロック番号
+/// @param pblo ブロック番号
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static uint32_t
-kafs_balloc (struct kafs_context *restrict ctx, kafs_blkcnt_t * pblo)
+kafs_alloc_blk (struct kafs_context *ctx, kafs_blkcnt_t * pblo)
 {
   assert (ctx != NULL);
   assert (pblo != NULL);
   kafs_blkcnt_t blo_search = ctx->blo_search;
   kafs_blkcnt_t blo = blo_search + 1;
-  kafs_blkmask_t *restrict blkmask = ctx->blkmask;
+  kafs_blkmask_t *blkmask = ctx->blkmask;
   kafs_blkcnt_t blo_max = ctx->sb->s_blocks_count;
   while (blo_search != blo)
     {
@@ -188,14 +188,14 @@ kafs_balloc (struct kafs_context *restrict ctx, kafs_blkcnt_t * pblo)
 /// @param pblo ブロック番号へのポインタ
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
-kafs_brelease (struct kafs_context *restrict ctx, kafs_blkcnt_t * pblo)
+kafs_release_blk (struct kafs_context *ctx, kafs_blkcnt_t * pblo)
 {
   assert (ctx != NULL);
   assert (pblo != NULL);
   assert (*pblo != 0);
   assert (*pblo < ctx->sb->s_blocks_count);
-  assert (kafs_bmget (ctx, *pblo) != 0);
-  int ret = kafs_bmset (ctx, *pblo, 0);
+  assert (kafs_get_blkmask (ctx, *pblo) != 0);
+  int ret = kafs_set_blkmask (ctx, *pblo, 0);
   if (ret < 0)
     return ret;
   int log_blksize = 10 + ctx->sb->s_log_block_size;
@@ -215,7 +215,7 @@ kafs_brelease (struct kafs_context *restrict ctx, kafs_blkcnt_t * pblo)
 /// @param buf 読み出すバッファ
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
-kafs_readb (struct kafs_context *restrict ctx, kafs_blkcnt_t blo, void *buf)
+kafs_read_blk (struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
 {
   assert (ctx != NULL);
   assert (buf != NULL);
@@ -240,8 +240,7 @@ kafs_readb (struct kafs_context *restrict ctx, kafs_blkcnt_t blo, void *buf)
 /// @param buf 読み出すバッファ
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
-kafs_readba (struct kafs_context *restrict ctx, kafs_blkcnt_t * pblo,
-	     void *buf)
+kafs_reada_blk (struct kafs_context *ctx, kafs_blkcnt_t * pblo, void *buf)
 {
   assert (ctx != NULL);
   assert (buf != NULL);
@@ -251,7 +250,7 @@ kafs_readba (struct kafs_context *restrict ctx, kafs_blkcnt_t * pblo,
   size_t blksize = 1 << log_blksize;
   if (*pblo == 0)
     {
-      int ret = kafs_balloc (ctx, pblo);
+      int ret = kafs_alloc_blk (ctx, pblo);
       if (ret < 0)
 	return ret;
       memset (buf, 0, blksize);
@@ -270,8 +269,8 @@ kafs_readba (struct kafs_context *restrict ctx, kafs_blkcnt_t * pblo,
 /// @param buf 書き込むバッファ
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
-kafs_writeb (struct kafs_context *restrict ctx, kafs_blkcnt_t * pblo,
-	     const void *buf)
+kafs_writea_blk (struct kafs_context *ctx, kafs_blkcnt_t * pblo,
+		 const void *buf)
 {
   assert (ctx != NULL);
   assert (buf != NULL);
@@ -281,7 +280,7 @@ kafs_writeb (struct kafs_context *restrict ctx, kafs_blkcnt_t * pblo,
   size_t blksize = 1 << log_blksize;
   if (*pblo == 0)
     {
-      int ret = kafs_balloc (ctx, pblo);
+      int ret = kafs_alloc_blk (ctx, pblo);
       if (ret < 0)
 	return ret;
     }
@@ -299,8 +298,8 @@ kafs_writeb (struct kafs_context *restrict ctx, kafs_blkcnt_t * pblo,
 /// @param iblo ブロック番号
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
-kafs_readib (struct kafs_context *restrict ctx,
-	     struct kafs_inode *restrict inode, kafs_blkcnt_t iblo, void *buf)
+kafs_read_iblk (struct kafs_context *ctx,
+		struct kafs_inode *inode, kafs_blkcnt_t iblo, void *buf)
 {
   assert (ctx != NULL);
   assert (inode != NULL);
@@ -311,7 +310,7 @@ kafs_readib (struct kafs_context *restrict ctx,
 
   // 0..11 は 直接
   if (iblo < 12)
-    return kafs_readb (ctx, inode->i_block[iblo], buf);
+    return kafs_read_blk (ctx, inode->i_block[iblo], buf);
   iblo -= 12;
   // 12 .. ブロックサイズ / 4 + 11 は、間接（１段階） 
   int log_blo_count_per_block = log_blksize - (sizeof (*inode->i_block) + 3);
@@ -320,10 +319,10 @@ kafs_readib (struct kafs_context *restrict ctx,
   kafs_blkcnt_t *blkref = (kafs_blkcnt_t *) buf2;
   if (iblo < blo_count_per_block)
     {
-      int ret = kafs_readb (ctx, inode->i_block[12], blkref);
+      int ret = kafs_read_blk (ctx, inode->i_block[12], blkref);
       if (ret < 0)
 	return ret;
-      return kafs_readb (ctx, blkref[iblo], buf);
+      return kafs_read_blk (ctx, blkref[iblo], buf);
     }
 
   // ブロックサイズ/4 + 12  .. (ブロックサイズ/4)^2 + ブロックサイズ / 4 + 11 は、間接（２段階） 
@@ -331,29 +330,33 @@ kafs_readib (struct kafs_context *restrict ctx,
   blkcnt_t blkid_per_block2 = 1 << (log_blo_count_per_block * 2);
   if (iblo < blkid_per_block2)
     {
-      int ret = kafs_readb (ctx, inode->i_block[13], blkref);
+      int ret = kafs_read_blk (ctx, inode->i_block[13], blkref);
       if (ret < 0)
 	return ret;
-      ret = kafs_readb (ctx, blkref[iblo >> log_blo_count_per_block], blkref);
+      ret =
+	kafs_read_blk (ctx, blkref[iblo >> log_blo_count_per_block], blkref);
       if (ret < 0)
 	return ret;
-      return kafs_readb (ctx, blkref[iblo & (blo_count_per_block - 1)],
-			 blkref);
+      return kafs_read_blk (ctx, blkref[iblo & (blo_count_per_block - 1)],
+			    blkref);
     }
 
   // (ブロックサイズ/4)^2 + ブロックサイズ / 4 + 12 .. Inf は、間接（３段階） 
   iblo -= blkid_per_block2;
-  int ret = kafs_readb (ctx, inode->i_block[14], blkref);
+  int ret = kafs_read_blk (ctx, inode->i_block[14], blkref);
   if (ret < 0)
     return ret;
   int blkid2 = iblo >> log_blo_count_per_block;
-  ret = kafs_readb (ctx, blkref[blkid2 >> log_blo_count_per_block], blkref);
+  ret =
+    kafs_read_blk (ctx, blkref[blkid2 >> log_blo_count_per_block], blkref);
   if (ret < 0)
     return ret;
-  ret = kafs_readb (ctx, blkref[blkid2 & (1 - blo_count_per_block)], blkref);
+  ret =
+    kafs_read_blk (ctx, blkref[blkid2 & (1 - blo_count_per_block)], blkref);
   if (ret < 0)
     return ret;
-  return kafs_readb (ctx, blkref[iblo & (1 - blo_count_per_block)], blkref);
+  return kafs_read_blk (ctx, blkref[iblo & (1 - blo_count_per_block)],
+			blkref);
 }
 
 /// @brief inode毎のデータを書き込む（ブロック単位）
@@ -363,9 +366,9 @@ kafs_readib (struct kafs_context *restrict ctx,
 /// @param iblo ブロック番号
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
-kafs_writeib (struct kafs_context *restrict ctx,
-	      struct kafs_inode *restrict inode, kafs_blkcnt_t iblo,
-	      const void *buf)
+kafs_write_iblk (struct kafs_context *ctx,
+		 struct kafs_inode *inode, kafs_blkcnt_t iblo,
+		 const void *buf)
 {
   int log_blksize = 10 + ctx->sb->s_log_block_size;
   size_t blksize = 1 << log_blksize;
@@ -373,7 +376,7 @@ kafs_writeib (struct kafs_context *restrict ctx,
 
   // 0..11 は 直接
   if (iblo < 12)
-    return kafs_writeb (ctx, inode->i_block + iblo, buf);
+    return kafs_writea_blk (ctx, inode->i_block + iblo, buf);
 
   // 12 .. ブロックサイズ / 4 + 11 は、間接（１段階） 
   iblo -= 12;
@@ -383,15 +386,15 @@ kafs_writeib (struct kafs_context *restrict ctx,
   kafs_blkcnt_t *blkref = (kafs_blkcnt_t *) buf2;
   if (iblo < blo_count_per_block)
     {
-      int ret = kafs_readba (ctx, inode->i_block + 12, blkref);
+      int ret = kafs_reada_blk (ctx, inode->i_block + 12, blkref);
       if (ret < 0)
 	return ret;
       kafs_blkcnt_t blo2 = blkref[iblo];
-      ret = kafs_writeb (ctx, blkref + iblo, buf);
+      ret = kafs_writea_blk (ctx, blkref + iblo, buf);
       if (ret < 0)
 	return ret;
       if (blo2 == 0)
-	return kafs_writeb (ctx, inode->i_block + 12, blkref);
+	return kafs_writea_blk (ctx, inode->i_block + 12, blkref);
       return 0;
     }
 
@@ -402,69 +405,75 @@ kafs_writeib (struct kafs_context *restrict ctx,
   kafs_blkcnt_t *blkref2 = (kafs_blkcnt_t *) buf3;
   if (iblo < blkid_per_block2)
     {
-      int ret = kafs_readba (ctx, inode->i_block + 13, blkref);
+      int ret = kafs_reada_blk (ctx, inode->i_block + 13, blkref);
       if (ret < 0)
 	return ret;
       uint32_t blo2 = blkref[iblo >> log_blo_count_per_block];
       ret =
-	kafs_readba (ctx, blkref + (iblo >> log_blo_count_per_block),
-		     blkref2);
+	kafs_reada_blk (ctx, blkref + (iblo >> log_blo_count_per_block),
+			blkref2);
       if (ret < 0)
 	return ret;
       if (blo2 == 0)
 	{
-	  ret = kafs_writeb (ctx, inode->i_block + 13, blkref);
+	  ret = kafs_writea_blk (ctx, inode->i_block + 13, blkref);
 	  if (ret < 0)
 	    return ret;
 	}
       blo2 = blkref2[iblo & (blo_count_per_block - 1)];
       ret =
-	kafs_writeb (ctx, blkref2 + (iblo & (blo_count_per_block - 1)), buf);
+	kafs_writea_blk (ctx, blkref2 + (iblo & (blo_count_per_block - 1)),
+			 buf);
       if (ret < 0)
 	return ret;
       if (blo2 == 0)
-	return kafs_writeb (ctx, blkref + (iblo >> log_blo_count_per_block),
-			    blkref2);
+	return kafs_writea_blk (ctx,
+				blkref + (iblo >> log_blo_count_per_block),
+				blkref2);
       return 0;
     }
 
   // (ブロックサイズ/4)^2 + ブロックサイズ / 4 + 12 .. Inf は、間接（３段階） 
   iblo -= blkid_per_block2;
 
-  int ret = kafs_readba (ctx, inode->i_block + 14, blkref);
+  int ret = kafs_reada_blk (ctx, inode->i_block + 14, blkref);
   if (ret < 0)
     return ret;
 
   int iblo2 = iblo >> log_blo_count_per_block;
   kafs_blkcnt_t blo2 = blkref[iblo2 >> log_blo_count_per_block];
   ret =
-    kafs_readba (ctx, blkref + (iblo2 >> log_blo_count_per_block), blkref2);
+    kafs_reada_blk (ctx, blkref + (iblo2 >> log_blo_count_per_block),
+		    blkref2);
   if (ret < 0)
     return ret;
   if (blo2 == 0)
     {
-      ret = kafs_writeb (ctx, inode->i_block + 14, blkref);
+      ret = kafs_writea_blk (ctx, inode->i_block + 14, blkref);
       if (ret < 0)
 	return ret;
     }
 
   blo2 = blkref2[iblo2 & (blo_count_per_block - 1)];
   ret =
-    kafs_readba (ctx, blkref2 + (iblo2 & (blo_count_per_block - 1)), blkref);
+    kafs_reada_blk (ctx, blkref2 + (iblo2 & (blo_count_per_block - 1)),
+		    blkref);
   if (ret < 0)
     return ret;
   if (blo2 == 0)
-    return kafs_writeb (ctx, blkref + (iblo2 >> log_blo_count_per_block),
-			blkref2);
+    return kafs_writea_blk (ctx, blkref + (iblo2 >> log_blo_count_per_block),
+			    blkref2);
 
   blo2 = blkref[iblo & (blo_count_per_block - 1)];
   ret =
-    kafs_readba (ctx, blkref + (iblo & (blo_count_per_block - 1)), blkref2);
+    kafs_reada_blk (ctx, blkref + (iblo & (blo_count_per_block - 1)),
+		    blkref2);
   if (ret < 0)
     return ret;
   if (blo2 == 0)
-    return kafs_writeb (ctx, blkref2 + (iblo2 & (blo_count_per_block - 1)),
-			blkref);
+    return kafs_writea_blk (ctx,
+			    blkref2 + (iblo2 & (blo_count_per_block - 1)),
+			    blkref);
   return 0;
 }
 
@@ -476,10 +485,10 @@ kafs_writeib (struct kafs_context *restrict ctx,
 /// @param offset オフセット
 /// @return > 0: 読み出しサイズ, 0: EOF, < 0: エラー(-errno)
 static int
-kafs_preadi (struct kafs_context *restrict ctx, uint32_t ino, void *buf,
-	     size_t size, off_t offset)
+kafs_pread_inode (struct kafs_context *ctx, uint32_t ino, void *buf,
+		  size_t size, off_t offset)
 {
-  struct kafs_inode *restrict inode = ctx->inode + ino;
+  struct kafs_inode *inode = ctx->inode + ino;
   uint32_t i_size = inode->i_size;
 
   // 60バイト以下は直接
@@ -507,7 +516,7 @@ kafs_preadi (struct kafs_context *restrict ctx, uint32_t ino, void *buf,
   if (oblk_off > 0 || size - size_read < blksize)
     {
       char buf2[blksize];
-      int ret = kafs_readib (ctx, inode, offset >> log_blksize, buf2);
+      int ret = kafs_read_iblk (ctx, inode, offset >> log_blksize, buf2);
       if (ret < 0)
 	return ret;
       if (size < blksize - oblk_off)
@@ -524,13 +533,13 @@ kafs_preadi (struct kafs_context *restrict ctx, uint32_t ino, void *buf,
       if (size - size_read <= blksize)
 	{
 	  char buf2[blksize];
-	  int ret = kafs_readib (ctx, inode, oblkid, buf2);
+	  int ret = kafs_read_iblk (ctx, inode, oblkid, buf2);
 	  if (ret < 0)
 	    return ret;
 	  memcpy (buf + size_read, buf2, size - size_read);
 	  return size;
 	}
-      int ret = kafs_readib (ctx, inode, oblkid, buf + size_read);
+      int ret = kafs_read_iblk (ctx, inode, oblkid, buf + size_read);
       if (ret < 0)
 	return ret;
       size_read += blksize;
@@ -546,10 +555,10 @@ kafs_preadi (struct kafs_context *restrict ctx, uint32_t ino, void *buf,
 /// @param offset オフセット
 /// @return > 0: 読み出しサイズ, 0: EOF, < 0: エラー(-errno)
 static int
-kafs_pwritei (struct kafs_context *restrict ctx, uint32_t ino,
-	      const void *buf, size_t size, off_t offset)
+kafs_pwrite_inode (struct kafs_context *ctx, uint32_t ino,
+		   const void *buf, size_t size, off_t offset)
 {
-  struct kafs_inode *restrict inode = ctx->inode + ino;
+  struct kafs_inode *inode = ctx->inode + ino;
   uint32_t i_size = inode->i_size;
   uint32_t i_size_new = offset + size;
   int log_blksize = 10 + ctx->sb->s_log_block_size;
@@ -564,7 +573,7 @@ kafs_pwritei (struct kafs_context *restrict ctx, uint32_t ino,
 	  memset (buf2, 0, blksize);
 	  memcpy (buf2, inode->i_block, i_size);
 	  memset (inode->i_block, 0, sizeof (inode->i_block));
-	  int ret = kafs_writeib (ctx, inode, 0, buf2);
+	  int ret = kafs_write_iblk (ctx, inode, 0, buf2);
 	  if (ret < 0)
 	    return ret;
 	}
@@ -594,19 +603,19 @@ kafs_pwritei (struct kafs_context *restrict ctx, uint32_t ino,
   if (oblk_off > 0 || size - size_written < blksize)
     {
       char buf2[blksize];
-      int ret = kafs_readib (ctx, inode, offset >> log_blksize, buf2);
+      int ret = kafs_read_iblk (ctx, inode, offset >> log_blksize, buf2);
       if (ret < 0)
 	return ret;
       if (size < blksize - oblk_off)
 	{
 	  memcpy (buf2 + oblk_off, buf, size);
-	  ret = kafs_writeib (ctx, inode, offset >> log_blksize, buf2);
+	  ret = kafs_write_iblk (ctx, inode, offset >> log_blksize, buf2);
 	  if (ret < 0)
 	    return ret;
 	  return size;
 	}
       memcpy (buf2 + oblk_off, buf, blksize - oblk_off);
-      ret = kafs_writeib (ctx, inode, offset >> log_blksize, buf2);
+      ret = kafs_write_iblk (ctx, inode, offset >> log_blksize, buf2);
       if (ret < 0)
 	return ret;
       size_written += blksize - oblk_off;
@@ -618,16 +627,16 @@ kafs_pwritei (struct kafs_context *restrict ctx, uint32_t ino,
       if (size - size_written <= blksize)
 	{
 	  char buf2[blksize];
-	  int ret = kafs_readib (ctx, inode, oblkid, buf2);
+	  int ret = kafs_read_iblk (ctx, inode, oblkid, buf2);
 	  if (ret < 0)
 	    return ret;
 	  memcpy (buf2, buf + size_written, size - size_written);
-	  ret = kafs_writeib (ctx, inode, oblkid, buf2);
+	  ret = kafs_write_iblk (ctx, inode, oblkid, buf2);
 	  if (ret < 0)
 	    return ret;
 	  return size;
 	}
-      int ret = kafs_writeib (ctx, inode, oblkid, buf + size_written);
+      int ret = kafs_write_iblk (ctx, inode, oblkid, buf + size_written);
       if (ret < 0)
 	return ret;
       size_written += blksize;
@@ -650,12 +659,14 @@ struct kafs_dirent
 /// @param offset 
 /// @return 
 static int
-kafs_dreadent (struct kafs_context *restrict ctx, kafs_inocnt_t ino_dir,
-	       struct kafs_dirent *dirent, size_t direntlen, off_t offset)
+kafs_read_dirent_inode (struct kafs_context *ctx, kafs_inocnt_t ino_dir,
+			struct kafs_dirent *dirent, size_t direntlen,
+			off_t offset)
 {
   assert (direntlen > sizeof (struct kafs_dirent));
   int r =
-    kafs_preadi (ctx, ino_dir, dirent, sizeof (struct kafs_dirent), offset);
+    kafs_pread_inode (ctx, ino_dir, dirent, sizeof (struct kafs_dirent),
+		      offset);
   if (r < 0)
     return r;
   if (r < sizeof (struct kafs_dirent))
@@ -663,8 +674,8 @@ kafs_dreadent (struct kafs_context *restrict ctx, kafs_inocnt_t ino_dir,
   if (direntlen - sizeof (struct kafs_dirent) < dirent->len)
     return sizeof (struct kafs_dirent) + dirent->len;
   r =
-    kafs_preadi (ctx, ino_dir, dirent->name, dirent->len,
-		 offset + dirent->len);
+    kafs_pread_inode (ctx, ino_dir, dirent->name, dirent->len,
+		      offset + dirent->len);
   if (r < 0)
     return r;
   if (r < dirent->len)
@@ -677,13 +688,14 @@ kafs_dreadent (struct kafs_context *restrict ctx, kafs_inocnt_t ino_dir,
 /// @param name ファイル名
 /// @param namelen ファイル名の長さ
 /// @param ino 対象のディレクトリ
-/// @param ino_found 見つかったエントリ
+/// @param pino_found 見つかったエントリ
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
-kafs_dgetent (struct kafs_context *restrict ctx, kafs_inocnt_t ino_dir,
-	      const char *name, size_t namelen, kafs_inocnt_t * ino_found)
+kafs_find_dirent_inode (struct kafs_context *ctx, kafs_inocnt_t ino_dir,
+			const char *name, size_t namelen,
+			kafs_inocnt_t * pino_found)
 {
-  const struct kafs_inode *restrict inode = kafs_iget_const (ctx, ino_dir);
+  const struct kafs_inode *inode = kafs_get_const_inode (ctx, ino_dir);
   if (inode == NULL)
     return -ENOENT;
   if (!S_ISDIR (inode->i_mode))
@@ -693,16 +705,17 @@ kafs_dgetent (struct kafs_context *restrict ctx, kafs_inocnt_t ino_dir,
   off_t offset = 0;
   while (1)
     {
-      ssize_t r = kafs_dreadent (ctx, ino_dir, dirent,
-				 sizeof (struct kafs_dirent) + namelen,
-				 offset);
+      ssize_t r = kafs_read_dirent_inode (ctx, ino_dir, dirent,
+					  sizeof (struct kafs_dirent) +
+					  namelen,
+					  offset);
       if (r < 0)
 	return r;
       if (r < sizeof (struct kafs_dirent) + namelen)
 	return -EIO;
       if (dirent->len == namelen && memcmp (name, dirent->name, namelen) == 0)
 	{
-	  *ino_found = dirent->ino;
+	  *pino_found = dirent->ino;
 	  return 0;
 	}
       offset += r;
@@ -710,11 +723,11 @@ kafs_dgetent (struct kafs_context *restrict ctx, kafs_inocnt_t ino_dir,
 }
 
 static int
-kafs_itruncate (struct kafs_context *ctx, kafs_inocnt_t ino, off_t size)
+kafs_truncate_inode (struct kafs_context *ctx, kafs_inocnt_t ino, off_t size)
 {
   assert (ctx != NULL);
   assert (ino < ctx->sb->s_inodes_count);
-  struct kafs_inode *inode = kafs_iget (ctx, ino);
+  struct kafs_inode *inode = kafs_get_inode (ctx, ino);
   int log_blksize = 10 + ctx->sb->s_log_block_size;
   size_t blksize = 1 << log_blksize;
   off_t i_size = inode->i_size;
@@ -729,7 +742,7 @@ kafs_itruncate (struct kafs_context *ctx, kafs_inocnt_t ino, off_t size)
     {
       char buf[blksize];
       memset (buf, 0, blksize);
-      int w = kafs_pwritei (ctx, ino, buf, blksize - off, offset);
+      int w = kafs_pwrite_inode (ctx, ino, buf, blksize - off, offset);
       if (w < 0)
 	return w;
       offset += blksize - off;
@@ -744,11 +757,10 @@ kafs_itruncate (struct kafs_context *ctx, kafs_inocnt_t ino, off_t size)
 }
 
 static int
-kafs_daddent (struct kafs_context *ctx, kafs_inocnt_t ino_dir,
-	      const char *name, size_t namelen, kafs_inocnt_t ino)
+kafs_add_dirent_inode (struct kafs_context *ctx, kafs_inocnt_t ino_dir,
+		       const char *name, size_t namelen, kafs_inocnt_t ino)
 {
-  const struct kafs_inode *restrict inode_dir =
-    kafs_iget_const (ctx, ino_dir);
+  const struct kafs_inode *inode_dir = kafs_get_const_inode (ctx, ino_dir);
   if (inode_dir == NULL)
     return -ENOENT;
   if (!S_ISDIR (inode_dir->i_mode))
@@ -759,8 +771,8 @@ kafs_daddent (struct kafs_context *ctx, kafs_inocnt_t ino_dir,
   while (1)
     {
       ssize_t r =
-	kafs_preadi (ctx, ino_dir, &dirent, sizeof (struct kafs_dirent),
-		     offset);
+	kafs_pread_inode (ctx, ino_dir, &dirent, sizeof (struct kafs_dirent),
+			  offset);
       if (r < 0)
 	return r;
       if (r < sizeof (struct kafs_dirent))
@@ -769,22 +781,24 @@ kafs_daddent (struct kafs_context *ctx, kafs_inocnt_t ino_dir,
 	  dirent->ino = ino;
 	  dirent->len = namelen;
 	  memcpy (dirent->name, name, namelen);
-	  int ret = kafs_itruncate (ctx, ino_dir, offset);
-	  ssize_t w = kafs_pwritei (ctx, ino_dir, dirent,
-				    sizeof (struct kafs_dirent) + namelen,
-				    offset);
+	  int ret = kafs_truncate_inode (ctx, ino_dir, offset);
+	  ssize_t w = kafs_pwrite_inode (ctx, ino_dir, dirent,
+					 sizeof (struct kafs_dirent) +
+					 namelen,
+					 offset);
 	  if (w < 0)
 	    return w;
 	  if (w < sizeof (struct kafs_dirent) + namelen)
 	    return -EIO;
-	  struct kafs_inode *inode = kafs_iget (ctx, ino);
+	  struct kafs_inode *inode = kafs_get_inode (ctx, ino);
 	  inode->i_links_count++;
 	  return 0;
 	}
       if (dirent->len == namelen)
 	{
 	  ssize_t r2 =
-	    kafs_preadi (ctx, ino_dir, dirent->name, namelen, offset + r);
+	    kafs_pread_inode (ctx, ino_dir, dirent->name, namelen,
+			      offset + r);
 	  if (r2 < 0)
 	    return r2;
 	  if (r2 < namelen)
@@ -797,10 +811,10 @@ kafs_daddent (struct kafs_context *ctx, kafs_inocnt_t ino_dir,
 }
 
 static int
-kafs_ddelent (struct kafs_context *ctx, kafs_inocnt_t ino_dir,
-	      const char *name, size_t namelen)
+kafs_delete_dirent_inode (struct kafs_context *ctx, kafs_inocnt_t ino_dir,
+			  const char *name, size_t namelen)
 {
-  const struct kafs_inode *restrict inode = kafs_iget_const (ctx, ino_dir);
+  const struct kafs_inode *inode = kafs_get_const_inode (ctx, ino_dir);
   if (inode == NULL)
     return -ENOENT;
   if (!S_ISDIR (inode->i_mode))
@@ -811,8 +825,8 @@ kafs_ddelent (struct kafs_context *ctx, kafs_inocnt_t ino_dir,
   while (1)
     {
       ssize_t r =
-	kafs_preadi (ctx, ino_dir, &dirent, sizeof (struct kafs_dirent),
-		     offset);
+	kafs_pread_inode (ctx, ino_dir, &dirent, sizeof (struct kafs_dirent),
+			  offset);
       if (r < 0)
 	return r;
       if (r < sizeof (struct kafs_dirent))
@@ -820,7 +834,8 @@ kafs_ddelent (struct kafs_context *ctx, kafs_inocnt_t ino_dir,
       if (dirent->len == namelen)
 	{
 	  ssize_t r2 =
-	    kafs_preadi (ctx, ino_dir, dirent->name, namelen, offset + r);
+	    kafs_pread_inode (ctx, ino_dir, dirent->name, namelen,
+			      offset + r);
 	  if (r2 < 0)
 	    return r2;
 	  if (r2 < namelen)
@@ -837,10 +852,10 @@ kafs_ddelent (struct kafs_context *ctx, kafs_inocnt_t ino_dir,
 }
 
 static int
-kafs_iresolvepath (struct kafs_context *restrict ctx, const char *path,
-		   kafs_inocnt_t * ino)
+kafs_get_from_path_inode (struct kafs_context *ctx, const char *path,
+			  kafs_inocnt_t * pino)
 {
-  kafs_inocnt_t i = *ino;
+  kafs_inocnt_t i = *pino;
   const char *p = path;
   if (*p == '/')
     {
@@ -851,7 +866,7 @@ kafs_iresolvepath (struct kafs_context *restrict ctx, const char *path,
     {
       char *frag = strchrnul (p, '/');
       kafs_inocnt_t j;
-      int ret = kafs_dgetent (ctx, p, frag - p, i, &j);
+      int ret = kafs_find_dirent_inode (ctx, p, frag - p, i, &j);
       if (ret < 0)
 	return ret;
       i = j;
@@ -859,7 +874,7 @@ kafs_iresolvepath (struct kafs_context *restrict ctx, const char *path,
       if (*p == '/')
 	p++;
     }
-  *ino = i;
+  *pino = i;
   return 0;
 }
 
@@ -869,7 +884,7 @@ kafs_op_getattr (const char *path, struct stat *st, struct fuse_file_info *fi)
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
   kafs_inocnt_t ino = fi->fh;
-  struct kafs_inode *inode = kafs_iget (ctx, ino);
+  struct kafs_inode *inode = kafs_get_inode (ctx, ino);
   st->st_dev = 0;
   st->st_ino = ino + 1;
   st->st_mode = inode->i_mode;
@@ -889,7 +904,7 @@ kafs_op_open (const char *path, struct fuse_file_info *fi)
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
   kafs_inocnt_t ino = 0;
-  int ret = kafs_iresolvepath (ctx, path, &ino);
+  int ret = kafs_get_from_path_inode (ctx, path, &ino);
   if (ret < 0)
     return ret;
   fi->fh = ino;
@@ -908,17 +923,17 @@ kafs_op_mknod (const char *path, mode_t mode, dev_t dev)
     return -EIO;
   *(filename++) = '\0';
   kafs_inocnt_t ino_dir = 0;
-  int ret = kafs_iresolvepath (ctx, dirpath, &ino_dir);
+  int ret = kafs_get_from_path_inode (ctx, dirpath, &ino_dir);
   if (ret < 0)
     return -ret;
-  struct kafs_inode *inode_dir = kafs_iget (ctx, ino_dir);
+  struct kafs_inode *inode_dir = kafs_get_inode (ctx, ino_dir);
   if (!S_ISDIR (inode_dir->i_mode))
     return -EIO;
   kafs_inocnt_t ino;
-  ret = kafs_ialloc (ctx, &ino);
+  ret = kafs_alloc_inode (ctx, &ino);
   if (ret < 0)
     return ret;
-  struct kafs_inode *inode = kafs_iget (ctx, ino);
+  struct kafs_inode *inode = kafs_get_inode (ctx, ino);
   inode->i_mode = mode;
   inode->i_uid = fctx->uid;
   inode->i_size = 0;
@@ -932,7 +947,7 @@ kafs_op_mknod (const char *path, mode_t mode, dev_t dev)
   inode->i_blocks = 0;
   inode->i_rdev = dev;
   memset (inode->i_block, 0, sizeof (inode->i_block));
-  ret = kafs_daddent (ctx, ino_dir, filename, ino);
+  ret = kafs_add_dirent_inode (ctx, ino_dir, filename, ino);
   if (ret < 0)
     {
       int ret2 = kafs_irelease (ctx, ino);
@@ -949,10 +964,10 @@ kafs_op_readlink (const char *path, char *buf, size_t buflen)
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
   kafs_inocnt_t ino = 0;
-  int ret = kafs_iresolvepath (ctx, path, &ino);
+  int ret = kafs_get_from_path_inode (ctx, path, &ino);
   if (ret < 0)
     return ret;
-  ssize_t r = kafs_preadi (ctx, ino, buf, buflen - 1, 0);
+  ssize_t r = kafs_pread_inode (ctx, ino, buf, buflen - 1, 0);
   if (r < 0)
     return r;
   buf[r] = '\0';
@@ -966,7 +981,7 @@ kafs_op_read (const char *path, char *buf, size_t size, off_t offset,
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
   kafs_inocnt_t ino = fi->fh;
-  return kafs_preadi (ctx, ino, buf, size, offset);
+  return kafs_pread_inode (ctx, ino, buf, size, offset);
 }
 
 static int
@@ -976,7 +991,7 @@ kafs_op_write (const char *path, const char *buf, size_t size, off_t offset,
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
   kafs_inocnt_t ino = fi->fh;
-  return kafs_pwritei (ctx, ino, buf, size, offset);
+  return kafs_pwrite_inode (ctx, ino, buf, size, offset);
 }
 
 static struct fuse_operations kafs_operations = {
