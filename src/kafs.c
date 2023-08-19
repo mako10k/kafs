@@ -9,122 +9,245 @@
 #include <string.h>
 #include <unistd.h>
 #include <assert.h>
+#include <endian.h>
 
+/// 標準呼び出し (戻り値が < 0 であれば戻り値を返す)
 #define kafs_call(func, ...) ({ \
-  int _ret = (func) (__VA_ARGS__); \
+  __auto_type _ret = (func) (__VA_ARGS__); \
   if (_ret < 0) \
     return _ret; \
   _ret; \
 })
 
+/// システムIOコール系呼び出し (戻り値が -1 であれば -errno を返す)
 #define kafs_iocall(func, ...) ({ \
   __auto_type _ret = (func) (__VA_ARGS__); \
-  if (_ret < 0) \
+  if (_ret == -1) \
     return -errno; \
   _ret; \
 })
 
-typedef unsigned int kafs_blkmask_t;
-typedef uint32_t kafs_blkcnt_t;
-typedef uint32_t kafs_inocnt_t;
-typedef uint16_t kafs_uid_t;
-typedef uint64_t kafs_off_t;
-typedef struct timespec kafs_time_t;
-typedef uint16_t kafs_gid_t;
-typedef uint16_t kafs_linkcnt_t;
-typedef uint32_t kafs_blksize_t;
-typedef uint16_t kafs_logblksize_t;
-typedef uint16_t kafs_mntcnt_t;
-typedef uint16_t kafs_mode_t;
-typedef uint16_t kafs_dev_t;
-typedef uint32_t kafs_iblkcnt_t;
-typedef uint16_t kafs_filenamelen_t;
+/// @brief ブロックマスク型
+typedef uint_fast16_t kafs_blkmask_t;
+/// @brief ブロックマスク型
+typedef struct kafs_sblkmask kafs_sblkmask_t;
 
+/// @brief ブロックカウント型
+typedef uint_fast32_t kafs_hblkcnt_t;
+/// @brief ブロックカウント型
+struct kafs_sblkcnt
+{
+  uint32_t value;
+} __attribute__((packed));
+/// @brief ブロックカウント型
+typedef struct kafs_sblkcnt kafs_sblkcnt_t;
+
+/// @brief inode カウント型
+typedef uint_fast32_t kafs_hinocnt_t;
+/// @brief inode カウント型
+struct kafs_sinocnt
+{
+  uint32_t value;
+} __attribute__((packed));
+/// @brief inode カウント型
+typedef struct kafs_sinocnt kafs_sinocnt_t;
+
+/// @brief uid 型
+typedef uint_fast16_t kafs_huid_t;
+/// @brief uid 型
+struct kafs_suid
+{
+  uint16_t value;
+} __attribute__((packed));
+/// @brief uid 型
+typedef struct kafs_suid kafs_suid_t;
+
+/// @brief ファイルオフセット型
+typedef uint_fast64_t kafs_hoff_t;
+/// @brief ファイルオフセット型
+struct kafs_soff
+{
+  uint64_t value;
+} __attribute__((packed));
+/// @brief ファイルオフセット型
+typedef struct kafs_soff kafs_soff_t;
+
+/// @brief タイムスタンプ型
+typedef struct timespec kafs_htime_t;
+/// @brief タイムスタンプ型
+struct kafs_stime
+{
+  uint64_t value;
+} __attribute__((packed));
+/// @brief ファイルオフセット型
+typedef struct kafs_stime kafs_stime_t;
+
+/// @brief gid 型
+typedef uint_fast16_t kafs_hgid_t;
+/// @brief gid 型
+struct kafs_sgid
+{
+  uint16_t value;
+} __attribute__((packed));
+/// @brief gid 型
+typedef struct kafs_sgid kafs_sgid_t;
+
+/// @brief リンクカウント型
+typedef uint_fast16_t kafs_hlinkcnt_t;
+/// @brief リンクカウント型
+struct kafs_slinkcnt
+{
+  uint16_t value;
+} __attribute ((packed));
+/// @brief リンクカウント型
+typedef struct kafs_slinkcnt kafs_slinkcnt_t;
+
+/// @brief log2 のブロックサイズ型
+typedef uint_fast16_t kafs_hlogblksize_t;
+/// @brief log2 のブロックサイズ型
+struct kafs_slogblksize
+{
+  uint16_t value;
+} __attribute__((packed));
+/// @brief log2 のブロックサイズ型
+typedef struct kafs_slogblksize kafs_slogblksize_t;
+
+/// @brief マウントカウント型
+typedef uint_fast16_t kafs_hmntcnt_t;
+/// @brief マウントカウント型
+struct kafs_smntcnt
+{
+  uint16_t value;
+} __attribute__((packed));
+/// @brief マウントカウント型
+typedef struct kafs_smntcnt kafs_smntcnt_t;
+
+/// @brief mode 型
+typedef uint_fast16_t kafs_hmode_t;
+/// @brief mode 型
+struct kafs_smode
+{
+  uint16_t value;
+} __attribute__((packed));
+/// @brief mode 型
+typedef struct kafs_smode kafs_smode_t;
+
+/// @brief デバイス型
+typedef uint_fast16_t kafs_hdev_t;
+/// @brief デバイス型
+struct kafs_sdev
+{
+  uint16_t value;
+} __attribute__((packed));
+/// @brief デバイス型
+typedef struct kafs_sdev kafs_sdev_t;
+
+/// @brief ファイル名長さ型
+typedef uint_fast16_t kafs_hfilenamelen_t;
+/// @brief ファイル名長さ型
+struct kafs_sfilenamelen
+{
+  uint16_t value;
+} __attribute__((packed));
+/// @brief ファイル名長さ型
+typedef struct kafs_sfilenamelen kafs_sfilenamelen_t;
+
+/// @brief ブロックサイズ型
+typedef uint_fast32_t kafs_hblksize_t;
+
+/// @brief inode ブロックカウント型
+typedef uint_fast32_t kafs_hiblkcnt_t;
+
+/// 標準関数の正常戻り値
 #define KAFS_SUCCESS 0
+
+/// inode番号のうち存在しないことを表す値
 #define KAFS_INO_NONE 0
+
+/// ブロック番号のうち存在しないことを表す値
 #define KAFS_BLO_NONE 0
 
 /// @brief スーパーブロック情報
-struct kafs_superblock_layout
+struct kafs_ssuperblock
 {
   /// @brief inode 番号の数
-  kafs_inocnt_t s_inocnt;
+  kafs_sinocnt_t s_inocnt;
   /// @brief block 番号の数(一般ユーザー)
-  kafs_blkcnt_t s_blkcnt;
+  kafs_sblkcnt_t s_blkcnt;
   /// @brief block 番号の数(ルートユーザー)
-  kafs_blkcnt_t s_r_blkcnt;
+  kafs_sblkcnt_t s_r_blkcnt;
   /// @brief 空き block 番号の数
-  kafs_blkcnt_t s_blkcnt_free;
+  kafs_sblkcnt_t s_blkcnt_free;
   /// @brief 空き inode 番号の数
-  kafs_inocnt_t s_inocnt_free;
+  kafs_sinocnt_t s_inocnt_free;
   /// @brief 最初のデータのブロック番号
-  kafs_blkcnt_t s_first_data_block;
+  kafs_sblkcnt_t s_first_data_block;
   /// @brief ブロックサイズ(ただし、サイズ=2^(10 + s_log_block_size))
-  kafs_logblksize_t s_log_blksize;
+  kafs_slogblksize_t s_log_blksize;
   /// @brief マウント日時
-  kafs_time_t s_mtime;
+  kafs_stime_t s_mtime;
   /// @brief 書き込み日時
-  kafs_time_t s_wtime;
+  kafs_stime_t s_wtime;
   /// @brief マウント数
-  kafs_mntcnt_t s_mnt_count;
-};
+  kafs_smntcnt_t s_mntcnt;
+} __attribute__((packed));
 
 /// @brief inode 情報
-struct kafs_inode_layout
+struct kafs_sinode
 {
   /// @brief モード
-  kafs_mode_t i_mode;
+  kafs_smode_t i_mode;
   /// @brief UID
-  kafs_uid_t i_uid;
+  kafs_suid_t i_uid;
   /// @brief ファイルサイズ
-  kafs_off_t i_size;
+  kafs_soff_t i_size;
   /// @brief アクセスタイム
-  kafs_time_t i_atime;
+  kafs_stime_t i_atime;
   /// @brief inode の更新時間
-  kafs_time_t i_ctime;
+  kafs_stime_t i_ctime;
   /// @brief データ の更新時間
-  kafs_time_t i_mtime;
+  kafs_stime_t i_mtime;
   /// @brief 削除時間
-  kafs_time_t i_dtime;
+  kafs_stime_t i_dtime;
   /// @brief GID
-  kafs_gid_t i_gid;
+  kafs_sgid_t i_gid;
   /// @brief リンク数
-  kafs_linkcnt_t i_links_count;
+  kafs_slinkcnt_t i_links_count;
   /// @brief ブロック数
-  kafs_blkcnt_t i_blocks;
+  kafs_sblkcnt_t i_blocks;
   /// @brief デバイス番号
-  kafs_dev_t i_rdev;
+  kafs_sdev_t i_rdev;
   /// @brief ブロックデータ
-  kafs_blkcnt_t i_blkreftbl[15];
-};
+  kafs_sblkcnt_t i_blkreftbl[15];
+} __attribute__((packed));
 
 /// @brief コンテキスト
 struct kafs_context
 {
   /// @brief スーパーブロック情報
-  struct kafs_superblock_layout *c_superblock;
+  struct kafs_ssuperblock *c_superblock;
   /// @brief inode 情報
-  struct kafs_inode_layout *c_inotbl;
+  struct kafs_sinode *c_inotbl;
   /// @brief ブロックマスク
   kafs_blkmask_t *c_blkmasktbl;
   /// @brief 前回の inode 検索情報
-  kafs_inocnt_t c_ino_search;
+  kafs_hinocnt_t c_ino_search;
   /// @brief 前回のブロック検索情報
-  kafs_blkcnt_t c_blo_search;
+  kafs_hblkcnt_t c_blo_search;
   /// @brief ファイル記述子
   int c_fd;
 };
 
 /// @brief ディレクトリエントリ
-struct kafs_dirent_layout
+struct kafs_sdirent
 {
   /// @brief inode 番号
-  kafs_inocnt_t d_ino;
+  kafs_sinocnt_t d_ino;
   /// @brief ファイル名の長さ
-  kafs_filenamelen_t d_filenamelen;
+  kafs_sfilenamelen_t d_filenamelen;
   /// @brief ファイル名
   char d_filename[0];
-};
+} __attribute__((packed));
 
 /// ブロックマスクのビット数
 #define KAFS_BLKMASK_BITS (sizeof(kafs_blkmask_t) << 3)
@@ -133,15 +256,64 @@ struct kafs_dirent_layout
 /// ブロックマスクのビット数のマスク値
 #define KAFS_BLKMASK_MASK_BITS (KAFS_BLKMASK_BITS - 1)
 
+/// @brief inodeカウント型の記録表現から処理表現へ変更する
+/// @param sinocnt inodeカウント型の記録表現
+/// @return inodeカウント型の処理表現
+static kafs_hinocnt_t
+kafs_inocnt_stoh (kafs_sinocnt_t s)
+{
+  return le32toh (s.value);
+}
+
+/// @brief スーパーブロックを取得する
+/// @param ctx コンテキスト
+/// @return スーパーブロック
+static struct kafs_ssuperblock *
+kafs_get_superblock (struct kafs_context *ctx)
+{
+  assert (ctx != NULL);
+  return ctx->c_superblock;
+}
+
+/// @brief スーパーブロックを取得する
+/// @param ctx コンテキスト
+/// @return スーパーブロック
+static const struct kafs_ssuperblock *
+kafs_get_const_superblock (const struct kafs_context *ctx)
+{
+  assert (ctx != NULL);
+  return ctx->c_superblock;
+}
+
+/// @brief inodeの最大数を読み出す
+/// @param sb スーパーブロック
+/// @return inodeの最大数
+static kafs_hinocnt_t
+kafs_sbload_inocnt (const struct kafs_ssuperblock *sb)
+{
+  assert (sb != NULL);
+  return kafs_inocnt_stoh (sb->s_inocnt);
+}
+
+/// @brief inodeの最大数を読み出す
+/// @param ctx コンテキスト
+/// @return inodeの最大数
+static kafs_hinocnt_t
+kafs_load_inode_max (const struct kafs_context *ctx)
+{
+  assert (ctx != NULL);
+  return kafs_sbload_inocnt (kafs_get_const_superblock (ctx));
+}
+
 /// @brief inode 構造体の参照を取得
 /// @param ctx コンテキスト
 /// @param ino inode 番号
 /// @return inode 構造体の参照
-static struct kafs_inode_layout *
-kafs_get_inode (struct kafs_context *ctx, kafs_inocnt_t ino)
+static struct kafs_sinode *
+kafs_get_inode (struct kafs_context *ctx, kafs_hinocnt_t ino)
 {
   assert (ctx != NULL);
-  assert (ino < ctx->c_superblock->s_inocnt);
+  assert (ino < kafs_load_inode_max (ctx));
   return ctx->c_inotbl + ino;
 }
 
@@ -149,11 +321,11 @@ kafs_get_inode (struct kafs_context *ctx, kafs_inocnt_t ino)
 /// @param ctx コンテキスト
 /// @param ino inode 番号
 /// @return inode 構造体の参照
-static const struct kafs_inode_layout *
-kafs_get_const_inode (const struct kafs_context *ctx, kafs_inocnt_t ino)
+static const struct kafs_sinode *
+kafs_get_const_inode (const struct kafs_context *ctx, kafs_hinocnt_t ino)
 {
   assert (ctx != NULL);
-  assert (ino < ctx->c_superblock->s_inocnt);
+  assert (ino < kafs_load_inode_max (ctx));
   return ctx->c_inotbl + ino;
 }
 
@@ -162,11 +334,27 @@ kafs_get_const_inode (const struct kafs_context *ctx, kafs_inocnt_t ino)
 /// @param ino inode 番号
 /// @return 0: 未使用, != 0: 使用中
 static int
-kafs_get_usage_inode (const struct kafs_context *ctx, kafs_inocnt_t ino)
+kafs_load_inode_usage (const struct kafs_context *ctx, kafs_hinocnt_t ino)
 {
   assert (ctx != NULL);
-  assert (ino < ctx->c_superblock->s_inocnt);
-  return ctx->c_inotbl[ino].i_mode != 0;
+  assert (ino < kafs_load_inode_max (ctx));
+  // 下記は 0 のビット表現がエンディアンによって変わらない前提
+  return kafs_get_const_inode (ctx, ino)->i_mode.value != 0;
+}
+
+static int
+kafs_is_zero_inocnt_free (const struct kafs_context *ctx)
+{
+  assert (ctx != NULL);
+  // 下記は 0 のビット表現がエンディアンによって変わらない前提
+  return kafs_get_const_superblock (ctx)->s_inocnt_free.value == 0;
+}
+
+static int
+kafs_sbload_inocnt_free (const struct kafs_ssuperblock *sb)
+{
+  assert (sb != NULL);
+  return kafs_inocnt_stoh (sb->s_inocnt_free);
 }
 
 /// @brief 未使用の inode 番号を見つける
@@ -174,21 +362,20 @@ kafs_get_usage_inode (const struct kafs_context *ctx, kafs_inocnt_t ino)
 /// @param pino 見つかった inode 番号
 /// @return 0: 成功、 < 0: 失敗 (-errno)
 static int
-kafs_find_free_inode (struct kafs_context *ctx, kafs_inocnt_t * pino)
+kafs_find_free_inode (struct kafs_context *ctx, kafs_hinocnt_t * pino)
 {
   assert (ctx != NULL);
   assert (pino != NULL);
-  if (ctx->c_superblock->s_inocnt_free == 0)
+  if (kafs_is_zero_inocnt_free (ctx))
     return -ENOSPC;
-  kafs_inocnt_t inocnt = ctx->c_superblock->s_inocnt;
-  kafs_inocnt_t ino_search = ctx->c_ino_search;
-  kafs_inocnt_t ino = ino_search + 1;
-  struct kafs_inode_layout *inotbl = ctx->c_inotbl;
+  __auto_type inocnt = kafs_load_inode_max (ctx);
+  __auto_type ino_search = ctx->c_ino_search;
+  __auto_type ino = ino_search + 1;
   while (ino_search != ino)
     {
       if (ino >= inocnt)
 	ino = 0;
-      if (!kafs_get_usage_inode (ctx, ino))
+      if (!kafs_load_inode_usage (ctx, ino))
 	{
 	  ctx->c_ino_search = ino;
 	  *pino = ino;
@@ -199,18 +386,123 @@ kafs_find_free_inode (struct kafs_context *ctx, kafs_inocnt_t * pino)
   return -ENOSPC;
 }
 
+static kafs_hblkcnt_t
+kafs_blkcnt_stoh (kafs_sblkcnt_t s)
+{
+  return le32toh (s.value);
+}
+
+static kafs_sblkcnt_t
+kafs_blkcnt_htos (kafs_hblkcnt_t h)
+{
+  kafs_sblkcnt_t s = {.value = htole32 (h) };
+  return s;
+}
+
+static kafs_hblkcnt_t
+kafs_sbload_blkcnt (const struct kafs_ssuperblock *sb)
+{
+  assert (sb != NULL);
+  return kafs_blkcnt_stoh (sb->s_blkcnt);
+}
+
+static kafs_hblkcnt_t
+kafs_load_blkcnt (const struct kafs_context *ctx)
+{
+  assert (ctx != NULL);
+  return kafs_sbload_blkcnt (kafs_get_const_superblock (ctx));
+}
+
+static kafs_hblkcnt_t
+kafs_sbload_r_blkcnt (const struct kafs_ssuperblock *sb)
+{
+  assert (sb != NULL);
+  return kafs_blkcnt_stoh (sb->s_blkcnt);
+}
+
+static kafs_hblkcnt_t
+kafs_load_r_blkcnt (const struct kafs_context *ctx)
+{
+  assert (ctx != NULL);
+  return kafs_sbload_r_blkcnt (kafs_get_const_superblock (ctx));
+}
+
+static kafs_hblkcnt_t
+kafs_sbload_blkcnt_free (const struct kafs_ssuperblock *sb)
+{
+  assert (sb != NULL);
+  return kafs_blkcnt_stoh (sb->s_blkcnt_free);
+}
+
+static kafs_hblkcnt_t
+kafs_load_blkcnt_free (const struct kafs_context *ctx)
+{
+  assert (ctx != NULL);
+  return kafs_sbload_blkcnt_free (kafs_get_const_superblock (ctx));
+}
+
+static void
+kafs_sbsave_blkcnt_free (struct kafs_ssuperblock *sb, kafs_hblkcnt_t blkcnt_free)
+{
+  assert (sb != NULL);
+  sb->s_blkcnt_free = kafs_blkcnt_htos (blkcnt_free);
+}
+
+static void
+kafs_save_blkcnt_free (struct kafs_context *ctx, kafs_hblkcnt_t blkcnt_free)
+{
+  assert (ctx != NULL);
+  kafs_sbsave_blkcnt_free (kafs_get_superblock (ctx), blkcnt_free);
+}
+
+#define kafs_now() ({ \
+  struct timespec _now; \
+  kafs_iocall (clock_gettime, CLOCK_REALTIME, &_now); \
+  _now; \
+})
+
 /// @brief 指定されたブロック番号の利用状況を取得する
 /// @param ctx コンテキスト
 /// @param blo ブロック番号
 /// @return 0: 未使用, != 0: 使用中
 static int
-kafs_get_blkmask (const struct kafs_context *ctx, kafs_blkcnt_t blo)
+kafs_get_blkmask (const struct kafs_context *ctx, kafs_hblkcnt_t blo)
 {
   assert (ctx != NULL);
-  assert (blo < ctx->c_superblock->s_blkcnt);
-  kafs_blkcnt_t blod = blo >> KAFS_BLKMASK_LOG_BITS;
-  kafs_blkcnt_t blor = blo & KAFS_BLKMASK_MASK_BITS;
+  assert (blo < kafs_load_blkcnt (ctx));
+  __auto_type blod = blo >> KAFS_BLKMASK_LOG_BITS;
+  __auto_type blor = blo & KAFS_BLKMASK_MASK_BITS;
   return (ctx->c_blkmasktbl[blod] & (1 << blor)) != 0;
+}
+
+static kafs_stime_t
+kafs_time_htos (kafs_htime_t h)
+{
+  __auto_type v = ((uint64_t) h.tv_sec << 32) | h.tv_nsec;
+  kafs_stime_t s = {.value = htole64 (v) };
+  return s;
+}
+
+static kafs_htime_t
+kafs_time_stoh (kafs_stime_t s)
+{
+  __auto_type v = le64toh (s.value);
+  kafs_htime_t h = {.tv_sec = v >> 32,.tv_nsec = v & 0xffffffff };
+  return h;
+}
+
+static void
+kafs_sbsave_wtime (struct kafs_ssuperblock *sb, kafs_htime_t wtime)
+{
+  assert (sb != NULL);
+  sb->s_wtime = kafs_time_htos (wtime);
+}
+
+static void
+kafs_save_wtime (struct kafs_context *ctx, kafs_htime_t wtime)
+{
+  assert (ctx != NULL);
+  kafs_sbsave_wtime (kafs_get_superblock (ctx), wtime);
 }
 
 /// @brief 指定されたブロックの利用状況をセットする
@@ -219,32 +511,35 @@ kafs_get_blkmask (const struct kafs_context *ctx, kafs_blkcnt_t blo)
 /// @param val 0: フラグをクリア, != 0: フラグをセット
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
-kafs_set_blkmask (struct kafs_context *ctx, kafs_blkcnt_t blo, int val)
+kafs_set_blkmask (struct kafs_context *ctx, kafs_hblkcnt_t blo, int val)
 {
   assert (ctx != NULL);
-  assert (blo < ctx->c_superblock->s_blkcnt);
-  kafs_blkcnt_t blod = blo >> KAFS_BLKMASK_LOG_BITS;
-  kafs_blkcnt_t blor = blo & KAFS_BLKMASK_MASK_BITS;
+  assert (blo < kafs_load_blkcnt (ctx));
+  __auto_type blod = blo >> KAFS_BLKMASK_LOG_BITS;
+  __auto_type blor = blo & KAFS_BLKMASK_MASK_BITS;
   if (val)
     {
       assert (!kafs_get_blkmask (ctx, blo));
       ctx->c_blkmasktbl[blod] |= 1 << blor;
-      assert (ctx->c_superblock->s_blkcnt_free > 0);
-      ctx->c_superblock->s_blkcnt_free--;
-      kafs_iocall (clock_settime, CLOCK_REALTIME, &ctx->c_superblock->s_wtime);
+      __auto_type blkcnt_free = kafs_load_blkcnt_free (ctx);
+      assert (blkcnt_free > 0);
+      kafs_save_blkcnt_free (ctx, blkcnt_free - 1);
+      kafs_save_wtime (ctx, kafs_now ());
     }
   else
     {
       assert (kafs_get_blkmask (ctx, blo));
       ctx->c_blkmasktbl[blod] &= ~(1 << blor);
-      assert (ctx->c_superblock->s_blkcnt_free < ctx->c_superblock->s_r_blkcnt - 1);
-      ctx->c_superblock->s_blkcnt_free++;
-      kafs_iocall (clock_settime, CLOCK_REALTIME, &ctx->c_superblock->s_wtime);
+      __auto_type blkcnt_free = kafs_load_blkcnt_free (ctx);
+      __auto_type r_blkcnt = kafs_load_r_blkcnt (ctx);
+      assert (blkcnt_free < r_blkcnt - 1);
+      kafs_save_blkcnt_free (ctx, blkcnt_free + 1);
+      kafs_save_wtime (ctx, kafs_now ());
     }
   return KAFS_SUCCESS;
 }
 
-static kafs_blkcnt_t
+static kafs_hblkcnt_t
 kafs_get_free_blkmask (kafs_blkmask_t bm)
 {
   if (sizeof (kafs_blkmask_t) <= sizeof (unsigned int))
@@ -254,30 +549,68 @@ kafs_get_free_blkmask (kafs_blkmask_t bm)
   return __builtin_ctzll (bm);
 }
 
+static kafs_hlogblksize_t
+kafs_logblksize_stoh (kafs_slogblksize_t s)
+{
+  return le16toh (s.value);
+}
+
+static kafs_hlogblksize_t
+kafs_sbload_log_blksize (const struct kafs_ssuperblock *sb)
+{
+  assert (sb != NULL);
+  return kafs_logblksize_stoh (sb->s_log_blksize) + 10;
+}
+
+static kafs_hlogblksize_t
+kafs_load_log_blksize (const struct kafs_context *ctx)
+{
+  assert (ctx != NULL);
+  return kafs_sbload_log_blksize (kafs_get_const_superblock (ctx));
+}
+
+static kafs_hblksize_t
+kafs_sbload_blksize (const struct kafs_ssuperblock *sb)
+{
+  assert (sb != NULL);
+  return 1 << kafs_sbload_log_blksize (sb);
+}
+
+static kafs_hblksize_t
+kafs_load_blksize (const struct kafs_context *ctx)
+{
+  assert (ctx != NULL);
+  return kafs_sbload_blksize (kafs_get_const_superblock (ctx));
+}
+
+// ---------------------------------------------------------
+// BLOCK OPERATIONS
+// ---------------------------------------------------------
+
 /// @brief 未使用のブロック番号を取得し、使用中フラグをつける
 /// @param ctx コンテキスト
 /// @param pblo ブロック番号
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
-kafs_alloc_blk (struct kafs_context *ctx, kafs_blkcnt_t * pblo)
+kafs_alloc_blk (struct kafs_context *ctx, kafs_hblkcnt_t * pblo)
 {
   assert (ctx != NULL);
   assert (pblo != NULL);
-  kafs_blkcnt_t blo_search = ctx->c_blo_search;
-  kafs_blkcnt_t blo = blo_search + 1;
-  kafs_blkmask_t *blkmasktbl = ctx->c_blkmasktbl;
-  kafs_blkcnt_t blocnt = ctx->c_superblock->s_blkcnt;
+  __auto_type blo_search = ctx->c_blo_search;
+  __auto_type blo = blo_search + 1;
+  __auto_type blkmasktbl = ctx->c_blkmasktbl;
+  __auto_type blocnt = kafs_load_blkcnt (ctx);
   while (blo_search != blo)
     {
       if (blo >= blocnt)
 	blo = 0;
-      kafs_blkcnt_t blod = blo >> KAFS_BLKMASK_LOG_BITS;
-      kafs_blkcnt_t blor = blo & KAFS_BLKMASK_MASK_BITS;	// ToDo: 2周目以降は常に0
-      kafs_blkmask_t blkmask = ~blkmasktbl[blod];
+      __auto_type blod = blo >> KAFS_BLKMASK_LOG_BITS;
+      __auto_type blor = blo & KAFS_BLKMASK_MASK_BITS;	// ToDo: 2周目以降は常に0
+      __auto_type blkmask = ~blkmasktbl[blod];
       if (blkmask != 0)
 	{
-	  kafs_blkcnt_t blor_found = kafs_get_free_blkmask (blkmask);	// TODO: エラー処理
-	  kafs_blkcnt_t blo_found = (blod << KAFS_BLKMASK_LOG_BITS) + blor_found;
+	  __auto_type blor_found = kafs_get_free_blkmask (blkmask);
+	  __auto_type blo_found = (blod << KAFS_BLKMASK_LOG_BITS) + blor_found;
 	  if (blo_found < blocnt)
 	    {
 	      ctx->c_blo_search = blo_found;
@@ -291,44 +624,21 @@ kafs_alloc_blk (struct kafs_context *ctx, kafs_blkcnt_t * pblo)
   return -ENOSPC;
 }
 
-/// @brief ブロックデータを削除する
-/// @param ctx コンテキスト
-/// @param pblo ブロック番号へのポインタ
-/// @return 0: 成功, < 0: 失敗 (-errno)
-static int
-kafs_release_blk (struct kafs_context *ctx, kafs_blkcnt_t * pblo)
-{
-  assert (ctx != NULL);
-  assert (pblo != NULL);
-  assert (*pblo != KAFS_BLO_NONE);
-  assert (*pblo < ctx->c_superblock->s_r_blkcnt);
-  assert (kafs_get_blkmask (ctx, *pblo));
-
-  kafs_call (kafs_set_blkmask, ctx, *pblo, 0);
-  kafs_logblksize_t log_blksize = 10 + ctx->c_superblock->s_log_blksize;
-  kafs_blksize_t blksize = 1 << log_blksize;
-  char zbuf[blksize];
-  memset (zbuf, 0, blksize);
-  ssize_t w = kafs_iocall (pwrite, ctx->c_fd, zbuf, blksize, blksize * *pblo);
-  assert (w == blksize);
-  *pblo = KAFS_BLO_NONE;
-  return KAFS_SUCCESS;
-}
-
 /// @brief ブロック単位でデータを読み出す
 /// @param ctx コンテキスト
 /// @param blo ブロック番号
 /// @param buf 読み出すバッファ
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
-kafs_read_blk (struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
+kafs_read_blk (struct kafs_context *ctx, kafs_hblkcnt_t blo, void *buf)
 {
   assert (ctx != NULL);
   assert (buf != NULL);
-  assert (blo < ctx->c_superblock->s_r_blkcnt);
+  assert (blo < kafs_load_r_blkcnt (ctx));
   assert (kafs_get_blkmask (ctx, blo));
-  kafs_logblksize_t log_blksize = 10 + ctx->c_superblock->s_log_blksize;
-  kafs_blksize_t blksize = 1 << log_blksize;
+
+  __auto_type log_blksize = kafs_load_log_blksize (ctx);
+  __auto_type blksize = kafs_load_blksize (ctx);
   if (blo == KAFS_BLO_NONE)
     {
       memset (buf, 0, blksize);
@@ -339,103 +649,245 @@ kafs_read_blk (struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
   return KAFS_SUCCESS;
 }
 
-/// @brief ブロック単位でデータを読み出す
-/// @param ctx コンテキスト
-/// @param pblo ブロック番号へのポインタ、0の場合はブロックを確保し、その値が入る
-/// @param buf 読み出すバッファ
-/// @return 0: 成功, < 0: 失敗 (-errno)
-static int
-kafs_reada_blk (struct kafs_context *ctx, kafs_blkcnt_t * pblo, void *buf)
-{
-  assert (ctx != NULL);
-  assert (buf != NULL);
-  assert (pblo != NULL);
-  assert (*pblo < ctx->c_superblock->s_r_blkcnt);
-  kafs_logblksize_t log_blksize = 10 + ctx->c_superblock->s_log_blksize;
-  kafs_blksize_t blksize = 1 << log_blksize;
-  if (*pblo == KAFS_BLO_NONE)
-    {
-      kafs_call (kafs_alloc_blk, ctx, pblo);
-      memset (buf, 0, blksize);
-      return KAFS_SUCCESS;
-    }
-  ssize_t r = kafs_iocall (pread, ctx->c_fd, buf, blksize, blksize * *pblo);
-  assert (r == blksize);
-  return KAFS_SUCCESS;
-}
-
 /// @brief ブロック単位でデータを書き込む
 /// @param ctx コンテキスト
-/// @param pblo ブロック番号へのポインタ、0の場合はブロックを確保し、その値が入る
+/// @param blo ブロック番号へのポインタ
 /// @param buf 書き込むバッファ
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
-kafs_writea_blk (struct kafs_context *ctx, kafs_blkcnt_t * pblo, const void *buf)
+kafs_write_blk (struct kafs_context *ctx, kafs_hblkcnt_t blo, const void *buf)
 {
   assert (ctx != NULL);
   assert (buf != NULL);
-  assert (pblo != NULL);
-  assert (*pblo < ctx->c_superblock->s_r_blkcnt);
-  kafs_logblksize_t log_blksize = 10 + ctx->c_superblock->s_log_blksize;
-  kafs_blksize_t blksize = 1 << log_blksize;
-  if (*pblo == KAFS_BLO_NONE)
-    kafs_call (kafs_alloc_blk, ctx, pblo);
-  ssize_t w = kafs_iocall (pwrite, ctx->c_fd, buf, blksize, blksize * *pblo);
+  assert (blo != KAFS_INO_NONE);
+  assert (blo < kafs_load_blkcnt (ctx));
+  assert (kafs_get_blkmask (ctx, blo));
+  __auto_type log_blksize = kafs_load_log_blksize (ctx);
+  __auto_type blksize = kafs_load_blksize (ctx);
+  __auto_type w = kafs_iocall (pwrite, ctx->c_fd, buf, blksize, blo << log_blksize);
   assert (w == blksize);
+  return KAFS_SUCCESS;
+}
+
+/// @brief ブロックデータを削除する
+/// @param ctx コンテキスト
+/// @param sblo ブロック番号
+/// @return 0: 成功, < 0: 失敗 (-errno)
+static int
+kafs_release_blk (struct kafs_context *ctx, kafs_hblkcnt_t blo)
+{
+  assert (ctx != NULL);
+  assert (blo != KAFS_BLO_NONE);
+  assert (blo < kafs_load_r_blkcnt (ctx));
+  assert (kafs_get_blkmask (ctx, blo));
+
+  kafs_call (kafs_set_blkmask, ctx, blo, 0);
+  __auto_type blksize = kafs_load_blksize (ctx);
+  char zbuf[blksize];
+  memset (zbuf, 0, blksize);
+  kafs_iocall (kafs_write_blk, ctx, blo, zbuf);
+  return KAFS_SUCCESS;
+}
+
+// ---------------------------------------------------------
+// INODE BLOCK OPERATIONS
+// ---------------------------------------------------------
+
+static kafs_hlogblksize_t
+kafs_load_log_blkref_pb (const struct kafs_context *ctx)
+{
+  return kafs_load_log_blksize (ctx) + 3;
+}
+
+static kafs_hblksize_t
+kafs_load_blkref_pb (const struct kafs_context *ctx)
+{
+  return 1 << kafs_load_log_blkref_pb (ctx);
+}
+
+#define KAFS_DIRECT_SIZE sizeof(((struct kafs_sinode *)NULL)->i_blkreftbl)
+
+static kafs_hoff_t
+kafs_off_stoh (kafs_soff_t s)
+{
+  return le64toh (s.value);
+}
+
+static kafs_hoff_t
+kafs_load_filesize (const struct kafs_context *ctx, kafs_hinocnt_t ino)
+{
+  assert (ctx != NULL);
+  assert (ino != KAFS_INO_NONE);
+  assert (ino < kafs_load_inode_max (ctx));
+  const struct kafs_sinode *inoent = kafs_get_const_inode (ctx, ino);
+  return kafs_off_stoh (inoent->i_size);
+}
+
+static kafs_hblkcnt_t
+kafs_load_blkreftbl_indirect1 (struct kafs_context *ctx, kafs_hblkcnt_t blo, kafs_hblkcnt_t idx, kafs_hblkcnt_t * pblo)
+{
+  assert (ctx != NULL);
+  assert (pblo != NULL);
+  assert (blo < kafs_load_r_blkcnt (ctx));
+  __auto_type blkrefs_pb = kafs_load_blkref_pb (ctx);
+  assert (idx < blkrefs_pb);
+
+  if (blo == KAFS_BLO_NONE)
+    {
+      *pblo = KAFS_BLO_NONE;
+      return KAFS_SUCCESS;
+    }
+  kafs_sblkcnt_t blkreftbl[blkrefs_pb];
+  kafs_call (kafs_read_blk, ctx, blo, blkreftbl);
+  *pblo = kafs_blkcnt_stoh (blkreftbl[idx]);
+  return KAFS_SUCCESS;
+}
+
+static kafs_hblkcnt_t
+kafs_load_blkreftbl_indirect2 (struct kafs_context *ctx, kafs_hblkcnt_t blo, kafs_hblkcnt_t idx, kafs_hblkcnt_t * pblo)
+{
+  assert (ctx != NULL);
+  assert (pblo != NULL);
+  assert (blo < kafs_load_r_blkcnt (ctx));
+  __auto_type log_blkrefs_pb = kafs_load_log_blkref_pb (ctx);
+  __auto_type blkrefs_pb = kafs_load_blkref_pb (ctx);
+  assert (idx < blkrefs_pb * blkrefs_pb);
+
+  if (blo == KAFS_BLO_NONE)
+    {
+      *pblo = KAFS_BLO_NONE;
+      return KAFS_SUCCESS;
+    }
+  __auto_type idx1 = idx >> log_blkrefs_pb;
+  __auto_type idx2 = idx & (blkrefs_pb - 1);
+  kafs_call (kafs_load_blkreftbl_indirect1, ctx, blo, idx1, &blo);
+  kafs_call (kafs_load_blkreftbl_indirect1, ctx, blo, idx2, pblo);
+  return KAFS_SUCCESS;
+}
+
+static kafs_hblkcnt_t
+kafs_load_blkreftbl_indirect3 (struct kafs_context *ctx, kafs_hblkcnt_t blo, kafs_hblkcnt_t idx, kafs_hblkcnt_t * pblo)
+{
+  assert (ctx != NULL);
+  assert (pblo != NULL);
+  assert (blo != KAFS_BLO_NONE);
+  assert (blo < kafs_load_r_blkcnt (ctx));
+
+  __auto_type log_blkrefs_pb = kafs_load_log_blkref_pb (ctx);
+  __auto_type blkrefs_pb = kafs_load_blkref_pb (ctx);
+  if (blo == KAFS_BLO_NONE)
+    {
+      *pblo = KAFS_BLO_NONE;
+      return KAFS_SUCCESS;
+    }
+  __auto_type idx1 = idx >> log_blkrefs_pb;
+  __auto_type idx2 = idx & (blkrefs_pb - 1);
+  kafs_call (kafs_load_blkreftbl_indirect2, ctx, blo, idx1, &blo);
+  kafs_call (kafs_load_blkreftbl_indirect1, ctx, blo, idx2, pblo);
+  return KAFS_SUCCESS;
+}
+
+static kafs_hblkcnt_t
+kafs_load_blkreftbl_indirect_final (struct kafs_context *ctx, kafs_hinocnt_t ino, kafs_hiblkcnt_t iblo,
+				    kafs_hblkcnt_t * pblo)
+{
+  assert (ctx != NULL);
+  assert (pblo != NULL);
+  assert (ino != KAFS_INO_NONE);
+  assert (ino < kafs_load_inode_max (ctx));
+  assert (kafs_load_inode_usage (ctx, ino));
+  assert (kafs_load_filesize (ctx, ino) > KAFS_DIRECT_SIZE);
+
+  const struct kafs_sinode *inoent = kafs_get_const_inode (ctx, ino);
+  kafs_hblkcnt_t blo = kafs_blkcnt_stoh (inoent->i_blkreftbl[14]);
+  kafs_call (kafs_load_blkreftbl_indirect3, ctx, blo, iblo, &blo);
+  return KAFS_SUCCESS;
+}
+
+static kafs_hblkcnt_t
+kafs_load_blkreftbl_indirect2_or_more (struct kafs_context *ctx, kafs_hinocnt_t ino, kafs_hiblkcnt_t iblo,
+				       kafs_hblkcnt_t * pblo)
+{
+  assert (ctx != NULL);
+  assert (pblo != NULL);
+  assert (ino != KAFS_INO_NONE);
+  assert (ino < kafs_load_inode_max (ctx));
+  assert (kafs_load_inode_usage (ctx, ino));
+  assert (kafs_load_filesize (ctx, ino) > KAFS_DIRECT_SIZE);
+
+  __auto_type log_blkrefs_pb = kafs_load_log_blkref_pb (ctx);
+  __auto_type blkrefs_pb = kafs_load_blkref_pb (ctx);
+  if (iblo < blkrefs_pb * blkrefs_pb)
+    {
+      const struct kafs_sinode *inoent = kafs_get_const_inode (ctx, ino);
+      kafs_hblkcnt_t blo = kafs_blkcnt_stoh (inoent->i_blkreftbl[13]);
+      kafs_call (kafs_load_blkreftbl_indirect2, ctx, blo, iblo, pblo);
+      return KAFS_SUCCESS;
+    }
+  return kafs_load_blkreftbl_indirect_final (ctx, ino, iblo - blkrefs_pb, pblo);
+}
+
+static kafs_hblkcnt_t
+kafs_load_blkreftbl_indirect1_or_more (struct kafs_context *ctx, kafs_hinocnt_t ino, kafs_hiblkcnt_t iblo,
+				       kafs_hblkcnt_t * pblo)
+{
+  assert (ctx != NULL);
+  assert (pblo != NULL);
+  assert (ino != KAFS_INO_NONE);
+  assert (ino < kafs_load_inode_max (ctx));
+  assert (kafs_load_inode_usage (ctx, ino));
+  assert (kafs_load_filesize (ctx, ino) > KAFS_DIRECT_SIZE);
+
+  __auto_type blkrefs_pb = kafs_load_blkref_pb (ctx);
+  if (iblo < blkrefs_pb)
+    {
+      const struct kafs_sinode *inoent = kafs_get_const_inode (ctx, ino);
+      kafs_hblkcnt_t blo = kafs_blkcnt_stoh (inoent->i_blkreftbl[12]);
+      kafs_call (kafs_load_blkreftbl_indirect1, ctx, blo, iblo, pblo);
+      return KAFS_SUCCESS;
+    }
+  return kafs_load_blkreftbl_indirect2_or_more (ctx, ino, iblo - blkrefs_pb, pblo);
+}
+
+static int
+kafs_load_iblk_to_blk (struct kafs_context *ctx, kafs_hinocnt_t ino, kafs_hiblkcnt_t iblo, kafs_hblkcnt_t * pblo)
+{
+  assert (ctx != NULL);
+  assert (pblo != NULL);
+  assert (ino != KAFS_INO_NONE);
+  assert (ino < kafs_load_inode_max (ctx));
+  assert (kafs_load_inode_usage (ctx, ino));
+  assert (kafs_load_filesize (ctx, ino) > KAFS_DIRECT_SIZE);
+
+  if (iblo < 12)
+    {
+      const struct kafs_sinode *inoent = kafs_get_const_inode (ctx, ino);
+      *pblo = kafs_blkcnt_stoh (inoent->i_blkreftbl[iblo]);
+      return KAFS_SUCCESS;
+    }
+  kafs_call (kafs_load_blkreftbl_indirect1_or_more, ctx, ino, iblo - 12, pblo);
   return KAFS_SUCCESS;
 }
 
 /// @brief inode毎のデータを読み出す（ブロック単位）
 /// @param ctx コンテキスト
-/// @param inotbl inode情報
+/// @param ino inode番号
 /// @param buf バッファ
 /// @param iblo ブロック番号
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
-kafs_read_iblk (struct kafs_context *ctx, struct kafs_inode_layout *inotbl, kafs_iblkcnt_t iblo, void *buf)
+kafs_read_iblk (struct kafs_context *ctx, kafs_hinocnt_t ino, kafs_hiblkcnt_t iblo, void *buf)
 {
   assert (ctx != NULL);
-  assert (inotbl != NULL);
   assert (buf != NULL);
-  kafs_logblksize_t log_blksize = 10 + ctx->c_superblock->s_log_blksize;
-  kafs_blksize_t blksize = 1 << log_blksize;
+  assert (ino != KAFS_INO_NONE);
+  assert (ino < kafs_load_inode_max (ctx));
+  assert (kafs_load_inode_usage (ctx, ino));
+  assert (kafs_load_filesize (ctx, ino) > KAFS_DIRECT_SIZE);
 
-  // 0..11 は 直接
-  if (iblo < 12)
-    {
-      kafs_call (kafs_read_blk, ctx, inotbl->i_blkreftbl[iblo], buf);
-      return KAFS_SUCCESS;
-    }
-  iblo -= 12;
-  // 12 .. ブロックサイズ / 4 + 11 は、間接（１段階） 
-  kafs_logblksize_t log_blkrefs_pb = log_blksize - (sizeof (*inotbl->i_blkreftbl) + 3);
-  kafs_blksize_t blkrefs_pb = 1 << log_blkrefs_pb;
-  kafs_blkcnt_t blkreftbl[blkrefs_pb];
-  if (iblo < blkrefs_pb)
-    {
-      kafs_call (kafs_read_blk, ctx, inotbl->i_blkreftbl[12], blkreftbl);
-      kafs_call (kafs_read_blk, ctx, blkreftbl[iblo], buf);
-      return KAFS_SUCCESS;
-    }
-
-  // ブロックサイズ/4 + 12  .. (ブロックサイズ/4)^2 + ブロックサイズ / 4 + 11 は、間接（２段階） 
-  iblo -= blkrefs_pb;
-  kafs_blkcnt_t blkrefs_pb_sq = 1 << (log_blkrefs_pb * 2);
-  if (iblo < blkrefs_pb_sq)
-    {
-      kafs_call (kafs_read_blk, ctx, inotbl->i_blkreftbl[13], blkreftbl);
-      kafs_call (kafs_read_blk, ctx, blkreftbl[iblo >> log_blkrefs_pb], blkreftbl);
-      kafs_call (kafs_read_blk, ctx, blkreftbl[iblo & (blkrefs_pb - 1)], blkreftbl);
-      return KAFS_SUCCESS;
-    }
-
-  // (ブロックサイズ/4)^2 + ブロックサイズ / 4 + 12 .. Inf は、間接（３段階） 
-  iblo -= blkrefs_pb_sq;
-  kafs_iblkcnt_t iblo2 = iblo >> log_blkrefs_pb;
-  kafs_call (kafs_read_blk, ctx, inotbl->i_blkreftbl[14], blkreftbl);
-  kafs_call (kafs_read_blk, ctx, blkreftbl[iblo2 >> log_blkrefs_pb], blkreftbl);
-  kafs_call (kafs_read_blk, ctx, blkreftbl[iblo2 & (blkrefs_pb - 1)], blkreftbl);
-  kafs_call (kafs_read_blk, ctx, blkreftbl[iblo & (blkrefs_pb - 1)], blkreftbl);
+  kafs_hblkcnt_t blo;
+  kafs_call (kafs_load_iblk_to_blk, ctx, ino, iblo, &blo);
+  kafs_call (kafs_read_blk, ctx, blo, buf);
   return KAFS_SUCCESS;
 }
 
@@ -446,7 +898,7 @@ kafs_read_iblk (struct kafs_context *ctx, struct kafs_inode_layout *inotbl, kafs
 /// @param iblo ブロック番号
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
-kafs_write_iblk (struct kafs_context *ctx, struct kafs_inode_layout *inotbl, kafs_iblkcnt_t iblo, const void *buf)
+kafs_write_iblk (struct kafs_context *ctx, struct kafs_sinode *inotbl, kafs_iblkcnt_t iblo, const void *buf)
 {
   assert (ctx != NULL);
   assert (inotbl != NULL);
@@ -544,7 +996,7 @@ kafs_release_iblk2 (struct kafs_context *ctx, kafs_blkcnt_t * blkreftbl, kafs_bl
 })
 
 static int
-kafs_release_iblk (struct kafs_context *ctx, struct kafs_inode_layout *inotbl, kafs_iblkcnt_t iblo)
+kafs_release_iblk (struct kafs_context *ctx, struct kafs_sinode *inotbl, kafs_iblkcnt_t iblo)
 {
   assert (ctx != NULL);
   assert (inotbl != NULL);
@@ -600,25 +1052,20 @@ kafs_release_iblk (struct kafs_context *ctx, struct kafs_inode_layout *inotbl, k
   kafs_blkcnt_t blo2 = blkreftbl[iblo2 >> log_blkrefs_pb];
   kafs_call (kafs_reada_blk, ctx, blkreftbl + (iblo2 >> log_blkrefs_pb), blkreftbl2);
   if (blo2 == KAFS_BLO_NONE)
-    {
-      ret = kafs_writea_blk (ctx, inotbl->i_blkreftbl + 14, blkreftbl);
-      if (ret < 0)
-	return ret;
-    }
+    kafs_call (kafs_writea_blk, ctx, inotbl->i_blkreftbl + 14, blkreftbl);
 
   blo2 = blkreftbl2[iblo2 & (blkrefs_pb - 1)];
-  ret = kafs_reada_blk (ctx, blkreftbl2 + (iblo2 & (blkrefs_pb - 1)), blkreftbl);
-  if (ret < 0)
-    return ret;
+  kafs_call (kafs_reada_blk, ctx, blkreftbl2 + (iblo2 & (blkrefs_pb - 1)), blkreftbl);
   if (blo2 == KAFS_BLO_NONE)
-    return kafs_writea_blk (ctx, blkreftbl + (iblo2 >> log_blkrefs_pb), blkreftbl2);
+    {
+      kafs_call (kafs_writea_blk, ctx, blkreftbl + (iblo2 >> log_blkrefs_pb), blkreftbl2);
+      return KAFS_SUCCESS;
+    }
 
   blo2 = blkreftbl[iblo & (blkrefs_pb - 1)];
-  ret = kafs_reada_blk (ctx, blkreftbl + (iblo & (blkrefs_pb - 1)), blkreftbl2);
-  if (ret < 0)
-    return ret;
+  kafs_call (kafs_reada_blk, ctx, blkreftbl + (iblo & (blkrefs_pb - 1)), blkreftbl2);
   if (blo2 == KAFS_BLO_NONE)
-    return kafs_writea_blk (ctx, blkreftbl2 + (iblo2 & (blkrefs_pb - 1)), blkreftbl);
+    kafs_call (kafs_writea_blk, ctx, blkreftbl2 + (iblo2 & (blkrefs_pb - 1)), blkreftbl);
   return KAFS_SUCCESS;
 }
 
@@ -636,7 +1083,7 @@ kafs_pread_inode (struct kafs_context *ctx, kafs_inocnt_t ino, void *buf, size_t
   assert (ino < ctx->c_superblock->s_inocnt_free);
   assert (buf != NULL);
 
-  struct kafs_inode_layout *inotbl = ctx->c_inotbl + ino;
+  struct kafs_sinode *inotbl = ctx->c_inotbl + ino;
   kafs_off_t i_size = inotbl->i_size;
 
   // 60バイト以下は直接
@@ -665,9 +1112,7 @@ kafs_pread_inode (struct kafs_context *ctx, kafs_inocnt_t ino, void *buf, size_t
     {
       char rbuf[blksize];
       kafs_iblkcnt_t iblo = offset >> log_blksize;
-      int ret = kafs_read_iblk (ctx, inotbl, iblo, rbuf);
-      if (ret < 0)
-	return ret;
+      kafs_call (kafs_read_iblk, ctx, inotbl, iblo, rbuf);
       if (size < blksize - offset_blksize)
 	{
 	  memcpy (buf, rbuf + offset_blksize, size);
@@ -682,15 +1127,11 @@ kafs_pread_inode (struct kafs_context *ctx, kafs_inocnt_t ino, void *buf, size_t
       if (size - size_read <= blksize)
 	{
 	  char rbuf[blksize];
-	  int ret = kafs_read_iblk (ctx, inotbl, iblo, rbuf);
-	  if (ret < 0)
-	    return ret;
+	  kafs_call (kafs_read_iblk, ctx, inotbl, iblo, rbuf);
 	  memcpy (buf + size_read, rbuf, size - size_read);
 	  return size;
 	}
-      int ret = kafs_read_iblk (ctx, inotbl, iblo, buf + size_read);
-      if (ret < 0)
-	return ret;
+      kafs_call (kafs_read_iblk, ctx, inotbl, iblo, buf + size_read);
       size_read += blksize;
     }
   return size;
@@ -710,7 +1151,7 @@ kafs_pwrite_inode (struct kafs_context *ctx, kafs_inocnt_t ino, const void *buf,
   assert (ino < ctx->c_superblock->s_inocnt_free);
   assert (buf != NULL);
 
-  struct kafs_inode_layout *inotbl = ctx->c_inotbl + ino;
+  struct kafs_sinode *inotbl = ctx->c_inotbl + ino;
   kafs_off_t i_size = inotbl->i_size;
   kafs_off_t i_size_new = offset + size;
   kafs_logblksize_t log_blksize = 10 + ctx->c_superblock->s_log_blksize;
@@ -726,9 +1167,7 @@ kafs_pwrite_inode (struct kafs_context *ctx, kafs_inocnt_t ino, const void *buf,
 	  memset (wbuf, 0, blksize);
 	  memcpy (wbuf, inotbl->i_blkreftbl, i_size);
 	  memset (inotbl->i_blkreftbl, 0, sizeof (inotbl->i_blkreftbl));
-	  int ret = kafs_write_iblk (ctx, inotbl, 0, wbuf);
-	  if (ret < 0)
-	    return ret;
+	  kafs_call (kafs_write_iblk, ctx, inotbl, 0, wbuf);
 	}
       i_size = i_size_new;
     }
@@ -751,23 +1190,17 @@ kafs_pwrite_inode (struct kafs_context *ctx, kafs_inocnt_t ino, const void *buf,
       kafs_iblkcnt_t iblo = offset >> log_blksize;
       // 書き戻しバッファ
       char wbuf[blksize];
-      int ret = kafs_read_iblk (ctx, inotbl, iblo, wbuf);
-      if (ret < 0)
-	return ret;
+      kafs_call (kafs_read_iblk, ctx, inotbl, iblo, wbuf);
       if (size < blksize - offset_blksize)
 	{
 	  // 1ブロックのみの場合
 	  memcpy (wbuf + offset_blksize, buf, size);
-	  ret = kafs_write_iblk (ctx, inotbl, iblo, wbuf);
-	  if (ret < 0)
-	    return ret;
+	  kafs_call (kafs_write_iblk, ctx, inotbl, iblo, wbuf);
 	  return size;
 	}
       // ブロックの残り分を書き込む
       memcpy (wbuf + offset_blksize, buf, blksize - offset_blksize);
-      ret = kafs_write_iblk (ctx, inotbl, iblo, wbuf);
-      if (ret < 0)
-	return ret;
+      kafs_call (kafs_write_iblk, ctx, inotbl, iblo, wbuf);
       size_written += blksize - offset_blksize;
     }
 
@@ -777,18 +1210,12 @@ kafs_pwrite_inode (struct kafs_context *ctx, kafs_inocnt_t ino, const void *buf,
       if (size - size_written < blksize)
 	{
 	  char wbuf[blksize];
-	  int ret = kafs_read_iblk (ctx, inotbl, iblo, wbuf);
-	  if (ret < 0)
-	    return ret;
+	  kafs_call (kafs_read_iblk, ctx, inotbl, iblo, wbuf);
 	  memcpy (wbuf, buf + size_written, size - size_written);
-	  ret = kafs_write_iblk (ctx, inotbl, iblo, wbuf);
-	  if (ret < 0)
-	    return ret;
+	  kafs_call (kafs_write_iblk, ctx, inotbl, iblo, wbuf);
 	  return size;
 	}
-      int ret = kafs_write_iblk (ctx, inotbl, iblo, buf + size_written);
-      if (ret < 0)
-	return ret;
+      kafs_call (kafs_write_iblk, ctx, inotbl, iblo, buf + size_written);
       size_written += blksize;
     }
   return size;
@@ -803,29 +1230,27 @@ kafs_pwrite_inode (struct kafs_context *ctx, kafs_inocnt_t ino, const void *buf,
 /// @return > 0: サイズ, 0: EOF, < 0: 失敗 (-errno)
 static ssize_t
 kafs_read_dirent_inode (struct kafs_context *ctx, kafs_inocnt_t ino_dir,
-			struct kafs_dirent_layout *dirent, size_t direntlen, off_t offset)
+			struct kafs_sdirent *dirent, size_t direntlen, off_t offset)
 {
   assert (ctx != NULL);
-  assert (kafs_get_usage_inode (ctx, ino_dir));
+  assert (kafs_load_inode_usage (ctx, ino_dir));
   assert (dirent < 0);
-  assert (direntlen > sizeof (struct kafs_dirent_layout));
-  int r = kafs_pread_inode (ctx, ino_dir, dirent,
-			    sizeof (struct kafs_dirent_layout),
-			    offset);
-  if (r < 0)
-    return r;
+  assert (direntlen > sizeof (struct kafs_sdirent));
+  ssize_t r = kafs_call (kafs_pread_inode, ctx, ino_dir, dirent,
+			 sizeof (struct kafs_sdirent),
+			 offset);
   if (r == 0)
     return 0;
-  if (r < sizeof (struct kafs_dirent_layout))
+  if (r < sizeof (struct kafs_sdirent))
     return -EIO;
-  if (direntlen - sizeof (struct kafs_dirent_layout) < dirent->d_filenamelen)
-    return sizeof (struct kafs_dirent_layout) + dirent->d_filenamelen;
-  r = kafs_pread_inode (ctx, ino_dir, dirent->d_filename, dirent->d_filenamelen, offset + dirent->d_filenamelen);
-  if (r < 0)
-    return r;
+  if (direntlen - sizeof (struct kafs_sdirent) < dirent->d_filenamelen)
+    return sizeof (struct kafs_sdirent) + dirent->d_filenamelen;
+  r =
+    kafs_call (kafs_pread_inode, ctx, ino_dir, dirent->d_filename, dirent->d_filenamelen,
+	       offset + dirent->d_filenamelen);
   if (r < dirent->d_filenamelen)
     return -EIO;
-  return sizeof (struct kafs_dirent_layout) + dirent->d_filenamelen;
+  return sizeof (struct kafs_sdirent) + dirent->d_filenamelen;
 }
 
 /// @brief ディレクトリエントリから対象のファイル名を探す
@@ -840,23 +1265,20 @@ kafs_find_dirent_inode (struct kafs_context *ctx, kafs_inocnt_t ino_dir,
 			const char *filename, size_t filenamelen, kafs_inocnt_t * pino_found)
 {
   assert (ctx != NULL);
-  assert (kafs_get_usage_inode (ctx, ino_dir));
+  assert (kafs_load_inode_usage (ctx, ino_dir));
   assert (filename != NULL);
   assert (filenamelen > 0);
-  const struct kafs_inode_layout *inotbl = kafs_get_const_inode (ctx, ino_dir);
+  const struct kafs_sinode *inotbl = kafs_get_const_inode (ctx, ino_dir);
   if (!S_ISDIR (inotbl->i_mode))
     return -ENOTDIR;
-  char buf[sizeof (struct kafs_dirent_layout) + filenamelen];
-  struct kafs_dirent_layout *dirent = (struct kafs_dirent_layout *) buf;
+  char buf[sizeof (struct kafs_sdirent) + filenamelen];
+  struct kafs_sdirent *dirent = (struct kafs_sdirent *) buf;
   off_t offset = 0;
   while (1)
     {
-      ssize_t r = kafs_read_dirent_inode (ctx, ino_dir, dirent,
-					  sizeof (struct kafs_dirent_layout) + filenamelen,
-					  offset);
-      if (r < 0)
-	return r;
-      assert (r == sizeof (struct kafs_dirent_layout) + filenamelen);
+      ssize_t r = kafs_call (kafs_read_dirent_inode, ctx, ino_dir, dirent, sizeof (struct kafs_sdirent) + filenamelen,
+			     offset);
+      assert (r == sizeof (struct kafs_sdirent) + filenamelen);
       if (dirent->d_filenamelen == filenamelen && memcmp (filename, dirent->d_filename, filenamelen) == 0)
 	{
 	  *pino_found = dirent->d_ino;
@@ -870,8 +1292,8 @@ static int
 kafs_truncate_inode (struct kafs_context *ctx, kafs_inocnt_t ino, off_t size)
 {
   assert (ctx != NULL);
-  assert (kafs_get_usage_inode (ctx, ino));
-  struct kafs_inode_layout *inotbl = kafs_get_inode (ctx, ino);
+  assert (kafs_load_inode_usage (ctx, ino));
+  struct kafs_sinode *inotbl = kafs_get_inode (ctx, ino);
   kafs_logblksize_t log_blksize = 10 + ctx->c_superblock->s_log_blksize;
   kafs_blksize_t blksize = 1 << log_blksize;
   kafs_off_t i_size = inotbl->i_size;
@@ -886,17 +1308,13 @@ kafs_truncate_inode (struct kafs_context *ctx, kafs_inocnt_t ino, off_t size)
     {
       char zbuf[blksize];
       memset (zbuf, 0, blksize);
-      ssize_t w = kafs_pwrite_inode (ctx, ino, zbuf, blksize - off, offset);
-      if (w < 0)
-	return w;
+      ssize_t w = kafs_call (kafs_pwrite_inode, ctx, ino, zbuf, blksize - off, offset);
       assert (w == blksize - off);
       offset += blksize - off;
     }
   while (offset < i_size)
     {
-      int ret = kafs_release_iblk (ctx, ino, offset >> log_blksize);
-      if (ret < 0)
-	return ret;
+      kafs_call (kafs_release_iblk, ctx, inotbl, offset >> log_blksize);
       offset += blksize;
     }
   return KAFS_SUCCESS;
@@ -906,44 +1324,38 @@ static int
 kafs_add_dirent_inode (struct kafs_context *ctx, kafs_inocnt_t ino_dir,
 		       const char *name, size_t namelen, kafs_inocnt_t ino)
 {
-  const struct kafs_inode_layout *inode_dir = kafs_get_const_inode (ctx, ino_dir);
+  const struct kafs_sinode *inode_dir = kafs_get_const_inode (ctx, ino_dir);
   if (inode_dir == NULL)
     return -ENOENT;
   if (!S_ISDIR (inode_dir->i_mode))
     return -ENOTDIR;
-  char buf[sizeof (struct kafs_dirent_layout) + namelen];
-  struct kafs_dirent_layout *dirent = (struct kafs_dirent_layout *) buf;
+  char buf[sizeof (struct kafs_sdirent) + namelen];
+  struct kafs_sdirent *dirent = (struct kafs_sdirent *) buf;
   off_t offset = 0;
   while (1)
     {
-      ssize_t r = kafs_pread_inode (ctx, ino_dir, &dirent,
-				    sizeof (struct kafs_dirent_layout),
-				    offset);
-      if (r < 0)
-	return r;
-      if (r < sizeof (struct kafs_dirent_layout))
+      ssize_t r = kafs_call (kafs_pread_inode, ctx, ino_dir, &dirent,
+			     sizeof (struct kafs_sdirent),
+			     offset);
+      if (r < sizeof (struct kafs_sdirent))
 	{
 	addent:
 	  dirent->d_ino = ino;
 	  dirent->d_filenamelen = namelen;
 	  memcpy (dirent->d_filename, name, namelen);
-	  int ret = kafs_truncate_inode (ctx, ino_dir, offset);
-	  ssize_t w = kafs_pwrite_inode (ctx, ino_dir, dirent,
-					 sizeof (struct kafs_dirent_layout) + namelen, offset);
-	  if (w < 0)
-	    return w;
-	  if (w < sizeof (struct kafs_dirent_layout) + namelen)
+	  kafs_call (kafs_truncate_inode, ctx, ino_dir, offset);
+	  ssize_t w = kafs_call (kafs_pwrite_inode, ctx, ino_dir, dirent,
+				 sizeof (struct kafs_sdirent) + namelen, offset);
+	  if (w < sizeof (struct kafs_sdirent) + namelen)
 	    return -EIO;
-	  struct kafs_inode_layout *inode = kafs_get_inode (ctx, ino);
+	  struct kafs_sinode *inode = kafs_get_inode (ctx, ino);
 	  inode->i_links_count++;
 	  return 0;
 	}
       if (dirent->d_filenamelen == namelen)
 	{
-	  ssize_t r2 = kafs_pread_inode (ctx, ino_dir, dirent->d_filename, namelen,
-					 offset + r);
-	  if (r2 < 0)
-	    return r2;
+	  ssize_t r2 = kafs_call (kafs_pread_inode, ctx, ino_dir, dirent->d_filename, namelen,
+				  offset + r);
 	  if (r2 < namelen)
 	    goto addent;
 	  if (memcmp (name, dirent->d_filename, namelen) == 0)
@@ -956,29 +1368,25 @@ kafs_add_dirent_inode (struct kafs_context *ctx, kafs_inocnt_t ino_dir,
 static int
 kafs_delete_dirent_inode (struct kafs_context *ctx, kafs_inocnt_t ino_dir, const char *name, size_t namelen)
 {
-  const struct kafs_inode_layout *inode = kafs_get_const_inode (ctx, ino_dir);
+  const struct kafs_sinode *inode = kafs_get_const_inode (ctx, ino_dir);
   if (inode == NULL)
     return -ENOENT;
   if (!S_ISDIR (inode->i_mode))
     return -ENOTDIR;
-  char buf[sizeof (struct kafs_dirent_layout) + namelen];
-  struct kafs_dirent_layout *dirent = (struct kafs_dirent_layout *) buf;
+  char buf[sizeof (struct kafs_sdirent) + namelen];
+  struct kafs_sdirent *dirent = (struct kafs_sdirent *) buf;
   off_t offset = 0;
   while (1)
     {
-      ssize_t r = kafs_pread_inode (ctx, ino_dir, &dirent,
-				    sizeof (struct kafs_dirent_layout),
-				    offset);
-      if (r < 0)
-	return r;
-      if (r < sizeof (struct kafs_dirent_layout))
+      ssize_t r = kafs_call (kafs_pread_inode, ctx, ino_dir, &dirent,
+			     sizeof (struct kafs_sdirent),
+			     offset);
+      if (r < sizeof (struct kafs_sdirent))
 	return -ENOENT;
       if (dirent->d_filenamelen == namelen)
 	{
-	  ssize_t r2 = kafs_pread_inode (ctx, ino_dir, dirent->d_filename, namelen,
-					 offset + r);
-	  if (r2 < 0)
-	    return r2;
+	  ssize_t r2 = kafs_call (kafs_pread_inode, ctx, ino_dir, dirent->d_filename, namelen,
+				  offset + r);
 	  if (r2 < namelen)
 	    return -ENOENT;
 	  if (memcmp (name, dirent->d_filename, namelen) == 0)
@@ -1024,7 +1432,7 @@ kafs_op_getattr (const char *path, struct stat *st, struct fuse_file_info *fi)
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
   kafs_inocnt_t ino = fi->fh;
-  struct kafs_inode_layout *inode = kafs_get_inode (ctx, ino);
+  struct kafs_sinode *inode = kafs_get_inode (ctx, ino);
   st->st_dev = 0;
   st->st_ino = ino + 1;
   st->st_mode = inode->i_mode;
@@ -1066,14 +1474,14 @@ kafs_op_mknod (const char *path, mode_t mode, dev_t dev)
   int ret = kafs_get_from_path_inode (ctx, dirpath, &ino_dir);
   if (ret < 0)
     return -ret;
-  struct kafs_inode_layout *inode_dir = kafs_get_inode (ctx, ino_dir);
+  struct kafs_sinode *inode_dir = kafs_get_inode (ctx, ino_dir);
   if (!S_ISDIR (inode_dir->i_mode))
     return -EIO;
   kafs_inocnt_t ino;
   ret = kafs_find_free_inode (ctx, &ino);
   if (ret < 0)
     return ret;
-  struct kafs_inode_layout *inode = kafs_get_inode (ctx, ino);
+  struct kafs_sinode *inode = kafs_get_inode (ctx, ino);
   inode->i_mode = mode;
   inode->i_uid = fctx->uid;
   inode->i_size = 0;
