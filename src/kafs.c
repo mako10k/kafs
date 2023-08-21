@@ -1357,6 +1357,47 @@ kafs_load_dirent_filenamelen (const struct kafs_sdirent *dirent)
   return kafs_filenamelen_stoh (dirent->d_filenamelen);
 }
 
+static kafs_sinocnt_t
+kafs_inocnt_htos (kafs_hinocnt_t h)
+{
+  kafs_sinocnt_t s = {.value = htole32 (h) };
+  return s;
+}
+
+static kafs_sfilenamelen_t
+kafs_filenamelen_htos (kafs_hfilenamelen_t h)
+{
+  kafs_sfilenamelen_t s = {.value = htole16 (h) };
+  return s;
+}
+
+static void
+kafs_save_dirent_ino (struct kafs_sdirent *dirent, kafs_hinocnt_t ino)
+{
+  dirent->d_ino = kafs_inocnt_htos (ino);
+}
+
+static void
+kafs_save_dirent_filenamelen (struct kafs_sdirent *dirent, kafs_hfilenamelen_t filenamelen)
+{
+  dirent->d_filenamelen = kafs_filenamelen_htos (filenamelen);
+}
+
+static void
+kafs_save_dirent_filename (struct kafs_sdirent *dirent, const char *filename, kafs_hfilenamelen_t filenamelen)
+{
+  memcpy (dirent->d_filename, filename, filenamelen);
+  kafs_save_dirent_filenamelen (dirent, filenamelen);
+}
+
+static void
+kafs_save_dirent (struct kafs_sdirent *dirent, kafs_hinocnt_t ino, const char *filename,
+		  kafs_hfilenamelen_t filenamelen)
+{
+  kafs_save_dirent_ino (dirent, ino);
+  kafs_save_dirent_filename (dirent, filename, filenamelen);
+}
+
 /// @brief ディレクトリエントリを読み出す
 /// @param ctx コンテキスト
 /// @param ino_dir ディレクトリのinode番号
@@ -1458,48 +1499,48 @@ kafs_truncate_inode (struct kafs_context *ctx, kafs_hinocnt_t ino, kafs_hoff_t s
   return KAFS_SUCCESS;
 }
 
+static kafs_hoff_t
+kafs_load_direntlen (const struct kafs_sdirent *dirent)
+{
+  return sizeof (struct kafs_sdirent) + kafs_load_dirent_filenamelen (dirent);
+}
+
 static int
-kafs_add_dirent_inode (struct kafs_context *ctx, kafs_inocnt_t ino_dir,
-		       const char *name, size_t namelen, kafs_inocnt_t ino)
+kafs_add_dirent_inode (struct kafs_context *ctx, kafs_hinocnt_t ino_dir,
+		       const char *name, size_t namelen, kafs_hinocnt_t ino)
 {
   const struct kafs_sinode *inode_dir = kafs_get_const_inode (ctx, ino_dir);
   if (inode_dir == NULL)
     return -ENOENT;
-  if (!S_ISDIR (inode_dir->i_mode))
+  kafs_hmode_t mode_dir = kafs_load_inode_mode (inode_dir);
+  if (!S_ISDIR (mode_dir))
     return -ENOTDIR;
   char buf[sizeof (struct kafs_sdirent) + namelen];
-  struct kafs_sdirent *dirent = (struct kafs_sdirent *) buf;
   off_t offset = 0;
   while (1)
     {
-      ssize_t r = kafs_call (kafs_pread_inode, ctx, ino_dir, &dirent,
-			     sizeof (struct kafs_sdirent),
-			     offset);
-      if (r < sizeof (struct kafs_sdirent))
+      ssize_t r = kafs_call (kafs_read_dirent_inode, ctx, ino_dir, &buf, sizeof (buf), offset);
+      struct kafs_sdirent *dirent = (struct kafs_sdirent *) buf;
+      kafs_hoff_t direntlen = kafs_load_direntlen (dirent);
+      kafs_hfilenamelen_t dfilenamelen = kafs_load_dirent_filenamelen (dirent);
+      assert (r == 0 || r == direntlen);
+      if (r == 0)
 	{
 	addent:
-	  dirent->d_ino = ino;
-	  dirent->d_filenamelen = namelen;
-	  memcpy (dirent->d_filename, name, namelen);
-	  kafs_call (kafs_truncate_inode, ctx, ino_dir, offset);
-	  ssize_t w = kafs_call (kafs_pwrite_inode, ctx, ino_dir, dirent,
-				 sizeof (struct kafs_sdirent) + namelen, offset);
+	  kafs_save_dirent (dirent, ino, name, namelen);
+	  direntlen = kafs_load_direntlen (dirent);
+	  ssize_t w = kafs_call (kafs_pwrite_inode, ctx, ino_dir, dirent, direntlen, offset);
+	  assert (w == sizeof (struct kafs_sdirent) + namelen);
+	  offset += sizeof (struct kafs_sdirent) + namelen;
 	  if (w < sizeof (struct kafs_sdirent) + namelen)
 	    return -EIO;
 	  struct kafs_sinode *inode = kafs_get_inode (ctx, ino);
-	  inode->i_links_count++;
-	  return 0;
+	  kafs_incr_inode_link_count (inode);
+	  return KAFS_SUCCESS;
 	}
-      if (dirent->d_filenamelen == namelen)
-	{
-	  ssize_t r2 = kafs_call (kafs_pread_inode, ctx, ino_dir, dirent->d_filename, namelen,
-				  offset + r);
-	  if (r2 < namelen)
-	    goto addent;
-	  if (memcmp (name, dirent->d_filename, namelen) == 0)
-	    return -EEXIST;
-	}
-      offset += r + dirent->d_filenamelen;
+      if (dfilenamelen == namelen && memcmp (name, dirent->d_filename, namelen) == 0)
+	return -EEXIST;
+      offset += r;
     }
 }
 
