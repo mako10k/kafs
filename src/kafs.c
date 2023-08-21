@@ -1172,6 +1172,8 @@ kafs_release_iblk (struct kafs_context *ctx, kafs_hinocnt_t ino, kafs_hiblkcnt_t
   return KAFS_SUCCESS;
 }
 
+#define kafs_load_directsize(ctx) (sizeof (((struct kafs_sinode *)NULL)->i_blkreftbl))
+
 /// @brief inode 毎にデータを読み出す
 /// @param ctx コンテキスト
 /// @param ino inode 番号
@@ -1180,41 +1182,39 @@ kafs_release_iblk (struct kafs_context *ctx, kafs_hinocnt_t ino, kafs_hiblkcnt_t
 /// @param offset オフセット
 /// @return > 0: 読み出しサイズ, 0: EOF, < 0: エラー(-errno)
 static ssize_t
-kafs_pread_inode (struct kafs_context *ctx, kafs_inocnt_t ino, void *buf, size_t size, off_t offset)
+kafs_pread_inode (struct kafs_context *ctx, kafs_hinocnt_t ino, void *buf, size_t size, off_t offset)
 {
   assert (ctx != NULL);
-  assert (ino < ctx->c_superblock->s_inocnt_free);
   assert (buf != NULL);
+  assert (ino != KAFS_INO_NONE);
+  assert (ino < kafs_load_inode_max (ctx));
+  assert (kafs_load_inode_usage (ctx, ino));
 
-  struct kafs_sinode *inotbl = ctx->c_inotbl + ino;
-  kafs_off_t i_size = inotbl->i_size;
+  struct kafs_sinode *inotbl = kafs_get_inode (ctx->c_inotbl, ino);
+  kafs_hoff_t filesize = kafs_load_filesize (ctx, ino);
+
+  if (offset >= filesize)
+    return 0;
+  if (offset + size > filesize)
+    size = filesize - offset;
+  if (size == 0)
+    return 0;
 
   // 60バイト以下は直接
-  if (i_size <= sizeof (inotbl->i_blkreftbl))
+  if (filesize <= kafs_load_directsize (ctx))
     {
-      if (offset >= sizeof (inotbl->i_blkreftbl))
-	return KAFS_SUCCESS;
-      if (offset + size > i_size)
-	size = i_size - offset;
       memcpy (buf, (void *) inotbl->i_blkreftbl + offset, size);
       return size;
     }
 
   size_t size_read = 0;
-  if (offset >= i_size)
-    return 0;
-  if (offset + size > i_size)
-    size = i_size - offset;
-  if (size == 0)
-    return 0;
-
-  kafs_logblksize_t log_blksize = 10 + ctx->c_superblock->s_log_blksize;
-  kafs_blksize_t blksize = 1 << log_blksize;
-  kafs_blksize_t offset_blksize = offset & (blksize - 1);
+  kafs_hlogblksize_t log_blksize = kafs_load_log_blksize (ctx);
+  kafs_hblksize_t blksize = kafs_load_blksize (ctx);
+  kafs_hblksize_t offset_blksize = offset & (blksize - 1);
   if (offset_blksize > 0 || size - size_read < blksize)
     {
       char rbuf[blksize];
-      kafs_iblkcnt_t iblo = offset >> log_blksize;
+      kafs_hiblkcnt_t iblo = offset >> log_blksize;
       kafs_call (kafs_read_iblk, ctx, inotbl, iblo, rbuf);
       if (size < blksize - offset_blksize)
 	{
@@ -1226,7 +1226,7 @@ kafs_pread_inode (struct kafs_context *ctx, kafs_inocnt_t ino, void *buf, size_t
     }
   while (size_read < size)
     {
-      kafs_iblkcnt_t iblo = (offset + size_read) >> log_blksize;
+      kafs_hiblkcnt_t iblo = (offset + size_read) >> log_blksize;
       if (size - size_read <= blksize)
 	{
 	  char rbuf[blksize];
