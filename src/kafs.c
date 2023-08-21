@@ -11,9 +11,12 @@
 #include <assert.h>
 #include <endian.h>
 
+/// @brief bool 型
 typedef enum
 {
+  /// @brief 偽
   kafs_false = 0,
+  /// @brief 真
   kafs_true
 } kafs_hbool_t;
 
@@ -166,9 +169,6 @@ typedef uint_fast32_t kafs_hiblkcnt_t;
 
 /// 標準関数の正常戻り値
 #define KAFS_SUCCESS 0
-#define KAFS_SUCCESS_ALLOC 1
-#define KAFS_SUCCESS_RELEASE 2
-#define KAFS_SUCCESS_NONE 3
 
 /// inode番号のうち存在しないことを表す値
 #define KAFS_INO_NONE 0
@@ -626,7 +626,7 @@ kafs_alloc_blk (struct kafs_context *ctx, kafs_hblkcnt_t * pblo)
 	      ctx->c_blo_search = blo_found;
 	      *pblo = blo_found;
 	      kafs_call (kafs_set_blkmask, ctx, blo_found, 1);
-	      return KAFS_SUCCESS_ALLOC;
+	      return KAFS_SUCCESS;
 	    }
 	}
       blo += KAFS_BLKMASK_BITS - blor;
@@ -1602,9 +1602,9 @@ kafs_delete_dirent_inode (struct kafs_context *ctx, kafs_hinocnt_t ino_dir, cons
 }
 
 static int
-kafs_get_from_path_inode (struct kafs_context *ctx, const char *path, kafs_inocnt_t * pino)
+kafs_get_from_path_inode (struct kafs_context *ctx, const char *path, kafs_hinocnt_t * pino)
 {
-  kafs_inocnt_t i = *pino;
+  kafs_hinocnt_t i = *pino;
   const char *p = path;
   if (*p == '/')
     {
@@ -1614,7 +1614,7 @@ kafs_get_from_path_inode (struct kafs_context *ctx, const char *path, kafs_inocn
   while (*p)
     {
       char *frag = strchrnul (p, '/');
-      kafs_inocnt_t j;
+      kafs_hinocnt_t j;
       int ret = kafs_find_dirent_inode (ctx, p, frag - p, i, &j);
       if (ret < 0)
 	return ret;
@@ -1632,18 +1632,18 @@ kafs_op_getattr (const char *path, struct stat *st, struct fuse_file_info *fi)
 {
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
-  kafs_inocnt_t ino = fi->fh;
+  kafs_hinocnt_t ino = fi->fh;
   struct kafs_sinode *inode = kafs_get_inode (ctx, ino);
   st->st_dev = 0;
-  st->st_ino = ino + 1;
-  st->st_mode = inode->i_mode;
-  st->st_nlink = inode->i_links_count;
-  st->st_uid = inode->i_uid;
-  st->st_gid = inode->i_gid;
-  st->st_rdev = inode->i_rdev;
-  st->st_size = inode->i_size;
-  st->st_blksize = 1 << (10 + ctx->c_superblock->s_log_blksize);
-  st->st_blocks = inode->i_links_count;
+  st->st_ino = ino;
+  st->st_mode = kafs_load_inode_mode (inode);
+  st->st_nlink = kafs_load_inode_links_count (inode);
+  st->st_uid = kafs_load_inode_uid (inode);
+  st->st_gid = kafs_load_inode_gid (inode);
+  st->st_rdev = kafs_load_inode_rdev (inode);
+  st->st_size = kafs_load_inode_size (inode);
+  st->st_blksize = kafs_load_blksize (ctx);
+  st->st_blocks = kafs_load_inode_blocks (inode);
   return 0;
 }
 
@@ -1652,7 +1652,7 @@ kafs_op_open (const char *path, struct fuse_file_info *fi)
 {
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
-  kafs_inocnt_t ino = 0;
+  kafs_hinocnt_t ino = 0;
   int ret = kafs_get_from_path_inode (ctx, path, &ino);
   if (ret < 0)
     return ret;
@@ -1671,35 +1671,38 @@ kafs_op_mknod (const char *path, mode_t mode, dev_t dev)
   if (filename == NULL)
     return -EIO;
   *(filename++) = '\0';
-  kafs_inocnt_t ino_dir = 0;
+  kafs_hinocnt_t ino_dir = 0;
   int ret = kafs_get_from_path_inode (ctx, dirpath, &ino_dir);
   if (ret < 0)
     return -ret;
   struct kafs_sinode *inode_dir = kafs_get_inode (ctx, ino_dir);
-  if (!S_ISDIR (inode_dir->i_mode))
+  kafs_hmode_t mode_dir = kafs_load_inode_mode (inode_dir);
+  if (!S_ISDIR (mode_dir))
     return -EIO;
-  kafs_inocnt_t ino;
+  kafs_hinocnt_t ino;
   ret = kafs_find_free_inode (ctx, &ino);
   if (ret < 0)
     return ret;
   struct kafs_sinode *inode = kafs_get_inode (ctx, ino);
-  inode->i_mode = mode;
-  inode->i_uid = fctx->uid;
-  inode->i_size = 0;
-  time_t now = time (NULL);
-  inode->i_atime = now;
-  inode->i_ctime = now;
-  inode->i_mtime = now;
-  inode->i_dtime = 0;
-  inode->i_gid = fctx->gid;
-  inode->i_links_count = 0;
-  inode->i_blocks = 0;
-  inode->i_rdev = dev;
+  kafs_save_inode_mode (inode, mode);
+  kafs_save_inode_uid (inode, fctx->uid);
+  kafs_save_inode_size (inode, 0);
+  kafs_htime_t now;
+  clock_gettime (CLOCK_REALTIME, &now);
+  kafs_htime_t nulltime = { 0, 0 };
+  kafs_save_inode_atime (inode, now);
+  kafs_save_inode_ctime (inode, now);
+  kafs_save_inode_mtime (inode, now);
+  kafs_save_inode_dtime (inode, nulltime);
+  kafs_save_inode_gid (inode, fctx->gid);
+  kafs_save_inode_links_count (inode, 0);
+  kafs_save_inode_blocks (inode, 0);
+  kafs_save_inode_rdev (inode, dev);
   memset (inode->i_blkreftbl, 0, sizeof (inode->i_blkreftbl));
-  ret = kafs_add_dirent_inode (ctx, ino_dir, filename, ino);
+  ret = kafs_add_dirent_inode (ctx, ino_dir, filename, strlen (filename), ino);
   if (ret < 0)
     {
-      int ret2 = kafs_irelease (ctx, ino);
+      int ret2 = kafs_release_inode (ctx, ino);
       if (ret2 < 0)
 	return -EIO;
       return ret;
@@ -1712,7 +1715,7 @@ kafs_op_readlink (const char *path, char *buf, size_t buflen)
 {
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
-  kafs_inocnt_t ino = 0;
+  kafs_hinocnt_t ino = 0;
   int ret = kafs_get_from_path_inode (ctx, path, &ino);
   if (ret < 0)
     return ret;
@@ -1728,7 +1731,7 @@ kafs_op_read (const char *path, char *buf, size_t size, off_t offset, struct fus
 {
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
-  kafs_inocnt_t ino = fi->fh;
+  kafs_hinocnt_t ino = fi->fh;
   return kafs_pread_inode (ctx, ino, buf, size, offset);
 }
 
@@ -1737,7 +1740,7 @@ kafs_op_write (const char *path, const char *buf, size_t size, off_t offset, str
 {
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
-  kafs_inocnt_t ino = fi->fh;
+  kafs_hinocnt_t ino = fi->fh;
   return kafs_pwrite_inode (ctx, ino, buf, size, offset);
 }
 
