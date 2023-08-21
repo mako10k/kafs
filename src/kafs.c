@@ -1248,49 +1248,52 @@ kafs_pread_inode (struct kafs_context *ctx, kafs_hinocnt_t ino, void *buf, size_
 /// @param offset オフセット
 /// @return > 0: 読み出しサイズ, 0: EOF, < 0: エラー(-errno)
 static ssize_t
-kafs_pwrite_inode (struct kafs_context *ctx, kafs_inocnt_t ino, const void *buf, size_t size, off_t offset)
+kafs_pwrite_inode (struct kafs_context *ctx, kafs_hinocnt_t ino, const void *buf, size_t size, off_t offset)
 {
   assert (ctx != NULL);
-  assert (ino < ctx->c_superblock->s_inocnt_free);
   assert (buf != NULL);
+  assert (ino != KAFS_INO_NONE);
+  assert (ino < kafs_load_inode_max (ctx));
+  assert (kafs_load_inode_usage (ctx, ino));
 
-  struct kafs_sinode *inotbl = ctx->c_inotbl + ino;
-  kafs_off_t i_size = inotbl->i_size;
-  kafs_off_t i_size_new = offset + size;
-  kafs_logblksize_t log_blksize = 10 + ctx->c_superblock->s_log_blksize;
-  kafs_blksize_t blksize = 1 << log_blksize;
+  struct kafs_sinode *inotbl = kafs_get_inode (ctx->c_inotbl, ino);
+  kafs_hoff_t filesize = kafs_load_filesize (ctx, ino);
+  kafs_hlogblksize_t log_blksize = kafs_load_log_blksize (ctx);
+  kafs_hblksize_t blksize = kafs_load_blksize (ctx);
+  kafs_hoff_t filesize_new = offset + size;
 
-  if (i_size < i_size_new)
+  if (size == 0)
+    return 0;
+
+  if (filesize < filesize_new)
     {
       // サイズ拡大時
-      inotbl->i_size = i_size_new;
-      if (i_size_new > sizeof (inotbl->i_blkreftbl))
+      kafs_save_filesize (ctx, ino, filesize_new);
+      if (filesize_new > sizeof (inotbl->i_blkreftbl))
 	{
 	  char wbuf[blksize];
 	  memset (wbuf, 0, blksize);
-	  memcpy (wbuf, inotbl->i_blkreftbl, i_size);
+	  memcpy (wbuf, inotbl->i_blkreftbl, filesize);
 	  memset (inotbl->i_blkreftbl, 0, sizeof (inotbl->i_blkreftbl));
 	  kafs_call (kafs_write_iblk, ctx, inotbl, 0, wbuf);
 	}
-      i_size = i_size_new;
+      filesize = filesize_new;
     }
 
   size_t size_written = 0;
-  if (size == 0)
-    return size_written;
 
   // 60バイト以下は直接
-  if (i_size <= sizeof (inotbl->i_blkreftbl))
+  if (filesize <= sizeof (inotbl->i_blkreftbl))
     {
       memcpy ((void *) inotbl->i_blkreftbl + offset, buf, size);
       return size;
     }
 
-  kafs_blksize_t offset_blksize = offset & (blksize - 1);
+  kafs_hblksize_t offset_blksize = offset & (blksize - 1);
   if (offset_blksize > 0 || size - size_written < blksize)
     {
       // 1ブロック目で端数が出る場合
-      kafs_iblkcnt_t iblo = offset >> log_blksize;
+      kafs_hiblkcnt_t iblo = offset >> log_blksize;
       // 書き戻しバッファ
       char wbuf[blksize];
       kafs_call (kafs_read_iblk, ctx, inotbl, iblo, wbuf);
@@ -1309,7 +1312,7 @@ kafs_pwrite_inode (struct kafs_context *ctx, kafs_inocnt_t ino, const void *buf,
 
   while (size_written < size)
     {
-      kafs_iblkcnt_t iblo = (offset + size_written) >> log_blksize;
+      kafs_hiblkcnt_t iblo = (offset + size_written) >> log_blksize;
       if (size - size_written < blksize)
 	{
 	  char wbuf[blksize];
