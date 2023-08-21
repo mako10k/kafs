@@ -1327,6 +1327,63 @@ kafs_pwrite_inode (struct kafs_context *ctx, kafs_hinocnt_t ino, const void *buf
   return size;
 }
 
+static int
+kafs_truncate_inode (struct kafs_context *ctx, kafs_hinocnt_t ino, kafs_hoff_t filesize_new)
+{
+  assert (ctx != NULL);
+  assert (ino != KAFS_INO_NONE);
+  assert (kafs_load_inode_usage (ctx, ino));
+  struct kafs_sinode *inotbl = kafs_get_inode (ctx, ino);
+  kafs_hlogblksize_t log_blksize = kafs_load_log_blksize (ctx);
+  kafs_hblksize_t blksize = kafs_load_blksize (ctx);
+  kafs_hoff_t filesize_orig = kafs_load_filesize (ctx, ino);
+  if (filesize_orig == filesize_new)
+    return KAFS_SUCCESS;
+  kafs_save_filesize (ino, filesize_new);
+  if (filesize_new > filesize_orig)
+    return KAFS_SUCCESS;
+  kafs_hblksize_t off = filesize_orig & (blksize - 1);
+  kafs_hoff_t offset = filesize_new;
+  if (off > 0)
+    {
+      char zbuf[blksize];
+      memset (zbuf, 0, blksize);
+      ssize_t w = kafs_call (kafs_pwrite_inode, ctx, ino, zbuf, blksize - off, offset);
+      assert (w == blksize - off);
+      offset += blksize - off;
+    }
+  while (offset < filesize_orig)
+    {
+      kafs_call (kafs_release_iblk, ctx, inotbl, offset >> log_blksize);
+      offset += blksize;
+    }
+  return KAFS_SUCCESS;
+}
+
+static int
+kafs_trim_inode (struct kafs_context *ctx, kafs_hinocnt_t ino, kafs_hoff_t off, kafs_hoff_t size)
+{
+  assert (ctx != NULL);
+  assert (ino != KAFS_INO_NONE);
+  assert (kafs_load_inode_usage (ctx, ino));
+  if (size == 0)
+    return size;
+  kafs_hoff_t size_orig = kafs_load_filesize (ctx, ino);
+  if (off >= size_orig)
+    return 0;
+  if (off + size >= size_orig)
+    {
+      kafs_call (kafs_truncate_inode, ctx, ino, off);
+      return size_orig - off;
+    }
+  // TODO: 簡易実装なのでしっかり実装していくべき
+  char buf[size_orig - (off + size)];
+  ssize_t r = kafs_call (kafs_pread_inode, ctx, ino, buf, size_orig - (off + size), off + size);
+  ssize_t w = kafs_call (kafs_pwrite_inode, ctx, ino, buf, r, off);
+  kafs_call (kafs_truncate_inode, ctx, ino, off + w);
+  return KAFS_SUCCESS;
+}
+
 static kafs_hmode_t
 kafs_mode_stoh (kafs_smode_t s)
 {
@@ -1440,63 +1497,33 @@ kafs_find_dirent_inode (struct kafs_context *ctx, kafs_hinocnt_t ino_dir,
 {
   assert (ctx != NULL);
   assert (kafs_load_inode_usage (ctx, ino_dir));
+  kafs_hoff_t direntlen = sizeof (struct kafs_sdirent) + filenamelen;
   assert (filename != NULL);
   assert (filenamelen > 0);
   const struct kafs_sinode *inotbl = kafs_get_const_inode (ctx, ino_dir);
   kafs_hmode_t mode = kafs_load_inode_mode (inotbl);
   if (!S_ISDIR (mode))
     return -ENOTDIR;
-  char buf[sizeof (struct kafs_sdirent) + filenamelen];
+  char buf[direntlen];
   struct kafs_sdirent *dirent = (struct kafs_sdirent *) buf;
   off_t offset = 0;
   while (1)
     {
-      ssize_t r = kafs_call (kafs_read_dirent_inode, ctx, ino_dir, dirent, sizeof (struct kafs_sdirent) + filenamelen,
-			     offset);
+      ssize_t r = kafs_call (kafs_read_dirent_inode, ctx, ino_dir, dirent, direntlen, offset);
+      if (r == 0)
+	break;
+      assert (r == direntlen);
       kafs_hinocnt_t d_ino = kafs_load_dirent_ino (dirent);
       const char *d_filename = dirent->d_filename;
       kafs_hfilenamelen_t d_filenamelen = kafs_load_dirent_filenamelen (dirent);
-      assert (r == sizeof (struct kafs_sdirent) + filenamelen);
       if (d_filenamelen == filenamelen && memcmp (d_filename, filename, filenamelen) == 0)
 	{
 	  *pino_found = d_ino;
-	  return 0;
+	  return KAFS_SUCCESS;
 	}
       offset += r;
     }
-}
-
-static int
-kafs_truncate_inode (struct kafs_context *ctx, kafs_hinocnt_t ino, kafs_hoff_t size)
-{
-  assert (ctx != NULL);
-  assert (ino != KAFS_INO_NONE);
-  assert (kafs_load_inode_usage (ctx, ino));
-  struct kafs_sinode *inotbl = kafs_get_inode (ctx, ino);
-  kafs_hlogblksize_t log_blksize = kafs_load_log_blksize (ctx);
-  kafs_hblksize_t blksize = kafs_load_blksize (ctx);
-  kafs_hoff_t size_orig = kafs_load_filesize (ctx, ino);
-  if (size_orig == size)
-    return 0;
-  kafs_save_filesize (ino, size);
-  if (size > size_orig)
-    return 0;
-  kafs_hblksize_t off = size_orig & (blksize - 1);
-  kafs_hoff_t offset = size;
-  if (off > 0)
-    {
-      char zbuf[blksize];
-      memset (zbuf, 0, blksize);
-      ssize_t w = kafs_call (kafs_pwrite_inode, ctx, ino, zbuf, blksize - off, offset);
-      assert (w == blksize - off);
-      offset += blksize - off;
-    }
-  while (offset < size_orig)
-    {
-      kafs_call (kafs_release_iblk, ctx, inotbl, offset >> log_blksize);
-      offset += blksize;
-    }
-  return KAFS_SUCCESS;
+  return -ENOENT;
 }
 
 static kafs_hoff_t
@@ -1515,68 +1542,63 @@ kafs_add_dirent_inode (struct kafs_context *ctx, kafs_hinocnt_t ino_dir,
   kafs_hmode_t mode_dir = kafs_load_inode_mode (inode_dir);
   if (!S_ISDIR (mode_dir))
     return -ENOTDIR;
-  char buf[sizeof (struct kafs_sdirent) + namelen];
+  kafs_hoff_t direntlen = sizeof (struct kafs_sdirent) + namelen;
+  char buf[direntlen];
   off_t offset = 0;
   while (1)
     {
-      ssize_t r = kafs_call (kafs_read_dirent_inode, ctx, ino_dir, &buf, sizeof (buf), offset);
-      struct kafs_sdirent *dirent = (struct kafs_sdirent *) buf;
-      kafs_hoff_t direntlen = kafs_load_direntlen (dirent);
-      kafs_hfilenamelen_t dfilenamelen = kafs_load_dirent_filenamelen (dirent);
-      assert (r == 0 || r == direntlen);
+      ssize_t r = kafs_call (kafs_read_dirent_inode, ctx, ino_dir, &buf, direntlen, offset);
       if (r == 0)
-	{
-	addent:
-	  kafs_save_dirent (dirent, ino, name, namelen);
-	  direntlen = kafs_load_direntlen (dirent);
-	  ssize_t w = kafs_call (kafs_pwrite_inode, ctx, ino_dir, dirent, direntlen, offset);
-	  assert (w == sizeof (struct kafs_sdirent) + namelen);
-	  offset += sizeof (struct kafs_sdirent) + namelen;
-	  if (w < sizeof (struct kafs_sdirent) + namelen)
-	    return -EIO;
-	  struct kafs_sinode *inode = kafs_get_inode (ctx, ino);
-	  kafs_incr_inode_link_count (inode);
-	  return KAFS_SUCCESS;
-	}
-      if (dfilenamelen == namelen && memcmp (name, dirent->d_filename, namelen) == 0)
+	break;
+      struct kafs_sdirent *dirent = (struct kafs_sdirent *) buf;
+      if (r == direntlen && memcmp (name, dirent->d_filename, namelen) == 0)
 	return -EEXIST;
       offset += r;
     }
+  struct kafs_sdirent *dirent = (struct kafs_sdirent *) buf;
+  kafs_save_dirent (dirent, ino, name, namelen);
+  kafs_hfilenamelen_t d_filenamelen = kafs_load_dirent_filenamelen (dirent);
+  ssize_t w = kafs_call (kafs_pwrite_inode, ctx, ino_dir, dirent, direntlen, offset);
+  assert (w == direntlen);
+  struct kafs_sinode *inode = kafs_get_inode (ctx, ino);
+  kafs_incr_inode_link_count (inode);
+  return KAFS_SUCCESS;
 }
 
 static int
-kafs_delete_dirent_inode (struct kafs_context *ctx, kafs_inocnt_t ino_dir, const char *name, size_t namelen)
+kafs_delete_dirent_inode (struct kafs_context *ctx, kafs_hinocnt_t ino_dir, const char *filename,
+			  kafs_hfilenamelen_t filenamelen)
 {
-  const struct kafs_sinode *inode = kafs_get_const_inode (ctx, ino_dir);
-  if (inode == NULL)
-    return -ENOENT;
-  if (!S_ISDIR (inode->i_mode))
+  assert (ctx != NULL);
+  assert (kafs_load_inode_usage (ctx, ino_dir));
+  kafs_hoff_t direntlen = sizeof (struct kafs_sdirent) + filenamelen;
+  assert (filename != NULL);
+  assert (filenamelen > 0);
+  const struct kafs_sinode *inotbl = kafs_get_const_inode (ctx, ino_dir);
+  kafs_hmode_t mode = kafs_load_inode_mode (inotbl);
+  if (!S_ISDIR (mode))
     return -ENOTDIR;
-  char buf[sizeof (struct kafs_sdirent) + namelen];
+  char buf[direntlen];
   struct kafs_sdirent *dirent = (struct kafs_sdirent *) buf;
   off_t offset = 0;
   while (1)
     {
-      ssize_t r = kafs_call (kafs_pread_inode, ctx, ino_dir, &dirent,
-			     sizeof (struct kafs_sdirent),
-			     offset);
-      if (r < sizeof (struct kafs_sdirent))
-	return -ENOENT;
-      if (dirent->d_filenamelen == namelen)
+      ssize_t r = kafs_call (kafs_read_dirent_inode, ctx, ino_dir, dirent, direntlen, offset);
+      if (r == 0)
+	break;
+      assert (r == direntlen);
+      kafs_hinocnt_t d_ino = kafs_load_dirent_ino (dirent);
+      const char *d_filename = dirent->d_filename;
+      kafs_hfilenamelen_t d_filenamelen = kafs_load_dirent_filenamelen (dirent);
+      if (d_filenamelen == filenamelen && memcmp (d_filename, filename, filenamelen) == 0)
 	{
-	  ssize_t r2 = kafs_call (kafs_pread_inode, ctx, ino_dir, dirent->d_filename, namelen,
-				  offset + r);
-	  if (r2 < namelen)
-	    return -ENOENT;
-	  if (memcmp (name, dirent->d_filename, namelen) == 0)
-	    while (1)
-	      {
-
-
-	      }
+	  kafs_call (kafs_trim_inode, ctx, inotbl, offset, r);
+	  kafs_decr_inode_link_count (inotbl);
+	  return KAFS_SUCCESS;
 	}
-      offset += r + dirent->d_filenamelen;
+      offset += r;
     }
+  return -ENOENT;
 }
 
 static int
