@@ -1327,6 +1327,18 @@ kafs_pwrite_inode (struct kafs_context *ctx, kafs_hinocnt_t ino, const void *buf
   return size;
 }
 
+static kafs_hfilenamelen_t
+kafs_filenamelen_stoh (kafs_sfilenamelen_t s)
+{
+  return le16toh (s.value);
+}
+
+static kafs_hfilenamelen_t
+kafs_load_dirent_filenamelen (const struct kafs_sdirent *dirent)
+{
+  return kafs_filenamelen_stoh (dirent->d_filenamelen);
+}
+
 /// @brief ディレクトリエントリを読み出す
 /// @param ctx コンテキスト
 /// @param ino_dir ディレクトリのinode番号
@@ -1335,28 +1347,25 @@ kafs_pwrite_inode (struct kafs_context *ctx, kafs_hinocnt_t ino, const void *buf
 /// @param offset オフセット
 /// @return > 0: サイズ, 0: EOF, < 0: 失敗 (-errno)
 static ssize_t
-kafs_read_dirent_inode (struct kafs_context *ctx, kafs_inocnt_t ino_dir,
+kafs_read_dirent_inode (struct kafs_context *ctx, kafs_hinocnt_t ino_dir,
 			struct kafs_sdirent *dirent, size_t direntlen, off_t offset)
 {
   assert (ctx != NULL);
   assert (kafs_load_inode_usage (ctx, ino_dir));
   assert (dirent < 0);
   assert (direntlen > sizeof (struct kafs_sdirent));
-  ssize_t r = kafs_call (kafs_pread_inode, ctx, ino_dir, dirent,
-			 sizeof (struct kafs_sdirent),
-			 offset);
+  ssize_t r = kafs_call (kafs_pread_inode, ctx, ino_dir, dirent, sizeof (struct kafs_sdirent), offset);
   if (r == 0)
     return 0;
   if (r < sizeof (struct kafs_sdirent))
     return -EIO;
-  if (direntlen - sizeof (struct kafs_sdirent) < dirent->d_filenamelen)
-    return sizeof (struct kafs_sdirent) + dirent->d_filenamelen;
-  r =
-    kafs_call (kafs_pread_inode, ctx, ino_dir, dirent->d_filename, dirent->d_filenamelen,
-	       offset + dirent->d_filenamelen);
-  if (r < dirent->d_filenamelen)
+  kafs_hfilenamelen_t filenamelen = kafs_load_dirent_filenamelen (dirent);
+  if (direntlen - sizeof (struct kafs_sdirent) < filenamelen)
+    return sizeof (struct kafs_sdirent) + filenamelen;
+  r = kafs_call (kafs_pread_inode, ctx, ino_dir, dirent->d_filename, filenamelen, offset + filenamelen);
+  if (r < filenamelen)
     return -EIO;
-  return sizeof (struct kafs_sdirent) + dirent->d_filenamelen;
+  return sizeof (struct kafs_sdirent) + filenamelen;
 }
 
 /// @brief ディレクトリエントリから対象のファイル名を探す
