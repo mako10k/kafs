@@ -1269,7 +1269,7 @@ kafs_pwrite_inode (struct kafs_context *ctx, kafs_hinocnt_t ino, const void *buf
     {
       // サイズ拡大時
       kafs_save_filesize (ctx, ino, filesize_new);
-      if (filesize_new > sizeof (inotbl->i_blkreftbl))
+      if (filesize != 0 && filesize_new > kafs_load_directsize (ctx))
 	{
 	  char wbuf[blksize];
 	  memset (wbuf, 0, blksize);
