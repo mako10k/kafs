@@ -5,6 +5,8 @@
 #include "kafs_inode.h"
 #include "kafs_dirent.h"
 
+#define KAFS_DIRECT_SIZE (sizeof (((struct kafs_sinode *)NULL)->i_blkreftbl))
+
 #include <fuse.h>
 #include <errno.h>
 #include <string.h>
@@ -88,8 +90,6 @@ typedef enum
   KAFS_IBLKREF_FUNC_DEL
 } kafs_iblkref_func_t;
 
-#define KAFS_DIRECT_SIZE sizeof(((struct kafs_sinode *)NULL)->i_blkreftbl)
-
 static int
 kafs_blk_is_zero (const void *buf, size_t len)
 {
@@ -101,7 +101,7 @@ kafs_blk_is_zero (const void *buf, size_t len)
 }
 
 static int
-kafs_do_ibrk (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_t iblo, kafs_blkcnt_t * pblo,
+kafs_ino_ibrk_run (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_t iblo, kafs_blkcnt_t * pblo,
 	      kafs_iblkref_func_t ifunc)
 {
   assert (ctx != NULL);
@@ -471,7 +471,7 @@ kafs_do_ibrk (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_t i
 /// @param iblo ブロック番号
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
-kafs_read_iblk (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_t iblo, void *buf)
+kafs_ino_iblk_read (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_t iblo, void *buf)
 {
   assert (ctx != NULL);
   assert (buf != NULL);
@@ -479,7 +479,7 @@ kafs_read_iblk (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_t
   assert (kafs_ino_get_usage (inoent));
   assert (kafs_ino_size_get (inoent) > KAFS_DIRECT_SIZE);
   kafs_blkcnt_t blo;
-  KAFS_CALL (kafs_do_ibrk, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_GET);
+  KAFS_CALL (kafs_ino_ibrk_run, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_GET);
   KAFS_CALL (kafs_blk_read, ctx, blo, buf);
   return KAFS_SUCCESS;
 }
@@ -491,7 +491,7 @@ kafs_read_iblk (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_t
 /// @param buf バッファ
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
-kafs_write_iblk (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_t iblo, const void *buf)
+kafs_ino_iblk_write (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_t iblo, const void *buf)
 {
   assert (ctx != NULL);
   assert (buf != NULL);
@@ -499,26 +499,24 @@ kafs_write_iblk (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_
   assert (kafs_ino_get_usage (inoent));
   assert (kafs_ino_size_get (inoent) > KAFS_DIRECT_SIZE);
   kafs_blkcnt_t blo;
-  KAFS_CALL (kafs_do_ibrk, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_PUT);
+  KAFS_CALL (kafs_ino_ibrk_run, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_PUT);
   assert (blo != KAFS_BLO_NONE);
   KAFS_CALL (kafs_blk_write, ctx, blo, buf);
   return KAFS_SUCCESS;
 }
 
 static int
-kafs_release_iblk (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_t iblo)
+kafs_ino_iblk_release (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_t iblo)
 {
   assert (ctx != NULL);
   assert (inoent != NULL);
   assert (kafs_ino_get_usage (inoent));
   assert (kafs_ino_size_get (inoent) > KAFS_DIRECT_SIZE);	// TODO: 縮小時の考慮
   kafs_blkcnt_t blo;
-  KAFS_CALL (kafs_do_ibrk, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_DEL);
+  KAFS_CALL (kafs_ino_ibrk_run, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_DEL);
   assert (blo == KAFS_BLO_NONE);
   return KAFS_SUCCESS;
 }
-
-#define kafs_load_directsize(ctx) (sizeof (((struct kafs_sinode *)NULL)->i_blkreftbl))
 
 /// @brief inode 毎にデータを読み出す
 /// @param ctx コンテキスト
@@ -542,7 +540,7 @@ kafs_pread (struct kafs_context *ctx, kafs_sinode_t * inoent, void *buf, size_t 
   if (size == 0)
     return 0;
   // 60バイト以下は直接
-  if (filesize <= kafs_load_directsize (ctx))
+  if (filesize <= KAFS_DIRECT_SIZE)
     {
       memcpy (buf, (void *) inoent->i_blkreftbl + offset, size);
       return size;
@@ -555,7 +553,7 @@ kafs_pread (struct kafs_context *ctx, kafs_sinode_t * inoent, void *buf, size_t 
     {
       char rbuf[blksize];
       kafs_iblkcnt_t iblo = offset >> log_blksize;
-      KAFS_CALL (kafs_read_iblk, ctx, inoent, iblo, rbuf);
+      KAFS_CALL (kafs_ino_iblk_read, ctx, inoent, iblo, rbuf);
       if (size < blksize - offset_blksize)
 	{
 	  memcpy (buf, rbuf + offset_blksize, size);
@@ -570,11 +568,11 @@ kafs_pread (struct kafs_context *ctx, kafs_sinode_t * inoent, void *buf, size_t 
       if (size - size_read <= blksize)
 	{
 	  char rbuf[blksize];
-	  KAFS_CALL (kafs_read_iblk, ctx, inoent, iblo, rbuf);
+	  KAFS_CALL (kafs_ino_iblk_read, ctx, inoent, iblo, rbuf);
 	  memcpy (buf + size_read, rbuf, size - size_read);
 	  return size;
 	}
-      KAFS_CALL (kafs_read_iblk, ctx, inoent, iblo, buf + size_read);
+      KAFS_CALL (kafs_ino_iblk_read, ctx, inoent, iblo, buf + size_read);
       size_read += blksize;
     }
   return size;
@@ -607,13 +605,13 @@ kafs_pwrite (struct kafs_context *ctx, kafs_sinode_t * inoent, const void *buf, 
     {
       // サイズ拡大時
       kafs_ino_size_set (inoent, filesize_new);
-      if (filesize != 0 && filesize_new > kafs_load_directsize (ctx))
+      if (filesize != 0 && filesize_new > KAFS_DIRECT_SIZE)
 	{
 	  char wbuf[blksize];
 	  memset (wbuf, 0, blksize);
 	  memcpy (wbuf, inoent->i_blkreftbl, filesize);
 	  memset (inoent->i_blkreftbl, 0, sizeof (inoent->i_blkreftbl));
-	  KAFS_CALL (kafs_write_iblk, ctx, inoent, 0, wbuf);
+	  KAFS_CALL (kafs_ino_iblk_write, ctx, inoent, 0, wbuf);
 	}
       filesize = filesize_new;
     }
@@ -634,17 +632,17 @@ kafs_pwrite (struct kafs_context *ctx, kafs_sinode_t * inoent, const void *buf, 
       kafs_iblkcnt_t iblo = offset >> log_blksize;
       // 書き戻しバッファ
       char wbuf[blksize];
-      KAFS_CALL (kafs_read_iblk, ctx, inoent, iblo, wbuf);
+      KAFS_CALL (kafs_ino_iblk_read, ctx, inoent, iblo, wbuf);
       if (size < blksize - offset_blksize)
 	{
 	  // 1ブロックのみの場合
 	  memcpy (wbuf + offset_blksize, buf, size);
-	  KAFS_CALL (kafs_write_iblk, ctx, inoent, iblo, wbuf);
+	  KAFS_CALL (kafs_ino_iblk_write, ctx, inoent, iblo, wbuf);
 	  return size;
 	}
       // ブロックの残り分を書き込む
       memcpy (wbuf + offset_blksize, buf, blksize - offset_blksize);
-      KAFS_CALL (kafs_write_iblk, ctx, inoent, iblo, wbuf);
+      KAFS_CALL (kafs_ino_iblk_write, ctx, inoent, iblo, wbuf);
       size_written += blksize - offset_blksize;
     }
 
@@ -654,12 +652,12 @@ kafs_pwrite (struct kafs_context *ctx, kafs_sinode_t * inoent, const void *buf, 
       if (size - size_written < blksize)
 	{
 	  char wbuf[blksize];
-	  KAFS_CALL (kafs_read_iblk, ctx, inoent, iblo, wbuf);
+	  KAFS_CALL (kafs_ino_iblk_read, ctx, inoent, iblo, wbuf);
 	  memcpy (wbuf, buf + size_written, size - size_written);
-	  KAFS_CALL (kafs_write_iblk, ctx, inoent, iblo, wbuf);
+	  KAFS_CALL (kafs_ino_iblk_write, ctx, inoent, iblo, wbuf);
 	  return size;
 	}
-      KAFS_CALL (kafs_write_iblk, ctx, inoent, iblo, buf + size_written);
+      KAFS_CALL (kafs_ino_iblk_write, ctx, inoent, iblo, buf + size_written);
       size_written += blksize;
     }
   return size;
@@ -691,7 +689,7 @@ kafs_truncate (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_off_t file
     }
   while (offset < filesize_orig)
     {
-      KAFS_CALL (kafs_release_iblk, ctx, inoent, offset >> log_blksize);
+      KAFS_CALL (kafs_ino_iblk_release, ctx, inoent, offset >> log_blksize);
       offset += blksize;
     }
   return KAFS_SUCCESS;
