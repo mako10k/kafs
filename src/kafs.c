@@ -1016,8 +1016,8 @@ kafs_op_create (const char *path, mode_t mode, struct fuse_file_info *fi)
   if (filename == NULL)
     return -EIO;
   *(filename++) = '\0';
-  kafs_inocnt_t ino_dir = 0;
-  KAFS_CALL (kafs_get_from_path_inode, ctx, dirpath, &ino_dir);
+  kafs_inocnt_t ino_dir = 1;
+  KAFS_CALL (kafs_get_from_path_inode, ctx, *dirpath == '\0' ? "/" : dirpath, &ino_dir);
   struct kafs_sinode *inoent_dir = &ctx->c_inotbl[ino_dir];
   kafs_mode_t mode_dir = kafs_ino_mode_get (inoent_dir);
   if (!S_ISDIR (mode_dir))
@@ -1060,8 +1060,8 @@ kafs_op_mknod (const char *path, mode_t mode, dev_t dev)
   if (filename == NULL)
     return -EIO;
   *(filename++) = '\0';
-  kafs_inocnt_t ino_dir = 0;
-  KAFS_CALL (kafs_get_from_path_inode, ctx, dirpath, &ino_dir);
+  kafs_inocnt_t ino_dir = 1;
+  KAFS_CALL (kafs_get_from_path_inode, ctx, *dirpath == '\0' ? "/" : dirpath, &ino_dir);
   struct kafs_sinode *inoent_dir = &ctx->c_inotbl[ino_dir];
   kafs_mode_t mode_dir = kafs_ino_mode_get (inoent_dir);
   if (!S_ISDIR (mode_dir))
