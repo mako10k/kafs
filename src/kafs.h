@@ -271,6 +271,13 @@ kafs_inocnt_stoh (kafs_sinocnt_t s)
   return le32toh (s.value);
 }
 
+static kafs_sinocnt_t
+kafs_inocnt_htos (kafs_inocnt_t h)
+{
+  kafs_sinocnt_t s = {.value = htole32 (h) };
+  return s;
+}
+
 static kafs_mode_t
 kafs_mode_stoh (kafs_smode_t s)
 {
@@ -294,6 +301,19 @@ static kafs_slinkcnt_t
 kafs_linkcnt_htos (kafs_linkcnt_t h)
 {
   kafs_slinkcnt_t s = {.value = htole16 (h) };
+  return s;
+}
+
+static kafs_filenamelen_t
+kafs_filenamelen_stoh (kafs_sfilenamelen_t s)
+{
+  return le16toh (s.value);
+}
+
+static kafs_sfilenamelen_t
+kafs_filenamelen_htos (kafs_filenamelen_t h)
+{
+  kafs_sfilenamelen_t s = {.value = htole16 (h) };
   return s;
 }
 

@@ -22,3 +22,8 @@ Makefile.in
 # patterns
 *~
 *.log
+*.o
+
+# outputs
+/src/kafs
+

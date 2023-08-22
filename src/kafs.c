@@ -22,15 +22,15 @@
 /// @param buf 読み出すバッファ
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
-kafs_read_blk (struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
+kafs_blk_read (struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
 {
   assert (ctx != NULL);
   assert (buf != NULL);
   assert (blo != KAFS_INO_NONE);
-  assert (blo < kafs_sb_load_r_blkcnt (ctx->c_superblock));
+  assert (blo < kafs_sb_r_blkcnt_get (ctx->c_superblock));
   assert (kafs_blk_get_usage (ctx, blo));
-  kafs_logblksize_t log_blksize = kafs_sb_load_log_blksize (ctx->c_superblock);
-  kafs_logblksize_t blksize = kafs_sb_load_blksize (ctx->c_superblock);
+  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get (ctx->c_superblock);
+  kafs_logblksize_t blksize = kafs_sb_blksize_get (ctx->c_superblock);
   ssize_t r = KAFS_IOCALL (pread, ctx->c_fd, buf, blksize, blo << log_blksize);
   assert (r == blksize);
   return KAFS_SUCCESS;
@@ -42,15 +42,15 @@ kafs_read_blk (struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
 /// @param buf 書き込むバッファ
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
-kafs_write_blk (struct kafs_context *ctx, kafs_blkcnt_t blo, const void *buf)
+kafs_blk_write (struct kafs_context *ctx, kafs_blkcnt_t blo, const void *buf)
 {
   assert (ctx != NULL);
   assert (buf != NULL);
   assert (blo != KAFS_INO_NONE);
-  assert (blo < kafs_sb_load_blkcnt (ctx->c_superblock));
+  assert (blo < kafs_sb_r_blkcnt_get (ctx->c_superblock));
   assert (kafs_blk_get_usage (ctx, blo));
-  kafs_logblksize_t log_blksize = kafs_sb_load_log_blksize (ctx->c_superblock);
-  kafs_blksize_t blksize = kafs_sb_load_blksize (ctx->c_superblock);
+  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get (ctx->c_superblock);
+  kafs_blksize_t blksize = kafs_sb_blksize_get (ctx->c_superblock);
   ssize_t w = KAFS_IOCALL (pwrite, ctx->c_fd, buf, blksize, blo << log_blksize);
   assert (w == blksize);
   return KAFS_SUCCESS;
@@ -61,17 +61,17 @@ kafs_write_blk (struct kafs_context *ctx, kafs_blkcnt_t blo, const void *buf)
 /// @param sblo ブロック番号
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
-kafs_release_blk (struct kafs_context *ctx, kafs_blkcnt_t * pblo)
+kafs_blk_release (struct kafs_context *ctx, kafs_blkcnt_t * pblo)
 {
   assert (ctx != NULL);
   assert (pblo != NULL);
   assert (*pblo != KAFS_INO_NONE);
-  assert (*pblo < kafs_sb_load_r_blkcnt (ctx->c_superblock));
+  assert (*pblo < kafs_sb_r_blkcnt_get (ctx->c_superblock));
   assert (kafs_blk_get_usage (ctx, *pblo));
-  kafs_blksize_t blksize = kafs_sb_load_blksize (ctx->c_superblock);
+  kafs_blksize_t blksize = kafs_sb_blksize_get (ctx->c_superblock);
   char zbuf[blksize];
   memset (zbuf, 0, blksize);
-  KAFS_CALL (kafs_write_blk, ctx, *pblo, zbuf);
+  KAFS_CALL (kafs_blk_write, ctx, *pblo, zbuf);
   KAFS_CALL (kafs_blk_set_usage, ctx, *pblo, KAFS_FALSE);
   *pblo = KAFS_BLO_NONE;
   return KAFS_SUCCESS;
@@ -88,22 +88,10 @@ typedef enum
   KAFS_IBLKREF_FUNC_DEL
 } kafs_iblkref_func_t;
 
-static kafs_logblksize_t
-kafs_load_log_blkref_pb (const struct kafs_context *ctx)
-{
-  return kafs_sb_load_log_blksize (ctx->c_superblock) + 3;
-}
-
-static kafs_blksize_t
-kafs_load_blkref_pb (const struct kafs_context *ctx)
-{
-  return 1 << kafs_load_log_blkref_pb (ctx);
-}
-
 #define KAFS_DIRECT_SIZE sizeof(((struct kafs_sinode *)NULL)->i_blkreftbl)
 
 static int
-kafs_is_zero_blk (const void *buf, size_t len)
+kafs_blk_is_zero (const void *buf, size_t len)
 {
   const char *c = buf;
   while (len--)
@@ -132,7 +120,7 @@ kafs_do_ibrk (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_t i
 	case KAFS_IBLKREF_FUNC_PUT:
 	  if (blo_data == KAFS_BLO_NONE)
 	    {
-	      KAFS_CALL (kafs_alloc_blk, ctx, &blo_data);
+	      KAFS_CALL (kafs_blk_alloc, ctx, &blo_data);
 	      inoent->i_blkreftbl[iblo] = kafs_blkcnt_htos (blo_data);
 	    }
 	  *pblo = blo_data;
@@ -144,7 +132,7 @@ kafs_do_ibrk (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_t i
 	      *pblo = KAFS_BLO_NONE;
 	      return KAFS_SUCCESS;
 	    }
-	  KAFS_CALL (kafs_release_blk, ctx, &blo_data);
+	  KAFS_CALL (kafs_blk_release, ctx, &blo_data);
 	  inoent->i_blkreftbl[iblo] = kafs_blkcnt_htos (KAFS_BLO_NONE);
 	  *pblo = KAFS_BLO_NONE;
 	  return KAFS_SUCCESS;
@@ -152,9 +140,9 @@ kafs_do_ibrk (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_t i
     }
 
   iblo -= 12;
-  kafs_blksize_t blksize = kafs_sb_load_blksize (ctx->c_superblock);
-  kafs_logblksize_t log_blkrefs_pb = kafs_load_log_blkref_pb (ctx);
-  kafs_blkcnt_t blkrefs_pb = kafs_load_blkref_pb (ctx);
+  kafs_blksize_t blksize = kafs_sb_blksize_get (ctx->c_superblock);
+  kafs_logblksize_t log_blkrefs_pb = kafs_sb_log_blkref_pb_get (ctx->c_superblock);
+  kafs_blkcnt_t blkrefs_pb = kafs_sb_blkref_pb_get (ctx->c_superblock);
   if (iblo < blkrefs_pb)
     {
       kafs_sblkcnt_t blkreftbl[blkrefs_pb];
@@ -169,27 +157,27 @@ kafs_do_ibrk (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_t i
 	      *pblo = KAFS_BLO_NONE;
 	      return KAFS_SUCCESS;
 	    }
-	  KAFS_CALL (kafs_read_blk, ctx, blo_blkreftbl, blkreftbl);
+	  KAFS_CALL (kafs_blk_read, ctx, blo_blkreftbl, blkreftbl);
 	  *pblo = kafs_blkcnt_stoh (blkreftbl[iblo]);
 	  return KAFS_SUCCESS;
 
 	case KAFS_IBLKREF_FUNC_PUT:
 	  if (blo_blkreftbl == KAFS_BLO_NONE)
 	    {
-	      KAFS_CALL (kafs_alloc_blk, ctx, &blo_blkreftbl);
+	      KAFS_CALL (kafs_blk_alloc, ctx, &blo_blkreftbl);
 	      inoent->i_blkreftbl[12] = kafs_blkcnt_htos (blo_blkreftbl);
 	      blo_data = KAFS_BLO_NONE;
 	    }
 	  else
 	    {
-	      KAFS_CALL (kafs_read_blk, ctx, blo_blkreftbl, blkreftbl);
+	      KAFS_CALL (kafs_blk_read, ctx, blo_blkreftbl, blkreftbl);
 	      blo_data = kafs_blkcnt_stoh (blkreftbl[iblo]);
 	    }
 	  if (blo_data == KAFS_BLO_NONE)
 	    {
-	      KAFS_CALL (kafs_alloc_blk, ctx, &blo_data);
+	      KAFS_CALL (kafs_blk_alloc, ctx, &blo_data);
 	      blkreftbl[iblo] = kafs_blkcnt_htos (blo_data);
-	      KAFS_CALL (kafs_write_blk, ctx, blo_blkreftbl, blkreftbl);
+	      KAFS_CALL (kafs_blk_write, ctx, blo_blkreftbl, blkreftbl);
 	    }
 	  *pblo = blo_data;
 	  return KAFS_SUCCESS;
@@ -200,20 +188,20 @@ kafs_do_ibrk (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_t i
 	      *pblo = KAFS_BLO_NONE;
 	      return KAFS_SUCCESS;
 	    }
-	  KAFS_CALL (kafs_read_blk, ctx, blo_blkreftbl, blkreftbl);
+	  KAFS_CALL (kafs_blk_read, ctx, blo_blkreftbl, blkreftbl);
 	  blo_data = kafs_blkcnt_stoh (blkreftbl[iblo]);
 	  if (blo_data != KAFS_BLO_NONE)
 	    {
-	      KAFS_CALL (kafs_release_blk, ctx, &blo_data);
+	      KAFS_CALL (kafs_blk_release, ctx, &blo_data);
 	      blkreftbl[iblo] = kafs_blkcnt_htos (blo_data);
 	    }
-	  if (!kafs_is_zero_blk (blkreftbl, blksize))
+	  if (!kafs_blk_is_zero (blkreftbl, blksize))
 	    {
-	      KAFS_CALL (kafs_write_blk, ctx, blo_blkreftbl, blkreftbl);
+	      KAFS_CALL (kafs_blk_write, ctx, blo_blkreftbl, blkreftbl);
 	      *pblo = KAFS_BLO_NONE;
 	      return KAFS_SUCCESS;
 	    }
-	  KAFS_CALL (kafs_release_blk, ctx, &blo_blkreftbl);
+	  KAFS_CALL (kafs_blk_release, ctx, &blo_blkreftbl);
 	  inoent->i_blkreftbl[12] = kafs_blkcnt_htos (blo_blkreftbl);
 	  *pblo = KAFS_BLO_NONE;
 	  return KAFS_SUCCESS;
@@ -241,48 +229,48 @@ kafs_do_ibrk (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_t i
 	      *pblo = KAFS_BLO_NONE;
 	      return KAFS_SUCCESS;
 	    }
-	  KAFS_CALL (kafs_read_blk, ctx, blo_blkreftbl1, blkreftbl1);
+	  KAFS_CALL (kafs_blk_read, ctx, blo_blkreftbl1, blkreftbl1);
 	  blo_blkreftbl2 = kafs_blkcnt_stoh (blkreftbl1[iblo1]);
 	  if (blo_blkreftbl2 == KAFS_BLO_NONE)
 	    {
 	      *pblo = KAFS_BLO_NONE;
 	      return KAFS_SUCCESS;
 	    }
-	  KAFS_CALL (kafs_read_blk, ctx, blo_blkreftbl2, blkreftbl2);
+	  KAFS_CALL (kafs_blk_read, ctx, blo_blkreftbl2, blkreftbl2);
 	  *pblo = kafs_blkcnt_stoh (blkreftbl2[iblo2]);
 	  return KAFS_SUCCESS;
 
 	case KAFS_IBLKREF_FUNC_PUT:
 	  if (blo_blkreftbl1 == KAFS_BLO_NONE)
 	    {
-	      KAFS_CALL (kafs_alloc_blk, ctx, &blo_blkreftbl1);
+	      KAFS_CALL (kafs_blk_alloc, ctx, &blo_blkreftbl1);
 	      inoent->i_blkreftbl[13] = kafs_blkcnt_htos (blo_blkreftbl1);
 	      memset (blkreftbl1, 0, blksize);
 	      blo_blkreftbl2 = KAFS_BLO_NONE;
 	    }
 	  else
 	    {
-	      KAFS_CALL (kafs_read_blk, ctx, blo_blkreftbl1, blkreftbl1);
+	      KAFS_CALL (kafs_blk_read, ctx, blo_blkreftbl1, blkreftbl1);
 	      blo_blkreftbl2 = kafs_blkcnt_stoh (blkreftbl1[iblo1]);
 	    }
 	  if (blo_blkreftbl2 == KAFS_BLO_NONE)
 	    {
-	      KAFS_CALL (kafs_alloc_blk, ctx, &blo_blkreftbl2);
+	      KAFS_CALL (kafs_blk_alloc, ctx, &blo_blkreftbl2);
 	      blkreftbl1[iblo1] = kafs_blkcnt_htos (blo_blkreftbl2);
-	      KAFS_CALL (kafs_write_blk, ctx, blo_blkreftbl1, blkreftbl1);
+	      KAFS_CALL (kafs_blk_write, ctx, blo_blkreftbl1, blkreftbl1);
 	      memset (blkreftbl2, 0, blksize);
 	      blo_data = KAFS_BLO_NONE;
 	    }
 	  else
 	    {
-	      KAFS_CALL (kafs_read_blk, ctx, blo_blkreftbl2, blkreftbl2);
+	      KAFS_CALL (kafs_blk_read, ctx, blo_blkreftbl2, blkreftbl2);
 	      blo_data = kafs_blkcnt_stoh (blkreftbl2[iblo2]);
 	    }
 	  if (blo_data == KAFS_BLO_NONE)
 	    {
-	      KAFS_CALL (kafs_alloc_blk, ctx, &blo_data);
+	      KAFS_CALL (kafs_blk_alloc, ctx, &blo_data);
 	      blkreftbl2[iblo2] = kafs_blkcnt_htos (blo_data);
-	      KAFS_CALL (kafs_write_blk, ctx, blo_blkreftbl2, blkreftbl2);
+	      KAFS_CALL (kafs_blk_write, ctx, blo_blkreftbl2, blkreftbl2);
 	    }
 	  *pblo = blo_data;
 	  return KAFS_SUCCESS;
@@ -293,37 +281,37 @@ kafs_do_ibrk (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_t i
 	      *pblo = KAFS_BLO_NONE;
 	      return KAFS_SUCCESS;
 	    }
-	  KAFS_CALL (kafs_read_blk, ctx, blo_blkreftbl1, blkreftbl1);
+	  KAFS_CALL (kafs_blk_read, ctx, blo_blkreftbl1, blkreftbl1);
 	  blo_blkreftbl2 = kafs_blkcnt_stoh (blkreftbl1[iblo1]);
 	  if (blo_blkreftbl2 == KAFS_BLO_NONE)
 	    {
 	      *pblo = KAFS_BLO_NONE;
 	      return KAFS_SUCCESS;
 	    }
-	  KAFS_CALL (kafs_read_blk, ctx, blo_blkreftbl2, blkreftbl2);
+	  KAFS_CALL (kafs_blk_read, ctx, blo_blkreftbl2, blkreftbl2);
 	  blo_data = kafs_blkcnt_stoh (blkreftbl2[iblo2]);
 	  if (blo_data == KAFS_BLO_NONE)
 	    {
 	      *pblo = KAFS_BLO_NONE;
 	      return KAFS_SUCCESS;
 	    }
-	  KAFS_CALL (kafs_release_blk, ctx, &blo_data);
+	  KAFS_CALL (kafs_blk_release, ctx, &blo_data);
 	  blkreftbl2[iblo2] = kafs_blkcnt_htos (KAFS_BLO_NONE);
-	  if (!kafs_is_zero_blk (blkreftbl2, blksize))
+	  if (!kafs_blk_is_zero (blkreftbl2, blksize))
 	    {
-	      KAFS_CALL (kafs_write_blk, ctx, blo_blkreftbl2, blkreftbl2);
+	      KAFS_CALL (kafs_blk_write, ctx, blo_blkreftbl2, blkreftbl2);
 	      *pblo = KAFS_BLO_NONE;
 	      return KAFS_SUCCESS;
 	    }
-	  KAFS_CALL (kafs_release_blk, ctx, &blo_blkreftbl2);
+	  KAFS_CALL (kafs_blk_release, ctx, &blo_blkreftbl2);
 	  blkreftbl1[iblo1] = kafs_blkcnt_htos (KAFS_BLO_NONE);
-	  if (!kafs_is_zero_blk (blkreftbl1, blksize))
+	  if (!kafs_blk_is_zero (blkreftbl1, blksize))
 	    {
-	      KAFS_CALL (kafs_write_blk, ctx, blo_blkreftbl1, blkreftbl1);
+	      KAFS_CALL (kafs_blk_write, ctx, blo_blkreftbl1, blkreftbl1);
 	      *pblo = KAFS_BLO_NONE;
 	      return KAFS_SUCCESS;
 	    }
-	  KAFS_CALL (kafs_release_blk, ctx, &blo_blkreftbl1);
+	  KAFS_CALL (kafs_blk_release, ctx, &blo_blkreftbl1);
 	  inoent->i_blkreftbl[13] = kafs_blkcnt_htos (KAFS_BLO_NONE);
 	  *pblo = KAFS_BLO_NONE;
 	  return KAFS_SUCCESS;
@@ -352,68 +340,68 @@ kafs_do_ibrk (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_t i
 	  *pblo = KAFS_BLO_NONE;
 	  return KAFS_SUCCESS;
 	}
-      KAFS_CALL (kafs_read_blk, ctx, blo_blkreftbl1, blkreftbl1);
+      KAFS_CALL (kafs_blk_read, ctx, blo_blkreftbl1, blkreftbl1);
       blo_blkreftbl2 = kafs_blkcnt_stoh (blkreftbl1[iblo1]);
       if (blo_blkreftbl2 == KAFS_BLO_NONE)
 	{
 	  *pblo = KAFS_BLO_NONE;
 	  return KAFS_SUCCESS;
 	}
-      KAFS_CALL (kafs_read_blk, ctx, blo_blkreftbl2, blkreftbl2);
+      KAFS_CALL (kafs_blk_read, ctx, blo_blkreftbl2, blkreftbl2);
       blo_blkreftbl3 = kafs_blkcnt_stoh (blkreftbl2[iblo2]);
       if (blo_blkreftbl3 == KAFS_BLO_NONE)
 	{
 	  *pblo = KAFS_BLO_NONE;
 	  return KAFS_SUCCESS;
 	}
-      KAFS_CALL (kafs_read_blk, ctx, blo_blkreftbl3, blkreftbl3);
+      KAFS_CALL (kafs_blk_read, ctx, blo_blkreftbl3, blkreftbl3);
       *pblo = kafs_blkcnt_stoh (blkreftbl3[iblo3]);
       return KAFS_SUCCESS;
 
     case KAFS_IBLKREF_FUNC_PUT:
       if (blo_blkreftbl1 == KAFS_BLO_NONE)
 	{
-	  KAFS_CALL (kafs_alloc_blk, ctx, &blo_blkreftbl1);
+	  KAFS_CALL (kafs_blk_alloc, ctx, &blo_blkreftbl1);
 	  inoent->i_blkreftbl[14] = kafs_blkcnt_htos (blo_blkreftbl1);
 	  memset (blkreftbl1, 0, blksize);
 	  blo_blkreftbl2 = KAFS_BLO_NONE;
 	}
       else
 	{
-	  KAFS_CALL (kafs_read_blk, ctx, blo_blkreftbl1, blkreftbl1);
+	  KAFS_CALL (kafs_blk_read, ctx, blo_blkreftbl1, blkreftbl1);
 	  blo_blkreftbl2 = kafs_blkcnt_stoh (blkreftbl1[iblo1]);
 	}
       if (blo_blkreftbl2 == KAFS_BLO_NONE)
 	{
-	  KAFS_CALL (kafs_alloc_blk, ctx, &blo_blkreftbl2);
+	  KAFS_CALL (kafs_blk_alloc, ctx, &blo_blkreftbl2);
 	  blkreftbl1[iblo1] = kafs_blkcnt_htos (blo_blkreftbl2);
-	  KAFS_CALL (kafs_write_blk, ctx, blo_blkreftbl1, blkreftbl1);
+	  KAFS_CALL (kafs_blk_write, ctx, blo_blkreftbl1, blkreftbl1);
 	  memset (blkreftbl2, 0, blksize);
 	  blo_blkreftbl3 = KAFS_BLO_NONE;
 	}
       else
 	{
-	  KAFS_CALL (kafs_read_blk, ctx, blo_blkreftbl2, blkreftbl2);
+	  KAFS_CALL (kafs_blk_read, ctx, blo_blkreftbl2, blkreftbl2);
 	  blo_blkreftbl3 = kafs_blkcnt_stoh (blkreftbl2[iblo2]);
 	}
       if (blo_blkreftbl3 == KAFS_BLO_NONE)
 	{
-	  KAFS_CALL (kafs_alloc_blk, ctx, &blo_blkreftbl3);
+	  KAFS_CALL (kafs_blk_alloc, ctx, &blo_blkreftbl3);
 	  blkreftbl2[iblo2] = kafs_blkcnt_htos (blo_blkreftbl3);
-	  KAFS_CALL (kafs_write_blk, ctx, blo_blkreftbl2, blkreftbl2);
+	  KAFS_CALL (kafs_blk_write, ctx, blo_blkreftbl2, blkreftbl2);
 	  memset (blkreftbl3, 0, blksize);
 	  blo_data = KAFS_BLO_NONE;
 	}
       else
 	{
-	  KAFS_CALL (kafs_read_blk, ctx, blo_blkreftbl3, blkreftbl3);
+	  KAFS_CALL (kafs_blk_read, ctx, blo_blkreftbl3, blkreftbl3);
 	  blo_data = kafs_blkcnt_stoh (blkreftbl3[iblo3]);
 	}
       if (blo_data == KAFS_BLO_NONE)
 	{
-	  KAFS_CALL (kafs_alloc_blk, ctx, &blo_data);
+	  KAFS_CALL (kafs_blk_alloc, ctx, &blo_data);
 	  blkreftbl3[iblo3] = kafs_blkcnt_htos (blo_data);
-	  KAFS_CALL (kafs_write_blk, ctx, blo_blkreftbl3, blkreftbl3);
+	  KAFS_CALL (kafs_blk_write, ctx, blo_blkreftbl3, blkreftbl3);
 	}
       *pblo = blo_data;
       return KAFS_SUCCESS;
@@ -424,52 +412,52 @@ kafs_do_ibrk (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_t i
 	  *pblo = KAFS_BLO_NONE;
 	  return KAFS_SUCCESS;
 	}
-      KAFS_CALL (kafs_read_blk, ctx, blo_blkreftbl1, blkreftbl1);
+      KAFS_CALL (kafs_blk_read, ctx, blo_blkreftbl1, blkreftbl1);
       blo_blkreftbl2 = kafs_blkcnt_stoh (blkreftbl1[iblo1]);
       if (blo_blkreftbl2 == KAFS_BLO_NONE)
 	{
 	  *pblo = KAFS_BLO_NONE;
 	  return KAFS_SUCCESS;
 	}
-      KAFS_CALL (kafs_read_blk, ctx, blo_blkreftbl2, blkreftbl2);
+      KAFS_CALL (kafs_blk_read, ctx, blo_blkreftbl2, blkreftbl2);
       blo_blkreftbl3 = kafs_blkcnt_stoh (blkreftbl2[iblo2]);
       if (blo_blkreftbl3 == KAFS_BLO_NONE)
 	{
 	  *pblo = KAFS_BLO_NONE;
 	  return KAFS_SUCCESS;
 	}
-      KAFS_CALL (kafs_read_blk, ctx, blo_blkreftbl3, blkreftbl3);
+      KAFS_CALL (kafs_blk_read, ctx, blo_blkreftbl3, blkreftbl3);
       blo_data = kafs_blkcnt_stoh (blkreftbl3[iblo3]);
       if (blo_data == KAFS_BLO_NONE)
 	{
 	  *pblo = KAFS_BLO_NONE;
 	  return KAFS_SUCCESS;
 	}
-      KAFS_CALL (kafs_release_blk, ctx, &blo_data);
+      KAFS_CALL (kafs_blk_release, ctx, &blo_data);
       blkreftbl3[iblo3] = kafs_blkcnt_htos (KAFS_BLO_NONE);
-      if (!kafs_is_zero_blk (blkreftbl3, blksize))
+      if (!kafs_blk_is_zero (blkreftbl3, blksize))
 	{
-	  KAFS_CALL (kafs_write_blk, ctx, blo_blkreftbl3, blkreftbl3);
+	  KAFS_CALL (kafs_blk_write, ctx, blo_blkreftbl3, blkreftbl3);
 	  *pblo = KAFS_BLO_NONE;
 	  return KAFS_SUCCESS;
 	}
-      KAFS_CALL (kafs_release_blk, ctx, &blo_blkreftbl3);
+      KAFS_CALL (kafs_blk_release, ctx, &blo_blkreftbl3);
       blkreftbl2[iblo2] = kafs_blkcnt_htos (KAFS_BLO_NONE);
-      if (!kafs_is_zero_blk (blkreftbl2, blksize))
+      if (!kafs_blk_is_zero (blkreftbl2, blksize))
 	{
-	  KAFS_CALL (kafs_write_blk, ctx, blo_blkreftbl2, blkreftbl2);
+	  KAFS_CALL (kafs_blk_write, ctx, blo_blkreftbl2, blkreftbl2);
 	  *pblo = KAFS_BLO_NONE;
 	  return KAFS_SUCCESS;
 	}
-      KAFS_CALL (kafs_release_blk, ctx, &blo_blkreftbl2);
+      KAFS_CALL (kafs_blk_release, ctx, &blo_blkreftbl2);
       blkreftbl1[iblo1] = kafs_blkcnt_htos (KAFS_BLO_NONE);
-      if (!kafs_is_zero_blk (blkreftbl1, blksize))
+      if (!kafs_blk_is_zero (blkreftbl1, blksize))
 	{
-	  KAFS_CALL (kafs_write_blk, ctx, blo_blkreftbl1, blkreftbl1);
+	  KAFS_CALL (kafs_blk_write, ctx, blo_blkreftbl1, blkreftbl1);
 	  *pblo = KAFS_BLO_NONE;
 	  return KAFS_SUCCESS;
 	}
-      KAFS_CALL (kafs_release_blk, ctx, &blo_blkreftbl1);
+      KAFS_CALL (kafs_blk_release, ctx, &blo_blkreftbl1);
       inoent->i_blkreftbl[14] = kafs_blkcnt_htos (KAFS_BLO_NONE);
       *pblo = KAFS_BLO_NONE;
       return KAFS_SUCCESS;
@@ -492,7 +480,7 @@ kafs_read_iblk (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_t
   assert (kafs_ino_size_get (inoent) > KAFS_DIRECT_SIZE);
   kafs_blkcnt_t blo;
   KAFS_CALL (kafs_do_ibrk, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_GET);
-  KAFS_CALL (kafs_read_blk, ctx, blo, buf);
+  KAFS_CALL (kafs_blk_read, ctx, blo, buf);
   return KAFS_SUCCESS;
 }
 
@@ -513,7 +501,7 @@ kafs_write_iblk (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcnt_
   kafs_blkcnt_t blo;
   KAFS_CALL (kafs_do_ibrk, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_PUT);
   assert (blo != KAFS_BLO_NONE);
-  KAFS_CALL (kafs_write_blk, ctx, blo, buf);
+  KAFS_CALL (kafs_blk_write, ctx, blo, buf);
   return KAFS_SUCCESS;
 }
 
@@ -540,7 +528,7 @@ kafs_release_iblk (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblkcn
 /// @param offset オフセット
 /// @return > 0: 読み出しサイズ, 0: EOF, < 0: エラー(-errno)
 static ssize_t
-kafs_pread_inode (struct kafs_context *ctx, kafs_sinode_t * inoent, void *buf, size_t size, off_t offset)
+kafs_pread (struct kafs_context *ctx, kafs_sinode_t * inoent, void *buf, size_t size, off_t offset)
 {
   assert (ctx != NULL);
   assert (buf != NULL);
@@ -560,8 +548,8 @@ kafs_pread_inode (struct kafs_context *ctx, kafs_sinode_t * inoent, void *buf, s
       return size;
     }
   size_t size_read = 0;
-  kafs_logblksize_t log_blksize = kafs_sb_load_log_blksize (ctx->c_superblock);
-  kafs_blksize_t blksize = kafs_sb_load_blksize (ctx->c_superblock);
+  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get (ctx->c_superblock);
+  kafs_blksize_t blksize = kafs_sb_blksize_get (ctx->c_superblock);
   kafs_blksize_t offset_blksize = offset & (blksize - 1);
   if (offset_blksize > 0 || size - size_read < blksize)
     {
@@ -600,7 +588,7 @@ kafs_pread_inode (struct kafs_context *ctx, kafs_sinode_t * inoent, void *buf, s
 /// @param offset オフセット
 /// @return > 0: 読み出しサイズ, 0: EOF, < 0: エラー(-errno)
 static ssize_t
-kafs_pwrite_inode (struct kafs_context *ctx, kafs_sinode_t * inoent, const void *buf, size_t size, off_t offset)
+kafs_pwrite (struct kafs_context *ctx, kafs_sinode_t * inoent, const void *buf, size_t size, off_t offset)
 {
   assert (ctx != NULL);
   assert (buf != NULL);
@@ -608,8 +596,8 @@ kafs_pwrite_inode (struct kafs_context *ctx, kafs_sinode_t * inoent, const void 
   assert (kafs_ino_get_usage (inoent));
 
   kafs_off_t filesize = kafs_ino_size_get (inoent);
-  kafs_logblksize_t log_blksize = kafs_sb_load_log_blksize (ctx->c_superblock);
-  kafs_blksize_t blksize = kafs_sb_load_blksize (ctx->c_superblock);
+  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get (ctx->c_superblock);
+  kafs_blksize_t blksize = kafs_sb_blksize_get (ctx->c_superblock);
   kafs_off_t filesize_new = offset + size;
 
   if (size == 0)
@@ -678,13 +666,13 @@ kafs_pwrite_inode (struct kafs_context *ctx, kafs_sinode_t * inoent, const void 
 }
 
 static int
-kafs_truncate_inode (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_off_t filesize_new)
+kafs_truncate (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_off_t filesize_new)
 {
   assert (ctx != NULL);
   assert (inoent != NULL);
   assert (kafs_ino_get_usage (inoent));
-  kafs_logblksize_t log_blksize = kafs_sb_load_log_blksize (ctx->c_superblock);
-  kafs_blksize_t blksize = kafs_sb_load_blksize (ctx->c_superblock);
+  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get (ctx->c_superblock);
+  kafs_blksize_t blksize = kafs_sb_blksize_get (ctx->c_superblock);
   kafs_off_t filesize_orig = kafs_ino_size_get (inoent);
   if (filesize_orig == filesize_new)
     return KAFS_SUCCESS;
@@ -697,7 +685,7 @@ kafs_truncate_inode (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_off_
     {
       char zbuf[blksize];
       memset (zbuf, 0, blksize);
-      ssize_t w = KAFS_CALL (kafs_pwrite_inode, ctx, inoent, zbuf, blksize - off, offset);
+      ssize_t w = KAFS_CALL (kafs_pwrite, ctx, inoent, zbuf, blksize - off, offset);
       assert (w == blksize - off);
       offset += blksize - off;
     }
@@ -710,7 +698,7 @@ kafs_truncate_inode (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_off_
 }
 
 static int
-kafs_trim_inode (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_off_t off, kafs_off_t size)
+kafs_trim (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_off_t off, kafs_off_t size)
 {
   assert (ctx != NULL);
   assert (inoent != NULL);
@@ -722,86 +710,28 @@ kafs_trim_inode (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_off_t of
     return 0;
   if (off + size >= size_orig)
     {
-      KAFS_CALL (kafs_truncate_inode, ctx, inoent, off);
+      KAFS_CALL (kafs_truncate, ctx, inoent, off);
       return size_orig - off;
     }
   // TODO: 簡易実装なのでしっかり実装していくべき
   char buf[size_orig - (off + size)];
-  ssize_t r = KAFS_CALL (kafs_pread_inode, ctx, inoent, buf, size_orig - (off + size), off + size);
-  ssize_t w = KAFS_CALL (kafs_pwrite_inode, ctx, inoent, buf, r, off);
-  KAFS_CALL (kafs_truncate_inode, ctx, inoent, off + w);
+  ssize_t r = KAFS_CALL (kafs_pread, ctx, inoent, buf, size_orig - (off + size), off + size);
+  ssize_t w = KAFS_CALL (kafs_pwrite, ctx, inoent, buf, r, off);
+  KAFS_CALL (kafs_truncate, ctx, inoent, off + w);
   return KAFS_SUCCESS;
 }
 
 static int
-kafs_release_inode (struct kafs_context *ctx, kafs_sinode_t * inoent)
+kafs_release (struct kafs_context *ctx, kafs_sinode_t * inoent)
 {
   if (kafs_ino_linkcnt_decr (inoent) == 0)
     {
-      KAFS_CALL (kafs_truncate_inode, ctx, inoent, 0);
+      KAFS_CALL (kafs_truncate, ctx, inoent, 0);
       memset (inoent, 0, sizeof (struct kafs_sinode));
       // TODO: SuperBlock の free_inode数を増やす
-      kafs_sb_incr_blkcnt_free (ctx->c_superblock);
+      kafs_sb_blkcnt_free_incr (ctx->c_superblock);
     }
   return KAFS_SUCCESS;
-}
-
-static kafs_filenamelen_t
-kafs_filenamelen_stoh (kafs_sfilenamelen_t s)
-{
-  return le16toh (s.value);
-}
-
-static kafs_inocnt_t
-kafs_load_dirent_ino (const struct kafs_sdirent *dirent)
-{
-  return kafs_inocnt_stoh (dirent->d_ino);
-}
-
-static kafs_filenamelen_t
-kafs_load_dirent_filenamelen (const struct kafs_sdirent *dirent)
-{
-  return kafs_filenamelen_stoh (dirent->d_filenamelen);
-}
-
-static kafs_sinocnt_t
-kafs_inocnt_htos (kafs_inocnt_t h)
-{
-  kafs_sinocnt_t s = {.value = htole32 (h) };
-  return s;
-}
-
-static kafs_sfilenamelen_t
-kafs_filenamelen_htos (kafs_filenamelen_t h)
-{
-  kafs_sfilenamelen_t s = {.value = htole16 (h) };
-  return s;
-}
-
-static void
-kafs_save_dirent_ino (struct kafs_sdirent *dirent, kafs_inocnt_t ino)
-{
-  dirent->d_ino = kafs_inocnt_htos (ino);
-}
-
-static void
-kafs_save_dirent_filenamelen (struct kafs_sdirent *dirent, kafs_filenamelen_t filenamelen)
-{
-  dirent->d_filenamelen = kafs_filenamelen_htos (filenamelen);
-}
-
-static void
-kafs_save_dirent_filename (struct kafs_sdirent *dirent, const char *filename, kafs_filenamelen_t filenamelen)
-{
-  memcpy (dirent->d_filename, filename, filenamelen);
-  kafs_save_dirent_filenamelen (dirent, filenamelen);
-}
-
-static void
-kafs_save_dirent (struct kafs_sdirent *dirent, kafs_inocnt_t ino, const char *filename, kafs_filenamelen_t filenamelen)
-{
-  kafs_save_dirent_ino (dirent, ino);
-  kafs_save_dirent_filename (dirent, filename, filenamelen);
 }
 
 /// @brief ディレクトリエントリを読み出す
@@ -820,15 +750,15 @@ kafs_read_dirent_inode (struct kafs_context *ctx, kafs_sinode_t * inoent_dir,
   assert (kafs_ino_get_usage (inoent_dir));
   assert (dirent < 0);
   assert (direntlen > sizeof (struct kafs_sdirent));
-  ssize_t r = KAFS_CALL (kafs_pread_inode, ctx, inoent_dir, dirent, sizeof (struct kafs_sdirent), offset);
+  ssize_t r = KAFS_CALL (kafs_pread, ctx, inoent_dir, dirent, sizeof (struct kafs_sdirent), offset);
   if (r == 0)
     return 0;
   if (r < sizeof (struct kafs_sdirent))
     return -EIO;
-  kafs_filenamelen_t filenamelen = kafs_load_dirent_filenamelen (dirent);
+  kafs_filenamelen_t filenamelen = kafs_dirent_filenamelen_get (dirent);
   if (direntlen - sizeof (struct kafs_sdirent) < filenamelen)
     return sizeof (struct kafs_sdirent) + filenamelen;
-  r = KAFS_CALL (kafs_pread_inode, ctx, inoent_dir, dirent->d_filename, filenamelen, offset + filenamelen);
+  r = KAFS_CALL (kafs_pread, ctx, inoent_dir, dirent->d_filename, filenamelen, offset + filenamelen);
   if (r < filenamelen)
     return -EIO;
   return sizeof (struct kafs_sdirent) + filenamelen;
@@ -864,9 +794,9 @@ kafs_find_dirent_inode (struct kafs_context *ctx, kafs_sinode_t * inoent,
       if (r == 0)
 	break;
       assert (r == direntlen);
-      kafs_inocnt_t d_ino = kafs_load_dirent_ino (dirent);
+      kafs_inocnt_t d_ino = kafs_dirent_ino_get (dirent);
       const char *d_filename = dirent->d_filename;
-      kafs_filenamelen_t d_filenamelen = kafs_load_dirent_filenamelen (dirent);
+      kafs_filenamelen_t d_filenamelen = kafs_dirent_filenamelen_get (dirent);
       if (d_filenamelen == filenamelen && memcmp (d_filename, filename, filenamelen) == 0)
 	{
 	  *pinoent_found = &ctx->c_inotbl[d_ino];
@@ -884,7 +814,7 @@ kafs_add_dirent_inode (struct kafs_context *ctx, kafs_sinode_t * inoent_dir, kaf
   assert (ctx != NULL);
   assert (inoent_dir != NULL);
   assert (ino != KAFS_INO_NONE);
-  kafs_inocnt_t inocnt = kafs_sb_load_inocnt (ctx->c_superblock);
+  kafs_inocnt_t inocnt = kafs_sb_inocnt_get (ctx->c_superblock);
   assert (ino < inocnt);
   kafs_mode_t mode_dir = kafs_ino_mode_get (inoent_dir);
   if (!S_ISDIR (mode_dir))
@@ -903,8 +833,8 @@ kafs_add_dirent_inode (struct kafs_context *ctx, kafs_sinode_t * inoent_dir, kaf
       offset += r;
     }
   struct kafs_sdirent *dirent = (struct kafs_sdirent *) buf;
-  kafs_save_dirent (dirent, ino, filename, filenamelen);
-  ssize_t w = KAFS_CALL (kafs_pwrite_inode, ctx, inoent_dir, dirent, direntlen, offset);
+  kafs_dirent_set (dirent, ino, filename, filenamelen);
+  ssize_t w = KAFS_CALL (kafs_pwrite, ctx, inoent_dir, dirent, direntlen, offset);
   assert (w == direntlen);
   struct kafs_sinode *inoent = &ctx->c_inotbl[ino];
   kafs_ino_linkcnt_incr (inoent);
@@ -918,7 +848,7 @@ kafs_delete_dirent_inode (struct kafs_context *ctx, kafs_inocnt_t ino_dir, const
   assert (ctx != NULL);
   assert (filename != NULL);
   assert (ino_dir != KAFS_INO_NONE);
-  kafs_inocnt_t inocnt = kafs_sb_load_inocnt (ctx->c_superblock);
+  kafs_inocnt_t inocnt = kafs_sb_inocnt_get (ctx->c_superblock);
   assert (ino_dir < inocnt);
   kafs_sinode_t *inoent_dir = &ctx->c_inotbl[ino_dir];
   assert (kafs_ino_get_usage (inoent_dir));
@@ -937,12 +867,12 @@ kafs_delete_dirent_inode (struct kafs_context *ctx, kafs_inocnt_t ino_dir, const
       if (r == 0)
 	break;
       assert (r == direntlen);
-      kafs_inocnt_t d_ino = kafs_load_dirent_ino (dirent);
+      kafs_inocnt_t d_ino = kafs_dirent_ino_get (dirent);
       const char *d_filename = dirent->d_filename;
-      kafs_filenamelen_t d_filenamelen = kafs_load_dirent_filenamelen (dirent);
+      kafs_filenamelen_t d_filenamelen = kafs_dirent_filenamelen_get (dirent);
       if (d_filenamelen == filenamelen && memcmp (d_filename, filename, filenamelen) == 0)
 	{
-	  KAFS_CALL (kafs_trim_inode, ctx, &ctx->c_inotbl[d_ino], offset, r);
+	  KAFS_CALL (kafs_trim, ctx, &ctx->c_inotbl[d_ino], offset, r);
 	  kafs_ino_linkcnt_decr (&ctx->c_inotbl[d_ino]);
 	  return KAFS_SUCCESS;
 	}
@@ -991,7 +921,7 @@ kafs_op_getattr (const char *path, struct stat *st, struct fuse_file_info *fi)
   st->st_gid = kafs_ino_gid_get (inoent);
   st->st_rdev = kafs_ino_dev_get (inoent);
   st->st_size = kafs_ino_size_get (inoent);
-  st->st_blksize = kafs_sb_load_blksize (ctx->c_superblock);
+  st->st_blksize = kafs_sb_blksize_get (ctx->c_superblock);
   st->st_blocks = kafs_ino_blocks_get (inoent);
   st->st_atim = kafs_ino_atime_get (inoent);
   st->st_mtim = kafs_ino_mtime_get (inoent);
@@ -1028,7 +958,7 @@ kafs_op_mknod (const char *path, mode_t mode, dev_t dev)
   if (!S_ISDIR (mode_dir))
     return -EIO;
   kafs_inocnt_t ino_new;
-  KAFS_CALL (kafs_ino_find_free, ctx->c_inotbl, &ino_new, &ctx->c_ino_search, kafs_sb_load_inocnt (ctx->c_superblock));
+  KAFS_CALL (kafs_ino_find_free, ctx->c_inotbl, &ino_new, &ctx->c_ino_search, kafs_sb_inocnt_get (ctx->c_superblock));
   struct kafs_sinode *inoent_new = &ctx->c_inotbl[ino_new];
   kafs_ino_mode_set (inoent_new, mode);
   kafs_ino_uid_set (inoent_new, fctx->uid);
@@ -1047,7 +977,7 @@ kafs_op_mknod (const char *path, mode_t mode, dev_t dev)
   int ret = kafs_add_dirent_inode (ctx, inoent_dir, ino_new, filename, strlen (filename));
   if (ret < 0)
     {
-      KAFS_CALL (kafs_release_inode, ctx, inoent_new);
+      KAFS_CALL (kafs_release, ctx, inoent_new);
       return ret;
     }
   return 0;
@@ -1060,7 +990,7 @@ kafs_op_readlink (const char *path, char *buf, size_t buflen)
   struct kafs_context *ctx = fctx->private_data;
   kafs_inocnt_t ino = 0;
   KAFS_CALL (kafs_get_from_path_inode, ctx, path, &ino);
-  ssize_t r = KAFS_CALL (kafs_pread_inode, ctx, &ctx->c_inotbl[ino], buf, buflen - 1, 0);
+  ssize_t r = KAFS_CALL (kafs_pread, ctx, &ctx->c_inotbl[ino], buf, buflen - 1, 0);
   buf[r] = '\0';
   return 0;
 }
@@ -1071,7 +1001,7 @@ kafs_op_read (const char *path, char *buf, size_t size, off_t offset, struct fus
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
   kafs_inocnt_t ino = fi->fh;
-  return kafs_pread_inode (ctx, &ctx->c_inotbl[ino], buf, size, offset);
+  return kafs_pread (ctx, &ctx->c_inotbl[ino], buf, size, offset);
 }
 
 static int
@@ -1080,7 +1010,7 @@ kafs_op_write (const char *path, const char *buf, size_t size, off_t offset, str
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
   kafs_inocnt_t ino = fi->fh;
-  return kafs_pwrite_inode (ctx, &ctx->c_inotbl[ino], buf, size, offset);
+  return kafs_pwrite (ctx, &ctx->c_inotbl[ino], buf, size, offset);
 }
 
 __attribute_maybe_unused__ static struct fuse_operations kafs_operations = {

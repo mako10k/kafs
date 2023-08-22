@@ -33,7 +33,7 @@ static int
 kafs_blk_get_usage (const struct kafs_context *ctx, kafs_blkcnt_t blo)
 {
   assert (ctx != NULL);
-  assert (blo < kafs_sb_load_blkcnt (ctx->c_superblock));
+  assert (blo < kafs_sb_blkcnt_get (ctx->c_superblock));
   kafs_blkcnt_t blod = blo >> KAFS_BLKMASK_LOG_BITS;
   kafs_blkcnt_t blor = blo & KAFS_BLKMASK_MASK_BITS;
   return (ctx->c_blkmasktbl[blod] & (1 << blor)) != 0;
@@ -49,27 +49,27 @@ kafs_blk_set_usage (struct kafs_context *ctx, kafs_blkcnt_t blo, kafs_hbool_t us
 {
   assert (ctx != NULL);
   kafs_ssuperblock_t *sb = ctx->c_superblock;
-  assert (blo < kafs_sb_load_blkcnt (sb));
+  assert (blo < kafs_sb_blkcnt_get (sb));
   kafs_blkcnt_t blod = blo >> KAFS_BLKMASK_LOG_BITS;
   kafs_blkcnt_t blor = blo & KAFS_BLKMASK_MASK_BITS;
   if (usage == KAFS_TRUE)
     {
       assert (!kafs_blk_get_usage (ctx, blo));
       ctx->c_blkmasktbl[blod] |= 1 << blor;
-      kafs_blkcnt_t blkcnt_free = kafs_sb_load_blkcnt_free (sb);
+      kafs_blkcnt_t blkcnt_free = kafs_sb_blkcnt_free_get (sb);
       assert (blkcnt_free > 0);
-      kafs_sb_save_blkcnt_free (sb, blkcnt_free - 1);
-      kafs_sb_save_wtime (sb, kafs_now ());
+      kafs_sb_blkcnt_free_set (sb, blkcnt_free - 1);
+      kafs_sb_wtime_set (sb, kafs_now ());
     }
   else
     {
       assert (kafs_blk_get_usage (ctx, blo));
       ctx->c_blkmasktbl[blod] &= ~(1 << blor);
-      kafs_blkcnt_t blkcnt_free = kafs_sb_load_blkcnt_free (sb);
-      kafs_blkcnt_t r_blkcnt = kafs_sb_load_r_blkcnt (sb);
+      kafs_blkcnt_t blkcnt_free = kafs_sb_blkcnt_free_get (sb);
+      kafs_blkcnt_t r_blkcnt = kafs_sb_r_blkcnt_get (sb);
       assert (blkcnt_free < r_blkcnt - 1);
-      kafs_sb_save_blkcnt_free (sb, blkcnt_free + 1);
-      kafs_sb_save_wtime (sb, kafs_now ());
+      kafs_sb_blkcnt_free_set (sb, blkcnt_free + 1);
+      kafs_sb_wtime_set (sb, kafs_now ());
     }
   return KAFS_SUCCESS;
 }
@@ -79,7 +79,7 @@ kafs_blk_set_usage (struct kafs_context *ctx, kafs_blkcnt_t blo, kafs_hbool_t us
 /// @param pblo ブロック番号
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
-kafs_alloc_blk (struct kafs_context *ctx, kafs_blkcnt_t * pblo)
+kafs_blk_alloc (struct kafs_context *ctx, kafs_blkcnt_t * pblo)
 {
   assert (ctx != NULL);
   assert (pblo != NULL);
@@ -87,7 +87,7 @@ kafs_alloc_blk (struct kafs_context *ctx, kafs_blkcnt_t * pblo)
   kafs_blkcnt_t blo_search = ctx->c_blo_search;
   kafs_blkcnt_t blo = blo_search + 1;
   kafs_blkmask_t *blkmasktbl = ctx->c_blkmasktbl;
-  kafs_blkmask_t blocnt = kafs_sb_load_blkcnt (ctx->c_superblock);
+  kafs_blkmask_t blocnt = kafs_sb_blkcnt_get (ctx->c_superblock);
   while (blo_search != blo)
     {
       if (blo >= blocnt)
