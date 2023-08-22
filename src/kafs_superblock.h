@@ -126,4 +126,3 @@ kafs_sb_blkref_pb_get (const struct kafs_ssuperblock *sb)
 {
   return 1 << kafs_sb_log_blkref_pb_get (sb);
 }
-

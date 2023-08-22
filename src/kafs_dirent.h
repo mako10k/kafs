@@ -11,7 +11,7 @@ struct kafs_sdirent
   /// @brief ファイル名の長さ
   kafs_sfilenamelen_t d_filenamelen;
   /// @brief ファイル名
-  char d_filename[0];
+  char d_filename[FILENAME_MAX];
 } __attribute__((packed));
 
 typedef struct kafs_sdirent kafs_sdirent_t;
@@ -53,4 +53,3 @@ kafs_dirent_set (struct kafs_sdirent *dirent, kafs_inocnt_t ino, const char *fil
   kafs_dirent_ino_set (dirent, ino);
   kafs_dirent_filename_set (dirent, filename, filenamelen);
 }
-

@@ -5,13 +5,14 @@
 #include <assert.h>
 #include <stdio.h>
 #include <errno.h>
+#include <fuse.h>
 
 /// ブロック番号のうち存在しないことを表す値
 #define KAFS_BLO_NONE ((kafs_blkcnt_t)0)
 /// ブロックマスクのビット数
 #define KAFS_BLKMASK_BITS (sizeof(kafs_blkmask_t) << 3)
 /// ブロックマスクのビット数の log2 の値
-#define KAFS_BLKMASK_LOG_BITS (sizeof(kafs_blkmask_t) + 3)
+#define KAFS_BLKMASK_LOG_BITS (__builtin_ctz(sizeof(kafs_blkmask_t))+3)
 /// ブロックマスクのビット数のマスク値
 #define KAFS_BLKMASK_MASK_BITS (KAFS_BLKMASK_BITS - 1)
 
@@ -36,7 +37,9 @@ kafs_blk_get_usage (const struct kafs_context *ctx, kafs_blkcnt_t blo)
   assert (blo < kafs_sb_blkcnt_get (ctx->c_superblock));
   kafs_blkcnt_t blod = blo >> KAFS_BLKMASK_LOG_BITS;
   kafs_blkcnt_t blor = blo & KAFS_BLKMASK_MASK_BITS;
-  return (ctx->c_blkmasktbl[blod] & (1 << blor)) != 0;
+  kafs_bool_t ret = (ctx->c_blkmasktbl[blod] & ((kafs_blkmask_t) 1 << blor)) != 0;
+  fuse_log (FUSE_LOG_DEBUG, "%s(blo=%" PRIuFAST32 ") returns %s\n", __func__, blo, ret ? "true" : "false");
+  return ret;
 }
 
 /// @brief 指定されたブロックの利用状況をセットする
@@ -45,8 +48,9 @@ kafs_blk_get_usage (const struct kafs_context *ctx, kafs_blkcnt_t blo)
 /// @param val 0: フラグをクリア, != 0: フラグをセット
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
-kafs_blk_set_usage (struct kafs_context *ctx, kafs_blkcnt_t blo, kafs_hbool_t usage)
+kafs_blk_set_usage (struct kafs_context *ctx, kafs_blkcnt_t blo, kafs_bool_t usage)
 {
+  fuse_log (FUSE_LOG_DEBUG, "%s(blo=%" PRIuFAST32 ", usage=%s)\n", __func__, blo, usage ? "true" : "false");
   assert (ctx != NULL);
   kafs_ssuperblock_t *sb = ctx->c_superblock;
   assert (blo < kafs_sb_blkcnt_get (sb));
@@ -55,7 +59,7 @@ kafs_blk_set_usage (struct kafs_context *ctx, kafs_blkcnt_t blo, kafs_hbool_t us
   if (usage == KAFS_TRUE)
     {
       assert (!kafs_blk_get_usage (ctx, blo));
-      ctx->c_blkmasktbl[blod] |= 1 << blor;
+      ctx->c_blkmasktbl[blod] |= (kafs_blkmask_t) 1 << blor;
       kafs_blkcnt_t blkcnt_free = kafs_sb_blkcnt_free_get (sb);
       assert (blkcnt_free > 0);
       kafs_sb_blkcnt_free_set (sb, blkcnt_free - 1);
@@ -64,7 +68,7 @@ kafs_blk_set_usage (struct kafs_context *ctx, kafs_blkcnt_t blo, kafs_hbool_t us
   else
     {
       assert (kafs_blk_get_usage (ctx, blo));
-      ctx->c_blkmasktbl[blod] &= ~(1 << blor);
+      ctx->c_blkmasktbl[blod] &= ~((kafs_blkmask_t) 1 << blor);
       kafs_blkcnt_t blkcnt_free = kafs_sb_blkcnt_free_get (sb);
       kafs_blkcnt_t r_blkcnt = kafs_sb_r_blkcnt_get (sb);
       assert (blkcnt_free < r_blkcnt - 1);

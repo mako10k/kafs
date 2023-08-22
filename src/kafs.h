@@ -18,7 +18,7 @@ typedef enum
   KAFS_FALSE = 0,
   /// @brief 真
   KAFS_TRUE
-} kafs_hbool_t;
+} kafs_bool_t;
 
 /// 標準呼び出し (戻り値が < 0 であれば戻り値を返す)
 #define KAFS_CALL(func, ...) ({ \

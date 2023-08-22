@@ -23,6 +23,7 @@ Makefile.in
 *~
 *.log
 *.o
+*.img
 
 # outputs
 /src/kafs
