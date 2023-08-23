@@ -1122,6 +1122,20 @@ kafs_op_write (const char *path, const char *buf, size_t size, off_t offset, str
   return kafs_pwrite (ctx, &ctx->c_inotbl[ino], buf, size, offset);
 }
 
+static int
+kafs_op_utimens (const char *path, const struct timespec *tv, struct fuse_file_info *fi)
+{
+  struct fuse_context *fctx = fuse_get_context ();
+  struct kafs_context *ctx = fctx->private_data;
+  kafs_inocnt_t ino;
+  if (fi == NULL)
+    KAFS_CALL (kafs_get_from_path_inode, ctx, path, &ino);
+  else
+    ino = fi->fh;
+  kafs_ino_mtime_set (&ctx->c_inotbl[ino], *tv);
+  return 0;
+}
+
 __attribute_maybe_unused__ static struct fuse_operations kafs_operations = {
   .getattr = kafs_op_getattr,
   .open = kafs_op_open,
@@ -1132,6 +1146,7 @@ __attribute_maybe_unused__ static struct fuse_operations kafs_operations = {
   .write = kafs_op_write,
   .opendir = kafs_op_opendir,
   .readdir = kafs_op_readdir,
+  .utimens = kafs_op_utimens,
 };
 
 int
