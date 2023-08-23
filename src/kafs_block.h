@@ -70,8 +70,6 @@ kafs_blk_set_usage (struct kafs_context *ctx, kafs_blkcnt_t blo, kafs_bool_t usa
       assert (kafs_blk_get_usage (ctx, blo));
       ctx->c_blkmasktbl[blod] &= ~((kafs_blkmask_t) 1 << blor);
       kafs_blkcnt_t blkcnt_free = kafs_sb_blkcnt_free_get (sb);
-      kafs_blkcnt_t r_blkcnt = kafs_sb_r_blkcnt_get (sb);
-      assert (blkcnt_free < r_blkcnt - 1);
       kafs_sb_blkcnt_free_set (sb, blkcnt_free + 1);
       kafs_sb_wtime_set (sb, kafs_now ());
     }

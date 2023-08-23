@@ -684,6 +684,8 @@ kafs_pwrite (struct kafs_context *ctx, kafs_sinode_t * inoent, const void *buf, 
 static int
 kafs_truncate (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_off_t filesize_new)
 {
+  fuse_log (FUSE_LOG_DEBUG, "%s(ino = %d, filesize_new = %" PRIuFAST64 ")\n", __func__, inoent - ctx->c_inotbl,
+	    filesize_new);
   assert (ctx != NULL);
   assert (inoent != NULL);
   assert (kafs_ino_get_usage (inoent));
@@ -697,12 +699,17 @@ kafs_truncate (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_off_t file
     return KAFS_SUCCESS;
   kafs_blksize_t off = filesize_orig & (blksize - 1);
   kafs_off_t offset = filesize_new;
+  if (filesize_orig <= KAFS_DIRECT_SIZE)
+    {
+      memset (inoent->i_blkreftbl + offset, 0, KAFS_DIRECT_SIZE - offset);
+      return KAFS_SUCCESS;
+    }
   if (off > 0)
     {
-      char zbuf[blksize];
-      memset (zbuf, 0, blksize);
-      ssize_t w = KAFS_CALL (kafs_pwrite, ctx, inoent, zbuf, blksize - off, offset);
-      assert (w == blksize - off);
+      char buf[blksize];
+      KAFS_CALL (kafs_ino_iblk_read, ctx, inoent, off >> log_blksize, buf);
+      memset (buf + off, 0, blksize - off);
+      KAFS_CALL (kafs_ino_iblk_write, ctx, inoent, off >> log_blksize, buf);
       offset += blksize - off;
     }
   while (offset < filesize_orig)
@@ -716,6 +723,8 @@ kafs_truncate (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_off_t file
 static int
 kafs_trim (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_off_t off, kafs_off_t size)
 {
+  fuse_log (FUSE_LOG_DEBUG, "%s(ino = %d, off = %" PRIuFAST64 ", size = %" PRIuFAST64 ")\n", __func__,
+	    inoent - ctx->c_inotbl, off, size);
   assert (ctx != NULL);
   assert (inoent != NULL);
   assert (kafs_ino_get_usage (inoent));
@@ -871,10 +880,11 @@ kafs_dirent_add (struct kafs_context *ctx, kafs_sinode_t * inoent_dir, kafs_inoc
   return KAFS_SUCCESS;
 }
 
-__attribute_maybe_unused__ static int
+static int
 kafs_dirent_remove (struct kafs_context *ctx, kafs_inocnt_t ino_dir, const char *filename,
 		    kafs_filenamelen_t filenamelen)
 {
+  fuse_log (FUSE_LOG_DEBUG, "%s(ino_dir = %" PRIuFAST32 ", filename = %s)\n", __func__, ino_dir, filename);
   assert (ctx != NULL);
   assert (filename != NULL);
   assert (ino_dir != KAFS_INO_NONE);
@@ -901,7 +911,7 @@ kafs_dirent_remove (struct kafs_context *ctx, kafs_inocnt_t ino_dir, const char 
 	return -EIO;
       if (d_filenamelen == filenamelen && memcmp (d_filename, filename, filenamelen) == 0)
 	{
-	  KAFS_CALL (kafs_trim, ctx, &ctx->c_inotbl[d_ino], offset, r);
+	  KAFS_CALL (kafs_trim, ctx, inoent_dir, offset, r);
 	  kafs_ino_linkcnt_decr (&ctx->c_inotbl[d_ino]);
 	  return KAFS_SUCCESS;
 	}
@@ -1147,6 +1157,23 @@ kafs_op_utimens (const char *path, const struct timespec *tv, struct fuse_file_i
   return 0;
 }
 
+static int
+kafs_op_unlink (const char *path)
+{
+  struct fuse_context *fctx = fuse_get_context ();
+  struct kafs_context *ctx = fctx->private_data;
+  char dirpath[strlen (path) + 1];
+  strcpy (dirpath, path);
+  char *filename = strrchr (dirpath, '/');
+  if (filename == NULL)
+    return -EIO;
+  *(filename++) = '\0';
+  kafs_inocnt_t ino_dir = KAFS_INO_ROOTDIR;
+  KAFS_CALL (kafs_path_get_ino, ctx, *dirpath == '\0' ? "/" : dirpath, &ino_dir);
+  KAFS_CALL (kafs_dirent_remove, ctx, ino_dir, filename, strlen (filename));
+  return 0;
+}
+
 __attribute_maybe_unused__ static struct fuse_operations kafs_operations = {
   .getattr = kafs_op_getattr,
   .open = kafs_op_open,
@@ -1158,6 +1185,7 @@ __attribute_maybe_unused__ static struct fuse_operations kafs_operations = {
   .opendir = kafs_op_opendir,
   .readdir = kafs_op_readdir,
   .utimens = kafs_op_utimens,
+  .unlink = kafs_op_unlink,
 };
 
 int
@@ -1216,7 +1244,7 @@ main (int argc, char **argv)
   kafs_ino_mtime_set (inoent_rootdir, now);
   kafs_ino_dtime_set (inoent_rootdir, nulltime);
   kafs_ino_gid_set (inoent_rootdir, 0);
-  kafs_ino_linkcnt_set (inoent_rootdir, 0);
+  kafs_ino_linkcnt_set (inoent_rootdir, 1);
   kafs_ino_blocks_set (inoent_rootdir, 0);
   kafs_ino_dev_set (inoent_rootdir, 0);
   kafs_dirent_add (&ctx, inoent_rootdir, KAFS_INO_ROOTDIR, "..", 2);
