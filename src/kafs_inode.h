@@ -2,8 +2,10 @@
 #include "kafs.h"
 #include <errno.h>
 
-/// inode番号のうち存在しないことを表す値
+/// 存在しないことを表す inode 番号
 #define KAFS_INO_NONE 0
+/// ルートディレクトリの inode 番号
+#define KAFS_INO_ROOTDIR 1
 
 /// @brief inode 情報
 struct kafs_sinode

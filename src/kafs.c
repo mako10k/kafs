@@ -907,7 +907,7 @@ kafs_get_from_path_inode (struct kafs_context *ctx, const char *path, kafs_inocn
   const char *p = path;
   if (*p == '/')
     {
-      inotbl = &ctx->c_inotbl[1];	// ROOT DIR
+      inotbl = &ctx->c_inotbl[KAFS_INO_ROOTDIR];
       p++;
     }
   while (*p)
@@ -930,7 +930,7 @@ kafs_op_getattr (const char *path, struct stat *st, struct fuse_file_info *fi)
 {
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
-  kafs_inocnt_t ino;
+  kafs_inocnt_t ino = KAFS_INO_ROOTDIR;
   if (fi == NULL)
     KAFS_CALL (kafs_get_from_path_inode, ctx, path, &ino);
   else
@@ -957,7 +957,7 @@ kafs_op_open (const char *path, struct fuse_file_info *fi)
 {
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
-  kafs_inocnt_t ino = KAFS_INO_NONE;
+  kafs_inocnt_t ino = KAFS_INO_ROOTDIR;
   KAFS_CALL (kafs_get_from_path_inode, ctx, path, &ino);
   fi->fh = ino;
   return 0;
@@ -968,7 +968,7 @@ kafs_op_opendir (const char *path, struct fuse_file_info *fi)
 {
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
-  kafs_inocnt_t ino = KAFS_INO_NONE;
+  kafs_inocnt_t ino = KAFS_INO_ROOTDIR;
   KAFS_CALL (kafs_get_from_path_inode, ctx, path, &ino);
   fi->fh = ino;
   return 0;
@@ -980,7 +980,7 @@ kafs_op_readdir (const char *path, void *buf, fuse_fill_dir_t filler, off_t offs
 {
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
-  kafs_inocnt_t ino;
+  kafs_inocnt_t ino = KAFS_INO_ROOTDIR;
   if (fi == NULL)
     KAFS_CALL (kafs_get_from_path_inode, ctx, path, &ino);
   else
@@ -1016,7 +1016,7 @@ kafs_op_create (const char *path, mode_t mode, struct fuse_file_info *fi)
   if (filename == NULL)
     return -EIO;
   *(filename++) = '\0';
-  kafs_inocnt_t ino_dir = 1;
+  kafs_inocnt_t ino_dir = KAFS_INO_ROOTDIR;
   KAFS_CALL (kafs_get_from_path_inode, ctx, *dirpath == '\0' ? "/" : dirpath, &ino_dir);
   struct kafs_sinode *inoent_dir = &ctx->c_inotbl[ino_dir];
   kafs_mode_t mode_dir = kafs_ino_mode_get (inoent_dir);
@@ -1060,7 +1060,7 @@ kafs_op_mknod (const char *path, mode_t mode, dev_t dev)
   if (filename == NULL)
     return -EIO;
   *(filename++) = '\0';
-  kafs_inocnt_t ino_dir = 1;
+  kafs_inocnt_t ino_dir = KAFS_INO_ROOTDIR;
   KAFS_CALL (kafs_get_from_path_inode, ctx, *dirpath == '\0' ? "/" : dirpath, &ino_dir);
   struct kafs_sinode *inoent_dir = &ctx->c_inotbl[ino_dir];
   kafs_mode_t mode_dir = kafs_ino_mode_get (inoent_dir);
@@ -1097,7 +1097,7 @@ kafs_op_readlink (const char *path, char *buf, size_t buflen)
 {
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
-  kafs_inocnt_t ino = 0;
+  kafs_inocnt_t ino = KAFS_INO_ROOTDIR;
   KAFS_CALL (kafs_get_from_path_inode, ctx, path, &ino);
   ssize_t r = KAFS_CALL (kafs_pread, ctx, &ctx->c_inotbl[ino], buf, buflen - 1, 0);
   buf[r] = '\0';
@@ -1127,7 +1127,7 @@ kafs_op_utimens (const char *path, const struct timespec *tv, struct fuse_file_i
 {
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
-  kafs_inocnt_t ino;
+  kafs_inocnt_t ino = KAFS_INO_ROOTDIR;
   if (fi == NULL)
     KAFS_CALL (kafs_get_from_path_inode, ctx, path, &ino);
   else
@@ -1194,7 +1194,7 @@ main (int argc, char **argv)
     kafs_blk_set_usage (&ctx, blo, KAFS_TRUE);
 
   ctx.c_inotbl->i_mode.value = 0xffff;
-  kafs_sinode_t *inoent_rootdir = &ctx.c_inotbl[1];
+  kafs_sinode_t *inoent_rootdir = &ctx.c_inotbl[KAFS_INO_ROOTDIR];
   kafs_ino_mode_set (inoent_rootdir, S_IFDIR | 0755);
   kafs_ino_uid_set (inoent_rootdir, 0);
   kafs_ino_size_set (inoent_rootdir, 0);
@@ -1205,9 +1205,9 @@ main (int argc, char **argv)
   kafs_ino_mtime_set (inoent_rootdir, now);
   kafs_ino_dtime_set (inoent_rootdir, nulltime);
   kafs_ino_gid_set (inoent_rootdir, 0);
-  kafs_ino_linkcnt_set (inoent_rootdir, 1);
+  kafs_ino_linkcnt_set (inoent_rootdir, 0);
   kafs_ino_blocks_set (inoent_rootdir, 0);
   kafs_ino_dev_set (inoent_rootdir, 0);
-  kafs_add_dirent_inode (&ctx, inoent_rootdir, 1, "..", 2);
+  kafs_add_dirent_inode (&ctx, inoent_rootdir, KAFS_INO_ROOTDIR, "..", 2);
   return fuse_main (argc, argv, &kafs_operations, &ctx);
 }
