@@ -38,7 +38,7 @@ kafs_blk_get_usage (const struct kafs_context *ctx, kafs_blkcnt_t blo)
   kafs_blkcnt_t blod = blo >> KAFS_BLKMASK_LOG_BITS;
   kafs_blkcnt_t blor = blo & KAFS_BLKMASK_MASK_BITS;
   kafs_bool_t ret = (ctx->c_blkmasktbl[blod] & ((kafs_blkmask_t) 1 << blor)) != 0;
-  fuse_log (FUSE_LOG_DEBUG, "%s(blo=%" PRIuFAST32 ") returns %s\n", __func__, blo, ret ? "true" : "false");
+  kafs_log (KAFS_LOG_DEBUG, "%s(blo=%" PRIuFAST32 ") returns %s\n", __func__, blo, ret ? "true" : "false");
   return ret;
 }
 
@@ -50,7 +50,7 @@ kafs_blk_get_usage (const struct kafs_context *ctx, kafs_blkcnt_t blo)
 static int
 kafs_blk_set_usage (struct kafs_context *ctx, kafs_blkcnt_t blo, kafs_bool_t usage)
 {
-  fuse_log (FUSE_LOG_DEBUG, "%s(blo=%" PRIuFAST32 ", usage=%s)\n", __func__, blo, usage ? "true" : "false");
+  kafs_log (KAFS_LOG_DEBUG, "%s(blo=%" PRIuFAST32 ", usage=%s)\n", __func__, blo, usage ? "true" : "false");
   assert (ctx != NULL);
   kafs_ssuperblock_t *sb = ctx->c_superblock;
   assert (blo < kafs_sb_blkcnt_get (sb));

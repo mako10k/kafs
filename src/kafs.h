@@ -7,6 +7,7 @@
 #include <inttypes.h>
 #include <time.h>
 #include <endian.h>
+#include <fuse.h>
 
 /// 標準関数の正常戻り値
 #define KAFS_SUCCESS 0
@@ -19,6 +20,20 @@ typedef enum
   /// @brief 真
   KAFS_TRUE
 } kafs_bool_t;
+
+typedef enum
+{
+  KAFS_LOG_EMERG = FUSE_LOG_EMERG,
+  KAFS_LOG_ALERT = FUSE_LOG_ALERT,
+  KAFS_LOG_CRIT = FUSE_LOG_CRIT,
+  KAFS_LOG_ERR = FUSE_LOG_ERR,
+  KAFS_LOG_WARNING = FUSE_LOG_WARNING,
+  KAFS_LOG_NOTICE = FUSE_LOG_NOTICE,
+  KAFS_LOG_INFO = FUSE_LOG_INFO,
+  KAFS_LOG_DEBUG = FUSE_LOG_DEBUG,
+} kafs_loglevel_t;
+
+#define kafs_log(level, fmt, ...) fuse_log ((enum fuse_log_level)(level), (fmt), __VA_ARGS__)
 
 /// 標準呼び出し (戻り値が < 0 であれば戻り値を返す)
 #define KAFS_CALL(func, ...) ({ \

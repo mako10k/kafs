@@ -182,12 +182,15 @@ kafs_ino_get_usage (const kafs_sinode_t * inoent)
 static kafs_linkcnt_t
 kafs_ino_linkcnt_get (const kafs_sinode_t * inoent)
 {
-  return kafs_linkcnt_stoh (inoent->i_linkcnt);
+  kafs_linkcnt_t linkcnt = kafs_linkcnt_stoh (inoent->i_linkcnt);
+  kafs_log (KAFS_LOG_DEBUG, "%s(inoent = %p) returns linkcnt = %" PRIuFAST16 "\n", __func__, inoent, linkcnt);
+  return linkcnt;
 }
 
 static void
 kafs_ino_linkcnt_set (kafs_sinode_t * inoent, kafs_linkcnt_t linkcnt)
 {
+  kafs_log (KAFS_LOG_DEBUG, "%s(inoent = %p, linkcnt = %" PRIuFAST16 ")\n", __func__, inoent, linkcnt);
   inoent->i_linkcnt = kafs_linkcnt_htos (linkcnt);
 }
 
