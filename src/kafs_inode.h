@@ -169,8 +169,7 @@ kafs_ino_dtime_set (kafs_sinode_t * inoent, kafs_time_t dtime)
 }
 
 /// @brief inode 番号の利用状況を返す
-/// @param ctx コンテキスト
-/// @param ino inode 番号
+/// @param inoent inodeテーブルのエントリ
 /// @return 0: 未使用, != 0: 使用中
 static int
 kafs_ino_get_usage (const kafs_sinode_t * inoent)
@@ -211,8 +210,10 @@ kafs_ino_linkcnt_decr (kafs_sinode_t * inoent)
 }
 
 /// @brief 未使用の inode 番号を見つける
-/// @param ctx コンテキスト
-/// @param pino 見つかった inode 番号
+/// @param inotbl inode テーブルの先頭アドレス
+/// @param pino 見つかった inode 番号の格納領域
+/// @param pino_search 前回見つかった inode 番号の格納領域
+/// @param inocnt inode 番号の最大数
 /// @return 0: 成功、 < 0: 失敗 (-errno)
 static int
 kafs_ino_find_free (const kafs_sinode_t * inotbl, kafs_inocnt_t * pino, kafs_inocnt_t * pino_search,

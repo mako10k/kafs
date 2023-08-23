@@ -45,7 +45,7 @@ kafs_blk_get_usage (const struct kafs_context *ctx, kafs_blkcnt_t blo)
 /// @brief 指定されたブロックの利用状況をセットする
 /// @param ctx コンテキスト
 /// @param blo ブロック番号
-/// @param val 0: フラグをクリア, != 0: フラグをセット
+/// @param usage KAFS_FALSE: フラグをクリア, KAFS_TRUE: フラグをセット
 /// @return 0: 成功, < 0: 失敗 (-errno)
 static int
 kafs_blk_set_usage (struct kafs_context *ctx, kafs_blkcnt_t blo, kafs_bool_t usage)

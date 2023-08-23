@@ -263,7 +263,7 @@ kafs_off_htos (kafs_off_t h)
 }
 
 /// @brief inodeカウント型の記録表現から処理表現へ変更する
-/// @param sinocnt inodeカウント型の記録表現
+/// @param s inodeカウント型の記録表現
 /// @return inodeカウント型の処理表現
 static kafs_inocnt_t
 kafs_inocnt_stoh (kafs_sinocnt_t s)
