@@ -24,6 +24,7 @@ Makefile.in
 *.log
 *.o
 *.img
+*.tar.gz
 
 # outputs
 /src/kafs
