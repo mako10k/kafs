@@ -1198,7 +1198,7 @@ kafs_op_unlink (const char *path)
   return 0;
 }
 
-__attribute_maybe_unused__ static struct fuse_operations kafs_operations = {
+static struct fuse_operations kafs_operations = {
   .getattr = kafs_op_getattr,
   .open = kafs_op_open,
   .create = kafs_op_create,
@@ -1225,17 +1225,29 @@ main (int argc, char **argv)
   ctx.c_fd = open ("test.img", O_RDWR | O_CREAT | O_TRUNC, 0666);
   ctx.c_blo_search = 0;
   ctx.c_ino_search = 0;
+
+  // ファイルレイアウトの計算
   off_t mapsize = 0;
+
+  // Superblock の終了位置の計算
   mapsize += sizeof (kafs_ssuperblock_t);
   mapsize = (mapsize + blksizemask) & ~blksizemask;
   ctx.c_superblock = NULL;
   ctx.c_blkmasktbl = (void *) mapsize;
 
-  mapsize += (blkcnt - 7) >> 3;	// ToDo: align by kafs_blkmask_t
+  // kafs_blkmask_t はコンパイル対象の処理系で早く処理できる変数サイズ
+  // これが 64 bits を超えると境界を跨ぐ可能性があるので、それをチェック
+  assert (sizeof (kafs_blkmask_t) <= 8);
+  // バイト単位に変換（切り上げ）
+  mapsize += (blkcnt - 7) >> 3;
+  // 64bit変数単位に変換（切り上げ）
+  mapsize = (mapsize + 7) & ~7;
+  // blksizemask 単位に変換（切り上げ）
   mapsize = (mapsize + blksizemask) & ~blksizemask;
+  // blkmask 領域をスキップし、inode テーブル領域をセット
   ctx.c_inotbl = (void *) mapsize;
 
-  mapsize += sizeof (kafs_sinocnt_t) * inocnt;
+  mapsize += sizeof (kafs_sinode_t) * inocnt;
   mapsize = (mapsize + blksizemask) & ~blksizemask;
   ssize_t s = ftruncate (ctx.c_fd, mapsize + (off_t) blksize * blkcnt);
   if (s < 0)

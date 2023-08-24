@@ -229,7 +229,7 @@ kafs_ino_find_free (const kafs_sinode_t * inotbl, kafs_inocnt_t * pino, kafs_ino
   while (ino_search != ino)
     {
       if (ino >= inocnt)
-	ino = 0;
+	ino = KAFS_INO_ROOTDIR;
       if (!kafs_ino_get_usage (&inotbl[ino]))
 	{
 	  *pino_search = ino;
