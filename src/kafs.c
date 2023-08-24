@@ -889,7 +889,7 @@ kafs_dirent_search (struct kafs_context *ctx, kafs_sinode_t * inoent,
 static int
 kafs_dirent_add (struct kafs_context *ctx, kafs_sinode_t * inoent_dir, kafs_inocnt_t ino, const char *filename)
 {
-  kafs_log (KAFS_LOG_DEBUG, "%s(ino_dir = %d, ino = %d, filename = %s, filenamelen = %zu)\n", __func__,
+  kafs_log (KAFS_LOG_DEBUG, "%s(ino_dir = %d, ino = %d, filename = %s)\n", __func__,
 	    inoent_dir - ctx->c_inotbl, ino, filename);
   assert (ctx != NULL);
   assert (inoent_dir != NULL);
@@ -1407,6 +1407,19 @@ kafs_op_chown (const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi
   return 0;
 }
 
+static int
+kafs_op_symlink (const char *target, const char *linkpath)
+{
+  struct fuse_context *fctx = fuse_get_context ();
+  struct kafs_context *ctx = fctx->private_data;
+  kafs_inocnt_t ino;
+  KAFS_CALL (kafs_create, linkpath, 0777 | S_IFLNK, 0, NULL, &ino);
+  kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+  ssize_t w = KAFS_CALL (kafs_pwrite, ctx, inoent, target, strlen (target), 0);
+  assert (w == strlen (target));
+  return 0;
+}
+
 static struct fuse_operations kafs_operations = {
   .getattr = kafs_op_getattr,
   .open = kafs_op_open,
@@ -1424,6 +1437,7 @@ static struct fuse_operations kafs_operations = {
   .access = kafs_op_access,
   .chmod = kafs_op_chmod,
   .chown = kafs_op_chown,
+  .symlink = kafs_op_symlink,
 };
 
 int
