@@ -925,18 +925,15 @@ kafs_dirent_add (struct kafs_context *ctx, kafs_sinode_t * inoent_dir, kafs_inoc
 }
 
 static int
-kafs_dirent_remove (struct kafs_context *ctx, kafs_inocnt_t ino_dir, const char *filename,
-		    kafs_filenamelen_t filenamelen)
+kafs_dirent_remove (struct kafs_context *ctx, kafs_sinode_t * inoent_dir, const char *filename)
 {
-  kafs_log (KAFS_LOG_DEBUG, "%s(ino_dir = %" PRIuFAST32 ", filename = %s)\n", __func__, ino_dir, filename);
+  kafs_log (KAFS_LOG_DEBUG, "%s(ino_dir = %" PRIuFAST32 ", filename = %s)\n", __func__, inoent_dir - ctx->c_inotbl,
+	    filename);
   assert (ctx != NULL);
+  assert (inoent_dir != NULL);
   assert (filename != NULL);
-  assert (ino_dir != KAFS_INO_NONE);
-  kafs_inocnt_t inocnt = kafs_sb_inocnt_get (ctx->c_superblock);
-  assert (ino_dir < inocnt);
-  kafs_sinode_t *inoent_dir = &ctx->c_inotbl[ino_dir];
   assert (kafs_ino_get_usage (inoent_dir));
-  assert (filename != NULL);
+  kafs_filenamelen_t filenamelen = strlen (filename);
   assert (filenamelen > 0);
   kafs_mode_t mode_dir = kafs_ino_mode_get (inoent_dir);
   if (!S_ISDIR (mode_dir))
@@ -1248,6 +1245,45 @@ kafs_op_mkdir (const char *path, mode_t mode)
 }
 
 static int
+kafs_op_rmdir (const char *path)
+{
+  struct fuse_context *fctx = fuse_get_context ();
+  struct kafs_context *ctx = fctx->private_data;
+  char path_copy[strlen (path) + 1];
+  strcpy (path_copy, path);
+  const char *dirpath = path_copy;
+  char *basepath = strrchr (path_copy, '/');
+  if (dirpath == basepath)
+    dirpath = "/";
+  *basepath = '\0';
+  basepath++;
+
+  kafs_sinode_t *inoent;
+  KAFS_CALL (kafs_access, fctx, ctx, path, NULL, F_OK, &inoent);
+  kafs_mode_t mode = kafs_ino_mode_get (inoent);
+  if (!S_ISDIR (mode))
+    return -ENOTDIR;
+  kafs_sinode_t *inoent_dir;
+  KAFS_CALL (kafs_access, fctx, ctx, dirpath, NULL, W_OK, &inoent_dir);
+
+  struct kafs_sdirent dirent;
+  off_t offset = 0;
+  while (1)
+    {
+      ssize_t r = KAFS_CALL (kafs_dirent_read, ctx, inoent, &dirent, offset);
+      if (r == 0)
+	break;
+      if (strcmp (dirent.d_filename, "..") != 0)
+	return -ENOTEMPTY;
+      offset += r;
+    }
+  KAFS_CALL (kafs_dirent_remove, ctx, inoent_dir, basepath);
+  KAFS_CALL (kafs_dirent_remove, ctx, inoent, "..");
+  return 0;
+}
+
+
+static int
 kafs_op_readlink (const char *path, char *buf, size_t buflen)
 {
   struct fuse_context *fctx = fuse_get_context ();
@@ -1334,8 +1370,7 @@ kafs_op_unlink (const char *path)
   KAFS_CALL (kafs_access, fctx, ctx, path, NULL, F_OK, NULL);
   kafs_sinode_t *inoent_dir;
   KAFS_CALL (kafs_access, fctx, ctx, dirpath, NULL, W_OK, &inoent_dir);
-  kafs_inocnt_t ino_dir = inoent_dir - ctx->c_inotbl;
-  KAFS_CALL (kafs_dirent_remove, ctx, ino_dir, basepath, strlen (basepath));
+  KAFS_CALL (kafs_dirent_remove, ctx, inoent_dir, basepath);
   return 0;
 }
 
@@ -1385,6 +1420,7 @@ static struct fuse_operations kafs_operations = {
   .utimens = kafs_op_utimens,
   .unlink = kafs_op_unlink,
   .mkdir = kafs_op_mkdir,
+  .rmdir = kafs_op_rmdir,
   .access = kafs_op_access,
   .chmod = kafs_op_chmod,
   .chown = kafs_op_chown,
