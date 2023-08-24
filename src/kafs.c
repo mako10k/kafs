@@ -965,29 +965,121 @@ kafs_dirent_remove (struct kafs_context *ctx, kafs_inocnt_t ino_dir, const char 
 }
 
 static int
-kafs_path_get_ino (struct kafs_context *ctx, const char *path, kafs_inocnt_t * pino)
+kafs_access_check (int ok, kafs_sinode_t * inoent, kafs_bool_t is_dir, uid_t uid, gid_t gid, size_t ngroups,
+		   gid_t groups[])
 {
-  kafs_log (KAFS_LOG_DEBUG, "%s(path = %s)\n", __func__, path);
-  kafs_sinode_t *inotbl = &ctx->c_inotbl[*pino];
-  const char *p = path;
-  if (*p == '/')
+  mode_t mode = kafs_ino_mode_get (inoent);
+  uid_t fuid = kafs_ino_uid_get (inoent);
+  gid_t fgid = kafs_ino_gid_get (inoent);
+  if (is_dir)
     {
-      inotbl = &ctx->c_inotbl[KAFS_INO_ROOTDIR];
-      p++;
+      if (!S_ISDIR (mode))
+	return -ENOTDIR;
+      if (ok == F_OK)
+	ok = X_OK;
     }
-  while (*p)
+  if (ok == F_OK)
+    return KAFS_SUCCESS;
+  if (ok & R_OK)
     {
-      char *name = strchrnul (p, '/');
+      kafs_bool_t result = KAFS_FALSE;
+      if (mode & S_IROTH)
+	result = KAFS_TRUE;
+      else if (mode & S_IRUSR && uid == fuid)
+	result = KAFS_TRUE;
+      else if (mode & S_IRGRP)
+	{
+	  if (gid == fgid)
+	    result = KAFS_TRUE;
+	  else
+	    for (size_t i = 0; i < ngroups; i++)
+	      if (fgid == groups[i])
+		{
+		  result = KAFS_TRUE;
+		  break;
+		}
+	}
+      if (!result)
+	return -EACCES;
+    }
+  if (ok & W_OK)
+    {
+      kafs_bool_t result = KAFS_FALSE;
+      if (mode & S_IWOTH)
+	result = KAFS_TRUE;
+      else if (mode & S_IWUSR && uid == fuid)
+	result = KAFS_TRUE;
+      else if (mode & S_IWGRP)
+	{
+	  if (gid == fgid)
+	    result = KAFS_TRUE;
+	  else
+	    for (size_t i = 0; i < ngroups; i++)
+	      if (fgid == groups[i])
+		{
+		  result = KAFS_TRUE;
+		  break;
+		}
+	}
+      if (!result)
+	return -EACCES;
+    }
+  if (ok & X_OK)
+    {
+      kafs_bool_t result = KAFS_FALSE;
+      if (mode & S_IXOTH)
+	result = KAFS_TRUE;
+      else if (mode & S_IXUSR && uid == fuid)
+	result = KAFS_TRUE;
+      else if (mode & S_IXGRP)
+	{
+	  if (gid == fgid)
+	    result = KAFS_TRUE;
+	  else
+	    for (size_t i = 0; i < ngroups; i++)
+	      if (fgid == groups[i])
+		{
+		  result = KAFS_TRUE;
+		  break;
+		}
+	}
+      if (!result)
+	return -EACCES;
+    }
+  return KAFS_SUCCESS;
+}
 
-      kafs_sinode_t *inotbl_next = NULL;
-      KAFS_CALL (kafs_dirent_search, ctx, inotbl, p, name - p, &inotbl_next);
-      inotbl = inotbl_next;
-      p = name;
-      if (*p == '/')
-	p++;
+static int
+kafs_access (struct fuse_context *fctx, kafs_context_t * ctx, const char *path, struct fuse_file_info *fi, int ok,
+	     kafs_sinode_t ** pinoent)
+{
+  assert (fctx != NULL);
+  assert (ctx != NULL);
+  assert (path != NULL || fi != NULL);
+  assert (*path == '/');
+
+  uid_t uid = fctx->uid;
+  gid_t gid = fctx->gid;
+  size_t ngroups = KAFS_IOCALL (fuse_getgroups, 0, NULL);
+  gid_t groups[ngroups];
+  KAFS_IOCALL (fuse_getgroups, ngroups, groups);
+
+  kafs_inocnt_t ino = fi == NULL ? KAFS_INO_ROOTDIR : (kafs_inocnt_t) fi->fh;
+  kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+  const char *p = path == NULL ? "" : path + 1;
+  while (*p != '\0')
+    {
+      KAFS_CALL (kafs_access_check, ok, inoent, KAFS_TRUE, uid, gid, ngroups, groups);
+      const char *n = strchrnul (p, '/');
+      KAFS_CALL (kafs_dirent_search, ctx, inoent, p, n - p, &inoent);
+      if (*n == '\0')
+	break;
+      p = n + 1;
     }
-  *pino = inotbl - ctx->c_inotbl;
-  return 0;
+  KAFS_CALL (kafs_access_check, ok, inoent, KAFS_FALSE, uid, gid, ngroups, groups);
+  if (pinoent != NULL)
+    *pinoent = inoent;
+  return KAFS_SUCCESS;
 }
 
 static int
@@ -995,14 +1087,10 @@ kafs_op_getattr (const char *path, struct stat *st, struct fuse_file_info *fi)
 {
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
-  kafs_inocnt_t ino = KAFS_INO_ROOTDIR;
-  if (fi == NULL)
-    KAFS_CALL (kafs_path_get_ino, ctx, path, &ino);
-  else
-    ino = fi->fh;
-  struct kafs_sinode *inoent = &ctx->c_inotbl[ino];
+  struct kafs_sinode *inoent;
+  KAFS_CALL (kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
   st->st_dev = 0;
-  st->st_ino = ino;
+  st->st_ino = inoent - ctx->c_inotbl;
   st->st_mode = kafs_ino_mode_get (inoent);
   st->st_nlink = kafs_ino_linkcnt_get (inoent);
   st->st_uid = kafs_ino_uid_get (inoent);
@@ -1022,9 +1110,15 @@ kafs_op_open (const char *path, struct fuse_file_info *fi)
 {
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
-  kafs_inocnt_t ino = KAFS_INO_ROOTDIR;
-  KAFS_CALL (kafs_path_get_ino, ctx, path, &ino);
-  fi->fh = ino;
+  int ok = 0;
+  int accmode = fi->flags & O_ACCMODE;
+  if (accmode == O_RDONLY || accmode == O_RDWR)
+    ok |= R_OK;
+  if (accmode == O_WRONLY || accmode == O_RDWR)
+    ok |= W_OK;
+  kafs_sinode_t *inoent;
+  KAFS_CALL (kafs_access, fctx, ctx, path, NULL, ok, &inoent);
+  fi->fh = inoent - ctx->c_inotbl;
   return 0;
 }
 
@@ -1033,9 +1127,9 @@ kafs_op_opendir (const char *path, struct fuse_file_info *fi)
 {
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
-  kafs_inocnt_t ino = KAFS_INO_ROOTDIR;
-  KAFS_CALL (kafs_path_get_ino, ctx, path, &ino);
-  fi->fh = ino;
+  kafs_sinode_t *inoent;
+  KAFS_CALL (kafs_access, fctx, ctx, path, NULL, R_OK, &inoent);
+  fi->fh = inoent - ctx->c_inotbl;
   return 0;
 }
 
@@ -1045,12 +1139,8 @@ kafs_op_readdir (const char *path, void *buf, fuse_fill_dir_t filler, off_t offs
 {
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
-  kafs_inocnt_t ino = KAFS_INO_ROOTDIR;
-  if (fi == NULL)
-    KAFS_CALL (kafs_path_get_ino, ctx, path, &ino);
-  else
-    ino = fi->fh;
-  kafs_sinode_t *inoent_dir = &ctx->c_inotbl[ino];
+  kafs_sinode_t *inoent_dir;
+  KAFS_CALL (kafs_access, fctx, ctx, path, NULL, R_OK, &inoent_dir);
   off_t filesize = kafs_ino_size_get (inoent_dir);
   off_t o = 0;
   kafs_sdirent_t dirent;
@@ -1073,17 +1163,28 @@ kafs_op_readdir (const char *path, void *buf, fuse_fill_dir_t filler, off_t offs
 static int
 kafs_create (const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_inocnt_t * pino_dir, kafs_inocnt_t * pino_new)
 {
+  assert (path != NULL);
+  assert (path[0] == '/');
+  assert (path[1] != '\0');
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
-  char dirpath[strlen (path) + 1];
-  strcpy (dirpath, path);
-  char *filename = strrchr (dirpath, '/');
-  if (filename == NULL)
-    return -EIO;
-  *(filename++) = '\0';
-  kafs_inocnt_t ino_dir = KAFS_INO_ROOTDIR;
-  KAFS_CALL (kafs_path_get_ino, ctx, *dirpath == '\0' ? "/" : dirpath, &ino_dir);
-  struct kafs_sinode *inoent_dir = &ctx->c_inotbl[ino_dir];
+  char path_copy[strlen (path) + 1];
+  strcpy (path_copy, path);
+  const char *dirpath = path_copy;
+  char *basepath = strrchr (path_copy, '/');
+  if (dirpath == basepath)
+    dirpath = "/";
+  *basepath = '\0';
+  basepath++;
+
+  int ret = kafs_access (fctx, ctx, path, NULL, F_OK, NULL);
+  if (ret == KAFS_SUCCESS)
+    return -EEXIST;
+  if (ret != -ENOENT)
+    return ret;
+
+  kafs_sinode_t *inoent_dir;
+  KAFS_CALL (kafs_access, fctx, ctx, dirpath, NULL, W_OK, &inoent_dir);
   kafs_mode_t mode_dir = kafs_ino_mode_get (inoent_dir);
   if (!S_ISDIR (mode_dir))
     return -EIO;
@@ -1104,14 +1205,14 @@ kafs_create (const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_inocnt_t *
   kafs_ino_blocks_set (inoent_new, 0);
   kafs_ino_dev_set (inoent_new, 0);
   memset (inoent_new->i_blkreftbl, 0, sizeof (inoent_new->i_blkreftbl));
-  int ret = kafs_dirent_add (ctx, inoent_dir, ino_new, filename);
+  ret = kafs_dirent_add (ctx, inoent_dir, ino_new, basepath);
   if (ret < 0)
     {
       KAFS_CALL (kafs_release, ctx, inoent_new);
       return ret;
     }
   if (pino_dir != NULL)
-    *pino_dir = ino_dir;
+    *pino_dir = inoent_dir - ctx->c_inotbl;
   if (pino_new != NULL)
     *pino_new = ino_new;
   return KAFS_SUCCESS;
@@ -1151,9 +1252,9 @@ kafs_op_readlink (const char *path, char *buf, size_t buflen)
 {
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
-  kafs_inocnt_t ino = KAFS_INO_ROOTDIR;
-  KAFS_CALL (kafs_path_get_ino, ctx, path, &ino);
-  ssize_t r = KAFS_CALL (kafs_pread, ctx, &ctx->c_inotbl[ino], buf, buflen - 1, 0);
+  kafs_sinode_t *inoent;
+  KAFS_CALL (kafs_access, fctx, ctx, path, NULL, F_OK, &inoent);
+  ssize_t r = KAFS_CALL (kafs_pread, ctx, inoent, buf, buflen - 1, 0);
   buf[r] = '\0';
   return 0;
 }
@@ -1173,6 +1274,8 @@ kafs_op_write (const char *path, const char *buf, size_t size, off_t offset, str
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
   kafs_inocnt_t ino = fi->fh;
+  if ((fi->flags & O_ACCMODE) == O_RDONLY)
+    return -EACCES;
   return kafs_pwrite (ctx, &ctx->c_inotbl[ino], buf, size, offset);
 }
 
@@ -1181,34 +1284,31 @@ kafs_op_utimens (const char *path, const struct timespec tv[2], struct fuse_file
 {
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
-  kafs_inocnt_t ino = KAFS_INO_ROOTDIR;
-  if (fi == NULL)
-    KAFS_CALL (kafs_path_get_ino, ctx, path, &ino);
-  else
-    ino = fi->fh;
+  kafs_sinode_t *inoent;
+  KAFS_CALL (kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
   kafs_time_t now = { 0, 0 };
   if (tv[0].tv_nsec == UTIME_NOW || tv[1].tv_nsec == UTIME_NOW)
     now = kafs_now ();
   switch (tv[0].tv_nsec)
     {
     case UTIME_NOW:
-      kafs_ino_atime_set (&ctx->c_inotbl[ino], now);
+      kafs_ino_atime_set (inoent, now);
       break;
     case UTIME_OMIT:
       break;
     default:
-      kafs_ino_atime_set (&ctx->c_inotbl[ino], tv[0]);
+      kafs_ino_atime_set (inoent, tv[0]);
       break;
     }
   switch (tv[1].tv_nsec)
     {
     case UTIME_NOW:
-      kafs_ino_mtime_set (&ctx->c_inotbl[ino], now);
+      kafs_ino_mtime_set (inoent, now);
       break;
     case UTIME_OMIT:
       break;
     default:
-      kafs_ino_mtime_set (&ctx->c_inotbl[ino], tv[1]);
+      kafs_ino_mtime_set (inoent, tv[1]);
       break;
     }
   return 0;
@@ -1217,17 +1317,58 @@ kafs_op_utimens (const char *path, const struct timespec tv[2], struct fuse_file
 static int
 kafs_op_unlink (const char *path)
 {
+  assert (path != NULL);
+  assert (path[0] == '/');
+  assert (path[1] != '\0');
   struct fuse_context *fctx = fuse_get_context ();
   struct kafs_context *ctx = fctx->private_data;
-  char dirpath[strlen (path) + 1];
-  strcpy (dirpath, path);
-  char *filename = strrchr (dirpath, '/');
-  if (filename == NULL)
-    return -EIO;
-  *(filename++) = '\0';
-  kafs_inocnt_t ino_dir = KAFS_INO_ROOTDIR;
-  KAFS_CALL (kafs_path_get_ino, ctx, *dirpath == '\0' ? "/" : dirpath, &ino_dir);
-  KAFS_CALL (kafs_dirent_remove, ctx, ino_dir, filename, strlen (filename));
+  char path_copy[strlen (path) + 1];
+  strcpy (path_copy, path);
+  const char *dirpath = path_copy;
+  char *basepath = strrchr (path_copy, '/');
+  if (dirpath == basepath)
+    dirpath = "/";
+  *basepath = '\0';
+  basepath++;
+
+  KAFS_CALL (kafs_access, fctx, ctx, path, NULL, F_OK, NULL);
+  kafs_sinode_t *inoent_dir;
+  KAFS_CALL (kafs_access, fctx, ctx, dirpath, NULL, W_OK, &inoent_dir);
+  kafs_inocnt_t ino_dir = inoent_dir - ctx->c_inotbl;
+  KAFS_CALL (kafs_dirent_remove, ctx, ino_dir, basepath, strlen (basepath));
+  return 0;
+}
+
+static int
+kafs_op_access (const char *path, int mode)
+{
+  struct fuse_context *fctx = fuse_get_context ();
+  struct kafs_context *ctx = fctx->private_data;
+  KAFS_CALL (kafs_access, fctx, ctx, path, NULL, mode, NULL);
+  return 0;
+}
+
+static int
+kafs_op_chmod (const char *path, mode_t mode, struct fuse_file_info *fi)
+{
+  struct fuse_context *fctx = fuse_get_context ();
+  struct kafs_context *ctx = fctx->private_data;
+  kafs_sinode_t *inoent;
+  KAFS_CALL (kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
+  kafs_mode_t m = kafs_ino_mode_get (inoent);
+  kafs_ino_mode_set (inoent, (m & S_IFMT) | mode);
+  return 0;
+}
+
+static int
+kafs_op_chown (const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi)
+{
+  struct fuse_context *fctx = fuse_get_context ();
+  struct kafs_context *ctx = fctx->private_data;
+  kafs_sinode_t *inoent;
+  KAFS_CALL (kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
+  kafs_ino_uid_set (inoent, uid);
+  kafs_ino_gid_set (inoent, gid);
   return 0;
 }
 
@@ -1244,6 +1385,9 @@ static struct fuse_operations kafs_operations = {
   .utimens = kafs_op_utimens,
   .unlink = kafs_op_unlink,
   .mkdir = kafs_op_mkdir,
+  .access = kafs_op_access,
+  .chmod = kafs_op_chmod,
+  .chown = kafs_op_chown,
 };
 
 int
