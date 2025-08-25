@@ -16,7 +16,7 @@
 #include <unistd.h>
 
 static void usage(const char *prog) {
-  fprintf(stderr, "Usage: %s <image> [--size-bytes N] [--blksize-log L] [--inodes I]\n", prog);
+  fprintf(stderr, "Usage: %s <image> [--size-bytes N|-s N] [--blksize-log L|-b L] [--inodes I|-i I]\n", prog);
   fprintf(stderr, "  defaults: N=1GiB, L=12 (4096B), I=65536\n");
 }
 
@@ -29,12 +29,12 @@ int main(int argc, char **argv) {
   kafs_inocnt_t inocnt = 65536;          // number of inodes
 
   for (int i = 1; i < argc; ++i) {
-    if (strcmp(argv[i], "--size-bytes") == 0 && i + 1 < argc) {
+  if ((strcmp(argv[i], "--size-bytes") == 0 || strcmp(argv[i], "-s") == 0) && i + 1 < argc) {
       bytes = strtoll(argv[++i], NULL, 0);
-    } else if (strcmp(argv[i], "--blksize-log") == 0 && i + 1 < argc) {
+  } else if ((strcmp(argv[i], "--blksize-log") == 0 || strcmp(argv[i], "-b") == 0) && i + 1 < argc) {
       log_blksize = (kafs_logblksize_t)strtoul(argv[++i], NULL, 0);
       blksize = 1u << log_blksize; blksizemask = blksize - 1u;
-    } else if (strcmp(argv[i], "--inodes") == 0 && i + 1 < argc) {
+  } else if ((strcmp(argv[i], "--inodes") == 0 || strcmp(argv[i], "-i") == 0) && i + 1 < argc) {
       inocnt = (kafs_inocnt_t)strtoul(argv[++i], NULL, 0);
     } else if (argv[i][0] != '-' && img == NULL) {
       img = argv[i];

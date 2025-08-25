@@ -1444,11 +1444,33 @@ static struct fuse_operations kafs_operations = {
 int
 main (int argc, char **argv)
 {
+  // 画像ファイル指定を受け取る: --image <path> または --image=<path>、環境変数 KAFS_IMAGE
+  const char *image_path = getenv("KAFS_IMAGE");
+  // argv から --image を取り除き fuse_main へは渡さない
+  char *argv_clean[argc];
+  int argc_clean = 0;
+  for (int i = 0; i < argc; ++i)
+    {
+      if (strncmp(argv[i], "--image=", 8) == 0)
+        {
+          image_path = argv[i] + 8;
+          continue;
+        }
+      if (strcmp(argv[i], "--image") == 0 && i + 1 < argc)
+        {
+          image_path = argv[++i];
+          continue;
+        }
+      argv_clean[argc_clean++] = argv[i];
+    }
+  if (image_path == NULL)
+    image_path = "test.img";
+
   static kafs_context_t ctx;
-  ctx.c_fd = open ("test.img", O_RDWR, 0666);
+  ctx.c_fd = open (image_path, O_RDWR, 0666);
   if (ctx.c_fd < 0)
     {
-      perror ("open test.img");
+      perror ("open image");
       fprintf (stderr, "image not found. run mkfs.kafs first.\n");
       exit (2);
     }
@@ -1467,6 +1489,11 @@ main (int argc, char **argv)
     {
       fprintf (stderr, "invalid magic. run mkfs.kafs to format.\n");
       exit (2);
+    }
+  if (kafs_sb_format_version_get(&sbdisk) != KAFS_FORMAT_VERSION)
+    {
+      fprintf(stderr, "unsupported format version. expected %u.\n", (unsigned)KAFS_FORMAT_VERSION);
+      exit(2);
     }
   // 読み出し値からレイアウト計算
   kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get (&sbdisk);
@@ -1499,5 +1526,5 @@ main (int argc, char **argv)
   // HRL オープン（ひな型: 何もしない）
   (void) kafs_hrl_open (&ctx);
 
-  return fuse_main (argc, argv, &kafs_operations, &ctx);
+  return fuse_main (argc_clean, argv_clean, &kafs_operations, &ctx);
 }

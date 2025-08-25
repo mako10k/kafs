@@ -3,48 +3,63 @@
 #include <assert.h>
 #include <stdio.h>
 
-/// @brief スーパーブロック情報
+/// @brief スーパーブロック情報（固定長 128 bytes）
 struct kafs_ssuperblock
 {
-  /// @brief inode 番号の数
-  kafs_sinocnt_t s_inocnt;
-  /// @brief block 番号の数(一般ユーザー)
-  kafs_sblkcnt_t s_blkcnt;
-  /// @brief block 番号の数(ルートユーザー)
-  kafs_sblkcnt_t s_r_blkcnt;
-  /// @brief 空き block 番号の数
-  kafs_sblkcnt_t s_blkcnt_free;
-  /// @brief 空き inode 番号の数
-  kafs_sinocnt_t s_inocnt_free;
-  /// @brief 最初のデータのブロック番号
-  kafs_sblkcnt_t s_first_data_block;
-  /// @brief ブロックサイズ(ただし、サイズ=2^(10 + s_log_block_size))
-  kafs_slogblksize_t s_log_blksize;
-  /// @brief マウント日時
-  kafs_stime_t s_mtime;
-  /// @brief 書き込み日時
-  kafs_stime_t s_wtime;
-  /// @brief マウント数
-  kafs_smntcnt_t s_mntcnt;
+  // --- Header ---
   /// @brief フォーマット識別子 'KAFS'
-  kafs_su32_t s_magic;
+  kafs_su32_t s_magic;                 // +0  (4)
   /// @brief フォーマットバージョン（2=HRL採用）
-  kafs_su32_t s_format_version;
+  kafs_su32_t s_format_version;        // +4  (4)
+  /// @brief ブロックサイズ(サイズ=2^(10 + s_log_blksize))
+  kafs_slogblksize_t s_log_blksize;    // +8  (2)
+  uint16_t s_pad0;                     // +10 (2) 8B境界調整
+
+  /// @brief マウント日時
+  kafs_stime_t s_mtime;                // +12 (8)
+  /// @brief 書き込み日時
+  kafs_stime_t s_wtime;                // +20 (8)
+  /// @brief マウント数
+  kafs_smntcnt_t s_mntcnt;             // +28 (2)
+  uint16_t s_pad1;                     // +30 (2)
+
+  // --- Geometry / counts ---
+  /// @brief inode 番号の数
+  kafs_sinocnt_t s_inocnt;             // +32 (4)
+  /// @brief block 番号の数(一般ユーザー)
+  kafs_sblkcnt_t s_blkcnt;             // +36 (4)
+  /// @brief block 番号の数(ルートユーザー)
+  kafs_sblkcnt_t s_r_blkcnt;           // +40 (4)
+  /// @brief 空き block 番号の数
+  kafs_sblkcnt_t s_blkcnt_free;        // +44 (4)
+  /// @brief 空き inode 番号の数
+  kafs_sinocnt_t s_inocnt_free;        // +48 (4)
+  /// @brief 最初のデータのブロック番号
+  kafs_sblkcnt_t s_first_data_block;   // +52 (4)
+
+  // --- HRL config ---
   /// @brief 高速ハッシュ識別子（例: 1=xxh64）
-  kafs_su32_t s_hash_algo_fast;
+  kafs_su32_t s_hash_algo_fast;        // +56 (4)
   /// @brief 強ハッシュ識別子（例: 1=BLAKE3-256）
-  kafs_su32_t s_hash_algo_strong;
+  kafs_su32_t s_hash_algo_strong;      // +60 (4)
   /// @brief HRL インデックス領域の先頭オフセット（バイト）
-  kafs_su64_t s_hrl_index_offset;
+  kafs_su64_t s_hrl_index_offset;      // +64 (8)
   /// @brief HRL インデックス領域のサイズ（バイト）
-  kafs_su64_t s_hrl_index_size;
+  kafs_su64_t s_hrl_index_size;        // +72 (8)
   /// @brief HR エントリ表の先頭オフセット（バイト）
-  kafs_su64_t s_hrl_entry_offset;
+  kafs_su64_t s_hrl_entry_offset;      // +80 (8)
   /// @brief HR エントリ数
-  kafs_su32_t s_hrl_entry_cnt;
+  kafs_su32_t s_hrl_entry_cnt;         // +88 (4)
+  uint32_t s_pad2;                     // +92 (4)
+
+  // --- Reserved (for future) ---
+  uint8_t s_reserved[128 - 96];        // +96 .. +127
 } __attribute__((packed));
 
 typedef struct kafs_ssuperblock kafs_ssuperblock_t;
+
+// 固定長チェック
+_Static_assert(sizeof(struct kafs_ssuperblock) == 128, "kafs_ssuperblock must be 128 bytes");
 
 #include "kafs_context.h"
 
