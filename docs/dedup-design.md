@@ -20,9 +20,9 @@
 - inode: `i_blkreftbl[15]`（12 直接 + 1/2/3 重間接）でデータブロック番号を参照。小サイズ（60B 以下）は inline。
 - 読み書き: `kafs_ino_iblk_read/write/release` が（間接を辿って）物理ブロック番号を取得し、`pread/pwrite` を実施。
 
-## 新設計の全体像
+## 新設計の全体像（後方互換なし）
 
-- 新レイヤ: ハッシュ参照レイヤ（Hash Reference Layer; HRL）を inode と物理ブロックの間に挿入する。
+- 新レイヤ: ハッシュ参照レイヤ（Hash Reference Layer; HRL）を inode と物理ブロックの間に挿入する（旧フォーマットからの互換は持たない）。
   - inode の `i_blkreftbl` は「物理ブロック番号」ではなく「ハッシュ参照 ID（HRID）」を保持する。
   - HRL は HRID → { 物理ブロック番号, 参照カウント, 強ハッシュ } を引ける。
   - HRL 内部では「高速ハッシュ」をインデックスに利用し、衝突検証には「強ハッシュ」を用いる。
@@ -48,14 +48,15 @@
   - 全ゼロブロックは「ゼロの共有ブロック」を 1 つだけ持ち、HRID を固定値にする（物理を持たず論理的にゼロ扱いでもよい）。
   - 60B 以下の inline データは当面従来通り（非 dedup）。将来は可変長 dedup の検討余地。
 
-## オンディスク構造（新規）
+## オンディスク構造（新規・互換なし）
 
 領域の拡張: 既存の superblock/bitmap/inode table の後に HRL のための領域を確保する。
 
-- Superblock 拡張フィールド（候補）
-  - `s_features`: ビットフラグ（例: bit0=DEDUP 有効）
-  - `s_hash_algo_fast`: 高速ハッシュ識別子（例: 1=xxh64）
-  - `s_hash_algo_strong`: 強ハッシュ識別子（例: 1=BLAKE3-256）
+- Superblock 拡張フィールド（確定方針）
+  - `s_magic`: フォーマット識別子（例: 0x4B414653 = 'KAFS'）
+  - `s_format_version`: フォーマットバージョン（例: 2 = HRL 採用版）
+  - `s_hash_algo_fast`: 高速ハッシュ識別子（固定: xxh64）
+  - `s_hash_algo_strong`: 強ハッシュ識別子（固定: BLAKE3-256）
   - `s_hrl_index_offset`, `s_hrl_index_size`: ハッシュインデックス領域（オープンアドレッシング配列）
   - `s_hrl_entry_offset`, `s_hrl_entry_cnt`: HR エントリ表（HRID → 実体）
 
@@ -107,15 +108,19 @@
 - `int kafs_hl_inc(struct kafs_context*, kafs_hrid_t)`
 - `int kafs_hl_dec(struct kafs_context*, kafs_hrid_t)`
 
-既存コード修正
+既存コード修正（破壊的変更）
 - `kafs_ino_ibrk_run` 系: 戻り値を "物理ブロック番号" ではなく "HRID" に切替。
 - `kafs_ino_iblk_read`: HRID→HRL 参照→phys_blo→`kafs_blk_read`
 - `kafs_ino_iblk_write`: HRL 参照/登録→HRID を i_blkreftbl に設定（必要なら旧 HRID の `dec`）
 - `kafs_ino_iblk_release`: HRID の `dec` のみ（refcnt==0 なら HRL 内で物理解放）
-- Superblock: HRL 関連フィールドの初期化/読み書き
+- Superblock: 新規必須フィールド（magic/version/hash/HRL offset 等）の初期化/読み書き（旧フォーマット読込は非対応）
 
-互換性オプション
-- Superblock の feature フラグで HRL 有効/無効を切り替え、旧フォーマット（直参照）読込も可能に（段階移行時）。
+破壊的変更点一覧
+- inode の `i_blkreftbl` 参照先を「物理ブロック番号」→「HRID」に変更
+- superblock に magic/version および HRL 関連フィールドを追加
+- 旧イメージ（v1 相当）はマウント不可（フォーマット不一致として扱う）
+
+（互換性オプションは無し。常に HRL フォーマットで動作する）
 
 ## 整合性と障害耐性
 
@@ -155,8 +160,8 @@
 
 ## 移行・互換
 
-- 新規フォーマット（feature フラグ on）のみをまずサポート。
-- 既存イメージからの移行ツール（将来）: 全ブロック走査→HRL へ再登録→inode を HRID に差し替え。
+- 後方互換なし。新規に初期化されたイメージのみサポート。
+- 既存イメージからの自動移行ツールは本計画の対象外（必要なら別途ユーティリティとして検討）。
 
 ## 段階的導入手順（実装タスク）
 
