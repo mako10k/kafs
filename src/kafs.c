@@ -106,9 +106,8 @@ kafs_blk_release (struct kafs_context *ctx, kafs_blkcnt_t * pblo)
   // ブロックを0で埋める
   char zbuf[blksize];
   memset (zbuf, 0, blksize);
-  KAFS_CALL (kafs_blk_write, ctx, *pblo, zbuf);
-  // ブロック利用状況をリセットする
-  KAFS_CALL (kafs_blk_set_usage, ctx, *pblo, KAFS_FALSE);
+  // HRL 管理されていれば参照減算、そうでなければ直接解放
+  (void)kafs_hrl_dec_ref_by_blo(ctx, *pblo);
   *pblo = KAFS_BLO_NONE;
   return KAFS_SUCCESS;
 }
@@ -536,28 +535,43 @@ kafs_ino_iblk_write (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblk
   assert (kafs_ino_get_usage (inoent));
   assert (kafs_ino_size_get (inoent) > KAFS_DIRECT_SIZE);
   kafs_blksize_t blksize = kafs_sb_blksize_get (ctx->c_superblock);
-  // ゼロブロックは割り当てず、既存なら解放して参照を NONE に戻す
+  // 注意: kafs_blk_is_zero は「非ゼロを含むと1、全ゼロで0」を返す
   if (kafs_blk_is_zero (buf, blksize))
     {
-      // バッファ内に非ゼロがある -> 通常の書き込み
+      // 非ゼロ: HRL 経路（失敗時は従来経路）
+      kafs_blkcnt_t old_blo;
+      KAFS_CALL (kafs_ino_ibrk_run, ctx, inoent, iblo, &old_blo, KAFS_IBLKREF_FUNC_GET);
+
+      kafs_hrid_t hrid;
+      int is_new = 0;
+      kafs_blkcnt_t new_blo = KAFS_BLO_NONE;
+      int rc = kafs_hrl_put (ctx, buf, &hrid, &is_new, &new_blo);
+     if (rc == 0)
+        {
+          KAFS_CALL (kafs_hrl_inc_ref, ctx, hrid);
+          if (old_blo != KAFS_BLO_NONE && old_blo != new_blo)
+            (void) kafs_hrl_dec_ref_by_blo (ctx, old_blo);
+       // 物理ブロック番号を直接設定
+       inoent->i_blkreftbl[iblo] = kafs_blkcnt_htos (new_blo);
+          return KAFS_SUCCESS;
+        }
+      // HRL 失敗時: 物理ブロックに直接書き込み
       kafs_blkcnt_t blo;
       KAFS_CALL (kafs_ino_ibrk_run, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_PUT);
       assert (blo != KAFS_BLO_NONE);
       KAFS_CALL (kafs_blk_write, ctx, blo, buf);
       return KAFS_SUCCESS;
     }
-  else
+  // 全ゼロ: スパース化（参照削除）
+  kafs_blkcnt_t blo;
+  KAFS_CALL (kafs_ino_ibrk_run, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_GET);
+  if (blo != KAFS_BLO_NONE)
     {
-      // バッファが全ゼロ -> 参照を削除してスパースにする
-      kafs_blkcnt_t blo;
-      KAFS_CALL (kafs_ino_ibrk_run, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_GET);
-      if (blo != KAFS_BLO_NONE)
-        {
-          KAFS_CALL (kafs_ino_ibrk_run, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_DEL);
-          assert (blo == KAFS_BLO_NONE);
-        }
-      return KAFS_SUCCESS;
+      (void) kafs_hrl_dec_ref_by_blo (ctx, blo);
+      KAFS_CALL (kafs_ino_ibrk_run, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_DEL);
+      assert (blo == KAFS_BLO_NONE);
     }
+  return KAFS_SUCCESS;
 }
 
 static int
@@ -567,27 +581,21 @@ kafs_ino_iblk_release (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_ib
   assert (ctx != NULL);
   assert (inoent != NULL);
   assert (kafs_ino_get_usage (inoent));
-  assert (kafs_ino_size_get (inoent) > KAFS_DIRECT_SIZE);	// TODO: 縮小時の考慮
+  assert (kafs_ino_size_get (inoent) > KAFS_DIRECT_SIZE);
   kafs_blkcnt_t blo;
-  KAFS_CALL (kafs_ino_ibrk_run, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_DEL);
-  assert (blo == KAFS_BLO_NONE);
+  KAFS_CALL (kafs_ino_ibrk_run, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_GET);
+  if (blo != KAFS_BLO_NONE)
+    {
+      (void) kafs_hrl_dec_ref_by_blo (ctx, blo);
+      KAFS_CALL (kafs_ino_ibrk_run, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_DEL);
+      assert (blo == KAFS_BLO_NONE);
+    }
   return KAFS_SUCCESS;
 }
 
-/// @brief inode 毎にデータを読み出す
-/// @param ctx コンテキスト
-/// @param inoent inode テーブルエントリ
-/// @param buf バッファ
-/// @param size バッファサイズ
-/// @param offset オフセット
-/// @return > 0: 読み出しサイズ, 0: EOF, < 0: エラー(-errno)
 static ssize_t
 kafs_pread (struct kafs_context *ctx, kafs_sinode_t * inoent, void *buf, kafs_off_t size, kafs_off_t offset)
 {
-  kafs_log (KAFS_LOG_DEBUG, "%s(ino = %d, size = %" PRIuFAST64 ", offset = %" PRIuFAST64 ")\n", __func__,
-	    inoent - ctx->c_inotbl, size, offset);
-  assert (ctx != NULL);
-  assert (buf != NULL);
   assert (inoent != NULL);
   assert (kafs_ino_get_usage (inoent));
   kafs_off_t filesize = kafs_ino_size_get (inoent);
@@ -613,10 +621,10 @@ kafs_pread (struct kafs_context *ctx, kafs_sinode_t * inoent, void *buf, kafs_of
       kafs_iblkcnt_t iblo = offset >> log_blksize;
       KAFS_CALL (kafs_ino_iblk_read, ctx, inoent, iblo, rbuf);
       if (size < blksize - offset_blksize)
-	{
-	  memcpy (buf, rbuf + offset_blksize, size);
-	  return size;
-	}
+        {
+          memcpy (buf, rbuf + offset_blksize, size);
+          return size;
+        }
       memcpy (buf, rbuf + offset_blksize, blksize - offset_blksize);
       size_read += blksize - offset_blksize;
     }
@@ -624,12 +632,12 @@ kafs_pread (struct kafs_context *ctx, kafs_sinode_t * inoent, void *buf, kafs_of
     {
       kafs_iblkcnt_t iblo = (offset + size_read) >> log_blksize;
       if (size - size_read <= blksize)
-	{
-	  char rbuf[blksize];
-	  KAFS_CALL (kafs_ino_iblk_read, ctx, inoent, iblo, rbuf);
-	  memcpy (buf + size_read, rbuf, size - size_read);
-	  return size;
-	}
+        {
+          char rbuf[blksize];
+          KAFS_CALL (kafs_ino_iblk_read, ctx, inoent, iblo, rbuf);
+          memcpy (buf + size_read, rbuf, size - size_read);
+          return size;
+        }
       KAFS_CALL (kafs_ino_iblk_read, ctx, inoent, iblo, buf + size_read);
       size_read += blksize;
     }
@@ -647,7 +655,7 @@ static ssize_t
 kafs_pwrite (struct kafs_context *ctx, kafs_sinode_t * inoent, const void *buf, kafs_off_t size, kafs_off_t offset)
 {
   kafs_log (KAFS_LOG_DEBUG, "%s(ino = %d, size = %" PRIuFAST64 ", offset = %" PRIuFAST64 ")\n", __func__,
-	    inoent - ctx->c_inotbl, size, offset);
+            inoent - ctx->c_inotbl, size, offset);
   assert (ctx != NULL);
   assert (buf != NULL);
   assert (inoent != NULL);
@@ -666,13 +674,13 @@ kafs_pwrite (struct kafs_context *ctx, kafs_sinode_t * inoent, const void *buf, 
       // サイズ拡大時
       kafs_ino_size_set (inoent, filesize_new);
       if (filesize != 0 && filesize <= KAFS_DIRECT_SIZE && filesize_new > KAFS_DIRECT_SIZE)
-	{
-	  char wbuf[blksize];
-	  memset (wbuf, 0, blksize);
-	  memcpy (wbuf, inoent->i_blkreftbl, filesize);
-	  memset (inoent->i_blkreftbl, 0, sizeof (inoent->i_blkreftbl));
-	  KAFS_CALL (kafs_ino_iblk_write, ctx, inoent, 0, wbuf);
-	}
+        {
+          char wbuf[blksize];
+          memset (wbuf, 0, blksize);
+          memcpy (wbuf, inoent->i_blkreftbl, filesize);
+          memset (inoent->i_blkreftbl, 0, sizeof (inoent->i_blkreftbl));
+          KAFS_CALL (kafs_ino_iblk_write, ctx, inoent, 0, wbuf);
+        }
       filesize = filesize_new;
     }
 
@@ -694,12 +702,12 @@ kafs_pwrite (struct kafs_context *ctx, kafs_sinode_t * inoent, const void *buf, 
       char wbuf[blksize];
       KAFS_CALL (kafs_ino_iblk_read, ctx, inoent, iblo, wbuf);
       if (size < blksize - offset_blksize)
-	{
-	  // 1ブロックのみの場合
-	  memcpy (wbuf + offset_blksize, buf, size);
-	  KAFS_CALL (kafs_ino_iblk_write, ctx, inoent, iblo, wbuf);
-	  return size;
-	}
+        {
+          // 1ブロックのみの場合
+          memcpy (wbuf + offset_blksize, buf, size);
+          KAFS_CALL (kafs_ino_iblk_write, ctx, inoent, iblo, wbuf);
+          return size;
+        }
       // ブロックの残り分を書き込む
       memcpy (wbuf + offset_blksize, buf, blksize - offset_blksize);
       KAFS_CALL (kafs_ino_iblk_write, ctx, inoent, iblo, wbuf);
@@ -710,13 +718,13 @@ kafs_pwrite (struct kafs_context *ctx, kafs_sinode_t * inoent, const void *buf, 
     {
       kafs_iblkcnt_t iblo = (offset + size_written) >> log_blksize;
       if (size - size_written < blksize)
-	{
-	  char wbuf[blksize];
-	  KAFS_CALL (kafs_ino_iblk_read, ctx, inoent, iblo, wbuf);
-	  memcpy (wbuf, buf + size_written, size - size_written);
-	  KAFS_CALL (kafs_ino_iblk_write, ctx, inoent, iblo, wbuf);
-	  return size;
-	}
+        {
+          char wbuf[blksize];
+          KAFS_CALL (kafs_ino_iblk_read, ctx, inoent, iblo, wbuf);
+          memcpy (wbuf, buf + size_written, size - size_written);
+          KAFS_CALL (kafs_ino_iblk_write, ctx, inoent, iblo, wbuf);
+          return size;
+        }
       KAFS_CALL (kafs_ino_iblk_write, ctx, inoent, iblo, buf + size_written);
       size_written += blksize;
     }
@@ -1474,40 +1482,43 @@ int
 main (int argc, char **argv)
 {
   // 画像ファイル指定を受け取る: --image <path> または --image=<path>、環境変数 KAFS_IMAGE
-  const char *image_path = getenv("KAFS_IMAGE");
-  // argv から --image を取り除き fuse_main へは渡さない
+  const char *image_path = getenv ("KAFS_IMAGE");
+  // argv から --image と --help を取り除き fuse_main へは渡さない
   char *argv_clean[argc];
   int argc_clean = 0;
   kafs_bool_t show_help = KAFS_FALSE;
   for (int i = 0; i < argc; ++i)
     {
-      if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
+      const char *a = argv[i];
+      if (strcmp (a, "--help") == 0 || strcmp (a, "-h") == 0)
         {
           show_help = KAFS_TRUE;
           continue;
         }
-      if (strncmp(argv[i], "--image=", 8) == 0)
+      if (strcmp (a, "--image") == 0)
         {
-          image_path = argv[i] + 8;
-          continue;
+          if (i + 1 < argc)
+            {
+              image_path = argv[++i];
+              continue;
+            }
+          else
+            {
+              fprintf (stderr, "--image requires a path argument.\n");
+              usage (argv[0]);
+              return 2;
+            }
         }
-      if (strcmp(argv[i], "--image") == 0 && i + 1 < argc)
+      if (strncmp (a, "--image=", 8) == 0)
         {
-          image_path = argv[++i];
+          image_path = a + 8;
           continue;
         }
       argv_clean[argc_clean++] = argv[i];
     }
-  if (show_help)
+  if (show_help || image_path == NULL || argc_clean < 2)
     {
-      usage(argv[0]);
-      return 0;
-    }
-  if (image_path == NULL)
-    image_path = "test.img";
-  if (argc_clean < 2)
-    {
-      usage(argv[0]);
+      usage (argv[0]);
       return 2;
     }
 
@@ -1552,7 +1563,7 @@ main (int argc, char **argv)
   mapsize = (mapsize + blksizemask) & ~blksizemask;
   void *blkmask_off = (void *) mapsize;
   assert (sizeof (kafs_blkmask_t) <= 8);
-  mapsize += (r_blkcnt - 7) >> 3;
+  mapsize += (r_blkcnt + 7) >> 3;
   mapsize = (mapsize + 7) & ~7;
   mapsize = (mapsize + blksizemask) & ~blksizemask;
   void *inotbl_off = (void *) mapsize;
@@ -1568,7 +1579,7 @@ main (int argc, char **argv)
   ctx.c_blkmasktbl = (void *) ctx.c_superblock + (intptr_t) blkmask_off;
   ctx.c_inotbl = (void *) ctx.c_superblock + (intptr_t) inotbl_off;
 
-  // HRL オープン（ひな型: 何もしない）
+  // HRL オープン
   (void) kafs_hrl_open (&ctx);
 
   return fuse_main (argc_clean, argv_clean, &kafs_operations, &ctx);

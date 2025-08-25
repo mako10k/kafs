@@ -18,6 +18,10 @@ struct kafs_context
   kafs_blkcnt_t c_blo_search;
   /// @brief ファイル記述子
   int c_fd;
+  /// @brief HRL バケットテーブル先頭（メタデータ mmap 内）
+  void *c_hrl_index;
+  /// @brief HRL バケット数（テーブルサイズ / バケットサイズ）
+  uint32_t c_hrl_bucket_cnt;
 };
 
 typedef struct kafs_context kafs_context_t;

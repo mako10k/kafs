@@ -105,7 +105,7 @@ kafs_blk_alloc (struct kafs_context *ctx, kafs_blkcnt_t * pblo)
 	    {
 	      ctx->c_blo_search = blo_found;
 	      *pblo = blo_found;
-	      KAFS_CALL (kafs_blk_set_usage, ctx, blo_found, 1);
+              KAFS_CALL (kafs_blk_set_usage, ctx, blo_found, KAFS_TRUE);
 	      return KAFS_SUCCESS;
 	    }
 	}

@@ -60,12 +60,26 @@ int main(int argc, char **argv) {
   ctx.c_blkmasktbl = (void*)mapsize;
 
   assert(sizeof(kafs_blkmask_t) <= 8);
-  mapsize += (blkcnt - 7) >> 3; // bitmap (bytes)
+  mapsize += (blkcnt + 7) >> 3; // bitmap (bytes) = ceil(blkcnt/8)
   mapsize = (mapsize + 7) & ~7; // 64-bit align
   mapsize = (mapsize + blksizemask) & ~blksizemask; // block align
   ctx.c_inotbl = (void*)mapsize;
 
   mapsize += sizeof(kafs_sinode_t) * inocnt;
+  mapsize = (mapsize + blksizemask) & ~blksizemask;
+
+  // HRL: choose bucket count as next power-of-two <= blocks/4 (min 1024)
+  uint32_t bucket_cnt = 1024;
+  while ((bucket_cnt << 1) <= (uint32_t)(blkcnt / 4)) bucket_cnt <<= 1;
+  size_t hrl_index_size = (size_t)bucket_cnt * sizeof(uint32_t);
+  off_t hrl_index_off = mapsize;
+  mapsize += hrl_index_size;
+  mapsize = (mapsize + 7) & ~7; // 64-bit align
+
+  // HRL entries: allow up to blocks/2 unique entries (cap)
+  uint32_t entry_cnt = (uint32_t)(blkcnt / 2);
+  off_t hrl_entry_off = mapsize;
+  mapsize += (off_t)entry_cnt * (off_t)sizeof(kafs_hrl_entry_t);
   mapsize = (mapsize + blksizemask) & ~blksizemask;
 
   if (ftruncate(ctx.c_fd, mapsize + (off_t)blksize * blkcnt) < 0) {
@@ -75,8 +89,21 @@ int main(int argc, char **argv) {
 
   ctx.c_superblock = mmap(NULL, mapsize, PROT_READ | PROT_WRITE, MAP_SHARED, ctx.c_fd, 0);
   if (ctx.c_superblock == MAP_FAILED) { perror("mmap"); return 1; }
-  ctx.c_blkmasktbl = (void*)ctx.c_superblock + (intptr_t)ctx.c_blkmasktbl;
-  ctx.c_inotbl = (void*)ctx.c_superblock + (intptr_t)ctx.c_inotbl;
+  // 先頭アドレスにオフセットを加算（byte単位）
+  ctx.c_blkmasktbl = (kafs_blkmask_t*)((char*)ctx.c_superblock + (intptr_t)ctx.c_blkmasktbl);
+  ctx.c_inotbl = (kafs_sinode_t*)((char*)ctx.c_superblock + (intptr_t)ctx.c_inotbl);
+
+  // 境界チェックとゼロ初期化
+  size_t blkmask_bytes = ((size_t)blkcnt + 7) >> 3; // ビットマップの総バイト数
+  size_t inotbl_bytes = (size_t)sizeof(kafs_sinode_t) * (size_t)inocnt;
+  char *base = (char*)ctx.c_superblock;
+  char *end  = base + mapsize;
+  char *bm_ptr = (char*)ctx.c_blkmasktbl;
+  char *ino_ptr = (char*)ctx.c_inotbl;
+  assert(bm_ptr >= base && bm_ptr + blkmask_bytes <= end);
+  assert(ino_ptr >= base && ino_ptr + inotbl_bytes <= end);
+  memset(bm_ptr, 0, blkmask_bytes);
+  memset(ino_ptr, 0, inotbl_bytes);
 
   // スーパーブロック基本
   kafs_sb_log_blksize_set(ctx.c_superblock, log_blksize);
@@ -84,15 +111,16 @@ int main(int argc, char **argv) {
   kafs_sb_format_version_set(ctx.c_superblock, KAFS_FORMAT_VERSION);
   kafs_sb_hash_fast_set(ctx.c_superblock, KAFS_HASH_FAST_XXH64);
   kafs_sb_hash_strong_set(ctx.c_superblock, KAFS_HASH_STRONG_BLAKE3_256);
-  // HRL領域は未割当
-  kafs_sb_hrl_index_offset_set(ctx.c_superblock, 0);
-  kafs_sb_hrl_index_size_set(ctx.c_superblock, 0);
-  kafs_sb_hrl_entry_offset_set(ctx.c_superblock, 0);
-  kafs_sb_hrl_entry_cnt_set(ctx.c_superblock, 0);
+  // HRL領域の割当
+  kafs_sb_hrl_index_offset_set(ctx.c_superblock, (uint64_t)hrl_index_off);
+  kafs_sb_hrl_index_size_set(ctx.c_superblock, (uint64_t)hrl_index_size);
+  kafs_sb_hrl_entry_offset_set(ctx.c_superblock, (uint64_t)hrl_entry_off);
+  kafs_sb_hrl_entry_cnt_set(ctx.c_superblock, (uint32_t)entry_cnt);
 
   // R/O items
   ctx.c_superblock->s_inocnt = kafs_inocnt_htos(inocnt);
-  ctx.c_superblock->s_blkcnt = kafs_blkcnt_htos(blkcnt * 0.95);
+  // 一般/ルートどちらも同一のブロック数で初期化（シンプル化）
+  ctx.c_superblock->s_blkcnt = kafs_blkcnt_htos(blkcnt);
   ctx.c_superblock->s_r_blkcnt = kafs_blkcnt_htos(blkcnt);
   kafs_blkcnt_t fdb = (kafs_blkcnt_t)(mapsize >> log_blksize);
   ctx.c_superblock->s_first_data_block = kafs_blkcnt_htos(fdb);
@@ -102,8 +130,19 @@ int main(int argc, char **argv) {
     kafs_blk_set_usage(&ctx, blo, KAFS_TRUE);
 
   // root inode
-  ctx.c_inotbl->i_mode.value = 0xffff;
+  // inotbl はゼロ初期化済み
   kafs_sinode_t *inoent_rootdir = &ctx.c_inotbl[KAFS_INO_ROOTDIR];
+  // 安全性チェック
+  {
+    char *p = (char*)inoent_rootdir;
+    char *base2 = (char*)ctx.c_superblock;
+    char *end2  = base2 + mapsize;
+    if (!(p >= base2 && p + sizeof(*inoent_rootdir) <= end2)) {
+      fprintf(stderr, "inotbl/root inode out of range: ptr=%p base=%p end=%p mapsize=%lld\n",
+              (void*)p, (void*)base2, (void*)end2, (long long)mapsize);
+      abort();
+    }
+  }
   kafs_ino_mode_set(inoent_rootdir, S_IFDIR | 0755);
   kafs_ino_uid_set(inoent_rootdir, 0);
   kafs_ino_size_set(inoent_rootdir, 0);
@@ -114,12 +153,15 @@ int main(int argc, char **argv) {
   kafs_ino_mtime_set(inoent_rootdir, now);
   kafs_ino_dtime_set(inoent_rootdir, nulltime);
   kafs_ino_gid_set(inoent_rootdir, 0);
-  kafs_ino_linkcnt_set(inoent_rootdir, 1);
+  // ログ呼び出しを避けて直接設定（デバッグ）
+  inoent_rootdir->i_linkcnt = kafs_linkcnt_htos(1);
   kafs_ino_blocks_set(inoent_rootdir, 0);
   kafs_ino_dev_set(inoent_rootdir, 0);
   // ルートディレクトリのエントリは省略（"." は readdir で注入、".." は任意）
 
-  // HRL 初期化（ひな型）
+  // HRL 初期化（ゼロクリア）
+  ctx.c_hrl_index = (void*)((char*)ctx.c_superblock + hrl_index_off);
+  ctx.c_hrl_bucket_cnt = bucket_cnt;
   (void)kafs_hrl_format(&ctx);
 
   munmap(ctx.c_superblock, mapsize);

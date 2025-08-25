@@ -1,10 +1,12 @@
 #include "kafs.h"
 #include "kafs_superblock.h"
+#include "kafs_hash.h"
 
 #include <fcntl.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <stdlib.h>
 
 static void usage(const char *prog) {
   fprintf(stderr, "Usage: %s <image>\n", prog);
@@ -40,6 +42,23 @@ int main(int argc, char **argv) {
          (uint64_t)kafs_sb_hrl_index_size_get(&sb),
          (uint64_t)kafs_sb_hrl_entry_offset_get(&sb),
          (uint32_t)kafs_sb_hrl_entry_cnt_get(&sb));
+
+       uint64_t index_size = kafs_sb_hrl_index_size_get(&sb);
+       uint64_t entry_off = kafs_sb_hrl_entry_offset_get(&sb);
+       uint32_t entry_cnt = kafs_sb_hrl_entry_cnt_get(&sb);
+       if (index_size && entry_off && entry_cnt) {
+              uint32_t buckets = (uint32_t)(index_size / sizeof(uint32_t));
+              printf("hrl buckets=%u\n", buckets);
+              size_t ents_bytes = (size_t)entry_cnt * sizeof(kafs_hrl_entry_t);
+              kafs_hrl_entry_t *ents = malloc(ents_bytes);
+              if (!ents) { perror("malloc"); close(fd); return 1; }
+              ssize_t er = pread(fd, ents, ents_bytes, (off_t)entry_off);
+              if (er != (ssize_t)ents_bytes) { perror("pread hrl entries"); free(ents); close(fd); return 1; }
+              uint32_t used = 0;
+              for (uint32_t i = 0; i < entry_cnt; ++i) if (ents[i].refcnt) ++used;
+              printf("hrl entries used=%u / %u\n", used, entry_cnt);
+              free(ents);
+       }
 
   close(fd);
   return 0;
