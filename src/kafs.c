@@ -535,11 +535,29 @@ kafs_ino_iblk_write (struct kafs_context *ctx, kafs_sinode_t * inoent, kafs_iblk
   assert (inoent != NULL);
   assert (kafs_ino_get_usage (inoent));
   assert (kafs_ino_size_get (inoent) > KAFS_DIRECT_SIZE);
-  kafs_blkcnt_t blo;
-  KAFS_CALL (kafs_ino_ibrk_run, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_PUT);
-  assert (blo != KAFS_BLO_NONE);
-  KAFS_CALL (kafs_blk_write, ctx, blo, buf);
-  return KAFS_SUCCESS;
+  kafs_blksize_t blksize = kafs_sb_blksize_get (ctx->c_superblock);
+  // ゼロブロックは割り当てず、既存なら解放して参照を NONE に戻す
+  if (kafs_blk_is_zero (buf, blksize))
+    {
+      // バッファ内に非ゼロがある -> 通常の書き込み
+      kafs_blkcnt_t blo;
+      KAFS_CALL (kafs_ino_ibrk_run, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_PUT);
+      assert (blo != KAFS_BLO_NONE);
+      KAFS_CALL (kafs_blk_write, ctx, blo, buf);
+      return KAFS_SUCCESS;
+    }
+  else
+    {
+      // バッファが全ゼロ -> 参照を削除してスパースにする
+      kafs_blkcnt_t blo;
+      KAFS_CALL (kafs_ino_ibrk_run, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_GET);
+      if (blo != KAFS_BLO_NONE)
+        {
+          KAFS_CALL (kafs_ino_ibrk_run, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_DEL);
+          assert (blo == KAFS_BLO_NONE);
+        }
+      return KAFS_SUCCESS;
+    }
 }
 
 static int
@@ -1441,6 +1459,17 @@ static struct fuse_operations kafs_operations = {
   .symlink = kafs_op_symlink,
 };
 
+static void
+usage(const char *prog)
+{
+  fprintf(stderr,
+          "Usage: %s [--image <image>|--image=<image>] <mountpoint> [FUSE options...]\n"
+          "       env KAFS_IMAGE can be used as fallback image path.\n"
+          "Examples:\n"
+          "  %s --image test.img mnt -f\n"
+          , prog, prog);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -1449,8 +1478,14 @@ main (int argc, char **argv)
   // argv から --image を取り除き fuse_main へは渡さない
   char *argv_clean[argc];
   int argc_clean = 0;
+  kafs_bool_t show_help = KAFS_FALSE;
   for (int i = 0; i < argc; ++i)
     {
+      if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
+        {
+          show_help = KAFS_TRUE;
+          continue;
+        }
       if (strncmp(argv[i], "--image=", 8) == 0)
         {
           image_path = argv[i] + 8;
@@ -1463,8 +1498,18 @@ main (int argc, char **argv)
         }
       argv_clean[argc_clean++] = argv[i];
     }
+  if (show_help)
+    {
+      usage(argv[0]);
+      return 0;
+    }
   if (image_path == NULL)
     image_path = "test.img";
+  if (argc_clean < 2)
+    {
+      usage(argv[0]);
+      return 2;
+    }
 
   static kafs_context_t ctx;
   ctx.c_fd = open (image_path, O_RDWR, 0666);
