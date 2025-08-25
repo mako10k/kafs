@@ -1,4 +1,8 @@
 # Copilot Instructions
 
-## 実験的なものなので基本的には後方互換は考えない
-## git branch で分岐しながらドラスティックな TRY&ERROR で開発を進めます。
+## Experimental; no backward compatibility is required.
+## Develop with aggressive try-and-error on short-lived Git branches.
+## Execute all commands via the `#shell_execute` tool.
+## Prefer fail-fast behavior.
+## Use assertions (design by contract) for early error detection.
+## Do not implement fallbacks; fail explicitly instead.

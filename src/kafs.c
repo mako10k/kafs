@@ -1444,88 +1444,60 @@ static struct fuse_operations kafs_operations = {
 int
 main (int argc, char **argv)
 {
-  kafs_logblksize_t log_blksize = 12;
-  kafs_blksize_t blksize = 1 << log_blksize;
-  kafs_blksize_t blksizemask = blksize - 1;
-  kafs_blkcnt_t blkcnt = (1024 * 1024 * 1024) >> log_blksize;
-  kafs_inocnt_t inocnt = 65536;
-
   static kafs_context_t ctx;
-  ctx.c_fd = open ("test.img", O_RDWR | O_CREAT | O_TRUNC, 0666);
+  ctx.c_fd = open ("test.img", O_RDWR, 0666);
+  if (ctx.c_fd < 0)
+    {
+      perror ("open test.img");
+      fprintf (stderr, "image not found. run mkfs.kafs first.\n");
+      exit (2);
+    }
   ctx.c_blo_search = 0;
   ctx.c_ino_search = 0;
 
-  // ファイルレイアウトの計算
-  off_t mapsize = 0;
+  // まずスーパーブロックだけ読み出してレイアウトを決定
+  kafs_ssuperblock_t sbdisk;
+  ssize_t r = pread (ctx.c_fd, &sbdisk, sizeof (sbdisk), 0);
+  if (r != (ssize_t) sizeof (sbdisk))
+    {
+      perror ("pread superblock");
+      exit (2);
+    }
+  if (kafs_sb_magic_get (&sbdisk) != KAFS_MAGIC)
+    {
+      fprintf (stderr, "invalid magic. run mkfs.kafs to format.\n");
+      exit (2);
+    }
+  // 読み出し値からレイアウト計算
+  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get (&sbdisk);
+  kafs_blksize_t blksize = 1u << log_blksize;
+  kafs_blksize_t blksizemask = blksize - 1u;
+  kafs_inocnt_t inocnt = kafs_inocnt_stoh (sbdisk.s_inocnt);
+  kafs_blkcnt_t r_blkcnt = kafs_blkcnt_stoh (sbdisk.s_r_blkcnt);
 
-  // Superblock の終了位置の計算
+  off_t mapsize = 0;
   mapsize += sizeof (kafs_ssuperblock_t);
   mapsize = (mapsize + blksizemask) & ~blksizemask;
-  ctx.c_superblock = NULL;
-  ctx.c_blkmasktbl = (void *) mapsize;
-
-  // kafs_blkmask_t はコンパイル対象の処理系で早く処理できる変数サイズ
-  // これが 64 bits を超えると境界を跨ぐ可能性があるので、それをチェック
+  void *blkmask_off = (void *) mapsize;
   assert (sizeof (kafs_blkmask_t) <= 8);
-  // バイト単位に変換（切り上げ）
-  mapsize += (blkcnt - 7) >> 3;
-  // 64bit変数単位に変換（切り上げ）
+  mapsize += (r_blkcnt - 7) >> 3;
   mapsize = (mapsize + 7) & ~7;
-  // blksizemask 単位に変換（切り上げ）
   mapsize = (mapsize + blksizemask) & ~blksizemask;
-  // blkmask 領域をスキップし、inode テーブル領域をセット
-  ctx.c_inotbl = (void *) mapsize;
-
+  void *inotbl_off = (void *) mapsize;
   mapsize += sizeof (kafs_sinode_t) * inocnt;
   mapsize = (mapsize + blksizemask) & ~blksizemask;
-  ssize_t s = ftruncate (ctx.c_fd, mapsize + (off_t) blksize * blkcnt);
-  if (s < 0)
-    {
-      perror ("ftruncate");
-      exit (EXIT_FAILURE);
-    }
-  ctx.c_superblock = mmap (NULL, mapsize, PROT_READ | PROT_WRITE, MAP_SHARED, ctx.c_fd, 0);
-  ctx.c_blkmasktbl = (void *) ctx.c_superblock + (intptr_t) ctx.c_blkmasktbl;
-  ctx.c_inotbl = (void *) ctx.c_superblock + (intptr_t) ctx.c_inotbl;
-  // 新フォーマット用の基本フィールドを初期化
-  kafs_sb_log_blksize_set (ctx.c_superblock, log_blksize);
-  kafs_sb_magic_set (ctx.c_superblock, KAFS_MAGIC);
-  kafs_sb_format_version_set (ctx.c_superblock, KAFS_FORMAT_VERSION);
-  kafs_sb_hash_fast_set (ctx.c_superblock, KAFS_HASH_FAST_XXH64);
-  kafs_sb_hash_strong_set (ctx.c_superblock, KAFS_HASH_STRONG_BLAKE3_256);
-  // HRL領域はひな型段階では未割当（0で初期化）
-  kafs_sb_hrl_index_offset_set (ctx.c_superblock, 0);
-  kafs_sb_hrl_index_size_set (ctx.c_superblock, 0);
-  kafs_sb_hrl_entry_offset_set (ctx.c_superblock, 0);
-  kafs_sb_hrl_entry_cnt_set (ctx.c_superblock, 0);
-  // HRL 初期化（ひな型: 何もしない）
-  (void)kafs_hrl_format(&ctx);
-  (void)kafs_hrl_open(&ctx);
-  // R/O items
-  ctx.c_superblock->s_inocnt = kafs_inocnt_htos (inocnt);
-  ctx.c_superblock->s_blkcnt = kafs_blkcnt_htos (blkcnt * 0.95);
-  ctx.c_superblock->s_r_blkcnt = kafs_blkcnt_htos (blkcnt);
-  kafs_blkcnt_t fdb = mapsize >> log_blksize;
-  ctx.c_superblock->s_first_data_block = kafs_blkcnt_htos (fdb);
-  kafs_sb_blkcnt_free_set (ctx.c_superblock, blkcnt - fdb);
-  for (kafs_blkcnt_t blo = 0; blo < fdb; blo++)
-    kafs_blk_set_usage (&ctx, blo, KAFS_TRUE);
 
-  ctx.c_inotbl->i_mode.value = 0xffff;
-  kafs_sinode_t *inoent_rootdir = &ctx.c_inotbl[KAFS_INO_ROOTDIR];
-  kafs_ino_mode_set (inoent_rootdir, S_IFDIR | 0755);
-  kafs_ino_uid_set (inoent_rootdir, 0);
-  kafs_ino_size_set (inoent_rootdir, 0);
-  kafs_time_t now = kafs_now ();
-  kafs_time_t nulltime = { 0, 0 };
-  kafs_ino_atime_set (inoent_rootdir, now);
-  kafs_ino_ctime_set (inoent_rootdir, now);
-  kafs_ino_mtime_set (inoent_rootdir, now);
-  kafs_ino_dtime_set (inoent_rootdir, nulltime);
-  kafs_ino_gid_set (inoent_rootdir, 0);
-  kafs_ino_linkcnt_set (inoent_rootdir, 1);
-  kafs_ino_blocks_set (inoent_rootdir, 0);
-  kafs_ino_dev_set (inoent_rootdir, 0);
-  kafs_dirent_add (&ctx, inoent_rootdir, KAFS_INO_ROOTDIR, "..");
+  ctx.c_superblock = mmap (NULL, mapsize, PROT_READ | PROT_WRITE, MAP_SHARED, ctx.c_fd, 0);
+  if (ctx.c_superblock == MAP_FAILED)
+    {
+      perror ("mmap");
+      exit (2);
+    }
+  ctx.c_blkmasktbl = (void *) ctx.c_superblock + (intptr_t) blkmask_off;
+  ctx.c_inotbl = (void *) ctx.c_superblock + (intptr_t) inotbl_off;
+
+  // HRL オープン（ひな型: 何もしない）
+  (void) kafs_hrl_open (&ctx);
+
   return fuse_main (argc, argv, &kafs_operations, &ctx);
 }
