@@ -1,0 +1,10 @@
+{
+	"servers": {
+		"mcp-shell-server": {
+			"type": "stdio",
+			"command": "mcp-shell-server",
+			"args": []
+		}
+	},
+	"inputs": []
+}
