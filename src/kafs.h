@@ -85,6 +85,14 @@ typedef uint_fast16_t kafs_filenamelen_t;
 typedef uint_fast32_t kafs_blksize_t;
 /// @brief inode ブロックカウント型
 typedef uint_fast32_t kafs_iblkcnt_t;
+/// @brief ハッシュ参照ID型 (Hash Reference ID)
+typedef uint_fast32_t kafs_hrid_t;
+
+// --- 定数（新フォーマット用） ---
+#define KAFS_MAGIC 0x4B414653u /* 'KAFS' */
+#define KAFS_FORMAT_VERSION 2u  /* HRL 採用版 */
+#define KAFS_HASH_FAST_XXH64 1u
+#define KAFS_HASH_STRONG_BLAKE3_256 1u
 
 // ------------------------------------
 // 記録表現で使う型
@@ -185,6 +193,20 @@ struct kafs_sfilenamelen
 } __attribute__((packed));
 /// @brief ファイル名長さ型
 typedef struct kafs_sfilenamelen kafs_sfilenamelen_t;
+
+// 一般用途の 32bit 保管型
+struct kafs_su32
+{
+  uint32_t value;
+} __attribute__((packed));
+typedef struct kafs_su32 kafs_su32_t;
+
+// 一般用途の 64bit 保管型
+struct kafs_su64
+{
+  uint64_t value;
+} __attribute__((packed));
+typedef struct kafs_su64 kafs_su64_t;
 
 // ------------------------------------
 // 型変換
@@ -329,6 +351,32 @@ static kafs_sfilenamelen_t
 kafs_filenamelen_htos (kafs_filenamelen_t h)
 {
   kafs_sfilenamelen_t s = {.value = htole16 (h) };
+  return s;
+}
+
+static inline uint32_t
+kafs_u32_stoh (kafs_su32_t s)
+{
+  return le32toh (s.value);
+}
+
+static inline kafs_su32_t
+kafs_u32_htos (uint32_t h)
+{
+  kafs_su32_t s = {.value = htole32 (h) };
+  return s;
+}
+
+static inline uint64_t
+kafs_u64_stoh (kafs_su64_t s)
+{
+  return le64toh (s.value);
+}
+
+static inline kafs_su64_t
+kafs_u64_htos (uint64_t h)
+{
+  kafs_su64_t s = {.value = htole64 (h) };
   return s;
 }
 

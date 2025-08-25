@@ -4,6 +4,7 @@
 #include "kafs_block.h"
 #include "kafs_inode.h"
 #include "kafs_dirent.h"
+#include "kafs_hash.h"
 
 #define KAFS_DIRECT_SIZE (sizeof (((struct kafs_sinode *)NULL)->i_blkreftbl))
 
@@ -1486,6 +1487,20 @@ main (int argc, char **argv)
   ctx.c_superblock = mmap (NULL, mapsize, PROT_READ | PROT_WRITE, MAP_SHARED, ctx.c_fd, 0);
   ctx.c_blkmasktbl = (void *) ctx.c_superblock + (intptr_t) ctx.c_blkmasktbl;
   ctx.c_inotbl = (void *) ctx.c_superblock + (intptr_t) ctx.c_inotbl;
+  // 新フォーマット用の基本フィールドを初期化
+  kafs_sb_log_blksize_set (ctx.c_superblock, log_blksize);
+  kafs_sb_magic_set (ctx.c_superblock, KAFS_MAGIC);
+  kafs_sb_format_version_set (ctx.c_superblock, KAFS_FORMAT_VERSION);
+  kafs_sb_hash_fast_set (ctx.c_superblock, KAFS_HASH_FAST_XXH64);
+  kafs_sb_hash_strong_set (ctx.c_superblock, KAFS_HASH_STRONG_BLAKE3_256);
+  // HRL領域はひな型段階では未割当（0で初期化）
+  kafs_sb_hrl_index_offset_set (ctx.c_superblock, 0);
+  kafs_sb_hrl_index_size_set (ctx.c_superblock, 0);
+  kafs_sb_hrl_entry_offset_set (ctx.c_superblock, 0);
+  kafs_sb_hrl_entry_cnt_set (ctx.c_superblock, 0);
+  // HRL 初期化（ひな型: 何もしない）
+  (void)kafs_hrl_format(&ctx);
+  (void)kafs_hrl_open(&ctx);
   // R/O items
   ctx.c_superblock->s_inocnt = kafs_inocnt_htos (inocnt);
   ctx.c_superblock->s_blkcnt = kafs_blkcnt_htos (blkcnt * 0.95);

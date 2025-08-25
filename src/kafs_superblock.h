@@ -26,6 +26,22 @@ struct kafs_ssuperblock
   kafs_stime_t s_wtime;
   /// @brief マウント数
   kafs_smntcnt_t s_mntcnt;
+  /// @brief フォーマット識別子 'KAFS'
+  kafs_su32_t s_magic;
+  /// @brief フォーマットバージョン（2=HRL採用）
+  kafs_su32_t s_format_version;
+  /// @brief 高速ハッシュ識別子（例: 1=xxh64）
+  kafs_su32_t s_hash_algo_fast;
+  /// @brief 強ハッシュ識別子（例: 1=BLAKE3-256）
+  kafs_su32_t s_hash_algo_strong;
+  /// @brief HRL インデックス領域の先頭オフセット（バイト）
+  kafs_su64_t s_hrl_index_offset;
+  /// @brief HRL インデックス領域のサイズ（バイト）
+  kafs_su64_t s_hrl_index_size;
+  /// @brief HR エントリ表の先頭オフセット（バイト）
+  kafs_su64_t s_hrl_entry_offset;
+  /// @brief HR エントリ数
+  kafs_su32_t s_hrl_entry_cnt;
 } __attribute__((packed));
 
 typedef struct kafs_ssuperblock kafs_ssuperblock_t;
@@ -107,6 +123,33 @@ kafs_sb_log_blksize_get (const struct kafs_ssuperblock *sb)
   assert (sb != NULL);
   return kafs_logblksize_stoh (sb->s_log_blksize) + 10;
 }
+
+static void
+kafs_sb_log_blksize_set (struct kafs_ssuperblock *sb, kafs_logblksize_t log2_blksize)
+{
+  assert (sb != NULL);
+  // 引数は実ブロックサイズの log2 値（例: 4096=2^12 → 12）
+  sb->s_log_blksize = (kafs_slogblksize_t){ .value = htole16((uint16_t)(log2_blksize - 10)) };
+}
+
+// --- HRL 追加フィールドの get/set ---
+static inline uint32_t kafs_sb_magic_get (const struct kafs_ssuperblock *sb) { return kafs_u32_stoh(sb->s_magic); }
+static inline void kafs_sb_magic_set (struct kafs_ssuperblock *sb, uint32_t v) { sb->s_magic = kafs_u32_htos(v); }
+static inline uint32_t kafs_sb_format_version_get (const struct kafs_ssuperblock *sb) { return kafs_u32_stoh(sb->s_format_version); }
+static inline void kafs_sb_format_version_set (struct kafs_ssuperblock *sb, uint32_t v) { sb->s_format_version = kafs_u32_htos(v); }
+static inline uint32_t kafs_sb_hash_fast_get (const struct kafs_ssuperblock *sb) { return kafs_u32_stoh(sb->s_hash_algo_fast); }
+static inline void kafs_sb_hash_fast_set (struct kafs_ssuperblock *sb, uint32_t v) { sb->s_hash_algo_fast = kafs_u32_htos(v); }
+static inline uint32_t kafs_sb_hash_strong_get (const struct kafs_ssuperblock *sb) { return kafs_u32_stoh(sb->s_hash_algo_strong); }
+static inline void kafs_sb_hash_strong_set (struct kafs_ssuperblock *sb, uint32_t v) { sb->s_hash_algo_strong = kafs_u32_htos(v); }
+
+static inline uint64_t kafs_sb_hrl_index_offset_get (const struct kafs_ssuperblock *sb) { return kafs_u64_stoh(sb->s_hrl_index_offset); }
+static inline void kafs_sb_hrl_index_offset_set (struct kafs_ssuperblock *sb, uint64_t v) { sb->s_hrl_index_offset = kafs_u64_htos(v); }
+static inline uint64_t kafs_sb_hrl_index_size_get (const struct kafs_ssuperblock *sb) { return kafs_u64_stoh(sb->s_hrl_index_size); }
+static inline void kafs_sb_hrl_index_size_set (struct kafs_ssuperblock *sb, uint64_t v) { sb->s_hrl_index_size = kafs_u64_htos(v); }
+static inline uint64_t kafs_sb_hrl_entry_offset_get (const struct kafs_ssuperblock *sb) { return kafs_u64_stoh(sb->s_hrl_entry_offset); }
+static inline void kafs_sb_hrl_entry_offset_set (struct kafs_ssuperblock *sb, uint64_t v) { sb->s_hrl_entry_offset = kafs_u64_htos(v); }
+static inline uint32_t kafs_sb_hrl_entry_cnt_get (const struct kafs_ssuperblock *sb) { return kafs_u32_stoh(sb->s_hrl_entry_cnt); }
+static inline void kafs_sb_hrl_entry_cnt_set (struct kafs_ssuperblock *sb, uint32_t v) { sb->s_hrl_entry_cnt = kafs_u32_htos(v); }
 
 static kafs_blksize_t
 kafs_sb_blksize_get (const struct kafs_ssuperblock *sb)
