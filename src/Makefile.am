@@ -18,3 +18,10 @@ kafs_info_LDADD = $(KAFS_LIBS)
 noinst_HEADERS = kafs_block.h kafs_context.h kafs_dirent.h kafs_inode.h kafs_superblock.h kafs.h
 
 CFLAGS = -Wall -Werror -g -O0 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64
+
+# --- Tests ---
+check_PROGRAMS = hrl_smoketest
+TESTS = hrl_smoketest
+hrl_smoketest_SOURCES = tests_hrl_smoketest.c kafs_hrl.c
+hrl_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+hrl_smoketest_LDADD = $(KAFS_LIBS)
