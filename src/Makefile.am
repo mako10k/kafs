@@ -20,8 +20,16 @@ noinst_HEADERS = kafs_block.h kafs_context.h kafs_dirent.h kafs_inode.h kafs_sup
 CFLAGS = -Wall -Werror -g -O0 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64
 
 # --- Tests ---
-check_PROGRAMS = hrl_smoketest
-TESTS = hrl_smoketest
+check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured
+TESTS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured
 hrl_smoketest_SOURCES = tests_hrl_smoketest.c kafs_hrl.c
 hrl_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 hrl_smoketest_LDADD = $(KAFS_LIBS)
+
+hrl_dec_ref_by_blo_SOURCES = tests_hrl_dec_ref_by_blo.c kafs_hrl.c
+hrl_dec_ref_by_blo_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+hrl_dec_ref_by_blo_LDADD = $(KAFS_LIBS)
+
+hrl_unconfigured_SOURCES = tests_hrl_unconfigured.c kafs_hrl.c
+hrl_unconfigured_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+hrl_unconfigured_LDADD = $(KAFS_LIBS)
