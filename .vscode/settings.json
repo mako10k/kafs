@@ -14,5 +14,10 @@
 ],
 "C_Cpp.codeAnalysis.clangTidy.enabled": true,
 "editor.tabSize": 8,
-"editor.detectIndentation": false
+"editor.detectIndentation": false,
+"chat.mcp.serverSampling": {
+        "kafs/.vscode/mcp.json: mcp-shell-server": {
+                "allowedDuringChat": true
+        }
+}
 }
