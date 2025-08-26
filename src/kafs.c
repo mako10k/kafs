@@ -1437,7 +1437,7 @@ static int kafs_op_symlink(const char *target, const char *linkpath)
   KAFS_CALL(kafs_create, linkpath, 0777 | S_IFLNK, 0, NULL, &ino);
   kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
   ssize_t w = KAFS_CALL(kafs_pwrite, ctx, inoent, target, strlen(target), 0);
-  assert(w == strlen(target));
+  assert(w == (ssize_t)strlen(target));
   return 0;
 }
 

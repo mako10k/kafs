@@ -129,7 +129,8 @@ static kafs_logblksize_t kafs_sb_log_blksize_get(const struct kafs_ssuperblock *
   return kafs_logblksize_stoh(sb->s_log_blksize) + 10;
 }
 
-static void kafs_sb_log_blksize_set(struct kafs_ssuperblock *sb, kafs_logblksize_t log2_blksize)
+__attribute_maybe_unused__ static void kafs_sb_log_blksize_set(struct kafs_ssuperblock *sb,
+                                                               kafs_logblksize_t log2_blksize)
 {
   assert(sb != NULL);
   // 引数は実ブロックサイズの log2 値（例: 4096=2^12 → 12）

@@ -8,7 +8,7 @@ if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists fuse3; then
 else
   FUSE_CFLAGS="-I/usr/include/fuse3"
 fi
-CFLAGS_COMMON=( -Wall -Wextra -Werror -std=c11 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -I./src ${FUSE_CFLAGS} )
+CFLAGS_COMMON=( -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -std=c11 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -I./src ${FUSE_CFLAGS} )
 SRC=( src/*.c )
 if [[ ${#SRC[@]} -eq 0 ]]; then echo "No C sources"; exit 0; fi
 # Compile each source to ensure warnings are caught; no link to avoid multiple mains
