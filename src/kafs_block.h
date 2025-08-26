@@ -86,7 +86,7 @@ static int kafs_blk_alloc(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
   assert(*pblo == KAFS_BLO_NONE);
   kafs_blkcnt_t blo_search = ctx->c_blo_search;
   kafs_blkcnt_t blo = blo_search + 1;
-  kafs_blkmask_t *blkmasktbl = ctx->c_blkmasktbl;
+  kafs_blkmask_t * const blkmasktbl = ctx->c_blkmasktbl;
   kafs_blkmask_t blocnt = kafs_sb_blkcnt_get(ctx->c_superblock);
   while (blo_search != blo)
   {
@@ -94,8 +94,9 @@ static int kafs_blk_alloc(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
       blo = 0;
     kafs_blkcnt_t blod = blo >> KAFS_BLKMASK_LOG_BITS;
     kafs_blkcnt_t blor = blo & KAFS_BLKMASK_MASK_BITS; // ToDo: 2周目以降は常に0
-    kafs_blkmask_t blkmask = ~blkmasktbl[blod];
-    if (blkmask != 0)
+  kafs_blkmask_t blkmask = ~blkmasktbl[blod];
+  // cppcheck-suppress knownConditionTrueFalse
+  if (blkmask != 0)
     {
       kafs_blkcnt_t blor_found = kafs_get_free_blkmask(blkmask);
       kafs_blkcnt_t blo_found = (blod << KAFS_BLKMASK_LOG_BITS) + blor_found;
