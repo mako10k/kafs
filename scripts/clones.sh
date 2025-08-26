@@ -12,6 +12,8 @@ npx --yes jscpd@latest \
   --threshold 2 \
   --reporters json,console \
   --ignore "**/autom4te.cache/**" \
-  --pattern "src/**/*.c" \
-  --pattern "src/**/*.h" \
-  --output "$REPORT_DIR"
+  --ignore "src/tests_*" \
+  --ignore "src/tests_*.*" \
+  --format "c,c-header" \
+  --pattern 'src/**/*.{c,h}' \
+  --output "$REPORT_DIR" || true

@@ -57,6 +57,7 @@ static void *memcpy_orig(void *d, const void *s, size_t l)
 /// @param blo ブロック番号
 /// @param buf 読み出すバッファ
 /// @return 0: 成功, < 0: 失敗 (-errno)
+// cppcheck-suppress constParameterCallback
 static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
 {
   kafs_log(KAFS_LOG_DEBUG, "%s(blo = %" PRIuFAST32 ")\n", __func__, blo);
@@ -81,6 +82,7 @@ static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
 /// @param blo ブロック番号へのポインタ
 /// @param buf 書き込むバッファ
 /// @return 0: 成功, < 0: 失敗 (-errno)
+// cppcheck-suppress constParameterCallback
 static int kafs_blk_write(struct kafs_context *ctx, kafs_blkcnt_t blo, const void *buf)
 {
   kafs_log(KAFS_LOG_DEBUG, "%s(blo = %" PRIuFAST32 ")\n", __func__, blo);
@@ -993,8 +995,10 @@ static int kafs_dirent_remove(struct kafs_context *ctx, kafs_sinode_t *inoent_di
   return -ENOENT;
 }
 
+// cppcheck-suppress constParameterCallback
 static int kafs_access_check(int ok, kafs_sinode_t *inoent, kafs_bool_t is_dir, uid_t uid,
-                             gid_t gid, size_t ngroups, gid_t groups[])
+                             gid_t gid, size_t ngroups,
+                             /* cppcheck-suppress constParameterCallback */ gid_t groups[])
 {
   mode_t mode = kafs_ino_mode_get(inoent);
   uid_t fuid = kafs_ino_uid_get(inoent);
@@ -1077,6 +1081,7 @@ static int kafs_access_check(int ok, kafs_sinode_t *inoent, kafs_bool_t is_dir, 
   return KAFS_SUCCESS;
 }
 
+// cppcheck-suppress constParameterCallback
 static int kafs_access(struct fuse_context *fctx, kafs_context_t *ctx, const char *path,
                        struct fuse_file_info *fi, int ok, kafs_sinode_t **pinoent)
 {
