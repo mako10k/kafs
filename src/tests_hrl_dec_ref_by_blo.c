@@ -15,9 +15,15 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-static int mkimg(const char *path, size_t bytes, unsigned log_bs, unsigned inodes, kafs_context_t *out_ctx, off_t *out_mapsize) {
+static int mkimg(const char *path, size_t bytes, unsigned log_bs, unsigned inodes,
+                 kafs_context_t *out_ctx, off_t *out_mapsize)
+{
   int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
-  if (fd < 0) { perror("open"); return -1; }
+  if (fd < 0)
+  {
+    perror("open");
+    return -1;
+  }
   kafs_blkcnt_t blkcnt = (kafs_blkcnt_t)(bytes >> log_bs);
   kafs_blksize_t bs = 1u << log_bs;
   kafs_blksize_t bmask = bs - 1u;
@@ -25,17 +31,18 @@ static int mkimg(const char *path, size_t bytes, unsigned log_bs, unsigned inode
   off_t mapsize = 0;
   mapsize += sizeof(kafs_ssuperblock_t);
   mapsize = (mapsize + bmask) & ~bmask;
-  void *blkmask_off = (void*)mapsize;
+  void *blkmask_off = (void *)mapsize;
   mapsize += (blkcnt + 7) >> 3;
   mapsize = (mapsize + 7) & ~7;
   mapsize = (mapsize + bmask) & ~bmask;
-  void *inotbl_off = (void*)mapsize;
+  void *inotbl_off = (void *)mapsize;
   mapsize += sizeof(kafs_sinode_t) * inodes;
   mapsize = (mapsize + bmask) & ~bmask;
 
   // HRL areas
   uint32_t bucket_cnt = 1024;
-  while ((bucket_cnt << 1) <= (uint32_t)(blkcnt / 4)) bucket_cnt <<= 1;
+  while ((bucket_cnt << 1) <= (uint32_t)(blkcnt / 4))
+    bucket_cnt <<= 1;
   size_t hrl_index_size = (size_t)bucket_cnt * sizeof(uint32_t);
   off_t hrl_index_off = mapsize;
   mapsize += hrl_index_size;
@@ -45,12 +52,20 @@ static int mkimg(const char *path, size_t bytes, unsigned log_bs, unsigned inode
   mapsize += (off_t)entry_cnt * (off_t)sizeof(kafs_hrl_entry_t);
   mapsize = (mapsize + bmask) & ~bmask;
 
-  if (ftruncate(fd, mapsize + (off_t)bs * blkcnt) < 0) { perror("ftruncate"); return -1; }
+  if (ftruncate(fd, mapsize + (off_t)bs * blkcnt) < 0)
+  {
+    perror("ftruncate");
+    return -1;
+  }
 
   kafs_ssuperblock_t *sb = mmap(NULL, mapsize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-  if (sb == MAP_FAILED) { perror("mmap"); return -1; }
-  memset((char*)sb + (intptr_t)blkmask_off, 0, ((size_t)blkcnt + 7) >> 3);
-  memset((char*)sb + (intptr_t)inotbl_off, 0, sizeof(kafs_sinode_t) * inodes);
+  if (sb == MAP_FAILED)
+  {
+    perror("mmap");
+    return -1;
+  }
+  memset((char *)sb + (intptr_t)blkmask_off, 0, ((size_t)blkcnt + 7) >> 3);
+  memset((char *)sb + (intptr_t)inotbl_off, 0, sizeof(kafs_sinode_t) * inodes);
 
   kafs_sb_log_blksize_set(sb, log_bs);
   kafs_sb_magic_set(sb, KAFS_MAGIC);
@@ -72,14 +87,15 @@ static int mkimg(const char *path, size_t bytes, unsigned log_bs, unsigned inode
   kafs_context_t c = {0};
   c.c_superblock = sb;
   c.c_fd = fd;
-  c.c_blkmasktbl = (kafs_blkmask_t*)((char*)sb + (intptr_t)blkmask_off);
-  c.c_inotbl = (kafs_sinode_t*)((char*)sb + (intptr_t)inotbl_off);
+  c.c_blkmasktbl = (kafs_blkmask_t *)((char *)sb + (intptr_t)blkmask_off);
+  c.c_inotbl = (kafs_sinode_t *)((char *)sb + (intptr_t)inotbl_off);
   c.c_blo_search = 0;
   c.c_ino_search = 0;
-  c.c_hrl_index = (void*)((char*)sb + hrl_index_off);
+  c.c_hrl_index = (void *)((char *)sb + hrl_index_off);
   c.c_hrl_bucket_cnt = bucket_cnt;
 
-  for (kafs_blkcnt_t blo = 0; blo < fdb; ++blo) kafs_blk_set_usage(&c, blo, KAFS_TRUE);
+  for (kafs_blkcnt_t blo = 0; blo < fdb; ++blo)
+    kafs_blk_set_usage(&c, blo, KAFS_TRUE);
   kafs_hrl_format(&c);
 
   *out_ctx = c;
@@ -87,17 +103,22 @@ static int mkimg(const char *path, size_t bytes, unsigned log_bs, unsigned inode
   return 0;
 }
 
-int main(void) {
+int main(void)
+{
   const char *img = "./hrl_dec_ref_by_blo.img";
-  kafs_context_t ctx; off_t mapsize;
-  assert(mkimg(img, 64*1024*1024u, 12, 1024, &ctx, &mapsize) == 0);
+  kafs_context_t ctx;
+  off_t mapsize;
+  assert(mkimg(img, 64 * 1024 * 1024u, 12, 1024, &ctx, &mapsize) == 0);
 
   // write a distinct block
   kafs_blksize_t bs = kafs_sb_blksize_get(ctx.c_superblock);
   char *buf = malloc(bs);
-  for (kafs_blksize_t i = 0; i < bs; ++i) buf[i] = (char)(i & 0xFF);
+  for (kafs_blksize_t i = 0; i < bs; ++i)
+    buf[i] = (char)(i & 0xFF);
 
-  kafs_hrid_t h; int is_new; kafs_blkcnt_t blo;
+  kafs_hrid_t h;
+  int is_new;
+  kafs_blkcnt_t blo;
   assert(kafs_hrl_put(&ctx, buf, &h, &is_new, &blo) == 0);
   assert(is_new == 1);
   assert(kafs_hrl_inc_ref(&ctx, h) == 0); // take a second reference
@@ -109,8 +130,8 @@ int main(void) {
   assert(kafs_hrl_dec_ref(&ctx, h) == 0);
 
   // ensure the block becomes free in bitmap afterward (by attempting to mark as free again)
-  // first, if still marked used, unmark should succeed; calling unmark twice would assert, so just check used->free transition
-  // This is indirectly validated by not crashing and final cleanup.
+  // first, if still marked used, unmark should succeed; calling unmark twice would assert, so just
+  // check used->free transition This is indirectly validated by not crashing and final cleanup.
 
   munmap(ctx.c_superblock, mapsize);
   close(ctx.c_fd);
