@@ -20,8 +20,8 @@ noinst_HEADERS = kafs_block.h kafs_context.h kafs_dirent.h kafs_inode.h kafs_sup
 CFLAGS = -Wall -Werror -g -O0 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64
 
 # --- Tests ---
-check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured
-TESTS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured
+check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured stress_fs
+TESTS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured stress_fs
 hrl_smoketest_SOURCES = tests_hrl_smoketest.c kafs_hrl.c kafs_locks.c test_utils.c
 hrl_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 hrl_smoketest_LDADD = $(KAFS_LIBS)
@@ -33,3 +33,9 @@ hrl_dec_ref_by_blo_LDADD = $(KAFS_LIBS)
 hrl_unconfigured_SOURCES = tests_hrl_unconfigured.c kafs_hrl.c kafs_locks.c test_utils.c
 hrl_unconfigured_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 hrl_unconfigured_LDADD = $(KAFS_LIBS)
+
+# Stress test that mounts kafs in foreground and runs multi-threaded operations
+stress_fs_SOURCES = tests_stress_fs.c test_utils.c kafs_hrl.c kafs_locks.c
+stress_fs_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -pthread
+stress_fs_LDADD = $(KAFS_LIBS)
+stress_fs_LDFLAGS = -pthread
