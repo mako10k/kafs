@@ -12,7 +12,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-
 int main(void)
 {
   const char *img = "./hrl_dec_ref_by_blo.img";

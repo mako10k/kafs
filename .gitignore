@@ -15,7 +15,6 @@ Makefile.in
 
 # directories
 .deps/
-/docs/
 
 /autom4te.cache/
 

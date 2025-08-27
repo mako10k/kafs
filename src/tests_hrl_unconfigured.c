@@ -14,7 +14,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-
 int main(void)
 {
   const char *img = "./hrl_unconfigured.img";

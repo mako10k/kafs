@@ -16,13 +16,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-int kafs_test_mkimg(const char *path,
-                    size_t bytes,
-                    unsigned log_bs,
-                    unsigned inodes,
-                    int enable_hrl,
-                    kafs_context_t *out_ctx,
-                    off_t *out_mapsize)
+int kafs_test_mkimg(const char *path, size_t bytes, unsigned log_bs, unsigned inodes,
+                    int enable_hrl, kafs_context_t *out_ctx, off_t *out_mapsize)
 {
   int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
   if (fd < 0)
