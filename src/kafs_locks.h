@@ -17,3 +17,7 @@ void kafs_hrl_bucket_lock(struct kafs_context *ctx, uint32_t bucket);
 void kafs_hrl_bucket_unlock(struct kafs_context *ctx, uint32_t bucket);
 void kafs_hrl_global_lock(struct kafs_context *ctx);
 void kafs_hrl_global_unlock(struct kafs_context *ctx);
+
+// Bitmap/allocator lock (must be acquired after HRL bucket lock when both are needed)
+void kafs_bitmap_lock(struct kafs_context *ctx);
+void kafs_bitmap_unlock(struct kafs_context *ctx);

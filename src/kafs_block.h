@@ -2,6 +2,7 @@
 #include "kafs.h"
 #include "kafs_context.h"
 #include "kafs_superblock.h"
+#include "kafs_locks.h"
 #include <assert.h>
 #include <stdio.h>
 #include <errno.h>
@@ -35,7 +36,7 @@ static int kafs_blk_get_usage(const struct kafs_context *ctx, kafs_blkcnt_t blo)
   assert(blo < kafs_sb_blkcnt_get(ctx->c_superblock));
   kafs_blkcnt_t blod = blo >> KAFS_BLKMASK_LOG_BITS;
   kafs_blkcnt_t blor = blo & KAFS_BLKMASK_MASK_BITS;
-  kafs_bool_t ret = (ctx->c_blkmasktbl[blod] & ((kafs_blkmask_t)1 << blor)) != 0;
+  int ret = (ctx->c_blkmasktbl[blod] & ((kafs_blkmask_t)1 << blor)) != 0;
   kafs_log(KAFS_LOG_DEBUG, "%s(blo=%" PRIuFAST32 ") returns %s\n", __func__, blo,
            ret ? "true" : "false");
   return ret;
@@ -46,7 +47,8 @@ static int kafs_blk_get_usage(const struct kafs_context *ctx, kafs_blkcnt_t blo)
 /// @param blo ブロック番号
 /// @param usage KAFS_FALSE: フラグをクリア, KAFS_TRUE: フラグをセット
 /// @return 0: 成功, < 0: 失敗 (-errno)
-static int kafs_blk_set_usage(struct kafs_context *ctx, kafs_blkcnt_t blo, kafs_bool_t usage)
+// Internal helper without taking bitmap lock (callers must hold bitmap lock)
+static int kafs_blk_set_usage_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo, kafs_bool_t usage)
 {
   kafs_log(KAFS_LOG_DEBUG, "%s(blo=%" PRIuFAST32 ", usage=%s)\n", __func__, blo,
            usage ? "true" : "false");
@@ -75,6 +77,15 @@ static int kafs_blk_set_usage(struct kafs_context *ctx, kafs_blkcnt_t blo, kafs_
   return KAFS_SUCCESS;
 }
 
+// Public wrapper that takes bitmap lock
+static int kafs_blk_set_usage(struct kafs_context *ctx, kafs_blkcnt_t blo, kafs_bool_t usage)
+{
+  kafs_bitmap_lock(ctx);
+  int rc = kafs_blk_set_usage_nolock(ctx, blo, usage);
+  kafs_bitmap_unlock(ctx);
+  return rc;
+}
+
 /// @brief 未使用のブロック番号を取得し、使用中フラグをつける
 /// @param ctx コンテキスト
 /// @param pblo ブロック番号
@@ -84,6 +95,7 @@ static int kafs_blk_alloc(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
   assert(ctx != NULL);
   assert(pblo != NULL);
   assert(*pblo == KAFS_BLO_NONE);
+  kafs_bitmap_lock(ctx);
   kafs_blkcnt_t blo_search = ctx->c_blo_search;
   kafs_blkcnt_t blo = blo_search + 1;
   const kafs_blkmask_t *blkmasktbl = ctx->c_blkmasktbl;
@@ -104,11 +116,14 @@ static int kafs_blk_alloc(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
       {
         ctx->c_blo_search = blo_found;
         *pblo = blo_found;
-        KAFS_CALL(kafs_blk_set_usage, ctx, blo_found, KAFS_TRUE);
-        return KAFS_SUCCESS;
+    // we already hold bitmap lock, so use nolock variant
+    KAFS_CALL(kafs_blk_set_usage_nolock, ctx, blo_found, KAFS_TRUE);
+    kafs_bitmap_unlock(ctx);
+    return KAFS_SUCCESS;
       }
     }
     blo += KAFS_BLKMASK_BITS - blor;
   }
+  kafs_bitmap_unlock(ctx);
   return -ENOSPC;
 }
