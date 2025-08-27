@@ -116,10 +116,10 @@ static int kafs_blk_alloc(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
       {
         ctx->c_blo_search = blo_found;
         *pblo = blo_found;
-    // we already hold bitmap lock, so use nolock variant
-    KAFS_CALL(kafs_blk_set_usage_nolock, ctx, blo_found, KAFS_TRUE);
-    kafs_bitmap_unlock(ctx);
-    return KAFS_SUCCESS;
+        // we already hold bitmap lock, so use nolock variant
+        KAFS_CALL(kafs_blk_set_usage_nolock, ctx, blo_found, KAFS_TRUE);
+        kafs_bitmap_unlock(ctx);
+        return KAFS_SUCCESS;
       }
     }
     blo += KAFS_BLKMASK_BITS - blor;

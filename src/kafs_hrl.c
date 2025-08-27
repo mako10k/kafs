@@ -200,7 +200,8 @@ int kafs_hrl_open(kafs_context_t *ctx)
 
 int kafs_hrl_close(kafs_context_t *ctx)
 {
-  if (ctx) kafs_ctx_locks_destroy(ctx);
+  if (ctx)
+    kafs_ctx_locks_destroy(ctx);
   return 0;
 }
 
@@ -363,11 +364,11 @@ int kafs_hrl_dec_ref_by_blo(kafs_context_t *ctx, kafs_blkcnt_t blo)
   int rc = kafs_hrl_find_by_blo(ctx, blo, &hrid);
   if (rc == 0)
   {
-  // dec_ref() 内でバケットロックを取得するため、ここではロックしない
-  int rc2 = kafs_hrl_dec_ref(ctx, hrid);
-  // 参照が既に0になって削除された等の競合では -EINVAL が返り得るが、
-  // その場合は解放済みとみなして成功扱いにする
-  return (rc2 == -EINVAL) ? 0 : rc2;
+    // dec_ref() 内でバケットロックを取得するため、ここではロックしない
+    int rc2 = kafs_hrl_dec_ref(ctx, hrid);
+    // 参照が既に0になって削除された等の競合では -EINVAL が返り得るが、
+    // その場合は解放済みとみなして成功扱いにする
+    return (rc2 == -EINVAL) ? 0 : rc2;
   }
   // not managed by HRL => legacy, free directly
   return hrl_release_blo(ctx, &blo);

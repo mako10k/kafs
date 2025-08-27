@@ -1512,7 +1512,7 @@ int main(int argc, char **argv)
       image_path = a + 8;
       continue;
     }
-  // pass other args through to FUSE
+    // pass other args through to FUSE
     argv_clean[argc_clean++] = argv[i];
   }
   if (show_help || image_path == NULL || argc_clean < 2)

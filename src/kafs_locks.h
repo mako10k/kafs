@@ -2,13 +2,13 @@
 #include "kafs_context.h"
 
 #ifdef __has_include
-#  if __has_include(<pthread.h>)
-#    define KAFS_HAS_PTHREAD 1
-#  else
-#    define KAFS_HAS_PTHREAD 0
-#  endif
+#if __has_include(<pthread.h>)
+#define KAFS_HAS_PTHREAD 1
 #else
-#  define KAFS_HAS_PTHREAD 1
+#define KAFS_HAS_PTHREAD 0
+#endif
+#else
+#define KAFS_HAS_PTHREAD 1
 #endif
 
 int kafs_ctx_locks_init(struct kafs_context *ctx);
