@@ -13,7 +13,7 @@ Phase 1 (HRL safety)
 
 Phase 2 (Allocator/bitmap safety)
 - [x] Add bitmap mutex in context; guard allocation/free/mark
-- [x] Define lock ordering to avoid deadlocks (global -> bitmap -> HRL bucket)
+ - [x] Define lock ordering to avoid deadlocks (HRL bucket -> bitmap). Do not acquire in reverse order.
 
 Phase 3 (Inode/dir entries safety)
 - [ ] Add inode/dirent mutexes or coarse-grained FS mutex
