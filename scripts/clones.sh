@@ -8,8 +8,8 @@ fi
 REPORT_DIR=${REPORT_DIR:-report/clone}
 mkdir -p "$REPORT_DIR"
 npx --yes jscpd@latest \
-  --min-lines 20 \
-  --threshold 2 \
+  --min-lines 10 \
+  --threshold 1 \
   --reporters json,console \
   --ignore "**/autom4te.cache/**" \
   --format "c,c-header" \
