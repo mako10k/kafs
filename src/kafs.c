@@ -1221,9 +1221,12 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   if (!S_ISDIR(mode_dir))
     return -EIO;
   kafs_inocnt_t ino_new;
+  kafs_inode_alloc_lock(ctx);
   KAFS_CALL(kafs_ino_find_free, ctx->c_inotbl, &ino_new, &ctx->c_ino_search,
             kafs_sb_inocnt_get(ctx->c_superblock));
   struct kafs_sinode *inoent_new = &ctx->c_inotbl[ino_new];
+  kafs_inode_lock(ctx, (uint32_t)ino_new);
+  kafs_inode_alloc_unlock(ctx);
   kafs_ino_mode_set(inoent_new, mode);
   kafs_ino_uid_set(inoent_new, fctx->uid);
   kafs_ino_size_set(inoent_new, 0);
@@ -1238,16 +1241,21 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   kafs_ino_blocks_set(inoent_new, 0);
   kafs_ino_dev_set(inoent_new, 0);
   memset(inoent_new->i_blkreftbl, 0, sizeof(inoent_new->i_blkreftbl));
+  // lock directory while adding entry
+  kafs_inode_lock(ctx, (uint32_t)(inoent_dir - ctx->c_inotbl));
   ret = kafs_dirent_add(ctx, inoent_dir, ino_new, basepath);
+  kafs_inode_unlock(ctx, (uint32_t)(inoent_dir - ctx->c_inotbl));
   if (ret < 0)
   {
     KAFS_CALL(kafs_release, ctx, inoent_new);
+    kafs_inode_unlock(ctx, (uint32_t)ino_new);
     return ret;
   }
   if (pino_dir != NULL)
     *pino_dir = inoent_dir - ctx->c_inotbl;
   if (pino_new != NULL)
     *pino_new = ino_new;
+  kafs_inode_unlock(ctx, (uint32_t)ino_new);
   return KAFS_SUCCESS;
 }
 
@@ -1273,7 +1281,10 @@ static int kafs_op_mkdir(const char *path, mode_t mode)
   kafs_inocnt_t ino_new;
   KAFS_CALL(kafs_create, path, mode | S_IFDIR, 0, &ino_dir, &ino_new);
   kafs_sinode_t *inoent_new = &ctx->c_inotbl[ino_new];
+  // lock new dir while adding ".." entry
+  kafs_inode_lock(ctx, (uint32_t)ino_new);
   KAFS_CALL(kafs_dirent_add, ctx, inoent_new, ino_dir, "..");
+  kafs_inode_unlock(ctx, (uint32_t)ino_new);
   return 0;
 }
 
@@ -1309,8 +1320,20 @@ static int kafs_op_rmdir(const char *path)
       return -ENOTEMPTY;
     offset += r;
   }
+  // lock parent then target dir in stable order by inode number to avoid deadlock
+  uint32_t ino_parent = (uint32_t)(inoent_dir - ctx->c_inotbl);
+  uint32_t ino_target = (uint32_t)(inoent - ctx->c_inotbl);
+  if (ino_parent < ino_target) {
+    kafs_inode_lock(ctx, ino_parent);
+    kafs_inode_lock(ctx, ino_target);
+  } else {
+    kafs_inode_lock(ctx, ino_target);
+    kafs_inode_lock(ctx, ino_parent);
+  }
   KAFS_CALL(kafs_dirent_remove, ctx, inoent_dir, basepath);
   KAFS_CALL(kafs_dirent_remove, ctx, inoent, "..");
+  kafs_inode_unlock(ctx, ino_target);
+  kafs_inode_unlock(ctx, ino_parent);
   return 0;
 }
 
@@ -1344,7 +1367,10 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
   kafs_inocnt_t ino = fi->fh;
   if ((fi->flags & O_ACCMODE) == O_RDONLY)
     return -EACCES;
-  return kafs_pwrite(ctx, &ctx->c_inotbl[ino], buf, size, offset);
+  kafs_inode_lock(ctx, (uint32_t)ino);
+  int rc_write = kafs_pwrite(ctx, &ctx->c_inotbl[ino], buf, size, offset);
+  kafs_inode_unlock(ctx, (uint32_t)ino);
+  return rc_write;
 }
 
 static int kafs_op_utimens(const char *path, const struct timespec tv[2], struct fuse_file_info *fi)
@@ -1400,7 +1426,9 @@ static int kafs_op_unlink(const char *path)
   KAFS_CALL(kafs_access, fctx, ctx, path, NULL, F_OK, NULL);
   kafs_sinode_t *inoent_dir;
   KAFS_CALL(kafs_access, fctx, ctx, dirpath, NULL, W_OK, &inoent_dir);
+  kafs_inode_lock(ctx, (uint32_t)(inoent_dir - ctx->c_inotbl));
   KAFS_CALL(kafs_dirent_remove, ctx, inoent_dir, basepath);
+  kafs_inode_unlock(ctx, (uint32_t)(inoent_dir - ctx->c_inotbl));
   return 0;
 }
 

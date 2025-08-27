@@ -26,6 +26,7 @@ struct kafs_context
   void *c_lock_hrl_buckets; // opaque pointer to mutex array
   void *c_lock_hrl_global;  // opaque pointer to global HRL mutex
   void *c_lock_bitmap;      // opaque pointer to bitmap/allocator mutex
+  void *c_lock_inode;        // opaque pointer to inode locks (array + alloc)
 };
 
 // Lock helpers (no-op when locks not enabled in build)

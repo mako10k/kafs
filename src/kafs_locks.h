@@ -21,3 +21,9 @@ void kafs_hrl_global_unlock(struct kafs_context *ctx);
 // Bitmap/allocator lock (must be acquired after HRL bucket lock when both are needed)
 void kafs_bitmap_lock(struct kafs_context *ctx);
 void kafs_bitmap_unlock(struct kafs_context *ctx);
+
+// Inode locking: per-inode mutex array and an allocation mutex
+void kafs_inode_lock(struct kafs_context *ctx, uint32_t ino);
+void kafs_inode_unlock(struct kafs_context *ctx, uint32_t ino);
+void kafs_inode_alloc_lock(struct kafs_context *ctx);
+void kafs_inode_alloc_unlock(struct kafs_context *ctx);
