@@ -1,4 +1,5 @@
 #include "kafs_hash.h"
+#include "kafs_locks.h"
 #include "kafs_block.h"
 #include <string.h>
 #include <unistd.h>
@@ -193,12 +194,13 @@ int kafs_hrl_open(kafs_context_t *ctx)
   }
   ctx->c_hrl_index = (void *)(base + index_off);
   ctx->c_hrl_bucket_cnt = (uint32_t)(index_size / sizeof(uint32_t));
+  (void)kafs_ctx_locks_init(ctx);
   return 0;
 }
 
 int kafs_hrl_close(kafs_context_t *ctx)
 {
-  (void)ctx;
+  if (ctx) kafs_ctx_locks_destroy(ctx);
   return 0;
 }
 
@@ -226,17 +228,23 @@ int kafs_hrl_put(kafs_context_t *ctx, const void *block_data, kafs_hrid_t *out_h
     return -ENOSYS;
   uint64_t fast = hrl_hash64(block_data, hrl_blksize(ctx));
   uint32_t idx;
+  int b = hrl_bucket_index(ctx, fast);
+  kafs_hrl_bucket_lock(ctx, (uint32_t)b);
   if (hrl_find_by_hash(ctx, fast, block_data, &idx) == 0)
   {
     kafs_hrl_entry_t *e = hrl_entries_tbl(ctx) + idx;
     *out_hrid = idx;
     *out_is_new = 0;
     *out_blo = e->blo;
+    kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
     return 0;
   }
   // allocate entry
   if (hrl_find_free_slot(ctx, &idx) != 0)
+  {
+    kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
     return -ENOSPC;
+  }
   // allocate physical block and write
   kafs_blkcnt_t blo = KAFS_BLO_NONE;
   int rc = kafs_blk_alloc(ctx, &blo);
@@ -251,6 +259,7 @@ int kafs_hrl_put(kafs_context_t *ctx, const void *block_data, kafs_hrid_t *out_h
   e->fast = fast;
   e->next_plus1 = 0;
   hrl_chain_insert_head(ctx, idx, fast);
+  kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
   *out_hrid = idx;
   *out_is_new = 1;
   *out_blo = blo;
@@ -260,17 +269,28 @@ int kafs_hrl_put(kafs_context_t *ctx, const void *block_data, kafs_hrid_t *out_h
 int kafs_hrl_inc_ref(kafs_context_t *ctx, kafs_hrid_t hrid)
 {
   kafs_hrl_entry_t *e = hrl_entries_tbl(ctx) + hrid;
+  int b = hrl_bucket_index(ctx, e->fast);
+  kafs_hrl_bucket_lock(ctx, (uint32_t)b);
   if (e->refcnt == 0xFFFFFFFFu)
+  {
+    kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
     return -EOVERFLOW;
+  }
   e->refcnt += 1u;
+  kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
   return 0;
 }
 
 int kafs_hrl_dec_ref(kafs_context_t *ctx, kafs_hrid_t hrid)
 {
   kafs_hrl_entry_t *e = hrl_entries_tbl(ctx) + hrid;
+  int b = hrl_bucket_index(ctx, e->fast);
+  kafs_hrl_bucket_lock(ctx, (uint32_t)b);
   if (e->refcnt == 0)
+  {
+    kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
     return -EINVAL;
+  }
   e->refcnt -= 1u;
   if (e->refcnt == 0)
   {
@@ -278,10 +298,14 @@ int kafs_hrl_dec_ref(kafs_context_t *ctx, kafs_hrid_t hrid)
     kafs_blkcnt_t blo = e->blo;
     int rc = hrl_release_blo(ctx, &blo);
     if (rc != 0)
+    {
+      kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
       return rc;
+    }
     (void)hrl_chain_remove(ctx, hrid, e->fast);
     memset(e, 0, sizeof(*e));
   }
+  kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
   return 0;
 }
 
@@ -338,7 +362,14 @@ int kafs_hrl_dec_ref_by_blo(kafs_context_t *ctx, kafs_blkcnt_t blo)
   kafs_hrid_t hrid;
   int rc = kafs_hrl_find_by_blo(ctx, blo, &hrid);
   if (rc == 0)
-    return kafs_hrl_dec_ref(ctx, hrid);
+  {
+    kafs_hrl_entry_t *e = hrl_entries_tbl(ctx) + hrid;
+    int b = hrl_bucket_index(ctx, e->fast);
+    kafs_hrl_bucket_lock(ctx, (uint32_t)b);
+    int rc2 = kafs_hrl_dec_ref(ctx, hrid);
+    kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
+    return rc2;
+  }
   // not managed by HRL => legacy, free directly
   return hrl_release_blo(ctx, &blo);
 }

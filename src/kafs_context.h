@@ -22,10 +22,13 @@ struct kafs_context
   void *c_hrl_index;
   /// @brief HRL バケット数（テーブルサイズ / バケットサイズ）
   uint32_t c_hrl_bucket_cnt;
-#ifdef KAFS_ENABLE_LOCKS
-  // 予備: グローバル/各種ロック（将来のマルチスレッド対応で使用）
-  void *c_locks_placeholder;
-#endif
+  // --- Concurrency (optional locks) ---
+  void *c_lock_hrl_buckets; // opaque pointer to mutex array
+  void *c_lock_hrl_global;   // opaque pointer to global HRL mutex
 };
+
+// Lock helpers (no-op when locks not enabled in build)
+int kafs_ctx_locks_init(struct kafs_context *ctx);
+void kafs_ctx_locks_destroy(struct kafs_context *ctx);
 
 typedef struct kafs_context kafs_context_t;
