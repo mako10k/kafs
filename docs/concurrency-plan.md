@@ -7,13 +7,13 @@ Phase 0 (done)
 - [x] Default single-threaded FUSE (-s), enable MT via env KAFS_MT=1
 
 Phase 1 (HRL safety)
-- [ ] Add per-bucket mutex array and a global HRL mutex in context
-- [ ] Initialize/destroy locks in hrl_open/close
-- [ ] Guard HRL ops (find/put/inc/dec/remove/dec_by_blo) with locks
+- [x] Add per-bucket mutex array and a global HRL mutex in context
+- [x] Initialize/destroy locks in hrl_open/close
+- [x] Guard HRL ops (find/put/inc/dec/remove/dec_by_blo) with locks
 
 Phase 2 (Allocator/bitmap safety)
-- [ ] Add bitmap mutex in context; guard allocation/free/mark
-- [ ] Define lock ordering to avoid deadlocks (global -> bitmap -> HRL bucket)
+- [x] Add bitmap mutex in context; guard allocation/free/mark
+- [x] Define lock ordering to avoid deadlocks (global -> bitmap -> HRL bucket)
 
 Phase 3 (Inode/dir entries safety)
 - [ ] Add inode/dirent mutexes or coarse-grained FS mutex
