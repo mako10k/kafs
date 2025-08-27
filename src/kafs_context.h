@@ -22,6 +22,10 @@ struct kafs_context
   void *c_hrl_index;
   /// @brief HRL バケット数（テーブルサイズ / バケットサイズ）
   uint32_t c_hrl_bucket_cnt;
+#ifdef KAFS_ENABLE_LOCKS
+  // 予備: グローバル/各種ロック（将来のマルチスレッド対応で使用）
+  void *c_locks_placeholder;
+#endif
 };
 
 typedef struct kafs_context kafs_context_t;

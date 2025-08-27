@@ -1471,6 +1471,7 @@ static void usage(const char *prog)
   fprintf(stderr,
           "Usage: %s [--image <image>|--image=<image>] <mountpoint> [FUSE options...]\n"
           "       env KAFS_IMAGE can be used as fallback image path.\n"
+          "       default runs single-threaded; set env KAFS_MT=1 to enable multithread.\n"
           "Examples:\n"
           "  %s --image test.img mnt -f\n",
           prog, prog);
@@ -1511,6 +1512,7 @@ int main(int argc, char **argv)
       image_path = a + 8;
       continue;
     }
+  // pass other args through to FUSE
     argv_clean[argc_clean++] = argv[i];
   }
   if (show_help || image_path == NULL || argc_clean < 2)
@@ -1579,5 +1581,38 @@ int main(int argc, char **argv)
   // HRL オープン
   (void)kafs_hrl_open(&ctx);
 
-  return fuse_main(argc_clean, argv_clean, &kafs_operations, &ctx);
+  // 画像ファイルに排他ロック（複数プロセスによる同時RW起動を防止）
+  struct flock lk = {0};
+  lk.l_type = F_WRLCK;
+  lk.l_whence = SEEK_SET;
+  lk.l_start = 0;
+  lk.l_len = 0; // whole file
+  if (fcntl(ctx.c_fd, F_SETLK, &lk) == -1)
+  {
+    perror("fcntl(F_SETLK)");
+    fprintf(stderr, "image '%s' is busy (already mounted?).\n", image_path);
+    exit(2);
+  }
+
+  // 既定は単一スレッド(-s)。環境 KAFS_MT=1 でマルチスレッドを許可。
+  const char *mt = getenv("KAFS_MT");
+  kafs_bool_t enable_mt = (mt && strcmp(mt, "1") == 0) ? KAFS_TRUE : KAFS_FALSE;
+  int saw_single = 0;
+  for (int i = 0; i < argc_clean; ++i)
+  {
+    if (strcmp(argv_clean[i], "-s") == 0)
+    {
+      saw_single = 1;
+      break;
+    }
+  }
+  char *argv_fuse[argc_clean + 2];
+  for (int i = 0; i < argc_clean; ++i)
+    argv_fuse[i] = argv_clean[i];
+  int argc_fuse = argc_clean;
+  if (!enable_mt && !saw_single)
+  {
+    argv_fuse[argc_fuse++] = "-s";
+  }
+  return fuse_main(argc_fuse, argv_fuse, &kafs_operations, &ctx);
 }
