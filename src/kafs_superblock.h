@@ -52,8 +52,15 @@ struct kafs_ssuperblock
   kafs_su32_t s_hrl_entry_cnt; // +88 (4)
   uint32_t s_pad2;             // +92 (4)
 
-  // --- Reserved (for future) ---
-  uint8_t s_reserved[128 - 96]; // +96 .. +127
+  // --- Journal (in-image) ---
+  /// @brief ジャーナル領域の先頭オフセット（バイト、メタ領域内）
+  kafs_su64_t s_journal_offset; // +96 (8)
+  /// @brief ジャーナル領域の総サイズ（ヘッダ含む、バイト）
+  kafs_su64_t s_journal_size;   // +104 (8)
+  /// @brief ジャーナル設定フラグ（将来用）
+  kafs_su32_t s_journal_flags;  // +112 (4)
+  uint32_t s_pad3;            // +116 (4)
+  uint8_t s_reserved[128 - 120]; // +120 .. +127
 } __attribute__((packed));
 
 typedef struct kafs_ssuperblock kafs_ssuperblock_t;
@@ -202,6 +209,32 @@ static inline uint32_t kafs_sb_hrl_entry_cnt_get(const struct kafs_ssuperblock *
 static inline void kafs_sb_hrl_entry_cnt_set(struct kafs_ssuperblock *sb, uint32_t v)
 {
   sb->s_hrl_entry_cnt = kafs_u32_htos(v);
+}
+
+// --- Journal get/set ---
+static inline uint64_t kafs_sb_journal_offset_get(const struct kafs_ssuperblock *sb)
+{
+  return kafs_u64_stoh(sb->s_journal_offset);
+}
+static inline void kafs_sb_journal_offset_set(struct kafs_ssuperblock *sb, uint64_t v)
+{
+  sb->s_journal_offset = kafs_u64_htos(v);
+}
+static inline uint64_t kafs_sb_journal_size_get(const struct kafs_ssuperblock *sb)
+{
+  return kafs_u64_stoh(sb->s_journal_size);
+}
+static inline void kafs_sb_journal_size_set(struct kafs_ssuperblock *sb, uint64_t v)
+{
+  sb->s_journal_size = kafs_u64_htos(v);
+}
+static inline uint32_t kafs_sb_journal_flags_get(const struct kafs_ssuperblock *sb)
+{
+  return kafs_u32_stoh(sb->s_journal_flags);
+}
+static inline void kafs_sb_journal_flags_set(struct kafs_ssuperblock *sb, uint32_t v)
+{
+  sb->s_journal_flags = kafs_u32_htos(v);
 }
 
 static kafs_blksize_t kafs_sb_blksize_get(const struct kafs_ssuperblock *sb)

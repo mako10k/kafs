@@ -18,9 +18,9 @@
 static void usage(const char *prog)
 {
   fprintf(stderr,
-          "Usage: %s <image> [--size-bytes N|-s N] [--blksize-log L|-b L] [--inodes I|-i I]\n",
+    "Usage: %s <image> [--size-bytes N|-s N] [--blksize-log L|-b L] [--inodes I|-i I] [--journal-size-bytes J|-J J]\n",
           prog);
-  fprintf(stderr, "  defaults: N=1GiB, L=12 (4096B), I=65536\n");
+  fprintf(stderr, "  defaults: N=1GiB, L=12 (4096B), I=65536, J=1MiB\n");
 }
 
 int main(int argc, char **argv)
@@ -31,6 +31,7 @@ int main(int argc, char **argv)
   kafs_blksize_t blksizemask = blksize - 1u;
   off_t bytes = 1024ll * 1024ll * 1024ll; // 1GiB
   kafs_inocnt_t inocnt = 65536;           // number of inodes
+  size_t journal_bytes = 1u << 20;        // 1MiB default journal region
 
   for (int i = 1; i < argc; ++i)
   {
@@ -47,6 +48,11 @@ int main(int argc, char **argv)
     else if ((strcmp(argv[i], "--inodes") == 0 || strcmp(argv[i], "-i") == 0) && i + 1 < argc)
     {
       inocnt = (kafs_inocnt_t)strtoul(argv[++i], NULL, 0);
+    }
+    else if ((strcmp(argv[i], "--journal-size-bytes") == 0 || strcmp(argv[i], "-J") == 0) && i + 1 < argc)
+    {
+      journal_bytes = (size_t)strtoull(argv[++i], NULL, 0);
+      if (journal_bytes < 4096) journal_bytes = 4096; // minimum
     }
     else if (argv[i][0] != '-' && img == NULL)
     {
@@ -107,6 +113,11 @@ int main(int argc, char **argv)
   mapsize += (off_t)entry_cnt * (off_t)sizeof(kafs_hrl_entry_t);
   mapsize = (mapsize + blksizemask) & ~blksizemask;
 
+  // Journal area (in-image): place after HRL and before data blocks
+  off_t journal_off = mapsize;
+  mapsize += (off_t)journal_bytes;
+  mapsize = (mapsize + blksizemask) & ~blksizemask;
+
   if (ftruncate(ctx.c_fd, mapsize + (off_t)blksize * blkcnt) < 0)
   {
     perror("ftruncate");
@@ -146,6 +157,10 @@ int main(int argc, char **argv)
   kafs_sb_hrl_index_size_set(ctx.c_superblock, (uint64_t)hrl_index_size);
   kafs_sb_hrl_entry_offset_set(ctx.c_superblock, (uint64_t)hrl_entry_off);
   kafs_sb_hrl_entry_cnt_set(ctx.c_superblock, (uint32_t)entry_cnt);
+  // Journal region metadata
+  kafs_sb_journal_offset_set(ctx.c_superblock, (uint64_t)journal_off);
+  kafs_sb_journal_size_set(ctx.c_superblock, (uint64_t)journal_bytes);
+  kafs_sb_journal_flags_set(ctx.c_superblock, 0);
 
   // R/O items
   ctx.c_superblock->s_inocnt = kafs_inocnt_htos(inocnt);

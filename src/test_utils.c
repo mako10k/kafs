@@ -59,6 +59,12 @@ int kafs_test_mkimg(const char *path, size_t bytes, unsigned log_bs, unsigned in
     mapsize = (mapsize + bmask) & ~bmask;
   }
 
+  // In-image journal region (fixed 1MiB for tests)
+  size_t journal_bytes = 1u << 20;
+  off_t journal_off = mapsize;
+  mapsize += (off_t)journal_bytes;
+  mapsize = (mapsize + bmask) & ~bmask;
+
   if (ftruncate(fd, mapsize + (off_t)bs * blkcnt) < 0)
   {
     int err = -errno;
@@ -88,6 +94,9 @@ int kafs_test_mkimg(const char *path, size_t bytes, unsigned log_bs, unsigned in
     kafs_sb_hrl_entry_offset_set(sb, (uint64_t)hrl_entry_off);
     kafs_sb_hrl_entry_cnt_set(sb, (uint32_t)entry_cnt);
   }
+  kafs_sb_journal_offset_set(sb, (uint64_t)journal_off);
+  kafs_sb_journal_size_set(sb, (uint64_t)journal_bytes);
+  kafs_sb_journal_flags_set(sb, 0);
 
   sb->s_inocnt = kafs_inocnt_htos(inodes);
   sb->s_blkcnt = kafs_blkcnt_htos(blkcnt);

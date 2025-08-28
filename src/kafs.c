@@ -1629,6 +1629,9 @@ int main(int argc, char **argv)
   // Journal 初期化（KAFS_JOURNAL=0/1/パス）
   (void)kafs_journal_init(&ctx, image_path);
 
+  // 起動時リプレイ（in-image のみ対象）。致命的ではなくベストエフォート。
+  (void)kafs_journal_replay(&ctx, NULL, NULL);
+
   // 画像ファイルに排他ロック（複数プロセスによる同時RW起動を防止）
   struct flock lk = {0};
   lk.l_type = F_WRLCK;
