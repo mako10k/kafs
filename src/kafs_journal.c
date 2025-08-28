@@ -54,6 +54,22 @@ static void timespec_now(struct timespec *ts) {
   clock_gettime(CLOCK_REALTIME, ts);
 }
 
+static uint64_t nsec_now_mono(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static void sleep_ns(uint64_t ns) {
+  if (ns == 0) return;
+  struct timespec req;
+  req.tv_sec = (time_t)(ns / 1000000000ull);
+  req.tv_nsec = (long)(ns % 1000000000ull);
+  while (nanosleep(&req, &req) == -1 && errno == EINTR) {
+    // retry with remaining time in req
+  }
+}
+
 static int jlock(kafs_journal_t *j) {
 #if KAFS_JOURNAL_HAS_PTHREAD
   if (!j->mtx) return 0;
@@ -92,28 +108,30 @@ static void jprintf(kafs_journal_t *j, const char *fmt, ...) {
 // ----------------------
 // Journal header persisted within image
 #define KJ_MAGIC 0x4b414a4c /* 'KAJL' */
-#define KJ_VER   1
+#define KJ_VER   2
 typedef struct kj_header {
   uint32_t magic;      // KJ_MAGIC
   uint16_t version;    // KJ_VER
-  uint16_t flags;      // future
+  uint16_t flags;      // future: bit0=clean
   uint64_t area_size;  // ring capacity in bytes
   uint64_t write_off;  // current write offset within ring [0..area_size)
   uint64_t seq;        // last used sequence id
   uint64_t reserved0;
+  uint32_t header_crc; // CRC32 over header with this field zeroed
 } __attribute__((packed)) kj_header_t;
 
 // Record tags
-#define KJ_TAG_BEG 0x42454731u /* 'BEG1' */
-#define KJ_TAG_CMT 0x434d5431u /* 'CMT1' */
-#define KJ_TAG_ABR 0x41425231u /* 'ABR1' */
-#define KJ_TAG_NOTE 0x4e4f5431u /* 'NOT1' */
+#define KJ_TAG_BEG 0x42454732u /* 'BEG2' */
+#define KJ_TAG_CMT 0x434d5432u /* 'CMT2' */
+#define KJ_TAG_ABR 0x41425232u /* 'ABR2' */
+#define KJ_TAG_NOTE 0x4e4f5432u /* 'NOT2' */
 #define KJ_TAG_WRAP 0x57524150u /* 'WRAP' */
 
 typedef struct kj_rec_hdr {
   uint32_t tag;     // KJ_TAG_*
   uint32_t size;    // payload size in bytes (may be 0)
   uint64_t seq;     // sequence id (0 for NOTE)
+  uint32_t crc32;   // CRC32 over (tag,size,seq,payload) with this field zeroed
 } __attribute__((packed)) kj_rec_hdr_t;
 
 static size_t kj_header_size(void) {
@@ -132,6 +150,11 @@ static int kj_pwrite_fsync(int fd, const void *buf, size_t sz, off_t off) {
   if (w != (ssize_t)sz) return -EIO;
   fsync(fd);
   return 0;
+}
+
+static int kj_pwrite_nosync(int fd, const void *buf, size_t sz, off_t off) {
+  ssize_t w = pwrite(fd, buf, sz, off);
+  return (w == (ssize_t)sz) ? 0 : -EIO;
 }
 
 static int kj_header_load(kafs_journal_t *j, kj_header_t *hdr) {
@@ -156,13 +179,31 @@ static void kj_reset_area(kafs_journal_t *j) {
   }
 }
 
+// CRC32 (IEEE 802.3)
+static uint32_t kj_crc32_update(uint32_t crc, const uint8_t *buf, size_t len) {
+  crc = ~crc;
+  for (size_t i = 0; i < len; ++i) {
+    crc ^= buf[i];
+    for (int k = 0; k < 8; ++k) crc = (crc >> 1) ^ (0xEDB88320u & (-(int)(crc & 1)));
+  }
+  return ~crc;
+}
+static uint32_t kj_crc32(const void *buf, size_t len) {
+  return kj_crc32_update(0, (const uint8_t *)buf, len);
+}
+
 static int kj_init_or_load(kafs_journal_t *j) {
   kj_header_t hdr;
-  if (kj_header_load(j, &hdr) == 0 && hdr.magic == KJ_MAGIC && hdr.version == KJ_VER &&
-      hdr.area_size == j->area_size) {
-    j->write_off = hdr.write_off < j->area_size ? hdr.write_off : 0;
-    j->seq = hdr.seq;
-    return 0;
+  if (kj_header_load(j, &hdr) == 0 && hdr.magic == KJ_MAGIC && hdr.area_size == j->area_size) {
+    if (hdr.version == KJ_VER) {
+      kj_header_t tmp = hdr; tmp.header_crc = 0;
+      uint32_t c = kj_crc32(&tmp, sizeof(tmp));
+      if (c == hdr.header_crc) {
+        j->write_off = hdr.write_off < j->area_size ? hdr.write_off : 0;
+        j->seq = hdr.seq;
+        return 0;
+      }
+    }
   }
   // initialize fresh header
   j->write_off = 0;
@@ -176,23 +217,25 @@ static int kj_init_or_load(kafs_journal_t *j) {
       .write_off = 0,
       .seq = 0,
       .reserved0 = 0,
+      .header_crc = 0,
   };
+  nh.header_crc = kj_crc32(&nh, sizeof(nh));
   return kj_header_store(j, &nh);
 }
 
-static int kj_ring_write(kafs_journal_t *j, const void *data, size_t len) {
+static int kj_ring_write(kafs_journal_t *j, const void *data, size_t len, int do_fsync) {
   if (!j->use_inimage) return -EINVAL;
   uint64_t remaining = j->area_size - j->write_off;
   if ((uint64_t)len > remaining) {
     // write WRAP marker if space allows
     kj_rec_hdr_t wrap = { .tag = KJ_TAG_WRAP, .size = 0, .seq = 0 };
     if (remaining >= sizeof(wrap)) {
-      if (kj_pwrite_fsync(j->fd, &wrap, sizeof(wrap), (off_t)(j->data_off + j->write_off)) != 0)
+      if (kj_pwrite_nosync(j->fd, &wrap, sizeof(wrap), (off_t)(j->data_off + j->write_off)) != 0)
         return -EIO;
     }
     j->write_off = 0;
   }
-  if (kj_pwrite_fsync(j->fd, data, len, (off_t)(j->data_off + j->write_off)) != 0)
+  if ((do_fsync ? kj_pwrite_fsync : kj_pwrite_nosync)(j->fd, data, len, (off_t)(j->data_off + j->write_off)) != 0)
     return -EIO;
   j->write_off += len;
   // persist header with updated write offset and seq
@@ -200,13 +243,15 @@ static int kj_ring_write(kafs_journal_t *j, const void *data, size_t len) {
   if (kj_header_load(j, &hdr) == 0) {
     hdr.write_off = j->write_off;
     hdr.seq = j->seq;
-    (void)kj_header_store(j, &hdr);
+    hdr.header_crc = 0; hdr.header_crc = kj_crc32(&hdr, sizeof(hdr));
+    if (do_fsync) (void)kj_header_store(j, &hdr);
+    else (void)kj_pwrite_nosync(j->fd, &hdr, sizeof(hdr), (off_t)j->base_off);
   }
   return 0;
 }
 
 static int kj_write_record(kafs_journal_t *j, uint32_t tag, uint64_t seq, const char *payload) {
-  kj_rec_hdr_t rh = { .tag = tag, .size = 0, .seq = seq };
+  kj_rec_hdr_t rh = { .tag = tag, .size = 0, .seq = seq, .crc32 = 0 };
   size_t psize = 0;
   if (payload && *payload) psize = strlen(payload);
   rh.size = (uint32_t)psize;
@@ -217,7 +262,10 @@ static int kj_write_record(kafs_journal_t *j, uint32_t tag, uint64_t seq, const 
   if (!buf) return -ENOMEM;
   memcpy(buf, &rh, sizeof(rh));
   if (psize) memcpy(buf + sizeof(rh), payload, psize);
-  int rc = kj_ring_write(j, buf, total);
+  // compute CRC over header(with crc32=0) + payload, then write back to header.crc32
+  uint32_t c = kj_crc32(buf, total);
+  ((kj_rec_hdr_t *)buf)->crc32 = c;
+  int rc = kj_ring_write(j, buf, total, 0);
   free(buf);
   return rc;
 }
@@ -245,7 +293,7 @@ int kafs_journal_init(struct kafs_context *ctx, const char *image_path) {
   uint64_t joff = kafs_sb_journal_offset_get(ctx->c_superblock);
   uint64_t jsize = kafs_sb_journal_size_get(ctx->c_superblock);
   // Enable by default when in-image is available (env unset or "1").
-  int use_inimg = (joff != 0 && jsize >= 4096 && (!env || strcmp(env, "1") == 0));
+  int use_inimg = (joff != 0 && jsize >= 4096);
   // prepare mutex
 #if KAFS_JOURNAL_HAS_PTHREAD
   pthread_mutex_t *mtx_ptr = malloc(sizeof(pthread_mutex_t));
@@ -265,52 +313,26 @@ int kafs_journal_init(struct kafs_context *ctx, const char *image_path) {
     g_state.j.data_off = joff + hsz;
     g_state.j.area_size = jsize > hsz ? (jsize - hsz) : 0;
     g_state.j.base_ptr = (char *)ctx->c_superblock + joff;
+    // group commit window (ns) from env KAFS_JOURNAL_GC_NS; default 2000000ns (2ms)
+    const char *gc = getenv("KAFS_JOURNAL_GC_NS");
+    g_state.j.gc_delay_ns = gc ? strtoull(gc, NULL, 0) : 2000000ull;
+    g_state.j.gc_last_ns = 0;
+    g_state.j.gc_pending = 0;
     // initialize or load header
     (void)kj_init_or_load(&g_state.j);
     return 0;
   }
-  // else: external sidecar
-  char pathbuf[1024];
-  const char *jpath = env;
-  if (strcmp(env, "1") == 0) {
-    // default sidecar: <image>.journal
-    snprintf(pathbuf, sizeof(pathbuf), "%s.journal", image_path ? image_path : "kafs");
-    jpath = pathbuf;
-  }
-  int fd = open(jpath, O_CREAT | O_APPEND | O_WRONLY, 0644);
-  if (fd < 0) {
-    perror("open journal");
-    // don't fail filesystem; run without journal
-    g_state.ctx = ctx;
-    g_state.j.enabled = 0;
-    g_state.j.fd = -1;
-    g_state.j.seq = 0;
-    g_state.j.mtx = NULL;
-    g_state.j.use_inimage = 0;
-    g_state.j.base_off = 0;
-    g_state.j.base_ptr = NULL;
-    g_state.j.area_size = 0;
-    return 0;
-  }
-#if KAFS_JOURNAL_HAS_PTHREAD
-  pthread_mutex_t *m = malloc(sizeof(pthread_mutex_t));
-  if (m) pthread_mutex_init(m, NULL);
-#else
-  void *m = NULL;
-#endif
+  // 外部サイドカーは廃止。ジャーナル無効で起動。
   g_state.ctx = ctx;
-  g_state.j.enabled = 1;
-  g_state.j.fd = fd;
+  g_state.j.enabled = 0;
+  g_state.j.fd = -1;
   g_state.j.seq = 0;
-  g_state.j.mtx = mtx_ptr;
+  g_state.j.mtx = NULL;
   g_state.j.use_inimage = 0;
   g_state.j.base_off = 0;
   g_state.j.data_off = 0;
   g_state.j.base_ptr = NULL;
   g_state.j.area_size = 0;
-  struct timespec ts; timespec_now(&ts);
-  dprintf(fd, "# kafs journal start %ld.%09ld\n", (long)ts.tv_sec, ts.tv_nsec);
-  fsync(fd);
   return 0;
 }
 
@@ -319,6 +341,15 @@ void kafs_journal_shutdown(struct kafs_context *ctx) {
   if (g_state.ctx != ctx) return;
   kafs_journal_t *j = &g_state.j;
   if (j->fd >= 0) {
+    if (j->use_inimage && j->enabled) {
+      // flush pending group commit batch, if any
+      jlock(j);
+      if (j->gc_pending) {
+        kj_header_t hdr; if (kj_header_load(j, &hdr) == 0) { hdr.write_off = j->write_off; hdr.seq = j->seq; hdr.header_crc = 0; hdr.header_crc = kj_crc32(&hdr, sizeof(hdr)); (void)kj_header_store(j, &hdr); }
+        j->gc_pending = 0;
+      }
+      junlock(j);
+    }
     if (!j->use_inimage) {
       struct timespec ts; timespec_now(&ts);
       dprintf(j->fd, "# kafs journal end %ld.%09ld\n", (long)ts.tv_sec, ts.tv_nsec);
@@ -364,7 +395,49 @@ void kafs_journal_commit(struct kafs_context *ctx, uint64_t seq) {
   kafs_journal_t *j = &g_state.j;
   jlock(j);
   if (j->use_inimage) {
-    (void)kj_write_record(j, KJ_TAG_CMT, seq, NULL);
+    // COMMITは書き込み自体は非同期。グループコミット窓の最後に1回だけfsync+ヘッダ更新。
+    kj_rec_hdr_t rh = { .tag = KJ_TAG_CMT, .size = 0, .seq = seq, .crc32 = 0 };
+    rh.crc32 = 0; rh.crc32 = kj_crc32(&rh, sizeof(rh));
+    (void)kj_ring_write(j, &rh, sizeof(rh), 0);
+
+    uint64_t delay = j->gc_delay_ns;
+    if (delay == 0) {
+      // すぐに耐久化
+      kj_header_t hdr;
+      if (kj_header_load(j, &hdr) == 0) {
+        hdr.write_off = j->write_off; hdr.seq = j->seq; hdr.header_crc = 0; hdr.header_crc = kj_crc32(&hdr, sizeof(hdr));
+        (void)kj_header_store(j, &hdr);
+      }
+      junlock(j);
+      return;
+    }
+
+    // リーダースレッド選出: 最初のCOMMITのみ待機してバッチフラッシュを担当
+    if (!j->gc_pending) {
+      j->gc_pending = 1;
+      j->gc_last_ns = nsec_now_mono();
+      // unlockして窓が閉じるまで待機
+      uint64_t start = j->gc_last_ns;
+      junlock(j);
+      uint64_t now = nsec_now_mono();
+      uint64_t elapsed = now - start;
+      if (elapsed < delay) sleep_ns(delay - elapsed);
+      // 再ロックしてフラッシュ（まだ自分が担当なら）
+      jlock(j);
+      if (j->gc_pending && (nsec_now_mono() - j->gc_last_ns) >= delay) {
+        kj_header_t hdr;
+        if (kj_header_load(j, &hdr) == 0) {
+          hdr.write_off = j->write_off; hdr.seq = j->seq; hdr.header_crc = 0; hdr.header_crc = kj_crc32(&hdr, sizeof(hdr));
+          (void)kj_header_store(j, &hdr);
+        }
+        j->gc_pending = 0;
+      }
+      junlock(j);
+      return;
+    }
+    // 非リーダー: すでにバッチ中。フラッシュはリーダーに任せる。
+    junlock(j);
+    return;
   } else {
     struct timespec ts; timespec_now(&ts);
     dprintf(j->fd, "COMMIT %llu %ld.%09ld\n", (unsigned long long)seq, (long)ts.tv_sec, ts.tv_nsec);
@@ -463,6 +536,18 @@ int kafs_journal_replay(struct kafs_context *ctx, kafs_journal_replay_cb cb, voi
       pl[rh.size] = '\0';
     }
     pos += rh.size;
+    // CRC検証（WRAPは除外）
+    if (rh.tag != KJ_TAG_WRAP) {
+      size_t total = sizeof(rh) + rh.size;
+      char *buf = (char *)malloc(total);
+      if (!buf) { if (pl) free(pl); break; }
+      kj_rec_hdr_t rh2 = rh; rh2.crc32 = 0;
+      memcpy(buf, &rh2, sizeof(rh2));
+      if (rh.size && pl) memcpy(buf + sizeof(rh2), pl, rh.size);
+      uint32_t c = kj_crc32(buf, total);
+      free(buf);
+      if (c != rh.crc32) { if (pl) free(pl); break; }
+    }
     switch (rh.tag) {
       case KJ_TAG_BEG: {
         if (open_cnt < MAX_OPEN) { open[open_cnt].seq = rh.seq; open[open_cnt].payload = pl; open_cnt++; pl = NULL; }

@@ -17,10 +17,13 @@ typedef struct kafs_journal {
   uint64_t area_size;   // usable area size for records (ring capacity)
   uint64_t write_off;   // current write offset within ring [0..area_size)
   char *base_ptr;       // mapped base pointer (ctx->c_superblock + base_off)
+  // group commit controls
+  uint64_t gc_delay_ns; // group commit window (nanoseconds), 0 disables grouping
+  uint64_t gc_last_ns;  // batch start timestamp (CLOCK_MONOTONIC, ns)
+  int gc_pending;       // 1 if there are unflushed records
 } kafs_journal_t;
 
-// Initialize journal if enabled by env. When enabled and no path provided,
-// a sidecar file "<image>.journal" will be used.
+// Initialize journal. In-image journalが存在すれば有効化。KAFS_JOURNAL=0で明示無効。
 int kafs_journal_init(struct kafs_context *ctx, const char *image_path);
 void kafs_journal_shutdown(struct kafs_context *ctx);
 
