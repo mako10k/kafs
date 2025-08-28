@@ -1,5 +1,9 @@
 SUBDIRS = src
 
+man_MANS = man/kafs.1 man/mkfs.kafs.8 man/fsck.kafs.8
+
+EXTRA_DIST = $(man_MANS)
+
 # Convenience targets for static analysis (call into scripts/)
 .PHONY: format lint clones deadcode complexity static-checks
 

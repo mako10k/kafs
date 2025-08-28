@@ -1,0 +1,39 @@
+'.\" -*- nroff -*-
+.TH FSCK.KAFS 8 "2025-08-28" "kafs 0.0.1" "System Administration"
+.SH NAME
+fsck.kafs \- check and optionally clear KAFS in-image journal
+.SH SYNOPSIS
+.B fsck.kafs
+.RB [ --check-only ]
+.RB [ --journal-only ]
+.RB [ --journal-clear ]
+.I image
+.SH DESCRIPTION
+.B fsck.kafs
+verifies the integrity of the in-image journal (header and record CRCs).
+On request it can clear the journal ring safely offline.
+.SH OPTIONS
+.TP
+.B --check-only
+Validate journal CRCs and exit (default behavior).
+.TP
+.B --journal-only
+Alias of --check-only (reserved for future).
+.TP
+.B --journal-clear
+When validation fails, clear the journal ring (zero data and rewrite header).
+.SH EXIT STATUS
+.TP
+.B 0
+Journal OK (or cleared successfully).
+.TP
+.B 3
+Journal validation failed.
+.TP
+.B 4
+Clear operation failed.
+.SH SEE ALSO
+.BR mkfs.kafs (8),
+.BR kafs (1)
+.SH AUTHOR
+kafs project.

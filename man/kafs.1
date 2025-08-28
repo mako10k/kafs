@@ -1,0 +1,29 @@
+'.\" -*- nroff -*-
+.TH KAFS 1 "2025-08-28" "kafs 0.0.1" "User Commands"
+.SH NAME
+kafs \- FUSE-based KAFS filesystem
+.SH SYNOPSIS
+.B kafs
+.RB [ --image
+.IR image ]
+.I mountpoint
+.RI [ FUSE\ options ]
+.SH DESCRIPTION
+.B kafs
+mounts a KAFS filesystem image via FUSE.
+An embedded journal region is used when present. Sidecar journals are not supported.
+.SH ENVIRONMENT
+.TP
+.B KAFS_IMAGE
+Fallback path to image when --image is not specified.
+.TP
+.B KAFS_JOURNAL
+Set to 0 to disable journal even if present.
+.TP
+.B KAFS_JOURNAL_GC_NS
+Group commit window in nanoseconds (default 2000000ns).
+.SH SEE ALSO
+.BR mkfs.kafs (8),
+.BR fsck.kafs (8)
+.SH AUTHOR
+kafs project.

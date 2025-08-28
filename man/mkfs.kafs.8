@@ -1,0 +1,42 @@
+'.\" -*- nroff -*-
+.TH MKFS.KAFS 8 "2025-08-28" "kafs 0.0.1" "System Administration"
+.SH NAME
+mkfs.kafs \- create a KAFS filesystem image
+.SH SYNOPSIS
+.B mkfs.kafs
+.I image
+.RB [ -s
+.IR size ]
+.RB [ -b
+.IR log2blksz ]
+.RB [ -i
+.IR inodes ]
+.RB [ -J
+.IR journalsz ]
+.SH DESCRIPTION
+.B mkfs.kafs
+creates a new KAFS filesystem image file with the specified parameters.
+It initializes superblock, block bitmap, inode table, HRL structures, and an in-image journal region.
+.SH OPTIONS
+.TP
+.BR -s ", " --size-bytes "=" size
+Total image size in bytes (default: 1GiB).
+.TP
+.BR -b ", " --blksize-log "=" log2
+Block size as log2 value (default: 12 => 4096 bytes).
+.TP
+.BR -i ", " --inodes "=" count
+Number of inodes (default: 65536).
+.TP
+.BR -J ", " --journal-size-bytes "=" bytes
+Journal region size (default: 1MiB, minimum 4KiB).
+.SH EXAMPLES
+Create a 2GiB image with 4MiB journal:
+.PP
+.B mkfs.kafs
+  -s 2G -J 4M image.kafs
+.SH SEE ALSO
+.BR kafs (1),
+.BR fsck.kafs (8)
+.SH AUTHOR
+kafs project.
