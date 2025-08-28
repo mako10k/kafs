@@ -1324,8 +1324,10 @@ static int kafs_op_rmdir(const char *path)
     if (r == 0)
       break;
     if (strcmp(dirent.d_filename, "..") != 0)
-  kafs_journal_abort(ctx, jseq, "ENOTEMPTY");
-  return -ENOTEMPTY;
+    {
+      kafs_journal_abort(ctx, jseq, "ENOTEMPTY");
+      return -ENOTEMPTY;
+    }
     offset += r;
   }
   // lock parent then target dir in stable order by inode number to avoid deadlock
