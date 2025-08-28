@@ -5,6 +5,7 @@
 #include "kafs_inode.h"
 #include "kafs_dirent.h"
 #include "kafs_hash.h"
+#include "kafs_journal.h"
 
 #define KAFS_DIRECT_SIZE (sizeof(((struct kafs_sinode *)NULL)->i_blkreftbl))
 
@@ -1209,17 +1210,18 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   *basepath = '\0';
   basepath++;
 
+  uint64_t jseq = kafs_journal_begin(ctx, "CREATE", "path=%s mode=%o", path, (unsigned)mode);
   int ret = kafs_access(fctx, ctx, path, NULL, F_OK, NULL);
   if (ret == KAFS_SUCCESS)
-    return -EEXIST;
+  { kafs_journal_abort(ctx, jseq, "EEXIST"); return -EEXIST; }
   if (ret != -ENOENT)
-    return ret;
+  { kafs_journal_abort(ctx, jseq, "access=%d", ret); return ret; }
 
   kafs_sinode_t *inoent_dir;
   KAFS_CALL(kafs_access, fctx, ctx, dirpath, NULL, W_OK, &inoent_dir);
   kafs_mode_t mode_dir = kafs_ino_mode_get(inoent_dir);
   if (!S_ISDIR(mode_dir))
-    return -EIO;
+  { kafs_journal_abort(ctx, jseq, "ENOTDIR"); return -EIO; }
   kafs_inocnt_t ino_new;
   kafs_inode_alloc_lock(ctx);
   KAFS_CALL(kafs_ino_find_free, ctx->c_inotbl, &ino_new, &ctx->c_ino_search,
@@ -1249,13 +1251,15 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   {
     KAFS_CALL(kafs_release, ctx, inoent_new);
     kafs_inode_unlock(ctx, (uint32_t)ino_new);
-    return ret;
+  kafs_journal_abort(ctx, jseq, "dirent_add=%d", ret);
+  return ret;
   }
   if (pino_dir != NULL)
     *pino_dir = inoent_dir - ctx->c_inotbl;
   if (pino_new != NULL)
     *pino_new = ino_new;
   kafs_inode_unlock(ctx, (uint32_t)ino_new);
+  kafs_journal_commit(ctx, jseq);
   return KAFS_SUCCESS;
 }
 
@@ -1277,6 +1281,7 @@ static int kafs_op_mkdir(const char *path, mode_t mode)
 {
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
+  uint64_t jseq = kafs_journal_begin(ctx, "MKDIR", "path=%s mode=%o", path, (unsigned)mode);
   kafs_inocnt_t ino_dir;
   kafs_inocnt_t ino_new;
   KAFS_CALL(kafs_create, path, mode | S_IFDIR, 0, &ino_dir, &ino_new);
@@ -1285,6 +1290,7 @@ static int kafs_op_mkdir(const char *path, mode_t mode)
   kafs_inode_lock(ctx, (uint32_t)ino_new);
   KAFS_CALL(kafs_dirent_add, ctx, inoent_new, ino_dir, "..");
   kafs_inode_unlock(ctx, (uint32_t)ino_new);
+  kafs_journal_commit(ctx, jseq);
   return 0;
 }
 
@@ -1292,6 +1298,7 @@ static int kafs_op_rmdir(const char *path)
 {
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
+  uint64_t jseq = kafs_journal_begin(ctx, "RMDIR", "path=%s", path);
   char path_copy[strlen(path) + 1];
   strcpy(path_copy, path);
   const char *dirpath = path_copy;
@@ -1305,7 +1312,7 @@ static int kafs_op_rmdir(const char *path)
   KAFS_CALL(kafs_access, fctx, ctx, path, NULL, F_OK, &inoent);
   kafs_mode_t mode = kafs_ino_mode_get(inoent);
   if (!S_ISDIR(mode))
-    return -ENOTDIR;
+  { kafs_journal_abort(ctx, jseq, "ENOTDIR"); return -ENOTDIR; }
   kafs_sinode_t *inoent_dir;
   KAFS_CALL(kafs_access, fctx, ctx, dirpath, NULL, W_OK, &inoent_dir);
 
@@ -1317,7 +1324,8 @@ static int kafs_op_rmdir(const char *path)
     if (r == 0)
       break;
     if (strcmp(dirent.d_filename, "..") != 0)
-      return -ENOTEMPTY;
+  kafs_journal_abort(ctx, jseq, "ENOTEMPTY");
+  return -ENOTEMPTY;
     offset += r;
   }
   // lock parent then target dir in stable order by inode number to avoid deadlock
@@ -1334,6 +1342,7 @@ static int kafs_op_rmdir(const char *path)
   KAFS_CALL(kafs_dirent_remove, ctx, inoent, "..");
   kafs_inode_unlock(ctx, ino_target);
   kafs_inode_unlock(ctx, ino_parent);
+  kafs_journal_commit(ctx, jseq);
   return 0;
 }
 
@@ -1414,6 +1423,7 @@ static int kafs_op_unlink(const char *path)
   assert(path[1] != '\0');
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
+  uint64_t jseq = kafs_journal_begin(ctx, "UNLINK", "path=%s", path);
   char path_copy[strlen(path) + 1];
   strcpy(path_copy, path);
   const char *dirpath = path_copy;
@@ -1429,6 +1439,7 @@ static int kafs_op_unlink(const char *path)
   kafs_inode_lock(ctx, (uint32_t)(inoent_dir - ctx->c_inotbl));
   KAFS_CALL(kafs_dirent_remove, ctx, inoent_dir, basepath);
   kafs_inode_unlock(ctx, (uint32_t)(inoent_dir - ctx->c_inotbl));
+  kafs_journal_commit(ctx, jseq);
   return 0;
 }
 
@@ -1444,10 +1455,12 @@ static int kafs_op_chmod(const char *path, mode_t mode, struct fuse_file_info *f
 {
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
+  uint64_t jseq = kafs_journal_begin(ctx, "CHMOD", "path=%s mode=%o", path, (unsigned)mode);
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
   kafs_mode_t m = kafs_ino_mode_get(inoent);
   kafs_ino_mode_set(inoent, (m & S_IFMT) | mode);
+  kafs_journal_commit(ctx, jseq);
   return 0;
 }
 
@@ -1455,10 +1468,12 @@ static int kafs_op_chown(const char *path, uid_t uid, gid_t gid, struct fuse_fil
 {
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
+  uint64_t jseq = kafs_journal_begin(ctx, "CHOWN", "path=%s uid=%u gid=%u", path, (unsigned)uid, (unsigned)gid);
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
   kafs_ino_uid_set(inoent, uid);
   kafs_ino_gid_set(inoent, gid);
+  kafs_journal_commit(ctx, jseq);
   return 0;
 }
 
@@ -1466,11 +1481,13 @@ static int kafs_op_symlink(const char *target, const char *linkpath)
 {
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
+  uint64_t jseq = kafs_journal_begin(ctx, "SYMLINK", "target=%s linkpath=%s", target, linkpath);
   kafs_inocnt_t ino;
   KAFS_CALL(kafs_create, linkpath, 0777 | S_IFLNK, 0, NULL, &ino);
   kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
   ssize_t w = KAFS_CALL(kafs_pwrite, ctx, inoent, target, strlen(target), 0);
   assert(w == (ssize_t)strlen(target));
+  kafs_journal_commit(ctx, jseq);
   return 0;
 }
 
@@ -1609,6 +1626,9 @@ int main(int argc, char **argv)
   // HRL オープン
   (void)kafs_hrl_open(&ctx);
 
+  // Journal 初期化（KAFS_JOURNAL=0/1/パス）
+  (void)kafs_journal_init(&ctx, image_path);
+
   // 画像ファイルに排他ロック（複数プロセスによる同時RW起動を防止）
   struct flock lk = {0};
   lk.l_type = F_WRLCK;
@@ -1642,5 +1662,7 @@ int main(int argc, char **argv)
   {
     argv_fuse[argc_fuse++] = "-s";
   }
-  return fuse_main(argc_fuse, argv_fuse, &kafs_operations, &ctx);
+  int rc = fuse_main(argc_fuse, argv_fuse, &kafs_operations, &ctx);
+  kafs_journal_shutdown(&ctx);
+  return rc;
 }

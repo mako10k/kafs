@@ -51,6 +51,7 @@ Makefile.in
 /src/hrl_smoketest
 /src/hrl_dec_ref_by_blo
 /src/hrl_unconfigured
+/src/stress_fs
 /src/*.log
 /src/*.trs
 /src/test-suite.log
