@@ -40,6 +40,8 @@
 /*.img
 /report/
 /logs/
+/_kafs*.log
+/_mnt_*/
 
 ### Editors/IDEs
 .vscode/
@@ -48,3 +50,4 @@
 
 ### Local staging (DESTDIR installs)
 /_staging/
+/src/min_git_hooks

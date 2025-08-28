@@ -120,6 +120,26 @@ int kafs_test_mkimg(const char *path, size_t bytes, unsigned log_bs, unsigned in
   if (enable_hrl)
     kafs_hrl_format(&c);
 
+  // Initialize root inode to a usable directory for tests
+  kafs_sinode_t *root = &c.c_inotbl[KAFS_INO_ROOTDIR];
+  {
+    // set mode/uid/gid/size/times
+    kafs_ino_mode_set(root, S_IFDIR | 0777);
+    kafs_ino_uid_set(root, (kafs_uid_t)getuid());
+    kafs_ino_gid_set(root, (kafs_gid_t)getgid());
+    kafs_ino_size_set(root, 0);
+    kafs_time_t now = kafs_now();
+    kafs_time_t nulltime = (kafs_time_t){0, 0};
+    kafs_ino_atime_set(root, now);
+    kafs_ino_ctime_set(root, now);
+    kafs_ino_mtime_set(root, now);
+    kafs_ino_dtime_set(root, nulltime);
+    kafs_ino_linkcnt_set(root, 1);
+    kafs_ino_blocks_set(root, 0);
+    kafs_ino_dev_set(root, 0);
+    memset(root->i_blkreftbl, 0, sizeof(root->i_blkreftbl));
+  }
+
   *out_ctx = c;
   *out_mapsize = mapsize;
   return 0;

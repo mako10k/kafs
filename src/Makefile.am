@@ -25,8 +25,8 @@ noinst_HEADERS = kafs_block.h kafs_context.h kafs_dirent.h kafs_inode.h kafs_sup
 CFLAGS = -Wall -Werror -g -O0 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64
 
 # --- Tests ---
-check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured stress_fs
-TESTS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured stress_fs
+check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured stress_fs min_git_hooks
+TESTS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured stress_fs min_git_hooks
 hrl_smoketest_SOURCES = tests_hrl_smoketest.c kafs_hrl.c kafs_locks.c test_utils.c
 hrl_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 hrl_smoketest_LDADD = $(KAFS_LIBS)
@@ -44,3 +44,8 @@ stress_fs_SOURCES = tests_stress_fs.c test_utils.c kafs_hrl.c kafs_locks.c
 stress_fs_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -pthread
 stress_fs_LDADD = $(KAFS_LIBS)
 stress_fs_LDFLAGS = -pthread
+
+# Minimal reproduction for .git/hooks and rmdir behaviors
+min_git_hooks_SOURCES = tests_min_git_hooks.c test_utils.c kafs_hrl.c kafs_locks.c
+min_git_hooks_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+min_git_hooks_LDADD = $(KAFS_LIBS)
