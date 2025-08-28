@@ -8,6 +8,7 @@
 #include <time.h>
 #include <endian.h>
 #include <fuse.h>
+#include <stdlib.h>
 
 /// 標準関数の正常戻り値
 #define KAFS_SUCCESS 0
@@ -33,7 +34,42 @@ typedef enum
   KAFS_LOG_DEBUG = FUSE_LOG_DEBUG,
 } kafs_loglevel_t;
 
-#define kafs_log(level, fmt, ...) fuse_log((enum fuse_log_level)(level), (fmt), __VA_ARGS__)
+// Debug log gate: KAFS_DEBUG can be numeric level (1=basic,2=verbose,3=very verbose)
+static inline int kafs_debug_level(void)
+{
+  static int inited = 0;
+  static int level = 0;
+  if (!inited)
+  {
+    const char *v = getenv("KAFS_DEBUG");
+    if (v && v[0] != '\0')
+    {
+      char *end = NULL;
+      long val = strtol(v, &end, 10);
+      if (end != v && val > 0)
+        level = (int)val;
+      else
+        level = 0;
+    }
+    inited = 1;
+  }
+  return level;
+}
+
+static inline int kafs_debug_enabled(void) { return kafs_debug_level() > 0; }
+
+#define kafs_log(level, fmt, ...)                                                                 \
+  do {                                                                                            \
+    if ((level) != KAFS_LOG_DEBUG || kafs_debug_enabled())                                        \
+      fuse_log((enum fuse_log_level)(level), (fmt), ##__VA_ARGS__);                               \
+  } while (0)
+
+// Very verbose debug (level-thresholded)
+#define kafs_dlog(lvl, fmt, ...)                                                                  \
+  do {                                                                                            \
+    if (kafs_debug_level() >= (lvl))                                                              \
+      kafs_log(KAFS_LOG_DEBUG, (fmt), ##__VA_ARGS__);                                             \
+  } while (0)
 
 /// 標準呼び出し (戻り値が < 0 であれば戻り値を返す)
 #define KAFS_CALL(func, ...)                                                                       \
