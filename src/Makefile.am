@@ -25,8 +25,8 @@ noinst_HEADERS = kafs_block.h kafs_context.h kafs_dirent.h kafs_inode.h kafs_sup
 CFLAGS = -Wall -Werror -g -O0 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64
 
 # --- Tests ---
-check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured stress_fs min_git_hooks
-TESTS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured stress_fs min_git_hooks
+check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured stress_fs min_git_hooks fs_semantics clone_template_copy
+TESTS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured stress_fs min_git_hooks fs_semantics clone_template_copy
 hrl_smoketest_SOURCES = tests_hrl_smoketest.c kafs_hrl.c kafs_locks.c test_utils.c
 hrl_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 hrl_smoketest_LDADD = $(KAFS_LIBS)
@@ -49,3 +49,13 @@ stress_fs_LDFLAGS = -pthread
 min_git_hooks_SOURCES = tests_min_git_hooks.c test_utils.c kafs_hrl.c kafs_locks.c
 min_git_hooks_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 min_git_hooks_LDADD = $(KAFS_LIBS)
+
+# Filesystem semantics tests (errors, perms, truncation, etc.)
+fs_semantics_SOURCES = tests_fs_semantics.c test_utils.c kafs_hrl.c kafs_locks.c
+fs_semantics_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+fs_semantics_LDADD = $(KAFS_LIBS)
+
+# Template copy simulation (like git hooks template copy)
+clone_template_copy_SOURCES = tests_clone_template_copy.c test_utils.c kafs_hrl.c kafs_locks.c
+clone_template_copy_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+clone_template_copy_LDADD = $(KAFS_LIBS)

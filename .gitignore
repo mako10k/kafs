@@ -35,6 +35,9 @@
 /src/hrl_dec_ref_by_blo
 /src/hrl_unconfigured
 /src/stress_fs
+/src/min_git_hooks
+/src/fs_semantics
+/src/clone_template_copy
 
 ### Images and logs
 /*.img
@@ -43,6 +46,9 @@
 /_kafs*.log
 /_mnt_*/
 
+# server logs produced by tests
+/src/minisrv.log
+
 ### Editors/IDEs
 .vscode/
 *.swp
@@ -50,4 +56,3 @@
 
 ### Local staging (DESTDIR installs)
 /_staging/
-/src/min_git_hooks
