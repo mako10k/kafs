@@ -1497,6 +1497,110 @@ static int kafs_op_access(const char *path, int mode)
   return 0;
 }
 
+static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
+{
+  // 最小実装: 通常ファイルのみ対応。RENAME_NOREPLACE は尊重。その他のフラグは未対応。
+  struct fuse_context *fctx = fuse_get_context();
+  struct kafs_context *ctx = fctx->private_data;
+  if (from == NULL || to == NULL || from[0] != '/' || to[0] != '/')
+    return -EINVAL;
+  if (strcmp(from, to) == 0)
+    return 0;
+
+  const unsigned int supported = RENAME_NOREPLACE;
+  if (flags & ~supported)
+    return -EOPNOTSUPP;
+
+  // 事前に対象 inode を確認（ディレクトリは未対応）
+  kafs_sinode_t *inoent_src;
+  int rc = kafs_access(fctx, ctx, from, NULL, F_OK, &inoent_src);
+  if (rc < 0)
+    return rc;
+  kafs_mode_t src_mode = kafs_ino_mode_get(inoent_src);
+  if (!S_ISREG(src_mode) && !S_ISLNK(src_mode))
+    return -EOPNOTSUPP; // ディレクトリ等は未対応
+
+  // パス分解
+  char from_copy[strlen(from) + 1];
+  strcpy(from_copy, from);
+  const char *from_dir = from_copy;
+  char *from_base = strrchr(from_copy, '/');
+  if (from_dir == from_base)
+    from_dir = "/";
+  *from_base = '\0';
+  from_base++;
+
+  char to_copy[strlen(to) + 1];
+  strcpy(to_copy, to);
+  const char *to_dir = to_copy;
+  char *to_base = strrchr(to_copy, '/');
+  if (to_dir == to_base)
+    to_dir = "/";
+  *to_base = '\0';
+  to_base++;
+
+  uint64_t jseq = kafs_journal_begin(ctx, "RENAME", "from=%s to=%s flags=%u", from, to, flags);
+
+  kafs_sinode_t *inoent_dir_from;
+  KAFS_CALL(kafs_access, fctx, ctx, from_dir, NULL, W_OK, &inoent_dir_from);
+  kafs_sinode_t *inoent_dir_to;
+  KAFS_CALL(kafs_access, fctx, ctx, to_dir, NULL, W_OK, &inoent_dir_to);
+
+  // RENAME_NOREPLACE: 既存なら EEXIST
+  if (flags & RENAME_NOREPLACE) {
+    kafs_sinode_t *inoent_tmp;
+    int ex = kafs_access(fctx, ctx, to, NULL, F_OK, &inoent_tmp);
+    if (ex == 0) { kafs_journal_abort(ctx, jseq, "EEXIST"); return -EEXIST; }
+    if (ex != -ENOENT) { kafs_journal_abort(ctx, jseq, "access(to)=%d", ex); return ex; }
+  }
+
+  // 取得しておく（from の inode番号）
+  kafs_inocnt_t ino_src = (kafs_inocnt_t)(inoent_src - ctx->c_inotbl);
+
+  // 置換先が存在する場合は削除（通常ファイルのみ）
+  kafs_sinode_t *inoent_to_exist = NULL;
+  int exists_to = kafs_access(fctx, ctx, to, NULL, F_OK, &inoent_to_exist);
+  if (exists_to == 0) {
+    kafs_mode_t dst_mode = kafs_ino_mode_get(inoent_to_exist);
+    if (!S_ISREG(dst_mode) && !S_ISLNK(dst_mode)) {
+      kafs_journal_abort(ctx, jseq, "DST_NOT_FILE");
+      return -EOPNOTSUPP;
+    }
+  }
+
+  // ロック順序: 親ディレクトリ２つを inode番号で昇順に、最後に対象 inode
+  uint32_t ino_from_dir = (uint32_t)(inoent_dir_from - ctx->c_inotbl);
+  uint32_t ino_to_dir = (uint32_t)(inoent_dir_to - ctx->c_inotbl);
+  if (ino_from_dir < ino_to_dir) {
+    kafs_inode_lock(ctx, ino_from_dir);
+    if (ino_to_dir != ino_from_dir) kafs_inode_lock(ctx, ino_to_dir);
+  } else {
+    kafs_inode_lock(ctx, ino_to_dir);
+    if (ino_to_dir != ino_from_dir) kafs_inode_lock(ctx, ino_from_dir);
+  }
+
+  // 置換先が存在していればエントリを除去（リンク数は内部で調整）
+  if (exists_to == 0) {
+    KAFS_CALL(kafs_dirent_remove, ctx, inoent_dir_to, to_base);
+  }
+  // from から削除（リンク数デクリメント）
+  KAFS_CALL(kafs_dirent_remove, ctx, inoent_dir_from, from_base);
+  // to に追加（リンク数インクリメント）
+  KAFS_CALL(kafs_dirent_add, ctx, inoent_dir_to, ino_src, to_base);
+
+  // ロック解除
+  if (ino_from_dir < ino_to_dir) {
+    if (ino_to_dir != ino_from_dir) kafs_inode_unlock(ctx, ino_to_dir);
+    kafs_inode_unlock(ctx, ino_from_dir);
+  } else {
+    if (ino_to_dir != ino_from_dir) kafs_inode_unlock(ctx, ino_from_dir);
+    kafs_inode_unlock(ctx, ino_to_dir);
+  }
+
+  kafs_journal_commit(ctx, jseq);
+  return 0;
+}
+
 static int kafs_op_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
   struct fuse_context *fctx = fuse_get_context();
@@ -1549,6 +1653,7 @@ static struct fuse_operations kafs_operations = {
     .readdir = kafs_op_readdir,
     .utimens = kafs_op_utimens,
   .truncate = kafs_op_truncate,
+  .rename = kafs_op_rename,
     .unlink = kafs_op_unlink,
     .mkdir = kafs_op_mkdir,
     .rmdir = kafs_op_rmdir,
@@ -1712,6 +1817,7 @@ int main(int argc, char **argv)
   {
     argv_fuse[argc_fuse++] = "-s";
   }
+  argv_fuse[argc_fuse] = NULL; // ensure NULL-terminated argv for libfuse safety
   int rc = fuse_main(argc_fuse, argv_fuse, &kafs_operations, &ctx);
   kafs_journal_shutdown(&ctx);
   return rc;
