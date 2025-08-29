@@ -25,8 +25,8 @@ noinst_HEADERS = kafs_block.h kafs_context.h kafs_dirent.h kafs_inode.h kafs_sup
 CFLAGS = -Wall -Werror -g -O0 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64
 
 # --- Tests ---
-check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured stress_fs min_git_hooks fs_semantics clone_template_copy
-TESTS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured stress_fs min_git_hooks fs_semantics clone_template_copy
+check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured stress_fs min_git_hooks fs_semantics clone_template_copy git_template_copy_mt
+TESTS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured stress_fs min_git_hooks fs_semantics clone_template_copy git_template_copy_mt
 hrl_smoketest_SOURCES = tests_hrl_smoketest.c kafs_hrl.c kafs_locks.c test_utils.c
 hrl_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 hrl_smoketest_LDADD = $(KAFS_LIBS)
@@ -59,3 +59,9 @@ fs_semantics_LDADD = $(KAFS_LIBS)
 clone_template_copy_SOURCES = tests_clone_template_copy.c test_utils.c kafs_hrl.c kafs_locks.c
 clone_template_copy_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 clone_template_copy_LDADD = $(KAFS_LIBS)
+
+# Concurrent template copy test (multi-file, multi-worker)
+git_template_copy_mt_SOURCES = tests_git_template_copy_mt.c test_utils.c kafs_hrl.c kafs_locks.c
+git_template_copy_mt_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -pthread
+git_template_copy_mt_LDADD = $(KAFS_LIBS)
+git_template_copy_mt_LDFLAGS = -pthread
