@@ -42,6 +42,15 @@ static int kafs_blk_get_usage(const struct kafs_context *ctx, kafs_blkcnt_t blo)
   return ret;
 }
 
+// MTセーフに読みたい場合のラッパ（ビットマップロックを取得）
+static int kafs_blk_get_usage_locked(struct kafs_context *ctx, kafs_blkcnt_t blo)
+{
+  kafs_bitmap_lock(ctx);
+  int ret = kafs_blk_get_usage((const struct kafs_context *)ctx, blo);
+  kafs_bitmap_unlock(ctx);
+  return ret;
+}
+
 /// @brief 指定されたブロックの利用状況をセットする
 /// @param ctx コンテキスト
 /// @param blo ブロック番号

@@ -38,6 +38,11 @@
 /src/min_git_hooks
 /src/fs_semantics
 /src/clone_template_copy
+/src/git_template_copy_mt
+/src/rename_overwrite_dirfsync
+/src/open_unlink_visibility
+/src/host-tmpl-mt/
+/src/mnt-*/
 
 ### Images and logs
 /*.img

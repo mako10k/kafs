@@ -65,16 +65,22 @@ static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
   assert(ctx != NULL);
   assert(buf != NULL);
   assert(blo < kafs_sb_r_blkcnt_get(ctx->c_superblock));
-  assert(kafs_blk_get_usage(ctx, blo));
   kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+  // Sentinel はゼロ読みとして扱う（MTレースでも安全側）
   if (blo == KAFS_BLO_NONE)
-    memset(buf, 0, blksize);
-  else
   {
-    ssize_t r = KAFS_IOCALL(pread, ctx->c_fd, buf, blksize, blo << log_blksize);
-    assert(r == (ssize_t)blksize);
+    memset(buf, 0, blksize);
+    return KAFS_SUCCESS;
   }
+  // MTレース時でもビットマップロック下で確認し、未使用ならゼロ読みとする
+  if (!kafs_blk_get_usage_locked(ctx, blo))
+  {
+    memset(buf, 0, blksize);
+    return KAFS_SUCCESS;
+  }
+  ssize_t r = KAFS_IOCALL(pread, ctx->c_fd, buf, blksize, blo << log_blksize);
+  assert(r == (ssize_t)blksize);
   return KAFS_SUCCESS;
 }
 
@@ -91,7 +97,11 @@ static int kafs_blk_write(struct kafs_context *ctx, kafs_blkcnt_t blo, const voi
   assert(buf != NULL);
   assert(blo != KAFS_INO_NONE);
   assert(blo < kafs_sb_r_blkcnt_get(ctx->c_superblock));
-  assert(kafs_blk_get_usage(ctx, blo));
+  if (!kafs_blk_get_usage_locked(ctx, blo))
+  {
+    // 競合で未使用に見える場合はI/Oエラーとする（アサートで落とさない）
+    return -EIO;
+  }
   kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
   ssize_t w = KAFS_IOCALL(pwrite, ctx->c_fd, buf, blksize, blo << log_blksize);
@@ -110,7 +120,12 @@ static int kafs_blk_release(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
   assert(pblo != NULL);
   assert(*pblo != KAFS_INO_NONE);
   assert(*pblo < kafs_sb_r_blkcnt_get(ctx->c_superblock));
-  assert(kafs_blk_get_usage(ctx, *pblo));
+  // 既に未使用なら何もしない（多重解放の回避）
+  if (!kafs_blk_get_usage_locked(ctx, *pblo))
+  {
+    *pblo = KAFS_BLO_NONE;
+    return KAFS_SUCCESS;
+  }
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
   // ブロックを0で埋める
   char zbuf[blksize];
@@ -1809,13 +1824,37 @@ int main(int argc, char **argv)
       break;
     }
   }
-  char *argv_fuse[argc_clean + 2];
+  // 余裕を持って追加オプション(-s, -o max_threads=)用のスロットを確保
+  char *argv_fuse[argc_clean + 6];
   for (int i = 0; i < argc_clean; ++i)
     argv_fuse[i] = argv_clean[i];
   int argc_fuse = argc_clean;
   if (!enable_mt && !saw_single)
   {
     argv_fuse[argc_fuse++] = "-s";
+  }
+  // MT有効時は max_threads を明示（libfuseの既定/奇妙な値を避ける）
+  char mt_opt_buf[64];
+  if (enable_mt)
+  {
+    unsigned mt_cnt = 16; // デフォルト
+    const char *mt_env = getenv("KAFS_MAX_THREADS");
+    if (mt_env && *mt_env)
+    {
+      char *endp = NULL;
+      unsigned long v = strtoul(mt_env, &endp, 10);
+      if (endp && *endp == '\0')
+        mt_cnt = (unsigned)v;
+    }
+    if (mt_cnt < 1)
+      mt_cnt = 1;
+    if (mt_cnt > 100000)
+      mt_cnt = 100000;
+    // -o max_threads=N
+    snprintf(mt_opt_buf, sizeof(mt_opt_buf), "max_threads=%u", mt_cnt);
+    argv_fuse[argc_fuse++] = "-o";
+    argv_fuse[argc_fuse++] = mt_opt_buf;
+  kafs_log(KAFS_LOG_INFO, "kafs: enabling multithread with %s\n", mt_opt_buf);
   }
   argv_fuse[argc_fuse] = NULL; // ensure NULL-terminated argv for libfuse safety
   int rc = fuse_main(argc_fuse, argv_fuse, &kafs_operations, &ctx);
