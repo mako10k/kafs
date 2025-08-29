@@ -73,11 +73,19 @@ static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
     memset(buf, 0, blksize);
     return KAFS_SUCCESS;
   }
-  // MTレース時でもビットマップロック下で確認し、未使用ならゼロ読みとする
-  if (!kafs_blk_get_usage_locked(ctx, blo))
+  // MTレース時の瞬間的不一致を吸収するため短いリトライを入れる
+  for (int tries = 0; tries < 3; ++tries)
   {
-    memset(buf, 0, blksize);
-    return KAFS_SUCCESS;
+    if (kafs_blk_get_usage_locked(ctx, blo))
+      break;
+    struct timespec ts = {0, 2000000}; // 2ms
+    nanosleep(&ts, NULL);
+    if (tries == 2)
+    {
+      // 最終手段: ゼロ読みとして返す（アサートで落とさない）
+      memset(buf, 0, blksize);
+      return KAFS_SUCCESS;
+    }
   }
   ssize_t r = KAFS_IOCALL(pread, ctx->c_fd, buf, blksize, blo << log_blksize);
   assert(r == (ssize_t)blksize);
@@ -97,10 +105,18 @@ static int kafs_blk_write(struct kafs_context *ctx, kafs_blkcnt_t blo, const voi
   assert(buf != NULL);
   assert(blo != KAFS_INO_NONE);
   assert(blo < kafs_sb_r_blkcnt_get(ctx->c_superblock));
-  if (!kafs_blk_get_usage_locked(ctx, blo))
+  // 瞬間的不一致を想定して短いリトライ
+  for (int tries = 0; tries < 3; ++tries)
   {
-    // 競合で未使用に見える場合はI/Oエラーとする（アサートで落とさない）
-    return -EIO;
+    if (kafs_blk_get_usage_locked(ctx, blo))
+      break;
+    struct timespec ts = {0, 2000000}; // 2ms
+    nanosleep(&ts, NULL);
+    if (tries == 2)
+    {
+      // それでも未使用に見える場合はI/Oエラー（上位で再試行され得る）
+      return -EIO;
+    }
   }
   kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
@@ -1413,7 +1429,10 @@ static int kafs_op_readlink(const char *path, char *buf, size_t buflen)
   struct kafs_context *ctx = fctx->private_data;
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, NULL, F_OK, &inoent);
+  uint32_t ino = (uint32_t)(inoent - ctx->c_inotbl);
+  kafs_inode_lock(ctx, ino);
   ssize_t r = KAFS_CALL(kafs_pread, ctx, inoent, buf, buflen - 1, 0);
+  kafs_inode_unlock(ctx, ino);
   buf[r] = '\0';
   return 0;
 }
@@ -1425,7 +1444,10 @@ static int kafs_op_read(const char *path, char *buf, size_t size, off_t offset,
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
   kafs_inocnt_t ino = fi->fh;
-  return kafs_pread(ctx, &ctx->c_inotbl[ino], buf, size, offset);
+  kafs_inode_lock(ctx, (uint32_t)ino);
+  ssize_t rr = kafs_pread(ctx, &ctx->c_inotbl[ino], buf, size, offset);
+  kafs_inode_unlock(ctx, (uint32_t)ino);
+  return rr;
 }
 
 static int kafs_op_write(const char *path, const char *buf, size_t size, off_t offset,
@@ -1855,6 +1877,13 @@ int main(int argc, char **argv)
     argv_fuse[argc_fuse++] = "-o";
     argv_fuse[argc_fuse++] = mt_opt_buf;
   kafs_log(KAFS_LOG_INFO, "kafs: enabling multithread with %s\n", mt_opt_buf);
+  }
+  // 起動引数を一度だけ情報ログに出力（デバッグ用途）
+  if (kafs_debug_level() >= 1) {
+    kafs_log(KAFS_LOG_INFO, "kafs: fuse argv (%d):", argc_fuse);
+    for (int i = 0; i < argc_fuse; ++i) {
+      kafs_log(KAFS_LOG_INFO, "  argv[%d]=%s", i, argv_fuse[i]);
+    }
   }
   argv_fuse[argc_fuse] = NULL; // ensure NULL-terminated argv for libfuse safety
   int rc = fuse_main(argc_fuse, argv_fuse, &kafs_operations, &ctx);

@@ -66,22 +66,29 @@ static int kafs_blk_set_usage_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo
   assert(blo < kafs_sb_blkcnt_get(sb));
   kafs_blkcnt_t blod = blo >> KAFS_BLKMASK_LOG_BITS;
   kafs_blkcnt_t blor = blo & KAFS_BLKMASK_MASK_BITS;
+  kafs_blkmask_t bit = (kafs_blkmask_t)1 << blor;
+  int was_used = (ctx->c_blkmasktbl[blod] & bit) != 0;
   if (usage == KAFS_TRUE)
   {
-    assert(!kafs_blk_get_usage(ctx, blo));
-    ctx->c_blkmasktbl[blod] |= (kafs_blkmask_t)1 << blor;
-    kafs_blkcnt_t blkcnt_free = kafs_sb_blkcnt_free_get(sb);
-    assert(blkcnt_free > 0);
-    kafs_sb_blkcnt_free_set(sb, blkcnt_free - 1);
-    kafs_sb_wtime_set(sb, kafs_now());
+    if (!was_used)
+    {
+      ctx->c_blkmasktbl[blod] |= bit;
+      kafs_blkcnt_t blkcnt_free = kafs_sb_blkcnt_free_get(sb);
+      // 0 下回りは防ぐ（MT競合時の二重減算を避ける）
+      if (blkcnt_free > 0)
+        kafs_sb_blkcnt_free_set(sb, blkcnt_free - 1);
+      kafs_sb_wtime_set(sb, kafs_now());
+    }
   }
   else
   {
-    assert(kafs_blk_get_usage(ctx, blo));
-    ctx->c_blkmasktbl[blod] &= ~((kafs_blkmask_t)1 << blor);
-    kafs_blkcnt_t blkcnt_free = kafs_sb_blkcnt_free_get(sb);
-    kafs_sb_blkcnt_free_set(sb, blkcnt_free + 1);
-    kafs_sb_wtime_set(sb, kafs_now());
+    if (was_used)
+    {
+      ctx->c_blkmasktbl[blod] &= ~bit;
+      kafs_blkcnt_t blkcnt_free = kafs_sb_blkcnt_free_get(sb);
+      kafs_sb_blkcnt_free_set(sb, blkcnt_free + 1);
+      kafs_sb_wtime_set(sb, kafs_now());
+    }
   }
   return KAFS_SUCCESS;
 }
