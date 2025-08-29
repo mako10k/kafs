@@ -20,6 +20,10 @@
 #include <sys/mman.h>
 #include <stdlib.h>
 #include <stddef.h>
+#include <signal.h>
+#ifdef __linux__
+#include <execinfo.h>
+#endif
 
 #ifdef DEBUG
 static void *memset_orig(void *d, int x, size_t l) { return memset(d, x, l); }
@@ -87,8 +91,21 @@ static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
       return KAFS_SUCCESS;
     }
   }
-  ssize_t r = KAFS_IOCALL(pread, ctx->c_fd, buf, blksize, blo << log_blksize);
-  assert(r == (ssize_t)blksize);
+  size_t done = 0;
+  off_t off = (off_t)blo << log_blksize;
+  while (done < blksize)
+  {
+    ssize_t r = pread(ctx->c_fd, (char *)buf + done, blksize - done, off + (off_t)done);
+    if (r == -1)
+    {
+      if (errno == EINTR)
+        continue;
+      return -errno;
+    }
+    if (r == 0)
+      return -EIO; // unexpected EOF
+    done += (size_t)r;
+  }
   return KAFS_SUCCESS;
 }
 
@@ -120,8 +137,21 @@ static int kafs_blk_write(struct kafs_context *ctx, kafs_blkcnt_t blo, const voi
   }
   kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
-  ssize_t w = KAFS_IOCALL(pwrite, ctx->c_fd, buf, blksize, blo << log_blksize);
-  assert(w == (ssize_t)blksize);
+  size_t done = 0;
+  off_t off = (off_t)blo << log_blksize;
+  while (done < blksize)
+  {
+    ssize_t w = pwrite(ctx->c_fd, (const char *)buf + done, blksize - done, off + (off_t)done);
+    if (w == -1)
+    {
+      if (errno == EINTR)
+        continue;
+      return -errno;
+    }
+    if (w == 0)
+      return -EIO; // should not happen
+    done += (size_t)w;
+  }
   return KAFS_SUCCESS;
 }
 
@@ -1711,8 +1741,38 @@ static void usage(const char *prog)
           prog, prog);
 }
 
+static void kafs_signal_handler(int sig)
+{
+  const char *name = strsignal(sig);
+  kafs_log(KAFS_LOG_ERR, "kafs: caught signal %d (%s)\n", sig, name ? name : "?");
+#ifdef __linux__
+  void *bt[64];
+  int n = backtrace(bt, (int)(sizeof(bt) / sizeof(bt[0])));
+  char **syms = backtrace_symbols(bt, n);
+  if (syms)
+  {
+    for (int i = 0; i < n; ++i)
+      kafs_log(KAFS_LOG_ERR, "  bt[%02d]=%s\n", i, syms[i]);
+  }
+#endif
+  signal(sig, SIG_DFL);
+  raise(sig);
+}
+
+static void kafs_install_crash_handlers(void)
+{
+  struct sigaction sa; memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = kafs_signal_handler; sigemptyset(&sa.sa_mask);
+  sigaction(SIGSEGV, &sa, NULL);
+  sigaction(SIGABRT, &sa, NULL);
+  sigaction(SIGBUS, &sa, NULL);
+  sigaction(SIGILL, &sa, NULL);
+  sigaction(SIGFPE, &sa, NULL);
+}
+
 int main(int argc, char **argv)
 {
+  kafs_install_crash_handlers();
   // 画像ファイル指定を受け取る: --image <path> または --image=<path>、環境変数 KAFS_IMAGE
   const char *image_path = getenv("KAFS_IMAGE");
   // argv から --image と --help を取り除き fuse_main へは渡さない
@@ -1855,6 +1915,9 @@ int main(int argc, char **argv)
   {
     argv_fuse[argc_fuse++] = "-s";
   }
+  if (kafs_debug_level() >= 3) {
+    argv_fuse[argc_fuse++] = "-d"; // libfuse debug
+  }
   // MT有効時は max_threads を明示（libfuseの既定/奇妙な値を避ける）
   char mt_opt_buf[64];
   if (enable_mt)
@@ -1872,17 +1935,16 @@ int main(int argc, char **argv)
       mt_cnt = 1;
     if (mt_cnt > 100000)
       mt_cnt = 100000;
-    // -o max_threads=N
-    snprintf(mt_opt_buf, sizeof(mt_opt_buf), "max_threads=%u", mt_cnt);
-    argv_fuse[argc_fuse++] = "-o";
+    // -omax_threads=N （単一引数として渡す）
+    snprintf(mt_opt_buf, sizeof(mt_opt_buf), "-omax_threads=%u", mt_cnt);
     argv_fuse[argc_fuse++] = mt_opt_buf;
   kafs_log(KAFS_LOG_INFO, "kafs: enabling multithread with %s\n", mt_opt_buf);
   }
   // 起動引数を一度だけ情報ログに出力（デバッグ用途）
   if (kafs_debug_level() >= 1) {
-    kafs_log(KAFS_LOG_INFO, "kafs: fuse argv (%d):", argc_fuse);
+    kafs_log(KAFS_LOG_INFO, "kafs: fuse argv (%d):\n", argc_fuse);
     for (int i = 0; i < argc_fuse; ++i) {
-      kafs_log(KAFS_LOG_INFO, "  argv[%d]=%s", i, argv_fuse[i]);
+      kafs_log(KAFS_LOG_INFO, "  argv[%d]=%s\n", i, argv_fuse[i]);
     }
   }
   argv_fuse[argc_fuse] = NULL; // ensure NULL-terminated argv for libfuse safety
