@@ -78,21 +78,18 @@ static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
     return KAFS_SUCCESS;
   }
   // MTレース時の瞬間的不一致を吸収するため短いリトライを入れる
-  for (int tries = 0; tries < 5; ++tries)
-  {
-    if (kafs_blk_get_usage_locked(ctx, blo))
-      break;
-    long ns = 2000000L << tries; // 2ms,4ms,8ms,16ms,32ms
-    if (ns > 100000000L) ns = 100000000L; // clamp 100ms
-    struct timespec ts = {0, ns};
-    nanosleep(&ts, NULL);
-    if (tries == 4)
+    int seen_used = 0;
+    for (int tries = 0; tries < 5; ++tries)
     {
-      // 最終手段: ゼロ読みとして返す（アサートで落とさない）
-      memset(buf, 0, blksize);
-      return KAFS_SUCCESS;
+      if (kafs_blk_get_usage_locked(ctx, blo)) { seen_used = 1; break; }
+      long ns = 2000000L << tries; // 2ms,4ms,8ms,16ms,32ms
+      if (ns > 100000000L) ns = 100000000L; // clamp 100ms
+      struct timespec ts = {0, ns};
+      nanosleep(&ts, NULL);
     }
-  }
+    // それでも未使用に見える場合、上位の整合が進む前の見かけの可能性があるため警告のみで続行
+    if (!seen_used)
+      kafs_dlog(1, "%s: blo=%" PRIuFAST32 " appears unused; proceeding write defensively\n", __func__, blo);
   size_t done = 0;
   off_t off = (off_t)blo << log_blksize;
   while (done < blksize)
@@ -126,17 +123,17 @@ static int kafs_blk_write(struct kafs_context *ctx, kafs_blkcnt_t blo, const voi
   assert(blo < kafs_sb_r_blkcnt_get(ctx->c_superblock));
   // 瞬間的不一致を想定して短いリトライ
   int seen_used = 0;
-  for (int tries = 0; tries < 5; ++tries)
-  {
-    if (kafs_blk_get_usage_locked(ctx, blo)) { seen_used = 1; break; }
-    long ns = 2000000L << tries; // 2ms,4ms,8ms,16ms,32ms
-    if (ns > 100000000L) ns = 100000000L; // clamp 100ms
-    struct timespec ts = {0, ns};
-    nanosleep(&ts, NULL);
-  }
-  // それでも未使用に見える場合、上位の整合が進む前の見かけの可能性があるため警告のみで続行
-  if (!seen_used)
-    kafs_dlog(1, "%s: blo=%" PRIuFAST32 " appears unused; proceeding write defensively\n", __func__, blo);
+    for (int tries = 0; tries < 5; ++tries)
+    {
+      if (kafs_blk_get_usage_locked(ctx, blo)) { seen_used = 1; break; }
+      long ns = 2000000L << tries; // 2ms,4ms,8ms,16ms,32ms
+      if (ns > 100000000L) ns = 100000000L; // clamp 100ms
+      struct timespec ts = {0, ns};
+      nanosleep(&ts, NULL);
+    }
+    // それでも未使用に見える場合、上位の整合が進む前の見かけの可能性があるため警告のみで続行
+    if (!seen_used)
+      kafs_dlog(1, "%s: blo=%" PRIuFAST32 " appears unused; proceeding write defensively\n", __func__, blo);
   kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
   size_t done = 0;
@@ -192,7 +189,8 @@ typedef enum
 {
   KAFS_IBLKREF_FUNC_GET,
   KAFS_IBLKREF_FUNC_PUT,
-  KAFS_IBLKREF_FUNC_DEL
+  KAFS_IBLKREF_FUNC_DEL,
+  KAFS_IBLKREF_FUNC_SET
 } kafs_iblkref_func_t;
 
 static int kafs_blk_is_zero(const void *buf, size_t len)
@@ -214,7 +212,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
   if (iblo < 12)
   {
     kafs_blkcnt_t blo_data = kafs_blkcnt_stoh(inoent->i_blkreftbl[iblo]);
-    switch (ifunc)
+  switch (ifunc)
     {
     case KAFS_IBLKREF_FUNC_GET:
       *pblo = blo_data;
@@ -239,6 +237,11 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
       inoent->i_blkreftbl[iblo] = kafs_blkcnt_htos(KAFS_BLO_NONE);
       *pblo = KAFS_BLO_NONE;
       return KAFS_SUCCESS;
+
+    case KAFS_IBLKREF_FUNC_SET:
+      // 直接参照に new blo を設定（中間テーブル不要）
+      inoent->i_blkreftbl[iblo] = kafs_blkcnt_htos(*pblo);
+      return KAFS_SUCCESS;
     }
   }
 
@@ -252,7 +255,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
     kafs_blkcnt_t blo_blkreftbl = kafs_blkcnt_stoh(inoent->i_blkreftbl[12]);
     kafs_blkcnt_t blo_data;
 
-    switch (ifunc)
+  switch (ifunc)
     {
     case KAFS_IBLKREF_FUNC_GET:
       if (blo_blkreftbl == KAFS_BLO_NONE)
@@ -308,6 +311,22 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
       inoent->i_blkreftbl[12] = kafs_blkcnt_htos(blo_blkreftbl);
       *pblo = KAFS_BLO_NONE;
       return KAFS_SUCCESS;
+
+    case KAFS_IBLKREF_FUNC_SET:
+      if (blo_blkreftbl == KAFS_BLO_NONE)
+      {
+        // 中間テーブルを割り当て
+        KAFS_CALL(kafs_blk_alloc, ctx, &blo_blkreftbl);
+        inoent->i_blkreftbl[12] = kafs_blkcnt_htos(blo_blkreftbl);
+        memset(blkreftbl, 0, blksize);
+      }
+      else
+      {
+        KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl, blkreftbl);
+      }
+      blkreftbl[iblo] = kafs_blkcnt_htos(*pblo);
+      KAFS_CALL(kafs_blk_write, ctx, blo_blkreftbl, blkreftbl);
+      return KAFS_SUCCESS;
     }
   }
 
@@ -324,7 +343,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
     kafs_blkcnt_t iblo1 = iblo >> log_blkrefs_pb;
     kafs_blkcnt_t iblo2 = iblo & (blkrefs_pb - 1);
 
-    switch (ifunc)
+  switch (ifunc)
     {
     case KAFS_IBLKREF_FUNC_GET:
       if (blo_blkreftbl1 == KAFS_BLO_NONE)
@@ -417,6 +436,33 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
       KAFS_CALL(kafs_blk_release, ctx, &blo_blkreftbl1);
       inoent->i_blkreftbl[13] = kafs_blkcnt_htos(KAFS_BLO_NONE);
       *pblo = KAFS_BLO_NONE;
+      return KAFS_SUCCESS;
+    case KAFS_IBLKREF_FUNC_SET:
+      if (blo_blkreftbl1 == KAFS_BLO_NONE)
+      {
+        KAFS_CALL(kafs_blk_alloc, ctx, &blo_blkreftbl1);
+        inoent->i_blkreftbl[13] = kafs_blkcnt_htos(blo_blkreftbl1);
+        memset(blkreftbl1, 0, blksize);
+        blo_blkreftbl2 = KAFS_BLO_NONE;
+      }
+      else
+      {
+        KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl1, blkreftbl1);
+        blo_blkreftbl2 = kafs_blkcnt_stoh(blkreftbl1[iblo1]);
+      }
+      if (blo_blkreftbl2 == KAFS_BLO_NONE)
+      {
+        KAFS_CALL(kafs_blk_alloc, ctx, &blo_blkreftbl2);
+        blkreftbl1[iblo1] = kafs_blkcnt_htos(blo_blkreftbl2);
+        KAFS_CALL(kafs_blk_write, ctx, blo_blkreftbl1, blkreftbl1);
+        memset(blkreftbl2, 0, blksize);
+      }
+      else
+      {
+        KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl2, blkreftbl2);
+      }
+      blkreftbl2[iblo2] = kafs_blkcnt_htos(*pblo);
+      KAFS_CALL(kafs_blk_write, ctx, blo_blkreftbl2, blkreftbl2);
       return KAFS_SUCCESS;
     }
   }
@@ -564,6 +610,46 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
     inoent->i_blkreftbl[14] = kafs_blkcnt_htos(KAFS_BLO_NONE);
     *pblo = KAFS_BLO_NONE;
     return KAFS_SUCCESS;
+  case KAFS_IBLKREF_FUNC_SET:
+    if (blo_blkreftbl1 == KAFS_BLO_NONE)
+    {
+      KAFS_CALL(kafs_blk_alloc, ctx, &blo_blkreftbl1);
+      inoent->i_blkreftbl[14] = kafs_blkcnt_htos(blo_blkreftbl1);
+      memset(blkreftbl1, 0, blksize);
+      blo_blkreftbl2 = KAFS_BLO_NONE;
+    }
+    else
+    {
+      KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl1, blkreftbl1);
+      blo_blkreftbl2 = kafs_blkcnt_stoh(blkreftbl1[iblo1]);
+    }
+    if (blo_blkreftbl2 == KAFS_BLO_NONE)
+    {
+      KAFS_CALL(kafs_blk_alloc, ctx, &blo_blkreftbl2);
+      blkreftbl1[iblo1] = kafs_blkcnt_htos(blo_blkreftbl2);
+      KAFS_CALL(kafs_blk_write, ctx, blo_blkreftbl1, blkreftbl1);
+      memset(blkreftbl2, 0, blksize);
+      blo_blkreftbl3 = KAFS_BLO_NONE;
+    }
+    else
+    {
+      KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl2, blkreftbl2);
+      blo_blkreftbl3 = kafs_blkcnt_stoh(blkreftbl2[iblo2]);
+    }
+    if (blo_blkreftbl3 == KAFS_BLO_NONE)
+    {
+      KAFS_CALL(kafs_blk_alloc, ctx, &blo_blkreftbl3);
+      blkreftbl2[iblo2] = kafs_blkcnt_htos(blo_blkreftbl3);
+      KAFS_CALL(kafs_blk_write, ctx, blo_blkreftbl2, blkreftbl2);
+      memset(blkreftbl3, 0, blksize);
+    }
+    else
+    {
+      KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl3, blkreftbl3);
+    }
+    blkreftbl3[iblo3] = kafs_blkcnt_htos(*pblo);
+    KAFS_CALL(kafs_blk_write, ctx, blo_blkreftbl3, blkreftbl3);
+    return KAFS_SUCCESS;
   }
   return KAFS_SUCCESS;
 }
@@ -610,10 +696,11 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
   // 注意: kafs_blk_is_zero は「非ゼロを含むと1、全ゼロで0」を返す
   if (kafs_blk_is_zero(buf, blksize))
   {
-    // 非ゼロ: HRL 経路（失敗時は従来経路）
-    kafs_blkcnt_t old_blo;
-    KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old_blo, KAFS_IBLKREF_FUNC_GET);
-
+    // 非ゼロ: HRL 経路（失敗時は従来経路）。
+    // ロック順序: HRLバケット/ビットマップ -> inode
+    uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
+    // いったん inode ロックを解放（呼び出し側で保持している前提）
+    kafs_inode_unlock(ctx, ino_idx);
     kafs_hrid_t hrid;
     int is_new = 0;
     kafs_blkcnt_t new_blo = KAFS_BLO_NONE;
@@ -621,27 +708,51 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
     if (rc == 0)
     {
       KAFS_CALL(kafs_hrl_inc_ref, ctx, hrid);
+      // inode ロックを再取得して参照更新
+      kafs_inode_lock(ctx, ino_idx);
+      kafs_blkcnt_t old_blo;
+      KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old_blo, KAFS_IBLKREF_FUNC_GET);
+      KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &new_blo, KAFS_IBLKREF_FUNC_SET);
+      // 旧ブロックの解放は inode ロック外で実施（順序逆転回避）
+      kafs_inode_unlock(ctx, ino_idx);
       if (old_blo != KAFS_BLO_NONE && old_blo != new_blo)
         (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
-      // 物理ブロック番号を直接設定
-      inoent->i_blkreftbl[iblo] = kafs_blkcnt_htos(new_blo);
+      // 以降の処理は不要（HRLがデータ書き込み済み）
       return KAFS_SUCCESS;
     }
-    // HRL 失敗時: 物理ブロックに直接書き込み
-    kafs_blkcnt_t blo;
-    KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_PUT);
-    assert(blo != KAFS_BLO_NONE);
-    KAFS_CALL(kafs_blk_write, ctx, blo, buf);
+    // HRL 失敗時: レガシー経路
+    // inode ロックは未保持のはずなので、先に物理ブロックを割り当てる
+    kafs_blkcnt_t new_blo2 = KAFS_BLO_NONE;
+    KAFS_CALL(kafs_blk_alloc, ctx, &new_blo2);
+    // inode ロックを取得し、参照更新（SET）
+    kafs_inode_lock(ctx, ino_idx);
+    kafs_blkcnt_t old_blo2;
+    KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old_blo2, KAFS_IBLKREF_FUNC_GET);
+    KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &new_blo2, KAFS_IBLKREF_FUNC_SET);
+    // 参照更新後に I/O を実施（読取り側は inode ロックで保護）
+    KAFS_CALL(kafs_blk_write, ctx, new_blo2, buf);
+    // inode ロックを解放し、旧ブロックの参照を解放
+    kafs_inode_unlock(ctx, ino_idx);
+    if (old_blo2 != KAFS_BLO_NONE && old_blo2 != new_blo2)
+      (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo2);
     return KAFS_SUCCESS;
   }
   // 全ゼロ: スパース化（参照削除）
-  kafs_blkcnt_t blo;
-  KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_GET);
-  if (blo != KAFS_BLO_NONE)
   {
-    (void)kafs_hrl_dec_ref_by_blo(ctx, blo);
-    KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_DEL);
-    assert(blo == KAFS_BLO_NONE);
+    uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
+    kafs_blkcnt_t old;
+    KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old, KAFS_IBLKREF_FUNC_GET);
+    if (old != KAFS_BLO_NONE)
+    {
+      kafs_blkcnt_t none = KAFS_BLO_NONE;
+      // 先に参照を NONE に更新（inode ロック内）
+      KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &none, KAFS_IBLKREF_FUNC_SET);
+      // inode ロック解放後に物理ブロック参照をデクリメント
+      kafs_inode_unlock(ctx, ino_idx);
+      (void)kafs_hrl_dec_ref_by_blo(ctx, old);
+      // 再ロックして戻る（上位の整合を保つ）
+      kafs_inode_lock(ctx, ino_idx);
+    }
   }
   return KAFS_SUCCESS;
 }
