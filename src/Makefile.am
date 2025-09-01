@@ -25,8 +25,8 @@ noinst_HEADERS = kafs_block.h kafs_context.h kafs_dirent.h kafs_inode.h kafs_sup
 CFLAGS = -Wall -Werror -g -O0 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64
 
 # --- Tests ---
-check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured stress_fs min_git_hooks fs_semantics clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility
-TESTS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured stress_fs min_git_hooks fs_semantics clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility
+check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured stress_fs min_git_hooks fs_semantics clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility prune_indirect_single prune_indirect_double prune_indirect_triple
+TESTS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured stress_fs min_git_hooks fs_semantics clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility prune_indirect_single prune_indirect_double prune_indirect_triple
 hrl_smoketest_SOURCES = tests_hrl_smoketest.c kafs_hrl.c kafs_locks.c test_utils.c
 hrl_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 hrl_smoketest_LDADD = $(KAFS_LIBS)
@@ -74,4 +74,17 @@ open_unlink_visibility_SOURCES = tests_open_unlink_visibility.c test_utils.c kaf
 open_unlink_visibility_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 open_unlink_visibility_LDADD = $(KAFS_LIBS)
 
-XFAIL_TESTS = git_template_copy_mt
+prune_indirect_single_SOURCES = tests_prune_indirect_single.c test_utils.c kafs_hrl.c kafs_locks.c
+prune_indirect_single_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+prune_indirect_single_LDADD = $(KAFS_LIBS)
+
+prune_indirect_double_SOURCES = tests_prune_indirect_double.c test_utils.c kafs_hrl.c kafs_locks.c
+prune_indirect_double_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+prune_indirect_double_LDADD = $(KAFS_LIBS)
+
+prune_indirect_triple_SOURCES = tests_prune_indirect_triple.c test_utils.c kafs_hrl.c kafs_locks.c
+prune_indirect_triple_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+prune_indirect_triple_LDADD = $(KAFS_LIBS)
+
+# All tests are expected to pass
+XFAIL_TESTS =

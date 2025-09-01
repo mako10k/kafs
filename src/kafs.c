@@ -160,6 +160,8 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
   assert(ctx != NULL);
   assert(pblo != NULL);
   assert(inoent != NULL);
+  kafs_dlog(3, "ibrk_run: iblo=%" PRIuFAST32 " ifunc=%d (size=%" PRIuFAST64 ")\n",
+           iblo, (int)ifunc, kafs_ino_size_get(inoent));
 
   if (iblo < 12)
   {
@@ -195,6 +197,8 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
     kafs_sblkcnt_t blkreftbl[blkrefs_pb];
     kafs_blkcnt_t blo_blkreftbl = kafs_blkcnt_stoh(inoent->i_blkreftbl[12]);
     kafs_blkcnt_t blo_data;
+  kafs_dlog(3, "ibrk_run: single-indirect idx=%" PRIuFAST32 ", blkrefs_pb=%" PRIuFAST32 ", tbl_blo=%" PRIuFAST32 "\n",
+       iblo, blkrefs_pb, blo_blkreftbl);
 
   switch (ifunc)
     {
@@ -213,6 +217,8 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
       {
         KAFS_CALL(kafs_blk_alloc, ctx, &blo_blkreftbl);
         inoent->i_blkreftbl[12] = kafs_blkcnt_htos(blo_blkreftbl);
+  // 新規に間接テーブルを割り当てた場合は全エントリを 0 で初期化する
+  memset(blkreftbl, 0, blksize);
         blo_data = KAFS_BLO_NONE;
       }
       else
@@ -1215,9 +1221,11 @@ static int kafs_access(struct fuse_context *fctx, kafs_context_t *ctx, const cha
 
   uid_t uid = fctx->uid;
   gid_t gid = fctx->gid;
-  size_t ngroups = KAFS_IOCALL(fuse_getgroups, 0, NULL);
-  gid_t groups[ngroups];
-  KAFS_IOCALL(fuse_getgroups, ngroups, groups);
+  // fuse_getgroups(0,NULL) may return 0 or -1; don't use KAFS_IOCALL here and avoid zero-length VLA
+  ssize_t ng0 = fuse_getgroups(0, NULL);
+  size_t ngroups = (ng0 > 0) ? (size_t)ng0 : 0;
+  gid_t groups[(ngroups > 0) ? ngroups : 1];
+  if (ngroups > 0) (void)fuse_getgroups(ngroups, groups);
 
   kafs_sinode_t *inoent;
   const char *p;
@@ -1368,6 +1376,7 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
 
   kafs_sinode_t *inoent_dir;
   ret = kafs_access(fctx, ctx, dirpath, NULL, W_OK, &inoent_dir);
+  kafs_dlog(2, "%s: access(dirpath='%s') rc=%d ino_dir=%u\n", __func__, dirpath, ret, (unsigned)(inoent_dir ? (inoent_dir - ctx->c_inotbl) : 0));
   if (ret < 0) { kafs_journal_abort(ctx, jseq, "parent access=%d", ret); return ret; }
   kafs_mode_t mode_dir = kafs_ino_mode_get(inoent_dir);
   if (!S_ISDIR(mode_dir))
@@ -1376,6 +1385,7 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   kafs_inode_alloc_lock(ctx);
   KAFS_CALL(kafs_ino_find_free, ctx->c_inotbl, &ino_new, &ctx->c_ino_search,
             kafs_sb_inocnt_get(ctx->c_superblock));
+  kafs_dlog(2, "%s: alloc ino=%u\n", __func__, (unsigned)ino_new);
   struct kafs_sinode *inoent_new = &ctx->c_inotbl[ino_new];
   kafs_inode_lock(ctx, (uint32_t)ino_new);
   kafs_inode_alloc_unlock(ctx);
@@ -1395,7 +1405,9 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   memset(inoent_new->i_blkreftbl, 0, sizeof(inoent_new->i_blkreftbl));
   // lock directory while adding entry
   kafs_inode_lock(ctx, (uint32_t)(inoent_dir - ctx->c_inotbl));
+  kafs_dlog(2, "%s: dirent_add start dir=%u name='%s'\n", __func__, (unsigned)(inoent_dir - ctx->c_inotbl), basepath);
   ret = kafs_dirent_add(ctx, inoent_dir, ino_new, basepath);
+  kafs_dlog(2, "%s: dirent_add done rc=%d\n", __func__, ret);
   kafs_inode_unlock(ctx, (uint32_t)(inoent_dir - ctx->c_inotbl));
   if (ret < 0)
   {
@@ -1409,6 +1421,7 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   if (pino_new != NULL)
     *pino_new = ino_new;
   kafs_inode_unlock(ctx, (uint32_t)ino_new);
+  kafs_dlog(2, "%s: success ino=%u added to dir ino=%u\n", __func__, (unsigned)ino_new, (unsigned)(pino_dir ? *pino_dir : 0));
   kafs_journal_commit(ctx, jseq);
   return KAFS_SUCCESS;
 }
@@ -1920,6 +1933,25 @@ int main(int argc, char **argv)
   void *inotbl_off = (void *)mapsize;
   mapsize += sizeof(kafs_sinode_t) * inocnt;
   mapsize = (mapsize + blksizemask) & ~blksizemask;
+  // Ensure mapping also covers optional HRL and in-image journal regions
+  {
+    uint64_t idx_off = kafs_sb_hrl_index_offset_get(&sbdisk);
+    uint64_t idx_size = kafs_sb_hrl_index_size_get(&sbdisk);
+    uint64_t ent_off = kafs_sb_hrl_entry_offset_get(&sbdisk);
+    uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(&sbdisk);
+    uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
+    uint64_t j_off = kafs_sb_journal_offset_get(&sbdisk);
+    uint64_t j_size = kafs_sb_journal_size_get(&sbdisk);
+    uint64_t end1 = (idx_off && idx_size) ? (idx_off + idx_size) : 0;
+    uint64_t end2 = (ent_off && ent_size) ? (ent_off + ent_size) : 0;
+    uint64_t end3 = (j_off && j_size) ? (j_off + j_size) : 0;
+    uint64_t max_end = end1;
+    if (end2 > max_end) max_end = end2;
+    if (end3 > max_end) max_end = end3;
+    if ((off_t)max_end > mapsize)
+      mapsize = (off_t)max_end;
+    mapsize = (mapsize + blksizemask) & ~blksizemask;
+  }
 
   ctx.c_superblock = mmap(NULL, mapsize, PROT_READ | PROT_WRITE, MAP_SHARED, ctx.c_fd, 0);
   if (ctx.c_superblock == MAP_FAILED)

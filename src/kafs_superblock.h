@@ -245,7 +245,9 @@ static kafs_blksize_t kafs_sb_blksize_get(const struct kafs_ssuperblock *sb)
 
 static kafs_logblksize_t kafs_sb_log_blkref_pb_get(const struct kafs_ssuperblock *sb)
 {
-  return kafs_sb_log_blksize_get(sb) + 3;
+  // 1ブロックに格納できる参照数: ブロックサイズ[byte] / 参照サイズ(4byte)
+  // したがって log2 = log_blksize - 2
+  return kafs_sb_log_blksize_get(sb) - 2;
 }
 
 static kafs_blksize_t kafs_sb_blkref_pb_get(const struct kafs_ssuperblock *sb)

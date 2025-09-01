@@ -61,3 +61,5 @@
 
 ### Local staging (DESTDIR installs)
 /_staging/
+src/prune_indirect_single
+minisrv.log
