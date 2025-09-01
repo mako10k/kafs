@@ -738,13 +738,17 @@ static int kafs_ino_iblk_release(struct kafs_context *ctx, kafs_sinode_t *inoent
   assert(inoent != NULL);
   assert(kafs_ino_get_usage(inoent));
   assert(kafs_ino_size_get(inoent) > KAFS_DIRECT_SIZE);
-  kafs_blkcnt_t blo;
-  KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_GET);
-  if (blo != KAFS_BLO_NONE)
+  kafs_blkcnt_t old;
+  KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old, KAFS_IBLKREF_FUNC_GET);
+  if (old != KAFS_BLO_NONE)
   {
-    (void)kafs_hrl_dec_ref_by_blo(ctx, blo);
-    KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_DEL);
-    assert(blo == KAFS_BLO_NONE);
+    kafs_blkcnt_t none = KAFS_BLO_NONE;
+    KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &none, KAFS_IBLKREF_FUNC_SET);
+    // dec_ref は inode ロック外で実施
+    uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
+    kafs_inode_unlock(ctx, ino_idx);
+    (void)kafs_hrl_dec_ref_by_blo(ctx, old);
+    kafs_inode_lock(ctx, ino_idx);
   }
   return KAFS_SUCCESS;
 }
