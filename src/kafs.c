@@ -475,6 +475,116 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
   return KAFS_SUCCESS;
 }
 
+// SET(NONE) 実施後に、空になった間接テーブルを親から切り離す。
+// - 呼び出しは inode ロック内で行うこと
+// - 解放すべきブロック番号（最大3段）を返し、物理解放は呼び出し側がロック外で行う
+static int kafs_ino_prune_empty_indirects(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                          kafs_iblkcnt_t iblo,
+                                          kafs_blkcnt_t *free_blo1,
+                                          kafs_blkcnt_t *free_blo2,
+                                          kafs_blkcnt_t *free_blo3)
+{
+  assert(ctx != NULL);
+  assert(inoent != NULL);
+  assert(kafs_ino_get_usage(inoent));
+  assert(free_blo1 && free_blo2 && free_blo3);
+  *free_blo1 = *free_blo2 = *free_blo3 = KAFS_BLO_NONE;
+
+  if (iblo < 12)
+    return KAFS_SUCCESS; // 直接参照は親テーブルなし
+
+  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+  kafs_logblksize_t log_blkrefs_pb = kafs_sb_log_blkref_pb_get(ctx->c_superblock);
+  kafs_blkcnt_t blkrefs_pb = kafs_sb_blkref_pb_get(ctx->c_superblock);
+
+  kafs_iblkcnt_t rem = iblo - 12;
+  if (rem < blkrefs_pb)
+  {
+    // 単間接
+    kafs_blkcnt_t blo_tbl = kafs_blkcnt_stoh(inoent->i_blkreftbl[12]);
+    if (blo_tbl == KAFS_BLO_NONE)
+      return KAFS_SUCCESS;
+    kafs_sblkcnt_t tbl[blkrefs_pb];
+    KAFS_CALL(kafs_blk_read, ctx, blo_tbl, tbl);
+  if (!kafs_blk_is_zero(tbl, blksize))
+    {
+      *free_blo1 = blo_tbl;
+      inoent->i_blkreftbl[12] = kafs_blkcnt_htos(KAFS_BLO_NONE);
+    }
+    return KAFS_SUCCESS;
+  }
+
+  rem -= blkrefs_pb;
+  kafs_logblksize_t log_blkrefs_pb_sq = log_blkrefs_pb << 1;
+  kafs_blkcnt_t blkrefs_pb_sq = 1u << log_blkrefs_pb_sq;
+  if (rem < blkrefs_pb_sq)
+  {
+    // 二重間接
+  kafs_iblkcnt_t ib1 = rem >> log_blkrefs_pb;
+    kafs_blkcnt_t blo_tbl1 = kafs_blkcnt_stoh(inoent->i_blkreftbl[13]);
+    if (blo_tbl1 == KAFS_BLO_NONE)
+      return KAFS_SUCCESS;
+    kafs_sblkcnt_t tbl1[blkrefs_pb];
+    KAFS_CALL(kafs_blk_read, ctx, blo_tbl1, tbl1);
+    kafs_blkcnt_t blo_tbl2 = kafs_blkcnt_stoh(tbl1[ib1]);
+    if (blo_tbl2 == KAFS_BLO_NONE)
+      return KAFS_SUCCESS;
+    kafs_sblkcnt_t tbl2[blkrefs_pb];
+    KAFS_CALL(kafs_blk_read, ctx, blo_tbl2, tbl2);
+    if (!kafs_blk_is_zero(tbl2, blksize))
+    {
+      *free_blo1 = blo_tbl2;
+      tbl1[ib1] = kafs_blkcnt_htos(KAFS_BLO_NONE);
+      KAFS_CALL(kafs_blk_write, ctx, blo_tbl1, tbl1);
+      // 親も空なら切り離し
+      if (!kafs_blk_is_zero(tbl1, blksize))
+      {
+        *free_blo2 = blo_tbl1;
+        inoent->i_blkreftbl[13] = kafs_blkcnt_htos(KAFS_BLO_NONE);
+      }
+    }
+    return KAFS_SUCCESS;
+  }
+
+  // 三重間接
+  rem -= blkrefs_pb_sq;
+  kafs_iblkcnt_t ib1 = rem >> log_blkrefs_pb_sq;
+  kafs_iblkcnt_t ib2 = (rem >> log_blkrefs_pb) & (blkrefs_pb - 1);
+  kafs_blkcnt_t blo_tbl1 = kafs_blkcnt_stoh(inoent->i_blkreftbl[14]);
+  if (blo_tbl1 == KAFS_BLO_NONE)
+    return KAFS_SUCCESS;
+  kafs_sblkcnt_t tbl1[blkrefs_pb];
+  KAFS_CALL(kafs_blk_read, ctx, blo_tbl1, tbl1);
+  kafs_blkcnt_t blo_tbl2 = kafs_blkcnt_stoh(tbl1[ib1]);
+  if (blo_tbl2 == KAFS_BLO_NONE)
+    return KAFS_SUCCESS;
+  kafs_sblkcnt_t tbl2[blkrefs_pb];
+  KAFS_CALL(kafs_blk_read, ctx, blo_tbl2, tbl2);
+  kafs_blkcnt_t blo_tbl3 = kafs_blkcnt_stoh(tbl2[ib2]);
+  if (blo_tbl3 == KAFS_BLO_NONE)
+    return KAFS_SUCCESS;
+  kafs_sblkcnt_t tbl3[blkrefs_pb];
+  KAFS_CALL(kafs_blk_read, ctx, blo_tbl3, tbl3);
+  if (!kafs_blk_is_zero(tbl3, blksize))
+  {
+    *free_blo1 = blo_tbl3;
+    tbl2[ib2] = kafs_blkcnt_htos(KAFS_BLO_NONE);
+    KAFS_CALL(kafs_blk_write, ctx, blo_tbl2, tbl2);
+    if (!kafs_blk_is_zero(tbl2, blksize))
+    {
+      *free_blo2 = blo_tbl2;
+      tbl1[ib1] = kafs_blkcnt_htos(KAFS_BLO_NONE);
+      KAFS_CALL(kafs_blk_write, ctx, blo_tbl1, tbl1);
+      if (!kafs_blk_is_zero(tbl1, blksize))
+      {
+        *free_blo3 = blo_tbl1;
+        inoent->i_blkreftbl[14] = kafs_blkcnt_htos(KAFS_BLO_NONE);
+      }
+    }
+  }
+  return KAFS_SUCCESS;
+}
+
 /// @brief inode毎のデータを読み出す（ブロック単位）
 /// @param ctx コンテキスト
 /// @param inoent inode テーブルエントリ
@@ -566,10 +676,16 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
       kafs_blkcnt_t none = KAFS_BLO_NONE;
       // 先に参照を NONE に更新（inode ロック内）
       KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &none, KAFS_IBLKREF_FUNC_SET);
+  // 空になった中間テーブルを切り離し（inode ロック内）
+  kafs_blkcnt_t f1, f2, f3;
+  KAFS_CALL(kafs_ino_prune_empty_indirects, ctx, inoent, iblo, &f1, &f2, &f3);
       // 参照減算は inode ロック外
       uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
       kafs_inode_unlock(ctx, ino_idx);
       (void)kafs_hrl_dec_ref_by_blo(ctx, old);
+  if (f1 != KAFS_BLO_NONE) (void)kafs_hrl_dec_ref_by_blo(ctx, f1);
+  if (f2 != KAFS_BLO_NONE) (void)kafs_hrl_dec_ref_by_blo(ctx, f2);
+  if (f3 != KAFS_BLO_NONE) (void)kafs_hrl_dec_ref_by_blo(ctx, f3);
       kafs_inode_lock(ctx, ino_idx);
     }
   }
@@ -591,10 +707,16 @@ static int kafs_ino_iblk_release(struct kafs_context *ctx, kafs_sinode_t *inoent
   {
     kafs_blkcnt_t none = KAFS_BLO_NONE;
     KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &none, KAFS_IBLKREF_FUNC_SET);
+  // 空になった中間テーブルを切り離し（inode ロック内）
+  kafs_blkcnt_t f1, f2, f3;
+  KAFS_CALL(kafs_ino_prune_empty_indirects, ctx, inoent, iblo, &f1, &f2, &f3);
     // dec_ref は inode ロック外で実施
     uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
     kafs_inode_unlock(ctx, ino_idx);
     (void)kafs_hrl_dec_ref_by_blo(ctx, old);
+  if (f1 != KAFS_BLO_NONE) (void)kafs_hrl_dec_ref_by_blo(ctx, f1);
+  if (f2 != KAFS_BLO_NONE) (void)kafs_hrl_dec_ref_by_blo(ctx, f2);
+  if (f3 != KAFS_BLO_NONE) (void)kafs_hrl_dec_ref_by_blo(ctx, f3);
     kafs_inode_lock(ctx, ino_idx);
   }
   return KAFS_SUCCESS;
