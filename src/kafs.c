@@ -132,28 +132,7 @@ static int kafs_blk_write(struct kafs_context *ctx, kafs_blkcnt_t blo, const voi
 /// @param ctx コンテキスト
 /// @param pblo ブロック番号へのポインタ
 /// @return 0: 成功, < 0: 失敗 (-errno)
-static int kafs_blk_release(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
-{
-  kafs_dlog(3, "%s(*pblo = %" PRIuFAST32 ")\n", __func__, *pblo);
-  assert(ctx != NULL);
-  assert(pblo != NULL);
-  assert(*pblo != KAFS_INO_NONE);
-  assert(*pblo < kafs_sb_r_blkcnt_get(ctx->c_superblock));
-  // 既に未使用なら何もしない（多重解放の回避）
-  if (!kafs_blk_get_usage_locked(ctx, *pblo))
-  {
-    *pblo = KAFS_BLO_NONE;
-    return KAFS_SUCCESS;
-  }
-  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
-  // ブロックを0で埋める
-  char zbuf[blksize];
-  memset(zbuf, 0, blksize);
-  // HRL 管理されていれば参照減算、そうでなければ直接解放
-  (void)kafs_hrl_dec_ref_by_blo(ctx, *pblo);
-  *pblo = KAFS_BLO_NONE;
-  return KAFS_SUCCESS;
-}
+// kafs_blk_release は DEL 経路廃止に伴い不要になったため削除しました
 
 // ---------------------------------------------------------
 // INODE BLOCK OPERATIONS
@@ -163,7 +142,6 @@ typedef enum
 {
   KAFS_IBLKREF_FUNC_GET,
   KAFS_IBLKREF_FUNC_PUT,
-  KAFS_IBLKREF_FUNC_DEL,
   KAFS_IBLKREF_FUNC_SET
 } kafs_iblkref_func_t;
 
@@ -199,17 +177,6 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
         inoent->i_blkreftbl[iblo] = kafs_blkcnt_htos(blo_data);
       }
       *pblo = blo_data;
-      return KAFS_SUCCESS;
-
-    case KAFS_IBLKREF_FUNC_DEL:
-      if (blo_data == KAFS_BLO_NONE)
-      {
-        *pblo = KAFS_BLO_NONE;
-        return KAFS_SUCCESS;
-      }
-      KAFS_CALL(kafs_blk_release, ctx, &blo_data);
-      inoent->i_blkreftbl[iblo] = kafs_blkcnt_htos(KAFS_BLO_NONE);
-      *pblo = KAFS_BLO_NONE;
       return KAFS_SUCCESS;
 
     case KAFS_IBLKREF_FUNC_SET:
@@ -260,30 +227,6 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
         KAFS_CALL(kafs_blk_write, ctx, blo_blkreftbl, blkreftbl);
       }
       *pblo = blo_data;
-      return KAFS_SUCCESS;
-
-    case KAFS_IBLKREF_FUNC_DEL:
-      if (blo_blkreftbl == KAFS_BLO_NONE)
-      {
-        *pblo = KAFS_BLO_NONE;
-        return KAFS_SUCCESS;
-      }
-      KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl, blkreftbl);
-      blo_data = kafs_blkcnt_stoh(blkreftbl[iblo]);
-      if (blo_data != KAFS_BLO_NONE)
-      {
-        KAFS_CALL(kafs_blk_release, ctx, &blo_data);
-        blkreftbl[iblo] = kafs_blkcnt_htos(blo_data);
-      }
-      if (!kafs_blk_is_zero(blkreftbl, blksize))
-      {
-        KAFS_CALL(kafs_blk_write, ctx, blo_blkreftbl, blkreftbl);
-        *pblo = KAFS_BLO_NONE;
-        return KAFS_SUCCESS;
-      }
-      KAFS_CALL(kafs_blk_release, ctx, &blo_blkreftbl);
-      inoent->i_blkreftbl[12] = kafs_blkcnt_htos(blo_blkreftbl);
-      *pblo = KAFS_BLO_NONE;
       return KAFS_SUCCESS;
 
     case KAFS_IBLKREF_FUNC_SET:
@@ -369,47 +312,6 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
         KAFS_CALL(kafs_blk_write, ctx, blo_blkreftbl2, blkreftbl2);
       }
       *pblo = blo_data;
-      return KAFS_SUCCESS;
-
-    case KAFS_IBLKREF_FUNC_DEL:
-      if (blo_blkreftbl1 == KAFS_BLO_NONE)
-      {
-        *pblo = KAFS_BLO_NONE;
-        return KAFS_SUCCESS;
-      }
-      KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl1, blkreftbl1);
-      blo_blkreftbl2 = kafs_blkcnt_stoh(blkreftbl1[iblo1]);
-      if (blo_blkreftbl2 == KAFS_BLO_NONE)
-      {
-        *pblo = KAFS_BLO_NONE;
-        return KAFS_SUCCESS;
-      }
-      KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl2, blkreftbl2);
-      blo_data = kafs_blkcnt_stoh(blkreftbl2[iblo2]);
-      if (blo_data == KAFS_BLO_NONE)
-      {
-        *pblo = KAFS_BLO_NONE;
-        return KAFS_SUCCESS;
-      }
-      KAFS_CALL(kafs_blk_release, ctx, &blo_data);
-      blkreftbl2[iblo2] = kafs_blkcnt_htos(KAFS_BLO_NONE);
-      if (!kafs_blk_is_zero(blkreftbl2, blksize))
-      {
-        KAFS_CALL(kafs_blk_write, ctx, blo_blkreftbl2, blkreftbl2);
-        *pblo = KAFS_BLO_NONE;
-        return KAFS_SUCCESS;
-      }
-      KAFS_CALL(kafs_blk_release, ctx, &blo_blkreftbl2);
-      blkreftbl1[iblo1] = kafs_blkcnt_htos(KAFS_BLO_NONE);
-      if (!kafs_blk_is_zero(blkreftbl1, blksize))
-      {
-        KAFS_CALL(kafs_blk_write, ctx, blo_blkreftbl1, blkreftbl1);
-        *pblo = KAFS_BLO_NONE;
-        return KAFS_SUCCESS;
-      }
-      KAFS_CALL(kafs_blk_release, ctx, &blo_blkreftbl1);
-      inoent->i_blkreftbl[13] = kafs_blkcnt_htos(KAFS_BLO_NONE);
-      *pblo = KAFS_BLO_NONE;
       return KAFS_SUCCESS;
     case KAFS_IBLKREF_FUNC_SET:
       if (blo_blkreftbl1 == KAFS_BLO_NONE)
@@ -529,61 +431,6 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
     *pblo = blo_data;
     return KAFS_SUCCESS;
 
-  case KAFS_IBLKREF_FUNC_DEL:
-    if (blo_blkreftbl1 == KAFS_BLO_NONE)
-    {
-      *pblo = KAFS_BLO_NONE;
-      return KAFS_SUCCESS;
-    }
-    KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl1, blkreftbl1);
-    blo_blkreftbl2 = kafs_blkcnt_stoh(blkreftbl1[iblo1]);
-    if (blo_blkreftbl2 == KAFS_BLO_NONE)
-    {
-      *pblo = KAFS_BLO_NONE;
-      return KAFS_SUCCESS;
-    }
-    KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl2, blkreftbl2);
-    blo_blkreftbl3 = kafs_blkcnt_stoh(blkreftbl2[iblo2]);
-    if (blo_blkreftbl3 == KAFS_BLO_NONE)
-    {
-      *pblo = KAFS_BLO_NONE;
-      return KAFS_SUCCESS;
-    }
-    KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl3, blkreftbl3);
-    blo_data = kafs_blkcnt_stoh(blkreftbl3[iblo3]);
-    if (blo_data == KAFS_BLO_NONE)
-    {
-      *pblo = KAFS_BLO_NONE;
-      return KAFS_SUCCESS;
-    }
-    KAFS_CALL(kafs_blk_release, ctx, &blo_data);
-    blkreftbl3[iblo3] = kafs_blkcnt_htos(KAFS_BLO_NONE);
-    if (!kafs_blk_is_zero(blkreftbl3, blksize))
-    {
-      KAFS_CALL(kafs_blk_write, ctx, blo_blkreftbl3, blkreftbl3);
-      *pblo = KAFS_BLO_NONE;
-      return KAFS_SUCCESS;
-    }
-    KAFS_CALL(kafs_blk_release, ctx, &blo_blkreftbl3);
-    blkreftbl2[iblo2] = kafs_blkcnt_htos(KAFS_BLO_NONE);
-    if (!kafs_blk_is_zero(blkreftbl2, blksize))
-    {
-      KAFS_CALL(kafs_blk_write, ctx, blo_blkreftbl2, blkreftbl2);
-      *pblo = KAFS_BLO_NONE;
-      return KAFS_SUCCESS;
-    }
-    KAFS_CALL(kafs_blk_release, ctx, &blo_blkreftbl2);
-    blkreftbl1[iblo1] = kafs_blkcnt_htos(KAFS_BLO_NONE);
-    if (!kafs_blk_is_zero(blkreftbl1, blksize))
-    {
-      KAFS_CALL(kafs_blk_write, ctx, blo_blkreftbl1, blkreftbl1);
-      *pblo = KAFS_BLO_NONE;
-      return KAFS_SUCCESS;
-    }
-    KAFS_CALL(kafs_blk_release, ctx, &blo_blkreftbl1);
-    inoent->i_blkreftbl[14] = kafs_blkcnt_htos(KAFS_BLO_NONE);
-    *pblo = KAFS_BLO_NONE;
-    return KAFS_SUCCESS;
   case KAFS_IBLKREF_FUNC_SET:
     if (blo_blkreftbl1 == KAFS_BLO_NONE)
     {
