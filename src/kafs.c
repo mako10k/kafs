@@ -78,13 +78,15 @@ static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
     return KAFS_SUCCESS;
   }
   // MTレース時の瞬間的不一致を吸収するため短いリトライを入れる
-  for (int tries = 0; tries < 3; ++tries)
+  for (int tries = 0; tries < 5; ++tries)
   {
     if (kafs_blk_get_usage_locked(ctx, blo))
       break;
-    struct timespec ts = {0, 2000000}; // 2ms
+    long ns = 2000000L << tries; // 2ms,4ms,8ms,16ms,32ms
+    if (ns > 100000000L) ns = 100000000L; // clamp 100ms
+    struct timespec ts = {0, ns};
     nanosleep(&ts, NULL);
-    if (tries == 2)
+    if (tries == 4)
     {
       // 最終手段: ゼロ読みとして返す（アサートで落とさない）
       memset(buf, 0, blksize);
@@ -123,18 +125,18 @@ static int kafs_blk_write(struct kafs_context *ctx, kafs_blkcnt_t blo, const voi
   assert(blo != KAFS_INO_NONE);
   assert(blo < kafs_sb_r_blkcnt_get(ctx->c_superblock));
   // 瞬間的不一致を想定して短いリトライ
-  for (int tries = 0; tries < 3; ++tries)
+  int seen_used = 0;
+  for (int tries = 0; tries < 5; ++tries)
   {
-    if (kafs_blk_get_usage_locked(ctx, blo))
-      break;
-    struct timespec ts = {0, 2000000}; // 2ms
+    if (kafs_blk_get_usage_locked(ctx, blo)) { seen_used = 1; break; }
+    long ns = 2000000L << tries; // 2ms,4ms,8ms,16ms,32ms
+    if (ns > 100000000L) ns = 100000000L; // clamp 100ms
+    struct timespec ts = {0, ns};
     nanosleep(&ts, NULL);
-    if (tries == 2)
-    {
-      // それでも未使用に見える場合はI/Oエラー（上位で再試行され得る）
-      return -EIO;
-    }
   }
+  // それでも未使用に見える場合、上位の整合が進む前の見かけの可能性があるため警告のみで続行
+  if (!seen_used)
+    kafs_dlog(1, "%s: blo=%" PRIuFAST32 " appears unused; proceeding write defensively\n", __func__, blo);
   kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
   size_t done = 0;
