@@ -697,10 +697,6 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
   if (kafs_blk_is_zero(buf, blksize))
   {
     // 非ゼロ: HRL 経路（失敗時は従来経路）。
-    // ロック順序: HRLバケット/ビットマップ -> inode
-    uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
-    // いったん inode ロックを解放（呼び出し側で保持している前提）
-    kafs_inode_unlock(ctx, ino_idx);
     kafs_hrid_t hrid;
     int is_new = 0;
     kafs_blkcnt_t new_blo = KAFS_BLO_NONE;
@@ -708,38 +704,40 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
     if (rc == 0)
     {
       KAFS_CALL(kafs_hrl_inc_ref, ctx, hrid);
-      // inode ロックを再取得して参照更新
-      kafs_inode_lock(ctx, ino_idx);
       kafs_blkcnt_t old_blo;
       KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old_blo, KAFS_IBLKREF_FUNC_GET);
       KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &new_blo, KAFS_IBLKREF_FUNC_SET);
-      // 旧ブロックの解放は inode ロック外で実施（順序逆転回避）
-      kafs_inode_unlock(ctx, ino_idx);
+      // HRLバケットロック順序のため、参照減算は inode ロック外で行う
+      uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
       if (old_blo != KAFS_BLO_NONE && old_blo != new_blo)
+      {
+        kafs_inode_unlock(ctx, ino_idx);
         (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
-      // 以降の処理は不要（HRLがデータ書き込み済み）
+        kafs_inode_lock(ctx, ino_idx);
+      }
       return KAFS_SUCCESS;
     }
     // HRL 失敗時: レガシー経路
-    // inode ロックは未保持のはずなので、先に物理ブロックを割り当てる
+    // 先に物理ブロックを割り当ててデータを書き込み、その後参照を更新する
     kafs_blkcnt_t new_blo2 = KAFS_BLO_NONE;
     KAFS_CALL(kafs_blk_alloc, ctx, &new_blo2);
-    // inode ロックを取得し、参照更新（SET）
-    kafs_inode_lock(ctx, ino_idx);
+    // 先にデータを書き込む（読取り側はまだ旧参照を見続ける）
+    KAFS_CALL(kafs_blk_write, ctx, new_blo2, buf);
     kafs_blkcnt_t old_blo2;
     KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old_blo2, KAFS_IBLKREF_FUNC_GET);
     KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &new_blo2, KAFS_IBLKREF_FUNC_SET);
-    // 参照更新後に I/O を実施（読取り側は inode ロックで保護）
-    KAFS_CALL(kafs_blk_write, ctx, new_blo2, buf);
-    // inode ロックを解放し、旧ブロックの参照を解放
-    kafs_inode_unlock(ctx, ino_idx);
+    // 旧ブロックの参照を解放（inode ロック外）
     if (old_blo2 != KAFS_BLO_NONE && old_blo2 != new_blo2)
+    {
+      uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
+      kafs_inode_unlock(ctx, ino_idx);
       (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo2);
+      kafs_inode_lock(ctx, ino_idx);
+    }
     return KAFS_SUCCESS;
   }
   // 全ゼロ: スパース化（参照削除）
   {
-    uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
     kafs_blkcnt_t old;
     KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old, KAFS_IBLKREF_FUNC_GET);
     if (old != KAFS_BLO_NONE)
@@ -747,10 +745,10 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
       kafs_blkcnt_t none = KAFS_BLO_NONE;
       // 先に参照を NONE に更新（inode ロック内）
       KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &none, KAFS_IBLKREF_FUNC_SET);
-      // inode ロック解放後に物理ブロック参照をデクリメント
+      // 参照減算は inode ロック外
+      uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
       kafs_inode_unlock(ctx, ino_idx);
       (void)kafs_hrl_dec_ref_by_blo(ctx, old);
-      // 再ロックして戻る（上位の整合を保つ）
       kafs_inode_lock(ctx, ino_idx);
     }
   }
