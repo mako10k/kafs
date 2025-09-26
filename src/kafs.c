@@ -2025,10 +2025,11 @@ int main(int argc, char **argv)
       mt_cnt = 1;
     if (mt_cnt > 100000)
       mt_cnt = 100000;
-    // -omax_threads=N （単一引数として渡す）
-    snprintf(mt_opt_buf, sizeof(mt_opt_buf), "-omax_threads=%u", mt_cnt);
+    // 安全のため -o と値を分けて渡す（-omax_threads= 形式のパース差異を回避）
+    snprintf(mt_opt_buf, sizeof(mt_opt_buf), "max_threads=%u", mt_cnt);
+    argv_fuse[argc_fuse++] = "-o";
     argv_fuse[argc_fuse++] = mt_opt_buf;
-  kafs_log(KAFS_LOG_INFO, "kafs: enabling multithread with %s\n", mt_opt_buf);
+    kafs_log(KAFS_LOG_INFO, "kafs: enabling multithread with -o %s\n", mt_opt_buf);
   }
   // 起動引数を一度だけ情報ログに出力（デバッグ用途）
   if (kafs_debug_level() >= 1) {
