@@ -1,3 +1,4 @@
+AUTOMAKE_OPTIONS = serial-tests
 bin_PROGRAMS = kafs mkfs.kafs fsck.kafs kafs-info
 
 # add per-target flags; silence unused-function as headers provide many static helpers
@@ -25,8 +26,10 @@ noinst_HEADERS = kafs_block.h kafs_context.h kafs_dirent.h kafs_inode.h kafs_sup
 CFLAGS = -Wall -Werror -g -O0 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64
 
 # --- Tests ---
-check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured stress_fs min_git_hooks fs_semantics clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility prune_indirect_single prune_indirect_double prune_indirect_triple
-TESTS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured stress_fs min_git_hooks fs_semantics clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility prune_indirect_single prune_indirect_double prune_indirect_triple
+# NOTE: stress_fs mounts in multithread mode and exercises heavier workloads.
+# To minimize any residual side effects on subsequent tests, run it last.
+check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured min_git_hooks fs_semantics clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility prune_indirect_single prune_indirect_double prune_indirect_triple truncate_prune stress_fs
+TESTS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured min_git_hooks fs_semantics clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility prune_indirect_single prune_indirect_double prune_indirect_triple truncate_prune stress_fs
 hrl_smoketest_SOURCES = tests_hrl_smoketest.c kafs_hrl.c kafs_locks.c test_utils.c
 hrl_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 hrl_smoketest_LDADD = $(KAFS_LIBS)
@@ -85,6 +88,10 @@ prune_indirect_double_LDADD = $(KAFS_LIBS)
 prune_indirect_triple_SOURCES = tests_prune_indirect_triple.c test_utils.c kafs_hrl.c kafs_locks.c
 prune_indirect_triple_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 prune_indirect_triple_LDADD = $(KAFS_LIBS)
+
+truncate_prune_SOURCES = tests_truncate_prune.c test_utils.c kafs_hrl.c kafs_locks.c
+truncate_prune_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+truncate_prune_LDADD = $(KAFS_LIBS)
 
 # All tests are expected to pass
 XFAIL_TESTS =

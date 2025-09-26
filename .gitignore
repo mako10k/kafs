@@ -61,5 +61,10 @@
 
 ### Local staging (DESTDIR installs)
 /_staging/
-src/prune_indirect_single
 minisrv.log
+
+# Built test binaries (explicit names)
+/src/prune_indirect_single
+/src/prune_indirect_double
+/src/prune_indirect_triple
+/src/truncate_prune
