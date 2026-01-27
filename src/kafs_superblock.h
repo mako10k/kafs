@@ -56,10 +56,10 @@ struct kafs_ssuperblock
   /// @brief ジャーナル領域の先頭オフセット（バイト、メタ領域内）
   kafs_su64_t s_journal_offset; // +96 (8)
   /// @brief ジャーナル領域の総サイズ（ヘッダ含む、バイト）
-  kafs_su64_t s_journal_size;   // +104 (8)
+  kafs_su64_t s_journal_size; // +104 (8)
   /// @brief ジャーナル設定フラグ（将来用）
-  kafs_su32_t s_journal_flags;  // +112 (4)
-  uint32_t s_pad3;            // +116 (4)
+  kafs_su32_t s_journal_flags;   // +112 (4)
+  uint32_t s_pad3;               // +116 (4)
   uint8_t s_reserved[128 - 120]; // +120 .. +127
 } __attribute__((packed));
 

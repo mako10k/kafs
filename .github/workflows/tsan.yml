@@ -1,0 +1,33 @@
+name: TSan
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  tsan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install deps (system)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libfuse3-dev pkg-config clang
+
+      - name: Autotools bootstrap
+        run: |
+          autoreconf -fi
+          CC=clang CFLAGS='-O1 -g -fsanitize=thread -fno-omit-frame-pointer' \
+          LDFLAGS='-fsanitize=thread' \
+          ./configure
+
+      - name: Build (TSan)
+        run: make -j2
+
+      # FUSE tests can hang/require privileges in CI, so only build under TSan here.
+      - name: Smoke run (no FUSE)
+        run: ./src/hrl_smoketest

@@ -7,6 +7,8 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,7 +16,170 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
+
+static const char *abspath_no_fs(const char *path, char out[PATH_MAX])
+{
+  if (!path || !*path)
+    return path;
+  if (path[0] == '/')
+  {
+    strncpy(out, path, PATH_MAX - 1);
+    out[PATH_MAX - 1] = '\0';
+    return out;
+  }
+  char cwd[PATH_MAX];
+  if (!getcwd(cwd, sizeof(cwd)))
+    return path;
+  if ((size_t)snprintf(out, PATH_MAX, "%s/%s", cwd, path) >= PATH_MAX)
+    return path;
+  return out;
+}
+
+static int is_mounted_fuse(const char *mnt)
+{
+  FILE *fp = fopen("/proc/mounts", "r");
+  if (!fp)
+    return 0;
+  char dev[256], dir[256], type[64];
+  int mounted = 0;
+  while (fscanf(fp, "%255s %255s %63s %*[^\n]\n", dev, dir, type) == 3)
+  {
+    if (strcmp(dir, mnt) == 0 && strncmp(type, "fuse", 4) == 0)
+    {
+      mounted = 1;
+      break;
+    }
+  }
+  fclose(fp);
+  return mounted;
+}
+
+static int run_cmd_timeout(char *const argv[], int timeout_ms)
+{
+  pid_t p = fork();
+  if (p < 0)
+    return -errno;
+  if (p == 0)
+  {
+    execvp(argv[0], argv);
+    _exit(127);
+  }
+  const int step_ms = 50;
+  int waited = 0;
+  for (;;)
+  {
+    int st = 0;
+    pid_t w = waitpid(p, &st, WNOHANG);
+    if (w == p)
+    {
+      if (WIFEXITED(st) && WEXITSTATUS(st) == 0)
+        return 0;
+      return -1;
+    }
+    if (w < 0)
+      return -errno;
+
+    if (timeout_ms >= 0 && waited >= timeout_ms)
+    {
+      (void)kill(p, SIGKILL);
+      // Never block here: fusermount can get stuck in uninterruptible sleep.
+      for (int i = 0; i < 100; ++i)
+      { // best-effort reap (~1s)
+        if (waitpid(p, NULL, WNOHANG) == p)
+          return -ETIMEDOUT;
+        struct timespec ts2 = {0, 10 * 1000 * 1000};
+        nanosleep(&ts2, NULL);
+      }
+      (void)waitpid(p, NULL, WNOHANG);
+      return -ETIMEDOUT;
+    }
+
+    struct timespec ts = {0, step_ms * 1000 * 1000};
+    nanosleep(&ts, NULL);
+    waited += step_ms;
+  }
+}
+
+static void kill_wait_timeout(pid_t pid, int timeout_ms)
+{
+  if (pid <= 0)
+    return;
+
+  // already exited?
+  {
+    int st = 0;
+    pid_t w = waitpid(pid, &st, WNOHANG);
+    if (w == pid)
+      return;
+    if (w < 0 && errno == ECHILD)
+      return;
+  }
+
+  (void)kill(pid, SIGTERM);
+  const int step_ms = 50;
+  int waited = 0;
+  for (;;)
+  {
+    int st = 0;
+    pid_t w = waitpid(pid, &st, WNOHANG);
+    if (w == pid)
+      return;
+    if (w < 0)
+    {
+      if (errno == ECHILD)
+        return;
+      break;
+    }
+    if (timeout_ms >= 0 && waited >= timeout_ms)
+      break;
+    struct timespec ts = {0, step_ms * 1000 * 1000};
+    nanosleep(&ts, NULL);
+    waited += step_ms;
+  }
+
+  (void)kill(pid, SIGKILL);
+  // Best-effort reap with a small bounded wait to avoid zombies.
+  for (int i = 0; i < 100; ++i)
+  { // ~1s
+    if (waitpid(pid, NULL, WNOHANG) == pid)
+      return;
+    struct timespec ts2 = {0, 10 * 1000 * 1000};
+    nanosleep(&ts2, NULL);
+  }
+  (void)waitpid(pid, NULL, WNOHANG);
+}
+
+void kafs_test_stop_kafs(const char *mnt, pid_t kafs_pid)
+{
+  char absbuf[PATH_MAX];
+  const char *mp = abspath_no_fs(mnt, absbuf);
+
+  // Try to unmount without hanging. Keep timeouts short to avoid blocking make check.
+  if (mp)
+  {
+    char *um1[] = {"fusermount3", "-u", (char *)mp, NULL};
+    (void)run_cmd_timeout(um1, 2000);
+
+    if (is_mounted_fuse(mp))
+    {
+      char *um2[] = {"fusermount", "-u", (char *)mp, NULL};
+      (void)run_cmd_timeout(um2, 2000);
+    }
+  }
+
+  // Ensure server is not left running.
+  kill_wait_timeout(kafs_pid, 2000);
+
+  // If still mounted, force lazy unmount again after killing server.
+  if (mp && is_mounted_fuse(mp))
+  {
+    char *um3[] = {"fusermount3", "-u", "-z", (char *)mp, NULL};
+    (void)run_cmd_timeout(um3, 2000);
+  }
+}
 
 int kafs_test_mkimg(const char *path, size_t bytes, unsigned log_bs, unsigned inodes,
                     int enable_hrl, kafs_context_t *out_ctx, off_t *out_mapsize)

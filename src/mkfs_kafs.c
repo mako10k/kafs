@@ -18,7 +18,8 @@
 static void usage(const char *prog)
 {
   fprintf(stderr,
-    "Usage: %s <image> [--size-bytes N|-s N] [--blksize-log L|-b L] [--inodes I|-i I] [--journal-size-bytes J|-J J]\n",
+          "Usage: %s <image> [--size-bytes N|-s N] [--blksize-log L|-b L] [--inodes I|-i I] "
+          "[--journal-size-bytes J|-J J]\n",
           prog);
   fprintf(stderr, "  defaults: N=1GiB, L=12 (4096B), I=65536, J=1MiB\n");
 }
@@ -49,10 +50,12 @@ int main(int argc, char **argv)
     {
       inocnt = (kafs_inocnt_t)strtoul(argv[++i], NULL, 0);
     }
-    else if ((strcmp(argv[i], "--journal-size-bytes") == 0 || strcmp(argv[i], "-J") == 0) && i + 1 < argc)
+    else if ((strcmp(argv[i], "--journal-size-bytes") == 0 || strcmp(argv[i], "-J") == 0) &&
+             i + 1 < argc)
     {
       journal_bytes = (size_t)strtoull(argv[++i], NULL, 0);
-      if (journal_bytes < 4096) journal_bytes = 4096; // minimum
+      if (journal_bytes < 4096)
+        journal_bytes = 4096; // minimum
     }
     else if (argv[i][0] != '-' && img == NULL)
     {

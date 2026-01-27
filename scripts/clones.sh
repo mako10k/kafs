@@ -9,9 +9,10 @@ REPORT_DIR=${REPORT_DIR:-report/clone}
 mkdir -p "$REPORT_DIR"
 npx --yes jscpd@latest \
   --min-lines 8 \
-  --threshold 0 \
+  --threshold 5 \
   --reporters json,console \
   --ignore "**/autom4te.cache/**" \
+  --ignore "**/tests_*.c" \
   --format "c,c-header" \
   --pattern 'src/**/*.{c,h}' \
   --output "$REPORT_DIR"

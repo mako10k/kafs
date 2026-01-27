@@ -13,7 +13,8 @@
     - リプレイ: マウント時にスキャン・クリーン。既定では「再適用」は実施せず（コールバックIFあり）。
 - ツール/テスト
   - `stress_fs` テスト（Automake tests）。マウント/並行操作のストレス検証で PASS。
-  - `mkfs_kafs.c` の実装は存在（画像作成・ジャーナル領域付与・`-J` サイズ指定対応）。ただしビルドターゲット未登録のため、既定ではバイナリ生成・インストールされない。
+  - `mkfs.kafs` / `fsck.kafs` は `src/Makefile.am` の `bin_PROGRAMS` に登録済みで、既定ビルド/インストール対象。
+  - 実装はそれぞれ `mkfs_kafs.c` / `fsck_kafs.c`。
 - ドキュメント
   - `docs/journal-plan.md`（M1〜M4 の計画）。
 

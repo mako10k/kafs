@@ -180,8 +180,16 @@ void kafs_hrl_global_unlock(struct kafs_context *ctx) { (void)ctx; }
 void kafs_bitmap_lock(struct kafs_context *ctx) { (void)ctx; }
 void kafs_bitmap_unlock(struct kafs_context *ctx) { (void)ctx; }
 
-void kafs_inode_lock(struct kafs_context *ctx, uint32_t ino) { (void)ctx; (void)ino; }
-void kafs_inode_unlock(struct kafs_context *ctx, uint32_t ino) { (void)ctx; (void)ino; }
+void kafs_inode_lock(struct kafs_context *ctx, uint32_t ino)
+{
+  (void)ctx;
+  (void)ino;
+}
+void kafs_inode_unlock(struct kafs_context *ctx, uint32_t ino)
+{
+  (void)ctx;
+  (void)ino;
+}
 void kafs_inode_alloc_lock(struct kafs_context *ctx) { (void)ctx; }
 void kafs_inode_alloc_unlock(struct kafs_context *ctx) { (void)ctx; }
 

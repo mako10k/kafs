@@ -16,8 +16,8 @@ Phase 2 (Allocator/bitmap safety)
  - [x] Define lock ordering to avoid deadlocks (HRL bucket -> bitmap). Do not acquire in reverse order.
 
 Phase 3 (Inode/dir entries safety)
-- [ ] Add inode/dirent mutexes or coarse-grained FS mutex
-- [ ] Protect inode table updates and directory modifications
+- [x] Add inode/dirent mutexes (per-inode mutex array + alloc mutex)
+- [x] Protect inode table updates and directory modifications
 
 Phase 4 (Validation)
 - [ ] Add parallel stress tests (N threads, same/different data)
