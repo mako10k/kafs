@@ -50,6 +50,7 @@
 /logs/
 /_kafs*.log
 /_mnt_*/
+/kafs-*.tar.gz
 
 # server logs produced by tests
 /src/minisrv.log

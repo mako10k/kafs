@@ -17,6 +17,7 @@ mkfs.kafs \- create a KAFS filesystem image
 .B mkfs.kafs
 creates a new KAFS filesystem image file with the specified parameters.
 It initializes superblock, block bitmap, inode table, HRL structures, and an in-image journal region.
+The filesystem root directory is owned by the user running mkfs.kafs (UID/GID).
 .SH OPTIONS
 .TP
 .BR -s ", " --size-bytes "=" size

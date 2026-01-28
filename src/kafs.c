@@ -18,6 +18,7 @@
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/mman.h>
+#include <sys/statvfs.h>
 #include <stdlib.h>
 #include <stddef.h>
 #include <signal.h>
@@ -1301,6 +1302,33 @@ static int kafs_op_getattr(const char *path, struct stat *st, struct fuse_file_i
   return 0;
 }
 
+static int kafs_op_statfs(const char *path, struct statvfs *st)
+{
+  (void)path;
+  struct fuse_context *fctx = fuse_get_context();
+  struct kafs_context *ctx = fctx->private_data;
+  memset(st, 0, sizeof(*st));
+
+  const unsigned blksize = (unsigned)kafs_sb_blksize_get(ctx->c_superblock);
+  const kafs_blkcnt_t blocks = kafs_sb_blkcnt_get(ctx->c_superblock);
+  const kafs_blkcnt_t bfree = kafs_sb_blkcnt_free_get(ctx->c_superblock);
+  const kafs_inocnt_t files = kafs_sb_inocnt_get(ctx->c_superblock);
+  const kafs_inocnt_t ffree = (kafs_inocnt_t)kafs_sb_inocnt_free_get(ctx->c_superblock);
+
+  st->f_bsize = blksize;
+  st->f_frsize = blksize;
+  st->f_blocks = (fsblkcnt_t)blocks;
+  st->f_bfree = (fsblkcnt_t)bfree;
+  st->f_bavail = (fsblkcnt_t)bfree;
+  st->f_files = (fsfilcnt_t)files;
+  st->f_ffree = (fsfilcnt_t)ffree;
+  st->f_favail = (fsfilcnt_t)ffree;
+  st->f_namemax = 255;
+
+  (void)fctx;
+  return 0;
+}
+
 static int kafs_op_open(const char *path, struct fuse_file_info *fi)
 {
   struct fuse_context *fctx = fuse_get_context();
@@ -1843,6 +1871,7 @@ static int kafs_op_symlink(const char *target, const char *linkpath)
 
 static struct fuse_operations kafs_operations = {
     .getattr = kafs_op_getattr,
+    .statfs = kafs_op_statfs,
     .open = kafs_op_open,
     .create = kafs_op_create,
     .mknod = kafs_op_mknod,
@@ -1867,11 +1896,12 @@ static void usage(const char *prog)
 {
   fprintf(stderr,
           "Usage: %s [--image <image>|--image=<image>] <mountpoint> [FUSE options...]\n"
+          "       %s <image> <mountpoint> [FUSE options...] (mount helper compatible)\n"
           "       env KAFS_IMAGE can be used as fallback image path.\n"
           "       default runs single-threaded; set env KAFS_MT=1 to enable multithread.\n"
           "Examples:\n"
           "  %s --image test.img mnt -f\n",
-          prog, prog);
+          prog, prog, prog);
 }
 
 static void kafs_signal_handler(int sig)
@@ -1943,6 +1973,15 @@ int main(int argc, char **argv)
     }
     // pass other args through to FUSE
     argv_clean[argc_clean++] = argv[i];
+  }
+  // mount(8) helper compatibility: allow "kafs <image> <mountpoint> [FUSE options...]"
+  // When invoked via mount -t fuse.kafs, the image path is typically passed as the first argument.
+  if (image_path == NULL && argc_clean >= 3 && argv_clean[1][0] != '-')
+  {
+    image_path = argv_clean[1];
+    for (int i = 1; i + 1 < argc_clean; ++i)
+      argv_clean[i] = argv_clean[i + 1];
+    argc_clean--;
   }
   if (show_help || image_path == NULL || argc_clean < 2)
   {

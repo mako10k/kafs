@@ -193,7 +193,8 @@ int main(int argc, char **argv)
     }
   }
   kafs_ino_mode_set(inoent_rootdir, S_IFDIR | 0755);
-  kafs_ino_uid_set(inoent_rootdir, 0);
+  // For unprivileged FUSE mounts, make the filesystem root owned by the image creator.
+  kafs_ino_uid_set(inoent_rootdir, (kafs_uid_t)getuid());
   kafs_ino_size_set(inoent_rootdir, 0);
   kafs_time_t now = kafs_now();
   kafs_time_t nulltime = (kafs_time_t){0, 0};
@@ -201,7 +202,7 @@ int main(int argc, char **argv)
   kafs_ino_ctime_set(inoent_rootdir, now);
   kafs_ino_mtime_set(inoent_rootdir, now);
   kafs_ino_dtime_set(inoent_rootdir, nulltime);
-  kafs_ino_gid_set(inoent_rootdir, 0);
+  kafs_ino_gid_set(inoent_rootdir, (kafs_gid_t)getgid());
   // ログ呼び出しを避けて直接設定（デバッグ）
   inoent_rootdir->i_linkcnt = kafs_linkcnt_htos(1);
   kafs_ino_blocks_set(inoent_rootdir, 0);
