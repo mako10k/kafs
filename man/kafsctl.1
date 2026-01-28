@@ -1,0 +1,26 @@
+'.\" -*- nroff -*-
+.TH KAFSCTL 1 "2026-01-28" "kafs 0.0.1" "User Commands"
+.SH NAME
+kafsctl \- query runtime stats from a mounted kafs filesystem
+.SH SYNOPSIS
+.B kafsctl
+.B stats
+.I mountpoint
+.RB [ --json ]
+.SH DESCRIPTION
+.B kafsctl
+queries a running
+.BR kafs (1)
+instance via a FUSE ioctl and prints filesystem/HRL statistics, including dedup-related indicators.
+.SH COMMANDS
+.TP
+.B stats
+Print current stats for the mounted filesystem at
+.IR mountpoint .
+Use
+.B --json
+to emit machine-readable JSON.
+.SH SEE ALSO
+.BR kafs (1)
+.SH AUTHOR
+kafs project.

@@ -6,6 +6,7 @@
 #include "kafs_dirent.h"
 #include "kafs_hash.h"
 #include "kafs_journal.h"
+#include "kafs_ioctl.h"
 
 #define KAFS_DIRECT_SIZE (sizeof(((struct kafs_sinode *)NULL)->i_blkreftbl))
 
@@ -636,9 +637,14 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
     kafs_hrid_t hrid;
     int is_new = 0;
     kafs_blkcnt_t new_blo = KAFS_BLO_NONE;
+    ctx->c_stat_hrl_put_calls++;
     int rc = kafs_hrl_put(ctx, buf, &hrid, &is_new, &new_blo);
     if (rc == 0)
     {
+      if (is_new)
+        ctx->c_stat_hrl_put_misses++;
+      else
+        ctx->c_stat_hrl_put_hits++;
       KAFS_CALL(kafs_hrl_inc_ref, ctx, hrid);
       kafs_blkcnt_t old_blo;
       KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old_blo, KAFS_IBLKREF_FUNC_GET);
@@ -654,6 +660,7 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
       return KAFS_SUCCESS;
     }
     // HRL 失敗時: レガシー経路
+    ctx->c_stat_hrl_put_fallback_legacy++;
     // 先に物理ブロックを割り当ててデータを書き込み、その後参照を更新する
     kafs_blkcnt_t new_blo2 = KAFS_BLO_NONE;
     KAFS_CALL(kafs_blk_alloc, ctx, &new_blo2);
@@ -1329,6 +1336,85 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
   return 0;
 }
 
+#define KAFS_STATS_VERSION 1u
+
+static inline kafs_hrl_entry_t *kafs_hrl_entries_tbl(kafs_context_t *ctx)
+{
+  uintptr_t base = (uintptr_t)ctx->c_superblock;
+  uint64_t off = kafs_sb_hrl_entry_offset_get(ctx->c_superblock);
+  if (!off)
+    return NULL;
+  return (kafs_hrl_entry_t *)(base + (uintptr_t)off);
+}
+
+static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
+{
+  memset(out, 0, sizeof(*out));
+  out->struct_size = (uint32_t)sizeof(*out);
+  out->version = KAFS_STATS_VERSION;
+
+  out->blksize = (uint32_t)kafs_sb_blksize_get(ctx->c_superblock);
+  out->fs_blocks_total = (uint64_t)kafs_sb_blkcnt_get(ctx->c_superblock);
+  out->fs_blocks_free = (uint64_t)kafs_sb_blkcnt_free_get(ctx->c_superblock);
+  out->fs_inodes_total = (uint64_t)kafs_sb_inocnt_get(ctx->c_superblock);
+  out->fs_inodes_free = (uint64_t)(kafs_inocnt_t)kafs_sb_inocnt_free_get(ctx->c_superblock);
+
+  uint32_t entry_cnt = kafs_sb_hrl_entry_cnt_get(ctx->c_superblock);
+  out->hrl_entries_total = (uint64_t)entry_cnt;
+
+  kafs_hrl_entry_t *ents = kafs_hrl_entries_tbl(ctx);
+  if (ents)
+  {
+    uint64_t used = 0, dup = 0, refsum = 0;
+    for (uint32_t i = 0; i < entry_cnt; ++i)
+    {
+      uint32_t r = ents[i].refcnt;
+      if (r)
+      {
+        used++;
+        refsum += r;
+        if (r > 1)
+          dup++;
+      }
+    }
+    out->hrl_entries_used = used;
+    out->hrl_entries_duplicated = dup;
+    out->hrl_refcnt_sum = refsum;
+  }
+
+  out->hrl_put_calls = ctx->c_stat_hrl_put_calls;
+  out->hrl_put_hits = ctx->c_stat_hrl_put_hits;
+  out->hrl_put_misses = ctx->c_stat_hrl_put_misses;
+  out->hrl_put_fallback_legacy = ctx->c_stat_hrl_put_fallback_legacy;
+}
+
+static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_info *fi,
+                         unsigned int flags, void *data)
+{
+  (void)path;
+  (void)fi;
+  (void)flags;
+
+  struct fuse_context *fctx = fuse_get_context();
+  kafs_context_t *ctx = (kafs_context_t *)fctx->private_data;
+
+  if ((unsigned int)cmd == (unsigned int)KAFS_IOCTL_GET_STATS)
+  {
+    void *buf = data ? data : arg;
+    if (!buf)
+      return -EINVAL;
+    if (_IOC_SIZE((unsigned int)cmd) < sizeof(kafs_stats_t))
+      return -EINVAL;
+    kafs_stats_t out;
+    kafs_stats_snapshot(ctx, &out);
+    memcpy(buf, &out, sizeof(out));
+    return 0;
+  }
+  return -ENOTTY;
+}
+
+#undef KAFS_STATS_VERSION
+
 static int kafs_op_open(const char *path, struct fuse_file_info *fi)
 {
   struct fuse_context *fctx = fuse_get_context();
@@ -1890,6 +1976,7 @@ static struct fuse_operations kafs_operations = {
     .chmod = kafs_op_chmod,
     .chown = kafs_op_chown,
     .symlink = kafs_op_symlink,
+    .ioctl = kafs_op_ioctl,
 };
 
 static void usage(const char *prog)

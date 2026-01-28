@@ -28,6 +28,7 @@
 /src/Makefile.in
 /src/*.img
 /src/kafs
+/src/kafsctl
 /src/mkfs.kafs
 /src/fsck.kafs
 /src/kafs-info

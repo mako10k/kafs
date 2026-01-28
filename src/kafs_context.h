@@ -29,6 +29,12 @@ struct kafs_context
   void *c_lock_inode;       // opaque pointer to inode locks (array + alloc)
   // --- Journal ---
   void *c_journal; // opaque pointer to journal state (kafs_journal_t*)
+
+  // --- Runtime stats (best-effort) ---
+  uint64_t c_stat_hrl_put_calls;
+  uint64_t c_stat_hrl_put_hits;
+  uint64_t c_stat_hrl_put_misses;
+  uint64_t c_stat_hrl_put_fallback_legacy;
 };
 
 // Lock helpers (no-op when locks not enabled in build)
