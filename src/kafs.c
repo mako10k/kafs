@@ -687,8 +687,8 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
   return KAFS_SUCCESS;
 }
 
-static int kafs_ino_iblk_release(struct kafs_context *ctx, kafs_sinode_t *inoent,
-                                 kafs_iblkcnt_t iblo)
+__attribute_maybe_unused__ static int kafs_ino_iblk_release(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                                              kafs_iblkcnt_t iblo)
 {
   kafs_dlog(3, "%s(ino = %d, iblo = %" PRIuFAST32 ")\n", __func__, inoent - ctx->c_inotbl, iblo);
   assert(ctx != NULL);
@@ -1002,8 +1002,8 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
   return KAFS_SUCCESS;
 }
 
-static int kafs_trim(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_off_t off,
-                     kafs_off_t size)
+__attribute_maybe_unused__ static int kafs_trim(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_off_t off,
+                                                  kafs_off_t size)
 {
   kafs_dlog(2, "%s(ino = %d, off = %" PRIuFAST64 ", size = %" PRIuFAST64 ")\n", __func__,
             inoent - ctx->c_inotbl, off, size);
@@ -1055,7 +1055,7 @@ static int kafs_trim(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_off_t
   return KAFS_SUCCESS;
 }
 
-static int kafs_release(struct kafs_context *ctx, kafs_sinode_t *inoent)
+__attribute_maybe_unused__ static int kafs_release(struct kafs_context *ctx, kafs_sinode_t *inoent)
 {
   // Requires: caller holds inode lock for inoent.
   if (kafs_ino_linkcnt_decr(inoent) == 0)

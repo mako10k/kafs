@@ -43,7 +43,7 @@ static int kafs_blk_get_usage(const struct kafs_context *ctx, kafs_blkcnt_t blo)
 }
 
 // MTセーフに読みたい場合のラッパ（ビットマップロックを取得）
-static int kafs_blk_get_usage_locked(struct kafs_context *ctx, kafs_blkcnt_t blo)
+__attribute_maybe_unused__ static int kafs_blk_get_usage_locked(struct kafs_context *ctx, kafs_blkcnt_t blo)
 {
   kafs_bitmap_lock(ctx);
   int ret = kafs_blk_get_usage((const struct kafs_context *)ctx, blo);
@@ -94,7 +94,7 @@ static int kafs_blk_set_usage_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo
 }
 
 // Public wrapper that takes bitmap lock
-static int kafs_blk_set_usage(struct kafs_context *ctx, kafs_blkcnt_t blo, kafs_bool_t usage)
+__attribute_maybe_unused__ static int kafs_blk_set_usage(struct kafs_context *ctx, kafs_blkcnt_t blo, kafs_bool_t usage)
 {
   kafs_bitmap_lock(ctx);
   int rc = kafs_blk_set_usage_nolock(ctx, blo, usage);
