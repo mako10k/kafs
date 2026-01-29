@@ -250,10 +250,17 @@ int kafs_hrl_put(kafs_context_t *ctx, const void *block_data, kafs_hrid_t *out_h
   kafs_blkcnt_t blo = KAFS_BLO_NONE;
   int rc = kafs_blk_alloc(ctx, &blo);
   if (rc != 0)
+  {
+    kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
     return rc;
+  }
   rc = hrl_write_blo(ctx, blo, block_data);
   if (rc != 0)
+  {
+    (void)hrl_release_blo(ctx, &blo);
+    kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
     return rc;
+  }
   kafs_hrl_entry_t *e = hrl_entries_tbl(ctx) + idx;
   e->refcnt = 0; // caller will inc_ref
   e->blo = blo;

@@ -2490,7 +2490,7 @@ static void usage(const char *prog)
           "Usage: %s [--image <image>|--image=<image>] <mountpoint> [FUSE options...]\n"
           "       %s <image> <mountpoint> [FUSE options...] (mount helper compatible)\n"
           "       env KAFS_IMAGE can be used as fallback image path.\n"
-          "       default runs single-threaded; set env KAFS_MT=1 to enable multithread.\n"
+          "       default runs multithreaded; pass -s or set env KAFS_MT=0 for single-thread.\n"
           "Examples:\n"
           "  %s --image test.img mnt -f\n",
           prog, prog, prog);
@@ -2687,9 +2687,10 @@ int main(int argc, char **argv)
     exit(2);
   }
 
-  // 既定は単一スレッド(-s)。環境 KAFS_MT=1 でマルチスレッドを許可。
+  // 既定はマルチスレッド。-s 指定時は単一スレッド。
+  // (環境 KAFS_MT=0 で明示的に単一スレッドへ落とす)
   const char *mt = getenv("KAFS_MT");
-  kafs_bool_t enable_mt = (mt && strcmp(mt, "1") == 0) ? KAFS_TRUE : KAFS_FALSE;
+  kafs_bool_t enable_mt = (mt && strcmp(mt, "0") == 0) ? KAFS_FALSE : KAFS_TRUE;
   int saw_single = 0;
   for (int i = 0; i < argc_clean; ++i)
   {
@@ -2707,6 +2708,11 @@ int main(int argc, char **argv)
   if (!enable_mt && !saw_single)
   {
     argv_fuse[argc_fuse++] = "-s";
+  }
+  if (enable_mt && saw_single)
+  {
+    // -s takes precedence for predictable CLI behavior.
+    enable_mt = KAFS_FALSE;
   }
   if (kafs_debug_level() >= 3)
   {
