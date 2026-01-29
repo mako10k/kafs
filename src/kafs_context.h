@@ -6,6 +6,10 @@
 /// @brief コンテキスト
 struct kafs_context
 {
+  /// @brief 画像全体の mmap ベース（MAP_SHARED）
+  void *c_img_base;
+  /// @brief 画像全体の mmap サイズ（バイト）
+  size_t c_img_size;
   /// @brief スーパーブロック情報
   kafs_ssuperblock_t *c_superblock;
   /// @brief inode 情報
@@ -18,6 +22,8 @@ struct kafs_context
   kafs_blkcnt_t c_blo_search;
   /// @brief ファイル記述子
   int c_fd;
+  /// @brief mmap サイズ（メタデータ領域）
+  size_t c_mapsize;
   /// @brief HRL バケットテーブル先頭（メタデータ mmap 内）
   void *c_hrl_index;
   /// @brief HRL バケット数（テーブルサイズ / バケットサイズ）
