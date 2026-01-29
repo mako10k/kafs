@@ -1639,12 +1639,19 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   }
   kafs_inocnt_t ino_new;
   kafs_inode_alloc_lock(ctx);
-  KAFS_CALL(kafs_ino_find_free, ctx->c_inotbl, &ino_new, &ctx->c_ino_search,
-            kafs_sb_inocnt_get(ctx->c_superblock));
+  ret = kafs_ino_find_free(ctx->c_inotbl, &ino_new, &ctx->c_ino_search,
+                          kafs_sb_inocnt_get(ctx->c_superblock));
+  if (ret < 0)
+  {
+    kafs_inode_alloc_unlock(ctx);
+    kafs_journal_abort(ctx, jseq, "ino_find_free=%d", ret);
+    return ret;
+  }
+
   kafs_dlog(2, "%s: alloc ino=%u\n", __func__, (unsigned)ino_new);
   struct kafs_sinode *inoent_new = &ctx->c_inotbl[ino_new];
-  kafs_inode_lock(ctx, (uint32_t)ino_new);
-  kafs_inode_alloc_unlock(ctx);
+
+  // Reserve/initialize the inode while holding alloc lock so no other thread can allocate it.
   kafs_ino_mode_set(inoent_new, mode);
   kafs_ino_uid_set(inoent_new, fctx->uid);
   kafs_ino_size_set(inoent_new, 0);
@@ -1659,25 +1666,62 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   kafs_ino_blocks_set(inoent_new, 0);
   kafs_ino_dev_set(inoent_new, 0);
   memset(inoent_new->i_blkreftbl, 0, sizeof(inoent_new->i_blkreftbl));
-  // lock directory while adding entry
-  kafs_inode_lock(ctx, (uint32_t)(inoent_dir - ctx->c_inotbl));
-  kafs_dlog(2, "%s: dirent_add start dir=%u name='%s'\n", __func__,
-            (unsigned)(inoent_dir - ctx->c_inotbl), basepath);
+
+  kafs_inode_alloc_unlock(ctx);
+
+  uint32_t ino_dir_u32 = (uint32_t)(inoent_dir - ctx->c_inotbl);
+  uint32_t ino_new_u32 = (uint32_t)ino_new;
+  // lock ordering: always by inode number to avoid deadlock with other ops
+  if (ino_dir_u32 < ino_new_u32)
+  {
+    kafs_inode_lock(ctx, ino_dir_u32);
+    kafs_inode_lock(ctx, ino_new_u32);
+  }
+  else
+  {
+    kafs_inode_lock(ctx, ino_new_u32);
+    if (ino_dir_u32 != ino_new_u32)
+      kafs_inode_lock(ctx, ino_dir_u32);
+  }
+
+  kafs_dlog(2, "%s: dirent_add start dir=%u name='%s'\n", __func__, (unsigned)ino_dir_u32, basepath);
   ret = kafs_dirent_add(ctx, inoent_dir, ino_new, basepath);
   kafs_dlog(2, "%s: dirent_add done rc=%d\n", __func__, ret);
-  kafs_inode_unlock(ctx, (uint32_t)(inoent_dir - ctx->c_inotbl));
   if (ret < 0)
   {
-    KAFS_CALL(kafs_release, ctx, inoent_new);
-    kafs_inode_unlock(ctx, (uint32_t)ino_new);
+    memset(inoent_new, 0, sizeof(*inoent_new));
+    if (ino_dir_u32 < ino_new_u32)
+    {
+      kafs_inode_unlock(ctx, ino_new_u32);
+      kafs_inode_unlock(ctx, ino_dir_u32);
+    }
+    else
+    {
+      if (ino_dir_u32 != ino_new_u32)
+        kafs_inode_unlock(ctx, ino_dir_u32);
+      kafs_inode_unlock(ctx, ino_new_u32);
+    }
     kafs_journal_abort(ctx, jseq, "dirent_add=%d", ret);
     return ret;
   }
+
   if (pino_dir != NULL)
     *pino_dir = inoent_dir - ctx->c_inotbl;
   if (pino_new != NULL)
     *pino_new = ino_new;
-  kafs_inode_unlock(ctx, (uint32_t)ino_new);
+
+  // unlock in reverse order
+  if (ino_dir_u32 < ino_new_u32)
+  {
+    kafs_inode_unlock(ctx, ino_new_u32);
+    kafs_inode_unlock(ctx, ino_dir_u32);
+  }
+  else
+  {
+    if (ino_dir_u32 != ino_new_u32)
+      kafs_inode_unlock(ctx, ino_dir_u32);
+    kafs_inode_unlock(ctx, ino_new_u32);
+  }
   kafs_dlog(2, "%s: success ino=%u added to dir ino=%u\n", __func__, (unsigned)ino_new,
             (unsigned)(pino_dir ? *pino_dir : 0));
   kafs_journal_commit(ctx, jseq);
