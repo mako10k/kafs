@@ -86,6 +86,46 @@ static void *img_ptr(void *base, size_t img_size, off_t off, size_t len)
   return (void *)((uint8_t *)base + off);
 }
 
+struct rel_ctx
+{
+  kafs_context_t *ctx;
+  void *base;
+  size_t img_size;
+  kafs_logblksize_t l2;
+  uint32_t refs_pb;
+  kafs_blksize_t blksize;
+};
+
+static int rel_tbl_impl(struct rel_ctx *rctx, kafs_blkcnt_t blo, int depth)
+{
+  if (blo == KAFS_BLO_NONE)
+    return 0;
+
+  void *p = img_ptr(rctx->base, rctx->img_size, (off_t)blo << rctx->l2, rctx->blksize);
+  if (!p)
+    return -EIO;
+
+  kafs_sblkcnt_t *tbl = (kafs_sblkcnt_t *)p;
+  for (uint32_t i = 0; i < rctx->refs_pb; ++i)
+  {
+    kafs_blkcnt_t child = kafs_blkcnt_stoh(tbl[i]);
+    if (child == KAFS_BLO_NONE)
+      continue;
+
+    if (depth > 1)
+    {
+      (void)rel_tbl_impl(rctx, child, depth - 1);
+      (void)kafs_hrl_dec_ref_by_blo(rctx->ctx, child);
+    }
+    else
+    {
+      (void)kafs_hrl_dec_ref_by_blo(rctx->ctx, child);
+    }
+  }
+
+  return 0;
+}
+
 static int orphan_reclaim(kafs_context_t *ctx, int do_fix)
 {
   kafs_ssuperblock_t *sb = ctx->c_superblock;
@@ -120,60 +160,24 @@ static int orphan_reclaim(kafs_context_t *ctx, int do_fix)
       }
 
       // Recursive indirect release
-      struct rel_ctx
-      {
-        kafs_context_t *ctx;
-        void *base;
-        size_t img_size;
-        kafs_logblksize_t l2;
-        uint32_t refs_pb;
-      } rctx = {ctx, ctx->c_img_base, ctx->c_img_size, log_blksize, refs_pb};
-
-      // nested helper via macro-style local function (GNU C)
-      int (*rel_tbl)(kafs_blkcnt_t, int) = NULL;
-      int rel_tbl_impl(kafs_blkcnt_t blo, int depth)
-      {
-        if (blo == KAFS_BLO_NONE)
-          return 0;
-        void *p = img_ptr(rctx.base, rctx.img_size, (off_t)blo << rctx.l2, blksize);
-        if (!p)
-          return -EIO;
-        kafs_sblkcnt_t *tbl = (kafs_sblkcnt_t *)p;
-        for (uint32_t i = 0; i < rctx.refs_pb; ++i)
-        {
-          kafs_blkcnt_t child = kafs_blkcnt_stoh(tbl[i]);
-          if (child == KAFS_BLO_NONE)
-            continue;
-          if (depth > 1)
-          {
-            (void)rel_tbl(child, depth - 1);
-            (void)kafs_hrl_dec_ref_by_blo(rctx.ctx, child);
-          }
-          else
-          {
-            (void)kafs_hrl_dec_ref_by_blo(rctx.ctx, child);
-          }
-        }
-        return 0;
-      }
-      rel_tbl = rel_tbl_impl;
+      struct rel_ctx rctx = {ctx, ctx->c_img_base, ctx->c_img_size, log_blksize, refs_pb, blksize};
 
       kafs_blkcnt_t si = kafs_blkcnt_stoh(e->i_blkreftbl[12]);
       kafs_blkcnt_t di = kafs_blkcnt_stoh(e->i_blkreftbl[13]);
       kafs_blkcnt_t ti = kafs_blkcnt_stoh(e->i_blkreftbl[14]);
       if (si != KAFS_BLO_NONE)
       {
-        (void)rel_tbl(si, 1);
+        (void)rel_tbl_impl(&rctx, si, 1);
         (void)kafs_hrl_dec_ref_by_blo(ctx, si);
       }
       if (di != KAFS_BLO_NONE)
       {
-        (void)rel_tbl(di, 2);
+        (void)rel_tbl_impl(&rctx, di, 2);
         (void)kafs_hrl_dec_ref_by_blo(ctx, di);
       }
       if (ti != KAFS_BLO_NONE)
       {
-        (void)rel_tbl(ti, 3);
+        (void)rel_tbl_impl(&rctx, ti, 3);
         (void)kafs_hrl_dec_ref_by_blo(ctx, ti);
       }
     }
