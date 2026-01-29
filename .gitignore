@@ -56,6 +56,25 @@
 # server logs produced by tests
 /src/minisrv.log
 
+### Local artifacts (debug/repro outputs)
+/.kafs_pid
+/*.log
+/*.txt
+
+# local scripts/docs generated during debugging (keep repo clean)
+/*-strace*.sh
+/force-eio.c
+/force-eio.so
+/minimal-fsck-test.sh
+/reproduce_workload.sh
+/run-eio-test.sh
+/test-*-git-*.sh
+/test-hooks-direct.sh
+/test-semantics-debug.sh
+/trigger-eio.sh
+/*_SUMMARY.md
+/*_REPORT.md
+
 ### Editors/IDEs
 .vscode/
 *.swp
