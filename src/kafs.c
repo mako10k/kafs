@@ -1634,12 +1634,49 @@ static int kafs_op_mkdir(const char *path, mode_t mode)
   kafs_sinode_t *inoent_new = &ctx->c_inotbl[ino_new];
   kafs_dlog(2, "%s: created ino=%u mode=%o\n", __func__, (unsigned)ino_new,
             (unsigned)kafs_ino_mode_get(inoent_new));
-  // lock new dir while adding ".." entry
-  kafs_inode_lock(ctx, (uint32_t)ino_new);
-  KAFS_CALL(kafs_dirent_add, ctx, inoent_new, ino_dir, "..");
+  // Lock parent + new dir in stable order (dirent_add("..") increments parent linkcnt)
+  uint32_t ino_parent = (uint32_t)ino_dir;
+  uint32_t ino_new_u32 = (uint32_t)ino_new;
+  if (ino_parent < ino_new_u32)
+  {
+    kafs_inode_lock(ctx, ino_parent);
+    kafs_inode_lock(ctx, ino_new_u32);
+  }
+  else
+  {
+    kafs_inode_lock(ctx, ino_new_u32);
+    kafs_inode_lock(ctx, ino_parent);
+  }
+
+  int rc = kafs_dirent_add(ctx, inoent_new, ino_dir, "..");
+  if (rc < 0)
+  {
+    if (ino_parent < ino_new_u32)
+    {
+      kafs_inode_unlock(ctx, ino_new_u32);
+      kafs_inode_unlock(ctx, ino_parent);
+    }
+    else
+    {
+      kafs_inode_unlock(ctx, ino_parent);
+      kafs_inode_unlock(ctx, ino_new_u32);
+    }
+    kafs_journal_abort(ctx, jseq, "dirent_add=%d", rc);
+    return rc;
+  }
+
   // ".." counts as a link for the new directory too.
   kafs_ino_linkcnt_incr(inoent_new);
-  kafs_inode_unlock(ctx, (uint32_t)ino_new);
+  if (ino_parent < ino_new_u32)
+  {
+    kafs_inode_unlock(ctx, ino_new_u32);
+    kafs_inode_unlock(ctx, ino_parent);
+  }
+  else
+  {
+    kafs_inode_unlock(ctx, ino_parent);
+    kafs_inode_unlock(ctx, ino_new_u32);
+  }
   kafs_journal_commit(ctx, jseq);
   return 0;
 }
@@ -1669,20 +1706,6 @@ static int kafs_op_rmdir(const char *path)
   kafs_sinode_t *inoent_dir;
   KAFS_CALL(kafs_access, fctx, ctx, dirpath, NULL, W_OK, &inoent_dir);
 
-  struct kafs_sdirent dirent;
-  off_t offset = 0;
-  while (1)
-  {
-    ssize_t r = KAFS_CALL(kafs_dirent_read, ctx, inoent, &dirent, offset);
-    if (r == 0)
-      break;
-    if (strcmp(dirent.d_filename, "..") != 0)
-    {
-      kafs_journal_abort(ctx, jseq, "ENOTEMPTY");
-      return -ENOTEMPTY;
-    }
-    offset += r;
-  }
   // lock parent then target dir in stable order by inode number to avoid deadlock
   uint32_t ino_parent = (uint32_t)(inoent_dir - ctx->c_inotbl);
   uint32_t ino_target = (uint32_t)(inoent - ctx->c_inotbl);
@@ -1696,10 +1719,60 @@ static int kafs_op_rmdir(const char *path)
     kafs_inode_lock(ctx, ino_target);
     kafs_inode_lock(ctx, ino_parent);
   }
-  KAFS_CALL(kafs_dirent_remove, ctx, inoent_dir, basepath);
-  KAFS_CALL(kafs_dirent_remove, ctx, inoent, "..");
-  kafs_inode_unlock(ctx, ino_target);
-  kafs_inode_unlock(ctx, ino_parent);
+
+  // Verify directory emptiness under lock (TOCTOU-safe)
+  struct kafs_sdirent dirent;
+  off_t offset = 0;
+  while (1)
+  {
+    ssize_t r = kafs_dirent_read(ctx, inoent, &dirent, offset);
+    if (r < 0)
+    {
+      kafs_inode_unlock(ctx, ino_target);
+      kafs_inode_unlock(ctx, ino_parent);
+      kafs_journal_abort(ctx, jseq, "dirent_read=%zd", r);
+      return (int)r;
+    }
+    if (r == 0)
+      break;
+    if (strcmp(dirent.d_filename, "..") != 0)
+    {
+      kafs_inode_unlock(ctx, ino_target);
+      kafs_inode_unlock(ctx, ino_parent);
+      kafs_journal_abort(ctx, jseq, "ENOTEMPTY");
+      return -ENOTEMPTY;
+    }
+    offset += r;
+  }
+
+  int rc = kafs_dirent_remove(ctx, inoent_dir, basepath);
+  if (rc < 0)
+  {
+    kafs_inode_unlock(ctx, ino_target);
+    kafs_inode_unlock(ctx, ino_parent);
+    kafs_journal_abort(ctx, jseq, "dirent_remove(parent)=%d", rc);
+    return rc;
+  }
+  rc = kafs_dirent_remove(ctx, inoent, "..");
+  if (rc < 0)
+  {
+    kafs_inode_unlock(ctx, ino_target);
+    kafs_inode_unlock(ctx, ino_parent);
+    kafs_journal_abort(ctx, jseq, "dirent_remove(dotdot)=%d", rc);
+    return rc;
+  }
+
+  // Unlock in reverse order of acquisition
+  if (ino_parent < ino_target)
+  {
+    kafs_inode_unlock(ctx, ino_target);
+    kafs_inode_unlock(ctx, ino_parent);
+  }
+  else
+  {
+    kafs_inode_unlock(ctx, ino_parent);
+    kafs_inode_unlock(ctx, ino_target);
+  }
   kafs_journal_commit(ctx, jseq);
   return 0;
 }
