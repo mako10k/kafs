@@ -1797,12 +1797,49 @@ static int kafs_op_unlink(const char *path)
   *basepath = '\0';
   basepath++;
 
-  KAFS_CALL(kafs_access, fctx, ctx, path, NULL, F_OK, NULL);
+  if (strcmp(basepath, ".") == 0 || strcmp(basepath, "..") == 0)
+  {
+    kafs_journal_abort(ctx, jseq, "EINVAL");
+    return -EINVAL;
+  }
+
   kafs_sinode_t *inoent_dir;
   KAFS_CALL(kafs_access, fctx, ctx, dirpath, NULL, W_OK, &inoent_dir);
-  kafs_inode_lock(ctx, (uint32_t)(inoent_dir - ctx->c_inotbl));
-  KAFS_CALL(kafs_dirent_remove, ctx, inoent_dir, basepath);
-  kafs_inode_unlock(ctx, (uint32_t)(inoent_dir - ctx->c_inotbl));
+  uint32_t ino_dir = (uint32_t)(inoent_dir - ctx->c_inotbl);
+
+  kafs_inocnt_t target_ino = KAFS_INO_NONE;
+  kafs_sinode_t *inoent_target = NULL;
+
+  kafs_inode_lock(ctx, ino_dir);
+  int s = kafs_dirent_search(ctx, inoent_dir, basepath, (kafs_filenamelen_t)strlen(basepath),
+                             &inoent_target);
+  if (s < 0)
+  {
+    kafs_inode_unlock(ctx, ino_dir);
+    kafs_journal_abort(ctx, jseq, "ENOENT");
+    return s;
+  }
+  target_ino = (kafs_inocnt_t)(inoent_target - ctx->c_inotbl);
+  // unlink(2) should not remove directories
+  if (S_ISDIR(kafs_ino_mode_get(inoent_target)))
+  {
+    kafs_inode_unlock(ctx, ino_dir);
+    kafs_journal_abort(ctx, jseq, "EISDIR");
+    return -EISDIR;
+  }
+
+  kafs_inocnt_t removed_ino = KAFS_INO_NONE;
+  KAFS_CALL(kafs_dirent_remove_nolink, ctx, inoent_dir, basepath, &removed_ino);
+  kafs_inode_unlock(ctx, ino_dir);
+
+  if (removed_ino != target_ino)
+    return -ESTALE;
+
+  // Decrement link count under target inode lock (keep dir lock hold time short)
+  kafs_inode_lock(ctx, (uint32_t)removed_ino);
+  (void)kafs_ino_linkcnt_decr(&ctx->c_inotbl[removed_ino]);
+  kafs_inode_unlock(ctx, (uint32_t)removed_ino);
+
   kafs_journal_commit(ctx, jseq);
   return 0;
 }
@@ -1913,14 +1950,18 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
       kafs_inode_lock(ctx, ino_from_dir);
   }
 
-  // 置換先が存在していればエントリを除去（リンク数は内部で調整）
+  // 置換先が存在していればエントリを除去（rename では moved inode の linkcount は変えない）
+  kafs_inocnt_t removed_dst_ino = KAFS_INO_NONE;
   if (exists_to == 0)
   {
-    KAFS_CALL(kafs_dirent_remove, ctx, inoent_dir_to, to_base);
+    // Remove dirent only; decrement linkcount later under inode lock.
+    KAFS_CALL(kafs_dirent_remove_nolink, ctx, inoent_dir_to, to_base, &removed_dst_ino);
   }
   // from から削除（rename ではリンク数を変更しない）
   kafs_inocnt_t moved_ino = KAFS_INO_NONE;
   KAFS_CALL(kafs_dirent_remove_nolink, ctx, inoent_dir_from, from_base, &moved_ino);
+  if (moved_ino != ino_src)
+    return -ESTALE;
   // to に追加（rename ではリンク数を変更しない）
   KAFS_CALL(kafs_dirent_add_nolink, ctx, inoent_dir_to, ino_src, to_base);
 
@@ -1936,6 +1977,14 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
     if (ino_to_dir != ino_from_dir)
       kafs_inode_unlock(ctx, ino_from_dir);
     kafs_inode_unlock(ctx, ino_to_dir);
+  }
+
+  // If we replaced an existing dst, decrement its linkcount under inode lock.
+  if (removed_dst_ino != KAFS_INO_NONE)
+  {
+    kafs_inode_lock(ctx, (uint32_t)removed_dst_ino);
+    (void)kafs_ino_linkcnt_decr(&ctx->c_inotbl[removed_dst_ino]);
+    kafs_inode_unlock(ctx, (uint32_t)removed_dst_ino);
   }
 
   kafs_journal_commit(ctx, jseq);
