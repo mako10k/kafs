@@ -136,7 +136,8 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
   printf(") free=%" PRIu64 " (", st.fs_blocks_free);
   print_bytes(st.fs_blocks_free * (uint64_t)st.blksize, unit);
   printf(")\n");
-  printf("      inodes total=%" PRIu64 " free=%" PRIu64 "\n", st.fs_inodes_total, st.fs_inodes_free);
+  printf("      inodes total=%" PRIu64 " free=%" PRIu64 "\n", st.fs_inodes_total,
+         st.fs_inodes_free);
 
   printf("  hrl: entries used=%" PRIu64 "/%" PRIu64 " duplicated=%" PRIu64 " refsum=%" PRIu64 "\n",
          st.hrl_entries_used, st.hrl_entries_total, st.hrl_entries_duplicated, st.hrl_refcnt_sum);

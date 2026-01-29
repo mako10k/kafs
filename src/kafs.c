@@ -1565,7 +1565,8 @@ static int kafs_op_getattr(const char *path, struct stat *st, struct fuse_file_i
 
   /* st_blocks is in 512-byte units; approximate allocation by rounding st_size to fs block size. */
   const unsigned blksz = (unsigned)st->st_blksize;
-  const unsigned long long alloc = blksz ? ((unsigned long long)st->st_size + blksz - 1) / blksz * blksz : 0;
+  const unsigned long long alloc =
+      blksz ? ((unsigned long long)st->st_size + blksz - 1) / blksz * blksz : 0;
   st->st_blocks = (blkcnt_t)(alloc / 512ull);
   st->st_atim = kafs_ino_atime_get(inoent);
   st->st_mtim = kafs_ino_mtime_get(inoent);

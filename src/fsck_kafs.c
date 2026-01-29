@@ -201,8 +201,8 @@ static void usage(const char *prog)
 
 int main(int argc, char **argv)
 {
-  int do_journal_clear = 0;   // optional clear
-  int do_orphan_reclaim = 0;   // optional fix
+  int do_journal_clear = 0;  // optional clear
+  int do_orphan_reclaim = 0; // optional fix
   const char *img = NULL;
   for (int i = 1; i < argc; ++i)
   {
