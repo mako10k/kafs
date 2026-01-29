@@ -111,35 +111,59 @@ static int kafs_blk_alloc(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
   assert(ctx != NULL);
   assert(pblo != NULL);
   assert(*pblo == KAFS_BLO_NONE);
-  kafs_bitmap_lock(ctx);
-  kafs_blkcnt_t blo_search = ctx->c_blo_search;
-  kafs_blkcnt_t blo = blo_search + 1;
+
   const kafs_blkmask_t *blkmasktbl = ctx->c_blkmasktbl;
-  kafs_blkmask_t blocnt = kafs_sb_blkcnt_get(ctx->c_superblock);
+  kafs_blkcnt_t blocnt = kafs_sb_blkcnt_get(ctx->c_superblock);
+  kafs_blkcnt_t fdb = kafs_sb_first_data_block_get(ctx->c_superblock);
+  if (fdb >= blocnt)
+    return -ENOSPC;
+
+  // Fast path: scan without holding the bitmap lock to keep the critical section short.
+  // We lock only when attempting to claim a candidate block.
+  kafs_blkcnt_t blo_search = ctx->c_blo_search;
+  if (blo_search < fdb)
+    blo_search = fdb;
+  kafs_blkcnt_t blo = blo_search + 1;
+  if (blo < fdb)
+    blo = fdb;
+
   while (blo_search != blo)
   {
     if (blo >= blocnt)
-      blo = 0;
+      blo = fdb;
+
     kafs_blkcnt_t blod = blo >> KAFS_BLKMASK_LOG_BITS;
-    kafs_blkcnt_t blor = blo & KAFS_BLKMASK_MASK_BITS; // ToDo: 2周目以降は常に0
+    kafs_blkcnt_t blor = blo & KAFS_BLKMASK_MASK_BITS; // next scan starts at bit blor
     kafs_blkmask_t blkmask = ~blkmasktbl[blod];
+
+    // never allocate blocks below first_data_block
+    kafs_blkcnt_t fdb_d = fdb >> KAFS_BLKMASK_LOG_BITS;
+    kafs_blkcnt_t fdb_r = fdb & KAFS_BLKMASK_MASK_BITS;
+    if (blod == fdb_d && fdb_r != 0)
+      blkmask &= (kafs_blkmask_t)(~(((kafs_blkmask_t)1u << fdb_r) - 1u));
+
     // cppcheck-suppress knownConditionTrueFalse
     if (blkmask != 0)
     {
       kafs_blkcnt_t blor_found = kafs_get_free_blkmask(blkmask);
       kafs_blkcnt_t blo_found = (blod << KAFS_BLKMASK_LOG_BITS) + blor_found;
-      if (blo_found < blocnt)
+      if (blo_found >= fdb && blo_found < blocnt)
       {
-        ctx->c_blo_search = blo_found;
-        *pblo = blo_found;
-        // we already hold bitmap lock, so use nolock variant
-        KAFS_CALL(kafs_blk_set_usage_nolock, ctx, blo_found, KAFS_TRUE);
+        // Claim under lock (recheck because scan is lock-free)
+        kafs_bitmap_lock(ctx);
+        if (kafs_blk_get_usage((const struct kafs_context *)ctx, blo_found) == 0)
+        {
+          ctx->c_blo_search = blo_found;
+          *pblo = blo_found;
+          KAFS_CALL(kafs_blk_set_usage_nolock, ctx, blo_found, KAFS_TRUE);
+          kafs_bitmap_unlock(ctx);
+          return KAFS_SUCCESS;
+        }
         kafs_bitmap_unlock(ctx);
-        return KAFS_SUCCESS;
       }
     }
     blo += KAFS_BLKMASK_BITS - blor;
   }
-  kafs_bitmap_unlock(ctx);
+
   return -ENOSPC;
 }

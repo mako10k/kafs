@@ -1337,7 +1337,9 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
 
   const unsigned blksize = (unsigned)kafs_sb_blksize_get(ctx->c_superblock);
   const kafs_blkcnt_t blocks = kafs_sb_blkcnt_get(ctx->c_superblock);
+  kafs_bitmap_lock(ctx);
   const kafs_blkcnt_t bfree = kafs_sb_blkcnt_free_get(ctx->c_superblock);
+  kafs_bitmap_unlock(ctx);
   const kafs_inocnt_t files = kafs_sb_inocnt_get(ctx->c_superblock);
   const kafs_inocnt_t ffree = (kafs_inocnt_t)kafs_sb_inocnt_free_get(ctx->c_superblock);
 
@@ -1374,7 +1376,9 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
 
   out->blksize = (uint32_t)kafs_sb_blksize_get(ctx->c_superblock);
   out->fs_blocks_total = (uint64_t)kafs_sb_blkcnt_get(ctx->c_superblock);
+  kafs_bitmap_lock(ctx);
   out->fs_blocks_free = (uint64_t)kafs_sb_blkcnt_free_get(ctx->c_superblock);
+  kafs_bitmap_unlock(ctx);
   out->fs_inodes_total = (uint64_t)kafs_sb_inocnt_get(ctx->c_superblock);
   out->fs_inodes_free = (uint64_t)(kafs_inocnt_t)kafs_sb_inocnt_free_get(ctx->c_superblock);
 

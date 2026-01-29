@@ -101,7 +101,13 @@ __attribute_maybe_unused__ static int kafs_sb_inocnt_free_get(const kafs_ssuperb
 static kafs_blkcnt_t kafs_sb_r_blkcnt_get(const struct kafs_ssuperblock *sb)
 {
   assert(sb != NULL);
-  return kafs_blkcnt_stoh(sb->s_blkcnt);
+  return kafs_blkcnt_stoh(sb->s_r_blkcnt);
+}
+
+static inline kafs_blkcnt_t kafs_sb_first_data_block_get(const struct kafs_ssuperblock *sb)
+{
+  assert(sb != NULL);
+  return kafs_blkcnt_stoh(sb->s_first_data_block);
 }
 
 static kafs_blkcnt_t kafs_sb_blkcnt_free_get(const struct kafs_ssuperblock *sb)
