@@ -28,15 +28,12 @@ int main(void)
   int n1, n2;
   kafs_blkcnt_t b1, b2;
   assert(kafs_hrl_put(&ctx, buf, &h1, &n1, &b1) == 0);
-  assert(kafs_hrl_inc_ref(&ctx, h1) == 0);
   assert(kafs_hrl_put(&ctx, buf, &h2, &n2, &b2) == 0);
   // same content -> same block, not new on second
   assert(n1 == 1);
   assert(n2 == 0);
   assert(b1 == b2);
   assert(h1 == h2);
-  // take a second reference for the duplicate content
-  assert(kafs_hrl_inc_ref(&ctx, h2) == 0);
 
   // Decrement twice should free the entry and block
   assert(kafs_hrl_dec_ref(&ctx, h1) == 0);

@@ -235,30 +235,49 @@ int kafs_hrl_put(kafs_context_t *ctx, const void *block_data, kafs_hrid_t *out_h
     return -EINVAL;
   if (ctx->c_hrl_bucket_cnt == 0 || hrl_capacity(ctx) == 0)
     return -ENOSYS;
+
   uint64_t fast = hrl_hash64(block_data, hrl_blksize(ctx));
   uint32_t idx;
   int b = hrl_bucket_index(ctx, fast);
+
   kafs_hrl_bucket_lock(ctx, (uint32_t)b);
   if (hrl_find_by_hash(ctx, fast, block_data, &idx) == 0)
   {
     kafs_hrl_entry_t *e = hrl_entries_tbl(ctx) + idx;
+    if (e->refcnt == 0xFFFFFFFFu)
+    {
+      kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
+      return -EOVERFLOW;
+    }
+    e->refcnt += 1u;
     *out_hrid = idx;
     *out_is_new = 0;
     *out_blo = e->blo;
     kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
     return 0;
   }
-  // allocate entry
+
+  // allocate entry (must be globally serialized; refcnt==0 is treated as free)
+  kafs_hrl_global_lock(ctx);
   if (hrl_find_free_slot(ctx, &idx) != 0)
   {
+    kafs_hrl_global_unlock(ctx);
     kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
     return -ENOSPC;
   }
+  kafs_hrl_entry_t *e = hrl_entries_tbl(ctx) + idx;
+  e->refcnt = 1u; // reserve slot and take one reference for caller
+  e->next_plus1 = 0;
+  kafs_hrl_global_unlock(ctx);
+
   // allocate physical block and write
   kafs_blkcnt_t blo = KAFS_BLO_NONE;
   int rc = kafs_blk_alloc(ctx, &blo);
   if (rc != 0)
   {
+    kafs_hrl_global_lock(ctx);
+    memset(e, 0, sizeof(*e));
+    kafs_hrl_global_unlock(ctx);
     kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
     return rc;
   }
@@ -266,16 +285,19 @@ int kafs_hrl_put(kafs_context_t *ctx, const void *block_data, kafs_hrid_t *out_h
   if (rc != 0)
   {
     (void)hrl_release_blo(ctx, &blo);
+    kafs_hrl_global_lock(ctx);
+    memset(e, 0, sizeof(*e));
+    kafs_hrl_global_unlock(ctx);
     kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
     return rc;
   }
-  kafs_hrl_entry_t *e = hrl_entries_tbl(ctx) + idx;
-  e->refcnt = 0; // caller will inc_ref
+
   e->blo = blo;
   e->fast = fast;
   e->next_plus1 = 0;
   hrl_chain_insert_head(ctx, idx, fast);
   kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
+
   *out_hrid = idx;
   *out_is_new = 1;
   *out_blo = blo;
@@ -346,28 +368,6 @@ int kafs_hrl_write_block(kafs_context_t *ctx, const void *buf, kafs_hrid_t *out_
   return kafs_hrl_put(ctx, buf, out_hrid, out_is_new, &blo);
 }
 
-// Helper: find HRID by physical block by hashing its content
-static int kafs_hrl_find_by_blo(kafs_context_t *ctx, kafs_blkcnt_t blo, kafs_hrid_t *out_hrid)
-{
-  kafs_blksize_t bs = hrl_blksize(ctx);
-  char buf[bs];
-  int rc = hrl_read_blo(ctx, blo, buf);
-  if (rc != 0)
-    return rc;
-  uint64_t fast = hrl_hash64(buf, bs);
-  uint32_t idx;
-  if (hrl_find_by_hash(ctx, fast, buf, &idx) == 0)
-  {
-    kafs_hrl_entry_t *e = hrl_entries_tbl(ctx) + idx;
-    if (hrl_entry_cmp_blo(ctx, e, blo, buf))
-    {
-      *out_hrid = idx;
-      return 0;
-    }
-  }
-  return -ENOENT;
-}
-
 int kafs_hrl_dec_ref_by_blo(kafs_context_t *ctx, kafs_blkcnt_t blo)
 {
   if (!ctx || ctx->c_hrl_bucket_cnt == 0 || hrl_capacity(ctx) == 0)
@@ -375,16 +375,58 @@ int kafs_hrl_dec_ref_by_blo(kafs_context_t *ctx, kafs_blkcnt_t blo)
     // HRL 未構成: 直接解放
     return hrl_release_blo(ctx, &blo);
   }
-  kafs_hrid_t hrid;
-  int rc = kafs_hrl_find_by_blo(ctx, blo, &hrid);
-  if (rc == 0)
+
+  kafs_blksize_t bs = hrl_blksize(ctx);
+  char buf[bs];
+  int rc = hrl_read_blo(ctx, blo, buf);
+  if (rc != 0)
+    return rc;
+
+  uint64_t fast = hrl_hash64(buf, bs);
+  int b = hrl_bucket_index(ctx, fast);
+  uint32_t *index = hrl_index_tbl(ctx);
+  kafs_hrl_entry_t *ents = hrl_entries_tbl(ctx);
+  uint32_t cap = hrl_capacity(ctx);
+
+  kafs_hrl_bucket_lock(ctx, (uint32_t)b);
+  uint32_t head = index[b];
+  for (uint32_t steps = 0; head != 0 && steps < cap; ++steps)
   {
-    // dec_ref() 内でバケットロックを取得するため、ここではロックしない
-    int rc2 = kafs_hrl_dec_ref(ctx, hrid);
-    // 参照が既に0になって削除された等の競合では -EINVAL が返り得るが、
-    // その場合は解放済みとみなして成功扱いにする
-    return (rc2 == -EINVAL) ? 0 : rc2;
+    uint32_t i = head - 1u;
+    if (i >= cap)
+    {
+      kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
+      return -EIO;
+    }
+    kafs_hrl_entry_t *e = &ents[i];
+    if (e->refcnt != 0 && e->fast == fast && e->blo == blo)
+    {
+      e->refcnt -= 1u;
+      if (e->refcnt == 0)
+      {
+        kafs_blkcnt_t pblo = e->blo;
+        int rc2 = hrl_release_blo(ctx, &pblo);
+        if (rc2 != 0)
+        {
+          kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
+          return rc2;
+        }
+        (void)hrl_chain_remove(ctx, i, e->fast);
+        memset(e, 0, sizeof(*e));
+      }
+      kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
+      return 0;
+    }
+    head = e->next_plus1;
   }
-  // not managed by HRL => legacy, free directly
+  kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
+
+  if (head != 0)
+    return -EIO;
+
+  // not managed by HRL => legacy, free directly.
+  // If it's already free (e.g. another thread just dropped the last HRL ref), treat as success.
+  if (kafs_blk_get_usage_locked(ctx, blo) == 0)
+    return 0;
   return hrl_release_blo(ctx, &blo);
 }

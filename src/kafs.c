@@ -625,7 +625,7 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
         ctx->c_stat_hrl_put_misses++;
       else
         ctx->c_stat_hrl_put_hits++;
-      KAFS_CALL(kafs_hrl_inc_ref, ctx, hrid);
+      // kafs_hrl_put() already takes one reference for the returned hrid.
       kafs_blkcnt_t old_blo;
       KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old_blo, KAFS_IBLKREF_FUNC_GET);
       KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &new_blo, KAFS_IBLKREF_FUNC_SET);

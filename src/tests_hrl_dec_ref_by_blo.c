@@ -30,8 +30,7 @@ int main(void)
   kafs_blkcnt_t blo;
   assert(kafs_hrl_put(&ctx, buf, &h, &is_new, &blo) == 0);
   assert(is_new == 1);
-  assert(kafs_hrl_inc_ref(&ctx, h) == 0); // take a second reference
-  assert(kafs_hrl_inc_ref(&ctx, h) == 0); // and a third, so total refs=2 (since entry starts at 0)
+  assert(kafs_hrl_inc_ref(&ctx, h) == 0); // take a second reference (total refs = 2)
 
   // dec by physical block: should reduce by one ref, not free
   assert(kafs_hrl_dec_ref_by_blo(&ctx, blo) == 0);
