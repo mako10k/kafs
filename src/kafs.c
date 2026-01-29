@@ -1020,15 +1020,38 @@ static int kafs_trim(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_off_t
     KAFS_CALL(kafs_truncate, ctx, inoent, off);
     return size_orig - off;
   }
-  // TODO: 簡易実装なのでしっかり実装していくべき
-  size_t tail = (size_t)(size_orig - (off + size));
-  char *buf = (char *)malloc(tail);
+  // Slow but correct implementation: shift tail data left in bounded chunks.
+  kafs_off_t src = off + size;
+  kafs_off_t dst = off;
+  kafs_off_t tail = size_orig - src;
+  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+  const size_t CHUNK_MAX = (size_t)blksize * 4u;
+  char *buf = (char *)malloc(CHUNK_MAX);
   if (buf == NULL)
     return -ENOMEM;
-  ssize_t r = KAFS_CALL(kafs_pread, ctx, inoent, buf, tail, off + size);
-  ssize_t w = KAFS_CALL(kafs_pwrite, ctx, inoent, buf, (kafs_off_t)r, off);
+  while (tail > 0)
+  {
+    size_t chunk = (tail > (kafs_off_t)CHUNK_MAX) ? CHUNK_MAX : (size_t)tail;
+    ssize_t r = KAFS_CALL(kafs_pread, ctx, inoent, buf, (kafs_off_t)chunk, src);
+    if (r < 0)
+    {
+      free(buf);
+      return (int)r;
+    }
+    if (r == 0)
+      break;
+    ssize_t w = KAFS_CALL(kafs_pwrite, ctx, inoent, buf, (kafs_off_t)r, dst);
+    if (w != r)
+    {
+      free(buf);
+      return (w < 0) ? (int)w : -EIO;
+    }
+    src += r;
+    dst += r;
+    tail -= r;
+  }
   free(buf);
-  KAFS_CALL(kafs_truncate, ctx, inoent, off + w);
+  KAFS_CALL(kafs_truncate, ctx, inoent, dst);
   return KAFS_SUCCESS;
 }
 
@@ -1039,8 +1062,9 @@ static int kafs_release(struct kafs_context *ctx, kafs_sinode_t *inoent)
   {
     KAFS_CALL(kafs_truncate, ctx, inoent, 0);
     memset(inoent, 0, sizeof(struct kafs_sinode));
-    // TODO: SuperBlock の free_inode数を増やす
-    kafs_sb_blkcnt_free_incr(ctx->c_superblock);
+    // Best-effort accounting (avoid taking inode_alloc_lock here to prevent lock inversion).
+    kafs_sb_inocnt_free_incr(ctx->c_superblock);
+    kafs_sb_wtime_set(ctx->c_superblock, kafs_now());
   }
   return KAFS_SUCCESS;
 }
@@ -1857,6 +1881,13 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
       kafs_inode_unlock(ctx, ino_dir_u32);
     kafs_inode_unlock(ctx, ino_new_u32);
   }
+
+  // Update free inode accounting after allocation (no inode locks held).
+  kafs_inode_alloc_lock(ctx);
+  (void)kafs_sb_inocnt_free_decr(ctx->c_superblock);
+  kafs_sb_wtime_set(ctx->c_superblock, kafs_now());
+  kafs_inode_alloc_unlock(ctx);
+
   kafs_dlog(2, "%s: success ino=%u added to dir ino=%u\n", __func__, (unsigned)ino_new,
             (unsigned)(pino_dir ? *pino_dir : 0));
   kafs_journal_commit(ctx, jseq);

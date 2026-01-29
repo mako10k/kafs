@@ -92,10 +92,31 @@ static kafs_inocnt_t kafs_sb_inocnt_get(const kafs_ssuperblock_t *sb)
   return kafs_inocnt_stoh(sb->s_inocnt);
 }
 
-__attribute_maybe_unused__ static int kafs_sb_inocnt_free_get(const kafs_ssuperblock_t *sb)
+static inline kafs_inocnt_t kafs_sb_inocnt_free_get(const kafs_ssuperblock_t *sb)
 {
   assert(sb != NULL);
   return kafs_inocnt_stoh(sb->s_inocnt_free);
+}
+
+static inline void kafs_sb_inocnt_free_set(kafs_ssuperblock_t *sb, kafs_inocnt_t v)
+{
+  assert(sb != NULL);
+  sb->s_inocnt_free = kafs_inocnt_htos(v);
+}
+
+static inline kafs_inocnt_t kafs_sb_inocnt_free_incr(kafs_ssuperblock_t *sb)
+{
+  kafs_inocnt_t v = kafs_sb_inocnt_free_get(sb);
+  kafs_sb_inocnt_free_set(sb, v + 1);
+  return v + 1;
+}
+
+static inline kafs_inocnt_t kafs_sb_inocnt_free_decr(kafs_ssuperblock_t *sb)
+{
+  kafs_inocnt_t v = kafs_sb_inocnt_free_get(sb);
+  if (v > 0)
+    kafs_sb_inocnt_free_set(sb, v - 1);
+  return (v > 0) ? (v - 1) : 0;
 }
 
 static kafs_blkcnt_t kafs_sb_r_blkcnt_get(const struct kafs_ssuperblock *sb)

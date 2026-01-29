@@ -264,6 +264,7 @@ int kafs_test_mkimg(const char *path, size_t bytes, unsigned log_bs, unsigned in
   kafs_sb_journal_flags_set(sb, 0);
 
   sb->s_inocnt = kafs_inocnt_htos(inodes);
+  kafs_sb_inocnt_free_set(sb, (inodes > (kafs_inocnt_t)KAFS_INO_ROOTDIR) ? (inodes - 1) : 0);
   sb->s_blkcnt = kafs_blkcnt_htos(blkcnt);
   sb->s_r_blkcnt = kafs_blkcnt_htos(blkcnt);
   kafs_blkcnt_t fdb = (kafs_blkcnt_t)(mapsize >> log_bs);

@@ -176,7 +176,9 @@ static void kafs_ino_linkcnt_set(kafs_sinode_t *inoent, kafs_linkcnt_t linkcnt)
 static kafs_linkcnt_t kafs_ino_linkcnt_incr(kafs_sinode_t *inoent)
 {
   kafs_linkcnt_t linkcnt = kafs_ino_linkcnt_get(inoent);
-  // TODO: 上限チェック
+  // linkcnt is stored as u16 on disk; clamp to avoid wraparound.
+  if (linkcnt == UINT16_MAX)
+    return linkcnt;
   kafs_ino_linkcnt_set(inoent, linkcnt + 1);
   return linkcnt + 1;
 }
