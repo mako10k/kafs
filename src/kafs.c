@@ -1142,41 +1142,143 @@ static int kafs_dirent_search(struct kafs_context *ctx, kafs_sinode_t *inoent, c
   return -ENOENT;
 }
 
-// NOTE: for rename(2) we must not change linkcount of the moved inode.
+// Directory entry format on disk: {ino,u16 namelen, name[namelen]} repeated.
+typedef struct __attribute__((packed))
+{
+  kafs_sinocnt_t d_ino;
+  kafs_sfilenamelen_t d_filenamelen;
+} kafs_dirent_hdr_t;
+
+static int kafs_dir_snapshot(struct kafs_context *ctx, kafs_sinode_t *inoent_dir, char **out,
+                             size_t *out_len)
+{
+  *out = NULL;
+  *out_len = 0;
+  size_t len = (size_t)kafs_ino_size_get(inoent_dir);
+  if (len == 0)
+    return 0;
+  char *buf = (char *)malloc(len);
+  if (!buf)
+    return -ENOMEM;
+  ssize_t r = kafs_pread(ctx, inoent_dir, buf, (kafs_off_t)len, 0);
+  if (r < 0 || (size_t)r != len)
+  {
+    free(buf);
+    return -EIO;
+  }
+  *out = buf;
+  *out_len = len;
+  return 0;
+}
+
+static int kafs_dir_writeback(struct kafs_context *ctx, kafs_sinode_t *inoent_dir, const char *buf,
+                              size_t len)
+{
+  size_t old = (size_t)kafs_ino_size_get(inoent_dir);
+  if (len)
+  {
+    ssize_t w = kafs_pwrite(ctx, inoent_dir, buf, (kafs_off_t)len, 0);
+    if (w < 0 || (size_t)w != len)
+      return -EIO;
+  }
+  if (len < old)
+    return kafs_truncate(ctx, inoent_dir, (kafs_off_t)len);
+  if (len == 0 && old)
+    return kafs_truncate(ctx, inoent_dir, 0);
+  return 0;
+}
+
+static int kafs_dirent_iter_next(const char *buf, size_t len, size_t off, kafs_inocnt_t *out_ino,
+                                 kafs_filenamelen_t *out_namelen, const char **out_name,
+                                 size_t *out_rec_len)
+{
+  const size_t hdr_sz = sizeof(kafs_dirent_hdr_t);
+  if (off >= len)
+    return 0;
+  if (len - off < hdr_sz)
+    return -EIO;
+  kafs_dirent_hdr_t hdr;
+  memcpy(&hdr, buf + off, hdr_sz);
+  kafs_inocnt_t ino = kafs_inocnt_stoh(hdr.d_ino);
+  kafs_filenamelen_t namelen = kafs_filenamelen_stoh(hdr.d_filenamelen);
+  if (ino == 0 || namelen == 0)
+    return 0;
+  if (namelen >= FILENAME_MAX)
+    return -EIO;
+  if (len - off < hdr_sz + (size_t)namelen)
+    return -EIO;
+  *out_ino = ino;
+  *out_namelen = namelen;
+  *out_name = buf + off + hdr_sz;
+  *out_rec_len = hdr_sz + (size_t)namelen;
+  return 1;
+}
+
+// NOTE: caller holds dir inode lock. For rename(2) we must not change linkcount of the moved inode.
 static int kafs_dirent_add_nolink(struct kafs_context *ctx, kafs_sinode_t *inoent_dir, kafs_inocnt_t ino,
                                   const char *filename)
 {
-  kafs_dlog(2, "%s(ino_dir = %d, ino = %d, filename = %s)\n", __func__, inoent_dir - ctx->c_inotbl,
-            ino, filename);
   assert(ctx != NULL);
   assert(inoent_dir != NULL);
+  assert(filename != NULL);
   assert(ino != KAFS_INO_NONE);
-  kafs_inocnt_t inocnt = kafs_sb_inocnt_get(ctx->c_superblock);
-  assert(ino < inocnt);
-  kafs_mode_t mode_dir = kafs_ino_mode_get(inoent_dir);
-  if (!S_ISDIR(mode_dir))
+  if (!S_ISDIR(kafs_ino_mode_get(inoent_dir)))
     return -ENOTDIR;
-  struct kafs_sdirent dirent;
-  off_t offset = 0;
-  kafs_filenamelen_t filenamelen = strlen(filename);
+
+  kafs_filenamelen_t filenamelen = (kafs_filenamelen_t)strlen(filename);
+  if (filenamelen == 0 || filenamelen >= FILENAME_MAX)
+    return -EINVAL;
+
+  char *old = NULL;
+  size_t old_len = 0;
+  int rc = kafs_dir_snapshot(ctx, inoent_dir, &old, &old_len);
+  if (rc < 0)
+    return rc;
+
+  // scan for duplicates and compute append offset
+  size_t off = 0;
   while (1)
   {
-    ssize_t r = KAFS_CALL(kafs_dirent_read, ctx, inoent_dir, &dirent, offset);
-    if (r == 0)
+    kafs_inocnt_t dino;
+    kafs_filenamelen_t dlen;
+    const char *dname;
+    size_t rec_len;
+    int step = kafs_dirent_iter_next(old, old_len, off, &dino, &dlen, &dname, &rec_len);
+    if (step == 0)
       break;
-    kafs_filenamelen_t d_filenamelen = kafs_dirent_filenamelen_get(&dirent);
-    const char *d_filename = dirent.d_filename;
-    if (r != (ssize_t)(offsetof(kafs_sdirent_t, d_filename) + d_filenamelen))
+    if (step < 0)
+    {
+      free(old);
       return -EIO;
-    if (d_filenamelen == filenamelen && memcmp(filename, d_filename, filenamelen) == 0)
+    }
+    if (dlen == filenamelen && memcmp(dname, filename, filenamelen) == 0)
+    {
+      free(old);
       return -EEXIST;
-    offset += r;
+    }
+    off += rec_len;
   }
-  kafs_dirent_set(&dirent, ino, filename);
-  ssize_t w = KAFS_CALL(kafs_pwrite, ctx, inoent_dir, &dirent,
-                        offsetof(kafs_sdirent_t, d_filename) + filenamelen, offset);
-  assert(w == (ssize_t)(offsetof(kafs_sdirent_t, d_filename) + filenamelen));
-  return KAFS_SUCCESS;
+
+  const size_t hdr_sz = sizeof(kafs_dirent_hdr_t);
+  size_t new_len = off + hdr_sz + (size_t)filenamelen;
+  char *nw = (char *)malloc(new_len);
+  if (!nw)
+  {
+    free(old);
+    return -ENOMEM;
+  }
+  if (off)
+    memcpy(nw, old, off);
+  kafs_dirent_hdr_t hdr;
+  hdr.d_ino = kafs_inocnt_htos(ino);
+  hdr.d_filenamelen = kafs_filenamelen_htos(filenamelen);
+  memcpy(nw + off, &hdr, hdr_sz);
+  memcpy(nw + off + hdr_sz, filename, filenamelen);
+
+  rc = kafs_dir_writeback(ctx, inoent_dir, nw, new_len);
+  free(nw);
+  free(old);
+  return rc;
 }
 
 static int kafs_dirent_add(struct kafs_context *ctx, kafs_sinode_t *inoent_dir, kafs_inocnt_t ino,
@@ -1188,48 +1290,72 @@ static int kafs_dirent_add(struct kafs_context *ctx, kafs_sinode_t *inoent_dir, 
   return rc;
 }
 
+// NOTE: caller holds dir inode lock.
 static int kafs_dirent_remove_nolink(struct kafs_context *ctx, kafs_sinode_t *inoent_dir,
                                      const char *filename, kafs_inocnt_t *out_ino)
 {
-  kafs_dlog(2, "%s(ino_dir = %" PRIuFAST32 ", filename = %s)\n", __func__,
-            inoent_dir - ctx->c_inotbl, filename);
   assert(ctx != NULL);
   assert(inoent_dir != NULL);
   assert(filename != NULL);
-  assert(kafs_ino_get_usage(inoent_dir));
   if (out_ino)
     *out_ino = KAFS_INO_NONE;
-  kafs_filenamelen_t filenamelen = strlen(filename);
-  assert(filenamelen > 0);
-  kafs_mode_t mode_dir = kafs_ino_mode_get(inoent_dir);
-  if (!S_ISDIR(mode_dir))
+  if (!S_ISDIR(kafs_ino_mode_get(inoent_dir)))
     return -ENOTDIR;
-  struct kafs_sdirent dirent;
-  off_t offset = 0;
+
+  kafs_filenamelen_t filenamelen = (kafs_filenamelen_t)strlen(filename);
+  if (filenamelen == 0 || filenamelen >= FILENAME_MAX)
+    return -EINVAL;
+
+  char *old = NULL;
+  size_t old_len = 0;
+  int rc = kafs_dir_snapshot(ctx, inoent_dir, &old, &old_len);
+  if (rc < 0)
+    return rc;
+
+  size_t off = 0;
   while (1)
   {
-    ssize_t r = KAFS_CALL(kafs_dirent_read, ctx, inoent_dir, &dirent, offset);
-    if (r == 0)
+    kafs_inocnt_t dino;
+    kafs_filenamelen_t dlen;
+    const char *dname;
+    size_t rec_len;
+    int step = kafs_dirent_iter_next(old, old_len, off, &dino, &dlen, &dname, &rec_len);
+    if (step == 0)
       break;
-    kafs_inocnt_t d_ino = kafs_dirent_ino_get(&dirent);
-    kafs_filenamelen_t d_filenamelen = kafs_dirent_filenamelen_get(&dirent);
-    const char *d_filename = dirent.d_filename;
-    if (r != (ssize_t)(offsetof(kafs_sdirent_t, d_filename) + d_filenamelen))
-      return -EIO;
-    if (d_filenamelen == filenamelen && memcmp(d_filename, filename, filenamelen) == 0)
+    if (step < 0)
     {
-      KAFS_CALL(kafs_trim, ctx, inoent_dir, offset, r);
-      if (out_ino)
-        *out_ino = d_ino;
-      return KAFS_SUCCESS;
+      free(old);
+      return -EIO;
     }
-    offset += r;
+    if (dlen == filenamelen && memcmp(dname, filename, filenamelen) == 0)
+    {
+      size_t new_len = old_len - rec_len;
+      char *nw = (char *)malloc(new_len);
+      if (!nw)
+      {
+        free(old);
+        return -ENOMEM;
+      }
+      if (off)
+        memcpy(nw, old, off);
+      if (off + rec_len < old_len)
+        memcpy(nw + off, old + off + rec_len, old_len - (off + rec_len));
+
+      rc = kafs_dir_writeback(ctx, inoent_dir, nw, new_len);
+      if (rc == 0 && out_ino)
+        *out_ino = dino;
+      free(nw);
+      free(old);
+      return rc;
+    }
+    off += rec_len;
   }
+
+  free(old);
   return -ENOENT;
 }
 
-static int kafs_dirent_remove(struct kafs_context *ctx, kafs_sinode_t *inoent_dir,
-                              const char *filename)
+static int kafs_dirent_remove(struct kafs_context *ctx, kafs_sinode_t *inoent_dir, const char *filename)
 {
   kafs_inocnt_t d_ino;
   int rc = kafs_dirent_remove_nolink(ctx, inoent_dir, filename, &d_ino);
@@ -1374,7 +1500,10 @@ static int kafs_access(struct fuse_context *fctx, kafs_context_t *ctx, const cha
     int rc_ac = kafs_access_check(ok_dirs, inoent, KAFS_TRUE, uid, gid, ngroups, groups);
     if (rc_ac < 0)
       return rc_ac;
+    uint32_t ino_dir = (uint32_t)(inoent - ctx->c_inotbl);
+    kafs_inode_lock(ctx, ino_dir);
     int rc = kafs_dirent_search(ctx, inoent, p, n - p, &inoent);
+    kafs_inode_unlock(ctx, ino_dir);
     if (rc < 0)
     {
       kafs_dlog(2, "%s: dirent_search('%.*s') rc=%d\n", __func__, (int)(n - p), p, rc);
@@ -1568,24 +1697,30 @@ static int kafs_op_readdir(const char *path, void *buf, fuse_fill_dir_t filler, 
   struct kafs_context *ctx = fctx->private_data;
   kafs_sinode_t *inoent_dir;
   KAFS_CALL(kafs_access, fctx, ctx, path, NULL, R_OK, &inoent_dir);
+  uint32_t ino_dir = (uint32_t)(inoent_dir - ctx->c_inotbl);
+
+  kafs_inode_lock(ctx, ino_dir);
   off_t filesize = kafs_ino_size_get(inoent_dir);
   off_t o = 0;
   kafs_sdirent_t dirent;
   if (filler(buf, ".", NULL, 0, 0))
+  {
+    kafs_inode_unlock(ctx, ino_dir);
     return -ENOENT;
+  }
   while (o < filesize)
   {
     ssize_t r = KAFS_CALL(kafs_dirent_read, ctx, inoent_dir, &dirent, o);
     if (r == 0)
       break;
-    kafs_inocnt_t d_ino = kafs_dirent_ino_get(&dirent);
-    kafs_filenamelen_t d_filenamelen = kafs_dirent_filenamelen_get(&dirent);
-    kafs_dlog(3, "%s ino = %d, name = %s, namelen = %d\n", __func__, d_ino, dirent.d_filename,
-              d_filenamelen);
     if (filler(buf, dirent.d_filename, NULL, 0, 0))
+    {
+      kafs_inode_unlock(ctx, ino_dir);
       return -ENOENT;
+    }
     o += r;
   }
+  kafs_inode_unlock(ctx, ino_dir);
   return 0;
 }
 
