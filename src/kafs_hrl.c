@@ -116,9 +116,13 @@ static int hrl_find_by_hash(kafs_context_t *ctx, uint64_t fast, const void *buf,
   kafs_hrl_entry_t *ents = hrl_entries_tbl(ctx);
   int b = hrl_bucket_index(ctx, fast);
   uint32_t head = index[b];
-  while (head != 0)
+  uint32_t cap = hrl_capacity(ctx);
+  // Guard against corrupted/looping chains: cap iterations.
+  for (uint32_t steps = 0; head != 0 && steps < cap; ++steps)
   {
     uint32_t i = head - 1u;
+    if (i >= cap)
+      return -EIO;
     kafs_hrl_entry_t *e = &ents[i];
     if (e->refcnt != 0 && hrl_entry_cmp_content(ctx, e, buf, fast))
     {
@@ -127,7 +131,7 @@ static int hrl_find_by_hash(kafs_context_t *ctx, uint64_t fast, const void *buf,
     }
     head = e->next_plus1;
   }
-  return -ENOENT;
+  return (head == 0) ? -ENOENT : -EIO;
 }
 
 static int hrl_find_free_slot(kafs_context_t *ctx, uint32_t *out_index)
@@ -161,9 +165,13 @@ static int hrl_chain_remove(kafs_context_t *ctx, uint32_t idx, uint64_t fast)
   kafs_hrl_entry_t *ents = hrl_entries_tbl(ctx);
   uint32_t head = index[b];
   uint32_t prev = 0;
-  while (head != 0)
+  uint32_t cap = hrl_capacity(ctx);
+  // Guard against corrupted/looping chains: cap iterations.
+  for (uint32_t steps = 0; head != 0 && steps < cap; ++steps)
   {
     uint32_t i = head - 1u;
+    if (i >= cap)
+      return -EIO;
     if (i == idx)
     {
       uint32_t next = ents[i].next_plus1;
@@ -176,7 +184,7 @@ static int hrl_chain_remove(kafs_context_t *ctx, uint32_t idx, uint64_t fast)
     prev = head;
     head = ents[i].next_plus1;
   }
-  return -ENOENT;
+  return (head == 0) ? -ENOENT : -EIO;
 }
 
 int kafs_hrl_open(kafs_context_t *ctx)
