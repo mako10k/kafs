@@ -34,8 +34,8 @@ static int cmd_stats(const char *mnt, int json)
   uint64_t logical_bytes = st.hrl_refcnt_sum * (uint64_t)st.blksize;
   uint64_t unique_bytes = st.hrl_entries_used * (uint64_t)st.blksize;
   uint64_t saved_bytes = (st.hrl_refcnt_sum > st.hrl_entries_used)
-                           ? (st.hrl_refcnt_sum - st.hrl_entries_used) * (uint64_t)st.blksize
-                           : 0;
+                             ? (st.hrl_refcnt_sum - st.hrl_entries_used) * (uint64_t)st.blksize
+                             : 0;
 
   double dedup_ratio = 1.0;
   if (unique_bytes > 0)
@@ -82,7 +82,8 @@ static int cmd_stats(const char *mnt, int json)
          logical_bytes, unique_bytes, saved_bytes, dedup_ratio);
   printf("  hrl_put: calls=%" PRIu64 " hits=%" PRIu64 " misses=%" PRIu64 " fallback_legacy=%" PRIu64
          " hit_rate=%.3f\n",
-         st.hrl_put_calls, st.hrl_put_hits, st.hrl_put_misses, st.hrl_put_fallback_legacy, hit_rate);
+         st.hrl_put_calls, st.hrl_put_hits, st.hrl_put_misses, st.hrl_put_fallback_legacy,
+         hit_rate);
   return 0;
 }
 

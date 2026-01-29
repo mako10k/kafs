@@ -83,7 +83,8 @@ __attribute_maybe_unused__ static kafs_blkcnt_t kafs_ino_blocks_get(const kafs_s
   return kafs_blkcnt_stoh(inoent->i_blocks);
 }
 
-__attribute_maybe_unused__ static void kafs_ino_blocks_set(kafs_sinode_t *inode, kafs_blkcnt_t blkcnt)
+__attribute_maybe_unused__ static void kafs_ino_blocks_set(kafs_sinode_t *inode,
+                                                           kafs_blkcnt_t blkcnt)
 {
   inode->i_blocks = kafs_blkcnt_htos(blkcnt);
 }

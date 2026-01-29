@@ -143,7 +143,8 @@ static void kafs_sb_blkcnt_free_set(struct kafs_ssuperblock *sb, kafs_blkcnt_t b
   sb->s_blkcnt_free = kafs_blkcnt_htos(blkcnt_free);
 }
 
-__attribute_maybe_unused__ static kafs_blkcnt_t kafs_sb_blkcnt_free_incr(struct kafs_ssuperblock *sb)
+__attribute_maybe_unused__ static kafs_blkcnt_t
+kafs_sb_blkcnt_free_incr(struct kafs_ssuperblock *sb)
 {
   assert(sb != NULL);
   kafs_blkcnt_t blkcnt_free = kafs_sb_blkcnt_free_get(sb);

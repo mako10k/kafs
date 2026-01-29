@@ -687,8 +687,8 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
   return KAFS_SUCCESS;
 }
 
-__attribute_maybe_unused__ static int kafs_ino_iblk_release(struct kafs_context *ctx, kafs_sinode_t *inoent,
-                                                              kafs_iblkcnt_t iblo)
+__attribute_maybe_unused__ static int
+kafs_ino_iblk_release(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_iblkcnt_t iblo)
 {
   kafs_dlog(3, "%s(ino = %d, iblo = %" PRIuFAST32 ")\n", __func__, inoent - ctx->c_inotbl, iblo);
   assert(ctx != NULL);
@@ -1002,8 +1002,8 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
   return KAFS_SUCCESS;
 }
 
-__attribute_maybe_unused__ static int kafs_trim(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_off_t off,
-                                                  kafs_off_t size)
+__attribute_maybe_unused__ static int kafs_trim(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                                kafs_off_t off, kafs_off_t size)
 {
   kafs_dlog(2, "%s(ino = %d, off = %" PRIuFAST64 ", size = %" PRIuFAST64 ")\n", __func__,
             inoent - ctx->c_inotbl, off, size);
@@ -1101,8 +1101,8 @@ static ssize_t kafs_dirent_read(struct kafs_context *ctx, kafs_sinode_t *inoent_
   if (filenamelen >= FILENAME_MAX)
   {
     kafs_log(KAFS_LOG_ERR,
-             "%s: invalid filenamelen=%" PRIuFAST32 " ino_dir=%d off=%" PRIuFAST64 "\n",
-             __func__, (uint_fast32_t)filenamelen, (int)(inoent_dir - ctx->c_inotbl), offset);
+             "%s: invalid filenamelen=%" PRIuFAST32 " ino_dir=%d off=%" PRIuFAST64 "\n", __func__,
+             (uint_fast32_t)filenamelen, (int)(inoent_dir - ctx->c_inotbl), offset);
     return -EIO;
   }
   ssize_t r2 = KAFS_CALL(kafs_pread, ctx, inoent_dir, dirent->d_filename, filenamelen, offset + r1);
@@ -1239,8 +1239,8 @@ static int kafs_dirent_iter_next(const char *buf, size_t len, size_t off, kafs_i
 }
 
 // NOTE: caller holds dir inode lock. For rename(2) we must not change linkcount of the moved inode.
-static int kafs_dirent_add_nolink(struct kafs_context *ctx, kafs_sinode_t *inoent_dir, kafs_inocnt_t ino,
-                                  const char *filename)
+static int kafs_dirent_add_nolink(struct kafs_context *ctx, kafs_sinode_t *inoent_dir,
+                                  kafs_inocnt_t ino, const char *filename)
 {
   assert(ctx != NULL);
   assert(inoent_dir != NULL);
@@ -1379,7 +1379,8 @@ static int kafs_dirent_remove_nolink(struct kafs_context *ctx, kafs_sinode_t *in
   return -ENOENT;
 }
 
-static int kafs_dirent_remove(struct kafs_context *ctx, kafs_sinode_t *inoent_dir, const char *filename)
+static int kafs_dirent_remove(struct kafs_context *ctx, kafs_sinode_t *inoent_dir,
+                              const char *filename)
 {
   kafs_inocnt_t d_ino;
   int rc = kafs_dirent_remove_nolink(ctx, inoent_dir, filename, &d_ino);
@@ -1799,7 +1800,7 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   kafs_inocnt_t ino_new;
   kafs_inode_alloc_lock(ctx);
   ret = kafs_ino_find_free(ctx->c_inotbl, &ino_new, &ctx->c_ino_search,
-                          kafs_sb_inocnt_get(ctx->c_superblock));
+                           kafs_sb_inocnt_get(ctx->c_superblock));
   if (ret < 0)
   {
     kafs_inode_alloc_unlock(ctx);
@@ -1843,7 +1844,8 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
       kafs_inode_lock(ctx, ino_dir_u32);
   }
 
-  kafs_dlog(2, "%s: dirent_add start dir=%u name='%s'\n", __func__, (unsigned)ino_dir_u32, basepath);
+  kafs_dlog(2, "%s: dirent_add start dir=%u name='%s'\n", __func__, (unsigned)ino_dir_u32,
+            basepath);
   ret = kafs_dirent_add(ctx, inoent_dir, ino_new, basepath);
   kafs_dlog(2, "%s: dirent_add done rc=%d\n", __func__, ret);
   if (ret < 0)
