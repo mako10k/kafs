@@ -1912,6 +1912,9 @@ static int kafs_op_utimens(const char *path, const struct timespec tv[2], struct
   struct kafs_context *ctx = fctx->private_data;
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
+  uint32_t ino = (uint32_t)(inoent - ctx->c_inotbl);
+  kafs_inode_lock(ctx, ino);
+
   kafs_time_t now = {0, 0};
   if (tv[0].tv_nsec == UTIME_NOW || tv[1].tv_nsec == UTIME_NOW)
     now = kafs_now();
@@ -1937,6 +1940,8 @@ static int kafs_op_utimens(const char *path, const struct timespec tv[2], struct
     kafs_ino_mtime_set(inoent, tv[1]);
     break;
   }
+
+  kafs_inode_unlock(ctx, ino);
   return 0;
 }
 
@@ -2158,8 +2163,11 @@ static int kafs_op_chmod(const char *path, mode_t mode, struct fuse_file_info *f
   uint64_t jseq = kafs_journal_begin(ctx, "CHMOD", "path=%s mode=%o", path, (unsigned)mode);
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
+  uint32_t ino = (uint32_t)(inoent - ctx->c_inotbl);
+  kafs_inode_lock(ctx, ino);
   kafs_mode_t m = kafs_ino_mode_get(inoent);
   kafs_ino_mode_set(inoent, (m & S_IFMT) | mode);
+  kafs_inode_unlock(ctx, ino);
   kafs_journal_commit(ctx, jseq);
   return 0;
 }
@@ -2172,8 +2180,11 @@ static int kafs_op_chown(const char *path, uid_t uid, gid_t gid, struct fuse_fil
       kafs_journal_begin(ctx, "CHOWN", "path=%s uid=%u gid=%u", path, (unsigned)uid, (unsigned)gid);
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
+  uint32_t ino = (uint32_t)(inoent - ctx->c_inotbl);
+  kafs_inode_lock(ctx, ino);
   kafs_ino_uid_set(inoent, uid);
   kafs_ino_gid_set(inoent, gid);
+  kafs_inode_unlock(ctx, ino);
   kafs_journal_commit(ctx, jseq);
   return 0;
 }
