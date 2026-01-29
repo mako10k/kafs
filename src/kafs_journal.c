@@ -34,6 +34,9 @@ typedef struct kafs_context_ext
   unsigned int c_ino_search;
   unsigned int c_blo_search;
   int c_fd;
+  size_t c_mapsize;
+  void *c_img_base;
+  size_t c_img_size;
   void *c_hrl_index;
   unsigned int c_hrl_bucket_cnt;
   void *c_lock_hrl_buckets;

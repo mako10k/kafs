@@ -38,7 +38,8 @@ static void kafs_dirent_filename_set(struct kafs_sdirent *dirent, const char *fi
   dirent->d_filenamelen = kafs_filenamelen_htos(filenamelen);
 }
 
-static void kafs_dirent_set(struct kafs_sdirent *dirent, kafs_inocnt_t ino, const char *filename)
+__attribute_maybe_unused__ static void kafs_dirent_set(struct kafs_sdirent *dirent,
+                                                       kafs_inocnt_t ino, const char *filename)
 {
   kafs_dirent_ino_set(dirent, ino);
   kafs_dirent_filename_set(dirent, filename);

@@ -48,53 +48,54 @@ static void kafs_ino_mode_set(kafs_sinode_t *inoent, kafs_mode_t mode)
   inoent->i_mode = kafs_mode_htos(mode);
 }
 
-static kafs_uid_t kafs_ino_uid_get(const kafs_sinode_t *inoent)
+__attribute_maybe_unused__ static kafs_uid_t kafs_ino_uid_get(const kafs_sinode_t *inoent)
 {
   return kafs_uid_stoh(inoent->i_uid);
 }
 
-static void kafs_ino_uid_set(kafs_sinode_t *inode, kafs_uid_t uid)
+__attribute_maybe_unused__ static void kafs_ino_uid_set(kafs_sinode_t *inode, kafs_uid_t uid)
 {
   inode->i_uid = kafs_uid_htos(uid);
 }
 
-static kafs_gid_t kafs_ino_gid_get(const kafs_sinode_t *inoent)
+__attribute_maybe_unused__ static kafs_gid_t kafs_ino_gid_get(const kafs_sinode_t *inoent)
 {
   return kafs_gid_stoh(inoent->i_gid);
 }
 
-static void kafs_ino_gid_set(kafs_sinode_t *inode, kafs_gid_t gid)
+__attribute_maybe_unused__ static void kafs_ino_gid_set(kafs_sinode_t *inode, kafs_gid_t gid)
 {
   inode->i_gid = kafs_gid_htos(gid);
 }
 
-static kafs_dev_t kafs_ino_dev_get(const kafs_sinode_t *inoent)
+__attribute_maybe_unused__ static kafs_dev_t kafs_ino_dev_get(const kafs_sinode_t *inoent)
 {
   return kafs_dev_stoh(inoent->i_rdev);
 }
 
-static void kafs_ino_dev_set(kafs_sinode_t *inode, kafs_dev_t dev)
+__attribute_maybe_unused__ static void kafs_ino_dev_set(kafs_sinode_t *inode, kafs_dev_t dev)
 {
   inode->i_rdev = kafs_dev_htos(dev);
 }
 
-static kafs_blkcnt_t kafs_ino_blocks_get(const kafs_sinode_t *inoent)
+__attribute_maybe_unused__ static kafs_blkcnt_t kafs_ino_blocks_get(const kafs_sinode_t *inoent)
 {
   return kafs_blkcnt_stoh(inoent->i_blocks);
 }
 
-static void kafs_ino_blocks_set(kafs_sinode_t *inode, kafs_blkcnt_t blkcnt)
+__attribute_maybe_unused__ static void kafs_ino_blocks_set(kafs_sinode_t *inode,
+                                                           kafs_blkcnt_t blkcnt)
 {
   inode->i_blocks = kafs_blkcnt_htos(blkcnt);
 }
 
-static kafs_off_t kafs_ino_size_get(const kafs_sinode_t *inoent)
+__attribute_maybe_unused__ static kafs_off_t kafs_ino_size_get(const kafs_sinode_t *inoent)
 {
   assert(inoent != NULL);
   return kafs_off_stoh(inoent->i_size);
 }
 
-static void kafs_ino_size_set(kafs_sinode_t *inoent, kafs_off_t size)
+__attribute_maybe_unused__ static void kafs_ino_size_set(kafs_sinode_t *inoent, kafs_off_t size)
 {
   assert(inoent != NULL);
   inoent->i_size = kafs_off_htos(size);
@@ -106,7 +107,7 @@ __attribute_maybe_unused__ static kafs_time_t kafs_ino_atime_get(const kafs_sino
   return kafs_time_stoh(inoent->i_atime);
 }
 
-static void kafs_ino_atime_set(kafs_sinode_t *inoent, kafs_time_t atime)
+__attribute_maybe_unused__ static void kafs_ino_atime_set(kafs_sinode_t *inoent, kafs_time_t atime)
 {
   assert(inoent != NULL);
   inoent->i_atime = kafs_time_htos(atime);
@@ -176,7 +177,9 @@ static void kafs_ino_linkcnt_set(kafs_sinode_t *inoent, kafs_linkcnt_t linkcnt)
 static kafs_linkcnt_t kafs_ino_linkcnt_incr(kafs_sinode_t *inoent)
 {
   kafs_linkcnt_t linkcnt = kafs_ino_linkcnt_get(inoent);
-  // TODO: 上限チェック
+  // linkcnt is stored as u16 on disk; clamp to avoid wraparound.
+  if (linkcnt == UINT16_MAX)
+    return linkcnt;
   kafs_ino_linkcnt_set(inoent, linkcnt + 1);
   return linkcnt + 1;
 }

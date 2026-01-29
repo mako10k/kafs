@@ -21,3 +21,14 @@ Validation and quality gates:
 Security and safety:
 - No network calls unless required by the task.
 - Do not exfiltrate secrets.
+
+## Guardrails for destructive commands
+
+To avoid accidental data loss, the agent MUST follow these rules:
+
+- **Never run destructive commands** (examples: `git reset --hard`, `git checkout -- <path>`, `git clean -fdx`, `rm -rf`, mass deletes) **against the WorkspaceRoot or repository checkout** unless the user explicitly approves after being shown the exact target path and the impact.
+- Default mode is **read-only** for the WorkspaceRoot: use `git status`, `git diff`, `git fsck`, log inspection, etc.
+- If a destructive operation is necessary, the agent must first:
+  1) show the exact command, target path(s), and what will be lost
+  2) propose a non-destructive alternative (backup/patch/dry-run)
+  3) obtain explicit user confirmation

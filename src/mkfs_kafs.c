@@ -167,6 +167,9 @@ int main(int argc, char **argv)
 
   // R/O items
   ctx.c_superblock->s_inocnt = kafs_inocnt_htos(inocnt);
+  // root inode uses one entry
+  kafs_sb_inocnt_free_set(ctx.c_superblock,
+                          (inocnt > (kafs_inocnt_t)KAFS_INO_ROOTDIR) ? (inocnt - 1) : 0);
   // 一般/ルートどちらも同一のブロック数で初期化（シンプル化）
   ctx.c_superblock->s_blkcnt = kafs_blkcnt_htos(blkcnt);
   ctx.c_superblock->s_r_blkcnt = kafs_blkcnt_htos(blkcnt);

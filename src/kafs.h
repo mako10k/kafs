@@ -335,9 +335,12 @@ static kafs_slinkcnt_t kafs_linkcnt_htos(kafs_linkcnt_t h)
   return s;
 }
 
-static kafs_filenamelen_t kafs_filenamelen_stoh(kafs_sfilenamelen_t s) { return le16toh(s.value); }
+__attribute_maybe_unused__ static kafs_filenamelen_t kafs_filenamelen_stoh(kafs_sfilenamelen_t s)
+{
+  return le16toh(s.value);
+}
 
-static kafs_sfilenamelen_t kafs_filenamelen_htos(kafs_filenamelen_t h)
+__attribute_maybe_unused__ static kafs_sfilenamelen_t kafs_filenamelen_htos(kafs_filenamelen_t h)
 {
   kafs_sfilenamelen_t s = {.value = htole16(h)};
   return s;
