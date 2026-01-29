@@ -882,25 +882,75 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
     return KAFS_SUCCESS;
   }
   assert(filesize_new < filesize_orig);
+  uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
   kafs_iblkcnt_t iblooff = filesize_new >> log_blksize;
   kafs_iblkcnt_t iblocnt = (filesize_orig + blksize - 1) >> log_blksize;
-  kafs_blksize_t off = filesize_orig & (blksize - 1);
+  kafs_blksize_t off = (kafs_blksize_t)(filesize_new & (blksize - 1));
+
   if (filesize_orig <= KAFS_DIRECT_SIZE)
   {
     memset((void *)inoent->i_blkreftbl + filesize_new, 0, filesize_orig - filesize_new);
     kafs_ino_size_set(inoent, filesize_new);
     return KAFS_SUCCESS;
   }
+
+  // Indirect -> direct: copy first block data to inode, then release all blocks.
   if (filesize_new <= KAFS_DIRECT_SIZE)
   {
     char buf[blksize];
     KAFS_CALL(kafs_ino_iblk_read, ctx, inoent, 0, buf);
-    for (kafs_iblkcnt_t iblo = 0; iblo < iblocnt; iblo++)
-      KAFS_CALL(kafs_ino_iblk_release, ctx, inoent, iblo);
-    memcpy(inoent->i_blkreftbl, buf, filesize_orig - filesize_new);
+
+    // Update size first so readers won't access blocks being freed.
     kafs_ino_size_set(inoent, filesize_new);
+
+    // Release blocks in batches: capture + clear refs under inode lock, dec_ref outside.
+    const kafs_iblkcnt_t TRUNC_BATCH = 64;
+    kafs_iblkcnt_t cur = 0;
+    while (cur < iblocnt)
+    {
+      kafs_iblkcnt_t end = cur + TRUNC_BATCH;
+      if (end > iblocnt)
+        end = iblocnt;
+
+      kafs_blkcnt_t to_free[TRUNC_BATCH * 4];
+      size_t to_free_cnt = 0;
+      for (kafs_iblkcnt_t iblo = cur; iblo < end; iblo++)
+      {
+        kafs_blkcnt_t old;
+        KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old, KAFS_IBLKREF_FUNC_GET);
+        if (old == KAFS_BLO_NONE)
+          continue;
+        kafs_blkcnt_t none = KAFS_BLO_NONE;
+        KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &none, KAFS_IBLKREF_FUNC_SET);
+        kafs_blkcnt_t f1, f2, f3;
+        KAFS_CALL(kafs_ino_prune_empty_indirects, ctx, inoent, iblo, &f1, &f2, &f3);
+        to_free[to_free_cnt++] = old;
+        if (f1 != KAFS_BLO_NONE)
+          to_free[to_free_cnt++] = f1;
+        if (f2 != KAFS_BLO_NONE)
+          to_free[to_free_cnt++] = f2;
+        if (f3 != KAFS_BLO_NONE)
+          to_free[to_free_cnt++] = f3;
+      }
+
+      if (to_free_cnt)
+      {
+        kafs_inode_unlock(ctx, ino_idx);
+        for (size_t i = 0; i < to_free_cnt; i++)
+          (void)kafs_hrl_dec_ref_by_blo(ctx, to_free[i]);
+        kafs_inode_lock(ctx, ino_idx);
+      }
+      cur = end;
+    }
+
+    memcpy(inoent->i_blkreftbl, buf, (size_t)filesize_new);
+    if (filesize_new < KAFS_DIRECT_SIZE)
+      memset((void *)inoent->i_blkreftbl + filesize_new, 0, KAFS_DIRECT_SIZE - filesize_new);
     return KAFS_SUCCESS;
   }
+
+  // Shrink within indirect mode: update size first so readers won't access freed blocks.
+  kafs_ino_size_set(inoent, filesize_new);
 
   if (off > 0)
   {
@@ -910,9 +960,45 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
     KAFS_CALL(kafs_ino_iblk_write, ctx, inoent, iblooff, buf);
     iblooff++;
   }
+
+  const kafs_iblkcnt_t TRUNC_BATCH = 64;
   while (iblooff < iblocnt)
-    KAFS_CALL(kafs_ino_iblk_release, ctx, inoent, iblooff++);
-  kafs_ino_size_set(inoent, filesize_new);
+  {
+    kafs_iblkcnt_t end = iblooff + TRUNC_BATCH;
+    if (end > iblocnt)
+      end = iblocnt;
+
+    kafs_blkcnt_t to_free[TRUNC_BATCH * 4];
+    size_t to_free_cnt = 0;
+    for (kafs_iblkcnt_t iblo = iblooff; iblo < end; iblo++)
+    {
+      kafs_blkcnt_t old;
+      KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old, KAFS_IBLKREF_FUNC_GET);
+      if (old == KAFS_BLO_NONE)
+        continue;
+      kafs_blkcnt_t none = KAFS_BLO_NONE;
+      KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &none, KAFS_IBLKREF_FUNC_SET);
+      kafs_blkcnt_t f1, f2, f3;
+      KAFS_CALL(kafs_ino_prune_empty_indirects, ctx, inoent, iblo, &f1, &f2, &f3);
+      to_free[to_free_cnt++] = old;
+      if (f1 != KAFS_BLO_NONE)
+        to_free[to_free_cnt++] = f1;
+      if (f2 != KAFS_BLO_NONE)
+        to_free[to_free_cnt++] = f2;
+      if (f3 != KAFS_BLO_NONE)
+        to_free[to_free_cnt++] = f3;
+    }
+
+    if (to_free_cnt)
+    {
+      kafs_inode_unlock(ctx, ino_idx);
+      for (size_t i = 0; i < to_free_cnt; i++)
+        (void)kafs_hrl_dec_ref_by_blo(ctx, to_free[i]);
+      kafs_inode_lock(ctx, ino_idx);
+    }
+    iblooff = end;
+  }
+
   return KAFS_SUCCESS;
 }
 
@@ -948,6 +1034,7 @@ static int kafs_trim(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_off_t
 
 static int kafs_release(struct kafs_context *ctx, kafs_sinode_t *inoent)
 {
+  // Requires: caller holds inode lock for inoent.
   if (kafs_ino_linkcnt_decr(inoent) == 0)
   {
     KAFS_CALL(kafs_truncate, ctx, inoent, 0);
