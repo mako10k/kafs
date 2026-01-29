@@ -1,6 +1,12 @@
 #include "kafs_superblock.h"
+#include "kafs_inode.h"
+#include "kafs_hash.h"
+#include "kafs_locks.h"
+#include "kafs_block.h"
 
+#include <errno.h>
 #include <fcntl.h>
+#include <sys/mman.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -73,14 +79,126 @@ static int pwrite_all(int fd, const void *buf, size_t sz, off_t off)
   return (w == (ssize_t)sz) ? 0 : -1;
 }
 
+static void *img_ptr(void *base, size_t img_size, off_t off, size_t len)
+{
+  if (off < 0 || (size_t)off + len > img_size)
+    return NULL;
+  return (void *)((uint8_t *)base + off);
+}
+
+static int orphan_reclaim(kafs_context_t *ctx, int do_fix)
+{
+  kafs_ssuperblock_t *sb = ctx->c_superblock;
+  kafs_inocnt_t inocnt = kafs_sb_inocnt_get(sb);
+  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(sb);
+  kafs_blksize_t blksize = kafs_sb_blksize_get(sb);
+  uint32_t refs_pb = (uint32_t)(blksize / sizeof(kafs_sblkcnt_t));
+
+  int found = 0;
+  for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
+  {
+    kafs_sinode_t *e = &ctx->c_inotbl[ino];
+    if (!kafs_ino_get_usage(e))
+      continue;
+    if (kafs_ino_linkcnt_get(e) != 0)
+      continue;
+
+    found++;
+    if (!do_fix)
+      continue;
+
+    // Free all referenced blocks (direct + indirect tables) best-effort.
+    // NOTE: For "direct" small files, data is in inode and there are no blocks to free.
+    if (kafs_ino_size_get(e) > (kafs_off_t)sizeof(e->i_blkreftbl))
+    {
+      // Direct data blocks
+      for (uint32_t i = 0; i < 12; ++i)
+      {
+        kafs_blkcnt_t b = kafs_blkcnt_stoh(e->i_blkreftbl[i]);
+        if (b != KAFS_BLO_NONE)
+          (void)kafs_hrl_dec_ref_by_blo(ctx, b);
+      }
+
+      // Recursive indirect release
+      struct rel_ctx
+      {
+        kafs_context_t *ctx;
+        void *base;
+        size_t img_size;
+        kafs_logblksize_t l2;
+        uint32_t refs_pb;
+      } rctx = {ctx, ctx->c_img_base, ctx->c_img_size, log_blksize, refs_pb};
+
+      // nested helper via macro-style local function (GNU C)
+      int (*rel_tbl)(kafs_blkcnt_t, int) = NULL;
+      int rel_tbl_impl(kafs_blkcnt_t blo, int depth)
+      {
+        if (blo == KAFS_BLO_NONE)
+          return 0;
+        void *p = img_ptr(rctx.base, rctx.img_size, (off_t)blo << rctx.l2, blksize);
+        if (!p)
+          return -EIO;
+        kafs_sblkcnt_t *tbl = (kafs_sblkcnt_t *)p;
+        for (uint32_t i = 0; i < rctx.refs_pb; ++i)
+        {
+          kafs_blkcnt_t child = kafs_blkcnt_stoh(tbl[i]);
+          if (child == KAFS_BLO_NONE)
+            continue;
+          if (depth > 1)
+          {
+            (void)rel_tbl(child, depth - 1);
+            (void)kafs_hrl_dec_ref_by_blo(rctx.ctx, child);
+          }
+          else
+          {
+            (void)kafs_hrl_dec_ref_by_blo(rctx.ctx, child);
+          }
+        }
+        return 0;
+      }
+      rel_tbl = rel_tbl_impl;
+
+      kafs_blkcnt_t si = kafs_blkcnt_stoh(e->i_blkreftbl[12]);
+      kafs_blkcnt_t di = kafs_blkcnt_stoh(e->i_blkreftbl[13]);
+      kafs_blkcnt_t ti = kafs_blkcnt_stoh(e->i_blkreftbl[14]);
+      if (si != KAFS_BLO_NONE)
+      {
+        (void)rel_tbl(si, 1);
+        (void)kafs_hrl_dec_ref_by_blo(ctx, si);
+      }
+      if (di != KAFS_BLO_NONE)
+      {
+        (void)rel_tbl(di, 2);
+        (void)kafs_hrl_dec_ref_by_blo(ctx, di);
+      }
+      if (ti != KAFS_BLO_NONE)
+      {
+        (void)rel_tbl(ti, 3);
+        (void)kafs_hrl_dec_ref_by_blo(ctx, ti);
+      }
+    }
+
+    memset(e, 0, sizeof(*e));
+    (void)kafs_sb_inocnt_free_incr(sb);
+    kafs_sb_wtime_set(sb, kafs_now());
+  }
+
+  if (found > 0)
+    fprintf(stderr, "Orphan inodes: %d\n", found);
+  return 0;
+}
+
 static void usage(const char *prog)
 {
-  fprintf(stderr, "Usage: %s [--check-only|--journal-only] [--journal-clear] <image>\n", prog);
+  fprintf(stderr,
+          "Usage: %s [--check-only|--journal-only] [--journal-clear] [--orphan-reclaim] <image>\n",
+          prog);
 }
 
 int main(int argc, char **argv)
 {
-  int do_journal_clear = 0; // optional clear
+  int do_journal_clear = 0;   // optional clear
+  int do_orphan_reclaim = 0;   // optional fix
   const char *img = NULL;
   for (int i = 1; i < argc; ++i)
   {
@@ -91,6 +209,10 @@ int main(int argc, char **argv)
     else if (strcmp(argv[i], "--journal-clear") == 0)
     {
       do_journal_clear = 1;
+    }
+    else if (strcmp(argv[i], "--orphan-reclaim") == 0)
+    {
+      do_orphan_reclaim = 1;
     }
     else if (argv[i][0] != '-' && !img)
     {
@@ -108,7 +230,8 @@ int main(int argc, char **argv)
     return 2;
   }
 
-  int fd = open(img, do_journal_clear ? O_RDWR : O_RDONLY);
+  int want_write = do_journal_clear || do_orphan_reclaim;
+  int fd = open(img, want_write ? O_RDWR : O_RDONLY);
   if (fd < 0)
   {
     perror("open");
@@ -122,6 +245,80 @@ int main(int argc, char **argv)
     perror("pread superblock");
     close(fd);
     return 1;
+  }
+
+  // Optional orphan reclaim (mount-time recovery equivalent)
+  if (do_orphan_reclaim)
+  {
+    kafs_context_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.c_fd = fd;
+
+    // layout and full-image mmap (matches kafs.c)
+    kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(&sb);
+    kafs_blksize_t blksize = 1u << log_blksize;
+    kafs_blksize_t blksizemask = blksize - 1u;
+    kafs_inocnt_t inocnt = kafs_inocnt_stoh(sb.s_inocnt);
+    kafs_blkcnt_t r_blkcnt = kafs_blkcnt_stoh(sb.s_r_blkcnt);
+
+    off_t mapsize = 0;
+    mapsize += sizeof(kafs_ssuperblock_t);
+    mapsize = (mapsize + blksizemask) & ~blksizemask;
+    void *blkmask_off = (void *)mapsize;
+    mapsize += (r_blkcnt + 7) >> 3;
+    mapsize = (mapsize + 7) & ~7;
+    mapsize = (mapsize + blksizemask) & ~blksizemask;
+    void *inotbl_off = (void *)mapsize;
+    mapsize += (off_t)sizeof(kafs_sinode_t) * inocnt;
+    mapsize = (mapsize + blksizemask) & ~blksizemask;
+
+    off_t imgsize = (off_t)r_blkcnt << log_blksize;
+    {
+      uint64_t idx_off = kafs_sb_hrl_index_offset_get(&sb);
+      uint64_t idx_size = kafs_sb_hrl_index_size_get(&sb);
+      uint64_t ent_off = kafs_sb_hrl_entry_offset_get(&sb);
+      uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(&sb);
+      uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
+      uint64_t j_off = kafs_sb_journal_offset_get(&sb);
+      uint64_t j_size = kafs_sb_journal_size_get(&sb);
+      uint64_t end1 = (idx_off && idx_size) ? (idx_off + idx_size) : 0;
+      uint64_t end2 = (ent_off && ent_size) ? (ent_off + ent_size) : 0;
+      uint64_t end3 = (j_off && j_size) ? (j_off + j_size) : 0;
+      uint64_t max_end = end1;
+      if (end2 > max_end)
+        max_end = end2;
+      if (end3 > max_end)
+        max_end = end3;
+      if ((off_t)max_end > imgsize)
+        imgsize = (off_t)max_end;
+      imgsize = (imgsize + blksizemask) & ~blksizemask;
+    }
+
+    int prot = want_write ? (PROT_READ | PROT_WRITE) : PROT_READ;
+    ctx.c_img_base = mmap(NULL, (size_t)imgsize, prot, MAP_SHARED, fd, 0);
+    if (ctx.c_img_base == MAP_FAILED)
+    {
+      perror("mmap");
+      close(fd);
+      return 1;
+    }
+    ctx.c_img_size = (size_t)imgsize;
+    ctx.c_superblock = (kafs_ssuperblock_t *)ctx.c_img_base;
+    ctx.c_mapsize = (size_t)mapsize;
+    ctx.c_blkmasktbl = (void *)ctx.c_superblock + (intptr_t)blkmask_off;
+    ctx.c_inotbl = (void *)ctx.c_superblock + (intptr_t)inotbl_off;
+    ctx.c_blo_search = 0;
+    ctx.c_ino_search = 0;
+
+    (void)kafs_hrl_open(&ctx);
+    (void)orphan_reclaim(&ctx, 1);
+    (void)kafs_hrl_close(&ctx);
+    if (want_write)
+    {
+      (void)msync(ctx.c_img_base, ctx.c_img_size, MS_SYNC);
+      (void)fsync(fd);
+    }
+    munmap(ctx.c_img_base, ctx.c_img_size);
   }
 
   uint64_t joff = kafs_sb_journal_offset_get(&sb);

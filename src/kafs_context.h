@@ -41,6 +41,9 @@ struct kafs_context
   uint64_t c_stat_hrl_put_hits;
   uint64_t c_stat_hrl_put_misses;
   uint64_t c_stat_hrl_put_fallback_legacy;
+
+  // --- Runtime inode open counts (in-memory only) ---
+  uint32_t *c_open_cnt; // sized to superblock inocnt (allocated at mount)
 };
 
 // Lock helpers (no-op when locks not enabled in build)

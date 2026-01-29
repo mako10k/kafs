@@ -38,6 +38,9 @@ int kafs_ctx_locks_init(struct kafs_context *ctx)
   st->inode_cnt = (uint32_t)kafs_sb_inocnt_get(ctx->c_superblock);
   if (st->inode_cnt == 0)
     st->inode_cnt = 1;
+
+  // open-count array (best-effort; only used for unlink/close reclamation)
+  ctx->c_open_cnt = (uint32_t *)calloc(st->inode_cnt, sizeof(uint32_t));
   st->inode_mutexes = (pthread_mutex_t *)calloc(st->inode_cnt, sizeof(pthread_mutex_t));
   if (!st->inode_mutexes)
   {
@@ -69,6 +72,11 @@ void kafs_ctx_locks_destroy(struct kafs_context *ctx)
   pthread_mutex_destroy(&st->global);
   pthread_mutex_destroy(&st->bitmap);
   pthread_mutex_destroy(&st->inode_alloc);
+  if (ctx->c_open_cnt)
+  {
+    free(ctx->c_open_cnt);
+    ctx->c_open_cnt = NULL;
+  }
   free(st);
   ctx->c_lock_hrl_buckets = NULL;
   ctx->c_lock_hrl_global = NULL;
@@ -160,10 +168,22 @@ void kafs_inode_alloc_unlock(struct kafs_context *ctx)
 
 int kafs_ctx_locks_init(struct kafs_context *ctx)
 {
-  (void)ctx;
+  if (!ctx)
+    return 0;
+  uint32_t cnt = (uint32_t)kafs_sb_inocnt_get(ctx->c_superblock);
+  if (cnt == 0)
+    cnt = 1;
+  ctx->c_open_cnt = (uint32_t *)calloc(cnt, sizeof(uint32_t));
   return 0;
 }
-void kafs_ctx_locks_destroy(struct kafs_context *ctx) { (void)ctx; }
+void kafs_ctx_locks_destroy(struct kafs_context *ctx)
+{
+  if (ctx && ctx->c_open_cnt)
+  {
+    free(ctx->c_open_cnt);
+    ctx->c_open_cnt = NULL;
+  }
+}
 void kafs_hrl_bucket_lock(struct kafs_context *ctx, uint32_t bucket)
 {
   (void)ctx;

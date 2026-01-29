@@ -1696,6 +1696,8 @@ static int kafs_op_open(const char *path, struct fuse_file_info *fi)
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, NULL, ok, &inoent);
   fi->fh = inoent - ctx->c_inotbl;
+  if (ctx->c_open_cnt)
+    __atomic_add_fetch(&ctx->c_open_cnt[fi->fh], 1u, __ATOMIC_RELAXED);
   // Handle O_TRUNC on open for existing files to match POSIX semantics
   if ((fi->flags & O_TRUNC) && (accmode == O_WRONLY || accmode == O_RDWR))
   {
@@ -1902,9 +1904,13 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
 
 static int kafs_op_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
+  struct fuse_context *fctx = fuse_get_context();
+  struct kafs_context *ctx = fctx ? fctx->private_data : NULL;
   kafs_inocnt_t ino_new;
   KAFS_CALL(kafs_create, path, mode | S_IFREG, 0, NULL, &ino_new);
   fi->fh = ino_new;
+  if (ctx && ctx->c_open_cnt)
+    __atomic_add_fetch(&ctx->c_open_cnt[ino_new], 1u, __ATOMIC_RELAXED);
   return 0;
 }
 
@@ -2218,7 +2224,10 @@ static int kafs_op_unlink(const char *path)
 
   // Decrement link count under target inode lock (keep dir lock hold time short)
   kafs_inode_lock(ctx, (uint32_t)removed_ino);
-  (void)kafs_ino_linkcnt_decr(&ctx->c_inotbl[removed_ino]);
+  kafs_sinode_t *t = &ctx->c_inotbl[removed_ino];
+  kafs_linkcnt_t nl = kafs_ino_linkcnt_decr(t);
+  if (nl == 0)
+    kafs_ino_dtime_set(t, kafs_now());
   kafs_inode_unlock(ctx, (uint32_t)removed_ino);
 
   kafs_journal_commit(ctx, jseq);
@@ -2459,6 +2468,34 @@ static int kafs_op_fsyncdir(const char *path, int isdatasync, struct fuse_file_i
 
 static int kafs_op_release(const char *path, struct fuse_file_info *fi)
 {
+  struct fuse_context *fctx = fuse_get_context();
+  struct kafs_context *ctx = fctx ? fctx->private_data : NULL;
+  kafs_inocnt_t ino = fi->fh;
+  int reclaimed = 0;
+  if (ctx && ctx->c_open_cnt)
+  {
+    uint32_t after = __atomic_sub_fetch(&ctx->c_open_cnt[ino], 1u, __ATOMIC_RELAXED);
+    if (after == 0)
+    {
+      kafs_inode_lock(ctx, (uint32_t)ino);
+      kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+      if (kafs_ino_get_usage(inoent) && kafs_ino_linkcnt_get(inoent) == 0)
+      {
+        (void)kafs_truncate(ctx, inoent, 0);
+        memset(inoent, 0, sizeof(*inoent));
+        reclaimed = 1;
+      }
+      kafs_inode_unlock(ctx, (uint32_t)ino);
+
+      if (reclaimed)
+      {
+        kafs_inode_alloc_lock(ctx);
+        (void)kafs_sb_inocnt_free_incr(ctx->c_superblock);
+        kafs_sb_wtime_set(ctx->c_superblock, kafs_now());
+        kafs_inode_alloc_unlock(ctx);
+      }
+    }
+  }
   return kafs_op_flush(path, fi);
 }
 
