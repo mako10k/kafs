@@ -29,5 +29,6 @@ jobs:
         run: make -j2
 
       # FUSE tests can hang/require privileges in CI, so only build under TSan here.
+      # hrl_smoketest is built under src/ by automake.
       - name: Smoke run (no FUSE)
         run: ./src/hrl_smoketest
