@@ -2534,7 +2534,7 @@ static void usage(const char *prog)
           "Usage: %s [--image <image>|--image=<image>] <mountpoint> [FUSE options...]\n"
           "       %s <image> <mountpoint> [FUSE options...] (mount helper compatible)\n"
           "       env KAFS_IMAGE can be used as fallback image path.\n"
-          "       default runs multithreaded; pass -s or set env KAFS_MT=0 for single-thread.\n"
+          "       default runs single-threaded; set env KAFS_MT=1 for multithread.\n"
           "Examples:\n"
           "  %s --image test.img mnt -f\n",
           prog, prog, prog);
@@ -2731,10 +2731,9 @@ int main(int argc, char **argv)
     exit(2);
   }
 
-  // 既定はマルチスレッド。-s 指定時は単一スレッド。
-  // (環境 KAFS_MT=0 で明示的に単一スレッドへ落とす)
+  // Raspi/低リソース前提: 既定は単一スレッド。KAFS_MT=1 でマルチスレッド。
   const char *mt = getenv("KAFS_MT");
-  kafs_bool_t enable_mt = (mt && strcmp(mt, "0") == 0) ? KAFS_FALSE : KAFS_TRUE;
+  kafs_bool_t enable_mt = (mt && strcmp(mt, "1") == 0) ? KAFS_TRUE : KAFS_FALSE;
   int saw_single = 0;
   for (int i = 0; i < argc_clean; ++i)
   {
@@ -2749,6 +2748,7 @@ int main(int argc, char **argv)
   for (int i = 0; i < argc_clean; ++i)
     argv_fuse[i] = argv_clean[i];
   int argc_fuse = argc_clean;
+  // default single-threaded: always add -s unless MT explicitly enabled.
   if (!enable_mt && !saw_single)
   {
     argv_fuse[argc_fuse++] = "-s";
@@ -2766,7 +2766,7 @@ int main(int argc, char **argv)
   char mt_opt_buf[64];
   if (enable_mt)
   {
-    unsigned mt_cnt = 16; // デフォルト
+    unsigned mt_cnt = 8; // Raspi向けデフォルト
     const char *mt_env = getenv("KAFS_MAX_THREADS");
     if (mt_env && *mt_env)
     {

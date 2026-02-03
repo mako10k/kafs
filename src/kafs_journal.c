@@ -379,9 +379,9 @@ int kafs_journal_init(struct kafs_context *ctx, const char *image_path)
     g_state.j.data_off = joff + hsz;
     g_state.j.area_size = jsize > hsz ? (jsize - hsz) : 0;
     g_state.j.base_ptr = (char *)ctx->c_superblock + joff;
-    // group commit window (ns) from env KAFS_JOURNAL_GC_NS; default 2000000ns (2ms)
+    // group commit window (ns) from env KAFS_JOURNAL_GC_NS; default 10000000ns (10ms)
     const char *gc = getenv("KAFS_JOURNAL_GC_NS");
-    g_state.j.gc_delay_ns = gc ? strtoull(gc, NULL, 0) : 2000000ull;
+    g_state.j.gc_delay_ns = gc ? strtoull(gc, NULL, 0) : 10000000ull;
     g_state.j.gc_last_ns = 0;
     g_state.j.gc_pending = 0;
     // initialize or load header
