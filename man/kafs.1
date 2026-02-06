@@ -17,6 +17,18 @@ kafs \- FUSE-based KAFS filesystem
 .B kafs
 mounts a KAFS filesystem image via FUSE.
 An embedded journal region is used when present. Sidecar journals are not supported.
+.SH OPTIONS
+.TP
+.BR "-o multi_thread" "[=N]"
+Enable FUSE multi-thread mode and set the worker thread count.
+This is translated to the FUSE option
+.BR max_threads= .
+Aliases:
+.BR multi-thread
+and
+.BR multithread .
+If N is omitted, a default is chosen (currently 8) or can be set via
+.BR KAFS_MAX_THREADS .
 .SH ENVIRONMENT
 .TP
 .B KAFS_IMAGE
@@ -24,6 +36,13 @@ Fallback path to image when --image is not specified.
 .TP
 .B KAFS_JOURNAL
 Set to 0 to disable journal even if present.
+.TP
+.B KAFS_MT
+Set to 1 to enable FUSE multi-thread mode (same effect as
+.BR "-o multi_thread" ).
+.TP
+.B KAFS_MAX_THREADS
+Default thread count used when multi-thread mode is enabled and N is not specified.
 .TP
 .B KAFS_JOURNAL_GC_NS
 Group commit window in nanoseconds (default 10000000ns).

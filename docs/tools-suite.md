@@ -6,7 +6,7 @@
 
 - 実行バイナリ
   - `kafs`（FUSE3 ベースのファイルシステム本体）
-    - フォアグラウンド実行が前提。`KAFS_MT` 環境変数で FUSE マルチスレッド切り替え。
+    - フォアグラウンド実行が前提。FUSE マルチスレッドは `-o multi_thread[=N]` または `KAFS_MT=1` で切り替え。
     - ジャーナル: 画像内リングバッファ（v2）を使用。ヘッダ/レコードとも CRC32 付き。
     - グループコミット: 既定 10ms 窓。`KAFS_JOURNAL_GC_NS` で調整（0=即時 fsync）。
     - サイドカー（外部ファイル）廃止。画像内ジャーナルが無い場合は無効化。
@@ -65,7 +65,7 @@
   - `-J, --journal-size-bytes J` ジャーナル領域サイズ（既定 1MiB、最小 4KiB）
 - `kafs`（または `mount.kafs`）
   - `-f` フォアグラウンド、`-o allow_other,ro,...` FUSE オプション。
-  - 環境変数: `KAFS_MT`、`KAFS_JOURNAL_GC_NS`。
+  - 環境変数: `KAFS_MT`、`KAFS_MAX_THREADS`、`KAFS_JOURNAL_GC_NS`。
 - `fsck.kafs`
   - `--check-only` / `--auto-repair` / `--journal-only` / `-v` 詳細出力。
 - `kafs-journalctl`

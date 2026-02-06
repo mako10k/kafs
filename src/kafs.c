@@ -2534,10 +2534,12 @@ static void usage(const char *prog)
           "Usage: %s [--image <image>|--image=<image>] <mountpoint> [FUSE options...]\n"
           "       %s <image> <mountpoint> [FUSE options...] (mount helper compatible)\n"
           "       env KAFS_IMAGE can be used as fallback image path.\n"
-          "       default runs single-threaded; set env KAFS_MT=1 for multithread.\n"
+          "       default runs single-threaded; enable MT via -o multi_thread[=N] or env KAFS_MT=1.\n"
+          "       MT thread count can be set via -o multi_thread=N (preferred) or env KAFS_MAX_THREADS.\n"
           "Examples:\n"
-          "  %s --image test.img mnt -f\n",
-          prog, prog, prog);
+          "  %s --image test.img mnt -f\n"
+          "  %s --image test.img mnt -f -o multi_thread=8\n",
+          prog, prog, prog, prog);
 }
 
 static void kafs_signal_handler(int sig)
@@ -2623,6 +2625,157 @@ int main(int argc, char **argv)
   {
     usage(argv[0]);
     return 2;
+  }
+
+  // Raspi/低リソース前提: 既定は単一スレッド。MT は -o multi_thread[=N] か KAFS_MT=1 で有効化。
+  const char *mt = getenv("KAFS_MT");
+  kafs_bool_t enable_mt = (mt && strcmp(mt, "1") == 0) ? KAFS_TRUE : KAFS_FALSE;
+  unsigned mt_cnt_override = 0;
+  int mt_cnt_override_set = 0;
+  int saw_max_threads = 0;
+
+  // Custom -o option: multi_thread[=N] (alias: multi-thread, multithread).
+  // Strip it from argv before passing to libfuse, and translate to max_threads=.
+  {
+    char *argv_user[argc_clean];
+    int argc_user = 0;
+    char *o_owned[argc_clean];
+    int o_owned_cnt = 0;
+
+    for (int i = 0; i < argc_clean; ++i)
+    {
+      const char *a = argv_clean[i];
+      const char *oval = NULL;
+      int is_compact = 0;
+      if (strcmp(a, "-o") == 0)
+      {
+        if (i + 1 < argc_clean)
+          oval = argv_clean[++i];
+        else
+        {
+          argv_user[argc_user++] = argv_clean[i];
+          continue;
+        }
+      }
+      else if (strncmp(a, "-o", 2) == 0 && a[2] != '\0')
+      {
+        oval = a + 2;
+        is_compact = 1;
+      }
+
+      if (oval)
+      {
+        char *dup = strdup(oval);
+        if (!dup)
+        {
+          perror("strdup");
+          return 2;
+        }
+        char filtered[strlen(oval) + 1];
+        filtered[0] = '\0';
+        size_t used = 0;
+        int want_mt = 0;
+
+        char *saveptr = NULL;
+        for (char *tok = strtok_r(dup, ",", &saveptr); tok; tok = strtok_r(NULL, ",", &saveptr))
+        {
+          if (strncmp(tok, "max_threads=", 12) == 0 || strcmp(tok, "max_threads") == 0)
+            saw_max_threads = 1;
+
+          if (strcmp(tok, "multi_thread") == 0 || strcmp(tok, "multi-thread") == 0 || strcmp(tok, "multithread") == 0)
+          {
+            want_mt = 1;
+            continue;
+          }
+
+          const char *vstr = NULL;
+          if (strncmp(tok, "multi_thread=", 13) == 0)
+            vstr = tok + 13;
+          else if (strncmp(tok, "multi-thread=", 13) == 0)
+            vstr = tok + 13;
+          else if (strncmp(tok, "multithread=", 12) == 0)
+            vstr = tok + 12;
+
+          if (vstr)
+          {
+            char *endp = NULL;
+            unsigned long v = strtoul(vstr, &endp, 10);
+            if (!endp || *endp != '\0')
+            {
+              fprintf(stderr, "invalid -o multi_thread=N: '%s'\n", vstr);
+              free(dup);
+              return 2;
+            }
+            if (v < 1)
+              v = 1;
+            if (v > 100000)
+              v = 100000;
+            mt_cnt_override = (unsigned)v;
+            mt_cnt_override_set = 1;
+            want_mt = 1;
+            continue;
+          }
+
+          // keep other options
+          size_t tlen = strlen(tok);
+          size_t need = tlen + (used ? 1 : 0);
+          if (need)
+          {
+            if (used)
+              filtered[used++] = ',';
+            memcpy(filtered + used, tok, tlen);
+            used += tlen;
+            filtered[used] = '\0';
+          }
+        }
+
+        free(dup);
+        if (want_mt)
+          enable_mt = KAFS_TRUE;
+
+        if (filtered[0] != '\0')
+        {
+          char *kept = NULL;
+          if (is_compact)
+          {
+            kept = (char *)malloc(strlen(filtered) + 3);
+            if (!kept)
+            {
+              perror("malloc");
+              return 2;
+            }
+            kept[0] = '-';
+            kept[1] = 'o';
+            strcpy(kept + 2, filtered);
+            argv_user[argc_user++] = kept;
+          }
+          else
+          {
+            kept = strdup(filtered);
+            if (!kept)
+            {
+              perror("strdup");
+              return 2;
+            }
+            argv_user[argc_user++] = "-o";
+            argv_user[argc_user++] = kept;
+          }
+          o_owned[o_owned_cnt++] = kept;
+        }
+        continue;
+      }
+
+      argv_user[argc_user++] = argv_clean[i];
+    }
+
+    // Copy back filtered argv
+    argc_clean = argc_user;
+    for (int i = 0; i < argc_clean; ++i)
+      argv_clean[i] = argv_user[i];
+
+    // Note: o_owned is intentionally not freed here; argv_clean references it.
+    (void)o_owned;
+    (void)o_owned_cnt;
   }
 
   static kafs_context_t ctx;
@@ -2731,9 +2884,6 @@ int main(int argc, char **argv)
     exit(2);
   }
 
-  // Raspi/低リソース前提: 既定は単一スレッド。KAFS_MT=1 でマルチスレッド。
-  const char *mt = getenv("KAFS_MT");
-  kafs_bool_t enable_mt = (mt && strcmp(mt, "1") == 0) ? KAFS_TRUE : KAFS_FALSE;
   int saw_single = 0;
   for (int i = 0; i < argc_clean; ++i)
   {
@@ -2764,21 +2914,28 @@ int main(int argc, char **argv)
   }
   // MT有効時は max_threads を明示（libfuseの既定/奇妙な値を避ける）
   char mt_opt_buf[64];
-  if (enable_mt)
+  if (enable_mt && !saw_max_threads)
   {
     unsigned mt_cnt = 8; // Raspi向けデフォルト
-    const char *mt_env = getenv("KAFS_MAX_THREADS");
-    if (mt_env && *mt_env)
+    if (mt_cnt_override_set)
     {
-      char *endp = NULL;
-      unsigned long v = strtoul(mt_env, &endp, 10);
-      if (endp && *endp == '\0')
-        mt_cnt = (unsigned)v;
+      mt_cnt = mt_cnt_override;
     }
-    if (mt_cnt < 1)
-      mt_cnt = 1;
-    if (mt_cnt > 100000)
-      mt_cnt = 100000;
+    else
+    {
+      const char *mt_env = getenv("KAFS_MAX_THREADS");
+      if (mt_env && *mt_env)
+      {
+        char *endp = NULL;
+        unsigned long v = strtoul(mt_env, &endp, 10);
+        if (endp && *endp == '\0')
+          mt_cnt = (unsigned)v;
+      }
+      if (mt_cnt < 1)
+        mt_cnt = 1;
+      if (mt_cnt > 100000)
+        mt_cnt = 100000;
+    }
     // 安全のため -o と値を分けて渡す（-omax_threads= 形式のパース差異を回避）
     snprintf(mt_opt_buf, sizeof(mt_opt_buf), "max_threads=%u", mt_cnt);
     argv_fuse[argc_fuse++] = "-o";
