@@ -74,8 +74,13 @@ static void usage(const char *prog)
           "  %s mv <mountpoint> <src> <dst>\n"
           "  %s rm <mountpoint> <path>\n"
           "  %s mkdir <mountpoint> <path>\n"
-          "  %s rmdir <mountpoint> <path>\n",
-          prog, prog, prog, prog, prog, prog);
+          "  %s rmdir <mountpoint> <path>\n"
+          "  %s ln <mountpoint> <src> <dst>\n"
+          "  %s symlink <mountpoint> <target> <linkpath>\n"
+          "  %s readlink <mountpoint> <path>\n"
+          "  %s chmod <mountpoint> <octal_mode> <path>\n"
+          "  %s touch <mountpoint> <path>\n",
+          prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 static int path_has_dotdot_component(const char *p)
@@ -409,6 +414,212 @@ static int cmd_mv(const char *mnt, const char *src, const char *dst)
   return 0;
 }
 
+static int cmd_ln(const char *mnt, const char *src, const char *dst)
+{
+  char mabs[KAFS_IOCTL_PATH_MAX];
+  const char *mnt_abs = mnt;
+  if (realpath(mnt, mabs) != NULL)
+    mnt_abs = mabs;
+
+  int dfd = open(mnt, O_RDONLY | O_DIRECTORY);
+  if (dfd < 0)
+  {
+    perror("open");
+    return 1;
+  }
+
+  char srel[KAFS_IOCTL_PATH_MAX];
+  char drel[KAFS_IOCTL_PATH_MAX];
+  const char *s = to_mount_rel_path(mnt_abs, src, srel);
+  const char *d = to_mount_rel_path(mnt_abs, dst, drel);
+  if (!s || !d)
+  {
+    fprintf(stderr, "invalid path\n");
+    close(dfd);
+    return 2;
+  }
+
+  if (linkat(dfd, s, dfd, d, 0) != 0)
+  {
+    perror("linkat");
+    close(dfd);
+    return 1;
+  }
+
+  close(dfd);
+  return 0;
+}
+
+static int cmd_symlink(const char *mnt, const char *target, const char *linkpath)
+{
+  char mabs[KAFS_IOCTL_PATH_MAX];
+  const char *mnt_abs = mnt;
+  if (realpath(mnt, mabs) != NULL)
+    mnt_abs = mabs;
+
+  int dfd = open(mnt, O_RDONLY | O_DIRECTORY);
+  if (dfd < 0)
+  {
+    perror("open");
+    return 1;
+  }
+
+  char lrel[KAFS_IOCTL_PATH_MAX];
+  const char *l = to_mount_rel_path(mnt_abs, linkpath, lrel);
+  if (!l)
+  {
+    fprintf(stderr, "invalid path\n");
+    close(dfd);
+    return 2;
+  }
+
+  if (symlinkat(target, dfd, l) != 0)
+  {
+    perror("symlinkat");
+    close(dfd);
+    return 1;
+  }
+
+  close(dfd);
+  return 0;
+}
+
+static int cmd_readlink(const char *mnt, const char *path)
+{
+  char mabs[KAFS_IOCTL_PATH_MAX];
+  const char *mnt_abs = mnt;
+  if (realpath(mnt, mabs) != NULL)
+    mnt_abs = mabs;
+
+  int dfd = open(mnt, O_RDONLY | O_DIRECTORY);
+  if (dfd < 0)
+  {
+    perror("open");
+    return 1;
+  }
+
+  char rel[KAFS_IOCTL_PATH_MAX];
+  const char *p = to_mount_rel_path(mnt_abs, path, rel);
+  if (!p)
+  {
+    fprintf(stderr, "invalid path\n");
+    close(dfd);
+    return 2;
+  }
+
+  char buf[KAFS_IOCTL_PATH_MAX];
+  ssize_t n = readlinkat(dfd, p, buf, sizeof(buf) - 1);
+  if (n < 0)
+  {
+    perror("readlinkat");
+    close(dfd);
+    return 1;
+  }
+  buf[n] = '\0';
+  printf("%s\n", buf);
+
+  close(dfd);
+  return 0;
+}
+
+static int parse_octal_mode(const char *s, mode_t *out)
+{
+  if (!s || !*s || !out)
+    return -EINVAL;
+  char *end = NULL;
+  errno = 0;
+  long v = strtol(s, &end, 8);
+  if (errno != 0 || !end || *end != '\0' || v < 0)
+    return -EINVAL;
+  *out = (mode_t)(v & 07777);
+  return 0;
+}
+
+static int cmd_chmod(const char *mnt, const char *mode_str, const char *path)
+{
+  mode_t mode;
+  if (parse_octal_mode(mode_str, &mode) != 0)
+  {
+    fprintf(stderr, "invalid mode\n");
+    return 2;
+  }
+
+  char mabs[KAFS_IOCTL_PATH_MAX];
+  const char *mnt_abs = mnt;
+  if (realpath(mnt, mabs) != NULL)
+    mnt_abs = mabs;
+
+  int dfd = open(mnt, O_RDONLY | O_DIRECTORY);
+  if (dfd < 0)
+  {
+    perror("open");
+    return 1;
+  }
+
+  char rel[KAFS_IOCTL_PATH_MAX];
+  const char *p = to_mount_rel_path(mnt_abs, path, rel);
+  if (!p)
+  {
+    fprintf(stderr, "invalid path\n");
+    close(dfd);
+    return 2;
+  }
+
+  if (fchmodat(dfd, p, mode, 0) != 0)
+  {
+    perror("fchmodat");
+    close(dfd);
+    return 1;
+  }
+
+  close(dfd);
+  return 0;
+}
+
+static int cmd_touch(const char *mnt, const char *path)
+{
+  char mabs[KAFS_IOCTL_PATH_MAX];
+  const char *mnt_abs = mnt;
+  if (realpath(mnt, mabs) != NULL)
+    mnt_abs = mabs;
+
+  int dfd = open(mnt, O_RDONLY | O_DIRECTORY);
+  if (dfd < 0)
+  {
+    perror("open");
+    return 1;
+  }
+
+  char rel[KAFS_IOCTL_PATH_MAX];
+  const char *p = to_mount_rel_path(mnt_abs, path, rel);
+  if (!p)
+  {
+    fprintf(stderr, "invalid path\n");
+    close(dfd);
+    return 2;
+  }
+
+  int fd = openat(dfd, p, O_CREAT | O_WRONLY, 0644);
+  if (fd >= 0)
+    close(fd);
+  else if (errno != EISDIR)
+  {
+    perror("openat");
+    close(dfd);
+    return 1;
+  }
+
+  if (utimensat(dfd, p, NULL, 0) != 0)
+  {
+    perror("utimensat");
+    close(dfd);
+    return 1;
+  }
+
+  close(dfd);
+  return 0;
+}
+
 int main(int argc, char **argv)
 {
   if (argc < 3)
@@ -499,6 +710,56 @@ int main(int argc, char **argv)
       return 2;
     }
     return cmd_rmdir(argv[2], argv[3]);
+  }
+
+  if (strcmp(argv[1], "ln") == 0)
+  {
+    if (argc != 5)
+    {
+      usage(argv[0]);
+      return 2;
+    }
+    return cmd_ln(argv[2], argv[3], argv[4]);
+  }
+
+  if (strcmp(argv[1], "symlink") == 0)
+  {
+    if (argc != 5)
+    {
+      usage(argv[0]);
+      return 2;
+    }
+    return cmd_symlink(argv[2], argv[3], argv[4]);
+  }
+
+  if (strcmp(argv[1], "readlink") == 0)
+  {
+    if (argc != 4)
+    {
+      usage(argv[0]);
+      return 2;
+    }
+    return cmd_readlink(argv[2], argv[3]);
+  }
+
+  if (strcmp(argv[1], "chmod") == 0)
+  {
+    if (argc != 5)
+    {
+      usage(argv[0]);
+      return 2;
+    }
+    return cmd_chmod(argv[2], argv[3], argv[4]);
+  }
+
+  if (strcmp(argv[1], "touch") == 0)
+  {
+    if (argc != 4)
+    {
+      usage(argv[0]);
+      return 2;
+    }
+    return cmd_touch(argv[2], argv[3]);
   }
 
   usage(argv[0]);
