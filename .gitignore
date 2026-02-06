@@ -89,3 +89,4 @@ minisrv.log
 /src/prune_indirect_double
 /src/prune_indirect_triple
 /src/truncate_prune
+/src/reflink_clone
