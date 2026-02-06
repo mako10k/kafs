@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <limits.h>
 #include <sys/stat.h>
+#include <time.h>
 
 typedef enum
 {
@@ -69,7 +70,10 @@ static void usage(const char *prog)
 {
   fprintf(stderr,
           "Usage:\n"
-          "  %s stats <mountpoint> [--json] [--bytes|--mib|--gib]\n"
+          "  %s fsstat <mountpoint> [--json] [--bytes|--mib|--gib]   (alias: stats)\n"
+          "  %s stat <mountpoint> <path>\n"
+          "  %s cat <mountpoint> <path>\n"
+          "  %s write <mountpoint> <path>   (stdin -> file, trunc)\n"
           "  %s cp <mountpoint> <src> <dst> [--reflink]\n"
           "  %s mv <mountpoint> <src> <dst>\n"
           "  %s rm <mountpoint> <path>\n"
@@ -80,7 +84,7 @@ static void usage(const char *prog)
           "  %s readlink <mountpoint> <path>\n"
           "  %s chmod <mountpoint> <octal_mode> <path>\n"
           "  %s touch <mountpoint> <path>\n",
-          prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
+          prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 static int path_has_dotdot_component(const char *p)
@@ -207,7 +211,7 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
     return 0;
   }
 
-  printf("kafs stats v%" PRIu32 "\n", st.version);
+  printf("kafs fsstat v%" PRIu32 "\n", st.version);
   printf("  blksize: ");
   print_bytes(st.blksize, unit);
   printf("\n");
@@ -234,6 +238,229 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
          " hit_rate=%.3f\n",
          st.hrl_put_calls, st.hrl_put_hits, st.hrl_put_misses, st.hrl_put_fallback_legacy,
          hit_rate);
+  return 0;
+}
+
+static void fmt_time(char out[64], const struct timespec *ts)
+{
+  if (!out)
+    return;
+  if (!ts)
+  {
+    out[0] = '\0';
+    return;
+  }
+  time_t t = ts->tv_sec;
+  struct tm tm;
+  if (localtime_r(&t, &tm) == NULL)
+  {
+    snprintf(out, 64, "%lld", (long long)ts->tv_sec);
+    return;
+  }
+  strftime(out, 64, "%Y-%m-%d %H:%M:%S", &tm);
+}
+
+static int cmd_stat(const char *mnt, const char *path)
+{
+  char mabs[KAFS_IOCTL_PATH_MAX];
+  const char *mnt_abs = mnt;
+  if (realpath(mnt, mabs) != NULL)
+    mnt_abs = mabs;
+
+  int dfd = open(mnt, O_RDONLY | O_DIRECTORY);
+  if (dfd < 0)
+  {
+    perror("open");
+    return 1;
+  }
+
+  char rel[KAFS_IOCTL_PATH_MAX];
+  const char *p = to_mount_rel_path(mnt_abs, path, rel);
+  if (!p)
+  {
+    fprintf(stderr, "invalid path\n");
+    close(dfd);
+    return 2;
+  }
+
+  struct stat st;
+  if (fstatat(dfd, p, &st, AT_SYMLINK_NOFOLLOW) != 0)
+  {
+    perror("fstatat");
+    close(dfd);
+    return 1;
+  }
+
+  const char *t = "unknown";
+  if (S_ISREG(st.st_mode))
+    t = "file";
+  else if (S_ISDIR(st.st_mode))
+    t = "dir";
+  else if (S_ISLNK(st.st_mode))
+    t = "symlink";
+  else if (S_ISCHR(st.st_mode))
+    t = "char";
+  else if (S_ISBLK(st.st_mode))
+    t = "block";
+  else if (S_ISFIFO(st.st_mode))
+    t = "fifo";
+  else if (S_ISSOCK(st.st_mode))
+    t = "sock";
+
+  char at[64], mt[64], ct[64];
+#if defined(__APPLE__)
+  (void)at;
+  (void)mt;
+  (void)ct;
+#else
+  fmt_time(at, &st.st_atim);
+  fmt_time(mt, &st.st_mtim);
+  fmt_time(ct, &st.st_ctim);
+#endif
+
+  printf("path: %s\n", path);
+  printf("type: %s\n", t);
+  printf("mode: %04o\n", (unsigned int)(st.st_mode & 07777));
+  printf("uid: %u\n", (unsigned int)st.st_uid);
+  printf("gid: %u\n", (unsigned int)st.st_gid);
+  printf("size: %lld\n", (long long)st.st_size);
+  printf("nlink: %llu\n", (unsigned long long)st.st_nlink);
+  printf("ino: %llu\n", (unsigned long long)st.st_ino);
+#if !defined(__APPLE__)
+  printf("atime: %s\n", at);
+  printf("mtime: %s\n", mt);
+  printf("ctime: %s\n", ct);
+#endif
+
+  close(dfd);
+  return 0;
+}
+
+static int cmd_cat(const char *mnt, const char *path)
+{
+  char mabs[KAFS_IOCTL_PATH_MAX];
+  const char *mnt_abs = mnt;
+  if (realpath(mnt, mabs) != NULL)
+    mnt_abs = mabs;
+
+  int dfd = open(mnt, O_RDONLY | O_DIRECTORY);
+  if (dfd < 0)
+  {
+    perror("open");
+    return 1;
+  }
+
+  char rel[KAFS_IOCTL_PATH_MAX];
+  const char *p = to_mount_rel_path(mnt_abs, path, rel);
+  if (!p)
+  {
+    fprintf(stderr, "invalid path\n");
+    close(dfd);
+    return 2;
+  }
+
+  int fd = openat(dfd, p, O_RDONLY);
+  if (fd < 0)
+  {
+    perror("openat");
+    close(dfd);
+    return 1;
+  }
+
+  char buf[64 * 1024];
+  while (1)
+  {
+    ssize_t r = read(fd, buf, sizeof(buf));
+    if (r < 0)
+    {
+      perror("read");
+      close(fd);
+      close(dfd);
+      return 1;
+    }
+    if (r == 0)
+      break;
+    ssize_t off = 0;
+    while (off < r)
+    {
+      ssize_t w = write(STDOUT_FILENO, buf + off, (size_t)(r - off));
+      if (w < 0)
+      {
+        perror("write");
+        close(fd);
+        close(dfd);
+        return 1;
+      }
+      off += w;
+    }
+  }
+
+  close(fd);
+  close(dfd);
+  return 0;
+}
+
+static int cmd_write(const char *mnt, const char *path)
+{
+  char mabs[KAFS_IOCTL_PATH_MAX];
+  const char *mnt_abs = mnt;
+  if (realpath(mnt, mabs) != NULL)
+    mnt_abs = mabs;
+
+  int dfd = open(mnt, O_RDONLY | O_DIRECTORY);
+  if (dfd < 0)
+  {
+    perror("open");
+    return 1;
+  }
+
+  char rel[KAFS_IOCTL_PATH_MAX];
+  const char *p = to_mount_rel_path(mnt_abs, path, rel);
+  if (!p)
+  {
+    fprintf(stderr, "invalid path\n");
+    close(dfd);
+    return 2;
+  }
+
+  int fd = openat(dfd, p, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+  if (fd < 0)
+  {
+    perror("openat");
+    close(dfd);
+    return 1;
+  }
+
+  char buf[64 * 1024];
+  while (1)
+  {
+    ssize_t r = read(STDIN_FILENO, buf, sizeof(buf));
+    if (r < 0)
+    {
+      perror("read(stdin)");
+      close(fd);
+      close(dfd);
+      return 1;
+    }
+    if (r == 0)
+      break;
+    ssize_t off = 0;
+    while (off < r)
+    {
+      ssize_t w = write(fd, buf + off, (size_t)(r - off));
+      if (w < 0)
+      {
+        perror("write(file)");
+        close(fd);
+        close(dfd);
+        return 1;
+      }
+      off += w;
+    }
+  }
+
+  close(fd);
+  close(dfd);
   return 0;
 }
 
@@ -628,7 +855,7 @@ int main(int argc, char **argv)
     return 2;
   }
 
-  if (strcmp(argv[1], "stats") == 0)
+  if (strcmp(argv[1], "fsstat") == 0 || strcmp(argv[1], "stats") == 0)
   {
     int json = 0;
     kafs_unit_t unit = KAFS_UNIT_KIB;
@@ -649,6 +876,36 @@ int main(int argc, char **argv)
       }
     }
     return cmd_stats(argv[2], json, unit);
+  }
+
+  if (strcmp(argv[1], "stat") == 0)
+  {
+    if (argc != 4)
+    {
+      usage(argv[0]);
+      return 2;
+    }
+    return cmd_stat(argv[2], argv[3]);
+  }
+
+  if (strcmp(argv[1], "cat") == 0)
+  {
+    if (argc != 4)
+    {
+      usage(argv[0]);
+      return 2;
+    }
+    return cmd_cat(argv[2], argv[3]);
+  }
+
+  if (strcmp(argv[1], "write") == 0)
+  {
+    if (argc != 4)
+    {
+      usage(argv[0]);
+      return 2;
+    }
+    return cmd_write(argv[2], argv[3]);
   }
 
   if (strcmp(argv[1], "cp") == 0)
