@@ -6,6 +6,8 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <stdlib.h>
+#include <limits.h>
 
 typedef enum
 {
@@ -64,7 +66,33 @@ static void print_bytes(uint64_t bytes, kafs_unit_t unit)
 
 static void usage(const char *prog)
 {
-  fprintf(stderr, "Usage: %s stats <mountpoint> [--json] [--bytes|--mib|--gib]\n", prog);
+  fprintf(stderr,
+          "Usage:\n"
+          "  %s stats <mountpoint> [--json] [--bytes|--mib|--gib]\n"
+          "  %s cp <mountpoint> <src> <dst> [--reflink]\n",
+          prog, prog);
+}
+
+static const char *to_kafs_path(const char *mnt_abs, const char *p, char out[KAFS_IOCTL_PATH_MAX])
+{
+  if (!p || !*p)
+    return NULL;
+  if (p[0] == '/')
+  {
+    size_t ml = mnt_abs ? strlen(mnt_abs) : 0;
+    if (ml && strncmp(p, mnt_abs, ml) == 0 && (p[ml] == '/' || p[ml] == '\0'))
+    {
+      const char *suf = p + ml;
+      if (*suf == '\0')
+        suf = "/";
+      snprintf(out, KAFS_IOCTL_PATH_MAX, "%s", suf);
+      return out;
+    }
+    snprintf(out, KAFS_IOCTL_PATH_MAX, "%s", p);
+    return out;
+  }
+  snprintf(out, KAFS_IOCTL_PATH_MAX, "/%s", p);
+  return out;
 }
 
 static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
@@ -156,6 +184,48 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
   return 0;
 }
 
+static int cmd_cp(const char *mnt, const char *src, const char *dst, int reflink)
+{
+  char mabs[KAFS_IOCTL_PATH_MAX];
+  const char *mnt_abs = mnt;
+  if (realpath(mnt, mabs) != NULL)
+    mnt_abs = mabs;
+
+  int fd = open(mnt, O_RDONLY | O_DIRECTORY);
+  if (fd < 0)
+  {
+    perror("open");
+    return 1;
+  }
+
+  kafs_ioctl_copy_t req;
+  memset(&req, 0, sizeof(req));
+  req.struct_size = (uint32_t)sizeof(req);
+  req.flags = reflink ? KAFS_IOCTL_COPY_F_REFLINK : 0;
+
+  char srcbuf[KAFS_IOCTL_PATH_MAX];
+  char dstbuf[KAFS_IOCTL_PATH_MAX];
+  const char *s = to_kafs_path(mnt_abs, src, srcbuf);
+  const char *d = to_kafs_path(mnt_abs, dst, dstbuf);
+  if (!s || !d)
+  {
+    fprintf(stderr, "invalid path\n");
+    close(fd);
+    return 2;
+  }
+  snprintf(req.src, sizeof(req.src), "%s", s);
+  snprintf(req.dst, sizeof(req.dst), "%s", d);
+
+  if (ioctl(fd, KAFS_IOCTL_COPY, &req) != 0)
+  {
+    perror("ioctl(KAFS_IOCTL_COPY)");
+    close(fd);
+    return 1;
+  }
+  close(fd);
+  return 0;
+}
+
 int main(int argc, char **argv)
 {
   if (argc < 3)
@@ -163,27 +233,50 @@ int main(int argc, char **argv)
     usage(argv[0]);
     return 2;
   }
-  int json = 0;
-  kafs_unit_t unit = KAFS_UNIT_KIB;
-  for (int i = 3; i < argc; ++i)
+
+  if (strcmp(argv[1], "stats") == 0)
   {
-    if (strcmp(argv[i], "--json") == 0)
-      json = 1;
-    else if (strcmp(argv[i], "--bytes") == 0)
-      unit = KAFS_UNIT_BYTES;
-    else if (strcmp(argv[i], "--mib") == 0)
-      unit = KAFS_UNIT_MIB;
-    else if (strcmp(argv[i], "--gib") == 0)
-      unit = KAFS_UNIT_GIB;
-    else
+    int json = 0;
+    kafs_unit_t unit = KAFS_UNIT_KIB;
+    for (int i = 3; i < argc; ++i)
+    {
+      if (strcmp(argv[i], "--json") == 0)
+        json = 1;
+      else if (strcmp(argv[i], "--bytes") == 0)
+        unit = KAFS_UNIT_BYTES;
+      else if (strcmp(argv[i], "--mib") == 0)
+        unit = KAFS_UNIT_MIB;
+      else if (strcmp(argv[i], "--gib") == 0)
+        unit = KAFS_UNIT_GIB;
+      else
+      {
+        usage(argv[0]);
+        return 2;
+      }
+    }
+    return cmd_stats(argv[2], json, unit);
+  }
+
+  if (strcmp(argv[1], "cp") == 0)
+  {
+    if (argc < 5)
     {
       usage(argv[0]);
       return 2;
     }
+    int reflink = 0;
+    for (int i = 5; i < argc; ++i)
+    {
+      if (strcmp(argv[i], "--reflink") == 0)
+        reflink = 1;
+      else
+      {
+        usage(argv[0]);
+        return 2;
+      }
+    }
+    return cmd_cp(argv[2], argv[3], argv[4], reflink);
   }
-
-  if (strcmp(argv[1], "stats") == 0)
-    return cmd_stats(argv[2], json, unit);
 
   usage(argv[0]);
   return 2;

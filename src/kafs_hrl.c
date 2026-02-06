@@ -368,6 +368,51 @@ int kafs_hrl_write_block(kafs_context_t *ctx, const void *buf, kafs_hrid_t *out_
   return kafs_hrl_put(ctx, buf, out_hrid, out_is_new, &blo);
 }
 
+int kafs_hrl_inc_ref_by_blo(kafs_context_t *ctx, kafs_blkcnt_t blo)
+{
+  if (!ctx || ctx->c_hrl_bucket_cnt == 0 || hrl_capacity(ctx) == 0)
+    return -ENOSYS;
+
+  uint32_t *index = hrl_index_tbl(ctx);
+  kafs_hrl_entry_t *ents = hrl_entries_tbl(ctx);
+  uint32_t cap = hrl_capacity(ctx);
+  uint32_t bcnt = hrl_bucket_count(ctx);
+
+  for (uint32_t b = 0; b < bcnt; ++b)
+  {
+    kafs_hrl_bucket_lock(ctx, b);
+    uint32_t head = index[b];
+    // Guard against corrupted/looping chains: cap iterations.
+    for (uint32_t steps = 0; head != 0 && steps < cap; ++steps)
+    {
+      uint32_t i = head - 1u;
+      if (i >= cap)
+      {
+        kafs_hrl_bucket_unlock(ctx, b);
+        return -EIO;
+      }
+      kafs_hrl_entry_t *e = &ents[i];
+      if (e->refcnt != 0 && e->blo == blo)
+      {
+        if (e->refcnt == 0xFFFFFFFFu)
+        {
+          kafs_hrl_bucket_unlock(ctx, b);
+          return -EOVERFLOW;
+        }
+        e->refcnt += 1u;
+        kafs_hrl_bucket_unlock(ctx, b);
+        return 0;
+      }
+      head = e->next_plus1;
+    }
+    kafs_hrl_bucket_unlock(ctx, b);
+    if (head != 0)
+      return -EIO;
+  }
+
+  return -ENOENT;
+}
+
 int kafs_hrl_dec_ref_by_blo(kafs_context_t *ctx, kafs_blkcnt_t blo)
 {
   if (!ctx || ctx->c_hrl_bucket_cnt == 0 || hrl_capacity(ctx) == 0)

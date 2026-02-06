@@ -24,8 +24,10 @@
 #include <stdlib.h>
 #include <stddef.h>
 #include <signal.h>
+#include <limits.h>
 #ifdef __linux__
 #include <execinfo.h>
+#include <linux/fs.h>
 #endif
 
 #ifdef DEBUG
@@ -1605,6 +1607,10 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
 
 #define KAFS_STATS_VERSION 1u
 
+// Forward decl (used by ioctl implementation)
+static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_inocnt_t *pino_dir,
+                       kafs_inocnt_t *pino_new);
+
 static inline kafs_hrl_entry_t *kafs_hrl_entries_tbl(kafs_context_t *ctx)
 {
   uintptr_t base = (uintptr_t)ctx->c_superblock;
@@ -1657,15 +1663,223 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
   out->hrl_put_fallback_legacy = ctx->c_stat_hrl_put_fallback_legacy;
 }
 
+#ifdef __linux__
+static int kafs_procfd_to_kafs_path(kafs_context_t *ctx, pid_t pid, int fd, char out[PATH_MAX])
+{
+  if (!ctx || !ctx->c_mountpoint)
+    return -EINVAL;
+  char proc[64];
+  snprintf(proc, sizeof(proc), "/proc/%d/fd/%d", (int)pid, fd);
+  ssize_t n = readlink(proc, out, PATH_MAX - 1);
+  if (n < 0)
+    return -errno;
+  out[n] = '\0';
+
+  // trim " (deleted)" suffix when present
+  char *del = strstr(out, " (deleted)");
+  if (del)
+    *del = '\0';
+
+  const char *mnt = ctx->c_mountpoint;
+  size_t ml = strlen(mnt);
+  if (ml > 1 && mnt[ml - 1] == '/')
+    ml--;
+  if (strncmp(out, mnt, ml) != 0 || (out[ml] != '/' && out[ml] != '\0'))
+    return -EXDEV;
+  const char *suf = out + ml;
+  if (*suf == '\0')
+    suf = "/";
+  memmove(out, suf, strlen(suf) + 1);
+  return 0;
+}
+#endif
+
+static int kafs_reflink_clone(kafs_context_t *ctx, kafs_sinode_t *src, kafs_sinode_t *dst)
+{
+  if (!ctx || !src || !dst)
+    return -EINVAL;
+  if (src == dst)
+    return 0;
+  if (ctx->c_hrl_bucket_cnt == 0)
+    return -EOPNOTSUPP;
+
+  kafs_mode_t sm = kafs_ino_mode_get(src);
+  kafs_mode_t dm = kafs_ino_mode_get(dst);
+  if (!S_ISREG(sm) || !S_ISREG(dm))
+    return -EINVAL;
+
+  kafs_off_t size;
+  char inline_buf[KAFS_DIRECT_SIZE];
+  int is_inline = 0;
+
+  uint32_t ino_src = (uint32_t)(src - ctx->c_inotbl);
+  kafs_inode_lock(ctx, ino_src);
+  size = kafs_ino_size_get(src);
+  if (size <= (kafs_off_t)KAFS_DIRECT_SIZE)
+  {
+    memcpy(inline_buf, (void *)src->i_blkreftbl, (size_t)size);
+    is_inline = 1;
+  }
+
+  kafs_blkcnt_t *blos = NULL;
+  kafs_iblkcnt_t iblocnt = 0;
+  if (!is_inline)
+  {
+    kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
+    iblocnt = (kafs_iblkcnt_t)((size + (kafs_off_t)bs - 1) / (kafs_off_t)bs);
+    blos = (kafs_blkcnt_t *)calloc((size_t)iblocnt ? (size_t)iblocnt : 1u, sizeof(*blos));
+    if (!blos)
+    {
+      kafs_inode_unlock(ctx, ino_src);
+      return -ENOMEM;
+    }
+    for (kafs_iblkcnt_t i = 0; i < iblocnt; ++i)
+    {
+      kafs_blkcnt_t b = KAFS_BLO_NONE;
+      int rc = kafs_ino_ibrk_run(ctx, src, i, &b, KAFS_IBLKREF_FUNC_GET);
+      if (rc < 0)
+      {
+        free(blos);
+        kafs_inode_unlock(ctx, ino_src);
+        return rc;
+      }
+      blos[i] = b;
+    }
+  }
+  kafs_inode_unlock(ctx, ino_src);
+
+  uint32_t ino_dst = (uint32_t)(dst - ctx->c_inotbl);
+  kafs_inode_lock(ctx, ino_dst);
+  int trc = kafs_truncate(ctx, dst, 0);
+  if (trc < 0)
+  {
+    kafs_inode_unlock(ctx, ino_dst);
+    free(blos);
+    return trc;
+  }
+  memset(dst->i_blkreftbl, 0, sizeof(dst->i_blkreftbl));
+
+  if (is_inline)
+  {
+    kafs_ino_size_set(dst, size);
+    memcpy((void *)dst->i_blkreftbl, inline_buf, (size_t)size);
+    kafs_time_t now = kafs_now();
+    kafs_ino_mtime_set(dst, now);
+    kafs_ino_ctime_set(dst, now);
+    kafs_inode_unlock(ctx, ino_dst);
+    return 0;
+  }
+
+  kafs_ino_size_set(dst, size);
+  for (kafs_iblkcnt_t i = 0; i < iblocnt; ++i)
+  {
+    kafs_blkcnt_t b = blos[i];
+    if (b == KAFS_BLO_NONE)
+      continue;
+
+    int irc = kafs_hrl_inc_ref_by_blo(ctx, b);
+    if (irc != 0)
+    {
+      (void)kafs_truncate(ctx, dst, 0);
+      kafs_inode_unlock(ctx, ino_dst);
+      free(blos);
+      return (irc == -ENOENT || irc == -ENOSYS) ? -EOPNOTSUPP : irc;
+    }
+
+    int s = kafs_ino_ibrk_run(ctx, dst, i, &b, KAFS_IBLKREF_FUNC_SET);
+    if (s < 0)
+    {
+      (void)kafs_truncate(ctx, dst, 0);
+      kafs_inode_unlock(ctx, ino_dst);
+      free(blos);
+      (void)kafs_hrl_dec_ref_by_blo(ctx, b);
+      return s;
+    }
+  }
+
+  kafs_time_t now = kafs_now();
+  kafs_ino_mtime_set(dst, now);
+  kafs_ino_ctime_set(dst, now);
+  kafs_inode_unlock(ctx, ino_dst);
+  free(blos);
+  return 0;
+}
+
 static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_info *fi,
                          unsigned int flags, void *data)
 {
-  (void)path;
-  (void)fi;
   (void)flags;
 
   struct fuse_context *fctx = fuse_get_context();
   kafs_context_t *ctx = (kafs_context_t *)fctx->private_data;
+
+#ifdef __linux__
+  if ((unsigned int)cmd == (unsigned int)FICLONE)
+  {
+    int srcfd = -1;
+    if (data)
+    {
+      if (_IOC_SIZE((unsigned int)cmd) < sizeof(int))
+        return -EINVAL;
+      srcfd = *(int *)data;
+    }
+    else
+    {
+      // FICLONE takes an int fd argument (passed as ioctl arg value, not as pointer).
+      srcfd = (int)(uintptr_t)arg;
+    }
+
+    char sp[PATH_MAX];
+    int prc = kafs_procfd_to_kafs_path(ctx, fctx->pid, srcfd, sp);
+    if (prc != 0)
+      return prc;
+
+    kafs_sinode_t *ino_src;
+    kafs_sinode_t *ino_dst;
+    KAFS_CALL(kafs_access, fctx, ctx, sp, NULL, R_OK, &ino_src);
+    KAFS_CALL(kafs_access, fctx, ctx, path, fi, W_OK, &ino_dst);
+    return kafs_reflink_clone(ctx, ino_src, ino_dst);
+  }
+  if ((unsigned int)cmd == (unsigned int)FICLONERANGE)
+    return -EOPNOTSUPP;
+#endif
+
+  if ((unsigned int)cmd == (unsigned int)KAFS_IOCTL_COPY)
+  {
+    void *buf = data ? data : arg;
+    if (!buf)
+      return -EINVAL;
+    if (_IOC_SIZE((unsigned int)cmd) < sizeof(kafs_ioctl_copy_t))
+      return -EINVAL;
+    kafs_ioctl_copy_t req;
+    memcpy(&req, buf, sizeof(req));
+    if (req.struct_size < sizeof(req))
+      return -EINVAL;
+    if ((req.flags & KAFS_IOCTL_COPY_F_REFLINK) == 0)
+      return -EOPNOTSUPP;
+    if (req.src[0] != '/' || req.dst[0] != '/' || req.src[1] == '\0' || req.dst[1] == '\0')
+      return -EINVAL;
+
+    kafs_sinode_t *ino_src;
+    kafs_sinode_t *ino_dst;
+    KAFS_CALL(kafs_access, fctx, ctx, req.src, NULL, R_OK, &ino_src);
+
+    int drc = kafs_access(fctx, ctx, req.dst, NULL, F_OK, &ino_dst);
+    if (drc == -ENOENT)
+    {
+      kafs_inocnt_t ino_new;
+      KAFS_CALL(kafs_create, req.dst, 0644 | S_IFREG, 0, NULL, &ino_new);
+      ino_dst = &ctx->c_inotbl[ino_new];
+    }
+    else
+    {
+      if (drc < 0)
+        return drc;
+      KAFS_CALL(kafs_access, fctx, ctx, req.dst, NULL, W_OK, &ino_dst);
+    }
+
+    return kafs_reflink_clone(ctx, ino_src, ino_dst);
+  }
 
   if ((unsigned int)cmd == (unsigned int)KAFS_IOCTL_GET_STATS)
   {
@@ -1680,6 +1894,107 @@ static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_
     return 0;
   }
   return -ENOTTY;
+}
+
+static ssize_t kafs_op_copy_file_range(const char *path_in, struct fuse_file_info *fi_in,
+                                      off_t offset_in, const char *path_out,
+                                      struct fuse_file_info *fi_out, off_t offset_out,
+                                      size_t size, int flags)
+{
+  struct fuse_context *fctx = fuse_get_context();
+  kafs_context_t *ctx = (kafs_context_t *)fctx->private_data;
+
+  kafs_sinode_t *ino_in = NULL;
+  kafs_sinode_t *ino_out = NULL;
+  if (fi_in)
+    ino_in = &ctx->c_inotbl[fi_in->fh];
+  else
+    KAFS_CALL(kafs_access, fctx, ctx, path_in, NULL, R_OK, &ino_in);
+  if (fi_out)
+    ino_out = &ctx->c_inotbl[fi_out->fh];
+  else
+    KAFS_CALL(kafs_access, fctx, ctx, path_out, NULL, W_OK, &ino_out);
+
+  // Kernel may route ioctl(FICLONE) through copy_file_range with internal flags.
+  if (flags != 0)
+  {
+    kafs_off_t src_size = kafs_ino_size_get(ino_in);
+    if (offset_in != 0 || offset_out != 0 || size < (size_t)src_size)
+      return -EOPNOTSUPP;
+    int rc = kafs_reflink_clone(ctx, ino_in, ino_out);
+    return rc < 0 ? rc : (ssize_t)src_size;
+  }
+
+  // Regular copy_file_range(2)
+  if (size == 0)
+    return 0;
+
+  uint32_t ino_src = (uint32_t)(ino_in - ctx->c_inotbl);
+  uint32_t ino_dst = (uint32_t)(ino_out - ctx->c_inotbl);
+  if (ino_src == ino_dst)
+    return 0;
+
+  if (ino_src < ino_dst)
+  {
+    kafs_inode_lock(ctx, ino_src);
+    kafs_inode_lock(ctx, ino_dst);
+  }
+  else
+  {
+    kafs_inode_lock(ctx, ino_dst);
+    kafs_inode_lock(ctx, ino_src);
+  }
+
+  kafs_off_t src_size = kafs_ino_size_get(ino_in);
+  if ((kafs_off_t)offset_in >= src_size)
+  {
+    kafs_inode_unlock(ctx, ino_src);
+    kafs_inode_unlock(ctx, ino_dst);
+    return 0;
+  }
+
+  kafs_off_t max = src_size - (kafs_off_t)offset_in;
+  if ((kafs_off_t)size < max)
+    max = (kafs_off_t)size;
+
+  const size_t bufsz = 128u * 1024u;
+  char *buf = (char *)malloc(bufsz);
+  if (!buf)
+  {
+    kafs_inode_unlock(ctx, ino_src);
+    kafs_inode_unlock(ctx, ino_dst);
+    return -ENOMEM;
+  }
+
+  kafs_off_t done = 0;
+  while (done < max)
+  {
+    size_t want = (size_t)((max - done) < (kafs_off_t)bufsz ? (max - done) : (kafs_off_t)bufsz);
+    ssize_t r = kafs_pread(ctx, ino_in, buf, (kafs_off_t)want, (kafs_off_t)offset_in + done);
+    if (r < 0)
+    {
+      free(buf);
+      kafs_inode_unlock(ctx, ino_src);
+      kafs_inode_unlock(ctx, ino_dst);
+      return r;
+    }
+    if (r == 0)
+      break;
+    ssize_t w = kafs_pwrite(ctx, ino_out, buf, (kafs_off_t)r, (kafs_off_t)offset_out + done);
+    if (w < 0)
+    {
+      free(buf);
+      kafs_inode_unlock(ctx, ino_src);
+      kafs_inode_unlock(ctx, ino_dst);
+      return w;
+    }
+    done += w;
+  }
+
+  free(buf);
+  kafs_inode_unlock(ctx, ino_src);
+  kafs_inode_unlock(ctx, ino_dst);
+  return (ssize_t)done;
 }
 
 #undef KAFS_STATS_VERSION
@@ -2526,6 +2841,7 @@ static struct fuse_operations kafs_operations = {
     .chown = kafs_op_chown,
     .symlink = kafs_op_symlink,
     .ioctl = kafs_op_ioctl,
+    .copy_file_range = kafs_op_copy_file_range,
 };
 
 static void usage(const char *prog)
@@ -2779,6 +3095,29 @@ int main(int argc, char **argv)
   }
 
   static kafs_context_t ctx;
+  static char mnt_abs[PATH_MAX];
+  // Store mountpoint as an absolute path for /proc fd resolution (FICLONE).
+  if (argv_clean[1] && argv_clean[1][0] == '/')
+  {
+    snprintf(mnt_abs, sizeof(mnt_abs), "%s", argv_clean[1]);
+    ctx.c_mountpoint = mnt_abs;
+  }
+  else
+  {
+    char cwd[PATH_MAX];
+    if (getcwd(cwd, sizeof(cwd)) != NULL && argv_clean[1] && argv_clean[1][0] != '\0')
+    {
+      if ((size_t)snprintf(mnt_abs, sizeof(mnt_abs), "%s/%s", cwd, argv_clean[1]) < sizeof(mnt_abs))
+        ctx.c_mountpoint = mnt_abs;
+      else
+        ctx.c_mountpoint = argv_clean[1];
+    }
+    else
+    {
+      ctx.c_mountpoint = argv_clean[1];
+    }
+  }
+
   ctx.c_fd = open(image_path, O_RDWR, 0666);
   if (ctx.c_fd < 0)
   {

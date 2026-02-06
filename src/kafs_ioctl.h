@@ -37,3 +37,22 @@ struct kafs_stats
 typedef struct kafs_stats kafs_stats_t;
 
 #define KAFS_IOCTL_GET_STATS _IOR(KAFS_IOCTL_MAGIC, 1, struct kafs_stats)
+
+// Path-based copy/reflink via kafsctl ("正統派": no /proc fd resolution).
+// src/dst are KAFS-internal absolute paths (begin with '/').
+#ifndef KAFS_IOCTL_PATH_MAX
+#define KAFS_IOCTL_PATH_MAX 4096
+#endif
+
+struct kafs_ioctl_copy
+{
+  uint32_t struct_size;
+  uint32_t flags;
+  char src[KAFS_IOCTL_PATH_MAX];
+  char dst[KAFS_IOCTL_PATH_MAX];
+};
+
+typedef struct kafs_ioctl_copy kafs_ioctl_copy_t;
+
+#define KAFS_IOCTL_COPY_F_REFLINK 1u
+#define KAFS_IOCTL_COPY _IOW(KAFS_IOCTL_MAGIC, 2, struct kafs_ioctl_copy)

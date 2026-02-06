@@ -44,6 +44,9 @@ struct kafs_context
 
   // --- Runtime inode open counts (in-memory only) ---
   uint32_t *c_open_cnt; // sized to superblock inocnt (allocated at mount)
+
+  // --- Mount context ---
+  const char *c_mountpoint; // mountpoint path (from argv)
 };
 
 // Lock helpers (no-op when locks not enabled in build)

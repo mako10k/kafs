@@ -36,5 +36,8 @@ int kafs_hrl_read_block(kafs_context_t *ctx, kafs_hrid_t hrid, void *out_buf);
 int kafs_hrl_write_block(kafs_context_t *ctx, const void *buf, kafs_hrid_t *out_hrid,
                          int *out_is_new);
 
+// 物理ブロックからの参照追加（HRL管理外なら -ENOENT）
+int kafs_hrl_inc_ref_by_blo(kafs_context_t *ctx, kafs_blkcnt_t blo);
+
 // 物理ブロックからの参照解除（HRL管理外なら直接解放）
 int kafs_hrl_dec_ref_by_blo(kafs_context_t *ctx, kafs_blkcnt_t blo);
