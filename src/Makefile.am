@@ -1,5 +1,5 @@
 AUTOMAKE_OPTIONS = serial-tests
-bin_PROGRAMS = kafs mkfs.kafs fsck.kafs kafs-info kafsctl
+bin_PROGRAMS = kafs mkfs.kafs fsck.kafs kafs-info kafsctl kafs-front kafs-back
 
 # add per-target flags; silence unused-function as headers provide many static helpers
 kafs_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
@@ -26,7 +26,15 @@ kafsctl_SOURCES = kafsctl.c
 kafsctl_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 kafsctl_LDADD = $(KAFS_LIBS)
 
-noinst_HEADERS = kafs_block.h kafs_context.h kafs_dirent.h kafs_inode.h kafs_superblock.h kafs.h kafs_ioctl.h test_utils.h kafs_journal.h
+kafs_front_SOURCES = kafs_front.c kafs_rpc.c
+kafs_front_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+kafs_front_LDADD = $(KAFS_LIBS)
+
+kafs_back_SOURCES = kafs_back.c kafs_rpc.c
+kafs_back_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+kafs_back_LDADD = $(KAFS_LIBS)
+
+noinst_HEADERS = kafs_block.h kafs_context.h kafs_dirent.h kafs_inode.h kafs_superblock.h kafs.h kafs_ioctl.h test_utils.h kafs_journal.h kafs_rpc.h
 
 CFLAGS = -Wall -Werror -g -O0 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -Wno-unused-function -Wno-unused-parameter
 
