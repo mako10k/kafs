@@ -1,6 +1,62 @@
 #pragma once
 #include <stdint.h>
 #include <stdarg.h>
+#include <stddef.h>
+
+// In-image journal format (shared with fsck)
+#define KJ_MAGIC 0x4b414a4c /* 'KAJL' */
+#define KJ_VER 2
+
+typedef struct kj_header
+{
+  uint32_t magic;
+  uint16_t version;
+  uint16_t flags;
+  uint64_t area_size;
+  uint64_t write_off;
+  uint64_t seq;
+  uint64_t reserved0;
+  uint32_t header_crc; // CRC over this struct with this field zeroed
+} __attribute__((packed)) kj_header_t;
+
+#define KJ_TAG_BEG 0x42454732u  /* 'BEG2' */
+#define KJ_TAG_CMT 0x434d5432u  /* 'CMT2' */
+#define KJ_TAG_ABR 0x41425232u  /* 'ABR2' */
+#define KJ_TAG_NOTE 0x4e4f5432u /* 'NOT2' */
+#define KJ_TAG_WRAP 0x57524150u /* 'WRAP' */
+
+typedef struct kj_rec_hdr
+{
+  uint32_t tag;
+  uint32_t size;
+  uint64_t seq;
+  uint32_t crc32;
+} __attribute__((packed)) kj_rec_hdr_t;
+
+static inline uint32_t kj_crc32_update(uint32_t crc, const uint8_t *buf, size_t len)
+{
+  crc = ~crc;
+  for (size_t i = 0; i < len; ++i)
+  {
+    crc ^= buf[i];
+    for (int k = 0; k < 8; ++k)
+      crc = (crc >> 1) ^ (0xEDB88320u & (-(int)(crc & 1)));
+  }
+  return ~crc;
+}
+
+static inline uint32_t kj_crc32(const void *buf, size_t len)
+{
+  return kj_crc32_update(0, (const uint8_t *)buf, len);
+}
+
+static inline size_t kj_header_size(void)
+{
+  size_t s = sizeof(kj_header_t);
+  if (s % 64)
+    s += 64 - (s % 64);
+  return s;
+}
 
 struct kafs_context;
 
