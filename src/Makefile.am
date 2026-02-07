@@ -4,7 +4,7 @@ bin_PROGRAMS = kafs mkfs.kafs fsck.kafs kafs-info kafsctl kafs-front kafs-back
 # add per-target flags; silence unused-function as headers provide many static helpers
 kafs_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 kafs_LDADD = $(KAFS_LIBS)
-kafs_SOURCES = kafs.c kafs_hrl.c kafs_locks.c kafs_journal.c
+kafs_SOURCES = kafs.c kafs_hrl.c kafs_locks.c kafs_journal.c kafs_rpc.c
 
 # new mkfs.kafs target
 mkfs_kafs_SOURCES = mkfs_kafs.c kafs_hrl.c kafs_locks.c

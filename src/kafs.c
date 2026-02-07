@@ -8,6 +8,7 @@
 #include "kafs_journal.h"
 #include "kafs_ioctl.h"
 #include "kafs_mmap_io.h"
+#include "kafs_rpc.h"
 
 #define KAFS_DIRECT_SIZE (sizeof(((struct kafs_sinode *)NULL)->i_blkreftbl))
 
@@ -19,8 +20,10 @@
 #include <endian.h>
 #include <fcntl.h>
 #include <sys/types.h>
+#include <sys/socket.h>
 #include <sys/mman.h>
 #include <sys/statvfs.h>
+#include <sys/un.h>
 #include <stdlib.h>
 #include <stddef.h>
 #include <signal.h>
@@ -1562,12 +1565,289 @@ static int kafs_access(struct fuse_context *fctx, kafs_context_t *ctx, const cha
   return KAFS_SUCCESS;
 }
 
+static int kafs_hotplug_should_fallback(int rc)
+{
+  return rc == -ENOSYS || rc == -EOPNOTSUPP;
+}
+
+static int kafs_hotplug_enabled(const kafs_context_t *ctx)
+{
+  return ctx && ctx->c_hotplug_active && ctx->c_hotplug_fd >= 0;
+}
+
+static int kafs_hotplug_wait_for_back(kafs_context_t *ctx, const char *uds_path)
+{
+  int srv = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (srv < 0)
+    return -errno;
+
+  struct sockaddr_un addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sun_family = AF_UNIX;
+  if (snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", uds_path) >=
+      (int)sizeof(addr.sun_path))
+  {
+    close(srv);
+    return -ENAMETOOLONG;
+  }
+  unlink(uds_path);
+
+  if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) < 0)
+  {
+    int rc = -errno;
+    close(srv);
+    return rc;
+  }
+  if (listen(srv, 1) < 0)
+  {
+    int rc = -errno;
+    close(srv);
+    return rc;
+  }
+
+  int cli = accept(srv, NULL, NULL);
+  if (cli < 0)
+  {
+    int rc = -errno;
+    close(srv);
+    return rc;
+  }
+  close(srv);
+
+  kafs_rpc_hdr_t hdr;
+  kafs_rpc_hello_t hello;
+  uint32_t payload_len = 0;
+  int rc = kafs_rpc_recv_msg(cli, &hdr, &hello, sizeof(hello), &payload_len);
+  if (rc != 0 || hdr.op != KAFS_RPC_OP_HELLO)
+  {
+    close(cli);
+    return rc != 0 ? rc : -EBADMSG;
+  }
+  if (payload_len != sizeof(hello))
+  {
+    close(cli);
+    return -EBADMSG;
+  }
+  if (hello.major != KAFS_RPC_HELLO_MAJOR || hello.minor != KAFS_RPC_HELLO_MINOR ||
+      (hello.feature_flags & ~KAFS_RPC_HELLO_FEATURES) != 0)
+  {
+    close(cli);
+    return -EPROTONOSUPPORT;
+  }
+
+  kafs_rpc_hello_t ready;
+  ready.major = KAFS_RPC_HELLO_MAJOR;
+  ready.minor = KAFS_RPC_HELLO_MINOR;
+  ready.feature_flags = KAFS_RPC_HELLO_FEATURES;
+  uint64_t req_id = kafs_rpc_next_req_id();
+  rc = kafs_rpc_send_msg(cli, KAFS_RPC_OP_READY, KAFS_RPC_FLAG_ENDIAN_HOST, req_id, 1u, 0u, &ready,
+                         sizeof(ready));
+  if (rc != 0)
+  {
+    close(cli);
+    return rc;
+  }
+
+  ctx->c_hotplug_fd = cli;
+  ctx->c_hotplug_active = 1;
+  ctx->c_hotplug_session_id = 1u;
+  ctx->c_hotplug_epoch = 0u;
+  if (!ctx->c_hotplug_lock_init)
+  {
+    if (pthread_mutex_init(&ctx->c_hotplug_lock, NULL) == 0)
+      ctx->c_hotplug_lock_init = 1;
+  }
+  return 0;
+}
+
+static int kafs_hotplug_call_getattr(struct fuse_context *fctx, kafs_context_t *ctx,
+                                     kafs_sinode_t *inoent, struct stat *st)
+{
+  if (!kafs_hotplug_enabled(ctx))
+    return -ENOSYS;
+  kafs_rpc_getattr_req_t req;
+  req.ino = (uint32_t)(inoent - ctx->c_inotbl);
+  req.uid = (uint32_t)fctx->uid;
+  req.gid = (uint32_t)fctx->gid;
+  req.pid = (uint32_t)fctx->pid;
+  uint64_t req_id = kafs_rpc_next_req_id();
+
+  if (ctx->c_hotplug_lock_init)
+    pthread_mutex_lock(&ctx->c_hotplug_lock);
+  int rc = kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_GETATTR, KAFS_RPC_FLAG_ENDIAN_HOST,
+                             req_id, ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, &req,
+                             sizeof(req));
+  if (rc == 0)
+  {
+    kafs_rpc_resp_hdr_t resp_hdr;
+    kafs_rpc_getattr_resp_t resp;
+    uint32_t resp_len = 0;
+    rc = kafs_rpc_recv_resp(ctx->c_hotplug_fd, &resp_hdr, &resp, sizeof(resp), &resp_len);
+    if (rc == 0 && resp_hdr.req_id != req_id)
+      rc = -EBADMSG;
+    if (rc == 0 && resp_hdr.result != 0)
+      rc = resp_hdr.result;
+    if (rc == 0 && resp_len != sizeof(resp))
+      rc = -EBADMSG;
+    if (rc == 0)
+      *st = resp.st;
+  }
+  if (ctx->c_hotplug_lock_init)
+    pthread_mutex_unlock(&ctx->c_hotplug_lock);
+  return rc;
+}
+
+static ssize_t kafs_hotplug_call_read(struct fuse_context *fctx, kafs_context_t *ctx,
+                                      kafs_inocnt_t ino, char *buf, size_t size, off_t offset)
+{
+  if (!kafs_hotplug_enabled(ctx))
+    return -ENOSYS;
+  if (ctx->c_hotplug_data_mode != KAFS_RPC_DATA_INLINE)
+    return -EOPNOTSUPP;
+  if (size > (KAFS_RPC_MAX_PAYLOAD - sizeof(kafs_rpc_read_resp_t)))
+    return -EOPNOTSUPP;
+
+  kafs_rpc_read_req_t req;
+  req.ino = (uint32_t)ino;
+  req.uid = (uint32_t)fctx->uid;
+  req.gid = (uint32_t)fctx->gid;
+  req.pid = (uint32_t)fctx->pid;
+  req.off = (uint64_t)offset;
+  req.size = (uint32_t)size;
+  req.data_mode = ctx->c_hotplug_data_mode;
+  uint64_t req_id = kafs_rpc_next_req_id();
+
+  uint8_t resp_buf[KAFS_RPC_MAX_PAYLOAD];
+  if (ctx->c_hotplug_lock_init)
+    pthread_mutex_lock(&ctx->c_hotplug_lock);
+  int rc = kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_READ, KAFS_RPC_FLAG_ENDIAN_HOST,
+                             req_id, ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, &req,
+                             sizeof(req));
+  if (rc == 0)
+  {
+    kafs_rpc_resp_hdr_t resp_hdr;
+    uint32_t resp_len = 0;
+    rc = kafs_rpc_recv_resp(ctx->c_hotplug_fd, &resp_hdr, resp_buf, sizeof(resp_buf), &resp_len);
+    if (rc == 0 && resp_hdr.req_id != req_id)
+      rc = -EBADMSG;
+    if (rc == 0 && resp_hdr.result != 0)
+      rc = resp_hdr.result;
+    if (rc == 0 && resp_len < sizeof(kafs_rpc_read_resp_t))
+      rc = -EBADMSG;
+    if (rc == 0)
+    {
+      kafs_rpc_read_resp_t *resp = (kafs_rpc_read_resp_t *)resp_buf;
+      uint32_t data_len = resp_len - (uint32_t)sizeof(*resp);
+      if (resp->size > data_len || resp->size > size)
+        rc = -EBADMSG;
+      else
+      {
+        memcpy(buf, resp_buf + sizeof(*resp), resp->size);
+        rc = (int)resp->size;
+      }
+    }
+  }
+  if (ctx->c_hotplug_lock_init)
+    pthread_mutex_unlock(&ctx->c_hotplug_lock);
+  return rc;
+}
+
+static ssize_t kafs_hotplug_call_write(struct fuse_context *fctx, kafs_context_t *ctx,
+                                       kafs_inocnt_t ino, const char *buf, size_t size,
+                                       off_t offset)
+{
+  if (!kafs_hotplug_enabled(ctx))
+    return -ENOSYS;
+  if (ctx->c_hotplug_data_mode != KAFS_RPC_DATA_INLINE)
+    return -EOPNOTSUPP;
+  if (size > (KAFS_RPC_MAX_PAYLOAD - sizeof(kafs_rpc_write_req_t)))
+    return -EOPNOTSUPP;
+
+  uint8_t payload[KAFS_RPC_MAX_PAYLOAD];
+  kafs_rpc_write_req_t *req = (kafs_rpc_write_req_t *)payload;
+  req->ino = (uint32_t)ino;
+  req->uid = (uint32_t)fctx->uid;
+  req->gid = (uint32_t)fctx->gid;
+  req->pid = (uint32_t)fctx->pid;
+  req->off = (uint64_t)offset;
+  req->size = (uint32_t)size;
+  req->data_mode = ctx->c_hotplug_data_mode;
+  memcpy(payload + sizeof(*req), buf, size);
+  uint32_t payload_len = (uint32_t)(sizeof(*req) + size);
+  uint64_t req_id = kafs_rpc_next_req_id();
+
+  if (ctx->c_hotplug_lock_init)
+    pthread_mutex_lock(&ctx->c_hotplug_lock);
+  int rc = kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_WRITE, KAFS_RPC_FLAG_ENDIAN_HOST,
+                             req_id, ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, payload,
+                             payload_len);
+  if (rc == 0)
+  {
+    kafs_rpc_resp_hdr_t resp_hdr;
+    kafs_rpc_write_resp_t resp;
+    uint32_t resp_len = 0;
+    rc = kafs_rpc_recv_resp(ctx->c_hotplug_fd, &resp_hdr, &resp, sizeof(resp), &resp_len);
+    if (rc == 0 && resp_hdr.req_id != req_id)
+      rc = -EBADMSG;
+    if (rc == 0 && resp_hdr.result != 0)
+      rc = resp_hdr.result;
+    if (rc == 0 && resp_len != sizeof(resp))
+      rc = -EBADMSG;
+    if (rc == 0)
+      rc = (int)resp.size;
+  }
+  if (ctx->c_hotplug_lock_init)
+    pthread_mutex_unlock(&ctx->c_hotplug_lock);
+  return rc;
+}
+
+static int kafs_hotplug_call_truncate(struct fuse_context *fctx, kafs_context_t *ctx,
+                                      kafs_sinode_t *inoent, off_t size)
+{
+  (void)fctx;
+  if (!kafs_hotplug_enabled(ctx))
+    return -ENOSYS;
+
+  kafs_rpc_truncate_req_t req;
+  req.ino = (uint32_t)(inoent - ctx->c_inotbl);
+  req.reserved = 0;
+  req.size = (uint64_t)size;
+  uint64_t req_id = kafs_rpc_next_req_id();
+
+  if (ctx->c_hotplug_lock_init)
+    pthread_mutex_lock(&ctx->c_hotplug_lock);
+  int rc = kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_TRUNCATE, KAFS_RPC_FLAG_ENDIAN_HOST,
+                             req_id, ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, &req,
+                             sizeof(req));
+  if (rc == 0)
+  {
+    kafs_rpc_resp_hdr_t resp_hdr;
+    kafs_rpc_truncate_resp_t resp;
+    uint32_t resp_len = 0;
+    rc = kafs_rpc_recv_resp(ctx->c_hotplug_fd, &resp_hdr, &resp, sizeof(resp), &resp_len);
+    if (rc == 0 && resp_hdr.req_id != req_id)
+      rc = -EBADMSG;
+    if (rc == 0 && resp_hdr.result != 0)
+      rc = resp_hdr.result;
+    if (rc == 0 && resp_len != sizeof(resp))
+      rc = -EBADMSG;
+  }
+  if (ctx->c_hotplug_lock_init)
+    pthread_mutex_unlock(&ctx->c_hotplug_lock);
+  return rc;
+}
+
 static int kafs_op_getattr(const char *path, struct stat *st, struct fuse_file_info *fi)
 {
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
   struct kafs_sinode *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
+  int rc_hp = kafs_hotplug_call_getattr(fctx, ctx, inoent, st);
+  if (rc_hp == 0)
+    return 0;
+  if (!kafs_hotplug_should_fallback(rc_hp))
+    return rc_hp;
   st->st_dev = 0;
   st->st_ino = inoent - ctx->c_inotbl;
   st->st_mode = kafs_ino_mode_get(inoent);
@@ -2255,6 +2535,11 @@ static int kafs_op_truncate(const char *path, off_t size, struct fuse_file_info 
   struct kafs_context *ctx = fctx->private_data;
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
+  int rc_hp = kafs_hotplug_call_truncate(fctx, ctx, inoent, size);
+  if (rc_hp == 0)
+    return 0;
+  if (!kafs_hotplug_should_fallback(rc_hp))
+    return rc_hp;
   kafs_inode_lock(ctx, (uint32_t)(inoent - ctx->c_inotbl));
   int rc = kafs_truncate(ctx, inoent, (kafs_off_t)size);
   kafs_inode_unlock(ctx, (uint32_t)(inoent - ctx->c_inotbl));
@@ -2436,6 +2721,11 @@ static int kafs_op_read(const char *path, char *buf, size_t size, off_t offset,
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
   kafs_inocnt_t ino = fi->fh;
+  ssize_t rc_hp = kafs_hotplug_call_read(fctx, ctx, ino, buf, size, offset);
+  if (rc_hp >= 0)
+    return (int)rc_hp;
+  if (!kafs_hotplug_should_fallback((int)rc_hp))
+    return (int)rc_hp;
   kafs_inode_lock(ctx, (uint32_t)ino);
   ssize_t rr = kafs_pread(ctx, &ctx->c_inotbl[ino], buf, size, offset);
   kafs_inode_unlock(ctx, (uint32_t)ino);
@@ -2451,6 +2741,11 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
   kafs_inocnt_t ino = fi->fh;
   if ((fi->flags & O_ACCMODE) == O_RDONLY)
     return -EACCES;
+  ssize_t rc_hp = kafs_hotplug_call_write(fctx, ctx, ino, buf, size, offset);
+  if (rc_hp >= 0)
+    return (int)rc_hp;
+  if (!kafs_hotplug_should_fallback((int)rc_hp))
+    return (int)rc_hp;
   kafs_inode_lock(ctx, (uint32_t)ino);
   int rc_write = kafs_pwrite(ctx, &ctx->c_inotbl[ino], buf, size, offset);
   kafs_inode_unlock(ctx, (uint32_t)ino);
@@ -3112,6 +3407,8 @@ int main(int argc, char **argv)
 
   static kafs_context_t ctx;
   static char mnt_abs[PATH_MAX];
+  char hotplug_uds_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
+  hotplug_uds_path[0] = '\0';
   // Store mountpoint as an absolute path for /proc fd resolution (FICLONE).
   if (argv_clean[1] && argv_clean[1][0] == '/')
   {
@@ -3131,6 +3428,44 @@ int main(int argc, char **argv)
     else
     {
       ctx.c_mountpoint = argv_clean[1];
+    }
+
+    ctx.c_hotplug_fd = -1;
+    ctx.c_hotplug_active = 0;
+    ctx.c_hotplug_lock_init = 0;
+    ctx.c_hotplug_session_id = 0;
+    ctx.c_hotplug_epoch = 0;
+    ctx.c_hotplug_data_mode = KAFS_RPC_DATA_INLINE;
+
+    const char *data_mode = getenv("KAFS_HOTPLUG_DATA_MODE");
+    if (data_mode)
+    {
+      if (strcmp(data_mode, "inline") == 0)
+        ctx.c_hotplug_data_mode = KAFS_RPC_DATA_INLINE;
+      else if (strcmp(data_mode, "plan_only") == 0)
+        ctx.c_hotplug_data_mode = KAFS_RPC_DATA_PLAN_ONLY;
+      else if (strcmp(data_mode, "shm") == 0)
+        ctx.c_hotplug_data_mode = KAFS_RPC_DATA_SHM;
+    }
+
+    const char *hotplug_uds = getenv("KAFS_HOTPLUG_UDS");
+    if (hotplug_uds)
+    {
+      if (snprintf(hotplug_uds_path, sizeof(hotplug_uds_path), "%s", hotplug_uds) <
+          (int)sizeof(hotplug_uds_path))
+      {
+        int rc_hp = kafs_hotplug_wait_for_back(&ctx, hotplug_uds_path);
+        if (rc_hp != 0)
+        {
+          fprintf(stderr, "hotplug: failed to accept back rc=%d\n", rc_hp);
+          return 2;
+        }
+      }
+      else
+      {
+        fprintf(stderr, "hotplug: uds path too long\n");
+        return 2;
+      }
     }
   }
 
@@ -3309,6 +3644,13 @@ int main(int argc, char **argv)
   argv_fuse[argc_fuse] = NULL; // ensure NULL-terminated argv for libfuse safety
   int rc = fuse_main(argc_fuse, argv_fuse, &kafs_operations, &ctx);
   kafs_journal_shutdown(&ctx);
+  if (ctx.c_hotplug_fd >= 0)
+    close(ctx.c_hotplug_fd);
+  ctx.c_hotplug_active = 0;
+  if (hotplug_uds_path[0] != '\0')
+    unlink(hotplug_uds_path);
+  if (ctx.c_hotplug_lock_init)
+    pthread_mutex_destroy(&ctx.c_hotplug_lock);
   if (ctx.c_img_base && ctx.c_img_base != MAP_FAILED)
     munmap(ctx.c_img_base, ctx.c_img_size);
   return rc;

@@ -6,6 +6,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <signal.h>
 #include <unistd.h>
 
 static void usage(const char *prog)
@@ -124,7 +125,6 @@ int main(int argc, char **argv)
   }
 
   fprintf(stderr, "kafs-front: handshake ok\n");
-  close(cli);
-  close(srv);
-  return 0;
+  for (;;)
+    pause();
 }

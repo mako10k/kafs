@@ -102,6 +102,51 @@ int main(int argc, char **argv)
   }
 
   fprintf(stderr, "kafs-back: handshake ok\n");
+
+  uint8_t payload[KAFS_RPC_MAX_PAYLOAD];
+  for (;;)
+  {
+    kafs_rpc_hdr_t req_hdr;
+    uint32_t req_len = 0;
+    rc = kafs_rpc_recv_msg(fd, &req_hdr, payload, sizeof(payload), &req_len);
+    if (rc != 0)
+    {
+      fprintf(stderr, "kafs-back: recv rc=%d\n", rc);
+      break;
+    }
+
+    int result = -ENOSYS;
+    switch (req_hdr.op)
+    {
+    case KAFS_RPC_OP_GETATTR:
+      if (req_len != sizeof(kafs_rpc_getattr_req_t))
+        result = -EBADMSG;
+      break;
+    case KAFS_RPC_OP_READ:
+      if (req_len != sizeof(kafs_rpc_read_req_t))
+        result = -EBADMSG;
+      break;
+    case KAFS_RPC_OP_WRITE:
+      if (req_len < sizeof(kafs_rpc_write_req_t))
+        result = -EBADMSG;
+      break;
+    case KAFS_RPC_OP_TRUNCATE:
+      if (req_len != sizeof(kafs_rpc_truncate_req_t))
+        result = -EBADMSG;
+      break;
+    default:
+      result = -ENOSYS;
+      break;
+    }
+
+    rc = kafs_rpc_send_resp(fd, req_hdr.req_id, result, NULL, 0);
+    if (rc != 0)
+    {
+      fprintf(stderr, "kafs-back: send resp rc=%d\n", rc);
+      break;
+    }
+  }
+
   close(fd);
   return 0;
 }

@@ -2,6 +2,7 @@
 #include "kafs.h"
 #include "kafs_superblock.h"
 #include "kafs_inode.h"
+#include <pthread.h>
 
 /// @brief コンテキスト
 struct kafs_context
@@ -47,6 +48,15 @@ struct kafs_context
 
   // --- Mount context ---
   const char *c_mountpoint; // mountpoint path (from argv)
+
+  // --- Hotplug RPC (front) ---
+  int c_hotplug_fd;
+  int c_hotplug_active;
+  uint64_t c_hotplug_session_id;
+  uint32_t c_hotplug_epoch;
+  uint32_t c_hotplug_data_mode;
+  pthread_mutex_t c_hotplug_lock;
+  int c_hotplug_lock_init;
 };
 
 // Lock helpers (no-op when locks not enabled in build)

@@ -27,6 +27,13 @@ typedef struct
 
 typedef struct
 {
+  uint64_t req_id;
+  int32_t result;
+  uint32_t payload_len;
+} kafs_rpc_resp_hdr_t;
+
+typedef struct
+{
   uint16_t major;
   uint16_t minor;
   uint32_t feature_flags;
@@ -111,3 +118,7 @@ int kafs_rpc_send_msg(int fd, uint16_t op, uint32_t flags, uint64_t req_id, uint
                       uint32_t epoch, const void *payload, uint32_t payload_len);
 int kafs_rpc_recv_msg(int fd, kafs_rpc_hdr_t *hdr, void *payload, uint32_t payload_cap,
                       uint32_t *payload_len);
+int kafs_rpc_send_resp(int fd, uint64_t req_id, int32_t result, const void *payload,
+                       uint32_t payload_len);
+int kafs_rpc_recv_resp(int fd, kafs_rpc_resp_hdr_t *hdr, void *payload, uint32_t payload_cap,
+                       uint32_t *payload_len);
