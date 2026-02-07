@@ -60,6 +60,10 @@ uint64_t kafs_rpc_next_req_id(void)
 int kafs_rpc_send_msg(int fd, uint16_t op, uint32_t flags, uint64_t req_id, uint64_t session_id,
                       uint32_t epoch, const void *payload, uint32_t payload_len)
 {
+  if (payload_len > KAFS_RPC_MAX_PAYLOAD)
+    return -EMSGSIZE;
+  if (payload_len != 0 && payload == NULL)
+    return -EINVAL;
   kafs_rpc_hdr_t hdr;
   memset(&hdr, 0, sizeof(hdr));
   hdr.magic = KAFS_RPC_MAGIC;
@@ -87,6 +91,8 @@ int kafs_rpc_recv_msg(int fd, kafs_rpc_hdr_t *hdr, void *payload, uint32_t paylo
   if (hdr->magic != KAFS_RPC_MAGIC)
     return -EBADMSG;
   if (hdr->version != KAFS_RPC_VERSION)
+    return -EPROTONOSUPPORT;
+  if ((hdr->flags & KAFS_RPC_FLAG_ENDIAN_HOST) == 0)
     return -EPROTONOSUPPORT;
   if (hdr->payload_len > KAFS_RPC_MAX_PAYLOAD)
     return -EMSGSIZE;

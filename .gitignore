@@ -32,6 +32,8 @@
 /src/mkfs.kafs
 /src/fsck.kafs
 /src/kafs-info
+/src/kafs-front
+/src/kafs-back
 /src/hrl_smoketest
 /src/hrl_dec_ref_by_blo
 /src/hrl_unconfigured

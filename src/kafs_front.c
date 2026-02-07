@@ -98,11 +98,19 @@ int main(int argc, char **argv)
     close(srv);
     return 2;
   }
+  if (hello.major != KAFS_RPC_HELLO_MAJOR || hello.minor != KAFS_RPC_HELLO_MINOR ||
+      (hello.feature_flags & ~KAFS_RPC_HELLO_FEATURES) != 0)
+  {
+    fprintf(stderr, "kafs-front: hello version/feature mismatch\n");
+    close(cli);
+    close(srv);
+    return 2;
+  }
 
   kafs_rpc_hello_t ready;
-  ready.major = 1;
-  ready.minor = 0;
-  ready.feature_flags = 0;
+  ready.major = KAFS_RPC_HELLO_MAJOR;
+  ready.minor = KAFS_RPC_HELLO_MINOR;
+  ready.feature_flags = KAFS_RPC_HELLO_FEATURES;
   uint64_t req_id = kafs_rpc_next_req_id();
 
   rc = kafs_rpc_send_msg(cli, KAFS_RPC_OP_READY, KAFS_RPC_FLAG_ENDIAN_HOST, req_id, 1u, 0u,

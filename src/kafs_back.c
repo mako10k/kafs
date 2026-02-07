@@ -64,9 +64,9 @@ int main(int argc, char **argv)
   }
 
   kafs_rpc_hello_t hello;
-  hello.major = 1;
-  hello.minor = 0;
-  hello.feature_flags = 0;
+  hello.major = KAFS_RPC_HELLO_MAJOR;
+  hello.minor = KAFS_RPC_HELLO_MINOR;
+  hello.feature_flags = KAFS_RPC_HELLO_FEATURES;
   uint64_t req_id = kafs_rpc_next_req_id();
   int rc = kafs_rpc_send_msg(fd, KAFS_RPC_OP_HELLO, KAFS_RPC_FLAG_ENDIAN_HOST, req_id, 1u, 0u,
                              &hello, sizeof(hello));
@@ -90,6 +90,13 @@ int main(int argc, char **argv)
   if (payload_len != sizeof(ready))
   {
     fprintf(stderr, "kafs-back: ready payload size mismatch\n");
+    close(fd);
+    return 2;
+  }
+  if (ready.major != KAFS_RPC_HELLO_MAJOR || ready.minor != KAFS_RPC_HELLO_MINOR ||
+      (ready.feature_flags & ~KAFS_RPC_HELLO_FEATURES) != 0)
+  {
+    fprintf(stderr, "kafs-back: ready version/feature mismatch\n");
     close(fd);
     return 2;
   }
