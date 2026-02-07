@@ -81,7 +81,9 @@ int main(int argc, char **argv)
   }
 
   kafs_rpc_hdr_t hdr;
-  int rc = kafs_rpc_recv_hdr(cli, &hdr);
+  kafs_rpc_hello_t hello;
+  uint32_t payload_len = 0;
+  int rc = kafs_rpc_recv_msg(cli, &hdr, &hello, sizeof(hello), &payload_len);
   if (rc != 0 || hdr.op != KAFS_RPC_OP_HELLO)
   {
     fprintf(stderr, "kafs-front: invalid hello rc=%d op=%u\n", rc, (unsigned)hdr.op);
@@ -89,8 +91,22 @@ int main(int argc, char **argv)
     close(srv);
     return 2;
   }
+  if (payload_len != sizeof(hello))
+  {
+    fprintf(stderr, "kafs-front: hello payload size mismatch\n");
+    close(cli);
+    close(srv);
+    return 2;
+  }
 
-  rc = kafs_rpc_send_hdr(cli, KAFS_RPC_OP_READY);
+  kafs_rpc_hello_t ready;
+  ready.major = 1;
+  ready.minor = 0;
+  ready.feature_flags = 0;
+  uint64_t req_id = kafs_rpc_next_req_id();
+
+  rc = kafs_rpc_send_msg(cli, KAFS_RPC_OP_READY, KAFS_RPC_FLAG_ENDIAN_HOST, req_id, 1u, 0u,
+                         &ready, sizeof(ready));
   if (rc != 0)
   {
     fprintf(stderr, "kafs-front: failed to send ready rc=%d\n", rc);

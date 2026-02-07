@@ -63,7 +63,13 @@ int main(int argc, char **argv)
     return 2;
   }
 
-  int rc = kafs_rpc_send_hdr(fd, KAFS_RPC_OP_HELLO);
+  kafs_rpc_hello_t hello;
+  hello.major = 1;
+  hello.minor = 0;
+  hello.feature_flags = 0;
+  uint64_t req_id = kafs_rpc_next_req_id();
+  int rc = kafs_rpc_send_msg(fd, KAFS_RPC_OP_HELLO, KAFS_RPC_FLAG_ENDIAN_HOST, req_id, 1u, 0u,
+                             &hello, sizeof(hello));
   if (rc != 0)
   {
     fprintf(stderr, "kafs-back: failed to send hello rc=%d\n", rc);
@@ -72,10 +78,18 @@ int main(int argc, char **argv)
   }
 
   kafs_rpc_hdr_t hdr;
-  rc = kafs_rpc_recv_hdr(fd, &hdr);
+  kafs_rpc_hello_t ready;
+  uint32_t payload_len = 0;
+  rc = kafs_rpc_recv_msg(fd, &hdr, &ready, sizeof(ready), &payload_len);
   if (rc != 0 || hdr.op != KAFS_RPC_OP_READY)
   {
     fprintf(stderr, "kafs-back: invalid ready rc=%d op=%u\n", rc, (unsigned)hdr.op);
+    close(fd);
+    return 2;
+  }
+  if (payload_len != sizeof(ready))
+  {
+    fprintf(stderr, "kafs-back: ready payload size mismatch\n");
     close(fd);
     return 2;
   }
