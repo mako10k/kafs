@@ -55,6 +55,10 @@ struct kafs_context
   uint64_t c_hotplug_session_id;
   uint32_t c_hotplug_epoch;
   uint32_t c_hotplug_data_mode;
+  int c_hotplug_state;
+  int c_hotplug_last_error;
+  uint32_t c_hotplug_wait_queue_len;
+  uint32_t c_hotplug_wait_timeout_ms;
   pthread_mutex_t c_hotplug_lock;
   int c_hotplug_lock_init;
 };

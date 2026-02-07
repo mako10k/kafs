@@ -56,3 +56,31 @@ typedef struct kafs_ioctl_copy kafs_ioctl_copy_t;
 
 #define KAFS_IOCTL_COPY_F_REFLINK 1u
 #define KAFS_IOCTL_COPY _IOW(KAFS_IOCTL_MAGIC, 2, struct kafs_ioctl_copy)
+
+// Hotplug status (kafsctl)
+#define KAFS_HOTPLUG_STATUS_VERSION 1u
+
+enum
+{
+  KAFS_HOTPLUG_STATE_DISABLED = 0,
+  KAFS_HOTPLUG_STATE_WAITING = 1,
+  KAFS_HOTPLUG_STATE_CONNECTED = 2,
+  KAFS_HOTPLUG_STATE_ERROR = 3
+};
+
+struct kafs_hotplug_status
+{
+  uint32_t struct_size;
+  uint32_t version;
+  uint32_t state;
+  uint32_t data_mode;
+  uint64_t session_id;
+  uint32_t epoch;
+  int32_t last_error;
+  uint32_t wait_queue_len;
+  uint32_t wait_timeout_ms;
+};
+
+typedef struct kafs_hotplug_status kafs_hotplug_status_t;
+
+#define KAFS_IOCTL_GET_HOTPLUG_STATUS _IOR(KAFS_IOCTL_MAGIC, 3, struct kafs_hotplug_status)

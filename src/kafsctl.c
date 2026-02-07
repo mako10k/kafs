@@ -71,6 +71,7 @@ static void usage(const char *prog)
   fprintf(stderr,
           "Usage:\n"
           "  %s fsstat <mountpoint> [--json] [--bytes|--mib|--gib]   (alias: stats)\n"
+          "  %s hotplug status <mountpoint> [--json]\n"
           "  %s stat <mountpoint> <path>\n"
           "  %s cat <mountpoint> <path>\n"
           "  %s write <mountpoint> <path>   (stdin -> file, trunc)\n"
@@ -84,7 +85,53 @@ static void usage(const char *prog)
           "  %s readlink <mountpoint> <path>\n"
           "  %s chmod <mountpoint> <octal_mode> <path>\n"
           "  %s touch <mountpoint> <path>\n",
-          prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
+          prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog,
+          prog);
+}
+
+static int cmd_hotplug_status(const char *mnt, int json)
+{
+  int fd = open(mnt, O_RDONLY | O_DIRECTORY);
+  if (fd < 0)
+  {
+    perror("open");
+    return 1;
+  }
+
+  kafs_hotplug_status_t st;
+  memset(&st, 0, sizeof(st));
+  if (ioctl(fd, KAFS_IOCTL_GET_HOTPLUG_STATUS, &st) != 0)
+  {
+    perror("ioctl(KAFS_IOCTL_GET_HOTPLUG_STATUS)");
+    close(fd);
+    return 1;
+  }
+  close(fd);
+
+  if (json)
+  {
+    printf("{\n");
+    printf("  \"version\": %u,\n", st.version);
+    printf("  \"state\": %u,\n", st.state);
+    printf("  \"data_mode\": %u,\n", st.data_mode);
+    printf("  \"session_id\": %" PRIu64 ",\n", st.session_id);
+    printf("  \"epoch\": %u,\n", st.epoch);
+    printf("  \"last_error\": %d,\n", st.last_error);
+    printf("  \"wait_queue_len\": %u,\n", st.wait_queue_len);
+    printf("  \"wait_timeout_ms\": %u\n", st.wait_timeout_ms);
+    printf("}\n");
+    return 0;
+  }
+
+  printf("kafs hotplug status v%u\n", st.version);
+  printf("  state: %u\n", st.state);
+  printf("  data_mode: %u\n", st.data_mode);
+  printf("  session_id: %" PRIu64 "\n", st.session_id);
+  printf("  epoch: %u\n", st.epoch);
+  printf("  last_error: %d\n", st.last_error);
+  printf("  wait_queue_len: %u\n", st.wait_queue_len);
+  printf("  wait_timeout_ms: %u\n", st.wait_timeout_ms);
+  return 0;
 }
 
 static int path_has_dotdot_component(const char *p)
@@ -877,6 +924,32 @@ int main(int argc, char **argv)
       }
     }
     return cmd_stats(argv[2], json, unit);
+  }
+
+  if (strcmp(argv[1], "hotplug") == 0)
+  {
+    if (argc < 4)
+    {
+      usage(argv[0]);
+      return 2;
+    }
+    if (strcmp(argv[2], "status") == 0)
+    {
+      int json = 0;
+      for (int i = 4; i < argc; ++i)
+      {
+        if (strcmp(argv[i], "--json") == 0)
+          json = 1;
+        else
+        {
+          usage(argv[0]);
+          return 2;
+        }
+      }
+      return cmd_hotplug_status(argv[3], json);
+    }
+    usage(argv[0]);
+    return 2;
   }
 
   if (strcmp(argv[1], "stat") == 0)

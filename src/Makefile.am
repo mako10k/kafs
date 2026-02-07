@@ -30,19 +30,19 @@ kafs_front_SOURCES = kafs_front.c kafs_rpc.c
 kafs_front_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 kafs_front_LDADD = $(KAFS_LIBS)
 
-kafs_back_SOURCES = kafs_back.c kafs_rpc.c
-kafs_back_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+kafs_back_SOURCES = kafs_back.c kafs_rpc.c kafs.c kafs_hrl.c kafs_locks.c kafs_journal.c
+kafs_back_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -DKAFS_NO_MAIN
 kafs_back_LDADD = $(KAFS_LIBS)
 
-noinst_HEADERS = kafs_block.h kafs_context.h kafs_dirent.h kafs_inode.h kafs_superblock.h kafs.h kafs_ioctl.h test_utils.h kafs_journal.h kafs_rpc.h
+noinst_HEADERS = kafs_block.h kafs_context.h kafs_dirent.h kafs_inode.h kafs_superblock.h kafs.h kafs_ioctl.h test_utils.h kafs_journal.h kafs_rpc.h kafs_core.h
 
 CFLAGS = -Wall -Werror -g -O0 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -Wno-unused-function -Wno-unused-parameter
 
 # --- Tests ---
 # NOTE: stress_fs mounts in multithread mode and exercises heavier workloads.
 # To minimize any residual side effects on subsequent tests, run it last.
-check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured min_git_hooks fs_semantics clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility prune_indirect_single prune_indirect_double prune_indirect_triple truncate_prune reflink_clone stress_fs
-TESTS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured min_git_hooks fs_semantics clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility prune_indirect_single prune_indirect_double prune_indirect_triple truncate_prune reflink_clone stress_fs
+check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured min_git_hooks fs_semantics clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility prune_indirect_single prune_indirect_double prune_indirect_triple truncate_prune reflink_clone stress_fs hotplug_rpc
+TESTS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured min_git_hooks fs_semantics clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility prune_indirect_single prune_indirect_double prune_indirect_triple truncate_prune reflink_clone stress_fs hotplug_rpc
 hrl_smoketest_SOURCES = tests_hrl_smoketest.c kafs_hrl.c kafs_locks.c test_utils.c
 hrl_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 hrl_smoketest_LDADD = $(KAFS_LIBS)
@@ -109,6 +109,10 @@ truncate_prune_LDADD = $(KAFS_LIBS)
 reflink_clone_SOURCES = tests_reflink_clone.c test_utils.c kafs_hrl.c kafs_locks.c
 reflink_clone_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 reflink_clone_LDADD = $(KAFS_LIBS)
+
+hotplug_rpc_SOURCES = tests_hotplug_rpc.c kafs_rpc.c
+hotplug_rpc_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+hotplug_rpc_LDADD = $(KAFS_LIBS)
 
 # All tests are expected to pass
 XFAIL_TESTS =

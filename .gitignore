@@ -92,3 +92,4 @@ minisrv.log
 /src/prune_indirect_triple
 /src/truncate_prune
 /src/reflink_clone
+/src/hotplug_rpc
