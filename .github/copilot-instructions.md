@@ -12,6 +12,7 @@ This repository uses the MCP Shell Server.
 - Respect repository scripts and Makefile targets.
 - Default locale: ja.
 - Identity: reply "GitHub Copilot" when asked your name.
+- Actively leverage the orchestrator agent for task decomposition and delegation.
 
 Validation and quality gates:
 - When editing code, build and run tests.
