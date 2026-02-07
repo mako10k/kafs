@@ -1,4 +1,5 @@
 #include "kafs_ioctl.h"
+#include "kafs_rpc.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -89,6 +90,38 @@ static void usage(const char *prog)
           prog);
 }
 
+static const char *hotplug_state_str(uint32_t state)
+{
+  switch (state)
+  {
+  case KAFS_HOTPLUG_STATE_DISABLED:
+    return "disabled";
+  case KAFS_HOTPLUG_STATE_WAITING:
+    return "waiting";
+  case KAFS_HOTPLUG_STATE_CONNECTED:
+    return "connected";
+  case KAFS_HOTPLUG_STATE_ERROR:
+    return "error";
+  default:
+    return "unknown";
+  }
+}
+
+static const char *hotplug_data_mode_str(uint32_t mode)
+{
+  switch (mode)
+  {
+  case KAFS_RPC_DATA_INLINE:
+    return "inline";
+  case KAFS_RPC_DATA_PLAN_ONLY:
+    return "plan_only";
+  case KAFS_RPC_DATA_SHM:
+    return "shm";
+  default:
+    return "unknown";
+  }
+}
+
 static int cmd_hotplug_status(const char *mnt, int json)
 {
   int fd = open(mnt, O_RDONLY | O_DIRECTORY);
@@ -113,7 +146,9 @@ static int cmd_hotplug_status(const char *mnt, int json)
     printf("{\n");
     printf("  \"version\": %u,\n", st.version);
     printf("  \"state\": %u,\n", st.state);
+    printf("  \"state_str\": \"%s\",\n", hotplug_state_str(st.state));
     printf("  \"data_mode\": %u,\n", st.data_mode);
+    printf("  \"data_mode_str\": \"%s\",\n", hotplug_data_mode_str(st.data_mode));
     printf("  \"session_id\": %" PRIu64 ",\n", st.session_id);
     printf("  \"epoch\": %u,\n", st.epoch);
     printf("  \"last_error\": %d,\n", st.last_error);
@@ -124,8 +159,8 @@ static int cmd_hotplug_status(const char *mnt, int json)
   }
 
   printf("kafs hotplug status v%u\n", st.version);
-  printf("  state: %u\n", st.state);
-  printf("  data_mode: %u\n", st.data_mode);
+  printf("  state: %u (%s)\n", st.state, hotplug_state_str(st.state));
+  printf("  data_mode: %u (%s)\n", st.data_mode, hotplug_data_mode_str(st.data_mode));
   printf("  session_id: %" PRIu64 "\n", st.session_id);
   printf("  epoch: %u\n", st.epoch);
   printf("  last_error: %d\n", st.last_error);
