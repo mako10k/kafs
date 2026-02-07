@@ -374,6 +374,9 @@ kafsctl
 - S2: back の READ/WRITE から画像アクセスを削除し、計画応答のみ返す。
 - S3: TRUNCATE/COPY なども計画応答化し、front が実行。
 
+補足
+- KAFS_BACK_ENABLE_IMAGE を有効にした場合のみ back が画像へ直接アクセスする。
+
 タスク分解
 - RPC: PLAN_ONLY 応答の最小メタデータ定義と互換性チェック。
 - front: PLAN_ONLY 受信時にローカル I/O を実行。

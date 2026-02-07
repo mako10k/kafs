@@ -1,5 +1,7 @@
 #include "kafs_rpc.h"
+#ifdef KAFS_BACK_ENABLE_IMAGE
 #include "kafs_core.h"
+#endif
 
 #include <errno.h>
 #include <stdio.h>
@@ -11,13 +13,19 @@
 
 static void usage(const char *prog)
 {
+#ifdef KAFS_BACK_ENABLE_IMAGE
   fprintf(stderr, "Usage: %s [--uds <path>] [--image <path>]\n", prog);
+#else
+  fprintf(stderr, "Usage: %s [--uds <path>]\n", prog);
+#endif
 }
 
 int main(int argc, char **argv)
 {
   const char *uds_path = getenv("KAFS_HOTPLUG_UDS");
+#ifdef KAFS_BACK_ENABLE_IMAGE
   const char *image_path = getenv("KAFS_IMAGE");
+#endif
   if (!uds_path)
     uds_path = "/tmp/kafs-hotplug.sock";
 
@@ -33,6 +41,7 @@ int main(int argc, char **argv)
       uds_path = argv[++i];
       continue;
     }
+#ifdef KAFS_BACK_ENABLE_IMAGE
     if (strcmp(argv[i], "--image") == 0)
     {
       if (i + 1 >= argc)
@@ -43,6 +52,7 @@ int main(int argc, char **argv)
       image_path = argv[++i];
       continue;
     }
+#endif
     if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
     {
       usage(argv[0]);
@@ -50,6 +60,7 @@ int main(int argc, char **argv)
     }
   }
 
+#ifdef KAFS_BACK_ENABLE_IMAGE
   if (!image_path)
   {
     fprintf(stderr, "kafs-back: image path is required (KAFS_IMAGE or --image)\n");
@@ -63,6 +74,9 @@ int main(int argc, char **argv)
     fprintf(stderr, "kafs-back: failed to open image rc=%d\n", rc);
     return 2;
   }
+#else
+  int rc = 0;
+#endif
 
   int fd = socket(AF_UNIX, SOCK_STREAM, 0);
   if (fd < 0)
@@ -100,7 +114,9 @@ int main(int argc, char **argv)
   {
     fprintf(stderr, "kafs-back: failed to send hello rc=%d\n", rc);
     close(fd);
+  #ifdef KAFS_BACK_ENABLE_IMAGE
     kafs_core_close_image(&ctx);
+  #endif
     return 2;
   }
 
@@ -112,14 +128,18 @@ int main(int argc, char **argv)
   {
     fprintf(stderr, "kafs-back: invalid ready rc=%d op=%u\n", rc, (unsigned)hdr.op);
     close(fd);
+#ifdef KAFS_BACK_ENABLE_IMAGE
     kafs_core_close_image(&ctx);
+#endif
     return 2;
   }
   if (payload_len != sizeof(ready))
   {
     fprintf(stderr, "kafs-back: ready payload size mismatch\n");
     close(fd);
+#ifdef KAFS_BACK_ENABLE_IMAGE
     kafs_core_close_image(&ctx);
+#endif
     return 2;
   }
   if (ready.major != KAFS_RPC_HELLO_MAJOR || ready.minor != KAFS_RPC_HELLO_MINOR ||
@@ -127,7 +147,9 @@ int main(int argc, char **argv)
   {
     fprintf(stderr, "kafs-back: ready version/feature mismatch\n");
     close(fd);
+#ifdef KAFS_BACK_ENABLE_IMAGE
     kafs_core_close_image(&ctx);
+#endif
     return 2;
   }
 
@@ -160,10 +182,16 @@ int main(int argc, char **argv)
       {
         kafs_rpc_getattr_req_t *req = (kafs_rpc_getattr_req_t *)payload;
         kafs_rpc_getattr_resp_t *resp = (kafs_rpc_getattr_resp_t *)resp_buf;
+#ifdef KAFS_BACK_ENABLE_IMAGE
         int grc = kafs_core_getattr(&ctx, (kafs_inocnt_t)req->ino, &resp->st);
         if (grc == 0)
           resp_len = (uint32_t)sizeof(*resp);
         result = grc;
+#else
+        (void)req;
+        (void)resp;
+        result = -ENOSYS;
+#endif
       }
       break;
     case KAFS_RPC_OP_READ:
@@ -183,6 +211,7 @@ int main(int argc, char **argv)
           result = 0;
           break;
         }
+#ifdef KAFS_BACK_ENABLE_IMAGE
         if (req->data_mode != KAFS_RPC_DATA_INLINE)
         {
           result = -EOPNOTSUPP;
@@ -204,6 +233,10 @@ int main(int argc, char **argv)
         {
           result = (int)rlen;
         }
+#else
+        (void)resp;
+        result = -EOPNOTSUPP;
+#endif
       }
       break;
     case KAFS_RPC_OP_WRITE:
@@ -224,6 +257,7 @@ int main(int argc, char **argv)
           result = 0;
           break;
         }
+#ifdef KAFS_BACK_ENABLE_IMAGE
         if (req->data_mode != KAFS_RPC_DATA_INLINE)
         {
           result = -EOPNOTSUPP;
@@ -246,6 +280,11 @@ int main(int argc, char **argv)
         {
           result = (int)wlen;
         }
+#else
+        (void)resp;
+        (void)data_len;
+        result = -EOPNOTSUPP;
+#endif
       }
       break;
     case KAFS_RPC_OP_TRUNCATE:
@@ -258,6 +297,7 @@ int main(int argc, char **argv)
       {
         kafs_rpc_truncate_req_t *req = (kafs_rpc_truncate_req_t *)payload;
         kafs_rpc_truncate_resp_t *resp = (kafs_rpc_truncate_resp_t *)resp_buf;
+#ifdef KAFS_BACK_ENABLE_IMAGE
         int trc = kafs_core_truncate(&ctx, (kafs_inocnt_t)req->ino, (off_t)req->size);
         if (trc == 0)
         {
@@ -265,6 +305,11 @@ int main(int argc, char **argv)
           resp_len = (uint32_t)sizeof(*resp);
         }
         result = trc;
+#else
+        (void)req;
+        (void)resp;
+        result = -ENOSYS;
+#endif
       }
       break;
     default:
@@ -281,6 +326,8 @@ int main(int argc, char **argv)
   }
 
   close(fd);
+#ifdef KAFS_BACK_ENABLE_IMAGE
   kafs_core_close_image(&ctx);
+#endif
   return 0;
 }
