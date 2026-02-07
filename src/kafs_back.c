@@ -175,6 +175,14 @@ int main(int argc, char **argv)
       else
       {
         kafs_rpc_read_req_t *req = (kafs_rpc_read_req_t *)payload;
+        kafs_rpc_read_resp_t *resp = (kafs_rpc_read_resp_t *)resp_buf;
+        if (req->data_mode == KAFS_RPC_DATA_PLAN_ONLY)
+        {
+          resp->size = req->size;
+          resp_len = (uint32_t)sizeof(*resp);
+          result = 0;
+          break;
+        }
         if (req->data_mode != KAFS_RPC_DATA_INLINE)
         {
           result = -EOPNOTSUPP;
@@ -184,7 +192,6 @@ int main(int argc, char **argv)
         size_t want = req->size;
         if (want > max_data)
           want = max_data;
-        kafs_rpc_read_resp_t *resp = (kafs_rpc_read_resp_t *)resp_buf;
         ssize_t rlen = kafs_core_read(&ctx, (kafs_inocnt_t)req->ino,
                                       resp_buf + sizeof(*resp), want, (off_t)req->off);
         if (rlen >= 0)
@@ -209,6 +216,14 @@ int main(int argc, char **argv)
       {
         kafs_rpc_write_req_t *req = (kafs_rpc_write_req_t *)payload;
         uint32_t data_len = req_len - (uint32_t)sizeof(*req);
+        kafs_rpc_write_resp_t *resp = (kafs_rpc_write_resp_t *)resp_buf;
+        if (req->data_mode == KAFS_RPC_DATA_PLAN_ONLY)
+        {
+          resp->size = req->size;
+          resp_len = (uint32_t)sizeof(*resp);
+          result = 0;
+          break;
+        }
         if (req->data_mode != KAFS_RPC_DATA_INLINE)
         {
           result = -EOPNOTSUPP;
@@ -219,7 +234,6 @@ int main(int argc, char **argv)
           result = -EBADMSG;
           break;
         }
-        kafs_rpc_write_resp_t *resp = (kafs_rpc_write_resp_t *)resp_buf;
         ssize_t wlen = kafs_core_write(&ctx, (kafs_inocnt_t)req->ino,
                                        payload + sizeof(*req), req->size, (off_t)req->off);
         if (wlen >= 0)

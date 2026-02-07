@@ -122,6 +122,37 @@ static const char *hotplug_data_mode_str(uint32_t mode)
   }
 }
 
+static const char *hotplug_compat_str(uint32_t result)
+{
+  switch (result)
+  {
+  case KAFS_HOTPLUG_COMPAT_OK:
+    return "ok";
+  case KAFS_HOTPLUG_COMPAT_WARN:
+    return "warn";
+  case KAFS_HOTPLUG_COMPAT_REJECT:
+    return "reject";
+  case KAFS_HOTPLUG_COMPAT_UNKNOWN:
+  default:
+    return "unknown";
+  }
+}
+
+static const char *hotplug_compat_reason_str(int32_t reason)
+{
+  switch (reason)
+  {
+  case 0:
+    return "ok";
+  case -EPROTONOSUPPORT:
+    return "protocol_mismatch";
+  case -EBADMSG:
+    return "bad_message";
+  default:
+    return "unknown";
+  }
+}
+
 static int cmd_hotplug_status(const char *mnt, int json)
 {
   int fd = open(mnt, O_RDONLY | O_DIRECTORY);
@@ -153,7 +184,17 @@ static int cmd_hotplug_status(const char *mnt, int json)
     printf("  \"epoch\": %u,\n", st.epoch);
     printf("  \"last_error\": %d,\n", st.last_error);
     printf("  \"wait_queue_len\": %u,\n", st.wait_queue_len);
-    printf("  \"wait_timeout_ms\": %u\n", st.wait_timeout_ms);
+    printf("  \"wait_timeout_ms\": %u,\n", st.wait_timeout_ms);
+    printf("  \"front_major\": %u,\n", st.front_major);
+    printf("  \"front_minor\": %u,\n", st.front_minor);
+    printf("  \"front_features\": %u,\n", st.front_features);
+    printf("  \"back_major\": %u,\n", st.back_major);
+    printf("  \"back_minor\": %u,\n", st.back_minor);
+    printf("  \"back_features\": %u,\n", st.back_features);
+    printf("  \"compat_result\": %u,\n", st.compat_result);
+    printf("  \"compat_result_str\": \"%s\",\n", hotplug_compat_str(st.compat_result));
+    printf("  \"compat_reason\": %d,\n", st.compat_reason);
+    printf("  \"compat_reason_str\": \"%s\"\n", hotplug_compat_reason_str(st.compat_reason));
     printf("}\n");
     return 0;
   }
@@ -166,6 +207,13 @@ static int cmd_hotplug_status(const char *mnt, int json)
   printf("  last_error: %d\n", st.last_error);
   printf("  wait_queue_len: %u\n", st.wait_queue_len);
   printf("  wait_timeout_ms: %u\n", st.wait_timeout_ms);
+  printf("  front_version: %u.%u\n", st.front_major, st.front_minor);
+  printf("  front_features: %u\n", st.front_features);
+  printf("  back_version: %u.%u\n", st.back_major, st.back_minor);
+  printf("  back_features: %u\n", st.back_features);
+  printf("  compat_result: %u (%s)\n", st.compat_result, hotplug_compat_str(st.compat_result));
+  printf("  compat_reason: %d (%s)\n", st.compat_reason,
+         hotplug_compat_reason_str(st.compat_reason));
   return 0;
 }
 

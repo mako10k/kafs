@@ -1579,6 +1579,14 @@ static int kafs_hotplug_enabled(const kafs_context_t *ctx)
 static int kafs_hotplug_wait_for_back(kafs_context_t *ctx, const char *uds_path)
 {
   ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_WAITING;
+  ctx->c_hotplug_front_major = KAFS_RPC_HELLO_MAJOR;
+  ctx->c_hotplug_front_minor = KAFS_RPC_HELLO_MINOR;
+  ctx->c_hotplug_front_features = KAFS_RPC_HELLO_FEATURES;
+  ctx->c_hotplug_back_major = 0;
+  ctx->c_hotplug_back_minor = 0;
+  ctx->c_hotplug_back_features = 0;
+  ctx->c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_UNKNOWN;
+  ctx->c_hotplug_compat_reason = 0;
   int srv = socket(AF_UNIX, SOCK_STREAM, 0);
   if (srv < 0)
   {
@@ -1637,6 +1645,8 @@ static int kafs_hotplug_wait_for_back(kafs_context_t *ctx, const char *uds_path)
     close(cli);
     ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
     ctx->c_hotplug_last_error = rc != 0 ? rc : -EBADMSG;
+    ctx->c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_REJECT;
+    ctx->c_hotplug_compat_reason = rc != 0 ? rc : -EBADMSG;
     return rc != 0 ? rc : -EBADMSG;
   }
   if (payload_len != sizeof(hello))
@@ -1644,16 +1654,25 @@ static int kafs_hotplug_wait_for_back(kafs_context_t *ctx, const char *uds_path)
     close(cli);
     ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
     ctx->c_hotplug_last_error = -EBADMSG;
+    ctx->c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_REJECT;
+    ctx->c_hotplug_compat_reason = -EBADMSG;
     return -EBADMSG;
   }
+  ctx->c_hotplug_back_major = hello.major;
+  ctx->c_hotplug_back_minor = hello.minor;
+  ctx->c_hotplug_back_features = hello.feature_flags;
   if (hello.major != KAFS_RPC_HELLO_MAJOR || hello.minor != KAFS_RPC_HELLO_MINOR ||
       (hello.feature_flags & ~KAFS_RPC_HELLO_FEATURES) != 0)
   {
     close(cli);
     ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
     ctx->c_hotplug_last_error = -EPROTONOSUPPORT;
+    ctx->c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_REJECT;
+    ctx->c_hotplug_compat_reason = -EPROTONOSUPPORT;
     return -EPROTONOSUPPORT;
   }
+  ctx->c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_OK;
+  ctx->c_hotplug_compat_reason = 0;
 
   kafs_rpc_hello_t ready;
   ready.major = KAFS_RPC_HELLO_MAJOR;
@@ -1896,9 +1915,10 @@ static ssize_t kafs_hotplug_call_read(struct fuse_context *fctx, kafs_context_t 
 {
   if (!kafs_hotplug_enabled(ctx))
     return -ENOSYS;
-  if (ctx->c_hotplug_data_mode != KAFS_RPC_DATA_INLINE)
+  if (ctx->c_hotplug_data_mode == KAFS_RPC_DATA_SHM)
     return -EOPNOTSUPP;
-  if (size > (KAFS_RPC_MAX_PAYLOAD - sizeof(kafs_rpc_read_resp_t)))
+  if (ctx->c_hotplug_data_mode == KAFS_RPC_DATA_INLINE &&
+      size > (KAFS_RPC_MAX_PAYLOAD - sizeof(kafs_rpc_read_resp_t)))
     return -EOPNOTSUPP;
 
   kafs_rpc_read_req_t req;
@@ -1917,6 +1937,7 @@ static ssize_t kafs_hotplug_call_read(struct fuse_context *fctx, kafs_context_t 
   int rc = kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_READ, KAFS_RPC_FLAG_ENDIAN_HOST,
                              req_id, ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, &req,
                              sizeof(req));
+  int need_local = 0;
   if (rc == 0)
   {
     kafs_rpc_resp_hdr_t resp_hdr;
@@ -1931,18 +1952,37 @@ static ssize_t kafs_hotplug_call_read(struct fuse_context *fctx, kafs_context_t 
     if (rc == 0)
     {
       kafs_rpc_read_resp_t *resp = (kafs_rpc_read_resp_t *)resp_buf;
-      uint32_t data_len = resp_len - (uint32_t)sizeof(*resp);
-      if (resp->size > data_len || resp->size > size)
-        rc = -EBADMSG;
+      if (ctx->c_hotplug_data_mode == KAFS_RPC_DATA_INLINE)
+      {
+        uint32_t data_len = resp_len - (uint32_t)sizeof(*resp);
+        if (resp->size > data_len || resp->size > size)
+          rc = -EBADMSG;
+        else
+        {
+          memcpy(buf, resp_buf + sizeof(*resp), resp->size);
+          rc = (int)resp->size;
+        }
+      }
       else
       {
-        memcpy(buf, resp_buf + sizeof(*resp), resp->size);
-        rc = (int)resp->size;
+        if (resp_len != sizeof(*resp))
+        {
+          rc = -EBADMSG;
+        }
+        else
+        {
+          need_local = 1;
+        }
       }
     }
   }
   if (ctx->c_hotplug_lock_init)
     pthread_mutex_unlock(&ctx->c_hotplug_lock);
+  if (rc == 0 && need_local)
+  {
+    ssize_t rlen = kafs_core_read(ctx, ino, buf, size, offset);
+    rc = rlen < 0 ? (int)rlen : (int)rlen;
+  }
   return rc;
 }
 
@@ -1952,9 +1992,10 @@ static ssize_t kafs_hotplug_call_write(struct fuse_context *fctx, kafs_context_t
 {
   if (!kafs_hotplug_enabled(ctx))
     return -ENOSYS;
-  if (ctx->c_hotplug_data_mode != KAFS_RPC_DATA_INLINE)
+  if (ctx->c_hotplug_data_mode == KAFS_RPC_DATA_SHM)
     return -EOPNOTSUPP;
-  if (size > (KAFS_RPC_MAX_PAYLOAD - sizeof(kafs_rpc_write_req_t)))
+  if (ctx->c_hotplug_data_mode == KAFS_RPC_DATA_INLINE &&
+      size > (KAFS_RPC_MAX_PAYLOAD - sizeof(kafs_rpc_write_req_t)))
     return -EOPNOTSUPP;
 
   uint8_t payload[KAFS_RPC_MAX_PAYLOAD];
@@ -1966,8 +2007,12 @@ static ssize_t kafs_hotplug_call_write(struct fuse_context *fctx, kafs_context_t
   req->off = (uint64_t)offset;
   req->size = (uint32_t)size;
   req->data_mode = ctx->c_hotplug_data_mode;
-  memcpy(payload + sizeof(*req), buf, size);
-  uint32_t payload_len = (uint32_t)(sizeof(*req) + size);
+  uint32_t payload_len = (uint32_t)sizeof(*req);
+  if (ctx->c_hotplug_data_mode == KAFS_RPC_DATA_INLINE)
+  {
+    memcpy(payload + sizeof(*req), buf, size);
+    payload_len = (uint32_t)(sizeof(*req) + size);
+  }
   uint64_t req_id = kafs_rpc_next_req_id();
 
   if (ctx->c_hotplug_lock_init)
@@ -1975,6 +2020,7 @@ static ssize_t kafs_hotplug_call_write(struct fuse_context *fctx, kafs_context_t
   int rc = kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_WRITE, KAFS_RPC_FLAG_ENDIAN_HOST,
                              req_id, ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, payload,
                              payload_len);
+  int need_local = 0;
   if (rc == 0)
   {
     kafs_rpc_resp_hdr_t resp_hdr;
@@ -1988,10 +2034,22 @@ static ssize_t kafs_hotplug_call_write(struct fuse_context *fctx, kafs_context_t
     if (rc == 0 && resp_len != sizeof(resp))
       rc = -EBADMSG;
     if (rc == 0)
-      rc = (int)resp.size;
+    {
+      if (ctx->c_hotplug_data_mode == KAFS_RPC_DATA_INLINE)
+        rc = (int)resp.size;
+      else
+      {
+        need_local = 1;
+      }
+    }
   }
   if (ctx->c_hotplug_lock_init)
     pthread_mutex_unlock(&ctx->c_hotplug_lock);
+  if (rc == 0 && need_local)
+  {
+    ssize_t wlen = kafs_core_write(ctx, ino, buf, size, offset);
+    rc = wlen < 0 ? (int)wlen : (int)wlen;
+  }
   return rc;
 }
 
@@ -2386,6 +2444,14 @@ static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_
     st.last_error = ctx->c_hotplug_last_error;
     st.wait_queue_len = ctx->c_hotplug_wait_queue_len;
     st.wait_timeout_ms = ctx->c_hotplug_wait_timeout_ms;
+    st.front_major = ctx->c_hotplug_front_major;
+    st.front_minor = ctx->c_hotplug_front_minor;
+    st.front_features = ctx->c_hotplug_front_features;
+    st.back_major = ctx->c_hotplug_back_major;
+    st.back_minor = ctx->c_hotplug_back_minor;
+    st.back_features = ctx->c_hotplug_back_features;
+    st.compat_result = ctx->c_hotplug_compat_result;
+    st.compat_reason = ctx->c_hotplug_compat_reason;
     memcpy(buf, &st, sizeof(st));
     return 0;
   }
@@ -3659,6 +3725,14 @@ int main(int argc, char **argv)
     ctx.c_hotplug_last_error = 0;
     ctx.c_hotplug_wait_queue_len = 0;
     ctx.c_hotplug_wait_timeout_ms = 0;
+    ctx.c_hotplug_front_major = KAFS_RPC_HELLO_MAJOR;
+    ctx.c_hotplug_front_minor = KAFS_RPC_HELLO_MINOR;
+    ctx.c_hotplug_front_features = KAFS_RPC_HELLO_FEATURES;
+    ctx.c_hotplug_back_major = 0;
+    ctx.c_hotplug_back_minor = 0;
+    ctx.c_hotplug_back_features = 0;
+    ctx.c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_UNKNOWN;
+    ctx.c_hotplug_compat_reason = 0;
 
     const char *data_mode = getenv("KAFS_HOTPLUG_DATA_MODE");
     if (data_mode)

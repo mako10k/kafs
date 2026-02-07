@@ -59,6 +59,14 @@ struct kafs_context
   int c_hotplug_last_error;
   uint32_t c_hotplug_wait_queue_len;
   uint32_t c_hotplug_wait_timeout_ms;
+  uint16_t c_hotplug_front_major;
+  uint16_t c_hotplug_front_minor;
+  uint32_t c_hotplug_front_features;
+  uint16_t c_hotplug_back_major;
+  uint16_t c_hotplug_back_minor;
+  uint32_t c_hotplug_back_features;
+  uint32_t c_hotplug_compat_result;
+  int32_t c_hotplug_compat_reason;
   pthread_mutex_t c_hotplug_lock;
   int c_hotplug_lock_init;
 };

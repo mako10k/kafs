@@ -361,3 +361,22 @@ kafsctl
 - 連続再接続失敗が閾値超過。
 - wait_queue_len が上限を越えた。
 - compat_result が reject。
+
+## 15. リファクタ計画 (front が全 I/O、back はロジックのみ)
+
+制約
+- front の I/O を優先し、back から画像アクセスを段階的に撤去する。
+- 既存 INLINE は維持し、PLAN_ONLY を先に有効化する。
+- 互換性情報は status に追加し、既存出力は維持する。
+
+移行ステップ
+- S1: READ/WRITE の PLAN_ONLY を導入し、front がローカル I/O を実行。
+- S2: back の READ/WRITE から画像アクセスを削除し、計画応答のみ返す。
+- S3: TRUNCATE/COPY なども計画応答化し、front が実行。
+
+タスク分解
+- RPC: PLAN_ONLY 応答の最小メタデータ定義と互換性チェック。
+- front: PLAN_ONLY 受信時にローカル I/O を実行。
+- back: PLAN_ONLY で計画のみ返す (画像アクセスなし)。
+- kafsctl: status に front/back 互換性情報を出力。
+- テスト: PLAN_ONLY と INLINE の両方で基本 read/write を確認。
