@@ -2,8 +2,8 @@
 	"servers": {
 		"mcp-shell-server": {
 			"type": "stdio",
-			"command": "mcp-shell-server",
-			"args": []
+			"command": "npx",
+			"args": ["-y", "@mako10k/mcp-shell-server@latest"]
 		}
 	},
 	"inputs": []

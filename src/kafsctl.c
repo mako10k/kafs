@@ -128,7 +128,8 @@ static const char *to_kafs_path(const char *mnt_abs, const char *p, char out[KAF
   return out;
 }
 
-static const char *to_mount_rel_path(const char *mnt_abs, const char *p, char out[KAFS_IOCTL_PATH_MAX])
+static const char *to_mount_rel_path(const char *mnt_abs, const char *p,
+                                     char out[KAFS_IOCTL_PATH_MAX])
 {
   if (!p || !*p)
     return NULL;

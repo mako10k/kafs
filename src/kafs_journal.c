@@ -121,47 +121,47 @@ static void jprintf(kafs_journal_t *j, const char *fmt, ...)
   jwritef(j, buf);
 }
 
+typedef enum
+{
+  KJ_SIDECAR_BEGIN,
+  KJ_SIDECAR_ABORT,
+  KJ_SIDECAR_NOTE,
+} kj_sidecar_kind_t;
+
+static void kj_write_sidecar_tsline(kafs_journal_t *j, kj_sidecar_kind_t kind, uint64_t seq,
+                                    const char *op, const char *opt_fmt, va_list opt_ap)
+{
+  if (j->fd < 0)
+    return;
+  struct timespec ts;
+  timespec_now(&ts);
+  char prefix[160];
+  switch (kind)
+  {
+  case KJ_SIDECAR_BEGIN:
+    snprintf(prefix, sizeof(prefix), "BEGIN %llu %s %ld.%09ld ", (unsigned long long)seq,
+             op ? op : "", (long)ts.tv_sec, ts.tv_nsec);
+    break;
+  case KJ_SIDECAR_ABORT:
+    snprintf(prefix, sizeof(prefix), "ABORT %llu %ld.%09ld ", (unsigned long long)seq,
+             (long)ts.tv_sec, ts.tv_nsec);
+    break;
+  case KJ_SIDECAR_NOTE:
+    snprintf(prefix, sizeof(prefix), "NOTE %s %ld.%09ld ", op ? op : "", (long)ts.tv_sec,
+             ts.tv_nsec);
+    break;
+  }
+  dprintf(j->fd, "%s", prefix);
+  if (opt_fmt && *opt_fmt)
+    vdprintf(j->fd, opt_fmt, opt_ap);
+  dprintf(j->fd, "\n");
+  fsync(j->fd);
+}
+
 // ----------------------
 // In-image ring journal
 // ----------------------
-// Journal header persisted within image
-#define KJ_MAGIC 0x4b414a4c /* 'KAJL' */
-#define KJ_VER 2
-typedef struct kj_header
-{
-  uint32_t magic;     // KJ_MAGIC
-  uint16_t version;   // KJ_VER
-  uint16_t flags;     // future: bit0=clean
-  uint64_t area_size; // ring capacity in bytes
-  uint64_t write_off; // current write offset within ring [0..area_size)
-  uint64_t seq;       // last used sequence id
-  uint64_t reserved0;
-  uint32_t header_crc; // CRC32 over header with this field zeroed
-} __attribute__((packed)) kj_header_t;
-
-// Record tags
-#define KJ_TAG_BEG 0x42454732u  /* 'BEG2' */
-#define KJ_TAG_CMT 0x434d5432u  /* 'CMT2' */
-#define KJ_TAG_ABR 0x41425232u  /* 'ABR2' */
-#define KJ_TAG_NOTE 0x4e4f5432u /* 'NOT2' */
-#define KJ_TAG_WRAP 0x57524150u /* 'WRAP' */
-
-typedef struct kj_rec_hdr
-{
-  uint32_t tag;   // KJ_TAG_*
-  uint32_t size;  // payload size in bytes (may be 0)
-  uint64_t seq;   // sequence id (0 for NOTE)
-  uint32_t crc32; // CRC32 over (tag,size,seq,payload) with this field zeroed
-} __attribute__((packed)) kj_rec_hdr_t;
-
-static size_t kj_header_size(void)
-{
-  // align header to 64 bytes for future growth
-  size_t s = sizeof(kj_header_t);
-  if (s % 64)
-    s += 64 - (s % 64);
-  return s;
-}
+// Journal format definitions live in kafs_journal.h
 
 static int kj_pread(int fd, void *buf, size_t sz, off_t off)
 {
@@ -213,23 +213,6 @@ static void kj_reset_area(kafs_journal_t *j)
   }
 }
 
-// CRC32 (IEEE 802.3)
-static uint32_t kj_crc32_update(uint32_t crc, const uint8_t *buf, size_t len)
-{
-  crc = ~crc;
-  for (size_t i = 0; i < len; ++i)
-  {
-    crc ^= buf[i];
-    for (int k = 0; k < 8; ++k)
-      crc = (crc >> 1) ^ (0xEDB88320u & (-(int)(crc & 1)));
-  }
-  return ~crc;
-}
-static uint32_t kj_crc32(const void *buf, size_t len)
-{
-  return kj_crc32_update(0, (const uint8_t *)buf, len);
-}
-
 static int kj_init_or_load(kafs_journal_t *j)
 {
   kj_header_t hdr;
@@ -266,6 +249,22 @@ static int kj_init_or_load(kafs_journal_t *j)
   return kj_header_store(j, &nh);
 }
 
+static void kj_persist_header(kafs_journal_t *j, int do_fsync)
+{
+  kj_header_t hdr;
+  if (kj_header_load(j, &hdr) == 0)
+  {
+    hdr.write_off = j->write_off;
+    hdr.seq = j->seq;
+    hdr.header_crc = 0;
+    hdr.header_crc = kj_crc32(&hdr, sizeof(hdr));
+    if (do_fsync)
+      (void)kj_header_store(j, &hdr);
+    else
+      (void)kj_pwrite_nosync(j->fd, &hdr, sizeof(hdr), (off_t)j->base_off);
+  }
+}
+
 static int kj_ring_write(kafs_journal_t *j, const void *data, size_t len, int do_fsync)
 {
   if (!j->use_inimage)
@@ -287,18 +286,7 @@ static int kj_ring_write(kafs_journal_t *j, const void *data, size_t len, int do
     return -EIO;
   j->write_off += len;
   // persist header with updated write offset and seq
-  kj_header_t hdr;
-  if (kj_header_load(j, &hdr) == 0)
-  {
-    hdr.write_off = j->write_off;
-    hdr.seq = j->seq;
-    hdr.header_crc = 0;
-    hdr.header_crc = kj_crc32(&hdr, sizeof(hdr));
-    if (do_fsync)
-      (void)kj_header_store(j, &hdr);
-    else
-      (void)kj_pwrite_nosync(j->fd, &hdr, sizeof(hdr), (off_t)j->base_off);
-  }
+  kj_persist_header(j, do_fsync);
   return 0;
 }
 
@@ -341,16 +329,37 @@ static void j_build_payload(char *dst, size_t cap, const char *op, const char *f
   }
 }
 
+static void kj_write_inimage_payload(kafs_journal_t *j, uint32_t tag, uint64_t seq, const char *op,
+                                     const char *fmt, va_list ap)
+{
+  char payload[512];
+  j_build_payload(payload, sizeof(payload), op, fmt, ap);
+  (void)kj_write_record(j, tag, seq, payload);
+}
+
+static void kj_state_disable(struct kafs_context *ctx)
+{
+  g_state.ctx = ctx;
+  g_state.j.enabled = 0;
+  g_state.j.fd = -1;
+  g_state.j.seq = 0;
+  g_state.j.mtx = NULL;
+  g_state.j.use_inimage = 0;
+  g_state.j.base_off = 0;
+  g_state.j.data_off = 0;
+  g_state.j.base_ptr = NULL;
+  g_state.j.area_size = 0;
+  g_state.j.gc_delay_ns = 0;
+  g_state.j.gc_last_ns = 0;
+  g_state.j.gc_pending = 0;
+}
+
 int kafs_journal_init(struct kafs_context *ctx, const char *image_path)
 {
   const char *env = getenv("KAFS_JOURNAL");
   if (env && strcmp(env, "0") == 0)
   {
-    g_state.ctx = ctx;
-    g_state.j.enabled = 0;
-    g_state.j.fd = -1;
-    g_state.j.seq = 0;
-    g_state.j.mtx = NULL;
+    kj_state_disable(ctx);
     return 0;
   }
   // Prefer in-image journal if present in superblock and env != explicit path
@@ -389,16 +398,7 @@ int kafs_journal_init(struct kafs_context *ctx, const char *image_path)
     return 0;
   }
   // 外部サイドカーは廃止。ジャーナル無効で起動。
-  g_state.ctx = ctx;
-  g_state.j.enabled = 0;
-  g_state.j.fd = -1;
-  g_state.j.seq = 0;
-  g_state.j.mtx = NULL;
-  g_state.j.use_inimage = 0;
-  g_state.j.base_off = 0;
-  g_state.j.data_off = 0;
-  g_state.j.base_ptr = NULL;
-  g_state.j.area_size = 0;
+  kj_state_disable(ctx);
   return 0;
 }
 
@@ -416,15 +416,7 @@ void kafs_journal_shutdown(struct kafs_context *ctx)
       jlock(j);
       if (j->gc_pending)
       {
-        kj_header_t hdr;
-        if (kj_header_load(j, &hdr) == 0)
-        {
-          hdr.write_off = j->write_off;
-          hdr.seq = j->seq;
-          hdr.header_crc = 0;
-          hdr.header_crc = kj_crc32(&hdr, sizeof(hdr));
-          (void)kj_header_store(j, &hdr);
-        }
+        kj_persist_header(j, 1);
         j->gc_pending = 0;
       }
       junlock(j);
@@ -458,28 +450,17 @@ uint64_t kafs_journal_begin(struct kafs_context *ctx, const char *op, const char
   uint64_t id = ++j->seq;
   if (j->use_inimage)
   {
-    char payload[512];
     va_list ap;
     va_start(ap, fmt);
-    j_build_payload(payload, sizeof(payload), op, fmt, ap);
+    kj_write_inimage_payload(j, KJ_TAG_BEG, id, op, fmt, ap);
     va_end(ap);
-    (void)kj_write_record(j, KJ_TAG_BEG, id, payload);
   }
   else
   {
-    struct timespec ts;
-    timespec_now(&ts);
-    dprintf(j->fd, "BEGIN %llu %s %ld.%09ld ", (unsigned long long)id, op, (long)ts.tv_sec,
-            ts.tv_nsec);
-    if (fmt && *fmt)
-    {
-      va_list ap;
-      va_start(ap, fmt);
-      vdprintf(j->fd, fmt, ap);
-      va_end(ap);
-    }
-    dprintf(j->fd, "\n");
-    fsync(j->fd);
+    va_list ap;
+    va_start(ap, fmt);
+    kj_write_sidecar_tsline(j, KJ_SIDECAR_BEGIN, id, op, fmt, ap);
+    va_end(ap);
   }
   junlock(j);
   return id;
@@ -503,15 +484,7 @@ void kafs_journal_commit(struct kafs_context *ctx, uint64_t seq)
     if (delay == 0)
     {
       // すぐに耐久化
-      kj_header_t hdr;
-      if (kj_header_load(j, &hdr) == 0)
-      {
-        hdr.write_off = j->write_off;
-        hdr.seq = j->seq;
-        hdr.header_crc = 0;
-        hdr.header_crc = kj_crc32(&hdr, sizeof(hdr));
-        (void)kj_header_store(j, &hdr);
-      }
+      kj_persist_header(j, 1);
       junlock(j);
       return;
     }
@@ -532,15 +505,7 @@ void kafs_journal_commit(struct kafs_context *ctx, uint64_t seq)
       jlock(j);
       if (j->gc_pending && (nsec_now_mono() - j->gc_last_ns) >= delay)
       {
-        kj_header_t hdr;
-        if (kj_header_load(j, &hdr) == 0)
-        {
-          hdr.write_off = j->write_off;
-          hdr.seq = j->seq;
-          hdr.header_crc = 0;
-          hdr.header_crc = kj_crc32(&hdr, sizeof(hdr));
-          (void)kj_header_store(j, &hdr);
-        }
+        kj_persist_header(j, 1);
         j->gc_pending = 0;
       }
       junlock(j);
@@ -580,18 +545,10 @@ void kafs_journal_abort(struct kafs_context *ctx, uint64_t seq, const char *reas
   }
   else
   {
-    struct timespec ts;
-    timespec_now(&ts);
-    dprintf(j->fd, "ABORT %llu %ld.%09ld ", (unsigned long long)seq, (long)ts.tv_sec, ts.tv_nsec);
-    if (reason_fmt && *reason_fmt)
-    {
-      va_list ap;
-      va_start(ap, reason_fmt);
-      vdprintf(j->fd, reason_fmt, ap);
-      va_end(ap);
-    }
-    dprintf(j->fd, "\n");
-    fsync(j->fd);
+    va_list ap;
+    va_start(ap, reason_fmt);
+    kj_write_sidecar_tsline(j, KJ_SIDECAR_ABORT, seq, NULL, reason_fmt, ap);
+    va_end(ap);
   }
   junlock(j);
 }
@@ -604,27 +561,17 @@ void kafs_journal_note(struct kafs_context *ctx, const char *op, const char *fmt
   jlock(j);
   if (j->use_inimage)
   {
-    char payload[512];
     va_list ap;
     va_start(ap, fmt);
-    j_build_payload(payload, sizeof(payload), op, fmt, ap);
+    kj_write_inimage_payload(j, KJ_TAG_NOTE, 0, op, fmt, ap);
     va_end(ap);
-    (void)kj_write_record(j, KJ_TAG_NOTE, 0, payload);
   }
   else
   {
-    struct timespec ts;
-    timespec_now(&ts);
-    dprintf(j->fd, "NOTE %s %ld.%09ld ", op, (long)ts.tv_sec, ts.tv_nsec);
-    if (fmt && *fmt)
-    {
-      va_list ap;
-      va_start(ap, fmt);
-      vdprintf(j->fd, fmt, ap);
-      va_end(ap);
-    }
-    dprintf(j->fd, "\n");
-    fsync(j->fd);
+    va_list ap;
+    va_start(ap, fmt);
+    kj_write_sidecar_tsline(j, KJ_SIDECAR_NOTE, 0, op, fmt, ap);
+    va_end(ap);
   }
   junlock(j);
 }

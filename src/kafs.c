@@ -1086,14 +1086,18 @@ static ssize_t kafs_dirent_read(struct kafs_context *ctx, kafs_sinode_t *inoent_
   assert(inoent_dir != NULL);
   assert(dirent != NULL);
   assert(kafs_ino_get_usage(inoent_dir));
+  kafs_off_t filesize = kafs_ino_size_get(inoent_dir);
   ssize_t r1 =
       KAFS_CALL(kafs_pread, ctx, inoent_dir, dirent, offsetof(kafs_sdirent_t, d_filename), offset);
   if (r1 == 0)
     return 0;
   if (r1 < (ssize_t)offsetof(kafs_sdirent_t, d_filename))
   {
-    kafs_dlog(1, "%s(short read dirent header)\n", __func__);
-    return -EIO;
+    kafs_log(KAFS_LOG_WARNING,
+             "%s: short read dirent header ino_dir=%d off=%" PRIuFAST64 " size=%" PRIuFAST64
+             " got=%zd\n",
+             __func__, (int)(inoent_dir - ctx->c_inotbl), offset, filesize, r1);
+    return 0;
   }
   kafs_inocnt_t d_ino = kafs_dirent_ino_get(dirent);
   kafs_filenamelen_t filenamelen = kafs_dirent_filenamelen_get(dirent);
@@ -1107,6 +1111,15 @@ static ssize_t kafs_dirent_read(struct kafs_context *ctx, kafs_sinode_t *inoent_
              (uint_fast32_t)filenamelen, (int)(inoent_dir - ctx->c_inotbl), offset);
     return -EIO;
   }
+  kafs_off_t want_end = offset + (kafs_off_t)r1 + (kafs_off_t)filenamelen;
+  if (want_end > filesize)
+  {
+    kafs_log(KAFS_LOG_WARNING,
+             "%s: dirent tail beyond size ino_dir=%d off=%" PRIuFAST64 " need_end=%" PRIuFAST64
+             " size=%" PRIuFAST64 "\n",
+             __func__, (int)(inoent_dir - ctx->c_inotbl), offset, want_end, filesize);
+    return 0;
+  }
   ssize_t r2 = KAFS_CALL(kafs_pread, ctx, inoent_dir, dirent->d_filename, filenamelen, offset + r1);
   if (r2 < (ssize_t)filenamelen)
   {
@@ -1114,7 +1127,7 @@ static ssize_t kafs_dirent_read(struct kafs_context *ctx, kafs_sinode_t *inoent_
              "%s: short read dirent name ino_dir=%d off=%" PRIuFAST64 " need=%" PRIuFAST32
              " got=%zd\n",
              __func__, (int)(inoent_dir - ctx->c_inotbl), offset, (uint_fast32_t)filenamelen, r2);
-    return -EIO;
+    return (offset + (kafs_off_t)r1 + (kafs_off_t)r2 >= filesize) ? 0 : -EIO;
   }
   dirent->d_filename[r2] = '\0';
   kafs_dlog(3,
@@ -1222,7 +1235,7 @@ static int kafs_dirent_iter_next(const char *buf, size_t len, size_t off, kafs_i
   if (off >= len)
     return 0;
   if (len - off < hdr_sz)
-    return -EIO;
+    return 0;
   kafs_dirent_hdr_t hdr;
   memcpy(&hdr, buf + off, hdr_sz);
   kafs_inocnt_t ino = kafs_inocnt_stoh(hdr.d_ino);
@@ -1232,7 +1245,7 @@ static int kafs_dirent_iter_next(const char *buf, size_t len, size_t off, kafs_i
   if (namelen >= FILENAME_MAX)
     return -EIO;
   if (len - off < hdr_sz + (size_t)namelen)
-    return -EIO;
+    return 0;
   *out_ino = ino;
   *out_namelen = namelen;
   *out_name = buf + off + hdr_sz;
@@ -1897,9 +1910,9 @@ static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_
 }
 
 static ssize_t kafs_op_copy_file_range(const char *path_in, struct fuse_file_info *fi_in,
-                                      off_t offset_in, const char *path_out,
-                                      struct fuse_file_info *fi_out, off_t offset_out,
-                                      size_t size, int flags)
+                                       off_t offset_in, const char *path_out,
+                                       struct fuse_file_info *fi_out, off_t offset_out, size_t size,
+                                       int flags)
 {
   struct fuse_context *fctx = fuse_get_context();
   kafs_context_t *ctx = (kafs_context_t *)fctx->private_data;
@@ -2846,16 +2859,18 @@ static struct fuse_operations kafs_operations = {
 
 static void usage(const char *prog)
 {
-  fprintf(stderr,
-          "Usage: %s [--image <image>|--image=<image>] <mountpoint> [FUSE options...]\n"
-          "       %s <image> <mountpoint> [FUSE options...] (mount helper compatible)\n"
-          "       env KAFS_IMAGE can be used as fallback image path.\n"
-          "       default runs single-threaded; enable MT via -o multi_thread[=N] or env KAFS_MT=1.\n"
-          "       MT thread count can be set via -o multi_thread=N (preferred) or env KAFS_MAX_THREADS.\n"
-          "Examples:\n"
-          "  %s --image test.img mnt -f\n"
-          "  %s --image test.img mnt -f -o multi_thread=8\n",
-          prog, prog, prog, prog);
+  fprintf(
+      stderr,
+      "Usage: %s [--image <image>|--image=<image>] <mountpoint> [FUSE options...]\n"
+      "       %s <image> <mountpoint> [FUSE options...] (mount helper compatible)\n"
+      "       env KAFS_IMAGE can be used as fallback image path.\n"
+      "       default runs single-threaded; enable MT via -o multi_thread[=N] or env KAFS_MT=1.\n"
+      "       MT thread count can be set via -o multi_thread=N (preferred) or env "
+      "KAFS_MAX_THREADS.\n"
+      "Examples:\n"
+      "  %s --image test.img mnt -f\n"
+      "  %s --image test.img mnt -f -o multi_thread=8\n",
+      prog, prog, prog, prog);
 }
 
 static void kafs_signal_handler(int sig)
@@ -2998,7 +3013,8 @@ int main(int argc, char **argv)
           if (strncmp(tok, "max_threads=", 12) == 0 || strcmp(tok, "max_threads") == 0)
             saw_max_threads = 1;
 
-          if (strcmp(tok, "multi_thread") == 0 || strcmp(tok, "multi-thread") == 0 || strcmp(tok, "multithread") == 0)
+          if (strcmp(tok, "multi_thread") == 0 || strcmp(tok, "multi-thread") == 0 ||
+              strcmp(tok, "multithread") == 0)
           {
             want_mt = 1;
             continue;

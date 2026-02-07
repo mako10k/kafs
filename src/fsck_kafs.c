@@ -3,70 +3,23 @@
 #include "kafs_hash.h"
 #include "kafs_locks.h"
 #include "kafs_block.h"
-
+/* jscpd:ignore-start */
 #include <errno.h>
 #include <fcntl.h>
-#include <sys/mman.h>
-#include <inttypes.h>
+#include <inttypes.h> // PRIu64, PRIu32
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+/* jscpd:ignore-end */
 
-// In-image journal format (must match kafs_journal.c)
-#define KJ_MAGIC 0x4b414a4c /* 'KAJL' */
-#define KJ_VER 2
-typedef struct kj_header
-{
-  uint32_t magic;
-  uint16_t version;
-  uint16_t flags;
-  uint64_t area_size;
-  uint64_t write_off;
-  uint64_t seq;
-  uint64_t reserved0;
-  uint32_t header_crc; // CRC over this struct with this field zeroed
-} __attribute__((packed)) kj_header_t;
+#include "kafs_journal.h"
 
-#define KJ_TAG_BEG 0x42454732u  /* 'BEG2' */
-#define KJ_TAG_CMT 0x434d5432u  /* 'CMT2' */
-#define KJ_TAG_ABR 0x41425232u  /* 'ABR2' */
-#define KJ_TAG_NOTE 0x4e4f5432u /* 'NOT2' */
-#define KJ_TAG_WRAP 0x57524150u /* 'WRAP' */
-
-typedef struct kj_rec_hdr
-{
-  uint32_t tag;
-  uint32_t size;
-  uint64_t seq;
-  uint32_t crc32;
-} __attribute__((packed)) kj_rec_hdr_t;
-
-static size_t kj_header_size(void)
-{
-  size_t s = sizeof(kj_header_t);
-  if (s % 64)
-    s += 64 - (s % 64);
-  return s;
-}
-
-static uint32_t crc32_update(uint32_t crc, const uint8_t *buf, size_t len)
-{
-  crc = ~crc;
-  for (size_t i = 0; i < len; ++i)
-  {
-    crc ^= buf[i];
-    for (int k = 0; k < 8; ++k)
-      crc = (crc >> 1) ^ (0xEDB88320u & (-(int)(crc & 1)));
-  }
-  return ~crc;
-}
-static uint32_t crc32_all(const void *buf, size_t len)
-{
-  return crc32_update(0, (const uint8_t *)buf, len);
-}
+// In-image journal format definitions come from kafs_journal.h
 
 static int pread_all(int fd, void *buf, size_t sz, off_t off)
 {
@@ -372,7 +325,7 @@ int main(int argc, char **argv)
   {
     kj_header_t tmp = hdr;
     tmp.header_crc = 0;
-    uint32_t c = crc32_all(&tmp, sizeof(tmp));
+    uint32_t c = kj_crc32(&tmp, sizeof(tmp));
     if (c != hdr.header_crc)
     {
       fprintf(stderr, "Journal: header CRC mismatch\n");
@@ -430,23 +383,11 @@ int main(int argc, char **argv)
         }
       }
       // CRC check
-      size_t total = sizeof(rh) + rh.size;
-      char *buf = (char *)malloc(total);
-      if (!buf)
-      {
-        if (pl)
-          free(pl);
-        perror("malloc");
-        ok = 0;
-        break;
-      }
       kj_rec_hdr_t rh2 = rh;
       rh2.crc32 = 0;
-      memcpy(buf, &rh2, sizeof(rh2));
+      uint32_t c = kj_crc32_update(0, (const uint8_t *)&rh2, sizeof(rh2));
       if (rh.size && pl)
-        memcpy(buf + sizeof(rh2), pl, rh.size);
-      uint32_t c = crc32_all(buf, total);
-      free(buf);
+        c = kj_crc32_update(c, (const uint8_t *)pl, rh.size);
       if (pl)
         free(pl);
       if (c != rh.crc32)
@@ -491,7 +432,7 @@ int main(int argc, char **argv)
         .reserved0 = 0,
         .header_crc = 0,
     };
-    nh.header_crc = crc32_all(&nh, sizeof(nh));
+    nh.header_crc = kj_crc32(&nh, sizeof(nh));
     if (pwrite_all(fd, &nh, sizeof(nh), (off_t)joff) != 0)
     {
       perror("pwrite header");

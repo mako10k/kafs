@@ -27,15 +27,15 @@
 ### Individual Tests
 
 ```bash
-./scripts/test-git-operations.sh  # Test 1: Git workflow reproduction
-./test-hooks-direct.sh            # Test 2: Hook functions verification
-./test-fresh-image-git-fsck.sh    # Test 3: Complete scenario
+./scripts/test-git-operations.sh        # Test 1: Git workflow reproduction
+./scripts/test-hooks-direct.sh          # Test 2: Hook functions verification
+./scripts/test-fresh-image-git-fsck.sh  # Test 3: Complete scenario
 ```
 
 ### Master Test Runner
 
 ```bash
-./scripts/run-all-tests.sh        # Run all 3 tests sequentially
+./scripts/run-all-tests.sh              # Run all 3 tests sequentially
 ```
 
 ## Test Results
@@ -121,10 +121,10 @@ Generates: `TEST_EXECUTION_RESULTS.txt`
 ./scripts/test-git-operations.sh
 
 # Test 2: Hook functions
-./test-hooks-direct.sh
+./scripts/test-hooks-direct.sh
 
 # Test 3: Fresh image + git + fsck
-./test-fresh-image-git-fsck.sh
+./scripts/test-fresh-image-git-fsck.sh
 ```
 
 ### Check Test Logs
