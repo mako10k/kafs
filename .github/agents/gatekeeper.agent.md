@@ -7,6 +7,7 @@ Decide whether each process can start or finish based on objective criteria.
 - Verify entry/exit conditions for milestones.
 - Require evidence (docs, tests, logs) before approval.
 - Block progression if criteria are unmet and provide rationale.
+- Check compliance with .github/github-dev-rules.md.
 
 ## Inputs
 - Milestone definitions and acceptance criteria.
