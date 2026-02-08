@@ -21,7 +21,9 @@ The filesystem root directory is owned by the user running mkfs.kafs (UID/GID).
 .SH OPTIONS
 .TP
 .BR -s ", " --size-bytes "=" size
-Total image size in bytes (default: 1GiB).
+Total image size in bytes (default: 1GiB). K/M/G suffixes are accepted.
+If the image file already exists and has a non-zero size, that file size
+is used and overrides this option.
 .TP
 .BR -b ", " --blksize-log "=" log2
 Block size as log2 value (default: 12 => 4096 bytes).
@@ -30,7 +32,7 @@ Block size as log2 value (default: 12 => 4096 bytes).
 Number of inodes (default: 65536).
 .TP
 .BR -J ", " --journal-size-bytes "=" bytes
-Journal region size (default: 1MiB, minimum 4KiB).
+Journal region size (default: 1MiB, minimum 4KiB). K/M/G suffixes are accepted.
 .SH EXAMPLES
 Create a 2GiB image with 4MiB journal:
 .PP
