@@ -44,7 +44,7 @@ static int kafs_front_spawn_back(const char *uds_path, pid_t pgid, pid_t *out_pi
   }
   if (pid == 0)
   {
-    if (setpgid(0, pgid) != 0)
+    if (setpgid(0, pgid) != 0 && errno != EPERM)
     {
       perror("setpgid");
       _exit(127);
@@ -68,7 +68,7 @@ static int kafs_front_spawn_back(const char *uds_path, pid_t pgid, pid_t *out_pi
     _exit(127);
   }
 
-  if (setpgid(pid, pgid) != 0)
+  if (setpgid(pid, pgid) != 0 && errno != EPERM)
   {
     perror("setpgid");
     close(fds[0]);
@@ -213,7 +213,7 @@ int main(int argc, char **argv)
   }
 
   pid_t pgid = getpid();
-  if (setpgid(0, pgid) != 0)
+  if (setpgid(0, pgid) != 0 && errno != EPERM)
   {
     perror("setpgid");
     return 2;
