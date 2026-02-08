@@ -2610,6 +2610,98 @@ static int kafs_reflink_clone(kafs_context_t *ctx, kafs_sinode_t *src, kafs_sino
   return 0;
 }
 
+static int kafs_hotplug_env_key_len(const char *key)
+{
+  if (!key)
+    return -1;
+  size_t len = strnlen(key, KAFS_HOTPLUG_ENV_KEY_MAX);
+  if (len == 0 || len >= KAFS_HOTPLUG_ENV_KEY_MAX)
+    return -1;
+  return (int)len;
+}
+
+static int kafs_hotplug_env_value_len(const char *value)
+{
+  if (!value)
+    return -1;
+  size_t len = strnlen(value, KAFS_HOTPLUG_ENV_VALUE_MAX);
+  if (len >= KAFS_HOTPLUG_ENV_VALUE_MAX)
+    return -1;
+  return (int)len;
+}
+
+static int kafs_hotplug_env_find(const kafs_context_t *ctx, const char *key)
+{
+  if (!ctx || !key)
+    return -1;
+  for (uint32_t i = 0; i < ctx->c_hotplug_env_count; ++i)
+  {
+    if (strcmp(ctx->c_hotplug_env[i].key, key) == 0)
+      return (int)i;
+  }
+  return -1;
+}
+
+static void kafs_hotplug_env_lock(kafs_context_t *ctx)
+{
+  if (ctx && ctx->c_hotplug_lock_init)
+    pthread_mutex_lock(&ctx->c_hotplug_lock);
+}
+
+static void kafs_hotplug_env_unlock(kafs_context_t *ctx)
+{
+  if (ctx && ctx->c_hotplug_lock_init)
+    pthread_mutex_unlock(&ctx->c_hotplug_lock);
+}
+
+static int kafs_hotplug_env_set(kafs_context_t *ctx, const char *key, const char *value)
+{
+  if (!ctx)
+    return -EINVAL;
+  if (kafs_hotplug_env_key_len(key) < 0)
+    return -EINVAL;
+  if (kafs_hotplug_env_value_len(value) < 0)
+    return -EINVAL;
+
+  kafs_hotplug_env_lock(ctx);
+  int idx = kafs_hotplug_env_find(ctx, key);
+  if (idx < 0)
+  {
+    if (ctx->c_hotplug_env_count >= KAFS_HOTPLUG_ENV_MAX)
+    {
+      kafs_hotplug_env_unlock(ctx);
+      return -ENOSPC;
+    }
+    idx = (int)ctx->c_hotplug_env_count++;
+  }
+
+  snprintf(ctx->c_hotplug_env[idx].key, sizeof(ctx->c_hotplug_env[idx].key), "%s", key);
+  snprintf(ctx->c_hotplug_env[idx].value, sizeof(ctx->c_hotplug_env[idx].value), "%s", value);
+  kafs_hotplug_env_unlock(ctx);
+  return 0;
+}
+
+static int kafs_hotplug_env_unset(kafs_context_t *ctx, const char *key)
+{
+  if (!ctx)
+    return -EINVAL;
+  if (kafs_hotplug_env_key_len(key) < 0)
+    return -EINVAL;
+
+  kafs_hotplug_env_lock(ctx);
+  int idx = kafs_hotplug_env_find(ctx, key);
+  if (idx < 0)
+  {
+    kafs_hotplug_env_unlock(ctx);
+    return -ENOENT;
+  }
+  for (uint32_t i = (uint32_t)idx + 1; i < ctx->c_hotplug_env_count; ++i)
+    ctx->c_hotplug_env[i - 1] = ctx->c_hotplug_env[i];
+  ctx->c_hotplug_env_count--;
+  kafs_hotplug_env_unlock(ctx);
+  return 0;
+}
+
 static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_info *fi,
                          unsigned int flags, void *data)
 {
@@ -2715,6 +2807,78 @@ static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_
     st.compat_reason = ctx->c_hotplug_compat_reason;
     memcpy(buf, &st, sizeof(st));
     return 0;
+  }
+
+  if ((unsigned int)cmd == (unsigned int)KAFS_IOCTL_HOTPLUG_RESTART)
+  {
+    if (ctx->c_hotplug_state == KAFS_HOTPLUG_STATE_DISABLED)
+      return -ENOSYS;
+    kafs_hotplug_mark_disconnected(ctx, -ECONNRESET);
+    return 0;
+  }
+
+  if ((unsigned int)cmd == (unsigned int)KAFS_IOCTL_SET_HOTPLUG_TIMEOUT)
+  {
+    void *buf = data ? data : arg;
+    if (!buf)
+      return -EINVAL;
+    if (_IOC_SIZE((unsigned int)cmd) < sizeof(kafs_hotplug_timeout_t))
+      return -EINVAL;
+    kafs_hotplug_timeout_t req;
+    memcpy(&req, buf, sizeof(req));
+    if (req.struct_size < sizeof(req))
+      return -EINVAL;
+    if (req.timeout_ms == 0)
+      return -EINVAL;
+    ctx->c_hotplug_wait_timeout_ms = req.timeout_ms;
+    return 0;
+  }
+
+  if ((unsigned int)cmd == (unsigned int)KAFS_IOCTL_GET_HOTPLUG_ENV)
+  {
+    void *buf = data ? data : arg;
+    if (!buf)
+      return -EINVAL;
+    if (_IOC_SIZE((unsigned int)cmd) < sizeof(kafs_hotplug_env_t))
+      return -EINVAL;
+    kafs_hotplug_env_t out;
+    memset(&out, 0, sizeof(out));
+    out.struct_size = (uint32_t)sizeof(out);
+    kafs_hotplug_env_lock(ctx);
+    out.count = ctx->c_hotplug_env_count;
+    for (uint32_t i = 0; i < out.count; ++i)
+      out.entries[i] = ctx->c_hotplug_env[i];
+    kafs_hotplug_env_unlock(ctx);
+    memcpy(buf, &out, sizeof(out));
+    return 0;
+  }
+
+  if ((unsigned int)cmd == (unsigned int)KAFS_IOCTL_SET_HOTPLUG_ENV)
+  {
+    void *buf = data ? data : arg;
+    if (!buf)
+      return -EINVAL;
+    if (_IOC_SIZE((unsigned int)cmd) < sizeof(kafs_hotplug_env_update_t))
+      return -EINVAL;
+    kafs_hotplug_env_update_t req;
+    memcpy(&req, buf, sizeof(req));
+    if (req.struct_size < sizeof(req))
+      return -EINVAL;
+    return kafs_hotplug_env_set(ctx, req.key, req.value);
+  }
+
+  if ((unsigned int)cmd == (unsigned int)KAFS_IOCTL_UNSET_HOTPLUG_ENV)
+  {
+    void *buf = data ? data : arg;
+    if (!buf)
+      return -EINVAL;
+    if (_IOC_SIZE((unsigned int)cmd) < sizeof(kafs_hotplug_env_update_t))
+      return -EINVAL;
+    kafs_hotplug_env_update_t req;
+    memcpy(&req, buf, sizeof(req));
+    if (req.struct_size < sizeof(req))
+      return -EINVAL;
+    return kafs_hotplug_env_unset(ctx, req.key);
   }
 
   if ((unsigned int)cmd == (unsigned int)KAFS_IOCTL_GET_STATS)

@@ -7,6 +7,11 @@ kafsctl \- query runtime stats from a mounted kafs filesystem
 .B stats
 .I mountpoint
 .RB [ --json ]
+.PP
+.B kafsctl
+.B hotplug
+.I subcommand
+.I mountpoint
 .SH DESCRIPTION
 .B kafsctl
 queries a running
@@ -20,6 +25,21 @@ Print current stats for the mounted filesystem at
 Use
 .B --json
 to emit machine-readable JSON.
+.TP
+.B hotplug status
+Show hotplug status, including session/epoch and compatibility.
+.TP
+.B hotplug restart-back
+Request a hotplug reconnect by transitioning the front to waiting state.
+.TP
+.B hotplug compat
+Show front/back version compatibility.
+.TP
+.B hotplug set-timeout
+Set the reconnect wait timeout (milliseconds).
+.TP
+.B hotplug env list|set|unset
+Manage environment variables passed to the back process on restart.
 .SH SEE ALSO
 .BR kafs (1)
 .SH AUTHOR

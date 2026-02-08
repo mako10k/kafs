@@ -2,6 +2,7 @@
 #include "kafs.h"
 #include "kafs_superblock.h"
 #include "kafs_inode.h"
+#include "kafs_ioctl.h"
 #include <pthread.h>
 #include <sys/un.h>
 
@@ -69,6 +70,8 @@ struct kafs_context
   uint32_t c_hotplug_back_features;
   uint32_t c_hotplug_compat_result;
   int32_t c_hotplug_compat_reason;
+  uint32_t c_hotplug_env_count;
+  kafs_hotplug_env_entry_t c_hotplug_env[KAFS_HOTPLUG_ENV_MAX];
   pthread_mutex_t c_hotplug_lock;
   int c_hotplug_lock_init;
   pthread_mutex_t c_hotplug_wait_lock;

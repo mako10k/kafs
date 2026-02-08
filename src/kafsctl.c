@@ -72,7 +72,13 @@ static void usage(const char *prog)
   fprintf(stderr,
           "Usage:\n"
           "  %s fsstat <mountpoint> [--json] [--bytes|--mib|--gib]   (alias: stats)\n"
-          "  %s hotplug status <mountpoint> [--json]\n"
+      "  %s hotplug status <mountpoint> [--json]\n"
+      "  %s hotplug restart-back <mountpoint>\n"
+      "  %s hotplug compat <mountpoint> [--json]\n"
+      "  %s hotplug set-timeout <mountpoint> <ms>\n"
+      "  %s hotplug env list <mountpoint>\n"
+      "  %s hotplug env set <mountpoint> <key>=<value>\n"
+      "  %s hotplug env unset <mountpoint> <key>\n"
           "  %s stat <mountpoint> <path>\n"
           "  %s cat <mountpoint> <path>\n"
           "  %s write <mountpoint> <path>   (stdin -> file, trunc)\n"
@@ -87,7 +93,7 @@ static void usage(const char *prog)
           "  %s chmod <mountpoint> <octal_mode> <path>\n"
           "  %s touch <mountpoint> <path>\n",
           prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog,
-          prog);
+          prog, prog, prog, prog, prog, prog, prog);
 }
 
 static const char *hotplug_state_str(uint32_t state)
@@ -153,24 +159,33 @@ static const char *hotplug_compat_reason_str(int32_t reason)
   }
 }
 
-static int cmd_hotplug_status(const char *mnt, int json)
+static int get_hotplug_status(const char *mnt, kafs_hotplug_status_t *out)
 {
+  if (!out)
+    return -EINVAL;
   int fd = open(mnt, O_RDONLY | O_DIRECTORY);
   if (fd < 0)
   {
     perror("open");
-    return 1;
+    return -errno;
   }
-
-  kafs_hotplug_status_t st;
-  memset(&st, 0, sizeof(st));
-  if (ioctl(fd, KAFS_IOCTL_GET_HOTPLUG_STATUS, &st) != 0)
+  memset(out, 0, sizeof(*out));
+  if (ioctl(fd, KAFS_IOCTL_GET_HOTPLUG_STATUS, out) != 0)
   {
+    int err = -errno;
     perror("ioctl(KAFS_IOCTL_GET_HOTPLUG_STATUS)");
     close(fd);
-    return 1;
+    return err;
   }
   close(fd);
+  return 0;
+}
+
+static int cmd_hotplug_status(const char *mnt, int json)
+{
+  kafs_hotplug_status_t st;
+  if (get_hotplug_status(mnt, &st) != 0)
+    return 1;
 
   if (json)
   {
@@ -216,6 +231,179 @@ static int cmd_hotplug_status(const char *mnt, int json)
   printf("  compat_result: %u (%s)\n", st.compat_result, hotplug_compat_str(st.compat_result));
   printf("  compat_reason: %d (%s)\n", st.compat_reason,
          hotplug_compat_reason_str(st.compat_reason));
+  return 0;
+}
+
+static int cmd_hotplug_restart(const char *mnt)
+{
+  int fd = open(mnt, O_RDONLY | O_DIRECTORY);
+  if (fd < 0)
+  {
+    perror("open");
+    return 1;
+  }
+  if (ioctl(fd, KAFS_IOCTL_HOTPLUG_RESTART, NULL) != 0)
+  {
+    perror("ioctl(KAFS_IOCTL_HOTPLUG_RESTART)");
+    close(fd);
+    return 1;
+  }
+  close(fd);
+  return 0;
+}
+
+static int cmd_hotplug_compat(const char *mnt, int json)
+{
+  kafs_hotplug_status_t st;
+  if (get_hotplug_status(mnt, &st) != 0)
+    return 1;
+
+  if (json)
+  {
+    printf("{\n");
+    printf("  \"front_major\": %u,\n", st.front_major);
+    printf("  \"front_minor\": %u,\n", st.front_minor);
+    printf("  \"front_features\": %u,\n", st.front_features);
+    printf("  \"back_major\": %u,\n", st.back_major);
+    printf("  \"back_minor\": %u,\n", st.back_minor);
+    printf("  \"back_features\": %u,\n", st.back_features);
+    printf("  \"compat_result\": %u,\n", st.compat_result);
+    printf("  \"compat_result_str\": \"%s\",\n", hotplug_compat_str(st.compat_result));
+    printf("  \"compat_reason\": %d,\n", st.compat_reason);
+    printf("  \"compat_reason_str\": \"%s\"\n", hotplug_compat_reason_str(st.compat_reason));
+    printf("}\n");
+    return 0;
+  }
+
+  printf("kafs hotplug compat\n");
+  printf("  front_version: %u.%u\n", st.front_major, st.front_minor);
+  printf("  front_features: %u\n", st.front_features);
+  printf("  back_version: %u.%u\n", st.back_major, st.back_minor);
+  printf("  back_features: %u\n", st.back_features);
+  printf("  compat_result: %u (%s)\n", st.compat_result, hotplug_compat_str(st.compat_result));
+  printf("  compat_reason: %d (%s)\n", st.compat_reason,
+         hotplug_compat_reason_str(st.compat_reason));
+  return 0;
+}
+
+static int cmd_hotplug_set_timeout(const char *mnt, const char *timeout_str)
+{
+  if (!timeout_str || *timeout_str == '\0')
+  {
+    fprintf(stderr, "invalid timeout\n");
+    return 2;
+  }
+  char *endp = NULL;
+  unsigned long v = strtoul(timeout_str, &endp, 10);
+  if (!endp || *endp != '\0' || v == 0 || v > UINT32_MAX)
+  {
+    fprintf(stderr, "invalid timeout\n");
+    return 2;
+  }
+
+  int fd = open(mnt, O_RDONLY | O_DIRECTORY);
+  if (fd < 0)
+  {
+    perror("open");
+    return 1;
+  }
+  kafs_hotplug_timeout_t req;
+  memset(&req, 0, sizeof(req));
+  req.struct_size = (uint32_t)sizeof(req);
+  req.timeout_ms = (uint32_t)v;
+  if (ioctl(fd, KAFS_IOCTL_SET_HOTPLUG_TIMEOUT, &req) != 0)
+  {
+    perror("ioctl(KAFS_IOCTL_SET_HOTPLUG_TIMEOUT)");
+    close(fd);
+    return 1;
+  }
+  close(fd);
+  return 0;
+}
+
+static int cmd_hotplug_env_list(const char *mnt)
+{
+  int fd = open(mnt, O_RDONLY | O_DIRECTORY);
+  if (fd < 0)
+  {
+    perror("open");
+    return 1;
+  }
+  kafs_hotplug_env_t env;
+  memset(&env, 0, sizeof(env));
+  if (ioctl(fd, KAFS_IOCTL_GET_HOTPLUG_ENV, &env) != 0)
+  {
+    perror("ioctl(KAFS_IOCTL_GET_HOTPLUG_ENV)");
+    close(fd);
+    return 1;
+  }
+  close(fd);
+
+  printf("kafs hotplug env list\n");
+  for (uint32_t i = 0; i < env.count && i < KAFS_HOTPLUG_ENV_MAX; ++i)
+    printf("  %s=%s\n", env.entries[i].key, env.entries[i].value);
+  return 0;
+}
+
+static int cmd_hotplug_env_set(const char *mnt, const char *kv)
+{
+  if (!kv)
+  {
+    fprintf(stderr, "invalid key=value\n");
+    return 2;
+  }
+  const char *eq = strchr(kv, '=');
+  if (!eq || eq == kv)
+  {
+    fprintf(stderr, "invalid key=value\n");
+    return 2;
+  }
+
+  int fd = open(mnt, O_RDONLY | O_DIRECTORY);
+  if (fd < 0)
+  {
+    perror("open");
+    return 1;
+  }
+  kafs_hotplug_env_update_t req;
+  memset(&req, 0, sizeof(req));
+  req.struct_size = (uint32_t)sizeof(req);
+  snprintf(req.key, sizeof(req.key), "%.*s", (int)(eq - kv), kv);
+  snprintf(req.value, sizeof(req.value), "%s", eq + 1);
+  if (ioctl(fd, KAFS_IOCTL_SET_HOTPLUG_ENV, &req) != 0)
+  {
+    perror("ioctl(KAFS_IOCTL_SET_HOTPLUG_ENV)");
+    close(fd);
+    return 1;
+  }
+  close(fd);
+  return 0;
+}
+
+static int cmd_hotplug_env_unset(const char *mnt, const char *key)
+{
+  if (!key || *key == '\0')
+  {
+    fprintf(stderr, "invalid key\n");
+    return 2;
+  }
+  int fd = open(mnt, O_RDONLY | O_DIRECTORY);
+  if (fd < 0)
+  {
+    perror("open");
+    return 1;
+  }
+  kafs_hotplug_env_update_t req;
+  memset(&req, 0, sizeof(req));
+  req.struct_size = (uint32_t)sizeof(req);
+  snprintf(req.key, sizeof(req.key), "%s", key);
+  if (ioctl(fd, KAFS_IOCTL_UNSET_HOTPLUG_ENV, &req) != 0)
+  {
+    perror("ioctl(KAFS_IOCTL_UNSET_HOTPLUG_ENV)");
+    close(fd);
+    return 1;
+  }
+  close(fd);
   return 0;
 }
 
@@ -1032,6 +1220,76 @@ int main(int argc, char **argv)
         }
       }
       return cmd_hotplug_status(argv[3], json);
+    }
+    if (strcmp(argv[2], "restart-back") == 0)
+    {
+      if (argc != 4)
+      {
+        usage(argv[0]);
+        return 2;
+      }
+      return cmd_hotplug_restart(argv[3]);
+    }
+    if (strcmp(argv[2], "compat") == 0)
+    {
+      int json = 0;
+      for (int i = 4; i < argc; ++i)
+      {
+        if (strcmp(argv[i], "--json") == 0)
+          json = 1;
+        else
+        {
+          usage(argv[0]);
+          return 2;
+        }
+      }
+      return cmd_hotplug_compat(argv[3], json);
+    }
+    if (strcmp(argv[2], "set-timeout") == 0)
+    {
+      if (argc != 5)
+      {
+        usage(argv[0]);
+        return 2;
+      }
+      return cmd_hotplug_set_timeout(argv[3], argv[4]);
+    }
+    if (strcmp(argv[2], "env") == 0)
+    {
+      if (argc < 5)
+      {
+        usage(argv[0]);
+        return 2;
+      }
+      if (strcmp(argv[3], "list") == 0)
+      {
+        if (argc != 5)
+        {
+          usage(argv[0]);
+          return 2;
+        }
+        return cmd_hotplug_env_list(argv[4]);
+      }
+      if (strcmp(argv[3], "set") == 0)
+      {
+        if (argc != 6)
+        {
+          usage(argv[0]);
+          return 2;
+        }
+        return cmd_hotplug_env_set(argv[4], argv[5]);
+      }
+      if (strcmp(argv[3], "unset") == 0)
+      {
+        if (argc != 6)
+        {
+          usage(argv[0]);
+          return 2;
+        }
+        return cmd_hotplug_env_unset(argv[4], argv[5]);
+      }
+      usage(argv[0]);
+      return 2;
     }
     usage(argv[0]);
     return 2;
