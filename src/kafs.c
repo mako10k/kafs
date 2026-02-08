@@ -1794,8 +1794,7 @@ static int kafs_hotplug_wait_ready(kafs_context_t *ctx)
     return -EIO;
 
   pthread_mutex_lock(&ctx->c_hotplug_wait_lock);
-  if (ctx->c_hotplug_wait_queue_limit > 0 &&
-      ctx->c_hotplug_wait_queue_len >= ctx->c_hotplug_wait_queue_limit)
+  if (ctx->c_hotplug_wait_queue_len >= ctx->c_hotplug_wait_queue_limit)
   {
     ctx->c_hotplug_last_error = -EOVERFLOW;
     pthread_mutex_unlock(&ctx->c_hotplug_wait_lock);
