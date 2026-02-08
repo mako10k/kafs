@@ -2,10 +2,11 @@
 
 #include <stdint.h>
 #include <sys/stat.h>
+#include "kafs_hotplug.h"
 
 #define KAFS_RPC_MAGIC 0x4b415250u
 #define KAFS_RPC_VERSION 1u
-#define KAFS_RPC_MAX_PAYLOAD 1024u
+#define KAFS_RPC_MAX_PAYLOAD 16384u
 
 #define KAFS_RPC_HELLO_MAJOR 1u
 #define KAFS_RPC_HELLO_MINOR 0u
@@ -47,7 +48,14 @@ enum
   KAFS_RPC_OP_READ = 4,
   KAFS_RPC_OP_WRITE = 5,
   KAFS_RPC_OP_TRUNCATE = 6,
-  KAFS_RPC_OP_SESSION_RESTORE = 7
+  KAFS_RPC_OP_SESSION_RESTORE = 7,
+  KAFS_RPC_OP_CTL_STATUS = 50,
+  KAFS_RPC_OP_CTL_COMPAT = 51,
+  KAFS_RPC_OP_CTL_RESTART = 52,
+  KAFS_RPC_OP_CTL_SET_TIMEOUT = 53,
+  KAFS_RPC_OP_CTL_ENV_LIST = 54,
+  KAFS_RPC_OP_CTL_ENV_SET = 55,
+  KAFS_RPC_OP_CTL_ENV_UNSET = 56
 };
 
 enum
@@ -118,6 +126,44 @@ typedef struct
 {
   uint64_t size;
 } kafs_rpc_truncate_resp_t;
+
+typedef struct
+{
+  uint32_t version;
+  uint32_t state;
+  uint32_t data_mode;
+  uint64_t session_id;
+  uint32_t epoch;
+  int32_t last_error;
+  uint32_t wait_queue_len;
+  uint32_t wait_timeout_ms;
+  uint32_t wait_queue_limit;
+  uint16_t front_major;
+  uint16_t front_minor;
+  uint32_t front_features;
+  uint16_t back_major;
+  uint16_t back_minor;
+  uint32_t back_features;
+  uint32_t compat_result;
+  int32_t compat_reason;
+} kafs_rpc_hotplug_status_t;
+
+typedef struct
+{
+  uint32_t timeout_ms;
+} kafs_rpc_set_timeout_t;
+
+typedef struct
+{
+  uint32_t count;
+  kafs_hotplug_env_entry_t entries[KAFS_HOTPLUG_ENV_MAX];
+} kafs_rpc_env_list_t;
+
+typedef struct
+{
+  char key[KAFS_HOTPLUG_ENV_KEY_MAX];
+  char value[KAFS_HOTPLUG_ENV_VALUE_MAX];
+} kafs_rpc_env_update_t;
 
 uint64_t kafs_rpc_next_req_id(void);
 int kafs_rpc_send_msg(int fd, uint16_t op, uint32_t flags, uint64_t req_id, uint64_t session_id,

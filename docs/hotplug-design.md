@@ -207,6 +207,10 @@ TRUNCATE
 
 ## 8. kafsctl 制御フロー
 
+制御チャネル
+- kafsctl はマウント内の `/.kafs.sock` に RPC を write/read する。
+- `/.kafs.sock` は readdir で見えない (直接パス指定のみ)。
+
 再起動要求
 1. kafsctl が前段に RESTART_BACK を送る。
 2. 前段が後段停止を指示し、再接続待機へ移行する。

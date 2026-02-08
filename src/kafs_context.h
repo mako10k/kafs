@@ -2,7 +2,7 @@
 #include "kafs.h"
 #include "kafs_superblock.h"
 #include "kafs_inode.h"
-#include "kafs_ioctl.h"
+#include "kafs_hotplug.h"
 #include <pthread.h>
 #include <sys/un.h>
 

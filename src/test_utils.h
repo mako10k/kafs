@@ -12,6 +12,9 @@
 int kafs_test_mkimg(const char *path, size_t bytes, unsigned log_bs, unsigned inodes,
                     int enable_hrl, kafs_context_t *out_ctx, off_t *out_mapsize);
 
+// Stop a running kafs instance and unmount (best-effort).
+void kafs_test_stop_kafs(const char *mnt, pid_t kafs_pid);
+
 static inline int kafs_test_mkimg_with_hrl(const char *path, size_t bytes, unsigned log_bs,
                                            unsigned inodes, kafs_context_t *out_ctx,
                                            off_t *out_mapsize)

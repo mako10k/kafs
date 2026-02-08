@@ -24,6 +24,20 @@ Security and safety:
 - No network calls unless required by the task.
 - Do not exfiltrate secrets.
 
+## Decision checkpoints (must ask user)
+
+When a change affects system boundaries or control paths, the agent MUST ask before implementing.
+Treat these as design decisions, not minor edits:
+- IPC/transport choices (ioctl vs RPC, UDS vs socketpair, signals, etc.).
+- Control-plane paths (how kafsctl talks to kafs-front/back).
+- Permission or security boundary changes.
+- New long-running services or daemons.
+
+If any of the above applies:
+1) Describe the options and trade-offs succinctly.
+2) Ask for explicit user selection.
+3) Proceed only after confirmation.
+
 ## Guardrails for destructive commands
 
 To avoid accidental data loss, the agent MUST follow these rules:

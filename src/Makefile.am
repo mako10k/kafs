@@ -41,8 +41,8 @@ CFLAGS = -Wall -Werror -g -O0 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -Wno-unused-f
 # --- Tests ---
 # NOTE: stress_fs mounts in multithread mode and exercises heavier workloads.
 # To minimize any residual side effects on subsequent tests, run it last.
-check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured min_git_hooks fs_semantics clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility prune_indirect_single prune_indirect_double prune_indirect_triple truncate_prune reflink_clone stress_fs hotplug_rpc
-TESTS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured min_git_hooks fs_semantics clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility prune_indirect_single prune_indirect_double prune_indirect_triple truncate_prune reflink_clone stress_fs hotplug_rpc
+check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured min_git_hooks fs_semantics clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility prune_indirect_single prune_indirect_double prune_indirect_triple truncate_prune reflink_clone stress_fs hotplug_rpc e2e_hotplug
+TESTS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured min_git_hooks fs_semantics clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility prune_indirect_single prune_indirect_double prune_indirect_triple truncate_prune reflink_clone stress_fs hotplug_rpc e2e_hotplug
 hrl_smoketest_SOURCES = tests_hrl_smoketest.c kafs_hrl.c kafs_locks.c test_utils.c
 hrl_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 hrl_smoketest_LDADD = $(KAFS_LIBS)
@@ -113,6 +113,10 @@ reflink_clone_LDADD = $(KAFS_LIBS)
 hotplug_rpc_SOURCES = tests_hotplug_rpc.c kafs_rpc.c
 hotplug_rpc_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 hotplug_rpc_LDADD = $(KAFS_LIBS)
+
+e2e_hotplug_SOURCES = tests_e2e_hotplug.c test_utils.c kafs_hrl.c kafs_locks.c
+e2e_hotplug_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+e2e_hotplug_LDADD = $(KAFS_LIBS)
 
 # All tests are expected to pass
 XFAIL_TESTS =

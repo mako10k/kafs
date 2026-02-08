@@ -100,49 +100,4 @@ struct kafs_hotplug_status
 
 typedef struct kafs_hotplug_status kafs_hotplug_status_t;
 
-#define KAFS_IOCTL_GET_HOTPLUG_STATUS _IOR(KAFS_IOCTL_MAGIC, 3, struct kafs_hotplug_status)
 
-// Hotplug control (kafsctl)
-#define KAFS_HOTPLUG_ENV_KEY_MAX 64
-#define KAFS_HOTPLUG_ENV_VALUE_MAX 256
-#define KAFS_HOTPLUG_ENV_MAX 32
-
-struct kafs_hotplug_timeout
-{
-  uint32_t struct_size;
-  uint32_t timeout_ms;
-};
-
-typedef struct kafs_hotplug_timeout kafs_hotplug_timeout_t;
-
-struct kafs_hotplug_env_entry
-{
-  char key[KAFS_HOTPLUG_ENV_KEY_MAX];
-  char value[KAFS_HOTPLUG_ENV_VALUE_MAX];
-};
-
-typedef struct kafs_hotplug_env_entry kafs_hotplug_env_entry_t;
-
-struct kafs_hotplug_env
-{
-  uint32_t struct_size;
-  uint32_t count;
-  kafs_hotplug_env_entry_t entries[KAFS_HOTPLUG_ENV_MAX];
-};
-
-typedef struct kafs_hotplug_env kafs_hotplug_env_t;
-
-struct kafs_hotplug_env_update
-{
-  uint32_t struct_size;
-  char key[KAFS_HOTPLUG_ENV_KEY_MAX];
-  char value[KAFS_HOTPLUG_ENV_VALUE_MAX];
-};
-
-typedef struct kafs_hotplug_env_update kafs_hotplug_env_update_t;
-
-#define KAFS_IOCTL_HOTPLUG_RESTART _IO(KAFS_IOCTL_MAGIC, 4)
-#define KAFS_IOCTL_SET_HOTPLUG_TIMEOUT _IOW(KAFS_IOCTL_MAGIC, 5, struct kafs_hotplug_timeout)
-#define KAFS_IOCTL_GET_HOTPLUG_ENV _IOR(KAFS_IOCTL_MAGIC, 6, struct kafs_hotplug_env)
-#define KAFS_IOCTL_SET_HOTPLUG_ENV _IOW(KAFS_IOCTL_MAGIC, 7, struct kafs_hotplug_env_update)
-#define KAFS_IOCTL_UNSET_HOTPLUG_ENV _IOW(KAFS_IOCTL_MAGIC, 8, struct kafs_hotplug_env_update)

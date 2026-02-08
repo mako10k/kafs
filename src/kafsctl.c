@@ -159,33 +159,186 @@ static const char *hotplug_compat_reason_str(int32_t reason)
   }
 }
 
+#define KAFS_CTL_REL ".kafs.sock"
+
+static int write_full(int fd, const void *buf, size_t len)
+{
+  const unsigned char *p = (const unsigned char *)buf;
+  size_t done = 0;
+  while (done < len)
+  {
+    ssize_t w = write(fd, p + done, len - done);
+    if (w < 0)
+      return -errno;
+    if (w == 0)
+      return -EIO;
+    done += (size_t)w;
+  }
+  return 0;
+}
+
+static int read_full(int fd, unsigned char *buf, size_t len)
+{
+  size_t done = 0;
+  while (done < len)
+  {
+    ssize_t r = read(fd, buf + done, len - done);
+    if (r < 0)
+      return -errno;
+    if (r == 0)
+      return -EIO;
+    done += (size_t)r;
+  }
+  return 0;
+}
+
+static uint64_t next_req_id(void)
+{
+  static uint64_t rid = 0;
+  return __atomic_add_fetch(&rid, 1u, __ATOMIC_RELAXED);
+}
+
+static int hotplug_ctl_exchange(const char *mnt, uint16_t op, const void *req,
+                                uint32_t req_len, void *resp, uint32_t resp_cap,
+                                uint32_t *resp_len, int32_t *resp_result)
+{
+  if (req_len > KAFS_RPC_MAX_PAYLOAD)
+    return -EMSGSIZE;
+
+  int dfd = open(mnt, O_RDONLY | O_DIRECTORY);
+  if (dfd < 0)
+    return -errno;
+
+  int fd = openat(dfd, KAFS_CTL_REL, O_RDWR);
+  if (fd < 0)
+  {
+    int err = -errno;
+    close(dfd);
+    return err;
+  }
+
+  unsigned char sbuf[sizeof(kafs_rpc_hdr_t) + KAFS_RPC_MAX_PAYLOAD];
+  kafs_rpc_hdr_t hdr;
+  hdr.magic = KAFS_RPC_MAGIC;
+  hdr.version = KAFS_RPC_VERSION;
+  hdr.op = op;
+  hdr.flags = KAFS_RPC_FLAG_ENDIAN_HOST;
+  hdr.req_id = next_req_id();
+  hdr.session_id = 0;
+  hdr.epoch = 0;
+  hdr.payload_len = req_len;
+  memcpy(sbuf, &hdr, sizeof(hdr));
+  if (req_len && req)
+    memcpy(sbuf + sizeof(hdr), req, req_len);
+
+  int rc = write_full(fd, sbuf, sizeof(hdr) + req_len);
+  if (rc != 0)
+  {
+    close(fd);
+    close(dfd);
+    return rc;
+  }
+
+  (void)lseek(fd, 0, SEEK_SET);
+
+  unsigned char rbuf[sizeof(kafs_rpc_resp_hdr_t) + KAFS_RPC_MAX_PAYLOAD];
+  kafs_rpc_resp_hdr_t rhdr;
+  rc = read_full(fd, (unsigned char *)&rhdr, sizeof(rhdr));
+  if (rc != 0)
+  {
+    close(fd);
+    close(dfd);
+    return rc;
+  }
+
+  if (rhdr.payload_len > KAFS_RPC_MAX_PAYLOAD)
+  {
+    close(fd);
+    close(dfd);
+    return -EMSGSIZE;
+  }
+
+  if (rhdr.payload_len)
+  {
+    rc = read_full(fd, rbuf, rhdr.payload_len);
+    if (rc != 0)
+    {
+      close(fd);
+      close(dfd);
+      return rc;
+    }
+  }
+
+  close(fd);
+  close(dfd);
+
+  if (resp_len)
+    *resp_len = rhdr.payload_len;
+  if (resp_result)
+    *resp_result = rhdr.result;
+
+  if (rhdr.payload_len && resp && resp_cap >= rhdr.payload_len)
+    memcpy(resp, rbuf, rhdr.payload_len);
+  else if (rhdr.payload_len && resp_cap < rhdr.payload_len)
+    return -EMSGSIZE;
+
+  if (rhdr.req_id != hdr.req_id)
+    return -EBADMSG;
+  return 0;
+}
+
+static void hotplug_status_from_rpc(kafs_hotplug_status_t *out,
+                                    const kafs_rpc_hotplug_status_t *in)
+{
+  memset(out, 0, sizeof(*out));
+  out->struct_size = (uint32_t)sizeof(*out);
+  out->version = in->version;
+  out->state = in->state;
+  out->data_mode = in->data_mode;
+  out->session_id = in->session_id;
+  out->epoch = in->epoch;
+  out->last_error = in->last_error;
+  out->wait_queue_len = in->wait_queue_len;
+  out->wait_timeout_ms = in->wait_timeout_ms;
+  out->wait_queue_limit = in->wait_queue_limit;
+  out->front_major = in->front_major;
+  out->front_minor = in->front_minor;
+  out->front_features = in->front_features;
+  out->back_major = in->back_major;
+  out->back_minor = in->back_minor;
+  out->back_features = in->back_features;
+  out->compat_result = in->compat_result;
+  out->compat_reason = in->compat_reason;
+}
+
 static int get_hotplug_status(const char *mnt, kafs_hotplug_status_t *out)
 {
   if (!out)
     return -EINVAL;
-  int fd = open(mnt, O_RDONLY | O_DIRECTORY);
-  if (fd < 0)
-  {
-    perror("open");
-    return -errno;
-  }
-  memset(out, 0, sizeof(*out));
-  if (ioctl(fd, KAFS_IOCTL_GET_HOTPLUG_STATUS, out) != 0)
-  {
-    int err = -errno;
-    perror("ioctl(KAFS_IOCTL_GET_HOTPLUG_STATUS)");
-    close(fd);
-    return err;
-  }
-  close(fd);
+  kafs_rpc_hotplug_status_t st;
+  uint32_t resp_len = 0;
+  int32_t resp_result = 0;
+  int rc = hotplug_ctl_exchange(mnt, KAFS_RPC_OP_CTL_STATUS, NULL, 0, &st, sizeof(st),
+                                &resp_len, &resp_result);
+  if (rc != 0)
+    return rc;
+  if (resp_result != 0)
+    return resp_result;
+  if (resp_len != sizeof(st))
+    return -EBADMSG;
+  hotplug_status_from_rpc(out, &st);
   return 0;
 }
 
 static int cmd_hotplug_status(const char *mnt, int json)
 {
   kafs_hotplug_status_t st;
-  if (get_hotplug_status(mnt, &st) != 0)
+  int rc = get_hotplug_status(mnt, &st);
+  if (rc != 0)
+  {
+    fprintf(stderr, "hotplug status failed: %s\n", strerror(-rc));
     return 1;
+  }
 
   if (json)
   {
@@ -236,27 +389,32 @@ static int cmd_hotplug_status(const char *mnt, int json)
 
 static int cmd_hotplug_restart(const char *mnt)
 {
-  int fd = open(mnt, O_RDONLY | O_DIRECTORY);
-  if (fd < 0)
+  uint32_t resp_len = 0;
+  int32_t resp_result = 0;
+  int rc = hotplug_ctl_exchange(mnt, KAFS_RPC_OP_CTL_RESTART, NULL, 0, NULL, 0, &resp_len,
+                                &resp_result);
+  if (rc != 0)
   {
-    perror("open");
+    fprintf(stderr, "hotplug restart failed: %s\n", strerror(-rc));
     return 1;
   }
-  if (ioctl(fd, KAFS_IOCTL_HOTPLUG_RESTART, NULL) != 0)
+  if (resp_result != 0)
   {
-    perror("ioctl(KAFS_IOCTL_HOTPLUG_RESTART)");
-    close(fd);
+    fprintf(stderr, "hotplug restart failed: %s\n", strerror(-resp_result));
     return 1;
   }
-  close(fd);
   return 0;
 }
 
 static int cmd_hotplug_compat(const char *mnt, int json)
 {
   kafs_hotplug_status_t st;
-  if (get_hotplug_status(mnt, &st) != 0)
+  int rc = get_hotplug_status(mnt, &st);
+  if (rc != 0)
+  {
+    fprintf(stderr, "hotplug compat failed: %s\n", strerror(-rc));
     return 1;
+  }
 
   if (json)
   {
@@ -301,43 +459,47 @@ static int cmd_hotplug_set_timeout(const char *mnt, const char *timeout_str)
     return 2;
   }
 
-  int fd = open(mnt, O_RDONLY | O_DIRECTORY);
-  if (fd < 0)
-  {
-    perror("open");
-    return 1;
-  }
-  kafs_hotplug_timeout_t req;
-  memset(&req, 0, sizeof(req));
-  req.struct_size = (uint32_t)sizeof(req);
+  kafs_rpc_set_timeout_t req;
   req.timeout_ms = (uint32_t)v;
-  if (ioctl(fd, KAFS_IOCTL_SET_HOTPLUG_TIMEOUT, &req) != 0)
+  uint32_t resp_len = 0;
+  int32_t resp_result = 0;
+  int rc = hotplug_ctl_exchange(mnt, KAFS_RPC_OP_CTL_SET_TIMEOUT, &req, sizeof(req), NULL, 0,
+                                &resp_len, &resp_result);
+  if (rc != 0)
   {
-    perror("ioctl(KAFS_IOCTL_SET_HOTPLUG_TIMEOUT)");
-    close(fd);
+    fprintf(stderr, "hotplug set-timeout failed: %s\n", strerror(-rc));
     return 1;
   }
-  close(fd);
+  if (resp_result != 0)
+  {
+    fprintf(stderr, "hotplug set-timeout failed: %s\n", strerror(-resp_result));
+    return 1;
+  }
   return 0;
 }
 
 static int cmd_hotplug_env_list(const char *mnt)
 {
-  int fd = open(mnt, O_RDONLY | O_DIRECTORY);
-  if (fd < 0)
+  kafs_rpc_env_list_t env;
+  uint32_t resp_len = 0;
+  int32_t resp_result = 0;
+  int rc = hotplug_ctl_exchange(mnt, KAFS_RPC_OP_CTL_ENV_LIST, NULL, 0, &env, sizeof(env),
+                                &resp_len, &resp_result);
+  if (rc != 0)
   {
-    perror("open");
+    fprintf(stderr, "hotplug env list failed: %s\n", strerror(-rc));
     return 1;
   }
-  kafs_hotplug_env_t env;
-  memset(&env, 0, sizeof(env));
-  if (ioctl(fd, KAFS_IOCTL_GET_HOTPLUG_ENV, &env) != 0)
+  if (resp_result != 0)
   {
-    perror("ioctl(KAFS_IOCTL_GET_HOTPLUG_ENV)");
-    close(fd);
+    fprintf(stderr, "hotplug env list failed: %s\n", strerror(-resp_result));
     return 1;
   }
-  close(fd);
+  if (resp_len != sizeof(env))
+  {
+    fprintf(stderr, "hotplug env list failed: %s\n", strerror(EBADMSG));
+    return 1;
+  }
 
   printf("kafs hotplug env list\n");
   for (uint32_t i = 0; i < env.count && i < KAFS_HOTPLUG_ENV_MAX; ++i)
@@ -359,24 +521,24 @@ static int cmd_hotplug_env_set(const char *mnt, const char *kv)
     return 2;
   }
 
-  int fd = open(mnt, O_RDONLY | O_DIRECTORY);
-  if (fd < 0)
-  {
-    perror("open");
-    return 1;
-  }
-  kafs_hotplug_env_update_t req;
+  kafs_rpc_env_update_t req;
   memset(&req, 0, sizeof(req));
-  req.struct_size = (uint32_t)sizeof(req);
   snprintf(req.key, sizeof(req.key), "%.*s", (int)(eq - kv), kv);
   snprintf(req.value, sizeof(req.value), "%s", eq + 1);
-  if (ioctl(fd, KAFS_IOCTL_SET_HOTPLUG_ENV, &req) != 0)
+  uint32_t resp_len = 0;
+  int32_t resp_result = 0;
+  int rc = hotplug_ctl_exchange(mnt, KAFS_RPC_OP_CTL_ENV_SET, &req, sizeof(req), NULL, 0,
+                                &resp_len, &resp_result);
+  if (rc != 0)
   {
-    perror("ioctl(KAFS_IOCTL_SET_HOTPLUG_ENV)");
-    close(fd);
+    fprintf(stderr, "hotplug env set failed: %s\n", strerror(-rc));
     return 1;
   }
-  close(fd);
+  if (resp_result != 0)
+  {
+    fprintf(stderr, "hotplug env set failed: %s\n", strerror(-resp_result));
+    return 1;
+  }
   return 0;
 }
 
@@ -387,23 +549,23 @@ static int cmd_hotplug_env_unset(const char *mnt, const char *key)
     fprintf(stderr, "invalid key\n");
     return 2;
   }
-  int fd = open(mnt, O_RDONLY | O_DIRECTORY);
-  if (fd < 0)
-  {
-    perror("open");
-    return 1;
-  }
-  kafs_hotplug_env_update_t req;
+  kafs_rpc_env_update_t req;
   memset(&req, 0, sizeof(req));
-  req.struct_size = (uint32_t)sizeof(req);
   snprintf(req.key, sizeof(req.key), "%s", key);
-  if (ioctl(fd, KAFS_IOCTL_UNSET_HOTPLUG_ENV, &req) != 0)
+  uint32_t resp_len = 0;
+  int32_t resp_result = 0;
+  int rc = hotplug_ctl_exchange(mnt, KAFS_RPC_OP_CTL_ENV_UNSET, &req, sizeof(req), NULL, 0,
+                                &resp_len, &resp_result);
+  if (rc != 0)
   {
-    perror("ioctl(KAFS_IOCTL_UNSET_HOTPLUG_ENV)");
-    close(fd);
+    fprintf(stderr, "hotplug env unset failed: %s\n", strerror(-rc));
     return 1;
   }
-  close(fd);
+  if (resp_result != 0)
+  {
+    fprintf(stderr, "hotplug env unset failed: %s\n", strerror(-resp_result));
+    return 1;
+  }
   return 0;
 }
 

@@ -1,5 +1,5 @@
 '.\" -*- nroff -*-
-.TH KAFSCTL 1 "2026-01-28" "kafs 0.0.1" "User Commands"
+.TH KAFSCTL 1 "2026-02-08" "kafs 0.1.0" "User Commands"
 .SH NAME
 kafsctl \- query runtime stats from a mounted kafs filesystem
 .SH SYNOPSIS
@@ -16,7 +16,9 @@ kafsctl \- query runtime stats from a mounted kafs filesystem
 .B kafsctl
 queries a running
 .BR kafs (1)
-instance via a FUSE ioctl and prints filesystem/HRL statistics, including dedup-related indicators.
+instance for filesystem/HRL statistics via FUSE ioctl, and sends hotplug control requests
+via the hidden control endpoint
+.IR /.kafs.sock .
 .SH COMMANDS
 .TP
 .B stats
