@@ -94,10 +94,13 @@ int main(int argc, char **argv)
     }
     if (fd < 0)
       fprintf(stderr, "kafs-back: invalid KAFS_HOTPLUG_BACK_FD, falling back to uds\n");
+    else
+      fprintf(stderr, "kafs-back: using inherited fd=%d\n", fd);
   }
 
   if (fd < 0)
   {
+    fprintf(stderr, "kafs-back: using uds=%s\n", uds_path);
     fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0)
     {
