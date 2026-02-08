@@ -58,7 +58,7 @@ typedef struct kafs_ioctl_copy kafs_ioctl_copy_t;
 #define KAFS_IOCTL_COPY _IOW(KAFS_IOCTL_MAGIC, 2, struct kafs_ioctl_copy)
 
 // Hotplug status (kafsctl)
-#define KAFS_HOTPLUG_STATUS_VERSION 2u
+#define KAFS_HOTPLUG_STATUS_VERSION 3u
 
 enum
 {
@@ -87,6 +87,7 @@ struct kafs_hotplug_status
   int32_t last_error;
   uint32_t wait_queue_len;
   uint32_t wait_timeout_ms;
+  uint32_t wait_queue_limit;
   uint16_t front_major;
   uint16_t front_minor;
   uint32_t front_features;

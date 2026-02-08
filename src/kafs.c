@@ -29,6 +29,8 @@
 #include <stddef.h>
 #include <signal.h>
 #include <limits.h>
+#include <poll.h>
+#include <time.h>
 #ifdef __linux__
 #include <execinfo.h>
 #include <linux/fs.h>
@@ -1571,12 +1573,53 @@ static int kafs_hotplug_should_fallback(int rc)
   return rc == -ENOSYS || rc == -EOPNOTSUPP;
 }
 
+#define KAFS_HOTPLUG_WAIT_TIMEOUT_MS_DEFAULT 2000u
+#define KAFS_HOTPLUG_WAIT_QUEUE_LIMIT_DEFAULT 64u
+
 static int kafs_hotplug_enabled(const kafs_context_t *ctx)
 {
   return ctx && ctx->c_hotplug_active && ctx->c_hotplug_fd >= 0;
 }
 
-static int kafs_hotplug_wait_for_back(kafs_context_t *ctx, const char *uds_path)
+static void kafs_timespec_add_ms(struct timespec *ts, uint32_t ms)
+{
+  ts->tv_sec += (time_t)(ms / 1000u);
+  ts->tv_nsec += (long)(ms % 1000u) * 1000000L;
+  if (ts->tv_nsec >= 1000000000L)
+  {
+    ts->tv_sec += 1;
+    ts->tv_nsec -= 1000000000L;
+  }
+}
+
+static void kafs_hotplug_wait_notify(kafs_context_t *ctx)
+{
+  if (!ctx || !ctx->c_hotplug_wait_lock_init)
+    return;
+  pthread_mutex_lock(&ctx->c_hotplug_wait_lock);
+  pthread_cond_broadcast(&ctx->c_hotplug_wait_cond);
+  pthread_mutex_unlock(&ctx->c_hotplug_wait_lock);
+}
+
+static int kafs_hotplug_is_disconnect_error(int rc)
+{
+  return rc == -EPIPE || rc == -ECONNRESET || rc == -ENOTCONN || rc == -ECONNABORTED;
+}
+
+static void kafs_hotplug_mark_disconnected(kafs_context_t *ctx, int rc)
+{
+  if (!ctx)
+    return;
+  if (ctx->c_hotplug_fd >= 0)
+    close(ctx->c_hotplug_fd);
+  ctx->c_hotplug_fd = -1;
+  ctx->c_hotplug_active = 0;
+  ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_WAITING;
+  ctx->c_hotplug_last_error = rc;
+  kafs_hotplug_wait_notify(ctx);
+}
+
+static int kafs_hotplug_wait_for_back(kafs_context_t *ctx, const char *uds_path, int timeout_ms)
 {
   ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_WAITING;
   ctx->c_hotplug_front_major = KAFS_RPC_HELLO_MAJOR;
@@ -1623,6 +1666,32 @@ static int kafs_hotplug_wait_for_back(kafs_context_t *ctx, const char *uds_path)
     ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
     ctx->c_hotplug_last_error = rc;
     return rc;
+  }
+
+  if (timeout_ms >= 0)
+  {
+    struct pollfd pfd;
+    pfd.fd = srv;
+    pfd.events = POLLIN;
+    int prc;
+    do
+    {
+      prc = poll(&pfd, 1, timeout_ms);
+    } while (prc < 0 && errno == EINTR);
+    if (prc == 0)
+    {
+      close(srv);
+      ctx->c_hotplug_last_error = -ETIMEDOUT;
+      return -EIO;
+    }
+    if (prc < 0)
+    {
+      int rc = -errno;
+      close(srv);
+      ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
+      ctx->c_hotplug_last_error = rc;
+      return rc;
+    }
   }
 
   int cli = accept(srv, NULL, NULL);
@@ -1700,14 +1769,88 @@ static int kafs_hotplug_wait_for_back(kafs_context_t *ctx, const char *uds_path)
     if (pthread_mutex_init(&ctx->c_hotplug_lock, NULL) == 0)
       ctx->c_hotplug_lock_init = 1;
   }
+  kafs_hotplug_wait_notify(ctx);
   return 0;
+}
+
+static int kafs_hotplug_wait_ready(kafs_context_t *ctx)
+{
+  if (!ctx || ctx->c_hotplug_state == KAFS_HOTPLUG_STATE_DISABLED)
+    return -ENOSYS;
+  if (kafs_hotplug_enabled(ctx))
+    return 0;
+  if (ctx->c_hotplug_wait_timeout_ms == 0 || ctx->c_hotplug_uds_path[0] == '\0')
+    return -EIO;
+
+  if (!ctx->c_hotplug_wait_lock_init)
+  {
+    if (pthread_mutex_init(&ctx->c_hotplug_wait_lock, NULL) == 0 &&
+        pthread_cond_init(&ctx->c_hotplug_wait_cond, NULL) == 0)
+    {
+      ctx->c_hotplug_wait_lock_init = 1;
+    }
+  }
+  if (!ctx->c_hotplug_wait_lock_init)
+    return -EIO;
+
+  pthread_mutex_lock(&ctx->c_hotplug_wait_lock);
+  if (ctx->c_hotplug_wait_queue_limit > 0 &&
+      ctx->c_hotplug_wait_queue_len >= ctx->c_hotplug_wait_queue_limit)
+  {
+    ctx->c_hotplug_last_error = -EOVERFLOW;
+    pthread_mutex_unlock(&ctx->c_hotplug_wait_lock);
+    return -EIO;
+  }
+  ctx->c_hotplug_wait_queue_len++;
+  int do_connect = 0;
+  if (!ctx->c_hotplug_connecting)
+  {
+    ctx->c_hotplug_connecting = 1;
+    do_connect = 1;
+  }
+  struct timespec deadline;
+  clock_gettime(CLOCK_REALTIME, &deadline);
+  kafs_timespec_add_ms(&deadline, ctx->c_hotplug_wait_timeout_ms);
+  pthread_mutex_unlock(&ctx->c_hotplug_wait_lock);
+
+  if (do_connect)
+  {
+    (void)kafs_hotplug_wait_for_back(ctx, ctx->c_hotplug_uds_path,
+                                     (int)ctx->c_hotplug_wait_timeout_ms);
+    pthread_mutex_lock(&ctx->c_hotplug_wait_lock);
+    ctx->c_hotplug_connecting = 0;
+    pthread_cond_broadcast(&ctx->c_hotplug_wait_cond);
+    pthread_mutex_unlock(&ctx->c_hotplug_wait_lock);
+  }
+
+  int rc = 0;
+  pthread_mutex_lock(&ctx->c_hotplug_wait_lock);
+  while (!kafs_hotplug_enabled(ctx))
+  {
+    int tw = pthread_cond_timedwait(&ctx->c_hotplug_wait_cond, &ctx->c_hotplug_wait_lock,
+                                    &deadline);
+    if (tw == ETIMEDOUT)
+    {
+      ctx->c_hotplug_last_error = -ETIMEDOUT;
+      rc = -EIO;
+      break;
+    }
+  }
+  if (ctx->c_hotplug_wait_queue_len > 0)
+    ctx->c_hotplug_wait_queue_len--;
+  pthread_mutex_unlock(&ctx->c_hotplug_wait_lock);
+
+  if (rc == 0 && !kafs_hotplug_enabled(ctx))
+    rc = -EIO;
+  return rc;
 }
 
 static int kafs_hotplug_call_getattr(struct fuse_context *fctx, kafs_context_t *ctx,
                                      kafs_sinode_t *inoent, struct stat *st)
 {
-  if (!kafs_hotplug_enabled(ctx))
-    return -ENOSYS;
+  int wait_rc = kafs_hotplug_wait_ready(ctx);
+  if (wait_rc != 0)
+    return wait_rc;
   kafs_rpc_getattr_req_t req;
   req.ino = (uint32_t)(inoent - ctx->c_inotbl);
   req.uid = (uint32_t)fctx->uid;
@@ -1737,6 +1880,11 @@ static int kafs_hotplug_call_getattr(struct fuse_context *fctx, kafs_context_t *
   }
   if (ctx->c_hotplug_lock_init)
     pthread_mutex_unlock(&ctx->c_hotplug_lock);
+  if (kafs_hotplug_is_disconnect_error(rc))
+  {
+    kafs_hotplug_mark_disconnected(ctx, rc);
+    rc = -EIO;
+  }
   return rc;
 }
 
@@ -1913,8 +2061,9 @@ int kafs_core_truncate(kafs_context_t *ctx, kafs_inocnt_t ino, off_t size)
 static ssize_t kafs_hotplug_call_read(struct fuse_context *fctx, kafs_context_t *ctx,
                                       kafs_inocnt_t ino, char *buf, size_t size, off_t offset)
 {
-  if (!kafs_hotplug_enabled(ctx))
-    return -ENOSYS;
+  int wait_rc = kafs_hotplug_wait_ready(ctx);
+  if (wait_rc != 0)
+    return wait_rc;
   if (ctx->c_hotplug_data_mode == KAFS_RPC_DATA_SHM)
     return -EOPNOTSUPP;
   if (ctx->c_hotplug_data_mode == KAFS_RPC_DATA_INLINE &&
@@ -1978,6 +2127,11 @@ static ssize_t kafs_hotplug_call_read(struct fuse_context *fctx, kafs_context_t 
   }
   if (ctx->c_hotplug_lock_init)
     pthread_mutex_unlock(&ctx->c_hotplug_lock);
+  if (kafs_hotplug_is_disconnect_error(rc))
+  {
+    kafs_hotplug_mark_disconnected(ctx, rc);
+    rc = -EIO;
+  }
   if (rc == 0 && need_local)
   {
     ssize_t rlen = kafs_core_read(ctx, ino, buf, size, offset);
@@ -1990,8 +2144,9 @@ static ssize_t kafs_hotplug_call_write(struct fuse_context *fctx, kafs_context_t
                                        kafs_inocnt_t ino, const char *buf, size_t size,
                                        off_t offset)
 {
-  if (!kafs_hotplug_enabled(ctx))
-    return -ENOSYS;
+  int wait_rc = kafs_hotplug_wait_ready(ctx);
+  if (wait_rc != 0)
+    return wait_rc;
   if (ctx->c_hotplug_data_mode == KAFS_RPC_DATA_SHM)
     return -EOPNOTSUPP;
   if (ctx->c_hotplug_data_mode == KAFS_RPC_DATA_INLINE &&
@@ -2045,6 +2200,11 @@ static ssize_t kafs_hotplug_call_write(struct fuse_context *fctx, kafs_context_t
   }
   if (ctx->c_hotplug_lock_init)
     pthread_mutex_unlock(&ctx->c_hotplug_lock);
+  if (kafs_hotplug_is_disconnect_error(rc))
+  {
+    kafs_hotplug_mark_disconnected(ctx, rc);
+    rc = -EIO;
+  }
   if (rc == 0 && need_local)
   {
     ssize_t wlen = kafs_core_write(ctx, ino, buf, size, offset);
@@ -2057,8 +2217,9 @@ static int kafs_hotplug_call_truncate(struct fuse_context *fctx, kafs_context_t 
                                       kafs_sinode_t *inoent, off_t size)
 {
   (void)fctx;
-  if (!kafs_hotplug_enabled(ctx))
-    return -ENOSYS;
+  int wait_rc = kafs_hotplug_wait_ready(ctx);
+  if (wait_rc != 0)
+    return wait_rc;
 
   kafs_rpc_truncate_req_t req;
   req.ino = (uint32_t)(inoent - ctx->c_inotbl);
@@ -2086,6 +2247,11 @@ static int kafs_hotplug_call_truncate(struct fuse_context *fctx, kafs_context_t 
   }
   if (ctx->c_hotplug_lock_init)
     pthread_mutex_unlock(&ctx->c_hotplug_lock);
+  if (kafs_hotplug_is_disconnect_error(rc))
+  {
+    kafs_hotplug_mark_disconnected(ctx, rc);
+    rc = -EIO;
+  }
   return rc;
 }
 
@@ -2444,6 +2610,7 @@ static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_
     st.last_error = ctx->c_hotplug_last_error;
     st.wait_queue_len = ctx->c_hotplug_wait_queue_len;
     st.wait_timeout_ms = ctx->c_hotplug_wait_timeout_ms;
+    st.wait_queue_limit = ctx->c_hotplug_wait_queue_limit;
     st.front_major = ctx->c_hotplug_front_major;
     st.front_minor = ctx->c_hotplug_front_minor;
     st.front_features = ctx->c_hotplug_front_features;
@@ -3724,7 +3891,11 @@ int main(int argc, char **argv)
     ctx.c_hotplug_state = KAFS_HOTPLUG_STATE_DISABLED;
     ctx.c_hotplug_last_error = 0;
     ctx.c_hotplug_wait_queue_len = 0;
-    ctx.c_hotplug_wait_timeout_ms = 0;
+    ctx.c_hotplug_wait_queue_limit = KAFS_HOTPLUG_WAIT_QUEUE_LIMIT_DEFAULT;
+    ctx.c_hotplug_wait_timeout_ms = KAFS_HOTPLUG_WAIT_TIMEOUT_MS_DEFAULT;
+    ctx.c_hotplug_wait_lock_init = 0;
+    ctx.c_hotplug_connecting = 0;
+    ctx.c_hotplug_uds_path[0] = '\0';
     ctx.c_hotplug_front_major = KAFS_RPC_HELLO_MAJOR;
     ctx.c_hotplug_front_minor = KAFS_RPC_HELLO_MINOR;
     ctx.c_hotplug_front_features = KAFS_RPC_HELLO_FEATURES;
@@ -3745,14 +3916,39 @@ int main(int argc, char **argv)
         ctx.c_hotplug_data_mode = KAFS_RPC_DATA_SHM;
     }
 
+    const char *wait_timeout_env = getenv("KAFS_HOTPLUG_WAIT_TIMEOUT_MS");
+    if (wait_timeout_env && *wait_timeout_env)
+    {
+      char *endp = NULL;
+      unsigned long v = strtoul(wait_timeout_env, &endp, 10);
+      if (endp && *endp == '\0')
+        ctx.c_hotplug_wait_timeout_ms = (uint32_t)v;
+    }
+
+    const char *wait_limit_env = getenv("KAFS_HOTPLUG_WAIT_QUEUE_LIMIT");
+    if (wait_limit_env && *wait_limit_env)
+    {
+      char *endp = NULL;
+      unsigned long v = strtoul(wait_limit_env, &endp, 10);
+      if (endp && *endp == '\0')
+        ctx.c_hotplug_wait_queue_limit = (uint32_t)v;
+    }
+
     const char *hotplug_uds = getenv("KAFS_HOTPLUG_UDS");
     if (hotplug_uds)
     {
       ctx.c_hotplug_state = KAFS_HOTPLUG_STATE_WAITING;
+      snprintf(ctx.c_hotplug_uds_path, sizeof(ctx.c_hotplug_uds_path), "%s", hotplug_uds);
+      if (!ctx.c_hotplug_wait_lock_init)
+      {
+        if (pthread_mutex_init(&ctx.c_hotplug_wait_lock, NULL) == 0 &&
+            pthread_cond_init(&ctx.c_hotplug_wait_cond, NULL) == 0)
+          ctx.c_hotplug_wait_lock_init = 1;
+      }
       if (snprintf(hotplug_uds_path, sizeof(hotplug_uds_path), "%s", hotplug_uds) <
           (int)sizeof(hotplug_uds_path))
       {
-        int rc_hp = kafs_hotplug_wait_for_back(&ctx, hotplug_uds_path);
+        int rc_hp = kafs_hotplug_wait_for_back(&ctx, hotplug_uds_path, -1);
         if (rc_hp != 0)
         {
           ctx.c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
@@ -3953,6 +4149,11 @@ int main(int argc, char **argv)
     unlink(hotplug_uds_path);
   if (ctx.c_hotplug_lock_init)
     pthread_mutex_destroy(&ctx.c_hotplug_lock);
+  if (ctx.c_hotplug_wait_lock_init)
+  {
+    pthread_cond_destroy(&ctx.c_hotplug_wait_cond);
+    pthread_mutex_destroy(&ctx.c_hotplug_wait_lock);
+  }
   if (ctx.c_img_base && ctx.c_img_base != MAP_FAILED)
     munmap(ctx.c_img_base, ctx.c_img_size);
   return rc;

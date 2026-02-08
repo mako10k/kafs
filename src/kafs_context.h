@@ -3,6 +3,7 @@
 #include "kafs_superblock.h"
 #include "kafs_inode.h"
 #include <pthread.h>
+#include <sys/un.h>
 
 /// @brief コンテキスト
 struct kafs_context
@@ -58,6 +59,7 @@ struct kafs_context
   int c_hotplug_state;
   int c_hotplug_last_error;
   uint32_t c_hotplug_wait_queue_len;
+  uint32_t c_hotplug_wait_queue_limit;
   uint32_t c_hotplug_wait_timeout_ms;
   uint16_t c_hotplug_front_major;
   uint16_t c_hotplug_front_minor;
@@ -69,6 +71,11 @@ struct kafs_context
   int32_t c_hotplug_compat_reason;
   pthread_mutex_t c_hotplug_lock;
   int c_hotplug_lock_init;
+  pthread_mutex_t c_hotplug_wait_lock;
+  pthread_cond_t c_hotplug_wait_cond;
+  int c_hotplug_wait_lock_init;
+  int c_hotplug_connecting;
+  char c_hotplug_uds_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
 };
 
 // Lock helpers (no-op when locks not enabled in build)

@@ -185,6 +185,7 @@ static int cmd_hotplug_status(const char *mnt, int json)
     printf("  \"last_error\": %d,\n", st.last_error);
     printf("  \"wait_queue_len\": %u,\n", st.wait_queue_len);
     printf("  \"wait_timeout_ms\": %u,\n", st.wait_timeout_ms);
+    printf("  \"wait_queue_limit\": %u,\n", st.wait_queue_limit);
     printf("  \"front_major\": %u,\n", st.front_major);
     printf("  \"front_minor\": %u,\n", st.front_minor);
     printf("  \"front_features\": %u,\n", st.front_features);
@@ -207,6 +208,7 @@ static int cmd_hotplug_status(const char *mnt, int json)
   printf("  last_error: %d\n", st.last_error);
   printf("  wait_queue_len: %u\n", st.wait_queue_len);
   printf("  wait_timeout_ms: %u\n", st.wait_timeout_ms);
+  printf("  wait_queue_limit: %u\n", st.wait_queue_limit);
   printf("  front_version: %u.%u\n", st.front_major, st.front_minor);
   printf("  front_features: %u\n", st.front_features);
   printf("  back_version: %u.%u\n", st.back_major, st.back_minor);
