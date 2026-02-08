@@ -4,6 +4,8 @@
 #endif
 
 #include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +24,7 @@ static void usage(const char *prog)
 
 int main(int argc, char **argv)
 {
+  const char *fd_env = getenv("KAFS_HOTPLUG_BACK_FD");
   const char *uds_path = getenv("KAFS_HOTPLUG_UDS");
 #ifdef KAFS_BACK_ENABLE_IMAGE
   const char *image_path = getenv("KAFS_IMAGE");
@@ -78,29 +81,47 @@ int main(int argc, char **argv)
   int rc = 0;
 #endif
 
-  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  int fd = -1;
+  if (fd_env && fd_env[0] != '\0')
+  {
+    char *end = NULL;
+    long val = strtol(fd_env, &end, 10);
+    if (end && *end == '\0' && val >= 0 && val <= INT_MAX)
+    {
+      int cand = (int)val;
+      if (fcntl(cand, F_GETFD) != -1)
+        fd = cand;
+    }
+    if (fd < 0)
+      fprintf(stderr, "kafs-back: invalid KAFS_HOTPLUG_BACK_FD, falling back to uds\n");
+  }
+
   if (fd < 0)
   {
-    perror("socket");
-    return 2;
-  }
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0)
+    {
+      perror("socket");
+      return 2;
+    }
 
-  struct sockaddr_un addr;
-  memset(&addr, 0, sizeof(addr));
-  addr.sun_family = AF_UNIX;
-  if (snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", uds_path) >=
-      (int)sizeof(addr.sun_path))
-  {
-    fprintf(stderr, "uds path too long\n");
-    close(fd);
-    return 2;
-  }
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    if (snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", uds_path) >=
+        (int)sizeof(addr.sun_path))
+    {
+      fprintf(stderr, "uds path too long\n");
+      close(fd);
+      return 2;
+    }
 
-  if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
-  {
-    perror("connect");
-    close(fd);
-    return 2;
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
+    {
+      perror("connect");
+      close(fd);
+      return 2;
+    }
   }
 
   kafs_rpc_hello_t hello;

@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <sys/un.h>
 #include <signal.h>
 #include <unistd.h>
@@ -39,47 +40,44 @@ int main(int argc, char **argv)
     }
   }
 
-  int srv = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (srv < 0)
+  int fds[2];
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0)
   {
-    perror("socket");
+    perror("socketpair");
     return 2;
   }
 
-  struct sockaddr_un addr;
-  memset(&addr, 0, sizeof(addr));
-  addr.sun_family = AF_UNIX;
-  if (snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", uds_path) >=
-      (int)sizeof(addr.sun_path))
+  pid_t pid = fork();
+  if (pid < 0)
   {
-    fprintf(stderr, "uds path too long\n");
-    close(srv);
+    perror("fork");
+    close(fds[0]);
+    close(fds[1]);
     return 2;
   }
-  unlink(uds_path);
+  if (pid == 0)
+  {
+    close(fds[0]);
+    char fd_buf[32];
+    snprintf(fd_buf, sizeof(fd_buf), "%d", fds[1]);
+    if (setenv("KAFS_HOTPLUG_BACK_FD", fd_buf, 1) != 0)
+    {
+      perror("setenv");
+      _exit(127);
+    }
+    if (setenv("KAFS_HOTPLUG_UDS", uds_path, 1) != 0)
+    {
+      perror("setenv");
+      _exit(127);
+    }
+    char *args[] = {"kafs-back", NULL};
+    execvp(args[0], args);
+    perror("execvp kafs-back");
+    _exit(127);
+  }
 
-  if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) < 0)
-  {
-    perror("bind");
-    close(srv);
-    return 2;
-  }
-
-  if (listen(srv, 1) < 0)
-  {
-    perror("listen");
-    close(srv);
-    return 2;
-  }
-
-  fprintf(stderr, "kafs-front: waiting for back on %s\n", uds_path);
-  int cli = accept(srv, NULL, NULL);
-  if (cli < 0)
-  {
-    perror("accept");
-    close(srv);
-    return 2;
-  }
+  close(fds[1]);
+  int cli = fds[0];
 
   kafs_rpc_hdr_t hdr;
   kafs_rpc_hello_t hello;
@@ -89,14 +87,13 @@ int main(int argc, char **argv)
   {
     fprintf(stderr, "kafs-front: invalid hello rc=%d op=%u\n", rc, (unsigned)hdr.op);
     close(cli);
-    close(srv);
+    close(cli);
     return 2;
   }
   if (payload_len != sizeof(hello))
   {
     fprintf(stderr, "kafs-front: hello payload size mismatch\n");
     close(cli);
-    close(srv);
     return 2;
   }
   if (hello.major != KAFS_RPC_HELLO_MAJOR || hello.minor != KAFS_RPC_HELLO_MINOR ||
@@ -104,7 +101,6 @@ int main(int argc, char **argv)
   {
     fprintf(stderr, "kafs-front: hello version/feature mismatch\n");
     close(cli);
-    close(srv);
     return 2;
   }
 
@@ -120,7 +116,6 @@ int main(int argc, char **argv)
   {
     fprintf(stderr, "kafs-front: failed to send session_restore rc=%d\n", rc);
     close(cli);
-    close(srv);
     return 2;
   }
 
@@ -131,14 +126,12 @@ int main(int argc, char **argv)
   {
     fprintf(stderr, "kafs-front: invalid ready rc=%d op=%u\n", rc, (unsigned)ready_hdr.op);
     close(cli);
-    close(srv);
     return 2;
   }
   if (ready_len != 0)
   {
     fprintf(stderr, "kafs-front: ready payload size mismatch\n");
     close(cli);
-    close(srv);
     return 2;
   }
 
