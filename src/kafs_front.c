@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 static volatile sig_atomic_t g_restart_requested = 0;
+static volatile sig_atomic_t g_back_exited = 0;
 
 static void usage(const char *prog)
 {
@@ -23,6 +24,12 @@ static void kafs_front_request_restart(int signo)
 {
   (void)signo;
   g_restart_requested = 1;
+}
+
+static void kafs_front_child_exited(int signo)
+{
+  (void)signo;
+  g_back_exited = 1;
 }
 
 static int kafs_front_spawn_back(const char *uds_path, pid_t pgid, pid_t *out_pid, int *out_fd)
@@ -229,6 +236,17 @@ int main(int argc, char **argv)
     return 2;
   }
 
+  struct sigaction chld;
+  memset(&chld, 0, sizeof(chld));
+  chld.sa_handler = kafs_front_child_exited;
+  sigemptyset(&chld.sa_mask);
+  chld.sa_flags = SA_NOCLDSTOP;
+  if (sigaction(SIGCHLD, &chld, NULL) != 0)
+  {
+    perror("sigaction(SIGCHLD)");
+    return 2;
+  }
+
   pid_t pid = -1;
   int cli = -1;
   int rc = kafs_front_spawn_back(uds_path, pgid, &pid, &cli);
@@ -248,13 +266,42 @@ int main(int argc, char **argv)
 
   for (;;)
   {
-    pause();
-    if (!g_restart_requested)
+    if (g_back_exited)
+    {
+      g_back_exited = 0;
+      int status = 0;
+      pid_t w = waitpid(pid, &status, WNOHANG);
+      if (w == pid)
+      {
+        if (WIFEXITED(status))
+        {
+          fprintf(stderr, "kafs-front: kafs-back exited status=%d\n",
+                  WEXITSTATUS(status));
+        }
+        else if (WIFSIGNALED(status))
+        {
+          int sig = WTERMSIG(status);
+          fprintf(stderr, "kafs-front: kafs-back terminated by signal=%d (%s)\n", sig,
+                  strsignal(sig));
+        }
+        else
+        {
+          fprintf(stderr, "kafs-front: kafs-back exited status=0x%x\n", status);
+        }
+        return 2;
+      }
+    }
+
+    if (g_restart_requested)
+    {
+      g_restart_requested = 0;
+      fprintf(stderr, "kafs-front: restart requested\n");
+      rc = kafs_front_restart_back(uds_path, pgid, &pid, &cli, session_id, &epoch);
+      if (rc != 0)
+        fprintf(stderr, "kafs-front: restart failed rc=%d\n", rc);
       continue;
-    g_restart_requested = 0;
-    fprintf(stderr, "kafs-front: restart requested\n");
-    rc = kafs_front_restart_back(uds_path, pgid, &pid, &cli, session_id, &epoch);
-    if (rc != 0)
-      fprintf(stderr, "kafs-front: restart failed rc=%d\n", rc);
+    }
+
+    pause();
   }
 }
