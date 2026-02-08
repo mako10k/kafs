@@ -47,6 +47,15 @@ int main(int argc, char **argv)
     return 2;
   }
 
+  pid_t pgid = getpid();
+  if (setpgid(0, pgid) != 0)
+  {
+    perror("setpgid");
+    close(fds[0]);
+    close(fds[1]);
+    return 2;
+  }
+
   pid_t pid = fork();
   if (pid < 0)
   {
@@ -57,6 +66,11 @@ int main(int argc, char **argv)
   }
   if (pid == 0)
   {
+    if (setpgid(0, pgid) != 0)
+    {
+      perror("setpgid");
+      _exit(127);
+    }
     close(fds[0]);
     char fd_buf[32];
     snprintf(fd_buf, sizeof(fd_buf), "%d", fds[1]);
@@ -74,6 +88,15 @@ int main(int argc, char **argv)
     execvp(args[0], args);
     perror("execvp kafs-back");
     _exit(127);
+  }
+
+  if (setpgid(pid, pgid) != 0)
+  {
+    perror("setpgid");
+    close(fds[0]);
+    close(fds[1]);
+    kill(pid, SIGTERM);
+    return 2;
   }
 
   close(fds[1]);
