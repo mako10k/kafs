@@ -5,6 +5,12 @@
 関連ドキュメント
 - hotplug-plan.md
 - hotplug-design.md
+- hotplug-pipe-plan.md
+- hotplug-pipe-design.md
+
+注記
+- 現行実装は socketpair (AF_UNIX) で前後段を接続し、前段が後段を fork/exec する。
+- UDS 前提の記述は過去設計として残している。詳細は hotplug-pipe-*.md を参照。
 
 ## 1. 機能要件
 
@@ -48,7 +54,8 @@
 
 ## 5. RPC 要件
 
-- UDS を使用し、同一ホスト内通信とする。
+- socketpair (AF_UNIX) を使用し、同一ホスト内通信とする。
+- kafs-back 単体起動時は UDS をフォールバックとして利用可能にする。
 - リクエスト/レスポンスは明示的なサイズと req_id を持つ。
 - エラーは -errno をそのまま返す。
 - read/write の payload は RPC に含めるか、共有メモリ方式を将来拡張できること。

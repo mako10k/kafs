@@ -5,6 +5,12 @@
 関連ドキュメント
 - hotplug-requirements.md
 - hotplug-design.md
+- hotplug-pipe-plan.md
+- hotplug-pipe-design.md
+
+注記
+- 現行実装は socketpair (AF_UNIX) で前後段を接続し、前段が後段を fork/exec する。
+- UDS 前提の記述は過去設計として残している。詳細は hotplug-pipe-*.md を参照。
 
 ## 目的
 
@@ -23,7 +29,7 @@
 KERNEL
   | [FUSE]
 FUSE-FRONT (常駐, BlockIO 担当, 再接続管理)
-  | [UDS RPC]
+  | [socketpair RPC]
 KAFS-BACK (ロジック特化, 交換可能)
 
 前段が I/O を保持することで、後段の差し替えは「再接続」と「状態再構築」のみに限定される。

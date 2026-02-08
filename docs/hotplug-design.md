@@ -5,6 +5,12 @@
 関連ドキュメント
 - hotplug-plan.md
 - hotplug-requirements.md
+- hotplug-pipe-plan.md
+- hotplug-pipe-design.md
+
+注記
+- 現行実装は socketpair (AF_UNIX) で前後段を接続し、前段が後段を fork/exec する。
+- UDS 前提の記述は過去設計として残している。詳細は hotplug-pipe-*.md を参照。
 
 目次
 - 1. コンポーネント
@@ -25,7 +31,7 @@
 用語
 - FUSE-FRONT: /dev/fuse を保持する常駐前段。
 - KAFS-BACK: ロジック特化の後段。
-- UDS: Unix Domain Socket。
+- socketpair: 前後段を接続する AF_UNIX ソケットペア。
 - RPC: 前段/後段間のリクエスト/レスポンス。
 - req_id: 冪等性のための一意リクエスト ID。
 
@@ -40,7 +46,7 @@
   - inode/dirent/権限/パス解決などのロジック。
   - 物理 I/O は行わず、操作計画を返す。
 
-- UDS RPC
+- socketpair RPC
   - 前段と後段を接続するローカル IPC。
 - kafsctl
   - 前段に対する制御インタフェース。
