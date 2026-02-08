@@ -5,6 +5,7 @@
 #include "kafs_inode.h"
 #include "kafs_hash.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -22,6 +23,41 @@ static void usage(const char *prog)
           "[--journal-size-bytes J|-J J]\n",
           prog);
   fprintf(stderr, "  defaults: N=1GiB, L=12 (4096B), I=65536, J=1MiB\n");
+  fprintf(stderr, "  sizes accept suffix K/M/G (binary, e.g. 64M = 67108864)\n");
+}
+
+static int parse_size_bytes(const char *arg, unsigned long long *out)
+{
+  if (!arg || !out || *arg == '\0')
+    return -1;
+  char *endp = NULL;
+  errno = 0;
+  unsigned long long v = strtoull(arg, &endp, 0);
+  if (errno != 0 || endp == arg)
+    return -1;
+  if (*endp == '\0')
+  {
+    *out = v;
+    return 0;
+  }
+  if (endp[1] != '\0')
+    return -1;
+  switch ((int)tolower((unsigned char)endp[0]))
+  {
+  case 'k':
+    v <<= 10;
+    break;
+  case 'm':
+    v <<= 20;
+    break;
+  case 'g':
+    v <<= 30;
+    break;
+  default:
+    return -1;
+  }
+  *out = v;
+  return 0;
 }
 
 int main(int argc, char **argv)
@@ -38,7 +74,13 @@ int main(int argc, char **argv)
   {
     if ((strcmp(argv[i], "--size-bytes") == 0 || strcmp(argv[i], "-s") == 0) && i + 1 < argc)
     {
-      bytes = strtoll(argv[++i], NULL, 0);
+      unsigned long long tmp = 0;
+      if (parse_size_bytes(argv[++i], &tmp) != 0)
+      {
+        fprintf(stderr, "invalid size: %s\n", argv[i]);
+        return 2;
+      }
+      bytes = (off_t)tmp;
     }
     else if ((strcmp(argv[i], "--blksize-log") == 0 || strcmp(argv[i], "-b") == 0) && i + 1 < argc)
     {
@@ -53,7 +95,13 @@ int main(int argc, char **argv)
     else if ((strcmp(argv[i], "--journal-size-bytes") == 0 || strcmp(argv[i], "-J") == 0) &&
              i + 1 < argc)
     {
-      journal_bytes = (size_t)strtoull(argv[++i], NULL, 0);
+      unsigned long long tmp = 0;
+      if (parse_size_bytes(argv[++i], &tmp) != 0)
+      {
+        fprintf(stderr, "invalid journal size: %s\n", argv[i]);
+        return 2;
+      }
+      journal_bytes = (size_t)tmp;
       if (journal_bytes < 4096)
         journal_bytes = 4096; // minimum
     }
