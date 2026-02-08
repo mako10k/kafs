@@ -126,7 +126,7 @@ op 一覧 (初期)
 payload 例
 - HELLO: { back_version, feature_flags }
 - READY: { }
-- SESSION_RESTORE: { open_handle_count, [handle, ino, flags]... }
+- SESSION_RESTORE: { open_handle_count } (T5 は open_handle_count=0 のみ送信)
 - STATUS: { state, wait_queue_len, wait_timeout_ms, last_error }
 - GETATTR: { ino, uid, gid, pid }
 - READ: { ino, off, size, uid, gid, pid, data_mode }

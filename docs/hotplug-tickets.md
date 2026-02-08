@@ -28,6 +28,7 @@ T5: session_id/epoch/SESSION_RESTORE
 - 対象: M3
 - 目的: 再接続の基盤
 - 完了条件: 後段再起動で I/O 復旧
+- 補足: 初期実装は open_handle_count=0 の SESSION_RESTORE のみ (ハンドル表は後続)
 
 T6: req_id 冪等性
 - 対象: M3

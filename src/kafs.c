@@ -1743,13 +1743,23 @@ static int kafs_hotplug_wait_for_back(kafs_context_t *ctx, const char *uds_path,
   ctx->c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_OK;
   ctx->c_hotplug_compat_reason = 0;
 
-  kafs_rpc_hello_t ready;
-  ready.major = KAFS_RPC_HELLO_MAJOR;
-  ready.minor = KAFS_RPC_HELLO_MINOR;
-  ready.feature_flags = KAFS_RPC_HELLO_FEATURES;
+  uint64_t session_id = ctx->c_hotplug_session_id;
+  uint32_t next_epoch = ctx->c_hotplug_epoch;
+  if (session_id == 0)
+  {
+    session_id = kafs_rpc_next_req_id();
+    next_epoch = 0u;
+  }
+  else
+  {
+    next_epoch = ctx->c_hotplug_epoch + 1u;
+  }
+
+  kafs_rpc_session_restore_t restore;
+  restore.open_handle_count = 0u;
   uint64_t req_id = kafs_rpc_next_req_id();
-  rc = kafs_rpc_send_msg(cli, KAFS_RPC_OP_READY, KAFS_RPC_FLAG_ENDIAN_HOST, req_id, 1u, 0u, &ready,
-                         sizeof(ready));
+  rc = kafs_rpc_send_msg(cli, KAFS_RPC_OP_SESSION_RESTORE, KAFS_RPC_FLAG_ENDIAN_HOST, req_id,
+                         session_id, next_epoch, &restore, sizeof(restore));
   if (rc != 0)
   {
     close(cli);
@@ -1758,12 +1768,30 @@ static int kafs_hotplug_wait_for_back(kafs_context_t *ctx, const char *uds_path,
     return rc;
   }
 
+  kafs_rpc_hdr_t ready_hdr;
+  uint32_t ready_len = 0;
+  rc = kafs_rpc_recv_msg(cli, &ready_hdr, NULL, 0, &ready_len);
+  if (rc != 0 || ready_hdr.op != KAFS_RPC_OP_READY)
+  {
+    close(cli);
+    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
+    ctx->c_hotplug_last_error = rc != 0 ? rc : -EBADMSG;
+    return rc != 0 ? rc : -EBADMSG;
+  }
+  if (ready_len != 0)
+  {
+    close(cli);
+    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
+    ctx->c_hotplug_last_error = -EBADMSG;
+    return -EBADMSG;
+  }
+
   ctx->c_hotplug_fd = cli;
   ctx->c_hotplug_active = 1;
   ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_CONNECTED;
   ctx->c_hotplug_last_error = 0;
-  ctx->c_hotplug_session_id = 1u;
-  ctx->c_hotplug_epoch = 0u;
+  ctx->c_hotplug_session_id = session_id;
+  ctx->c_hotplug_epoch = next_epoch;
   if (!ctx->c_hotplug_lock_init)
   {
     if (pthread_mutex_init(&ctx->c_hotplug_lock, NULL) == 0)

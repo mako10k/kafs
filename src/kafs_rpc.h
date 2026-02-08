@@ -46,7 +46,8 @@ enum
   KAFS_RPC_OP_GETATTR = 3,
   KAFS_RPC_OP_READ = 4,
   KAFS_RPC_OP_WRITE = 5,
-  KAFS_RPC_OP_TRUNCATE = 6
+  KAFS_RPC_OP_TRUNCATE = 6,
+  KAFS_RPC_OP_SESSION_RESTORE = 7
 };
 
 enum
@@ -55,6 +56,11 @@ enum
   KAFS_RPC_DATA_PLAN_ONLY = 2,
   KAFS_RPC_DATA_SHM = 3
 };
+
+typedef struct
+{
+  uint32_t open_handle_count;
+} kafs_rpc_session_restore_t;
 
 typedef struct
 {

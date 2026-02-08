@@ -108,17 +108,35 @@ int main(int argc, char **argv)
     return 2;
   }
 
-  kafs_rpc_hello_t ready;
-  ready.major = KAFS_RPC_HELLO_MAJOR;
-  ready.minor = KAFS_RPC_HELLO_MINOR;
-  ready.feature_flags = KAFS_RPC_HELLO_FEATURES;
+  uint64_t session_id = 1u;
+  uint32_t epoch = 0u;
+  kafs_rpc_session_restore_t restore;
+  restore.open_handle_count = 0u;
   uint64_t req_id = kafs_rpc_next_req_id();
 
-  rc = kafs_rpc_send_msg(cli, KAFS_RPC_OP_READY, KAFS_RPC_FLAG_ENDIAN_HOST, req_id, 1u, 0u,
-                         &ready, sizeof(ready));
+  rc = kafs_rpc_send_msg(cli, KAFS_RPC_OP_SESSION_RESTORE, KAFS_RPC_FLAG_ENDIAN_HOST, req_id,
+                         session_id, epoch, &restore, sizeof(restore));
   if (rc != 0)
   {
-    fprintf(stderr, "kafs-front: failed to send ready rc=%d\n", rc);
+    fprintf(stderr, "kafs-front: failed to send session_restore rc=%d\n", rc);
+    close(cli);
+    close(srv);
+    return 2;
+  }
+
+  kafs_rpc_hdr_t ready_hdr;
+  uint32_t ready_len = 0;
+  rc = kafs_rpc_recv_msg(cli, &ready_hdr, NULL, 0, &ready_len);
+  if (rc != 0 || ready_hdr.op != KAFS_RPC_OP_READY)
+  {
+    fprintf(stderr, "kafs-front: invalid ready rc=%d op=%u\n", rc, (unsigned)ready_hdr.op);
+    close(cli);
+    close(srv);
+    return 2;
+  }
+  if (ready_len != 0)
+  {
+    fprintf(stderr, "kafs-front: ready payload size mismatch\n");
     close(cli);
     close(srv);
     return 2;

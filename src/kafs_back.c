@@ -121,31 +121,36 @@ int main(int argc, char **argv)
   }
 
   kafs_rpc_hdr_t hdr;
-  kafs_rpc_hello_t ready;
+  kafs_rpc_session_restore_t restore;
   uint32_t payload_len = 0;
-  rc = kafs_rpc_recv_msg(fd, &hdr, &ready, sizeof(ready), &payload_len);
-  if (rc != 0 || hdr.op != KAFS_RPC_OP_READY)
+  rc = kafs_rpc_recv_msg(fd, &hdr, &restore, sizeof(restore), &payload_len);
+  if (rc != 0 || hdr.op != KAFS_RPC_OP_SESSION_RESTORE)
   {
-    fprintf(stderr, "kafs-back: invalid ready rc=%d op=%u\n", rc, (unsigned)hdr.op);
+    fprintf(stderr, "kafs-back: invalid session_restore rc=%d op=%u\n", rc, (unsigned)hdr.op);
     close(fd);
 #ifdef KAFS_BACK_ENABLE_IMAGE
     kafs_core_close_image(&ctx);
 #endif
     return 2;
   }
-  if (payload_len != sizeof(ready))
+  if (payload_len != sizeof(restore))
   {
-    fprintf(stderr, "kafs-back: ready payload size mismatch\n");
+    fprintf(stderr, "kafs-back: session_restore payload size mismatch\n");
     close(fd);
 #ifdef KAFS_BACK_ENABLE_IMAGE
     kafs_core_close_image(&ctx);
 #endif
     return 2;
   }
-  if (ready.major != KAFS_RPC_HELLO_MAJOR || ready.minor != KAFS_RPC_HELLO_MINOR ||
-      (ready.feature_flags & ~KAFS_RPC_HELLO_FEATURES) != 0)
+
+  uint64_t session_id = hdr.session_id;
+  uint32_t epoch = hdr.epoch;
+  uint64_t ready_req_id = kafs_rpc_next_req_id();
+  rc = kafs_rpc_send_msg(fd, KAFS_RPC_OP_READY, KAFS_RPC_FLAG_ENDIAN_HOST, ready_req_id,
+                         session_id, epoch, NULL, 0);
+  if (rc != 0)
   {
-    fprintf(stderr, "kafs-back: ready version/feature mismatch\n");
+    fprintf(stderr, "kafs-back: failed to send ready rc=%d\n", rc);
     close(fd);
 #ifdef KAFS_BACK_ENABLE_IMAGE
     kafs_core_close_image(&ctx);
