@@ -10,6 +10,7 @@
 #include "kafs_mmap_io.h"
 #include "kafs_rpc.h"
 #include "kafs_core.h"
+#include "kafs_back_server.h"
 
 #define KAFS_DIRECT_SIZE (sizeof(((struct kafs_sinode *)NULL)->i_blkreftbl))
 
@@ -2147,6 +2148,158 @@ int kafs_core_truncate(kafs_context_t *ctx, kafs_inocnt_t ino, off_t size)
   return rc;
 }
 
+int kafs_back_rpc_serve(kafs_context_t *ctx, int fd)
+{
+  if (!ctx || fd < 0)
+    return -EINVAL;
+
+  for (;;)
+  {
+    kafs_rpc_hdr_t req_hdr;
+    uint8_t payload[KAFS_RPC_MAX_PAYLOAD];
+    uint32_t req_len = 0;
+    int rc = kafs_rpc_recv_msg(fd, &req_hdr, payload, sizeof(payload), &req_len);
+    if (rc != 0)
+      return rc;
+
+    int32_t result = 0;
+    uint8_t resp_buf[KAFS_RPC_MAX_PAYLOAD];
+    uint32_t resp_len = 0;
+
+    switch (req_hdr.op)
+    {
+    case KAFS_RPC_OP_GETATTR:
+      if (req_len != sizeof(kafs_rpc_getattr_req_t))
+      {
+        result = -EBADMSG;
+        break;
+      }
+      else
+      {
+        kafs_rpc_getattr_req_t *req = (kafs_rpc_getattr_req_t *)payload;
+        kafs_rpc_getattr_resp_t *resp = (kafs_rpc_getattr_resp_t *)resp_buf;
+        int grc = kafs_core_getattr(ctx, (kafs_inocnt_t)req->ino, &resp->st);
+        if (grc == 0)
+          resp_len = (uint32_t)sizeof(*resp);
+        result = grc;
+      }
+      break;
+
+    case KAFS_RPC_OP_READ:
+      if (req_len != sizeof(kafs_rpc_read_req_t))
+      {
+        result = -EBADMSG;
+        break;
+      }
+      else
+      {
+        kafs_rpc_read_req_t *req = (kafs_rpc_read_req_t *)payload;
+        kafs_rpc_read_resp_t *resp = (kafs_rpc_read_resp_t *)resp_buf;
+        if (req->data_mode == KAFS_RPC_DATA_PLAN_ONLY)
+        {
+          resp->size = req->size;
+          resp_len = (uint32_t)sizeof(*resp);
+          result = 0;
+          break;
+        }
+        if (req->data_mode != KAFS_RPC_DATA_INLINE)
+        {
+          result = -EOPNOTSUPP;
+          break;
+        }
+        size_t max_data = KAFS_RPC_MAX_PAYLOAD - sizeof(kafs_rpc_read_resp_t);
+        size_t want = req->size;
+        if (want > max_data)
+          want = max_data;
+        ssize_t rlen = kafs_core_read(ctx, (kafs_inocnt_t)req->ino, resp_buf + sizeof(*resp), want,
+                                      (off_t)req->off);
+        if (rlen >= 0)
+        {
+          resp->size = (uint32_t)rlen;
+          resp_len = (uint32_t)sizeof(*resp) + (uint32_t)rlen;
+          result = 0;
+        }
+        else
+        {
+          result = (int32_t)rlen;
+        }
+      }
+      break;
+
+    case KAFS_RPC_OP_WRITE:
+      if (req_len < sizeof(kafs_rpc_write_req_t))
+      {
+        result = -EBADMSG;
+        break;
+      }
+      else
+      {
+        kafs_rpc_write_req_t *req = (kafs_rpc_write_req_t *)payload;
+        uint32_t data_len = req_len - (uint32_t)sizeof(*req);
+        kafs_rpc_write_resp_t *resp = (kafs_rpc_write_resp_t *)resp_buf;
+        if (req->data_mode == KAFS_RPC_DATA_PLAN_ONLY)
+        {
+          resp->size = req->size;
+          resp_len = (uint32_t)sizeof(*resp);
+          result = 0;
+          break;
+        }
+        if (req->data_mode != KAFS_RPC_DATA_INLINE)
+        {
+          result = -EOPNOTSUPP;
+          break;
+        }
+        if (req->size > data_len)
+        {
+          result = -EBADMSG;
+          break;
+        }
+        ssize_t wlen = kafs_core_write(ctx, (kafs_inocnt_t)req->ino, payload + sizeof(*req),
+                                       req->size, (off_t)req->off);
+        if (wlen >= 0)
+        {
+          resp->size = (uint32_t)wlen;
+          resp_len = (uint32_t)sizeof(*resp);
+          result = 0;
+        }
+        else
+        {
+          result = (int32_t)wlen;
+        }
+      }
+      break;
+
+    case KAFS_RPC_OP_TRUNCATE:
+      if (req_len != sizeof(kafs_rpc_truncate_req_t))
+      {
+        result = -EBADMSG;
+        break;
+      }
+      else
+      {
+        kafs_rpc_truncate_req_t *req = (kafs_rpc_truncate_req_t *)payload;
+        kafs_rpc_truncate_resp_t *resp = (kafs_rpc_truncate_resp_t *)resp_buf;
+        int trc = kafs_core_truncate(ctx, (kafs_inocnt_t)req->ino, (off_t)req->size);
+        if (trc == 0)
+        {
+          resp->size = req->size;
+          resp_len = (uint32_t)sizeof(*resp);
+        }
+        result = trc;
+      }
+      break;
+
+    default:
+      result = -ENOSYS;
+      break;
+    }
+
+    rc = kafs_rpc_send_resp(fd, req_hdr.req_id, result, resp_len ? resp_buf : NULL, resp_len);
+    if (rc != 0)
+      return rc;
+  }
+}
+
 static ssize_t kafs_hotplug_call_read(struct fuse_context *fctx, kafs_context_t *ctx,
                                       kafs_inocnt_t ino, char *buf, size_t size, off_t offset)
 {
@@ -2424,8 +2577,8 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
 #define KAFS_STATS_VERSION 1u
 
 // Forward decl (used by ioctl implementation)
-static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_inocnt_t *pino_dir,
-                       kafs_inocnt_t *pino_new);
+static int kafs_create(struct fuse_context *fctx, const char *path, kafs_mode_t mode, kafs_dev_t dev,
+                       kafs_inocnt_t *pino_dir, kafs_inocnt_t *pino_new);
 
 static inline kafs_hrl_entry_t *kafs_hrl_entries_tbl(kafs_context_t *ctx)
 {
@@ -2910,7 +3063,7 @@ static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_
     if (drc == -ENOENT)
     {
       kafs_inocnt_t ino_new;
-      KAFS_CALL(kafs_create, req.dst, 0644 | S_IFREG, 0, NULL, &ino_new);
+      KAFS_CALL(kafs_create, fctx, req.dst, 0644 | S_IFREG, 0, NULL, &ino_new);
       ino_dst = &ctx->c_inotbl[ino_new];
     }
     else
@@ -3125,14 +3278,14 @@ static int kafs_op_readdir(const char *path, void *buf, fuse_fill_dir_t filler, 
   return 0;
 }
 
-static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_inocnt_t *pino_dir,
-                       kafs_inocnt_t *pino_new)
+static int kafs_create(struct fuse_context *fctx, const char *path, kafs_mode_t mode, kafs_dev_t dev,
+                       kafs_inocnt_t *pino_dir, kafs_inocnt_t *pino_new)
 {
   (void)dev;
   assert(path != NULL);
   assert(path[0] == '/');
   assert(path[1] != '\0');
-  struct fuse_context *fctx = fuse_get_context();
+  assert(fctx != NULL);
   struct kafs_context *ctx = fctx->private_data;
   char path_copy[strlen(path) + 1];
   strcpy(path_copy, path);
@@ -3279,7 +3432,7 @@ static int kafs_op_create(const char *path, mode_t mode, struct fuse_file_info *
   if (kafs_is_ctl_path(path))
     return -EACCES;
   kafs_inocnt_t ino_new;
-  KAFS_CALL(kafs_create, path, mode | S_IFREG, 0, NULL, &ino_new);
+  KAFS_CALL(kafs_create, fctx, path, mode | S_IFREG, 0, NULL, &ino_new);
   fi->fh = ino_new;
   if (ctx && ctx->c_open_cnt)
     __atomic_add_fetch(&ctx->c_open_cnt[ino_new], 1u, __ATOMIC_RELAXED);
@@ -3290,7 +3443,8 @@ static int kafs_op_mknod(const char *path, mode_t mode, dev_t dev)
 {
   if (kafs_is_ctl_path(path))
     return -EACCES;
-  KAFS_CALL(kafs_create, path, mode, dev, NULL, NULL);
+  struct fuse_context *fctx = fuse_get_context();
+  KAFS_CALL(kafs_create, fctx, path, mode, dev, NULL, NULL);
   return 0;
 }
 
@@ -3322,7 +3476,7 @@ static int kafs_op_mkdir(const char *path, mode_t mode)
   uint64_t jseq = kafs_journal_begin(ctx, "MKDIR", "path=%s mode=%o", path, (unsigned)mode);
   kafs_inocnt_t ino_dir;
   kafs_inocnt_t ino_new;
-  KAFS_CALL(kafs_create, path, mode | S_IFDIR, 0, &ino_dir, &ino_new);
+  KAFS_CALL(kafs_create, fctx, path, mode | S_IFDIR, 0, &ino_dir, &ino_new);
   kafs_sinode_t *inoent_new = &ctx->c_inotbl[ino_new];
   kafs_dlog(2, "%s: created ino=%u mode=%o\n", __func__, (unsigned)ino_new,
             (unsigned)kafs_ino_mode_get(inoent_new));
@@ -3947,7 +4101,7 @@ static int kafs_op_symlink(const char *target, const char *linkpath)
     return -EACCES;
   uint64_t jseq = kafs_journal_begin(ctx, "SYMLINK", "target=%s linkpath=%s", target, linkpath);
   kafs_inocnt_t ino;
-  KAFS_CALL(kafs_create, linkpath, 0777 | S_IFLNK, 0, NULL, &ino);
+  KAFS_CALL(kafs_create, fctx, linkpath, 0777 | S_IFLNK, 0, NULL, &ino);
   kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
   ssize_t w = KAFS_CALL(kafs_pwrite, ctx, inoent, target, strlen(target), 0);
   assert(w == (ssize_t)strlen(target));

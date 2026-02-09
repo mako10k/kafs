@@ -72,6 +72,8 @@ struct kafs_context
   int32_t c_hotplug_compat_reason;
   uint32_t c_hotplug_env_count;
   kafs_hotplug_env_entry_t c_hotplug_env[KAFS_HOTPLUG_ENV_MAX];
+  // Proxy/supervisor (front) state
+  pid_t c_back_pid;
   pthread_mutex_t c_hotplug_lock;
   int c_hotplug_lock_init;
   pthread_mutex_t c_hotplug_wait_lock;
