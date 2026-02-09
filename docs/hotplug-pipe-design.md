@@ -4,6 +4,9 @@
 - socketpair で前後段を接続し、前段が後段の起動と再起動を管理する。
 - ユーザは `kafs` のみを意識する。
 
+注記
+- IPC は socketpair のみを使用する。UDS 前提の設計は削除対象。
+
 ## 2. IPC 構成
 - 前段が `socketpair(AF_UNIX, SOCK_STREAM, 0, fds)` を生成。
 - 前段は `fds[0]` を使用、後段は `fds[1]` を使用。

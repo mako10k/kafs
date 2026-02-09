@@ -2,6 +2,7 @@
 
 必須要件
 - IPC は socketpair を使用する。
+- UDS への依存は廃止・削除対象とする。
 - 後段の起動は前段が行う (fork/exec)。
 - 前段/後段は同一 ProcessGroup に所属する。
 - 親終了時は socketpair close 連鎖で子は終了する。

@@ -319,12 +319,15 @@ typedef struct
   uint32_t path_len;
 } kafs_rpc_fuse_mknod_req_t;
 
-// ioctl(FICLONE): request carries two absolute paths: src, dst.
+// ioctl(FICLONE): request carries src absolute path and either dst absolute path or dst file handle.
 typedef struct
 {
   kafs_rpc_cred_t cred;
-  uint32_t a_len;
-  uint32_t b_len;
+  uint32_t a_len; // src path length
+  uint32_t b_len; // dst path length (0 when dst_has_fh=1)
+  uint64_t dst_fh;
+  uint32_t dst_has_fh;
+  uint32_t reserved0;
 } kafs_rpc_fuse_ioctl_clone_req_t;
 
 // KAFS_IOCTL_COPY: inline full request struct.

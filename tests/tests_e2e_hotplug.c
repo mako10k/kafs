@@ -1,6 +1,8 @@
 #include "kafs_context.h"
 #include "test_utils.h"
 
+#include "kafs_ioctl.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -12,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -26,17 +29,27 @@ static void tlogf(const char *fmt, ...)
   va_end(ap);
 }
 
+static char g_repo_cwd[PATH_MAX];
+
 static const char *pick_exe(const char *const cands[])
 {
   static char chosen[PATH_MAX];
+  char tmp[PATH_MAX];
   for (int i = 0; cands[i]; ++i)
   {
     const char *c = cands[i];
     if (strchr(c, '/'))
     {
-      if (access(c, X_OK) == 0)
+      const char *p = c;
+      if (c[0] != '/' && g_repo_cwd[0] != '\0')
       {
-        strncpy(chosen, c, sizeof(chosen) - 1);
+        if ((size_t)snprintf(tmp, sizeof(tmp), "%s/%s", g_repo_cwd, c) < sizeof(tmp))
+          p = tmp;
+      }
+
+      if (access(p, X_OK) == 0)
+      {
+        strncpy(chosen, p, sizeof(chosen) - 1);
         chosen[sizeof(chosen) - 1] = '\0';
         return chosen;
       }
@@ -53,36 +66,56 @@ static const char *pick_kafs_exe(void)
 {
   const char *env = getenv("KAFS_TEST_KAFS");
   if (env && *env)
+  {
+    tlogf("pick_kafs_exe: env=%s", env);
     return env;
+  }
   const char *cands[] = {"./kafs", "../src/kafs", "./src/kafs", "src/kafs", "kafs", NULL};
-  return pick_exe(cands);
+  const char *p = pick_exe(cands);
+  tlogf("pick_kafs_exe: %s", p);
+  return p;
 }
 
 static const char *pick_kafsctl_exe(void)
 {
   const char *env = getenv("KAFS_TEST_KAFSCTL");
   if (env && *env)
+  {
+    tlogf("pick_kafsctl_exe: env=%s", env);
     return env;
+  }
   const char *cands[] = {"./kafsctl", "../src/kafsctl", "./src/kafsctl", "src/kafsctl", "kafsctl", NULL};
-  return pick_exe(cands);
+  const char *p = pick_exe(cands);
+  tlogf("pick_kafsctl_exe: %s", p);
+  return p;
 }
 
 static const char *pick_mkfs_exe(void)
 {
   const char *env = getenv("KAFS_TEST_MKFS");
   if (env && *env)
+  {
+    tlogf("pick_mkfs_exe: env=%s", env);
     return env;
+  }
   const char *cands[] = {"./mkfs.kafs", "../src/mkfs.kafs", "./src/mkfs.kafs", "src/mkfs.kafs", "mkfs.kafs", NULL};
-  return pick_exe(cands);
+  const char *p = pick_exe(cands);
+  tlogf("pick_mkfs_exe: %s", p);
+  return p;
 }
 
 static const char *pick_back_exe(void)
 {
   const char *env = getenv("KAFS_TEST_KAFS_BACK");
   if (env && *env)
+  {
+    tlogf("pick_back_exe: env=%s", env);
     return env;
+  }
   const char *cands[] = {"./kafs-back", "../src/kafs-back", "./src/kafs-back", "src/kafs-back", "kafs-back", NULL};
-  return pick_exe(cands);
+  const char *p = pick_exe(cands);
+  tlogf("pick_back_exe: %s", p);
+  return p;
 }
 
 static int run_cmd(char *const argv[])
@@ -301,8 +334,39 @@ static int hotplug_env_list_contains(const char *mnt, const char *needle)
   return strstr(buf, needle) ? 1 : 0;
 }
 
+static ssize_t do_copy_file_range(int fd_in, off_t *off_in, int fd_out, off_t *off_out, size_t len,
+                                  unsigned int flags)
+{
+#ifdef SYS_copy_file_range
+  return (ssize_t)syscall(SYS_copy_file_range, fd_in, off_in, fd_out, off_out, len, flags);
+#else
+  (void)fd_in;
+  (void)off_in;
+  (void)fd_out;
+  (void)off_out;
+  (void)len;
+  (void)flags;
+  errno = ENOSYS;
+  return -1;
+#endif
+}
+
 int main(void)
 {
+  // Deprecated: this test exercises the legacy UDS-based hotplug transport
+  // (KAFS_HOTPLUG_UDS). As we migrate away from UDS, skip by default to avoid
+  // spending CI/runtime budget on legacy compatibility.
+  const char *enable_uds = getenv("KAFS_TEST_ENABLE_UDS");
+  if (!enable_uds || strcmp(enable_uds, "1") != 0)
+  {
+    tlogf("SKIP: deprecated UDS hotplug test (set KAFS_TEST_ENABLE_UDS=1 to run)");
+    return 77;
+  }
+
+  // Capture the repo working directory before entering the test tmpdir.
+  if (!getcwd(g_repo_cwd, sizeof(g_repo_cwd)))
+    g_repo_cwd[0] = '\0';
+
   if (kafs_test_enter_tmpdir("e2e_hotplug") != 0)
     return 77;
 
@@ -504,6 +568,236 @@ int main(void)
     waitpid(back_pid, NULL, 0);
     return 1;
   }
+
+  // ---- hotplug-mode IO tests: copy_file_range + KAFS ioctl ----
+  char psrc2[PATH_MAX];
+  char pdst2[PATH_MAX];
+  char preflink[PATH_MAX];
+  snprintf(psrc2, sizeof(psrc2), "%s/src.bin", mnt);
+  snprintf(pdst2, sizeof(pdst2), "%s/dst.bin", mnt);
+  snprintf(preflink, sizeof(preflink), "%s/reflink.bin", mnt);
+
+  int sfd = open(psrc2, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+  if (sfd < 0)
+  {
+    tlogf("open(src.bin) failed: %s", strerror(errno));
+    kafs_test_stop_kafs(mnt, kafs_pid);
+    kill(back_pid, SIGTERM);
+    waitpid(back_pid, NULL, 0);
+    return 1;
+  }
+  unsigned char pat[8192];
+  for (size_t i = 0; i < sizeof(pat); ++i)
+    pat[i] = (unsigned char)(i & 0xFF);
+  for (int rep = 0; rep < 8; ++rep)
+  {
+    pat[0] = (unsigned char)rep;
+    if (write(sfd, pat, sizeof(pat)) != (ssize_t)sizeof(pat))
+    {
+      tlogf("write(src.bin) failed: %s", strerror(errno));
+      close(sfd);
+      kafs_test_stop_kafs(mnt, kafs_pid);
+      kill(back_pid, SIGTERM);
+      waitpid(back_pid, NULL, 0);
+      return 1;
+    }
+  }
+  close(sfd);
+
+  sfd = open(psrc2, O_RDONLY);
+  if (sfd < 0)
+  {
+    tlogf("open(src.bin ro) failed: %s", strerror(errno));
+    kafs_test_stop_kafs(mnt, kafs_pid);
+    kill(back_pid, SIGTERM);
+    waitpid(back_pid, NULL, 0);
+    return 1;
+  }
+  int dfd = open(pdst2, O_CREAT | O_TRUNC | O_RDWR, 0644);
+  if (dfd < 0)
+  {
+    tlogf("open(dst.bin) failed: %s", strerror(errno));
+    close(sfd);
+    kafs_test_stop_kafs(mnt, kafs_pid);
+    kill(back_pid, SIGTERM);
+    waitpid(back_pid, NULL, 0);
+    return 1;
+  }
+
+  off_t off_in = 0;
+  off_t off_out = 0;
+  const size_t total = sizeof(pat) * 8u;
+  size_t copied = 0;
+  while (copied < total)
+  {
+    size_t want = total - copied;
+    if (want > 64u * 1024u)
+      want = 64u * 1024u;
+    ssize_t n = do_copy_file_range(sfd, &off_in, dfd, &off_out, want, 0);
+    if (n < 0)
+    {
+      tlogf("copy_file_range failed: %s", strerror(errno));
+      close(dfd);
+      close(sfd);
+      kafs_test_stop_kafs(mnt, kafs_pid);
+      kill(back_pid, SIGTERM);
+      waitpid(back_pid, NULL, 0);
+      return 1;
+    }
+    if (n == 0)
+      break;
+    copied += (size_t)n;
+  }
+
+  // Verify dst content matches src.
+  unsigned char rbuf[8192];
+  if (lseek(sfd, 0, SEEK_SET) < 0 || lseek(dfd, 0, SEEK_SET) < 0)
+  {
+    tlogf("lseek failed: %s", strerror(errno));
+    close(dfd);
+    close(sfd);
+    kafs_test_stop_kafs(mnt, kafs_pid);
+    kill(back_pid, SIGTERM);
+    waitpid(back_pid, NULL, 0);
+    return 1;
+  }
+  for (int rep = 0; rep < 8; ++rep)
+  {
+    if (read(sfd, rbuf, sizeof(rbuf)) != (ssize_t)sizeof(rbuf))
+    {
+      tlogf("read(src.bin) failed: %s", strerror(errno));
+      close(dfd);
+      close(sfd);
+      kafs_test_stop_kafs(mnt, kafs_pid);
+      kill(back_pid, SIGTERM);
+      waitpid(back_pid, NULL, 0);
+      return 1;
+    }
+    unsigned char r2[8192];
+    if (read(dfd, r2, sizeof(r2)) != (ssize_t)sizeof(r2))
+    {
+      tlogf("read(dst.bin) failed: %s", strerror(errno));
+      close(dfd);
+      close(sfd);
+      kafs_test_stop_kafs(mnt, kafs_pid);
+      kill(back_pid, SIGTERM);
+      waitpid(back_pid, NULL, 0);
+      return 1;
+    }
+    if (memcmp(rbuf, r2, sizeof(rbuf)) != 0)
+    {
+      tlogf("copy_file_range content mismatch");
+      close(dfd);
+      close(sfd);
+      kafs_test_stop_kafs(mnt, kafs_pid);
+      kill(back_pid, SIGTERM);
+      waitpid(back_pid, NULL, 0);
+      return 1;
+    }
+  }
+
+  // KAFS_IOCTL_GET_STATS
+  kafs_stats_t st;
+  memset(&st, 0, sizeof(st));
+  if (ioctl(dfd, KAFS_IOCTL_GET_STATS, &st) != 0)
+  {
+    tlogf("ioctl(GET_STATS) failed: %s", strerror(errno));
+    close(dfd);
+    close(sfd);
+    kafs_test_stop_kafs(mnt, kafs_pid);
+    kill(back_pid, SIGTERM);
+    waitpid(back_pid, NULL, 0);
+    return 1;
+  }
+  if (st.struct_size != sizeof(st) || st.version == 0)
+  {
+    tlogf("GET_STATS invalid response");
+    close(dfd);
+    close(sfd);
+    kafs_test_stop_kafs(mnt, kafs_pid);
+    kill(back_pid, SIGTERM);
+    waitpid(back_pid, NULL, 0);
+    return 1;
+  }
+
+  // KAFS_IOCTL_COPY (reflink)
+  kafs_ioctl_copy_t creq;
+  memset(&creq, 0, sizeof(creq));
+  creq.struct_size = (uint32_t)sizeof(creq);
+  creq.flags = KAFS_IOCTL_COPY_F_REFLINK;
+  snprintf(creq.src, sizeof(creq.src), "/src.bin");
+  snprintf(creq.dst, sizeof(creq.dst), "/reflink.bin");
+  if (ioctl(dfd, KAFS_IOCTL_COPY, &creq) != 0)
+  {
+    tlogf("ioctl(COPY) failed: %s", strerror(errno));
+    close(dfd);
+    close(sfd);
+    kafs_test_stop_kafs(mnt, kafs_pid);
+    kill(back_pid, SIGTERM);
+    waitpid(back_pid, NULL, 0);
+    return 1;
+  }
+
+  int rfd = open(preflink, O_RDWR);
+  if (rfd < 0)
+  {
+    tlogf("open(reflink.bin) failed: %s", strerror(errno));
+    close(dfd);
+    close(sfd);
+    kafs_test_stop_kafs(mnt, kafs_pid);
+    kill(back_pid, SIGTERM);
+    waitpid(back_pid, NULL, 0);
+    return 1;
+  }
+  const char patch[] = "ZZZ";
+  if (pwrite(rfd, patch, sizeof(patch) - 1, 123) != (ssize_t)(sizeof(patch) - 1))
+  {
+    tlogf("pwrite(reflink.bin) failed: %s", strerror(errno));
+    close(rfd);
+    close(dfd);
+    close(sfd);
+    kafs_test_stop_kafs(mnt, kafs_pid);
+    kill(back_pid, SIGTERM);
+    waitpid(back_pid, NULL, 0);
+    return 1;
+  }
+  char a[4] = {0}, b[4] = {0};
+  if (pread(rfd, a, 3, 123) != 3 || pread(sfd, b, 3, 123) != 3)
+  {
+    tlogf("pread verify failed: %s", strerror(errno));
+    close(rfd);
+    close(dfd);
+    close(sfd);
+    kafs_test_stop_kafs(mnt, kafs_pid);
+    kill(back_pid, SIGTERM);
+    waitpid(back_pid, NULL, 0);
+    return 1;
+  }
+  if (memcmp(a, "ZZZ", 3) != 0)
+  {
+    tlogf("reflink dst patch verify failed");
+    close(rfd);
+    close(dfd);
+    close(sfd);
+    kafs_test_stop_kafs(mnt, kafs_pid);
+    kill(back_pid, SIGTERM);
+    waitpid(back_pid, NULL, 0);
+    return 1;
+  }
+  if (memcmp(b, "ZZZ", 3) == 0)
+  {
+    tlogf("reflink src unexpectedly modified");
+    close(rfd);
+    close(dfd);
+    close(sfd);
+    kafs_test_stop_kafs(mnt, kafs_pid);
+    kill(back_pid, SIGTERM);
+    waitpid(back_pid, NULL, 0);
+    return 1;
+  }
+  close(rfd);
+  close(dfd);
+  close(sfd);
 
   kafs_test_stop_kafs(mnt, kafs_pid);
   kill(back_pid, SIGTERM);

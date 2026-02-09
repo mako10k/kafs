@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 static void usage(const char *prog)
@@ -142,7 +143,36 @@ int main(int argc, char **argv)
   }
   else
   {
-    fd = kafs_back_connect_uds(uds_path);
+    int timeout_ms = 5000;
+    const char *tout = getenv("KAFS_BACK_CONNECT_TIMEOUT_MS");
+    if (tout && *tout)
+    {
+      char *endp = NULL;
+      unsigned long v = strtoul(tout, &endp, 10);
+      if (endp && *endp == '\0' && v > 0 && v <= 600000)
+        timeout_ms = (int)v;
+    }
+
+    int waited = 0;
+    const int step_ms = 50;
+    for (;;)
+    {
+      fd = kafs_back_connect_uds(uds_path);
+      if (fd >= 0)
+        break;
+
+      if (fd != -ENOENT && fd != -ECONNREFUSED)
+        break;
+
+      if (waited >= timeout_ms)
+        break;
+
+      struct timespec ts;
+      ts.tv_sec = 0;
+      ts.tv_nsec = step_ms * 1000 * 1000;
+      (void)nanosleep(&ts, NULL);
+      waited += step_ms;
+    }
     if (fd < 0)
     {
       fprintf(stderr, "kafs-back: failed to connect uds '%s' rc=%d\n", uds_path, fd);

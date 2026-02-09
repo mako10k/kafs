@@ -10,7 +10,7 @@
 
 注記
 - 現行実装は socketpair (AF_UNIX) で前後段を接続し、前段が後段を fork/exec する。
-- UDS 前提の記述は過去設計として残している。詳細は hotplug-pipe-*.md を参照。
+- IPC は socketpair のみを使用する。UDS 前提の記述は legacy として削除対象。
 
 目次
 - 1. コンポーネント

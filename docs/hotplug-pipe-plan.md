@@ -5,6 +5,9 @@
 - 後段のプロセス管理を前段で完結させる。
 - ユーザはアーキテクチャを意識せずに利用できるようにする。
 
+注記
+- IPC は socketpair のみを使用する。UDS 依存は廃止・削除対象。
+
 関連ドキュメント
 - hotplug-pipe-requirements.md
 - hotplug-pipe-design.md

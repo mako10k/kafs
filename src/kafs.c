@@ -1649,6 +1649,7 @@ static void kafs_hotplug_schedule_relisten(kafs_context_t *ctx)
 {
   if (!ctx || ctx->c_hotplug_uds_path[0] == '\0')
     return;
+  const int debug = getenv("KAFS_HOTPLUG_DEBUG") != NULL;
   if (!ctx->c_hotplug_wait_lock_init)
   {
     if (pthread_mutex_init(&ctx->c_hotplug_wait_lock, NULL) == 0 &&
@@ -1663,6 +1664,8 @@ static void kafs_hotplug_schedule_relisten(kafs_context_t *ctx)
   pthread_mutex_lock(&ctx->c_hotplug_wait_lock);
   if (ctx->c_hotplug_connecting)
   {
+    if (debug)
+      fprintf(stderr, "hotplug: relisten already connecting\n");
     pthread_mutex_unlock(&ctx->c_hotplug_wait_lock);
     return;
   }
@@ -1672,6 +1675,8 @@ static void kafs_hotplug_schedule_relisten(kafs_context_t *ctx)
   pthread_t tid;
   if (pthread_create(&tid, NULL, kafs_hotplug_relisten_thread, ctx) == 0)
   {
+    if (debug)
+      fprintf(stderr, "hotplug: relisten thread started\n");
     pthread_detach(tid);
     return;
   }
@@ -1686,6 +1691,9 @@ static void kafs_hotplug_mark_disconnected(kafs_context_t *ctx, int rc)
 {
   if (!ctx)
     return;
+  const int debug = getenv("KAFS_HOTPLUG_DEBUG") != NULL;
+  if (debug)
+    fprintf(stderr, "hotplug: mark_disconnected rc=%d\n", rc);
   if (ctx->c_hotplug_fd >= 0)
     close(ctx->c_hotplug_fd);
   ctx->c_hotplug_fd = -1;
@@ -1698,6 +1706,10 @@ static void kafs_hotplug_mark_disconnected(kafs_context_t *ctx, int rc)
 
 static int kafs_hotplug_wait_for_back(kafs_context_t *ctx, const char *uds_path, int timeout_ms)
 {
+  const int debug = getenv("KAFS_HOTPLUG_DEBUG") != NULL;
+  if (debug)
+    fprintf(stderr, "hotplug: wait_for_back start uds='%s' timeout_ms=%d\n", uds_path ? uds_path : "(null)",
+            timeout_ms);
   ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_WAITING;
   ctx->c_hotplug_front_major = KAFS_RPC_HELLO_MAJOR;
   ctx->c_hotplug_front_minor = KAFS_RPC_HELLO_MINOR;
@@ -1733,6 +1745,8 @@ static int kafs_hotplug_wait_for_back(kafs_context_t *ctx, const char *uds_path,
     close(srv);
     ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
     ctx->c_hotplug_last_error = rc;
+    if (debug)
+      fprintf(stderr, "hotplug: bind failed uds='%s' rc=%d\n", uds_path, rc);
     return rc;
   }
   if (listen(srv, 1) < 0)
@@ -1741,8 +1755,13 @@ static int kafs_hotplug_wait_for_back(kafs_context_t *ctx, const char *uds_path,
     close(srv);
     ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
     ctx->c_hotplug_last_error = rc;
+    if (debug)
+      fprintf(stderr, "hotplug: listen failed uds='%s' rc=%d\n", uds_path, rc);
     return rc;
   }
+
+  if (debug)
+    fprintf(stderr, "hotplug: listening uds='%s' timeout_ms=%d\n", uds_path, timeout_ms);
 
   if (timeout_ms >= 0)
   {
@@ -1756,6 +1775,8 @@ static int kafs_hotplug_wait_for_back(kafs_context_t *ctx, const char *uds_path,
     } while (prc < 0 && errno == EINTR);
     if (prc == 0)
     {
+      if (debug)
+        fprintf(stderr, "hotplug: poll timeout uds='%s'\n", uds_path);
       close(srv);
       ctx->c_hotplug_last_error = -ETIMEDOUT;
       return -EIO;
@@ -1780,6 +1801,9 @@ static int kafs_hotplug_wait_for_back(kafs_context_t *ctx, const char *uds_path,
     return rc;
   }
   close(srv);
+
+  if (debug)
+    fprintf(stderr, "hotplug: accepted uds='%s'\n", uds_path);
 
   kafs_rpc_hdr_t hdr;
   kafs_rpc_hello_t hello;
@@ -3114,17 +3138,24 @@ static int kafs_hotplug_call_fuse_fsync_common(struct fuse_context *fctx, kafs_c
 }
 
 static int kafs_hotplug_call_fuse_ioctl_clone(struct fuse_context *fctx, kafs_context_t *ctx,
-                                              const char *src_path, const char *dst_path)
+                                              const char *src_path, const char *dst_path,
+                                              const struct fuse_file_info *dst_fi)
 {
-  if (!fctx || !ctx || !src_path || !dst_path)
+  if (!fctx || !ctx || !src_path)
+    return -EINVAL;
+  if (!dst_path && !dst_fi)
     return -EINVAL;
   int wait_rc = kafs_hotplug_wait_ready(ctx);
   if (wait_rc != 0)
     return wait_rc;
 
   uint32_t a_len = (uint32_t)strlen(src_path);
-  uint32_t b_len = (uint32_t)strlen(dst_path);
-  if (a_len == 0 || b_len == 0)
+  uint32_t b_len = dst_path ? (uint32_t)strlen(dst_path) : 0u;
+  uint32_t dst_has_fh = dst_fi ? 1u : 0u;
+  uint64_t dst_fh = dst_fi ? (uint64_t)dst_fi->fh : 0u;
+  if (a_len == 0 || (!dst_has_fh && b_len == 0))
+    return -EINVAL;
+  if (dst_has_fh && b_len != 0)
     return -EINVAL;
   if ((uint64_t)sizeof(kafs_rpc_fuse_ioctl_clone_req_t) + (uint64_t)a_len + (uint64_t)b_len >
       (uint64_t)KAFS_RPC_MAX_PAYLOAD)
@@ -3138,8 +3169,12 @@ static int kafs_hotplug_call_fuse_ioctl_clone(struct fuse_context *fctx, kafs_co
   req->cred.umask = (uint32_t)fctx->umask;
   req->a_len = a_len;
   req->b_len = b_len;
+  req->dst_fh = dst_fh;
+  req->dst_has_fh = dst_has_fh;
+  req->reserved0 = 0u;
   memcpy(payload + sizeof(*req), src_path, a_len);
-  memcpy(payload + sizeof(*req) + a_len, dst_path, b_len);
+  if (b_len)
+    memcpy(payload + sizeof(*req) + a_len, dst_path, b_len);
   uint32_t payload_len = (uint32_t)sizeof(*req) + a_len + b_len;
   uint64_t req_id = kafs_rpc_next_req_id();
 
@@ -4073,7 +4108,12 @@ int kafs_back_rpc_serve(kafs_context_t *ctx, int fd)
       {
         const kafs_rpc_fuse_ioctl_clone_req_t *req = (const kafs_rpc_fuse_ioctl_clone_req_t *)payload;
         uint32_t need = (uint32_t)sizeof(*req) + req->a_len + req->b_len;
-        if (req->a_len == 0 || req->b_len == 0 || need != req_len)
+        if (req->a_len == 0 || need != req_len)
+        {
+          result = -EBADMSG;
+          break;
+        }
+        if ((!req->dst_has_fh && req->b_len == 0) || (req->dst_has_fh && req->b_len != 0))
         {
           result = -EBADMSG;
           break;
@@ -4088,10 +4128,13 @@ int kafs_back_rpc_serve(kafs_context_t *ctx, int fd)
         char dst_path[PATH_MAX];
         memcpy(src_path, payload + sizeof(*req), req->a_len);
         src_path[req->a_len] = '\0';
-        memcpy(dst_path, payload + sizeof(*req) + req->a_len, req->b_len);
-        dst_path[req->b_len] = '\0';
+        if (req->b_len)
+        {
+          memcpy(dst_path, payload + sizeof(*req) + req->a_len, req->b_len);
+          dst_path[req->b_len] = '\0';
+        }
 
-        if (kafs_is_ctl_path(src_path) || kafs_is_ctl_path(dst_path))
+        if (kafs_is_ctl_path(src_path) || (req->b_len && kafs_is_ctl_path(dst_path)))
         {
           result = -ENOENT;
           break;
@@ -4113,11 +4156,24 @@ int kafs_back_rpc_serve(kafs_context_t *ctx, int fd)
           result = arc;
           break;
         }
-        arc = kafs_access(&fctx, ctx, dst_path, NULL, W_OK, &ino_dst);
-        if (arc != 0)
+        if (req->dst_has_fh)
         {
-          result = arc;
-          break;
+          kafs_inocnt_t cnt = kafs_sb_inocnt_get(ctx->c_superblock);
+          if (req->dst_fh >= (uint64_t)cnt)
+          {
+            result = -EBADF;
+            break;
+          }
+          ino_dst = &ctx->c_inotbl[req->dst_fh];
+        }
+        else
+        {
+          arc = kafs_access(&fctx, ctx, dst_path, NULL, W_OK, &ino_dst);
+          if (arc != 0)
+          {
+            result = arc;
+            break;
+          }
         }
         result = kafs_reflink_clone(ctx, ino_src, ino_dst);
       }
@@ -5376,6 +5432,25 @@ static int kafs_op_getattr(const char *path, struct stat *st, struct fuse_file_i
     return 0;
   }
 
+  // During hotplug WAITING (back disconnected), avoid blocking basic path traversal
+  // on back connectivity. This keeps the control plane usable (kafsctl uses the
+  // mountpoint path to reach /.kafs.sock).
+  if (kafs_hotplug_mode(ctx) && !kafs_hotplug_enabled(ctx) && path && strcmp(path, "/") == 0)
+  {
+    memset(st, 0, sizeof(*st));
+    st->st_mode = S_IFDIR | 0700;
+    st->st_nlink = 2;
+    st->st_uid = fctx->uid;
+    st->st_gid = fctx->gid;
+    st->st_size = 0;
+    st->st_blksize = 4096;
+    st->st_blocks = 0;
+    st->st_atim = kafs_now();
+    st->st_mtim = st->st_atim;
+    st->st_ctim = st->st_atim;
+    return 0;
+  }
+
   if (kafs_hotplug_mode(ctx))
   {
     int rc_hp = kafs_hotplug_call_fuse_getattr(fctx, ctx, path, st, fi);
@@ -5937,7 +6012,7 @@ static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_
       if (prc != 0)
         return prc;
 
-      int rc_hp = kafs_hotplug_call_fuse_ioctl_clone(fctx, ctx, sp, path);
+      int rc_hp = kafs_hotplug_call_fuse_ioctl_clone(fctx, ctx, sp, path, fi);
       if (rc_hp == 0)
         return 0;
       if (!kafs_hotplug_should_fallback(rc_hp))
@@ -7012,6 +7087,9 @@ static int kafs_op_access(const char *path, int mode)
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
 
+  if (kafs_hotplug_mode(ctx) && !kafs_hotplug_enabled(ctx) && path && strcmp(path, "/") == 0)
+    return 0;
+
   if (kafs_hotplug_mode(ctx))
   {
     int rc_hp = kafs_hotplug_call_fuse_access(fctx, ctx, path, mode);
@@ -7919,14 +7997,58 @@ int main(int argc, char **argv)
   if (hotplug_uds)
   {
     ctx.c_hotplug_state = KAFS_HOTPLUG_STATE_WAITING;
-    snprintf(ctx.c_hotplug_uds_path, sizeof(ctx.c_hotplug_uds_path), "%s", hotplug_uds);
+    // Stabilize the UDS path across relisten attempts. If the user provides a
+    // relative path, make it absolute using the startup working directory.
+    if (hotplug_uds[0] == '/')
+    {
+      size_t n = strlen(hotplug_uds);
+      if (n >= sizeof(ctx.c_hotplug_uds_path))
+      {
+        ctx.c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
+        ctx.c_hotplug_last_error = -ENAMETOOLONG;
+        fprintf(stderr, "hotplug: uds path too long\n");
+        return 2;
+      }
+      memcpy(ctx.c_hotplug_uds_path, hotplug_uds, n + 1);
+    }
+    else
+    {
+      char cwd[PATH_MAX];
+      if (getcwd(cwd, sizeof(cwd)) == NULL)
+      {
+        size_t n = strlen(hotplug_uds);
+        if (n >= sizeof(ctx.c_hotplug_uds_path))
+        {
+          ctx.c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
+          ctx.c_hotplug_last_error = -ENAMETOOLONG;
+          fprintf(stderr, "hotplug: uds path too long\n");
+          return 2;
+        }
+        memcpy(ctx.c_hotplug_uds_path, hotplug_uds, n + 1);
+      }
+      else
+      {
+        size_t cwd_len = strlen(cwd);
+        size_t uds_len = strlen(hotplug_uds);
+        if (cwd_len + 1 + uds_len >= sizeof(ctx.c_hotplug_uds_path))
+        {
+          ctx.c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
+          ctx.c_hotplug_last_error = -ENAMETOOLONG;
+          fprintf(stderr, "hotplug: uds path too long\n");
+          return 2;
+        }
+        memcpy(ctx.c_hotplug_uds_path, cwd, cwd_len);
+        ctx.c_hotplug_uds_path[cwd_len] = '/';
+        memcpy(ctx.c_hotplug_uds_path + cwd_len + 1, hotplug_uds, uds_len + 1);
+      }
+    }
     if (!ctx.c_hotplug_wait_lock_init)
     {
       if (pthread_mutex_init(&ctx.c_hotplug_wait_lock, NULL) == 0 &&
           pthread_cond_init(&ctx.c_hotplug_wait_cond, NULL) == 0)
         ctx.c_hotplug_wait_lock_init = 1;
     }
-    if (snprintf(hotplug_uds_path, sizeof(hotplug_uds_path), "%s", hotplug_uds) <
+    if (snprintf(hotplug_uds_path, sizeof(hotplug_uds_path), "%s", ctx.c_hotplug_uds_path) <
         (int)sizeof(hotplug_uds_path))
     {
       int rc_hp = kafs_hotplug_wait_for_back(&ctx, hotplug_uds_path, -1);
