@@ -138,9 +138,9 @@ int main(int argc, char **argv)
   {
     fprintf(stderr, "kafs-back: failed to send hello rc=%d\n", rc);
     close(fd);
-  #ifdef KAFS_BACK_ENABLE_IMAGE
+#ifdef KAFS_BACK_ENABLE_IMAGE
     kafs_core_close_image(&ctx);
-  #endif
+#endif
     return 2;
   }
 
@@ -170,8 +170,8 @@ int main(int argc, char **argv)
   uint64_t session_id = hdr.session_id;
   uint32_t epoch = hdr.epoch;
   uint64_t ready_req_id = kafs_rpc_next_req_id();
-  rc = kafs_rpc_send_msg(fd, KAFS_RPC_OP_READY, KAFS_RPC_FLAG_ENDIAN_HOST, ready_req_id,
-                         session_id, epoch, NULL, 0);
+  rc = kafs_rpc_send_msg(fd, KAFS_RPC_OP_READY, KAFS_RPC_FLAG_ENDIAN_HOST, ready_req_id, session_id,
+                         epoch, NULL, 0);
   if (rc != 0)
   {
     fprintf(stderr, "kafs-back: failed to send ready rc=%d\n", rc);
@@ -250,8 +250,8 @@ int main(int argc, char **argv)
         size_t want = req->size;
         if (want > max_data)
           want = max_data;
-        ssize_t rlen = kafs_core_read(&ctx, (kafs_inocnt_t)req->ino,
-                                      resp_buf + sizeof(*resp), want, (off_t)req->off);
+        ssize_t rlen = kafs_core_read(&ctx, (kafs_inocnt_t)req->ino, resp_buf + sizeof(*resp), want,
+                                      (off_t)req->off);
         if (rlen >= 0)
         {
           resp->size = (uint32_t)rlen;
@@ -297,8 +297,8 @@ int main(int argc, char **argv)
           result = -EBADMSG;
           break;
         }
-        ssize_t wlen = kafs_core_write(&ctx, (kafs_inocnt_t)req->ino,
-                                       payload + sizeof(*req), req->size, (off_t)req->off);
+        ssize_t wlen = kafs_core_write(&ctx, (kafs_inocnt_t)req->ino, payload + sizeof(*req),
+                                       req->size, (off_t)req->off);
         if (wlen >= 0)
         {
           resp->size = (uint32_t)wlen;

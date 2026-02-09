@@ -169,8 +169,8 @@ int main(int argc, char **argv)
   kafs_blksize_t blksize = 1u << log_blksize;
   kafs_blksize_t blksizemask = blksize - 1u;
   off_t total_bytes = 1024ll * 1024ll * 1024ll; // 1GiB
-  kafs_inocnt_t inocnt = 65536;           // number of inodes
-  size_t journal_bytes = 1u << 20;        // 1MiB default journal region
+  kafs_inocnt_t inocnt = 65536;                 // number of inodes
+  size_t journal_bytes = 1u << 20;              // 1MiB default journal region
   int size_arg_provided = 0;
 
   for (int i = 1; i < argc; ++i)

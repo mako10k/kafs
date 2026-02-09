@@ -15,10 +15,7 @@
 static volatile sig_atomic_t g_restart_requested = 0;
 static volatile sig_atomic_t g_back_exited = 0;
 
-static void usage(const char *prog)
-{
-  fprintf(stderr, "Usage: %s [--uds <path>]\n", prog);
-}
+static void usage(const char *prog) { fprintf(stderr, "Usage: %s [--uds <path>]\n", prog); }
 
 static void kafs_front_request_restart(int signo)
 {
@@ -139,8 +136,7 @@ static int kafs_front_handshake(int cli, uint64_t session_id, uint32_t epoch)
     return -EBADMSG;
   }
 
-  fprintf(stderr, "kafs-front: handshake ok (session=%" PRIu64 " epoch=%u)\n", session_id,
-          epoch);
+  fprintf(stderr, "kafs-front: handshake ok (session=%" PRIu64 " epoch=%u)\n", session_id, epoch);
   return 0;
 }
 
@@ -275,8 +271,7 @@ int main(int argc, char **argv)
       {
         if (WIFEXITED(status))
         {
-          fprintf(stderr, "kafs-front: kafs-back exited status=%d\n",
-                  WEXITSTATUS(status));
+          fprintf(stderr, "kafs-front: kafs-back exited status=%d\n", WEXITSTATUS(status));
         }
         else if (WIFSIGNALED(status))
         {

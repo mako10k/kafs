@@ -72,13 +72,13 @@ static void usage(const char *prog)
   fprintf(stderr,
           "Usage:\n"
           "  %s fsstat <mountpoint> [--json] [--bytes|--mib|--gib]   (alias: stats)\n"
-      "  %s hotplug status <mountpoint> [--json]\n"
-      "  %s hotplug restart-back <mountpoint>\n"
-      "  %s hotplug compat <mountpoint> [--json]\n"
-      "  %s hotplug set-timeout <mountpoint> <ms>\n"
-      "  %s hotplug env list <mountpoint>\n"
-      "  %s hotplug env set <mountpoint> <key>=<value>\n"
-      "  %s hotplug env unset <mountpoint> <key>\n"
+          "  %s hotplug status <mountpoint> [--json]\n"
+          "  %s hotplug restart-back <mountpoint>\n"
+          "  %s hotplug compat <mountpoint> [--json]\n"
+          "  %s hotplug set-timeout <mountpoint> <ms>\n"
+          "  %s hotplug env list <mountpoint>\n"
+          "  %s hotplug env set <mountpoint> <key>=<value>\n"
+          "  %s hotplug env unset <mountpoint> <key>\n"
           "  %s stat <mountpoint> <path>\n"
           "  %s cat <mountpoint> <path>\n"
           "  %s write <mountpoint> <path>   (stdin -> file, trunc)\n"
@@ -92,8 +92,8 @@ static void usage(const char *prog)
           "  %s readlink <mountpoint> <path>\n"
           "  %s chmod <mountpoint> <octal_mode> <path>\n"
           "  %s touch <mountpoint> <path>\n",
-          prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog,
-          prog, prog, prog, prog, prog, prog, prog);
+          prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog,
+          prog, prog, prog, prog, prog, prog);
 }
 
 static const char *hotplug_state_str(uint32_t state)
@@ -198,9 +198,9 @@ static uint64_t next_req_id(void)
   return __atomic_add_fetch(&rid, 1u, __ATOMIC_RELAXED);
 }
 
-static int hotplug_ctl_exchange(const char *mnt, uint16_t op, const void *req,
-                                uint32_t req_len, void *resp, uint32_t resp_cap,
-                                uint32_t *resp_len, int32_t *resp_result)
+static int hotplug_ctl_exchange(const char *mnt, uint16_t op, const void *req, uint32_t req_len,
+                                void *resp, uint32_t resp_cap, uint32_t *resp_len,
+                                int32_t *resp_result)
 {
   if (req_len > KAFS_RPC_MAX_PAYLOAD)
     return -EMSGSIZE;
@@ -287,8 +287,7 @@ static int hotplug_ctl_exchange(const char *mnt, uint16_t op, const void *req,
   return 0;
 }
 
-static void hotplug_status_from_rpc(kafs_hotplug_status_t *out,
-                                    const kafs_rpc_hotplug_status_t *in)
+static void hotplug_status_from_rpc(kafs_hotplug_status_t *out, const kafs_rpc_hotplug_status_t *in)
 {
   memset(out, 0, sizeof(*out));
   out->struct_size = (uint32_t)sizeof(*out);
@@ -318,8 +317,8 @@ static int get_hotplug_status(const char *mnt, kafs_hotplug_status_t *out)
   kafs_rpc_hotplug_status_t st;
   uint32_t resp_len = 0;
   int32_t resp_result = 0;
-  int rc = hotplug_ctl_exchange(mnt, KAFS_RPC_OP_CTL_STATUS, NULL, 0, &st, sizeof(st),
-                                &resp_len, &resp_result);
+  int rc = hotplug_ctl_exchange(mnt, KAFS_RPC_OP_CTL_STATUS, NULL, 0, &st, sizeof(st), &resp_len,
+                                &resp_result);
   if (rc != 0)
     return rc;
   if (resp_result != 0)
@@ -391,8 +390,8 @@ static int cmd_hotplug_restart(const char *mnt)
 {
   uint32_t resp_len = 0;
   int32_t resp_result = 0;
-  int rc = hotplug_ctl_exchange(mnt, KAFS_RPC_OP_CTL_RESTART, NULL, 0, NULL, 0, &resp_len,
-                                &resp_result);
+  int rc =
+      hotplug_ctl_exchange(mnt, KAFS_RPC_OP_CTL_RESTART, NULL, 0, NULL, 0, &resp_len, &resp_result);
   if (rc != 0)
   {
     fprintf(stderr, "hotplug restart failed: %s\n", strerror(-rc));
@@ -527,8 +526,8 @@ static int cmd_hotplug_env_set(const char *mnt, const char *kv)
   snprintf(req.value, sizeof(req.value), "%s", eq + 1);
   uint32_t resp_len = 0;
   int32_t resp_result = 0;
-  int rc = hotplug_ctl_exchange(mnt, KAFS_RPC_OP_CTL_ENV_SET, &req, sizeof(req), NULL, 0,
-                                &resp_len, &resp_result);
+  int rc = hotplug_ctl_exchange(mnt, KAFS_RPC_OP_CTL_ENV_SET, &req, sizeof(req), NULL, 0, &resp_len,
+                                &resp_result);
   if (rc != 0)
   {
     fprintf(stderr, "hotplug env set failed: %s\n", strerror(-rc));

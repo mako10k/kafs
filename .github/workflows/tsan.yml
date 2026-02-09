@@ -31,4 +31,4 @@ jobs:
       # FUSE tests can hang/require privileges in CI, so only build under TSan here.
       # hrl_smoketest is a check_PROGRAM, so build it explicitly.
       - name: Smoke run (no FUSE)
-        run: make -C src hrl_smoketest && ./src/hrl_smoketest
+        run: make -C tests hrl_smoketest && ./tests/hrl_smoketest
