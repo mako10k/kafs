@@ -1,4 +1,4 @@
-# Hotplug Pipe Plan
+# Hotplug IPC Plan
 
 目的
 - UDS ベースから socketpair ベースへ再設計する。
@@ -9,10 +9,10 @@
 - IPC は socketpair のみを使用する。UDS 依存は廃止・削除対象。
 
 関連ドキュメント
-- hotplug-pipe-requirements.md
-- hotplug-pipe-design.md
-- hotplug-pipe-milestones.md
-- hotplug-pipe-tickets.md
+- hotplug-ipc-requirements.md
+- hotplug-ipc-design.md
+- hotplug-ipc-milestones.md
+- hotplug-ipc-tickets.md
 
 スコープ
 - 前段が socketpair を生成し、後段を fork/exec で起動。

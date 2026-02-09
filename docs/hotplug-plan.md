@@ -5,12 +5,12 @@
 関連ドキュメント
 - hotplug-requirements.md
 - hotplug-design.md
-- hotplug-pipe-plan.md
-- hotplug-pipe-design.md
+- hotplug-ipc-plan.md
+- hotplug-ipc-design.md
 
 注記
 - 現行実装は socketpair (AF_UNIX) で前後段を接続し、前段が後段を fork/exec する。
-- UDS 前提の記述は過去設計として残している。詳細は hotplug-pipe-*.md を参照。
+- UDS 前提の記述は過去設計として残している。詳細は hotplug-ipc-*.md を参照。
 
 ## 目的
 

@@ -5,8 +5,8 @@
 関連ドキュメント
 - hotplug-plan.md
 - hotplug-design.md
-- hotplug-pipe-plan.md
-- hotplug-pipe-design.md
+- hotplug-ipc-plan.md
+- hotplug-ipc-design.md
 
 注記
 - 現行実装は socketpair (AF_UNIX) で前後段を接続し、前段が後段を fork/exec する。

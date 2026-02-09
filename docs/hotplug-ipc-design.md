@@ -1,4 +1,4 @@
-# Hotplug Pipe Design
+# Hotplug IPC Design
 
 ## 1. 目的
 - socketpair で前後段を接続し、前段が後段の起動と再起動を管理する。

@@ -1,4 +1,4 @@
-# Hotplug Pipe Requirements
+# Hotplug IPC Requirements
 
 必須要件
 - IPC は socketpair を使用する。
