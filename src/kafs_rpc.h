@@ -113,6 +113,11 @@ typedef struct
   uint32_t path_len;
 } kafs_rpc_fuse_path_req_t;
 
+typedef struct
+{
+  struct stat st;
+} kafs_rpc_fuse_getattr_resp_t;
+
 // Requests that carry two path strings (e.g., rename, symlink).
 typedef struct
 {
