@@ -93,6 +93,19 @@ enum
   KAFS_RPC_OP_FUSE_MKNOD = 124
 };
 
+  typedef struct
+  {
+    kafs_rpc_cred_t cred;
+    uint32_t max_bytes;
+    uint32_t path_len;
+  } kafs_rpc_fuse_readlink_req_t;
+
+  typedef struct
+  {
+    uint32_t size;
+    // followed by data[size] (not NUL-terminated)
+  } kafs_rpc_fuse_readlink_resp_t;
+
 enum
 {
   KAFS_RPC_DATA_INLINE = 1,
