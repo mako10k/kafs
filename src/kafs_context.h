@@ -4,7 +4,6 @@
 #include "kafs_inode.h"
 #include "kafs_hotplug.h"
 #include <pthread.h>
-#include <sys/un.h>
 
 /// @brief コンテキスト
 struct kafs_context
@@ -79,8 +78,6 @@ struct kafs_context
   pthread_mutex_t c_hotplug_wait_lock;
   pthread_cond_t c_hotplug_wait_cond;
   int c_hotplug_wait_lock_init;
-  int c_hotplug_connecting;
-  char c_hotplug_uds_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
 };
 
 // Lock helpers (no-op when locks not enabled in build)

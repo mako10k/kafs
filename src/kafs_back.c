@@ -9,44 +9,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 
 static void usage(const char *prog)
 {
 #ifdef KAFS_BACK_ENABLE_IMAGE
-  fprintf(stderr, "Usage: %s [--uds <path>] [--image <path>]\n", prog);
+  fprintf(stderr, "Usage: %s [--fd <num>] [--image <path>]\n", prog);
 #else
-  fprintf(stderr, "Usage: %s [--uds <path>]\n", prog);
+  fprintf(stderr, "Usage: %s [--fd <num>]\n", prog);
 #endif
-}
-
-static int kafs_back_connect_uds(const char *uds_path)
-{
-  if (!uds_path || !*uds_path)
-    return -EINVAL;
-
-  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (fd < 0)
-    return -errno;
-
-  struct sockaddr_un addr;
-  memset(&addr, 0, sizeof(addr));
-  addr.sun_family = AF_UNIX;
-  if (snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", uds_path) >= (int)sizeof(addr.sun_path))
-  {
-    close(fd);
-    return -ENAMETOOLONG;
-  }
-
-  if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0)
-  {
-    int rc = -errno;
-    close(fd);
-    return rc;
-  }
-  return fd;
 }
 
 static int kafs_back_handshake(int fd)
@@ -80,23 +52,23 @@ static int kafs_back_handshake(int fd)
 int main(int argc, char **argv)
 {
   const char *fd_env = getenv("KAFS_HOTPLUG_BACK_FD");
-  const char *uds_path = getenv("KAFS_HOTPLUG_UDS");
 #ifdef KAFS_BACK_ENABLE_IMAGE
   const char *image_path = getenv("KAFS_IMAGE");
 #endif
-  if (!uds_path)
-    uds_path = "/tmp/kafs-hotplug.sock";
+  int fd = -1;
+  if (fd_env && *fd_env)
+    fd = atoi(fd_env);
 
   for (int i = 1; i < argc; ++i)
   {
-    if (strcmp(argv[i], "--uds") == 0)
+    if (strcmp(argv[i], "--fd") == 0)
     {
       if (i + 1 >= argc)
       {
         usage(argv[0]);
         return 2;
       }
-      uds_path = argv[++i];
+      fd = atoi(argv[++i]);
       continue;
     }
 #ifdef KAFS_BACK_ENABLE_IMAGE
@@ -136,51 +108,13 @@ int main(int argc, char **argv)
   }
 #endif
 
-  int fd = -1;
-  if (fd_env && *fd_env)
+  if (fd < 0)
   {
-    fd = atoi(fd_env);
-  }
-  else
-  {
-    int timeout_ms = 5000;
-    const char *tout = getenv("KAFS_BACK_CONNECT_TIMEOUT_MS");
-    if (tout && *tout)
-    {
-      char *endp = NULL;
-      unsigned long v = strtoul(tout, &endp, 10);
-      if (endp && *endp == '\0' && v > 0 && v <= 600000)
-        timeout_ms = (int)v;
-    }
-
-    int waited = 0;
-    const int step_ms = 50;
-    for (;;)
-    {
-      fd = kafs_back_connect_uds(uds_path);
-      if (fd >= 0)
-        break;
-
-      if (fd != -ENOENT && fd != -ECONNREFUSED)
-        break;
-
-      if (waited >= timeout_ms)
-        break;
-
-      struct timespec ts;
-      ts.tv_sec = 0;
-      ts.tv_nsec = step_ms * 1000 * 1000;
-      (void)nanosleep(&ts, NULL);
-      waited += step_ms;
-    }
-    if (fd < 0)
-    {
-      fprintf(stderr, "kafs-back: failed to connect uds '%s' rc=%d\n", uds_path, fd);
+    fprintf(stderr, "kafs-back: KAFS_HOTPLUG_BACK_FD (or --fd) is required\n");
 #ifdef KAFS_BACK_ENABLE_IMAGE
-      kafs_core_close_image(&ctx);
+    kafs_core_close_image(&ctx);
 #endif
-      return 2;
-    }
+    return 2;
   }
 
   int hrc = kafs_back_handshake(fd);
