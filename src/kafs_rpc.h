@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include "kafs_ioctl.h"
 #include "kafs_hotplug.h"
 
 #define KAFS_RPC_MAGIC 0x4b415250u
@@ -91,7 +92,11 @@ enum
   KAFS_RPC_OP_FUSE_UTIMENS = 121,
   KAFS_RPC_OP_FUSE_READLINK = 122,
   KAFS_RPC_OP_FUSE_SYMLINK = 123,
-  KAFS_RPC_OP_FUSE_MKNOD = 124
+  KAFS_RPC_OP_FUSE_MKNOD = 124,
+  KAFS_RPC_OP_FUSE_IOCTL_CLONE = 125,
+  KAFS_RPC_OP_FUSE_IOCTL_COPY = 126,
+  KAFS_RPC_OP_FUSE_IOCTL_GET_STATS = 127,
+  KAFS_RPC_OP_FUSE_COPY_FILE_RANGE = 128
 };
 
   typedef struct
@@ -313,6 +318,56 @@ typedef struct
   uint32_t dev;
   uint32_t path_len;
 } kafs_rpc_fuse_mknod_req_t;
+
+// ioctl(FICLONE): request carries two absolute paths: src, dst.
+typedef struct
+{
+  kafs_rpc_cred_t cred;
+  uint32_t a_len;
+  uint32_t b_len;
+} kafs_rpc_fuse_ioctl_clone_req_t;
+
+// KAFS_IOCTL_COPY: inline full request struct.
+typedef struct
+{
+  kafs_rpc_cred_t cred;
+  kafs_ioctl_copy_t req;
+} kafs_rpc_fuse_ioctl_copy_req_t;
+
+// KAFS_IOCTL_GET_STATS: response returns the stats struct.
+typedef struct
+{
+  kafs_rpc_cred_t cred;
+  uint32_t reserved0;
+  uint32_t reserved1;
+} kafs_rpc_fuse_ioctl_get_stats_req_t;
+
+typedef struct
+{
+  kafs_stats_t st;
+} kafs_rpc_fuse_ioctl_get_stats_resp_t;
+
+// copy_file_range(2)
+typedef struct
+{
+  kafs_rpc_cred_t cred;
+  uint64_t fh_in;
+  uint64_t fh_out;
+  int64_t offset_in;
+  int64_t offset_out;
+  uint64_t size;
+  uint32_t flags;
+  uint32_t in_has_fh;
+  uint32_t out_has_fh;
+  uint32_t path_in_len;
+  uint32_t path_out_len;
+  // followed by optional: path_in[path_in_len], path_out[path_out_len]
+} kafs_rpc_fuse_copy_file_range_req_t;
+
+typedef struct
+{
+  int64_t n;
+} kafs_rpc_fuse_copy_file_range_resp_t;
 
 typedef struct
 {
