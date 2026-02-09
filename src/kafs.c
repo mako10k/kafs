@@ -3675,6 +3675,12 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
   if (strcmp(from, to) == 0)
     return 0;
 
+  // ディレクトリを自身の配下へ移動する rename は許可しない（ループ防止）。
+  // 例: rename("/a", "/a/b")
+  size_t from_len = strlen(from);
+  if (from_len > 1 && strncmp(to, from, from_len) == 0 && to[from_len] == '/')
+    return -EINVAL;
+
   const unsigned int supported = RENAME_NOREPLACE;
   if (flags & ~supported)
     return -EOPNOTSUPP;
@@ -3698,6 +3704,8 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
     from_dir = "/";
   *from_base = '\0';
   from_base++;
+  if (from_base[0] == '\0')
+    return -EINVAL;
   if (strcmp(from_base, ".") == 0 || strcmp(from_base, "..") == 0)
     return -EINVAL;
 
@@ -3709,6 +3717,8 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
     to_dir = "/";
   *to_base = '\0';
   to_base++;
+  if (to_base[0] == '\0')
+    return -EINVAL;
   if (strcmp(to_base, ".") == 0 || strcmp(to_base, "..") == 0)
     return -EINVAL;
 
@@ -3718,15 +3728,8 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
   KAFS_CALL(kafs_access, fctx, ctx, from_dir, NULL, W_OK, &inoent_dir_from);
   kafs_sinode_t *inoent_dir_to;
   KAFS_CALL(kafs_access, fctx, ctx, to_dir, NULL, W_OK, &inoent_dir_to);
-
-  // ディレクトリの rename は、リンク数/".." の扱いが絡むため最小で同一親ディレクトリ内のみ許可。
   uint32_t ino_from_dir = (uint32_t)(inoent_dir_from - ctx->c_inotbl);
   uint32_t ino_to_dir = (uint32_t)(inoent_dir_to - ctx->c_inotbl);
-  if (src_is_dir && ino_from_dir != ino_to_dir)
-  {
-    kafs_journal_abort(ctx, jseq, "DIR_CROSS_PARENT");
-    return -EOPNOTSUPP;
-  }
 
   // RENAME_NOREPLACE: 既存なら EEXIST
   if (flags & RENAME_NOREPLACE)
@@ -3762,12 +3765,6 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
         kafs_journal_abort(ctx, jseq, "DST_NOT_DIR");
         return -ENOTDIR;
       }
-      // 既存ディレクトリに置換する場合は空である必要がある（最小チェック: dirent が 0 件）。
-      if (kafs_ino_size_get(inoent_to_exist) != 0)
-      {
-        kafs_journal_abort(ctx, jseq, "DST_DIR_NOT_EMPTY");
-        return -ENOTEMPTY;
-      }
     }
     else
     {
@@ -3784,18 +3781,70 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
     }
   }
 
-  // ロック順序: 親ディレクトリ２つを inode番号で昇順に、最後に対象 inode
-  if (ino_from_dir < ino_to_dir)
+  // ロック順序: 関係 inode を番号昇順に取得（親ディレクトリ2つ + 対象 inode + (置換先 inode)）。
+  uint32_t ino_src_u32 = (uint32_t)ino_src;
+  uint32_t ino_dst_u32 = UINT32_MAX;
+  if (exists_to == 0 && inoent_to_exist)
+    ino_dst_u32 = (uint32_t)(inoent_to_exist - ctx->c_inotbl);
+
+  uint32_t lock_list[4];
+  size_t lock_n = 0;
+  lock_list[lock_n++] = ino_from_dir;
+  if (ino_to_dir != ino_from_dir)
+    lock_list[lock_n++] = ino_to_dir;
+  if (ino_src_u32 != ino_from_dir && ino_src_u32 != ino_to_dir)
+    lock_list[lock_n++] = ino_src_u32;
+  if (ino_dst_u32 != UINT32_MAX && ino_dst_u32 != ino_from_dir && ino_dst_u32 != ino_to_dir &&
+      ino_dst_u32 != ino_src_u32)
+    lock_list[lock_n++] = ino_dst_u32;
+
+  for (size_t i = 0; i < lock_n; ++i)
+    for (size_t j = i + 1; j < lock_n; ++j)
+      if (lock_list[j] < lock_list[i])
+      {
+        uint32_t tmp = lock_list[i];
+        lock_list[i] = lock_list[j];
+        lock_list[j] = tmp;
+      }
+
+  for (size_t i = 0; i < lock_n; ++i)
+    kafs_inode_lock(ctx, lock_list[i]);
+
+  // ディレクトリ置換の場合は、空 (".." のみ) を確認して ".." を除去する（親リンク数整合）。
+  if (src_is_dir && exists_to == 0 && inoent_to_exist)
   {
-    kafs_inode_lock(ctx, ino_from_dir);
-    if (ino_to_dir != ino_from_dir)
-      kafs_inode_lock(ctx, ino_to_dir);
-  }
-  else
-  {
-    kafs_inode_lock(ctx, ino_to_dir);
-    if (ino_to_dir != ino_from_dir)
-      kafs_inode_lock(ctx, ino_from_dir);
+    struct kafs_sdirent dirent;
+    off_t off = 0;
+    while (1)
+    {
+      ssize_t r = kafs_dirent_read(ctx, inoent_to_exist, &dirent, off);
+      if (r < 0)
+      {
+        kafs_journal_abort(ctx, jseq, "dst_dirent_read=%zd", r);
+        for (size_t i = lock_n; i > 0; --i)
+          kafs_inode_unlock(ctx, lock_list[i - 1]);
+        return (int)r;
+      }
+      if (r == 0)
+        break;
+      if (strcmp(dirent.d_filename, "..") != 0)
+      {
+        kafs_journal_abort(ctx, jseq, "DST_DIR_NOT_EMPTY");
+        for (size_t i = lock_n; i > 0; --i)
+          kafs_inode_unlock(ctx, lock_list[i - 1]);
+        return -ENOTEMPTY;
+      }
+      off += r;
+    }
+
+    int rr = kafs_dirent_remove(ctx, inoent_to_exist, "..");
+    if (rr < 0)
+    {
+      kafs_journal_abort(ctx, jseq, "dst_remove_dotdot=%d", rr);
+      for (size_t i = lock_n; i > 0; --i)
+        kafs_inode_unlock(ctx, lock_list[i - 1]);
+      return rr;
+    }
   }
 
   // 置換先が存在していればエントリを除去（rename では moved inode の linkcount は変えない）
@@ -3813,19 +3862,30 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
   // to に追加（rename ではリンク数を変更しない）
   KAFS_CALL(kafs_dirent_add_nolink, ctx, inoent_dir_to, ino_src, to_base);
 
-  // ロック解除
-  if (ino_from_dir < ino_to_dir)
+  // ディレクトリを親またぎで移動した場合は、".." を新しい親へ付け替える。
+  if (src_is_dir && ino_from_dir != ino_to_dir)
   {
-    if (ino_to_dir != ino_from_dir)
-      kafs_inode_unlock(ctx, ino_to_dir);
-    kafs_inode_unlock(ctx, ino_from_dir);
+    int rr = kafs_dirent_remove(ctx, inoent_src, "..");
+    if (rr < 0)
+    {
+      kafs_journal_abort(ctx, jseq, "src_remove_dotdot=%d", rr);
+      for (size_t i = lock_n; i > 0; --i)
+        kafs_inode_unlock(ctx, lock_list[i - 1]);
+      return rr;
+    }
+    rr = kafs_dirent_add(ctx, inoent_src, (kafs_inocnt_t)ino_to_dir, "..");
+    if (rr < 0)
+    {
+      kafs_journal_abort(ctx, jseq, "src_add_dotdot=%d", rr);
+      for (size_t i = lock_n; i > 0; --i)
+        kafs_inode_unlock(ctx, lock_list[i - 1]);
+      return rr;
+    }
   }
-  else
-  {
-    if (ino_to_dir != ino_from_dir)
-      kafs_inode_unlock(ctx, ino_from_dir);
-    kafs_inode_unlock(ctx, ino_to_dir);
-  }
+
+  // ロック解除（取得の逆順）
+  for (size_t i = lock_n; i > 0; --i)
+    kafs_inode_unlock(ctx, lock_list[i - 1]);
 
   // If we replaced an existing dst, decrement its linkcount under inode lock.
   if (removed_dst_ino != KAFS_INO_NONE)
