@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include "kafs_hotplug.h"
 
 #define KAFS_RPC_MAGIC 0x4b415250u
@@ -130,6 +131,11 @@ typedef struct
 {
   struct stat st;
 } kafs_rpc_fuse_getattr_resp_t;
+
+typedef struct
+{
+  struct statvfs st;
+} kafs_rpc_fuse_statfs_resp_t;
 
 // Requests that carry two path strings (e.g., rename, symlink).
 typedef struct
