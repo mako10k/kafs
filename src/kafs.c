@@ -3679,14 +3679,15 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
   if (flags & ~supported)
     return -EOPNOTSUPP;
 
-  // 事前に対象 inode を確認（ディレクトリは未対応）
+  // 事前に対象 inode を確認（ディレクトリは同一親ディレクトリ内のみ対応）
   kafs_sinode_t *inoent_src;
   int rc = kafs_access(fctx, ctx, from, NULL, F_OK, &inoent_src);
   if (rc < 0)
     return rc;
   kafs_mode_t src_mode = kafs_ino_mode_get(inoent_src);
-  if (!S_ISREG(src_mode) && !S_ISLNK(src_mode))
-    return -EOPNOTSUPP; // ディレクトリ等は未対応
+  int src_is_dir = S_ISDIR(src_mode) ? 1 : 0;
+  if (!S_ISREG(src_mode) && !S_ISLNK(src_mode) && !src_is_dir)
+    return -EOPNOTSUPP;
 
   // パス分解
   char from_copy[strlen(from) + 1];
@@ -3697,6 +3698,8 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
     from_dir = "/";
   *from_base = '\0';
   from_base++;
+  if (strcmp(from_base, ".") == 0 || strcmp(from_base, "..") == 0)
+    return -EINVAL;
 
   char to_copy[strlen(to) + 1];
   strcpy(to_copy, to);
@@ -3706,6 +3709,8 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
     to_dir = "/";
   *to_base = '\0';
   to_base++;
+  if (strcmp(to_base, ".") == 0 || strcmp(to_base, "..") == 0)
+    return -EINVAL;
 
   uint64_t jseq = kafs_journal_begin(ctx, "RENAME", "from=%s to=%s flags=%u", from, to, flags);
 
@@ -3713,6 +3718,15 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
   KAFS_CALL(kafs_access, fctx, ctx, from_dir, NULL, W_OK, &inoent_dir_from);
   kafs_sinode_t *inoent_dir_to;
   KAFS_CALL(kafs_access, fctx, ctx, to_dir, NULL, W_OK, &inoent_dir_to);
+
+  // ディレクトリの rename は、リンク数/".." の扱いが絡むため最小で同一親ディレクトリ内のみ許可。
+  uint32_t ino_from_dir = (uint32_t)(inoent_dir_from - ctx->c_inotbl);
+  uint32_t ino_to_dir = (uint32_t)(inoent_dir_to - ctx->c_inotbl);
+  if (src_is_dir && ino_from_dir != ino_to_dir)
+  {
+    kafs_journal_abort(ctx, jseq, "DIR_CROSS_PARENT");
+    return -EOPNOTSUPP;
+  }
 
   // RENAME_NOREPLACE: 既存なら EEXIST
   if (flags & RENAME_NOREPLACE)
@@ -3740,16 +3754,37 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
   if (exists_to == 0)
   {
     kafs_mode_t dst_mode = kafs_ino_mode_get(inoent_to_exist);
-    if (!S_ISREG(dst_mode) && !S_ISLNK(dst_mode))
+    int dst_is_dir = S_ISDIR(dst_mode) ? 1 : 0;
+    if (src_is_dir)
     {
-      kafs_journal_abort(ctx, jseq, "DST_NOT_FILE");
-      return -EOPNOTSUPP;
+      if (!dst_is_dir)
+      {
+        kafs_journal_abort(ctx, jseq, "DST_NOT_DIR");
+        return -ENOTDIR;
+      }
+      // 既存ディレクトリに置換する場合は空である必要がある（最小チェック: dirent が 0 件）。
+      if (kafs_ino_size_get(inoent_to_exist) != 0)
+      {
+        kafs_journal_abort(ctx, jseq, "DST_DIR_NOT_EMPTY");
+        return -ENOTEMPTY;
+      }
+    }
+    else
+    {
+      if (dst_is_dir)
+      {
+        kafs_journal_abort(ctx, jseq, "DST_IS_DIR");
+        return -EISDIR;
+      }
+      if (!S_ISREG(dst_mode) && !S_ISLNK(dst_mode))
+      {
+        kafs_journal_abort(ctx, jseq, "DST_NOT_FILE");
+        return -EOPNOTSUPP;
+      }
     }
   }
 
   // ロック順序: 親ディレクトリ２つを inode番号で昇順に、最後に対象 inode
-  uint32_t ino_from_dir = (uint32_t)(inoent_dir_from - ctx->c_inotbl);
-  uint32_t ino_to_dir = (uint32_t)(inoent_dir_to - ctx->c_inotbl);
   if (ino_from_dir < ino_to_dir)
   {
     kafs_inode_lock(ctx, ino_from_dir);
@@ -3796,7 +3831,10 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
   if (removed_dst_ino != KAFS_INO_NONE)
   {
     kafs_inode_lock(ctx, (uint32_t)removed_dst_ino);
-    (void)kafs_ino_linkcnt_decr(&ctx->c_inotbl[removed_dst_ino]);
+    kafs_sinode_t *dst = &ctx->c_inotbl[removed_dst_ino];
+    kafs_linkcnt_t nl = kafs_ino_linkcnt_decr(dst);
+    if (nl == 0)
+      kafs_ino_dtime_set(dst, kafs_now());
     kafs_inode_unlock(ctx, (uint32_t)removed_dst_ino);
   }
 
