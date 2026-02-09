@@ -65,7 +65,8 @@ static pid_t spawn_kafs(const char *img, const char *mnt)
       dup2(lfd, STDOUT_FILENO);
       close(lfd);
     }
-    char *args[] = {"./kafs", (char *)mnt, "-f", NULL};
+    const char *kafs = kafs_test_kafs_bin();
+    char *args[] = {(char *)kafs, (char *)mnt, "-f", NULL};
     execvp(args[0], args);
     _exit(127);
   }
@@ -134,6 +135,9 @@ static int read_file(const char *path, char *buf, size_t cap)
 
 int main(void)
 {
+  if (kafs_test_enter_tmpdir("rename_overwrite_dirfsync") != 0)
+    return 77;
+
   const char *img = "rename.img";
   const char *mnt = "mnt-rename";
   kafs_context_t ctx;

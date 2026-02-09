@@ -96,11 +96,11 @@ if [[ "$RECONF" != "0" || ! -f ./Makefile ]]; then
 fi
 
 # Determine tests to run
-TESTS_OVERRIDE=""
+MAKE_ARGS=()
 if [[ -n "$USER_TESTS" ]]; then
-  TESTS_OVERRIDE="TESTS=$USER_TESTS"
+  MAKE_ARGS+=("TESTS=$USER_TESTS")
 elif [[ "$SKIP_FUSE" == "1" ]]; then
-  TESTS_OVERRIDE="TESTS=hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured"
+  MAKE_ARGS+=("TESTS=hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured")
 fi
 
 # Optional valgrind wrapper
@@ -114,16 +114,20 @@ if [[ "$USE_VALGRIND" == "1" ]]; then
   fi
 fi
 
-echo "[build] make -C src -j$JOBS check $TESTS_OVERRIDE"
+echo "[build] make -j$JOBS check ${MAKE_ARGS[*]:-}"
 if [[ -n "$TESTS_ENVIRONMENT" ]]; then
-  TESTS_ENVIRONMENT="$TESTS_ENVIRONMENT" make -C src -j"$JOBS" check $TESTS_OVERRIDE
+  TESTS_ENVIRONMENT="$TESTS_ENVIRONMENT" make -j"$JOBS" check "${MAKE_ARGS[@]}"
 else
-  make -C src -j"$JOBS" check $TESTS_OVERRIDE
+  make -j"$JOBS" check "${MAKE_ARGS[@]}"
 fi
 
-if [[ -f src/test-suite.log ]]; then
-  echo "[summary] src/test-suite.log"
-  sed -n '1,160p' src/test-suite.log || true
-fi
+for log in tests/test-suite.log test-suite.log src/test-suite.log; do
+  if [[ -f "$log" ]]; then
+    echo "[summary] $log"
+    sed -n '1,160p' "$log" || true
+    break
+  fi
+done
+
 
 echo "[done] bootstrap-check completed"

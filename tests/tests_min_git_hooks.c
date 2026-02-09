@@ -32,7 +32,10 @@ static void tlogf(const char *fmt, ...)
 static const char *pick_kafs_exe(void)
 {
   static char chosen[PATH_MAX];
-  const char *cands[] = {"./kafs", "./src/kafs", "src/kafs", "kafs", NULL};
+  const char *env = getenv("KAFS_TEST_KAFS");
+  if (env && *env)
+    return env;
+  const char *cands[] = {"./kafs", "../src/kafs", "./src/kafs", "src/kafs", "kafs", NULL};
   for (int i = 0; cands[i]; ++i)
   {
     const char *c = cands[i];
@@ -144,6 +147,9 @@ static void unmount_kafs(const char *mnt, pid_t pid)
 
 int main(void)
 {
+  if (kafs_test_enter_tmpdir("min_git_hooks") != 0)
+    return 77;
+
   const char *img = "mini.img";
   const char *mnt = "mnt-mini";
   kafs_context_t ctx;

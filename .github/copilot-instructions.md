@@ -48,3 +48,27 @@ To avoid accidental data loss, the agent MUST follow these rules:
   1) show the exact command, target path(s), and what will be lost
   2) propose a non-destructive alternative (backup/patch/dry-run)
   3) obtain explicit user confirmation
+
+## Local test artifacts policy (mnt-* / *.img)
+
+Goal: prevent accidental commits of mount/work directories and disk images.
+
+Authoritative policy: see `docs/test-folder-policy.md`.
+
+- Treat repository-root `mnt-*` directories and `*.img` files as **ephemeral test artifacts**.
+- Never add/commit these artifacts. Keep them ignored (see `.gitignore`).
+- Prefer placing mountpoints/workdirs under `${TMPDIR:-/tmp}` using `mktemp -d` when writing new scripts.
+- If a test must use repo-local paths, it MUST:
+  - create paths only under `./mnt-*` (unique names, e.g. `mnt-test-$(date +%s)-$$`)
+  - set `trap` cleanup to remove them on exit
+  - avoid reusing a shared `mnt-*` directory name across tests
+
+## Safe test & smoke rules
+
+- Before running integration tests, run a cleanup dry-run and ensure the working tree is not polluted by artifacts:
+  - `scripts/cleanup-mnt-artifacts.sh --dry-run`
+- Minimal smoke (no mounts):
+  - `./scripts/lint.sh`
+- Integration suites (may create mounts/images):
+  - run in a disposable environment, ensure cleanup via `scripts/cleanup-mnt-artifacts.sh`
+  - prefer `./scripts/run-all-tests.sh` as the canonical aggregator

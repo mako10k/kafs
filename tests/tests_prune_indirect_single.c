@@ -74,7 +74,8 @@ static pid_t spawn_kafs(const char *img, const char *mnt, const char *debug)
       dup2(lfd, STDOUT_FILENO);
       close(lfd);
     }
-    char *args[] = {"./kafs", (char *)mp, "-f", NULL};
+    const char *kafs = kafs_test_kafs_bin();
+    char *args[] = {(char *)kafs, (char *)mp, "-f", NULL};
     execvp(args[0], args);
     _exit(127);
   }
@@ -114,8 +115,11 @@ int main(void)
 {
   const unsigned log_bs = 12; // 4096
   const kafs_blksize_t bs = 1u << log_bs;
-  const char *img = "prune-di.img";
-  const char *mnt = "mnt-prune-di";
+  const char *img = "prune.img";
+  const char *mnt = "mnt-prune";
+
+  if (kafs_test_enter_tmpdir("prune_indirect_single") != 0)
+    return 77;
 
   kafs_context_t ctx;
   off_t mapsize;
@@ -128,12 +132,27 @@ int main(void)
   close(ctx.c_fd);
 
   pid_t srv = spawn_kafs(img, mnt, "3");
+  // 失敗時の解析を容易にするため、詳細ログを有効化
+  if (srv <= 0)
+  {
+    // 起動失敗時でも minisrv.log があれば出力
+    FILE *lf = fopen("minisrv.log", "r");
+    if (lf)
+    {
+      tlogf("--- minisrv.log (on mount failure) ---");
+      char line[512];
+      while (fgets(line, sizeof(line), lf))
+        fputs(line, stderr);
+      fclose(lf);
+    }
+  }
   if (srv <= 0)
   {
     tlogf("mount failed");
     return 77;
   }
 
+  // Create a file and place one block into the first single-indirect range
   char p[PATH_MAX];
   snprintf(p, sizeof(p), "%s/file", mnt);
   int fd = open(p, O_CREAT | O_WRONLY, 0644);
@@ -143,30 +162,36 @@ int main(void)
     stop_kafs(mnt, srv);
     return 1;
   }
-
-  // Pick a logical block in the first double-indirect region: 12 + blkrefs_pb * 1
-  // We can derive blkrefs_pb from superblock later, but we know for 4K block and 4-byte refs it's
-  // 1024 So choose iblo = 12 + 1024*0 + 0 => to ensure double-indirect tables are allocated. Then
-  // zero it.
-  off_t p_off = (off_t)(12 + 1024) * bs;
+  off_t p_off = (off_t)12 * bs; // first single-indirect logical block
   char *buf = malloc(bs);
-  memset(buf, 0xCD, bs);
+  memset(buf, 0xAB, bs); // non-zero content to allocate data + table
   ssize_t w = pwrite(fd, buf, bs, p_off);
   free(buf);
   if (w != (ssize_t)bs)
   {
-    tlogf("pwrite DI data failed: %s", strerror(errno));
+    tlogf("pwrite data failed: %s", strerror(errno));
     close(fd);
+    // クラッシュや切断時のログをダンプ
+    FILE *lf = fopen("minisrv.log", "r");
+    if (lf)
+    {
+      tlogf("--- minisrv.log (on write failure) ---");
+      char line[512];
+      while (fgets(line, sizeof(line), lf))
+        fputs(line, stderr);
+      fclose(lf);
+    }
     stop_kafs(mnt, srv);
     return 1;
   }
 
+  // Now write a zero block at the same offset to trigger SET(NONE) and prune of the table
   char *z = calloc(1, bs);
   w = pwrite(fd, z, bs, p_off);
   free(z);
   if (w != (ssize_t)bs)
   {
-    tlogf("pwrite DI zero failed: %s", strerror(errno));
+    tlogf("pwrite zero failed: %s", strerror(errno));
     close(fd);
     stop_kafs(mnt, srv);
     return 1;
@@ -176,6 +201,7 @@ int main(void)
 
   stop_kafs(mnt, srv);
 
+  // Reopen the image metadata to inspect the inode's single-indirect pointer [12]
   int ifd = open(img, O_RDONLY);
   if (ifd < 0)
   {
@@ -190,6 +216,16 @@ int main(void)
     return 1;
   }
   kafs_ssuperblock_t *sb = (kafs_ssuperblock_t *)base;
+  // test_utils laid out inotbl immediately after blkmask; recompute like test_utils did
+  // But simpler: after mmap we can reconstruct from ctx by reopening; here we compute offset
+  // Using the same logic is heavy; instead, reuse the inode table pointer from a temporary ctx
+  // no need to build a full context here
+  // in test image, c_inotbl starts at mapsize computed earlier in test_utils. We cannot recompute
+  // easily here. Fall back to scanning root dir directly via sb and known layout is unreliable;
+  // better: open with same helper. Minimal approach: the root directory content is kept in direct
+  // i_blkreftbl in this test, so we can locate the inode table by heuristic: We know c_inotbl was
+  // placed at (char*)sb + inotbl_off where inotbl_off = aligned after blkmask. Replicate a tiny
+  // subset to find it safely.
   kafs_blkcnt_t blkcnt = kafs_sb_blkcnt_get(sb);
   kafs_blksize_t bs_ro = kafs_sb_blksize_get(sb);
   kafs_blksize_t bmask = bs_ro - 1u;
@@ -201,6 +237,9 @@ int main(void)
   kafs_sinode_t *inotbl = (kafs_sinode_t *)((char *)base + off);
   kafs_sinode_t *root = &inotbl[KAFS_INO_ROOTDIR];
 
+  // Walk root directory to find the created file's inode
+  // The directory layout is simple append; we can scan entries sequentially
+  // Read from offset 0 until we find our filename "file"
   const char *name = "file";
   size_t name_len = strlen(name);
   off_t doff = 0;
@@ -209,7 +248,7 @@ int main(void)
   while (doff < (off_t)kafs_ino_size_get(root))
   {
     size_t hdr = offsetof(kafs_sdirent_t, d_filename);
-    memcpy(&d, (char *)root->i_blkreftbl + doff, hdr);
+    memcpy(&d, (char *)root->i_blkreftbl + doff, hdr); // direct-only dirs in this test
     kafs_filenamelen_t dlen = kafs_dirent_filenamelen_get(&d);
     if (dlen == name_len && memcmp((char *)root->i_blkreftbl + doff + hdr, name, name_len) == 0)
     {
@@ -227,11 +266,10 @@ int main(void)
   }
 
   kafs_sinode_t *fileino = &inotbl[ino];
-  // After prune, i_blkreftbl[13] (double-indirect top table) may be NONE if its only child was
-  // cleared
-  if (kafs_blkcnt_stoh(fileino->i_blkreftbl[13]) != 0)
+  // After prune, i_blkreftbl[12] (single-indirect table pointer) must be NONE(0)
+  if (kafs_blkcnt_stoh(fileino->i_blkreftbl[12]) != 0)
   {
-    tlogf("expected i_blkreftbl[13]==0 after prune, got non-zero");
+    tlogf("expected i_blkreftbl[12]==0 after prune, got non-zero");
     munmap(base, mapsize);
     close(ifd);
     return 1;
@@ -239,6 +277,6 @@ int main(void)
 
   munmap(base, mapsize);
   close(ifd);
-  tlogf("prune_indirect_double OK");
+  tlogf("prune_indirect_single OK");
   return 0;
 }

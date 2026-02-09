@@ -67,7 +67,8 @@ static pid_t spawn_kafs(const char *img, const char *mnt, const char *debug)
       dup2(lfd, STDOUT_FILENO);
       close(lfd);
     }
-    char *args[] = {"./kafs", (char *)mnt, "-f", NULL};
+    const char *kafs = kafs_test_kafs_bin();
+    char *args[] = {(char *)kafs, (char *)mnt, "-f", NULL};
     execvp(args[0], args);
     _exit(127);
   }
@@ -101,6 +102,9 @@ static void stop_kafs(const char *mnt, pid_t pid)
 
 int main(void)
 {
+  if (kafs_test_enter_tmpdir("fs_semantics") != 0)
+    return 77;
+
   const char *img = "semantics.img";
   const char *mnt = "mnt-semantics";
   kafs_context_t ctx;

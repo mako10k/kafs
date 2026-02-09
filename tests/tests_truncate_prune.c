@@ -74,7 +74,8 @@ static pid_t spawn_kafs(const char *img, const char *mnt, const char *debug)
       dup2(lfd, STDOUT_FILENO);
       close(lfd);
     }
-    char *args[] = {"./kafs", (char *)mp, "-f", NULL};
+    const char *kafs = kafs_test_kafs_bin();
+    char *args[] = {(char *)kafs, (char *)mp, "-f", NULL};
     execvp(args[0], args);
     _exit(127);
   }
@@ -203,6 +204,9 @@ int main(void)
   const kafs_blksize_t bs = 1u << log_bs;
   const char *img = "truncate.img";
   const char *mnt = "mnt-truncate";
+
+  if (kafs_test_enter_tmpdir("truncate_prune") != 0)
+    return 77;
 
   kafs_context_t ctx;
   off_t mapsize;

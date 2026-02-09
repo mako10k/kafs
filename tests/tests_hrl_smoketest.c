@@ -15,6 +15,9 @@
 
 int main(void)
 {
+  if (kafs_test_enter_tmpdir("hrl_smoketest") != 0)
+    return 77;
+
   const char *img = "./hrl_smoke.img";
   kafs_context_t ctx;
   off_t mapsize;

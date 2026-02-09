@@ -65,7 +65,8 @@ static pid_t spawn_kafs(const char *img, const char *mnt)
       dup2(lfd, STDOUT_FILENO);
       close(lfd);
     }
-    char *args[] = {"./kafs", (char *)mnt, "-f", NULL};
+    const char *kafs = kafs_test_kafs_bin();
+    char *args[] = {(char *)kafs, (char *)mnt, "-f", NULL};
     execvp(args[0], args);
     _exit(127);
   }
@@ -130,6 +131,9 @@ static int copy_file(const char *src, const char *dst)
 
 int main(void)
 {
+  if (kafs_test_enter_tmpdir("clone_template_copy") != 0)
+    return 77;
+
   const char *img = "clone.img";
   const char *mnt = "mnt-clone";
   kafs_context_t ctx;

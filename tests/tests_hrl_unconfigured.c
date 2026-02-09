@@ -16,6 +16,9 @@
 
 int main(void)
 {
+  if (kafs_test_enter_tmpdir("hrl_unconfigured") != 0)
+    return 77;
+
   const char *img = "./hrl_unconfigured.img";
   kafs_context_t ctx;
   off_t mapsize;

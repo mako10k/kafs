@@ -1,17 +1,32 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-IMG="fresh-git-repro.img"
-MNT="mnt-fresh-git"
-LOG="fresh-git-repro.log"
-KAFS="./src/kafs"
+ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
+cd "$ROOT_DIR"
+
+WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/kafs-test.fresh-git.XXXXXX")
+IMG="$WORKDIR/fresh-git-repro.img"
+MNT="$WORKDIR/mnt"
+LOG="$WORKDIR/fresh-git-repro.log"
+KAFS="$ROOT_DIR/src/kafs"
+KAFS_PID=""
+
+cleanup() {
+    set +e
+    fusermount3 -u "$MNT" 2>/dev/null || umount "$MNT" 2>/dev/null || true
+    if [[ -n "${KAFS_PID:-}" ]]; then
+        kill "$KAFS_PID" 2>/dev/null || true
+        wait "$KAFS_PID" 2>/dev/null || true
+    fi
+    rm -rf "$WORKDIR" 2>/dev/null || true
+}
+trap cleanup EXIT
 
 echo "=== KAFS Fresh Image Git+fsck Test ==="
 echo "Time: $(date)"
 echo ""
 
 # Cleanup
-rm -rf "$IMG" "$MNT" "$LOG" 2>/dev/null || true
 mkdir -p "$MNT"
 
 # Create fresh KAFS filesystem image
@@ -34,7 +49,7 @@ echo "KAFS PID: $KAFS_PID"
 # Wait for mount
 MOUNTED=0
 for i in {1..100}; do
-    if grep -q "$MNT" /proc/mounts 2>/dev/null; then
+    if grep -Fq "$MNT" /proc/mounts 2>/dev/null; then
         MOUNTED=1
         echo "✓ Mounted"
         break
@@ -82,8 +97,9 @@ echo "4. Unmounting..."
 
 fusermount3 -u "$MNT" 2>/dev/null || umount "$MNT" 2>/dev/null || true
 sleep 1
-kill $KAFS_PID 2>/dev/null || true
-wait $KAFS_PID 2>/dev/null || true
+kill "$KAFS_PID" 2>/dev/null || true
+wait "$KAFS_PID" 2>/dev/null || true
+KAFS_PID=""
 
 echo "✓ Unmounted"
 

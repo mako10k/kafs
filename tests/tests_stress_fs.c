@@ -38,7 +38,10 @@ static void slogf(const char *fmt, ...)
 static const char *pick_kafs_exe(void)
 {
   static char chosen[PATH_MAX];
-  const char *cands[] = {"./kafs", "./src/kafs", "src/kafs", "kafs", NULL};
+  const char *env = getenv("KAFS_TEST_KAFS");
+  if (env && *env)
+    return env;
+  const char *cands[] = {"./kafs", "../src/kafs", "./src/kafs", "src/kafs", "kafs", NULL};
   for (int i = 0; cands[i]; ++i)
   {
     const char *c = cands[i];
@@ -274,6 +277,9 @@ static void *worker_fn(void *p)
 
 int main(void)
 {
+  if (kafs_test_enter_tmpdir("stress_fs") != 0)
+    return 77;
+
   // 1) prepare image with HRL enabled
   const char *img = "stress.img";
   const char *mnt = "mnt-stress";
@@ -284,6 +290,7 @@ int main(void)
     slogf("mkimg failed");
     return 1;
   }
+
   munmap(ctx.c_superblock, mapsize);
   close(ctx.c_fd);
 

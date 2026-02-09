@@ -7,6 +7,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <ftw.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdint.h>
@@ -19,6 +20,68 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+static char g_test_workdir[PATH_MAX];
+static int g_test_workdir_set = 0;
+
+static int rm_rf_cb(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf)
+{
+  (void)sb;
+  (void)typeflag;
+  (void)ftwbuf;
+  // Best-effort removal; ignore errors.
+  (void)unlink(fpath);
+  (void)rmdir(fpath);
+  return 0;
+}
+
+static void kafs_test_cleanup_workdir(void)
+{
+  if (!g_test_workdir_set)
+    return;
+
+  // Ensure we're not sitting inside the directory we want to delete.
+  (void)chdir("/");
+
+  // Depth-first walk so we remove children before parents.
+  (void)nftw(g_test_workdir, rm_rf_cb, 64, FTW_DEPTH | FTW_PHYS);
+}
+
+int kafs_test_enter_tmpdir(const char *tag)
+{
+  if (g_test_workdir_set)
+    return 0;
+
+  const char *tmp = getenv("TMPDIR");
+  if (!tmp || !*tmp)
+    tmp = "/tmp";
+
+  char tmpl[PATH_MAX];
+  if ((size_t)snprintf(tmpl, sizeof(tmpl), "%s/kafs-%s-%ld-XXXXXX", tmp,
+                       (tag && *tag) ? tag : "test", (long)getpid()) >= sizeof(tmpl))
+    return -ENAMETOOLONG;
+
+  char *dir = mkdtemp(tmpl);
+  if (!dir)
+    return -errno;
+
+  if (chdir(dir) != 0)
+    return -errno;
+
+  strncpy(g_test_workdir, dir, sizeof(g_test_workdir) - 1);
+  g_test_workdir[sizeof(g_test_workdir) - 1] = '\0';
+  g_test_workdir_set = 1;
+  (void)atexit(kafs_test_cleanup_workdir);
+  return 0;
+}
+
+const char *kafs_test_kafs_bin(void)
+{
+  const char *p = getenv("KAFS_TEST_KAFS");
+  if (p && *p)
+    return p;
+  return "./kafs";
+}
 
 static const char *abspath_no_fs(const char *path, char out[PATH_MAX])
 {

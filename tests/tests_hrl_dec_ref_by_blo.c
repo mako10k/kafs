@@ -14,6 +14,9 @@
 
 int main(void)
 {
+  if (kafs_test_enter_tmpdir("hrl_dec_ref_by_blo") != 0)
+    return 77;
+
   const char *img = "./hrl_dec_ref_by_blo.img";
   kafs_context_t ctx;
   off_t mapsize;

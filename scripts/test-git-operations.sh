@@ -1,17 +1,32 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-IMG="git-test.img"
-MNT="mnt-git-test"
-LOG="git-test.log"
-KAFS="./src/kafs"
+ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
+cd "$ROOT_DIR"
+
+WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/kafs-test.git-ops.XXXXXX")
+IMG="$WORKDIR/git-test.img"
+MNT="$WORKDIR/mnt"
+LOG="$WORKDIR/git-test.log"
+KAFS="$ROOT_DIR/src/kafs"
+KAFS_PID=""
+
+cleanup() {
+    set +e
+    fusermount3 -u "$MNT" 2>/dev/null || umount "$MNT" 2>/dev/null || true
+    if [[ -n "${KAFS_PID:-}" ]]; then
+        kill "$KAFS_PID" 2>/dev/null || true
+        wait "$KAFS_PID" 2>/dev/null || true
+    fi
+    rm -rf "$WORKDIR" 2>/dev/null || true
+}
+trap cleanup EXIT
 
 echo "=== KAFS Git Operations Test (with flush/fsync/release/fsyncdir hooks) ==="
 echo "Time: $(date)"
 echo ""
 
 # Cleanup
-rm -rf "$IMG" "$MNT" "$LOG" 2>/dev/null || true
 mkdir -p "$MNT"
 
 # Create fresh KAFS filesystem image
@@ -35,7 +50,7 @@ echo "KAFS PID: $KAFS_PID"
 # Wait for mount
 MOUNTED=0
 for i in {1..100}; do
-    if grep -q "$MNT" /proc/mounts 2>/dev/null; then
+    if grep -Fq "$MNT" /proc/mounts 2>/dev/null; then
         MOUNTED=1
         echo "✓ Mounted"
         break
@@ -88,17 +103,18 @@ echo "5. Running fsck.kafs to verify filesystem..."
 cd - > /dev/null
 sleep 1
 
-# Unmount
+# Unmount (also handled by trap, but keep explicit phase)
 fusermount3 -u "$MNT" 2>/dev/null || umount "$MNT" 2>/dev/null || true
 sleep 1
-kill $KAFS_PID 2>/dev/null || true
-wait $KAFS_PID 2>/dev/null || true
+kill "$KAFS_PID" 2>/dev/null || true
+wait "$KAFS_PID" 2>/dev/null || true
+KAFS_PID=""
 
 echo "✓ Unmounted"
 
 echo ""
 echo "6. Running fsck.kafs..."
-./src/fsck.kafs "$IMG" 2>&1 | tail -20
+"$ROOT_DIR/src/fsck.kafs" "$IMG" 2>&1 | tail -20
 
 echo ""
 echo "=== Log Analysis ==="

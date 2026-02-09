@@ -7,7 +7,9 @@ echo ""
 echo "Date: $(date)"
 echo ""
 
-RESULTS_FILE="TEST_EXECUTION_RESULTS.txt"
+RESULTS_DIR="${RESULTS_DIR:-report}"
+RESULTS_FILE="${RESULTS_FILE:-$RESULTS_DIR/TEST_EXECUTION_RESULTS.txt}"
+mkdir -p "$(dirname "$RESULTS_FILE")"
 > "$RESULTS_FILE"
 
 # Test 1

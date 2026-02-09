@@ -74,7 +74,8 @@ static pid_t spawn_kafs(const char *img, const char *mnt, const char *debug)
       dup2(lfd, STDOUT_FILENO);
       close(lfd);
     }
-    char *args[] = {"./kafs", (char *)mp, "-f", NULL};
+    const char *kafs = kafs_test_kafs_bin();
+    char *args[] = {(char *)kafs, (char *)mp, "-f", NULL};
     execvp(args[0], args);
     _exit(127);
   }
@@ -114,8 +115,11 @@ int main(void)
 {
   const unsigned log_bs = 12; // 4096
   const kafs_blksize_t bs = 1u << log_bs;
-  const char *img = "prune-ti.img";
-  const char *mnt = "mnt-prune-ti";
+  const char *img = "prune-di.img";
+  const char *mnt = "mnt-prune-di";
+
+  if (kafs_test_enter_tmpdir("prune_indirect_double") != 0)
+    return 77;
 
   kafs_context_t ctx;
   off_t mapsize;
@@ -144,16 +148,18 @@ int main(void)
     return 1;
   }
 
-  // Choose a logical block in triple-indirect region: 12 + blkrefs_pb (SI) + blkrefs_pb^2 (DI)
-  // For 4K blocks and 4-byte refs: blkrefs_pb = 1024, so pick iblo = 12 + 1024 + 1024*1024
-  off_t p_off = (off_t)(12 + 1024 + 1024 * 1024) * bs;
+  // Pick a logical block in the first double-indirect region: 12 + blkrefs_pb * 1
+  // We can derive blkrefs_pb from superblock later, but we know for 4K block and 4-byte refs it's
+  // 1024 So choose iblo = 12 + 1024*0 + 0 => to ensure double-indirect tables are allocated. Then
+  // zero it.
+  off_t p_off = (off_t)(12 + 1024) * bs;
   char *buf = malloc(bs);
-  memset(buf, 0xEF, bs);
+  memset(buf, 0xCD, bs);
   ssize_t w = pwrite(fd, buf, bs, p_off);
   free(buf);
   if (w != (ssize_t)bs)
   {
-    tlogf("pwrite TI data failed: %s", strerror(errno));
+    tlogf("pwrite DI data failed: %s", strerror(errno));
     close(fd);
     stop_kafs(mnt, srv);
     return 1;
@@ -164,7 +170,7 @@ int main(void)
   free(z);
   if (w != (ssize_t)bs)
   {
-    tlogf("pwrite TI zero failed: %s", strerror(errno));
+    tlogf("pwrite DI zero failed: %s", strerror(errno));
     close(fd);
     stop_kafs(mnt, srv);
     return 1;
@@ -225,11 +231,11 @@ int main(void)
   }
 
   kafs_sinode_t *fileino = &inotbl[ino];
-  // After prune, i_blkreftbl[14] (triple-indirect top table) may be NONE if its only child path was
+  // After prune, i_blkreftbl[13] (double-indirect top table) may be NONE if its only child was
   // cleared
-  if (kafs_blkcnt_stoh(fileino->i_blkreftbl[14]) != 0)
+  if (kafs_blkcnt_stoh(fileino->i_blkreftbl[13]) != 0)
   {
-    tlogf("expected i_blkreftbl[14]==0 after prune, got non-zero");
+    tlogf("expected i_blkreftbl[13]==0 after prune, got non-zero");
     munmap(base, mapsize);
     close(ifd);
     return 1;
@@ -237,6 +243,6 @@ int main(void)
 
   munmap(base, mapsize);
   close(ifd);
-  tlogf("prune_indirect_triple OK");
+  tlogf("prune_indirect_double OK");
   return 0;
 }

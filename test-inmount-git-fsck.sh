@@ -1,10 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-IMG="inmount-git.img"
-MNT="mnt-inmount-git"
-LOG="inmount-git.log"
-KAFS="./src/kafs"
+ROOT_DIR=$(cd "$(dirname "$0")" && pwd)
+cd "$ROOT_DIR"
+
+WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/kafs-test.inmount-git.XXXXXX")
+IMG="$WORKDIR/inmount-git.img"
+MNT="$WORKDIR/mnt"
+LOG="$WORKDIR/inmount-git.log"
+KAFS="$ROOT_DIR/src/kafs"
 
 echo "============================================"
 echo "KAFS In-Mount Git fsck Reproduction"
@@ -18,6 +22,7 @@ cleanup() {
   if [ -n "${KAFS_PID:-}" ]; then
     kill "$KAFS_PID" 2>/dev/null || true
   fi
+  rm -rf "$WORKDIR" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -27,7 +32,7 @@ mkdir -p "$MNT"
 
 echo "[1/6] Creating fresh KAFS image (100MB)..."
 truncate -s $((100 * 1024 * 1024)) "$IMG"
-mkfs.kafs "$IMG" >/dev/null 2>&1
+./src/mkfs.kafs "$IMG" >/dev/null 2>&1
 echo "✓ Image created"
 
 echo ""
@@ -39,13 +44,13 @@ KAFS_PID=$!
 echo "PID: $KAFS_PID"
 
 for i in {1..200}; do
-  if grep -q "$MNT" /proc/mounts 2>/dev/null; then
+  if grep -Fq "$MNT" /proc/mounts 2>/dev/null; then
     echo "✓ Mounted"
     break
   fi
   sleep 0.05
 done
-if ! grep -q "$MNT" /proc/mounts 2>/dev/null; then
+if ! grep -Fq "$MNT" /proc/mounts 2>/dev/null; then
   echo "✗ Mount failed"
   tail -n 80 "$LOG" 2>/dev/null || true
   exit 1

@@ -70,7 +70,8 @@ static pid_t spawn_kafs(const char *img, const char *mnt)
       dup2(lfd, STDOUT_FILENO);
       close(lfd);
     }
-    char *args[] = {"./kafs", (char *)mnt, "-f", NULL};
+    const char *kafs = kafs_test_kafs_bin();
+    char *args[] = {(char *)kafs, (char *)mnt, "-f", NULL};
     execvp(args[0], args);
     _exit(127);
   }
@@ -109,6 +110,9 @@ int main(void)
 #else
   const char *img = "reflink.img";
   const char *mnt = "mnt-reflink";
+
+  if (kafs_test_enter_tmpdir("reflink_clone") != 0)
+    return 77;
 
   kafs_context_t ctx;
   off_t mapsize;

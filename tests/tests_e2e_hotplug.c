@@ -51,25 +51,37 @@ static const char *pick_exe(const char *const cands[])
 
 static const char *pick_kafs_exe(void)
 {
-  const char *cands[] = {"./kafs", "./src/kafs", "src/kafs", "kafs", NULL};
+  const char *env = getenv("KAFS_TEST_KAFS");
+  if (env && *env)
+    return env;
+  const char *cands[] = {"./kafs", "../src/kafs", "./src/kafs", "src/kafs", "kafs", NULL};
   return pick_exe(cands);
 }
 
 static const char *pick_kafsctl_exe(void)
 {
-  const char *cands[] = {"./kafsctl", "./src/kafsctl", "src/kafsctl", "kafsctl", NULL};
+  const char *env = getenv("KAFS_TEST_KAFSCTL");
+  if (env && *env)
+    return env;
+  const char *cands[] = {"./kafsctl", "../src/kafsctl", "./src/kafsctl", "src/kafsctl", "kafsctl", NULL};
   return pick_exe(cands);
 }
 
 static const char *pick_mkfs_exe(void)
 {
-  const char *cands[] = {"./mkfs.kafs", "./src/mkfs.kafs", "src/mkfs.kafs", "mkfs.kafs", NULL};
+  const char *env = getenv("KAFS_TEST_MKFS");
+  if (env && *env)
+    return env;
+  const char *cands[] = {"./mkfs.kafs", "../src/mkfs.kafs", "./src/mkfs.kafs", "src/mkfs.kafs", "mkfs.kafs", NULL};
   return pick_exe(cands);
 }
 
 static const char *pick_back_exe(void)
 {
-  const char *cands[] = {"./kafs-back", "./src/kafs-back", "src/kafs-back", "kafs-back", NULL};
+  const char *env = getenv("KAFS_TEST_KAFS_BACK");
+  if (env && *env)
+    return env;
+  const char *cands[] = {"./kafs-back", "../src/kafs-back", "./src/kafs-back", "src/kafs-back", "kafs-back", NULL};
   return pick_exe(cands);
 }
 
@@ -291,9 +303,12 @@ static int hotplug_env_list_contains(const char *mnt, const char *needle)
 
 int main(void)
 {
-  const char *img = "/tmp/kafs-e2e.img";
-  const char *mnt = "/tmp/kafs-e2e.mnt";
-  const char *uds = "/tmp/kafs-e2e.sock";
+  if (kafs_test_enter_tmpdir("e2e_hotplug") != 0)
+    return 77;
+
+  const char *img = "kafs-e2e.img";
+  const char *mnt = "kafs-e2e.mnt";
+  const char *uds = "kafs-e2e.sock";
 
   unlink(uds);
   unlink(img);
