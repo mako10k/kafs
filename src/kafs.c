@@ -11,6 +11,7 @@
 #include "kafs_rpc.h"
 #include "kafs_core.h"
 #include "kafs_back_server.h"
+#include "kafs_crash_diag.h"
 #include <fuse.h>
 #include <errno.h>
 #include <string.h>
@@ -22,7 +23,9 @@
 #include <sys/socket.h>
 #include <sys/mman.h>
 #include <sys/statvfs.h>
+#include <sys/wait.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <stdlib.h>
 #include <stddef.h>
 #include <signal.h>
@@ -30,7 +33,6 @@
 #include <poll.h>
 #include <time.h>
 #ifdef __linux__
-#include <execinfo.h>
 #include <linux/fs.h>
 #endif
 
@@ -1616,6 +1618,9 @@ static int kafs_hotplug_is_disconnect_error(int rc)
   return rc == -EPIPE || rc == -ECONNRESET || rc == -ENOTCONN || rc == -ECONNABORTED;
 }
 
+static void kafs_hotplug_env_lock(kafs_context_t *ctx);
+static void kafs_hotplug_env_unlock(kafs_context_t *ctx);
+
 static int kafs_hotplug_spawn_back(kafs_context_t *ctx, const char *image_path, int *out_fd)
 {
   if (!ctx || !out_fd)
@@ -1790,7 +1795,7 @@ static int kafs_hotplug_handshake(kafs_context_t *ctx, int cli)
   return 0;
 }
 
-static int kafs_hotplug_restart_back(kafs_context_t *ctx, const char *image_path)
+static int kafs_hotplug_restart_back(kafs_context_t *ctx)
 {
   if (!ctx)
     return -EINVAL;
@@ -1827,7 +1832,7 @@ static int kafs_hotplug_restart_back(kafs_context_t *ctx, const char *image_path
   ctx->c_hotplug_active = 0;
 
   int cli = -1;
-  int rc = kafs_hotplug_spawn_back(ctx, image_path, &cli);
+  int rc = kafs_hotplug_spawn_back(ctx, ctx->c_image_path, &cli);
   if (rc != 0)
     return rc;
 
@@ -5849,7 +5854,14 @@ static int kafs_ctl_handle_request(kafs_context_t *ctx, kafs_ctl_session_t *sess
     if (ctx->c_hotplug_state == KAFS_HOTPLUG_STATE_DISABLED)
       result = -ENOSYS;
     else
-      kafs_hotplug_mark_disconnected(ctx, -ECONNRESET);
+    {
+      int rc = kafs_hotplug_restart_back(ctx);
+      if (rc != 0)
+      {
+        ctx->c_hotplug_last_error = rc;
+        result = rc;
+      }
+    }
     break;
   case KAFS_RPC_OP_CTL_SET_TIMEOUT:
     if (hdr.payload_len != sizeof(kafs_rpc_set_timeout_t))
@@ -7594,41 +7606,10 @@ static void usage(const char *prog)
       prog, prog, prog, prog);
 }
 
-static void kafs_signal_handler(int sig)
-{
-  const char *name = strsignal(sig);
-  kafs_log(KAFS_LOG_ERR, "kafs: caught signal %d (%s)\n", sig, name ? name : "?");
-#ifdef __linux__
-  void *bt[64];
-  int n = backtrace(bt, (int)(sizeof(bt) / sizeof(bt[0])));
-  char **syms = backtrace_symbols(bt, n);
-  if (syms)
-  {
-    for (int i = 0; i < n; ++i)
-      kafs_log(KAFS_LOG_ERR, "  bt[%02d]=%s\n", i, syms[i]);
-  }
-#endif
-  signal(sig, SIG_DFL);
-  raise(sig);
-}
-
-static void kafs_install_crash_handlers(void)
-{
-  struct sigaction sa;
-  memset(&sa, 0, sizeof(sa));
-  sa.sa_handler = kafs_signal_handler;
-  sigemptyset(&sa.sa_mask);
-  sigaction(SIGSEGV, &sa, NULL);
-  sigaction(SIGABRT, &sa, NULL);
-  sigaction(SIGBUS, &sa, NULL);
-  sigaction(SIGILL, &sa, NULL);
-  sigaction(SIGFPE, &sa, NULL);
-}
-
 #ifndef KAFS_NO_MAIN
 int main(int argc, char **argv)
 {
-  kafs_install_crash_handlers();
+  kafs_crash_diag_install("kafs");
   // 画像ファイル指定を受け取る: --image <path> または --image=<path>、環境変数 KAFS_IMAGE
   const char *image_path = getenv("KAFS_IMAGE");
   // argv から --image と --help を取り除き fuse_main へは渡さない
@@ -7929,7 +7910,8 @@ int main(int argc, char **argv)
   ctx.c_ino_search = 0;
 
   ctx.c_hotplug_state = KAFS_HOTPLUG_STATE_WAITING;
-  if (kafs_hotplug_restart_back(&ctx, image_path) != 0)
+  ctx.c_image_path = image_path;
+  if (kafs_hotplug_restart_back(&ctx) != 0)
   {
     fprintf(stderr, "hotplug: failed to start back\n");
     exit(2);

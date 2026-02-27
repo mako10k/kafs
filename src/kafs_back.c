@@ -1,5 +1,6 @@
 #include "kafs_rpc.h"
 #include "kafs_back_server.h"
+#include "kafs_crash_diag.h"
 #ifdef KAFS_BACK_ENABLE_IMAGE
 #include "kafs_core.h"
 #endif
@@ -51,6 +52,8 @@ static int kafs_back_handshake(int fd)
 
 int main(int argc, char **argv)
 {
+  kafs_crash_diag_install("kafs-back");
+
   const char *fd_env = getenv("KAFS_HOTPLUG_BACK_FD");
 #ifdef KAFS_BACK_ENABLE_IMAGE
   const char *image_path = getenv("KAFS_IMAGE");

@@ -49,6 +49,7 @@ struct kafs_context
 
   // --- Mount context ---
   const char *c_mountpoint; // mountpoint path (from argv)
+  const char *c_image_path; // image path (from argv/env)
 
   // --- Hotplug RPC (front) ---
   int c_hotplug_fd;
