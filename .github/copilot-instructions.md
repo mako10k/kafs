@@ -24,6 +24,12 @@ Security and safety:
 - No network calls unless required by the task.
 - Do not exfiltrate secrets.
 
+## Hotplug delegation rules (NO fallback by default)
+
+- During hotplug/delegation work, **local execution in the front path is forbidden**: if the back-side RPC cannot serve an operation (including back crash/exit, disconnects, protocol errors, or unimplemented ops), the error must be surfaced.
+- **Fallback MUST NOT be implemented** unless the user explicitly requests it.
+- If an explicit fallback mechanism exists, it must be **opt-in** (default off) and clearly documented (e.g., env var `KAFS_HOTPLUG_ALLOW_FALLBACK=1`).
+
 ## Decision checkpoints (must ask user)
 
 When a change affects system boundaries or control paths, the agent MUST ask before implementing.

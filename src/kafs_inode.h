@@ -38,6 +38,9 @@ struct kafs_sinode
 
 typedef struct kafs_sinode kafs_sinode_t;
 
+// Inline-data storage size within an inode (stored in i_blkreftbl as raw bytes for small files).
+#define KAFS_DIRECT_SIZE (sizeof(((kafs_sinode_t *)0)->i_blkreftbl))
+
 static kafs_mode_t kafs_ino_mode_get(const kafs_sinode_t *inoent)
 {
   return kafs_mode_stoh(inoent->i_mode);

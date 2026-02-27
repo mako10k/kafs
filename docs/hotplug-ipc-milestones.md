@@ -1,7 +1,7 @@
-# Hotplug Pipe Milestones
+# Hotplug IPC Milestones
 
 M1: 設計確定
-- hotplug-pipe-plan/requirements/design を作成。
+- hotplug-ipc-plan/requirements/design を作成。
 - socketpair + ProcessGroup 方針に合意。
 
 M2: 基本起動経路
@@ -20,3 +20,4 @@ M4: 異常終了ハンドリング
 M5: 運用/テスト
 - 手動再接続テスト。
 - 主要テストの合格。
+- UDS 依存のテスト/実装を削除。

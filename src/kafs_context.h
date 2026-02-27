@@ -4,7 +4,6 @@
 #include "kafs_inode.h"
 #include "kafs_hotplug.h"
 #include <pthread.h>
-#include <sys/un.h>
 
 /// @brief コンテキスト
 struct kafs_context
@@ -50,6 +49,7 @@ struct kafs_context
 
   // --- Mount context ---
   const char *c_mountpoint; // mountpoint path (from argv)
+  const char *c_image_path; // image path (from argv/env)
 
   // --- Hotplug RPC (front) ---
   int c_hotplug_fd;
@@ -72,13 +72,13 @@ struct kafs_context
   int32_t c_hotplug_compat_reason;
   uint32_t c_hotplug_env_count;
   kafs_hotplug_env_entry_t c_hotplug_env[KAFS_HOTPLUG_ENV_MAX];
+  // Proxy/supervisor (front) state
+  pid_t c_back_pid;
   pthread_mutex_t c_hotplug_lock;
   int c_hotplug_lock_init;
   pthread_mutex_t c_hotplug_wait_lock;
   pthread_cond_t c_hotplug_wait_cond;
   int c_hotplug_wait_lock_init;
-  int c_hotplug_connecting;
-  char c_hotplug_uds_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
 };
 
 // Lock helpers (no-op when locks not enabled in build)

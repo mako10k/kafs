@@ -1,7 +1,7 @@
-# Hotplug Pipe Tickets
+# Hotplug IPC Tickets
 
 T0: docs
-- hotplug-pipe-plan/requrements/design/milestones/tickets を作成。
+- hotplug-ipc-plan/requirements/design/milestones/tickets を作成。
 
 T1: socketpair 起動
 - 前段で socketpair 作成。

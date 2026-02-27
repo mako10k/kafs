@@ -26,7 +26,7 @@ AM_TESTS_ENVIRONMENT = \
 check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured min_git_hooks fs_semantics \
 	clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility \
 	prune_indirect_single prune_indirect_double prune_indirect_triple truncate_prune reflink_clone \
-	stress_fs hotplug_rpc e2e_hotplug
+	stress_fs hotplug_rpc
 
 TESTS = $(check_PROGRAMS)
 
@@ -110,13 +110,6 @@ stress_fs_LDFLAGS = -pthread
 hotplug_rpc_SOURCES = tests_hotplug_rpc.c $(top_srcdir)/src/kafs_rpc.c
 hotplug_rpc_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 hotplug_rpc_LDADD = $(KAFS_LIBS)
-
-e2e_hotplug_SOURCES = tests_e2e_hotplug.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
-
-e2e_hotplug_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
-
-e2e_hotplug_LDADD = $(KAFS_LIBS)
 
 # All tests are expected to pass
 XFAIL_TESTS =

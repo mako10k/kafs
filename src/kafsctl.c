@@ -192,6 +192,21 @@ static int read_full(int fd, unsigned char *buf, size_t len)
   return 0;
 }
 
+static int pread_full(int fd, unsigned char *buf, size_t len, off_t off)
+{
+  size_t done = 0;
+  while (done < len)
+  {
+    ssize_t r = pread(fd, buf + done, len - done, off + (off_t)done);
+    if (r < 0)
+      return -errno;
+    if (r == 0)
+      return -EIO;
+    done += (size_t)r;
+  }
+  return 0;
+}
+
 static uint64_t next_req_id(void)
 {
   static uint64_t rid = 0;
@@ -202,18 +217,22 @@ static int hotplug_ctl_exchange(const char *mnt, uint16_t op, const void *req, u
                                 void *resp, uint32_t resp_cap, uint32_t *resp_len,
                                 int32_t *resp_result)
 {
+  const int debug = getenv("KAFSCTL_HOTPLUG_DEBUG") != NULL;
   if (req_len > KAFS_RPC_MAX_PAYLOAD)
     return -EMSGSIZE;
 
-  int dfd = open(mnt, O_RDONLY | O_DIRECTORY);
-  if (dfd < 0)
-    return -errno;
+  char ctl_path[PATH_MAX];
+  if (!mnt || !*mnt)
+    return -EINVAL;
+  if (snprintf(ctl_path, sizeof(ctl_path), "%s/%s", mnt, KAFS_CTL_REL) >= (int)sizeof(ctl_path))
+    return -ENAMETOOLONG;
 
-  int fd = openat(dfd, KAFS_CTL_REL, O_RDWR);
+  int fd = open(ctl_path, O_RDWR);
   if (fd < 0)
   {
+    if (debug)
+      fprintf(stderr, "kafsctl: open('%s') failed errno=%d (%s)\n", ctl_path, errno, strerror(errno));
     int err = -errno;
-    close(dfd);
     return err;
   }
 
@@ -234,43 +253,43 @@ static int hotplug_ctl_exchange(const char *mnt, uint16_t op, const void *req, u
   int rc = write_full(fd, sbuf, sizeof(hdr) + req_len);
   if (rc != 0)
   {
+    if (debug)
+      fprintf(stderr, "kafsctl: write_full(op=%u) failed rc=%d\n", (unsigned)op, rc);
     close(fd);
-    close(dfd);
     return rc;
   }
 
-  (void)lseek(fd, 0, SEEK_SET);
-
   unsigned char rbuf[sizeof(kafs_rpc_resp_hdr_t) + KAFS_RPC_MAX_PAYLOAD];
   kafs_rpc_resp_hdr_t rhdr;
-  rc = read_full(fd, (unsigned char *)&rhdr, sizeof(rhdr));
+  rc = pread_full(fd, (unsigned char *)&rhdr, sizeof(rhdr), 0);
   if (rc != 0)
   {
+    if (debug)
+      fprintf(stderr, "kafsctl: pread_full(resp_hdr, op=%u) failed rc=%d\n", (unsigned)op, rc);
     close(fd);
-    close(dfd);
     return rc;
   }
 
   if (rhdr.payload_len > KAFS_RPC_MAX_PAYLOAD)
   {
     close(fd);
-    close(dfd);
     return -EMSGSIZE;
   }
 
   if (rhdr.payload_len)
   {
-    rc = read_full(fd, rbuf, rhdr.payload_len);
+    rc = pread_full(fd, rbuf, rhdr.payload_len, (off_t)sizeof(rhdr));
     if (rc != 0)
     {
+      if (debug)
+        fprintf(stderr, "kafsctl: pread_full(payload, op=%u len=%u) failed rc=%d\n", (unsigned)op,
+                (unsigned)rhdr.payload_len, rc);
       close(fd);
-      close(dfd);
       return rc;
     }
   }
 
   close(fd);
-  close(dfd);
 
   if (resp_len)
     *resp_len = rhdr.payload_len;
