@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <errno.h>
+#include <string.h>
 #include <time.h>
 #include <fuse.h>
 
@@ -103,6 +104,7 @@ static int kafs_blk_set_usage_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo
       uint64_t t_wtime1 = kafs_blk_now_ns();
       __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_wtime_update, t_wtime1 - t_wtime0,
                          __ATOMIC_RELAXED);
+      ctx->c_alloc_v3_summary_dirty = 1u;
     }
   }
   else
@@ -128,6 +130,7 @@ static int kafs_blk_set_usage_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo
       uint64_t t_wtime1 = kafs_blk_now_ns();
       __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_wtime_update, t_wtime1 - t_wtime0,
                          __ATOMIC_RELAXED);
+      ctx->c_alloc_v3_summary_dirty = 1u;
     }
   }
   return KAFS_SUCCESS;
@@ -169,6 +172,7 @@ static int kafs_blk_try_claim_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo
   uint64_t t_wtime1 = kafs_blk_now_ns();
   __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_wtime_update, t_wtime1 - t_wtime0,
                      __ATOMIC_RELAXED);
+  ctx->c_alloc_v3_summary_dirty = 1u;
 
   return 1;
 }
@@ -291,9 +295,209 @@ static int kafs_blk_alloc_legacy(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
   return -ENOSPC;
 }
 
+static int kafs_alloc_v3_layout(struct kafs_context *ctx, uint8_t **l1, size_t *l1_bytes,
+                                uint8_t **l2, size_t *l2_bytes, const uint8_t **l0,
+                                size_t *l0_bytes)
+{
+  if (!ctx || !ctx->c_superblock || !l1 || !l1_bytes || !l2 || !l2_bytes || !l0 || !l0_bytes)
+    return -EINVAL;
+
+  kafs_blkcnt_t blocnt = kafs_sb_blkcnt_get(ctx->c_superblock);
+  size_t l0_sz = ((size_t)blocnt + 7u) >> 3;
+  size_t l1_sz = (l0_sz + 7u) >> 3;
+  size_t l2_sz = (l1_sz + 7u) >> 3;
+  uint64_t off = kafs_sb_allocator_offset_get(ctx->c_superblock);
+  uint64_t sz = kafs_sb_allocator_size_get(ctx->c_superblock);
+  uint64_t need = (uint64_t)l1_sz + (uint64_t)l2_sz;
+  if (sz < need)
+    return -EINVAL;
+  if (off > (uint64_t)ctx->c_mapsize || need > (uint64_t)ctx->c_mapsize - off)
+    return -EINVAL;
+
+  uint8_t *base = (uint8_t *)ctx->c_superblock + (size_t)off;
+  *l1 = base;
+  *l1_bytes = l1_sz;
+  *l2 = base + l1_sz;
+  *l2_bytes = l2_sz;
+  *l0 = (const uint8_t *)ctx->c_blkmasktbl;
+  *l0_bytes = l0_sz;
+  return 0;
+}
+
+static int kafs_alloc_v3_rebuild_summary_if_dirty(struct kafs_context *ctx)
+{
+  if (!ctx)
+    return -EINVAL;
+  if (!ctx->c_alloc_v3_summary_dirty)
+    return 0;
+
+  uint8_t *l1 = NULL;
+  uint8_t *l2 = NULL;
+  const uint8_t *l0 = NULL;
+  size_t l1_bytes = 0;
+  size_t l2_bytes = 0;
+  size_t l0_bytes = 0;
+  int rc = kafs_alloc_v3_layout(ctx, &l1, &l1_bytes, &l2, &l2_bytes, &l0, &l0_bytes);
+  if (rc < 0)
+    return rc;
+
+  memset(l1, 0, l1_bytes);
+  memset(l2, 0, l2_bytes);
+  for (size_t i = 0; i < l0_bytes; ++i)
+  {
+    if (l0[i] != 0xFFu)
+      l1[i >> 3] |= (uint8_t)(1u << (i & 7u));
+  }
+  for (size_t i = 0; i < l1_bytes; ++i)
+  {
+    if (l1[i] != 0u)
+      l2[i >> 3] |= (uint8_t)(1u << (i & 7u));
+  }
+  ctx->c_alloc_v3_summary_dirty = 0u;
+  return 0;
+}
+
+static int kafs_alloc_v3_find_in_range(struct kafs_context *ctx, kafs_blkcnt_t start,
+                                       kafs_blkcnt_t end, kafs_blkcnt_t *out_blo)
+{
+  if (!ctx || !out_blo || start > end)
+    return 0;
+
+  uint8_t *l1 = NULL;
+  uint8_t *l2 = NULL;
+  const uint8_t *l0 = NULL;
+  size_t l1_bytes = 0;
+  size_t l2_bytes = 0;
+  size_t l0_bytes = 0;
+  if (kafs_alloc_v3_layout(ctx, &l1, &l1_bytes, &l2, &l2_bytes, &l0, &l0_bytes) < 0)
+    return 0;
+
+  size_t l0_start_byte = ((size_t)start) >> 3;
+  size_t l0_end_byte = ((size_t)end) >> 3;
+  size_t l1_start = l0_start_byte >> 3;
+  size_t l1_end = l0_end_byte >> 3;
+
+  for (size_t l1_idx = l1_start; l1_idx <= l1_end && l1_idx < l1_bytes; ++l1_idx)
+  {
+    size_t l2_idx = l1_idx >> 3;
+    if (l2_idx >= l2_bytes)
+      continue;
+    if ((l2[l2_idx] & (uint8_t)(1u << (l1_idx & 7u))) == 0)
+      continue;
+
+    uint8_t l1_bits = l1[l1_idx];
+    if (l1_bits == 0u)
+      continue;
+
+    size_t l0_min = l1_idx << 3;
+    size_t l0_max = l0_min + 7u;
+    if (l0_min < l0_start_byte)
+      l1_bits &= (uint8_t)(0xFFu << (l0_start_byte - l0_min));
+    if (l0_max > l0_end_byte)
+    {
+      size_t keep = l0_end_byte - l0_min + 1u;
+      if (keep < 8u)
+        l1_bits &= (uint8_t)((1u << keep) - 1u);
+    }
+    if (l1_bits == 0u)
+      continue;
+
+    while (l1_bits)
+    {
+      unsigned b = (unsigned)__builtin_ctz((unsigned)l1_bits);
+      l1_bits &= (uint8_t)(l1_bits - 1u);
+
+      size_t l0_idx = l0_min + b;
+      if (l0_idx >= l0_bytes)
+        continue;
+
+      uint8_t free_bits = (uint8_t)~l0[l0_idx];
+      if (l0_idx == l0_start_byte)
+        free_bits &= (uint8_t)(0xFFu << (((size_t)start) & 7u));
+      if (l0_idx == l0_end_byte)
+      {
+        size_t end_bit = ((size_t)end) & 7u;
+        if (end_bit < 7u)
+          free_bits &= (uint8_t)((1u << (end_bit + 1u)) - 1u);
+      }
+      if (free_bits == 0u)
+        continue;
+
+      unsigned bit = (unsigned)__builtin_ctz((unsigned)free_bits);
+      kafs_blkcnt_t blo = (kafs_blkcnt_t)((l0_idx << 3) + bit);
+      if (blo < start || blo > end)
+        continue;
+      *out_blo = blo;
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static int kafs_blk_alloc_v3(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
 {
-  return kafs_blk_alloc_legacy(ctx, pblo);
+  assert(ctx != NULL);
+  assert(pblo != NULL);
+  assert(*pblo == KAFS_BLO_NONE);
+
+  __atomic_add_fetch(&ctx->c_stat_blk_alloc_calls, 1u, __ATOMIC_RELAXED);
+
+  kafs_blkcnt_t blocnt = kafs_sb_blkcnt_get(ctx->c_superblock);
+  kafs_blkcnt_t fdb = kafs_sb_first_data_block_get(ctx->c_superblock);
+  if (fdb >= blocnt)
+    return -ENOSPC;
+
+  kafs_blkcnt_t search_start = ctx->c_blo_search + 1;
+  if (search_start < fdb || search_start >= blocnt)
+    search_start = fdb;
+
+  uint64_t t_scan_start = kafs_blk_now_ns();
+  for (;;)
+  {
+    if (kafs_alloc_v3_rebuild_summary_if_dirty(ctx) < 0)
+      return kafs_blk_alloc_legacy(ctx, pblo);
+
+    kafs_blkcnt_t candidate = KAFS_BLO_NONE;
+    int found = kafs_alloc_v3_find_in_range(ctx, search_start, blocnt - 1, &candidate);
+    if (!found && search_start > fdb)
+      found = kafs_alloc_v3_find_in_range(ctx, fdb, search_start - 1, &candidate);
+    if (!found)
+    {
+      uint64_t t_scan_end = kafs_blk_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_scan, t_scan_end - t_scan_start,
+                         __ATOMIC_RELAXED);
+      return -ENOSPC;
+    }
+
+    uint64_t t_scan_stop = kafs_blk_now_ns();
+    __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_scan, t_scan_stop - t_scan_start,
+                       __ATOMIC_RELAXED);
+
+    uint64_t t_claim0 = kafs_blk_now_ns();
+    kafs_bitmap_lock(ctx);
+    uint64_t t_set0 = kafs_blk_now_ns();
+    int claimed = kafs_blk_try_claim_nolock(ctx, candidate);
+    uint64_t t_set1 = kafs_blk_now_ns();
+    __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_set_usage, t_set1 - t_set0, __ATOMIC_RELAXED);
+    if (claimed)
+    {
+      ctx->c_blo_search = candidate;
+      *pblo = candidate;
+      kafs_bitmap_unlock(ctx);
+      uint64_t t_claim1 = kafs_blk_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_claim, t_claim1 - t_claim0, __ATOMIC_RELAXED);
+      return KAFS_SUCCESS;
+    }
+    kafs_bitmap_unlock(ctx);
+    uint64_t t_claim1 = kafs_blk_now_ns();
+    __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_claim, t_claim1 - t_claim0, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&ctx->c_stat_blk_alloc_claim_retries, 1u, __ATOMIC_RELAXED);
+
+    search_start = candidate + 1;
+    if (search_start < fdb || search_start >= blocnt)
+      search_start = fdb;
+    t_scan_start = kafs_blk_now_ns();
+  }
 }
 
 static int kafs_blk_alloc(struct kafs_context *ctx, kafs_blkcnt_t *pblo)

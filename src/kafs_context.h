@@ -90,6 +90,9 @@ struct kafs_context
   uint64_t c_stat_blk_set_usage_ns_freecnt_update;
   uint64_t c_stat_blk_set_usage_ns_wtime_update;
 
+  // --- Allocator v3 runtime state ---
+  uint32_t c_alloc_v3_summary_dirty;
+
   // --- Runtime inode open counts (in-memory only) ---
   uint32_t *c_open_cnt; // sized to superblock inocnt (allocated at mount)
 

@@ -2130,6 +2130,7 @@ int kafs_core_open_image(const char *image_path, kafs_context_t *ctx)
   ctx->c_mapsize = (size_t)mapsize;
   ctx->c_blkmasktbl = (void *)ctx->c_superblock + (intptr_t)blkmask_off;
   ctx->c_inotbl = (void *)ctx->c_superblock + (intptr_t)inotbl_off;
+  ctx->c_alloc_v3_summary_dirty = 1;
 
   (void)kafs_hrl_open(ctx);
   (void)kafs_journal_init(ctx, image_path);
@@ -4558,6 +4559,7 @@ int main(int argc, char **argv)
   ctx.c_mapsize = (size_t)mapsize; // metadata region length (subset of img)
   ctx.c_blkmasktbl = (void *)ctx.c_superblock + (intptr_t)blkmask_off;
   ctx.c_inotbl = (void *)ctx.c_superblock + (intptr_t)inotbl_off;
+  ctx.c_alloc_v3_summary_dirty = 1;
 
   // HRL オープン
   (void)kafs_hrl_open(&ctx);
