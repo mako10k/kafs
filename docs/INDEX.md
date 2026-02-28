@@ -28,6 +28,7 @@ design and policy notes.
 - [format-v3-123-tickets.md](format-v3-123-tickets.md)
 - [phase1-validation-20260228.md](phase1-validation-20260228.md)
 - [phase2-validation-20260228.md](phase2-validation-20260228.md)
+- [phase3-validation-20260228.md](phase3-validation-20260228.md)
 - [static-checks.md](static-checks.md)
 - [tools-suite.md](tools-suite.md)
 - [STRACE_ANALYSIS_INDEX.md](STRACE_ANALYSIS_INDEX.md)
