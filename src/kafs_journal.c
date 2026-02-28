@@ -1,5 +1,6 @@
 #include "kafs_journal.h"
 #include "kafs_context.h"
+#include "kafs_locks.h"
 #include "kafs_superblock.h"
 
 #include <stdio.h>
@@ -54,6 +55,40 @@ typedef struct journal_state
 } journal_state_t;
 
 static journal_state_t g_state = {0};
+
+static void kj_apply_meta_delta(struct kafs_context *ctx)
+{
+  if (!ctx || !ctx->c_meta_delta_enabled)
+    return;
+
+  kafs_bitmap_lock(ctx);
+
+  int64_t free_delta = ctx->c_meta_delta_free_blocks;
+  uint32_t wtime_dirty = ctx->c_meta_delta_wtime_dirty;
+  kafs_time_t wtime = ctx->c_meta_delta_last_wtime;
+
+  if (free_delta != 0)
+  {
+    kafs_blkcnt_t free_now = kafs_sb_blkcnt_free_get(ctx->c_superblock);
+    int64_t merged = (int64_t)free_now + free_delta;
+    if (merged < 0)
+      merged = 0;
+    kafs_blkcnt_t blkcnt = kafs_sb_blkcnt_get(ctx->c_superblock);
+    if ((uint64_t)merged > (uint64_t)blkcnt)
+      merged = (int64_t)blkcnt;
+    kafs_sb_blkcnt_free_set(ctx->c_superblock, (kafs_blkcnt_t)merged);
+    ctx->c_meta_delta_free_blocks = 0;
+  }
+
+  if (wtime_dirty)
+  {
+    kafs_sb_wtime_set(ctx->c_superblock, wtime);
+    ctx->c_meta_delta_wtime_dirty = 0;
+    ctx->c_meta_delta_last_wtime = (kafs_time_t){0};
+  }
+
+  kafs_bitmap_unlock(ctx);
+}
 
 static void timespec_now(struct timespec *ts) { clock_gettime(CLOCK_REALTIME, ts); }
 
@@ -404,7 +439,7 @@ int kafs_journal_init(struct kafs_context *ctx, const char *image_path)
 
 void kafs_journal_shutdown(struct kafs_context *ctx)
 {
-  (void)ctx;
+  kj_apply_meta_delta(ctx);
   if (g_state.ctx != ctx)
     return;
   kafs_journal_t *j = &g_state.j;
@@ -441,6 +476,11 @@ void kafs_journal_shutdown(struct kafs_context *ctx)
   memset(&g_state, 0, sizeof(g_state));
 }
 
+int kafs_journal_is_enabled(struct kafs_context *ctx)
+{
+  return (g_state.ctx == ctx && g_state.j.enabled) ? 1 : 0;
+}
+
 uint64_t kafs_journal_begin(struct kafs_context *ctx, const char *op, const char *fmt, ...)
 {
   if (g_state.ctx != ctx || !g_state.j.enabled)
@@ -470,6 +510,9 @@ void kafs_journal_commit(struct kafs_context *ctx, uint64_t seq)
 {
   if (g_state.ctx != ctx || !g_state.j.enabled || seq == 0)
     return;
+
+  kj_apply_meta_delta(ctx);
+
   kafs_journal_t *j = &g_state.j;
   jlock(j);
   if (j->use_inimage)

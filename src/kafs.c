@@ -2134,6 +2134,7 @@ int kafs_core_open_image(const char *image_path, kafs_context_t *ctx)
 
   (void)kafs_hrl_open(ctx);
   (void)kafs_journal_init(ctx, image_path);
+  ctx->c_meta_delta_enabled = (uint32_t)kafs_journal_is_enabled(ctx);
   (void)kafs_journal_replay(ctx, NULL, NULL);
   return 0;
 }
@@ -4566,6 +4567,7 @@ int main(int argc, char **argv)
 
   // Journal 初期化（KAFS_JOURNAL=0/1/パス）
   (void)kafs_journal_init(&ctx, image_path);
+  ctx.c_meta_delta_enabled = (uint32_t)kafs_journal_is_enabled(&ctx);
 
   // 起動時リプレイ（in-image のみ対象）。致命的ではなくベストエフォート。
   (void)kafs_journal_replay(&ctx, NULL, NULL);

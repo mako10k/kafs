@@ -93,6 +93,12 @@ struct kafs_context
   // --- Allocator v3 runtime state ---
   uint32_t c_alloc_v3_summary_dirty;
 
+  // --- Phase2 meta delta (runtime batching) ---
+  uint32_t c_meta_delta_enabled;
+  int64_t c_meta_delta_free_blocks;
+  uint32_t c_meta_delta_wtime_dirty;
+  kafs_time_t c_meta_delta_last_wtime;
+
   // --- Runtime inode open counts (in-memory only) ---
   uint32_t *c_open_cnt; // sized to superblock inocnt (allocated at mount)
 
