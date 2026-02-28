@@ -24,6 +24,8 @@ design and policy notes.
 - [bottleneck-measurement-plan.md](bottleneck-measurement-plan.md)
 - [perf-evaluation-20260228.md](perf-evaluation-20260228.md)
 - [perf-discrepancy-analysis-20260228.md](perf-discrepancy-analysis-20260228.md)
+- [format-v3-123-spec.md](format-v3-123-spec.md)
+- [format-v3-123-tickets.md](format-v3-123-tickets.md)
 - [static-checks.md](static-checks.md)
 - [tools-suite.md](tools-suite.md)
 - [STRACE_ANALYSIS_INDEX.md](STRACE_ANALYSIS_INDEX.md)
