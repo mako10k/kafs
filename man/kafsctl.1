@@ -1,5 +1,5 @@
 '.\" -*- nroff -*-
-.TH KAFSCTL 1 "2026-02-08" "kafs 0.1.0" "User Commands"
+.TH KAFSCTL 1 "2026-02-28" "kafs 0.2.0" "User Commands"
 .SH NAME
 kafsctl \- query runtime stats from a mounted kafs filesystem
 .SH SYNOPSIS
@@ -7,6 +7,11 @@ kafsctl \- query runtime stats from a mounted kafs filesystem
 .B stats
 .I mountpoint
 .RB [ --json ]
+.PP
+.B kafsctl
+.B migrate
+.I image
+.RB [ --yes ]
 .PP
 .B kafsctl
 .B hotplug
@@ -27,6 +32,13 @@ Print current stats for the mounted filesystem at
 Use
 .B --json
 to emit machine-readable JSON.
+.TP
+.B migrate
+Migrate an offline v2 image to v3.
+This operation is irreversible.
+Without
+.BR --yes ,
+interactive confirmation is required.
 .TP
 .B hotplug status
 Show hotplug status, including session/epoch and compatibility.
