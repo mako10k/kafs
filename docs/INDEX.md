@@ -20,6 +20,8 @@ design and policy notes.
 - [duplicate-policy.md](duplicate-policy.md)
 - [concurrency-plan.md](concurrency-plan.md)
 - [journal-plan.md](journal-plan.md)
+- [write-performance-ideas.md](write-performance-ideas.md)
+- [bottleneck-measurement-plan.md](bottleneck-measurement-plan.md)
 - [static-checks.md](static-checks.md)
 - [tools-suite.md](tools-suite.md)
 - [STRACE_ANALYSIS_INDEX.md](STRACE_ANALYSIS_INDEX.md)
