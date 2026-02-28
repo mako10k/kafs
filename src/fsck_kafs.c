@@ -152,6 +152,19 @@ static void usage(const char *prog)
           prog);
 }
 
+static int check_region_bounds(const char *name, uint64_t off, uint64_t size, uint64_t file_size)
+{
+  if (size == 0)
+    return 0;
+  if (off >= file_size || size > file_size - off)
+  {
+    fprintf(stderr, "%s out of range: off=%" PRIu64 " size=%" PRIu64 " file=%" PRIu64 "\n",
+            name, off, size, file_size);
+    return -1;
+  }
+  return 0;
+}
+
 int main(int argc, char **argv)
 {
   int do_journal_clear = 0;  // optional clear
@@ -202,6 +215,28 @@ int main(int argc, char **argv)
     perror("pread superblock");
     close(fd);
     return 1;
+  }
+
+  struct stat st;
+  if (fstat(fd, &st) != 0)
+  {
+    perror("fstat");
+    close(fd);
+    return 1;
+  }
+  uint64_t file_size = (uint64_t)st.st_size;
+
+  if (check_region_bounds("allocator", kafs_sb_allocator_offset_get(&sb),
+                          kafs_sb_allocator_size_get(&sb), file_size) != 0)
+  {
+    close(fd);
+    return 3;
+  }
+  if (check_region_bounds("pendinglog", kafs_sb_pendinglog_offset_get(&sb),
+                          kafs_sb_pendinglog_size_get(&sb), file_size) != 0)
+  {
+    close(fd);
+    return 3;
   }
 
   // Optional orphan reclaim (mount-time recovery equivalent)
@@ -280,6 +315,11 @@ int main(int argc, char **argv)
 
   uint64_t joff = kafs_sb_journal_offset_get(&sb);
   uint64_t jsize = kafs_sb_journal_size_get(&sb);
+  if (check_region_bounds("journal", joff, jsize, file_size) != 0)
+  {
+    close(fd);
+    return 3;
+  }
   if (joff == 0 || jsize < 4096)
   {
     fprintf(stderr, "No in-image journal: off=%" PRIu64 " size=%" PRIu64 "\n", joff, jsize);

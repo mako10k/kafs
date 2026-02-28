@@ -66,6 +66,8 @@ struct mkfs_layout
   off_t mapsize;
   off_t blkmask_off;
   off_t inotbl_off;
+  off_t allocator_off;
+  size_t allocator_size;
   uint32_t hrl_bucket_cnt;
   size_t hrl_index_size;
   off_t hrl_index_off;
@@ -86,6 +88,18 @@ static void compute_layout(kafs_blkcnt_t blkcnt, kafs_blksize_t blksizemask, kaf
   mapsize = (mapsize + blksizemask) & ~blksizemask; // block align
   off_t inotbl_off = mapsize;
   mapsize += (off_t)sizeof(kafs_sinode_t) * inocnt;
+  mapsize = (mapsize + blksizemask) & ~blksizemask;
+
+  // allocator v2 reserved metadata area (L1/L2 summaries, future use)
+  size_t l0_bytes = ((size_t)blkcnt + 7u) >> 3;
+  size_t l1_bytes = (l0_bytes + 7u) >> 3;
+  size_t l2_bytes = (l1_bytes + 7u) >> 3;
+  size_t allocator_size = l1_bytes + l2_bytes;
+  if (allocator_size < 4096u)
+    allocator_size = 4096u;
+  allocator_size = (allocator_size + (size_t)blksizemask) & ~(size_t)blksizemask;
+  off_t allocator_off = mapsize;
+  mapsize += (off_t)allocator_size;
   mapsize = (mapsize + blksizemask) & ~blksizemask;
 
   uint32_t bucket_cnt = 1024;
@@ -110,6 +124,8 @@ static void compute_layout(kafs_blkcnt_t blkcnt, kafs_blksize_t blksizemask, kaf
     out->mapsize = mapsize;
     out->blkmask_off = blkmask_off;
     out->inotbl_off = inotbl_off;
+    out->allocator_off = allocator_off;
+    out->allocator_size = allocator_size;
     out->hrl_bucket_cnt = bucket_cnt;
     out->hrl_index_size = hrl_index_size;
     out->hrl_index_off = hrl_index_off;
@@ -301,6 +317,12 @@ int main(int argc, char **argv)
   assert(ino_ptr >= base && ino_ptr + inotbl_bytes <= end);
   memset(bm_ptr, 0, blkmask_bytes);
   memset(ino_ptr, 0, inotbl_bytes);
+  if (layout.allocator_size > 0)
+  {
+    char *alloc_ptr = (char *)ctx.c_superblock + layout.allocator_off;
+    assert(alloc_ptr >= base && alloc_ptr + layout.allocator_size <= end);
+    memset(alloc_ptr, 0, layout.allocator_size);
+  }
 
   // スーパーブロック基本
   kafs_sb_log_blksize_set(ctx.c_superblock, log_blksize);
@@ -317,14 +339,14 @@ int main(int argc, char **argv)
   kafs_sb_journal_offset_set(ctx.c_superblock, (uint64_t)layout.journal_off);
   kafs_sb_journal_size_set(ctx.c_superblock, (uint64_t)journal_bytes);
   kafs_sb_journal_flags_set(ctx.c_superblock, 0);
-  kafs_sb_allocator_version_set(ctx.c_superblock, 0);
-  kafs_sb_allocator_offset_set(ctx.c_superblock, 0);
-  kafs_sb_allocator_size_set(ctx.c_superblock, 0);
+  kafs_sb_allocator_version_set(ctx.c_superblock, 2);
+  kafs_sb_allocator_offset_set(ctx.c_superblock, (uint64_t)layout.allocator_off);
+  kafs_sb_allocator_size_set(ctx.c_superblock, (uint64_t)layout.allocator_size);
   kafs_sb_pendinglog_offset_set(ctx.c_superblock, 0);
   kafs_sb_pendinglog_size_set(ctx.c_superblock, 0);
   kafs_sb_checkpoint_seq_set(ctx.c_superblock, 0);
   kafs_sb_commit_seq_set(ctx.c_superblock, 0);
-  kafs_sb_feature_flags_set(ctx.c_superblock, 0);
+  kafs_sb_feature_flags_set(ctx.c_superblock, KAFS_FEATURE_ALLOC_V2);
   kafs_sb_compat_flags_set(ctx.c_superblock, 0);
 
   // R/O items
