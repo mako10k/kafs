@@ -642,6 +642,17 @@ static void *kafs_pending_worker_main(void *arg)
           kafs_inode_unlock(ctx, ent.ino);
         }
 
+        kafs_blkcnt_t old_blo = (kafs_blkcnt_t)ent.target_hrid;
+        if (old_blo != KAFS_BLO_NONE && old_blo != (kafs_blkcnt_t)ent.temp_blo &&
+            old_blo != final_blo)
+        {
+          uint64_t t_dec0 = kafs_now_ns();
+          (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
+          uint64_t t_dec1 = kafs_now_ns();
+          __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0,
+                             __ATOMIC_RELAXED);
+        }
+
         if ((kafs_blkcnt_t)ent.temp_blo != KAFS_BLO_NONE && (kafs_blkcnt_t)ent.temp_blo != final_blo)
           (void)kafs_hrl_dec_ref_by_blo(ctx, (kafs_blkcnt_t)ent.temp_blo);
 
@@ -1377,6 +1388,7 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
       ent.iblk = (uint32_t)iblo;
       ent.temp_blo = (uint32_t)temp_blo;
       ent.state = KAFS_PENDING_QUEUED;
+      ent.target_hrid = (uint32_t)old_blo;
 
       uint64_t pending_id = 0;
       if (ctx->c_pending_worker_lock_init)
@@ -1393,17 +1405,6 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
       kafs_blkcnt_t pref = KAFS_BLO_NONE;
       KAFS_CALL(kafs_ref_pending_encode, pending_id, &pref);
       KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &pref, KAFS_IBLKREF_FUNC_SET);
-
-      if (old_blo != KAFS_BLO_NONE && old_blo != temp_blo)
-      {
-        kafs_inode_unlock(ctx, ino_idx);
-        uint64_t t_dec0 = kafs_now_ns();
-        (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
-        uint64_t t_dec1 = kafs_now_ns();
-        __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0,
-                           __ATOMIC_RELAXED);
-        kafs_inode_lock(ctx, ino_idx);
-      }
 
       kafs_pending_worker_notify(ctx);
       return KAFS_SUCCESS;
