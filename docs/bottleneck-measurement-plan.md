@@ -79,11 +79,17 @@ KAFS_MEASURE_STRACE=1 scripts/measure-bottleneck.sh --quick
 
 ## 計測ステップ
 
+### 評価フェーズ結果（2026-02-28）
+
+- 固定 5-run の quick ベースラインを取得済み（全ケース success 5/5）
+- 評価レポート: `docs/perf-evaluation-20260228.md`
+- 測定データ: `report/perf/quick-series-fixed-20260228-021528/`
+
 ### Phase 0: ベースライン固定
 
 - [ ] マシン条件（CPU governor, バックグラウンド負荷）を固定
 - [ ] mount オプションと環境変数を記録
-- [ ] 各 workload を 5 回以上実行し、中央値を採用
+- [x] 各 workload を 5 回以上実行し、中央値を採用
 
 ### Phase 1: 外部観測
 
