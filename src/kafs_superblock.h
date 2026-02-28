@@ -3,7 +3,7 @@
 #include <assert.h>
 #include <stdio.h>
 
-/// @brief スーパーブロック情報（固定長 128 bytes）
+/// @brief スーパーブロック情報（固定長 256 bytes）
 struct kafs_ssuperblock
 {
   // --- Header ---
@@ -58,15 +58,36 @@ struct kafs_ssuperblock
   /// @brief ジャーナル領域の総サイズ（ヘッダ含む、バイト）
   kafs_su64_t s_journal_size; // +104 (8)
   /// @brief ジャーナル設定フラグ（将来用）
-  kafs_su32_t s_journal_flags;   // +112 (4)
-  uint32_t s_pad3;               // +116 (4)
-  uint8_t s_reserved[128 - 120]; // +120 .. +127
+  kafs_su32_t s_journal_flags; // +112 (4)
+  uint32_t s_pad3;             // +116 (4)
+
+  // --- v3 metadata ---
+  /// @brief allocator layout version
+  kafs_su32_t s_allocator_version; // +120 (4)
+  uint32_t s_allocator_flags;      // +124 (4)
+  /// @brief allocator領域の先頭オフセット（バイト）
+  kafs_su64_t s_allocator_offset; // +128 (8)
+  /// @brief allocator領域のサイズ（バイト）
+  kafs_su64_t s_allocator_size; // +136 (8)
+  /// @brief pending log領域の先頭オフセット（バイト）
+  kafs_su64_t s_pendinglog_offset; // +144 (8)
+  /// @brief pending log領域のサイズ（バイト）
+  kafs_su64_t s_pendinglog_size; // +152 (8)
+  /// @brief チェックポイントシーケンス
+  kafs_su64_t s_checkpoint_seq; // +160 (8)
+  /// @brief コミットシーケンス
+  kafs_su64_t s_commit_seq; // +168 (8)
+  /// @brief 機能フラグ
+  kafs_su64_t s_feature_flags; // +176 (8)
+  /// @brief 互換フラグ（将来拡張）
+  kafs_su64_t s_compat_flags; // +184 (8)
+  uint8_t s_reserved[256 - 192]; // +192 .. +255
 } __attribute__((packed));
 
 typedef struct kafs_ssuperblock kafs_ssuperblock_t;
 
 // 固定長チェック
-_Static_assert(sizeof(struct kafs_ssuperblock) == 128, "kafs_ssuperblock must be 128 bytes");
+_Static_assert(sizeof(struct kafs_ssuperblock) == 256, "kafs_ssuperblock must be 256 bytes");
 
 #include "kafs_context.h"
 
@@ -263,6 +284,80 @@ static inline uint32_t kafs_sb_journal_flags_get(const struct kafs_ssuperblock *
 static inline void kafs_sb_journal_flags_set(struct kafs_ssuperblock *sb, uint32_t v)
 {
   sb->s_journal_flags = kafs_u32_htos(v);
+}
+
+// --- v3 metadata get/set ---
+static inline uint32_t kafs_sb_allocator_version_get(const struct kafs_ssuperblock *sb)
+{
+  return kafs_u32_stoh(sb->s_allocator_version);
+}
+static inline void kafs_sb_allocator_version_set(struct kafs_ssuperblock *sb, uint32_t v)
+{
+  sb->s_allocator_version = kafs_u32_htos(v);
+}
+static inline uint64_t kafs_sb_allocator_offset_get(const struct kafs_ssuperblock *sb)
+{
+  return kafs_u64_stoh(sb->s_allocator_offset);
+}
+static inline void kafs_sb_allocator_offset_set(struct kafs_ssuperblock *sb, uint64_t v)
+{
+  sb->s_allocator_offset = kafs_u64_htos(v);
+}
+static inline uint64_t kafs_sb_allocator_size_get(const struct kafs_ssuperblock *sb)
+{
+  return kafs_u64_stoh(sb->s_allocator_size);
+}
+static inline void kafs_sb_allocator_size_set(struct kafs_ssuperblock *sb, uint64_t v)
+{
+  sb->s_allocator_size = kafs_u64_htos(v);
+}
+static inline uint64_t kafs_sb_pendinglog_offset_get(const struct kafs_ssuperblock *sb)
+{
+  return kafs_u64_stoh(sb->s_pendinglog_offset);
+}
+static inline void kafs_sb_pendinglog_offset_set(struct kafs_ssuperblock *sb, uint64_t v)
+{
+  sb->s_pendinglog_offset = kafs_u64_htos(v);
+}
+static inline uint64_t kafs_sb_pendinglog_size_get(const struct kafs_ssuperblock *sb)
+{
+  return kafs_u64_stoh(sb->s_pendinglog_size);
+}
+static inline void kafs_sb_pendinglog_size_set(struct kafs_ssuperblock *sb, uint64_t v)
+{
+  sb->s_pendinglog_size = kafs_u64_htos(v);
+}
+static inline uint64_t kafs_sb_checkpoint_seq_get(const struct kafs_ssuperblock *sb)
+{
+  return kafs_u64_stoh(sb->s_checkpoint_seq);
+}
+static inline void kafs_sb_checkpoint_seq_set(struct kafs_ssuperblock *sb, uint64_t v)
+{
+  sb->s_checkpoint_seq = kafs_u64_htos(v);
+}
+static inline uint64_t kafs_sb_commit_seq_get(const struct kafs_ssuperblock *sb)
+{
+  return kafs_u64_stoh(sb->s_commit_seq);
+}
+static inline void kafs_sb_commit_seq_set(struct kafs_ssuperblock *sb, uint64_t v)
+{
+  sb->s_commit_seq = kafs_u64_htos(v);
+}
+static inline uint64_t kafs_sb_feature_flags_get(const struct kafs_ssuperblock *sb)
+{
+  return kafs_u64_stoh(sb->s_feature_flags);
+}
+static inline void kafs_sb_feature_flags_set(struct kafs_ssuperblock *sb, uint64_t v)
+{
+  sb->s_feature_flags = kafs_u64_htos(v);
+}
+static inline uint64_t kafs_sb_compat_flags_get(const struct kafs_ssuperblock *sb)
+{
+  return kafs_u64_stoh(sb->s_compat_flags);
+}
+static inline void kafs_sb_compat_flags_set(struct kafs_ssuperblock *sb, uint64_t v)
+{
+  sb->s_compat_flags = kafs_u64_htos(v);
 }
 
 static kafs_blksize_t kafs_sb_blksize_get(const struct kafs_ssuperblock *sb)

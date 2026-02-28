@@ -130,9 +130,14 @@ typedef uint_fast32_t kafs_hrid_t;
 
 // --- 定数（新フォーマット用） ---
 #define KAFS_MAGIC 0x4B414653u /* 'KAFS' */
-#define KAFS_FORMAT_VERSION 2u /* HRL 採用版 */
+#define KAFS_FORMAT_VERSION 3u /* v3: allocator/pending log metadata */
+#define KAFS_FORMAT_VERSION_V2 2u
 #define KAFS_HASH_FAST_XXH64 1u
 #define KAFS_HASH_STRONG_BLAKE3_256 1u
+
+#define KAFS_FEATURE_ALLOC_V2 (1ull << 0)
+#define KAFS_FEATURE_META_BATCH (1ull << 1)
+#define KAFS_FEATURE_ASYNC_DEDUP (1ull << 2)
 
 // ------------------------------------
 // 記録表現で使う型

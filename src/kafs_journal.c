@@ -1,5 +1,6 @@
 #include "kafs_journal.h"
 #include "kafs_context.h"
+#include "kafs_locks.h"
 #include "kafs_superblock.h"
 
 #include <stdio.h>
@@ -54,6 +55,231 @@ typedef struct journal_state
 } journal_state_t;
 
 static journal_state_t g_state = {0};
+
+static int kj_write_record(kafs_journal_t *j, uint32_t tag, uint64_t seq, const char *payload);
+
+typedef struct kj_meta_snapshot
+{
+  int valid;
+  kafs_blkcnt_t free_abs;
+  kafs_time_t wtime;
+  uint32_t wtime_dirty;
+  size_t word_count;
+  uint32_t *word_idx;
+  kafs_blkmask_t *word_val;
+} kj_meta_snapshot_t;
+
+static void kj_meta_snapshot_clear(kj_meta_snapshot_t *s)
+{
+  if (!s)
+    return;
+  free(s->word_idx);
+  free(s->word_val);
+  memset(s, 0, sizeof(*s));
+}
+
+static int kj_collect_meta_snapshot(struct kafs_context *ctx, kj_meta_snapshot_t *out)
+{
+  if (!ctx || !out)
+    return 0;
+  if (!ctx->c_meta_delta_enabled)
+    return 0;
+
+  memset(out, 0, sizeof(*out));
+
+  kafs_bitmap_lock(ctx);
+
+  kafs_blkcnt_t blkcnt = kafs_sb_blkcnt_get(ctx->c_superblock);
+  kafs_blkcnt_t free_now = kafs_sb_blkcnt_free_get(ctx->c_superblock);
+  int64_t merged = (int64_t)free_now + ctx->c_meta_delta_free_blocks;
+  if (merged < 0)
+    merged = 0;
+  if ((uint64_t)merged > (uint64_t)blkcnt)
+    merged = (int64_t)blkcnt;
+  out->free_abs = (kafs_blkcnt_t)merged;
+
+  out->wtime_dirty = ctx->c_meta_delta_wtime_dirty ? 1u : 0u;
+  out->wtime = ctx->c_meta_delta_last_wtime;
+
+  if (ctx->c_meta_bitmap_words_enabled && ctx->c_meta_bitmap_dirty && ctx->c_meta_bitmap_words &&
+      ctx->c_meta_bitmap_wordcnt > 0 && ctx->c_meta_bitmap_dirty_count > 0)
+  {
+    size_t dirty_count = ctx->c_meta_bitmap_dirty_count;
+    out->word_idx = (uint32_t *)calloc(dirty_count, sizeof(uint32_t));
+    out->word_val = (kafs_blkmask_t *)calloc(dirty_count, sizeof(kafs_blkmask_t));
+    if (out->word_idx && out->word_val)
+    {
+      size_t n = 0;
+      for (size_t i = 0; i < ctx->c_meta_bitmap_wordcnt && n < dirty_count; ++i)
+      {
+        if (!ctx->c_meta_bitmap_dirty[i])
+          continue;
+        out->word_idx[n] = (uint32_t)i;
+        out->word_val[n] = ctx->c_meta_bitmap_words[i];
+        ++n;
+      }
+      out->word_count = n;
+    }
+    else
+    {
+      free(out->word_idx);
+      free(out->word_val);
+      out->word_idx = NULL;
+      out->word_val = NULL;
+      out->word_count = 0;
+    }
+  }
+
+  kafs_bitmap_unlock(ctx);
+
+  out->valid = 1;
+  return 1;
+}
+
+static int kj_write_meta_delta_record(kafs_journal_t *j, uint64_t seq, const kj_meta_snapshot_t *s)
+{
+  if (!j || !s || !s->valid)
+    return 0;
+
+  size_t cap = 160u + (s->word_count * 44u);
+  char *payload = (char *)calloc(cap, 1u);
+  if (!payload)
+    return -ENOMEM;
+
+  int n = snprintf(payload, cap, "free_abs=%" PRIuFAST32 " wtime_dirty=%u wtime_sec=%lld "
+                                 "wtime_nsec=%ld wc=%zu words=",
+                   s->free_abs, s->wtime_dirty, (long long)s->wtime.tv_sec, s->wtime.tv_nsec,
+                   s->word_count);
+  if (n < 0)
+  {
+    free(payload);
+    return -EINVAL;
+  }
+  size_t off = (size_t)n;
+
+  for (size_t i = 0; i < s->word_count && off < cap; ++i)
+  {
+    int m = snprintf(payload + off, cap - off, "%s%u:%" PRIxMAX, (i == 0) ? "" : ",",
+                     s->word_idx[i], (uintmax_t)s->word_val[i]);
+    if (m < 0)
+      break;
+    off += (size_t)m;
+  }
+
+  int rc = kj_write_record(j, KJ_TAG_MDT, seq, payload);
+  free(payload);
+  return rc;
+}
+
+static void kj_replay_apply_meta_delta(struct kafs_context *ctx, const char *payload)
+{
+  if (!ctx || !payload || !*payload)
+    return;
+
+  uint64_t free_abs = 0;
+  uint32_t wtime_dirty = 0;
+  long long wtime_sec = 0;
+  long wtime_nsec = 0;
+
+  const char *p = strstr(payload, "free_abs=");
+  if (p)
+    (void)sscanf(p, "free_abs=%" SCNu64, &free_abs);
+  p = strstr(payload, "wtime_dirty=");
+  if (p)
+    (void)sscanf(p, "wtime_dirty=%u", &wtime_dirty);
+  p = strstr(payload, "wtime_sec=");
+  if (p)
+    (void)sscanf(p, "wtime_sec=%lld", &wtime_sec);
+  p = strstr(payload, "wtime_nsec=");
+  if (p)
+    (void)sscanf(p, "wtime_nsec=%ld", &wtime_nsec);
+
+  kafs_blkcnt_t blkcnt = kafs_sb_blkcnt_get(ctx->c_superblock);
+  if (free_abs > (uint64_t)blkcnt)
+    free_abs = (uint64_t)blkcnt;
+  kafs_sb_blkcnt_free_set(ctx->c_superblock, (kafs_blkcnt_t)free_abs);
+
+  if (wtime_dirty)
+  {
+    kafs_time_t wt = {.tv_sec = (time_t)wtime_sec, .tv_nsec = wtime_nsec};
+    kafs_sb_wtime_set(ctx->c_superblock, wt);
+  }
+
+  const char *w = strstr(payload, "words=");
+  if (!w)
+    return;
+  w += 6;
+
+  size_t bits = sizeof(kafs_blkmask_t) * 8u;
+  size_t wordcnt = ((size_t)kafs_sb_blkcnt_get(ctx->c_superblock) + bits - 1u) / bits;
+
+  char *copy = strdup(w);
+  if (!copy)
+    return;
+
+  char *save = NULL;
+  for (char *tok = strtok_r(copy, ",", &save); tok; tok = strtok_r(NULL, ",", &save))
+  {
+    unsigned idx = 0;
+    uintmax_t val = 0;
+    if (sscanf(tok, "%u:%" SCNxMAX, &idx, &val) != 2)
+      continue;
+    if ((size_t)idx >= wordcnt)
+      continue;
+    ctx->c_blkmasktbl[idx] = (kafs_blkmask_t)val;
+  }
+  free(copy);
+}
+
+static void kj_apply_meta_delta(struct kafs_context *ctx)
+{
+  if (!ctx || !ctx->c_meta_delta_enabled)
+    return;
+
+  kafs_bitmap_lock(ctx);
+
+  int64_t free_delta = ctx->c_meta_delta_free_blocks;
+  uint32_t wtime_dirty = ctx->c_meta_delta_wtime_dirty;
+  kafs_time_t wtime = ctx->c_meta_delta_last_wtime;
+
+  if (ctx->c_meta_bitmap_words_enabled && ctx->c_meta_bitmap_dirty &&
+      ctx->c_meta_bitmap_words && ctx->c_meta_bitmap_wordcnt > 0 &&
+      ctx->c_meta_bitmap_dirty_count > 0)
+  {
+    for (size_t i = 0; i < ctx->c_meta_bitmap_wordcnt; ++i)
+    {
+      if (!ctx->c_meta_bitmap_dirty[i])
+        continue;
+      ctx->c_blkmasktbl[i] = ctx->c_meta_bitmap_words[i];
+      ctx->c_meta_bitmap_dirty[i] = 0;
+    }
+    ctx->c_meta_bitmap_dirty_count = 0;
+  }
+
+  if (free_delta != 0)
+  {
+    kafs_blkcnt_t free_now = kafs_sb_blkcnt_free_get(ctx->c_superblock);
+    int64_t merged = (int64_t)free_now + free_delta;
+    if (merged < 0)
+      merged = 0;
+    kafs_blkcnt_t blkcnt = kafs_sb_blkcnt_get(ctx->c_superblock);
+    if ((uint64_t)merged > (uint64_t)blkcnt)
+      merged = (int64_t)blkcnt;
+    kafs_sb_blkcnt_free_set(ctx->c_superblock, (kafs_blkcnt_t)merged);
+    ctx->c_meta_delta_free_blocks = 0;
+  }
+
+  if (wtime_dirty)
+  {
+    if (wtime.tv_sec == 0 && wtime.tv_nsec == 0)
+      clock_gettime(CLOCK_REALTIME, &wtime);
+    kafs_sb_wtime_set(ctx->c_superblock, wtime);
+    ctx->c_meta_delta_wtime_dirty = 0;
+    ctx->c_meta_delta_last_wtime = (kafs_time_t){0};
+  }
+
+  kafs_bitmap_unlock(ctx);
+}
 
 static void timespec_now(struct timespec *ts) { clock_gettime(CLOCK_REALTIME, ts); }
 
@@ -404,7 +630,7 @@ int kafs_journal_init(struct kafs_context *ctx, const char *image_path)
 
 void kafs_journal_shutdown(struct kafs_context *ctx)
 {
-  (void)ctx;
+  kj_apply_meta_delta(ctx);
   if (g_state.ctx != ctx)
     return;
   kafs_journal_t *j = &g_state.j;
@@ -441,6 +667,35 @@ void kafs_journal_shutdown(struct kafs_context *ctx)
   memset(&g_state, 0, sizeof(g_state));
 }
 
+int kafs_journal_is_enabled(struct kafs_context *ctx)
+{
+  return (g_state.ctx == ctx && g_state.j.enabled) ? 1 : 0;
+}
+
+void kafs_journal_force_flush(struct kafs_context *ctx)
+{
+  if (!ctx)
+    return;
+
+  kj_apply_meta_delta(ctx);
+
+  if (g_state.ctx != ctx || !g_state.j.enabled)
+    return;
+
+  kafs_journal_t *j = &g_state.j;
+  jlock(j);
+  if (j->use_inimage)
+  {
+    kj_persist_header(j, 1);
+    j->gc_pending = 0;
+  }
+  else if (j->fd >= 0)
+  {
+    fsync(j->fd);
+  }
+  junlock(j);
+}
+
 uint64_t kafs_journal_begin(struct kafs_context *ctx, const char *op, const char *fmt, ...)
 {
   if (g_state.ctx != ctx || !g_state.j.enabled)
@@ -470,10 +725,19 @@ void kafs_journal_commit(struct kafs_context *ctx, uint64_t seq)
 {
   if (g_state.ctx != ctx || !g_state.j.enabled || seq == 0)
     return;
+
+  kj_meta_snapshot_t meta = {0};
+  (void)kj_collect_meta_snapshot(ctx, &meta);
+
+  kj_apply_meta_delta(ctx);
+
   kafs_journal_t *j = &g_state.j;
   jlock(j);
   if (j->use_inimage)
   {
+    if (meta.valid)
+      (void)kj_write_meta_delta_record(j, seq, &meta);
+
     // COMMITは書き込み自体は非同期。グループコミット窓の最後に1回だけfsync+ヘッダ更新。
     kj_rec_hdr_t rh = {.tag = KJ_TAG_CMT, .size = 0, .seq = seq, .crc32 = 0};
     rh.crc32 = 0;
@@ -486,6 +750,7 @@ void kafs_journal_commit(struct kafs_context *ctx, uint64_t seq)
       // すぐに耐久化
       kj_persist_header(j, 1);
       junlock(j);
+      kj_meta_snapshot_clear(&meta);
       return;
     }
 
@@ -509,10 +774,12 @@ void kafs_journal_commit(struct kafs_context *ctx, uint64_t seq)
         j->gc_pending = 0;
       }
       junlock(j);
+      kj_meta_snapshot_clear(&meta);
       return;
     }
     // 非リーダー: すでにバッチ中。フラッシュはリーダーに任せる。
     junlock(j);
+    kj_meta_snapshot_clear(&meta);
     return;
   }
   else
@@ -523,6 +790,7 @@ void kafs_journal_commit(struct kafs_context *ctx, uint64_t seq)
     fsync(j->fd);
   }
   junlock(j);
+  kj_meta_snapshot_clear(&meta);
 }
 
 void kafs_journal_abort(struct kafs_context *ctx, uint64_t seq, const char *reason_fmt, ...)
@@ -611,6 +879,7 @@ int kafs_journal_replay(struct kafs_context *ctx, kafs_journal_replay_cb cb, voi
   {
     uint64_t seq;
     char *payload;
+    char *meta_payload;
   } open[MAX_OPEN];
   size_t open_cnt = 0;
   while (pos + sizeof(kj_rec_hdr_t) <= j.write_off)
@@ -673,8 +942,22 @@ int kafs_journal_replay(struct kafs_context *ctx, kafs_journal_replay_cb cb, voi
       {
         open[open_cnt].seq = rh.seq;
         open[open_cnt].payload = pl;
+        open[open_cnt].meta_payload = NULL;
         open_cnt++;
         pl = NULL;
+      }
+      break;
+    }
+    case KJ_TAG_MDT:
+    {
+      for (size_t i = 0; i < open_cnt; ++i)
+      {
+        if (open[i].seq != rh.seq)
+          continue;
+        free(open[i].meta_payload);
+        open[i].meta_payload = pl;
+        pl = NULL;
+        break;
       }
       break;
     }
@@ -685,6 +968,8 @@ int kafs_journal_replay(struct kafs_context *ctx, kafs_journal_replay_cb cb, voi
       {
         if (open[i].seq == rh.seq)
         {
+          if (open[i].meta_payload)
+            kj_replay_apply_meta_delta(ctx, open[i].meta_payload);
           if (cb && open[i].payload)
           {
             // payload is "op=... <args>"
@@ -703,6 +988,7 @@ int kafs_journal_replay(struct kafs_context *ctx, kafs_journal_replay_cb cb, voi
             (void)cb(ctx, opbuf, argstr, user);
           }
           free(open[i].payload);
+          free(open[i].meta_payload);
           // compact remove
           open[i] = open[open_cnt - 1];
           open_cnt--;
@@ -718,6 +1004,7 @@ int kafs_journal_replay(struct kafs_context *ctx, kafs_journal_replay_cb cb, voi
         if (open[i].seq == rh.seq)
         {
           free(open[i].payload);
+          free(open[i].meta_payload);
           open[i] = open[open_cnt - 1];
           open_cnt--;
           break;
@@ -743,6 +1030,9 @@ int kafs_journal_replay(struct kafs_context *ctx, kafs_journal_replay_cb cb, voi
     kj_header_store(&j, &hdr);
   }
   for (size_t i = 0; i < open_cnt; ++i)
+  {
     free(open[i].payload);
+    free(open[i].meta_payload);
+  }
   return 0;
 }

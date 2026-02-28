@@ -32,6 +32,57 @@ struct kafs_stats
   uint64_t hrl_put_hits;            // existing block used (is_new==0)
   uint64_t hrl_put_misses;          // new block stored (is_new==1)
   uint64_t hrl_put_fallback_legacy; // HRL path failed and legacy allocation used
+  uint64_t hrl_put_ns_hash;
+  uint64_t hrl_put_ns_find;
+  uint64_t hrl_put_ns_cmp_content;
+  uint64_t hrl_put_ns_slot_alloc;
+  uint64_t hrl_put_ns_blk_alloc;
+  uint64_t hrl_put_ns_blk_write;
+  uint64_t hrl_put_chain_steps;
+  uint64_t hrl_put_cmp_calls;
+
+  // Lock contention snapshot (best-effort, runtime counters)
+  uint64_t lock_hrl_bucket_acquire;
+  uint64_t lock_hrl_bucket_contended;
+  uint64_t lock_hrl_bucket_wait_ns;
+  uint64_t lock_hrl_global_acquire;
+  uint64_t lock_hrl_global_contended;
+  uint64_t lock_hrl_global_wait_ns;
+  uint64_t lock_bitmap_acquire;
+  uint64_t lock_bitmap_contended;
+  uint64_t lock_bitmap_wait_ns;
+  uint64_t lock_inode_acquire;
+  uint64_t lock_inode_contended;
+  uint64_t lock_inode_wait_ns;
+  uint64_t lock_inode_alloc_acquire;
+  uint64_t lock_inode_alloc_contended;
+  uint64_t lock_inode_alloc_wait_ns;
+
+  uint64_t pwrite_calls;
+  uint64_t pwrite_bytes;
+  uint64_t pwrite_ns_iblk_read;
+  uint64_t pwrite_ns_iblk_write;
+  uint64_t pwrite_iblk_write_sample_count;
+  uint64_t pwrite_iblk_write_sample_cap;
+  uint64_t pwrite_iblk_write_p50_ns;
+  uint64_t pwrite_iblk_write_p95_ns;
+  uint64_t pwrite_iblk_write_p99_ns;
+  uint64_t iblk_write_ns_hrl_put;
+  uint64_t iblk_write_ns_legacy_blk_write;
+  uint64_t iblk_write_ns_dec_ref;
+
+  uint64_t blk_alloc_calls;
+  uint64_t blk_alloc_claim_retries;
+  uint64_t blk_alloc_ns_scan;
+  uint64_t blk_alloc_ns_claim;
+  uint64_t blk_alloc_ns_set_usage;
+
+  uint64_t blk_set_usage_calls;
+  uint64_t blk_set_usage_alloc_calls;
+  uint64_t blk_set_usage_free_calls;
+  uint64_t blk_set_usage_ns_bit_update;
+  uint64_t blk_set_usage_ns_freecnt_update;
+  uint64_t blk_set_usage_ns_wtime_update;
 };
 
 typedef struct kafs_stats kafs_stats_t;
@@ -99,3 +150,5 @@ struct kafs_hotplug_status
 };
 
 typedef struct kafs_hotplug_status kafs_hotplug_status_t;
+
+

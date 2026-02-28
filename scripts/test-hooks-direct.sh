@@ -42,7 +42,13 @@ echo "2. Mounting KAFS filesystem..."
 export KAFS_DEBUG=1
 export KAFS_IMAGE="$IMG"
 
-"$KAFS" "$MNT" -f -s > "$LOG" 2>&1 &
+KAFS_MOUNT_SINGLETHREAD=${KAFS_MOUNT_SINGLETHREAD:-1}
+MOUNT_ARGS=("$MNT" -f)
+if [[ "$KAFS_MOUNT_SINGLETHREAD" != "0" ]]; then
+    MOUNT_ARGS+=(-s)
+fi
+
+"$KAFS" "${MOUNT_ARGS[@]}" > "$LOG" 2>&1 &
 KAFS_PID=$!
 echo "KAFS PID: $KAFS_PID"
 
@@ -95,6 +101,12 @@ cd - > /dev/null
 echo "✓ Hook exercise done"
 
 echo ""
+echo "3.5. Capturing fsstat (lock counters)..."
+echo "=== FSSTAT_JSON_BEGIN ==="
+"$ROOT_DIR/src/kafsctl" fsstat "$MNT" --json 2>/dev/null || true
+echo "=== FSSTAT_JSON_END ==="
+
+echo ""
 echo "4. Unmounting..."
 
 fusermount3 -u "$MNT" 2>/dev/null || umount "$MNT" 2>/dev/null || true
@@ -129,25 +141,25 @@ echo ""
 ERROR_COUNT=0
 
 echo "--- EIO errors ---"
-EIO_COUNT=$(grep -i "EIO\|I/O error" "$LOG" 2>/dev/null | wc -l)
+EIO_COUNT=$(awk 'BEGIN{IGNORECASE=1} /EIO|I\/O error/{c++} END{print c+0}' "$LOG")
 echo "EIO/I/O error count: $EIO_COUNT"
 [ $EIO_COUNT -gt 0 ] && ERROR_COUNT=$((ERROR_COUNT + 1))
 
 echo ""
 echo "--- SHA1 corruption errors ---"
-SHA1_COUNT=$(grep -i "sha1\|hash\|corrupt" "$LOG" 2>/dev/null | wc -l)
+SHA1_COUNT=$(awk 'BEGIN{IGNORECASE=1} /sha1|hash|corrupt/{c++} END{print c+0}' "$LOG")
 echo "SHA1/hash/corruption errors: $SHA1_COUNT"
 [ $SHA1_COUNT -gt 0 ] && ERROR_COUNT=$((ERROR_COUNT + 1))
 
 echo ""
 echo "--- EOF errors (kafs_blk_read) ---"
-EOF_COUNT=$(grep "kafs_blk_read.*EOF\|unexpected EOF" "$LOG" 2>/dev/null | wc -l)
+EOF_COUNT=$(awk 'BEGIN{IGNORECASE=1} /kafs_blk_read.*EOF|unexpected EOF/{c++} END{print c+0}' "$LOG")
 echo "EOF error count: $EOF_COUNT"
 [ $EOF_COUNT -gt 0 ] && ERROR_COUNT=$((ERROR_COUNT + 1))
 
 echo ""
 echo "--- fsync/flush related errors ---"
-FSYNC_COUNT=$(grep "fsync\|flush\|release" "$LOG" 2>/dev/null | grep -i "error\|failed" | wc -l)
+FSYNC_COUNT=$(awk 'BEGIN{IGNORECASE=1} /(fsync|flush|release)/ && /(error|failed)/{c++} END{print c+0}' "$LOG")
 echo "fsync/flush/release errors: $FSYNC_COUNT"
 [ $FSYNC_COUNT -gt 0 ] && ERROR_COUNT=$((ERROR_COUNT + 1))
 
