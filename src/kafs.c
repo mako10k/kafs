@@ -64,6 +64,13 @@ static void *memcpy_orig(void *d, const void *s, size_t l)
   })
 #endif
 
+static inline uint64_t kafs_now_ns(void)
+{
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
 // ---------------------------------------------------------
 // BLOCK OPERATIONS
 // ---------------------------------------------------------
@@ -626,7 +633,10 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
     int is_new = 0;
     kafs_blkcnt_t new_blo = KAFS_BLO_NONE;
     ctx->c_stat_hrl_put_calls++;
+    uint64_t t_hrl0 = kafs_now_ns();
     int rc = kafs_hrl_put(ctx, buf, &hrid, &is_new, &new_blo);
+    uint64_t t_hrl1 = kafs_now_ns();
+    __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_hrl_put, t_hrl1 - t_hrl0, __ATOMIC_RELAXED);
     if (rc == 0)
     {
       if (is_new)
@@ -642,7 +652,10 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
       if (old_blo != KAFS_BLO_NONE && old_blo != new_blo)
       {
         kafs_inode_unlock(ctx, ino_idx);
+        uint64_t t_dec0 = kafs_now_ns();
         (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
+        uint64_t t_dec1 = kafs_now_ns();
+        __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
         kafs_inode_lock(ctx, ino_idx);
       }
       return KAFS_SUCCESS;
@@ -653,7 +666,11 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
     kafs_blkcnt_t new_blo2 = KAFS_BLO_NONE;
     KAFS_CALL(kafs_blk_alloc, ctx, &new_blo2);
     // 先にデータを書き込む（読取り側はまだ旧参照を見続ける）
+    uint64_t t_lw0 = kafs_now_ns();
     KAFS_CALL(kafs_blk_write, ctx, new_blo2, buf);
+    uint64_t t_lw1 = kafs_now_ns();
+    __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_legacy_blk_write, t_lw1 - t_lw0,
+               __ATOMIC_RELAXED);
     kafs_blkcnt_t old_blo2;
     KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old_blo2, KAFS_IBLKREF_FUNC_GET);
     KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &new_blo2, KAFS_IBLKREF_FUNC_SET);
@@ -662,7 +679,10 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
     {
       uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
       kafs_inode_unlock(ctx, ino_idx);
+      uint64_t t_dec0 = kafs_now_ns();
       (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo2);
+      uint64_t t_dec1 = kafs_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
       kafs_inode_lock(ctx, ino_idx);
     }
     return KAFS_SUCCESS;
@@ -682,6 +702,7 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
       // 参照減算は inode ロック外
       uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
       kafs_inode_unlock(ctx, ino_idx);
+      uint64_t t_dec0 = kafs_now_ns();
       (void)kafs_hrl_dec_ref_by_blo(ctx, old);
       if (f1 != KAFS_BLO_NONE)
         (void)kafs_hrl_dec_ref_by_blo(ctx, f1);
@@ -689,6 +710,8 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
         (void)kafs_hrl_dec_ref_by_blo(ctx, f2);
       if (f3 != KAFS_BLO_NONE)
         (void)kafs_hrl_dec_ref_by_blo(ctx, f3);
+      uint64_t t_dec1 = kafs_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
       kafs_inode_lock(ctx, ino_idx);
     }
   }
@@ -803,6 +826,9 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
   if (size == 0)
     return 0;
 
+  __atomic_add_fetch(&ctx->c_stat_pwrite_calls, 1u, __ATOMIC_RELAXED);
+  __atomic_add_fetch(&ctx->c_stat_pwrite_bytes, (uint64_t)size, __ATOMIC_RELAXED);
+
   if (filesize < filesize_new)
   {
     // サイズ拡大時
@@ -834,17 +860,26 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
     kafs_iblkcnt_t iblo = offset >> log_blksize;
     // 書き戻しバッファ
     char wbuf[blksize];
+    uint64_t t_r0 = kafs_now_ns();
     KAFS_CALL(kafs_ino_iblk_read, ctx, inoent, iblo, wbuf);
+    uint64_t t_r1 = kafs_now_ns();
+    __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_read, t_r1 - t_r0, __ATOMIC_RELAXED);
     if (size < blksize - offset_blksize)
     {
       // 1ブロックのみの場合
       memcpy(wbuf + offset_blksize, buf, size);
+      uint64_t t_w0 = kafs_now_ns();
       KAFS_CALL(kafs_ino_iblk_write, ctx, inoent, iblo, wbuf);
+      uint64_t t_w1 = kafs_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_write, t_w1 - t_w0, __ATOMIC_RELAXED);
       return size;
     }
     // ブロックの残り分を書き込む
     memcpy(wbuf + offset_blksize, buf, blksize - offset_blksize);
+    uint64_t t_w0 = kafs_now_ns();
     KAFS_CALL(kafs_ino_iblk_write, ctx, inoent, iblo, wbuf);
+    uint64_t t_w1 = kafs_now_ns();
+    __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_write, t_w1 - t_w0, __ATOMIC_RELAXED);
     size_written += blksize - offset_blksize;
   }
 
@@ -854,12 +889,21 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
     if (size - size_written < blksize)
     {
       char wbuf[blksize];
+      uint64_t t_r0 = kafs_now_ns();
       KAFS_CALL(kafs_ino_iblk_read, ctx, inoent, iblo, wbuf);
+      uint64_t t_r1 = kafs_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_read, t_r1 - t_r0, __ATOMIC_RELAXED);
       memcpy(wbuf, buf + size_written, size - size_written);
+      uint64_t t_w0 = kafs_now_ns();
       KAFS_CALL(kafs_ino_iblk_write, ctx, inoent, iblo, wbuf);
+      uint64_t t_w1 = kafs_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_write, t_w1 - t_w0, __ATOMIC_RELAXED);
       return size;
     }
+    uint64_t t_w0 = kafs_now_ns();
     KAFS_CALL(kafs_ino_iblk_write, ctx, inoent, iblo, buf + size_written);
+    uint64_t t_w1 = kafs_now_ns();
+    __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_write, t_w1 - t_w0, __ATOMIC_RELAXED);
     size_written += blksize;
   }
   return size;
@@ -1144,6 +1188,13 @@ static ssize_t kafs_dirent_read(struct kafs_context *ctx, kafs_sinode_t *inoent_
   return r1 + r2;
 }
 
+static int kafs_dir_snapshot(struct kafs_context *ctx, kafs_sinode_t *inoent_dir, char **out,
+                             size_t *out_len);
+
+static int kafs_dirent_iter_next(const char *buf, size_t len, size_t off, kafs_inocnt_t *out_ino,
+                                 kafs_filenamelen_t *out_namelen, const char **out_name,
+                                 size_t *out_rec_len);
+
 /// @brief ディレクトリエントリから対象のファイル名を探す
 /// @param ctx コンテキスト
 /// @param name ファイル名
@@ -1165,25 +1216,38 @@ static int kafs_dirent_search(struct kafs_context *ctx, kafs_sinode_t *inoent, c
   kafs_mode_t mode = kafs_ino_mode_get(inoent);
   if (!S_ISDIR(mode))
     return -ENOTDIR;
-  struct kafs_sdirent dirent;
-  off_t offset = 0;
+  char *snap = NULL;
+  size_t snap_len = 0;
+  int rc = kafs_dir_snapshot(ctx, inoent, &snap, &snap_len);
+  if (rc < 0)
+    return rc;
+
+  size_t off = 0;
   while (1)
   {
-    ssize_t r = KAFS_CALL(kafs_dirent_read, ctx, inoent, &dirent, offset);
-    if (r == 0)
+    kafs_inocnt_t d_ino;
+    kafs_filenamelen_t d_filenamelen;
+    const char *d_filename;
+    size_t rec_len;
+    int step = kafs_dirent_iter_next(snap, snap_len, off, &d_ino, &d_filenamelen, &d_filename,
+                                     &rec_len);
+    if (step == 0)
       break;
-    kafs_inocnt_t d_ino = kafs_dirent_ino_get(&dirent);
-    kafs_filenamelen_t d_filenamelen = kafs_dirent_filenamelen_get(&dirent);
-    const char *d_filename = dirent.d_filename;
-    if (r != (ssize_t)(offsetof(kafs_sdirent_t, d_filename) + d_filenamelen))
+    if (step < 0)
+    {
+      free(snap);
       return -EIO;
+    }
+
     if (d_filenamelen == filenamelen && memcmp(d_filename, filename, filenamelen) == 0)
     {
       *pinoent_found = &ctx->c_inotbl[d_ino];
+      free(snap);
       return KAFS_SUCCESS;
     }
-    offset += r;
+    off += rec_len;
   }
+  free(snap);
   return -ENOENT;
 }
 
@@ -2427,7 +2491,7 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
   return 0;
 }
 
-#define KAFS_STATS_VERSION 1u
+#define KAFS_STATS_VERSION 5u
 
 // Forward decl (used by ioctl implementation)
 static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_inocnt_t *pino_dir,
@@ -2483,6 +2547,51 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
   out->hrl_put_hits = ctx->c_stat_hrl_put_hits;
   out->hrl_put_misses = ctx->c_stat_hrl_put_misses;
   out->hrl_put_fallback_legacy = ctx->c_stat_hrl_put_fallback_legacy;
+  out->hrl_put_ns_hash = ctx->c_stat_hrl_put_ns_hash;
+  out->hrl_put_ns_find = ctx->c_stat_hrl_put_ns_find;
+  out->hrl_put_ns_cmp_content = ctx->c_stat_hrl_put_ns_cmp_content;
+  out->hrl_put_ns_slot_alloc = ctx->c_stat_hrl_put_ns_slot_alloc;
+  out->hrl_put_ns_blk_alloc = ctx->c_stat_hrl_put_ns_blk_alloc;
+  out->hrl_put_ns_blk_write = ctx->c_stat_hrl_put_ns_blk_write;
+  out->hrl_put_chain_steps = ctx->c_stat_hrl_put_chain_steps;
+  out->hrl_put_cmp_calls = ctx->c_stat_hrl_put_cmp_calls;
+
+  out->lock_hrl_bucket_acquire = ctx->c_stat_lock_hrl_bucket_acquire;
+  out->lock_hrl_bucket_contended = ctx->c_stat_lock_hrl_bucket_contended;
+  out->lock_hrl_bucket_wait_ns = ctx->c_stat_lock_hrl_bucket_wait_ns;
+  out->lock_hrl_global_acquire = ctx->c_stat_lock_hrl_global_acquire;
+  out->lock_hrl_global_contended = ctx->c_stat_lock_hrl_global_contended;
+  out->lock_hrl_global_wait_ns = ctx->c_stat_lock_hrl_global_wait_ns;
+  out->lock_bitmap_acquire = ctx->c_stat_lock_bitmap_acquire;
+  out->lock_bitmap_contended = ctx->c_stat_lock_bitmap_contended;
+  out->lock_bitmap_wait_ns = ctx->c_stat_lock_bitmap_wait_ns;
+  out->lock_inode_acquire = ctx->c_stat_lock_inode_acquire;
+  out->lock_inode_contended = ctx->c_stat_lock_inode_contended;
+  out->lock_inode_wait_ns = ctx->c_stat_lock_inode_wait_ns;
+  out->lock_inode_alloc_acquire = ctx->c_stat_lock_inode_alloc_acquire;
+  out->lock_inode_alloc_contended = ctx->c_stat_lock_inode_alloc_contended;
+  out->lock_inode_alloc_wait_ns = ctx->c_stat_lock_inode_alloc_wait_ns;
+
+  out->pwrite_calls = ctx->c_stat_pwrite_calls;
+  out->pwrite_bytes = ctx->c_stat_pwrite_bytes;
+  out->pwrite_ns_iblk_read = ctx->c_stat_pwrite_ns_iblk_read;
+  out->pwrite_ns_iblk_write = ctx->c_stat_pwrite_ns_iblk_write;
+  out->iblk_write_ns_hrl_put = ctx->c_stat_iblk_write_ns_hrl_put;
+  out->iblk_write_ns_legacy_blk_write = ctx->c_stat_iblk_write_ns_legacy_blk_write;
+  out->iblk_write_ns_dec_ref = ctx->c_stat_iblk_write_ns_dec_ref;
+
+  out->blk_alloc_calls = ctx->c_stat_blk_alloc_calls;
+  out->blk_alloc_claim_retries = ctx->c_stat_blk_alloc_claim_retries;
+  out->blk_alloc_ns_scan = ctx->c_stat_blk_alloc_ns_scan;
+  out->blk_alloc_ns_claim = ctx->c_stat_blk_alloc_ns_claim;
+  out->blk_alloc_ns_set_usage = ctx->c_stat_blk_alloc_ns_set_usage;
+
+  out->blk_set_usage_calls = ctx->c_stat_blk_set_usage_calls;
+  out->blk_set_usage_alloc_calls = ctx->c_stat_blk_set_usage_alloc_calls;
+  out->blk_set_usage_free_calls = ctx->c_stat_blk_set_usage_free_calls;
+  out->blk_set_usage_ns_bit_update = ctx->c_stat_blk_set_usage_ns_bit_update;
+  out->blk_set_usage_ns_freecnt_update = ctx->c_stat_blk_set_usage_ns_freecnt_update;
+  out->blk_set_usage_ns_wtime_update = ctx->c_stat_blk_set_usage_ns_wtime_update;
 }
 
 #ifdef __linux__
@@ -3110,26 +3219,49 @@ static int kafs_op_readdir(const char *path, void *buf, fuse_fill_dir_t filler, 
   uint32_t ino_dir = (uint32_t)(inoent_dir - ctx->c_inotbl);
 
   kafs_inode_lock(ctx, ino_dir);
-  off_t filesize = kafs_ino_size_get(inoent_dir);
-  off_t o = 0;
-  kafs_sdirent_t dirent;
+  char *snap = NULL;
+  size_t snap_len = 0;
+  int rc = kafs_dir_snapshot(ctx, inoent_dir, &snap, &snap_len);
+  if (rc < 0)
+  {
+    kafs_inode_unlock(ctx, ino_dir);
+    return rc;
+  }
   if (filler(buf, ".", NULL, 0, 0))
   {
+    free(snap);
     kafs_inode_unlock(ctx, ino_dir);
     return -ENOENT;
   }
-  while (o < filesize)
+  size_t o = 0;
+  while (1)
   {
-    ssize_t r = KAFS_CALL(kafs_dirent_read, ctx, inoent_dir, &dirent, o);
-    if (r == 0)
+    kafs_inocnt_t d_ino;
+    kafs_filenamelen_t d_filenamelen;
+    const char *d_filename;
+    size_t rec_len;
+    int step = kafs_dirent_iter_next(snap, snap_len, o, &d_ino, &d_filenamelen, &d_filename,
+                                     &rec_len);
+    if (step == 0)
       break;
-    if (filler(buf, dirent.d_filename, NULL, 0, 0))
+    if (step < 0)
     {
+      free(snap);
+      kafs_inode_unlock(ctx, ino_dir);
+      return -EIO;
+    }
+    char name[FILENAME_MAX];
+    memcpy(name, d_filename, d_filenamelen);
+    name[d_filenamelen] = '\0';
+    if (filler(buf, name, NULL, 0, 0))
+    {
+      free(snap);
       kafs_inode_unlock(ctx, ino_dir);
       return -ENOENT;
     }
-    o += r;
+    o += rec_len;
   }
+  free(snap);
   kafs_inode_unlock(ctx, ino_dir);
   return 0;
 }

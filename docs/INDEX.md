@@ -23,6 +23,7 @@ design and policy notes.
 - [write-performance-ideas.md](write-performance-ideas.md)
 - [bottleneck-measurement-plan.md](bottleneck-measurement-plan.md)
 - [perf-evaluation-20260228.md](perf-evaluation-20260228.md)
+- [perf-discrepancy-analysis-20260228.md](perf-discrepancy-analysis-20260228.md)
 - [static-checks.md](static-checks.md)
 - [tools-suite.md](tools-suite.md)
 - [STRACE_ANALYSIS_INDEX.md](STRACE_ANALYSIS_INDEX.md)

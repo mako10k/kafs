@@ -42,8 +42,14 @@ echo "2. Mounting KAFS filesystem..."
 export KAFS_DEBUG=1
 export KAFS_IMAGE="$IMG"
 
+KAFS_MOUNT_SINGLETHREAD=${KAFS_MOUNT_SINGLETHREAD:-1}
+MOUNT_ARGS=("$MNT" -f)
+if [[ "$KAFS_MOUNT_SINGLETHREAD" != "0" ]]; then
+    MOUNT_ARGS+=(-s)
+fi
+
 # Mount KAFS with debug logging
-"$KAFS" "$MNT" -f -s > "$LOG" 2>&1 &
+"$KAFS" "${MOUNT_ARGS[@]}" > "$LOG" 2>&1 &
 KAFS_PID=$!
 echo "KAFS PID: $KAFS_PID"
 
@@ -102,6 +108,12 @@ echo ""
 echo "5. Running fsck.kafs to verify filesystem..."
 cd - > /dev/null
 sleep 1
+
+echo ""
+echo "5.5. Capturing fsstat (lock counters)..."
+echo "=== FSSTAT_JSON_BEGIN ==="
+"$ROOT_DIR/src/kafsctl" fsstat "$MNT" --json 2>/dev/null || true
+echo "=== FSSTAT_JSON_END ==="
 
 # Unmount (also handled by trap, but keep explicit phase)
 fusermount3 -u "$MNT" 2>/dev/null || umount "$MNT" 2>/dev/null || true

@@ -42,7 +42,13 @@ echo "2. Mounting KAFS filesystem..."
 export KAFS_DEBUG=1
 export KAFS_IMAGE="$IMG"
 
-"$KAFS" "$MNT" -f -s > "$LOG" 2>&1 &
+KAFS_MOUNT_SINGLETHREAD=${KAFS_MOUNT_SINGLETHREAD:-1}
+MOUNT_ARGS=("$MNT" -f)
+if [[ "$KAFS_MOUNT_SINGLETHREAD" != "0" ]]; then
+    MOUNT_ARGS+=(-s)
+fi
+
+"$KAFS" "${MOUNT_ARGS[@]}" > "$LOG" 2>&1 &
 KAFS_PID=$!
 echo "KAFS PID: $KAFS_PID"
 
@@ -93,6 +99,12 @@ ls -la > /dev/null
 cd - > /dev/null
 
 echo "✓ Hook exercise done"
+
+echo ""
+echo "3.5. Capturing fsstat (lock counters)..."
+echo "=== FSSTAT_JSON_BEGIN ==="
+"$ROOT_DIR/src/kafsctl" fsstat "$MNT" --json 2>/dev/null || true
+echo "=== FSSTAT_JSON_END ==="
 
 echo ""
 echo "4. Unmounting..."

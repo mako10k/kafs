@@ -44,6 +44,51 @@ struct kafs_context
   uint64_t c_stat_hrl_put_hits;
   uint64_t c_stat_hrl_put_misses;
   uint64_t c_stat_hrl_put_fallback_legacy;
+  uint64_t c_stat_hrl_put_ns_hash;
+  uint64_t c_stat_hrl_put_ns_find;
+  uint64_t c_stat_hrl_put_ns_cmp_content;
+  uint64_t c_stat_hrl_put_ns_slot_alloc;
+  uint64_t c_stat_hrl_put_ns_blk_alloc;
+  uint64_t c_stat_hrl_put_ns_blk_write;
+  uint64_t c_stat_hrl_put_chain_steps;
+  uint64_t c_stat_hrl_put_cmp_calls;
+
+  uint64_t c_stat_lock_hrl_bucket_acquire;
+  uint64_t c_stat_lock_hrl_bucket_contended;
+  uint64_t c_stat_lock_hrl_bucket_wait_ns;
+  uint64_t c_stat_lock_hrl_global_acquire;
+  uint64_t c_stat_lock_hrl_global_contended;
+  uint64_t c_stat_lock_hrl_global_wait_ns;
+  uint64_t c_stat_lock_bitmap_acquire;
+  uint64_t c_stat_lock_bitmap_contended;
+  uint64_t c_stat_lock_bitmap_wait_ns;
+  uint64_t c_stat_lock_inode_acquire;
+  uint64_t c_stat_lock_inode_contended;
+  uint64_t c_stat_lock_inode_wait_ns;
+  uint64_t c_stat_lock_inode_alloc_acquire;
+  uint64_t c_stat_lock_inode_alloc_contended;
+  uint64_t c_stat_lock_inode_alloc_wait_ns;
+
+  uint64_t c_stat_pwrite_calls;
+  uint64_t c_stat_pwrite_bytes;
+  uint64_t c_stat_pwrite_ns_iblk_read;
+  uint64_t c_stat_pwrite_ns_iblk_write;
+  uint64_t c_stat_iblk_write_ns_hrl_put;
+  uint64_t c_stat_iblk_write_ns_legacy_blk_write;
+  uint64_t c_stat_iblk_write_ns_dec_ref;
+
+  uint64_t c_stat_blk_alloc_calls;
+  uint64_t c_stat_blk_alloc_claim_retries;
+  uint64_t c_stat_blk_alloc_ns_scan;
+  uint64_t c_stat_blk_alloc_ns_claim;
+  uint64_t c_stat_blk_alloc_ns_set_usage;
+
+  uint64_t c_stat_blk_set_usage_calls;
+  uint64_t c_stat_blk_set_usage_alloc_calls;
+  uint64_t c_stat_blk_set_usage_free_calls;
+  uint64_t c_stat_blk_set_usage_ns_bit_update;
+  uint64_t c_stat_blk_set_usage_ns_freecnt_update;
+  uint64_t c_stat_blk_set_usage_ns_wtime_update;
 
   // --- Runtime inode open counts (in-memory only) ---
   uint32_t *c_open_cnt; // sized to superblock inocnt (allocated at mount)

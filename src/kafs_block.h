@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <errno.h>
+#include <time.h>
 #include <fuse.h>
 
 /// ブロック番号のうち存在しないことを表す値
@@ -24,6 +25,13 @@ static kafs_blkcnt_t kafs_get_free_blkmask(kafs_blkmask_t bm)
   if (sizeof(kafs_blkmask_t) <= sizeof(unsigned long))
     return __builtin_ctzl(bm);
   return __builtin_ctzll(bm);
+}
+
+static inline uint64_t kafs_blk_now_ns(void)
+{
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
 /// @brief 指定されたブロック番号の利用状況を取得する
@@ -69,26 +77,57 @@ static int kafs_blk_set_usage_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo
   kafs_blkcnt_t blor = blo & KAFS_BLKMASK_MASK_BITS;
   kafs_blkmask_t bit = (kafs_blkmask_t)1 << blor;
   int was_used = (ctx->c_blkmasktbl[blod] & bit) != 0;
+  __atomic_add_fetch(&ctx->c_stat_blk_set_usage_calls, 1u, __ATOMIC_RELAXED);
   if (usage == KAFS_TRUE)
   {
+    __atomic_add_fetch(&ctx->c_stat_blk_set_usage_alloc_calls, 1u, __ATOMIC_RELAXED);
     if (!was_used)
     {
+      uint64_t t_bit0 = kafs_blk_now_ns();
       ctx->c_blkmasktbl[blod] |= bit;
+      uint64_t t_bit1 = kafs_blk_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_bit_update, t_bit1 - t_bit0,
+                         __ATOMIC_RELAXED);
+
+      uint64_t t_free0 = kafs_blk_now_ns();
       kafs_blkcnt_t blkcnt_free = kafs_sb_blkcnt_free_get(sb);
       // 0 下回りは防ぐ（MT競合時の二重減算を避ける）
       if (blkcnt_free > 0)
         kafs_sb_blkcnt_free_set(sb, blkcnt_free - 1);
+      uint64_t t_free1 = kafs_blk_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_freecnt_update, t_free1 - t_free0,
+                         __ATOMIC_RELAXED);
+
+      uint64_t t_wtime0 = kafs_blk_now_ns();
       kafs_sb_wtime_set(sb, kafs_now());
+      uint64_t t_wtime1 = kafs_blk_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_wtime_update, t_wtime1 - t_wtime0,
+                         __ATOMIC_RELAXED);
     }
   }
   else
   {
+    __atomic_add_fetch(&ctx->c_stat_blk_set_usage_free_calls, 1u, __ATOMIC_RELAXED);
     if (was_used)
     {
+      uint64_t t_bit0 = kafs_blk_now_ns();
       ctx->c_blkmasktbl[blod] &= ~bit;
+      uint64_t t_bit1 = kafs_blk_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_bit_update, t_bit1 - t_bit0,
+                         __ATOMIC_RELAXED);
+
+      uint64_t t_free0 = kafs_blk_now_ns();
       kafs_blkcnt_t blkcnt_free = kafs_sb_blkcnt_free_get(sb);
       kafs_sb_blkcnt_free_set(sb, blkcnt_free + 1);
+      uint64_t t_free1 = kafs_blk_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_freecnt_update, t_free1 - t_free0,
+                         __ATOMIC_RELAXED);
+
+      uint64_t t_wtime0 = kafs_blk_now_ns();
       kafs_sb_wtime_set(sb, kafs_now());
+      uint64_t t_wtime1 = kafs_blk_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_wtime_update, t_wtime1 - t_wtime0,
+                         __ATOMIC_RELAXED);
     }
   }
   return KAFS_SUCCESS;
@@ -114,6 +153,8 @@ static int kafs_blk_alloc(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
   assert(pblo != NULL);
   assert(*pblo == KAFS_BLO_NONE);
 
+  __atomic_add_fetch(&ctx->c_stat_blk_alloc_calls, 1u, __ATOMIC_RELAXED);
+
   const kafs_blkmask_t *blkmasktbl = ctx->c_blkmasktbl;
   kafs_blkcnt_t blocnt = kafs_sb_blkcnt_get(ctx->c_superblock);
   kafs_blkcnt_t fdb = kafs_sb_first_data_block_get(ctx->c_superblock);
@@ -128,6 +169,8 @@ static int kafs_blk_alloc(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
   kafs_blkcnt_t blo = blo_search + 1;
   if (blo < fdb)
     blo = fdb;
+
+  uint64_t t_scan_start = kafs_blk_now_ns();
 
   while (blo_search != blo)
   {
@@ -151,21 +194,41 @@ static int kafs_blk_alloc(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
       kafs_blkcnt_t blo_found = (blod << KAFS_BLKMASK_LOG_BITS) + blor_found;
       if (blo_found >= fdb && blo_found < blocnt)
       {
+        uint64_t t_scan_stop = kafs_blk_now_ns();
+        __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_scan, t_scan_stop - t_scan_start,
+                           __ATOMIC_RELAXED);
+
         // Claim under lock (recheck because scan is lock-free)
+        uint64_t t_claim0 = kafs_blk_now_ns();
         kafs_bitmap_lock(ctx);
         if (kafs_blk_get_usage((const struct kafs_context *)ctx, blo_found) == 0)
         {
           ctx->c_blo_search = blo_found;
           *pblo = blo_found;
+          uint64_t t_set0 = kafs_blk_now_ns();
           KAFS_CALL(kafs_blk_set_usage_nolock, ctx, blo_found, KAFS_TRUE);
+          uint64_t t_set1 = kafs_blk_now_ns();
+          __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_set_usage, t_set1 - t_set0,
+                             __ATOMIC_RELAXED);
           kafs_bitmap_unlock(ctx);
+          uint64_t t_claim1 = kafs_blk_now_ns();
+          __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_claim, t_claim1 - t_claim0,
+                             __ATOMIC_RELAXED);
           return KAFS_SUCCESS;
         }
         kafs_bitmap_unlock(ctx);
+        uint64_t t_claim1 = kafs_blk_now_ns();
+        __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_claim, t_claim1 - t_claim0,
+                           __ATOMIC_RELAXED);
+        __atomic_add_fetch(&ctx->c_stat_blk_alloc_claim_retries, 1u, __ATOMIC_RELAXED);
+        t_scan_start = kafs_blk_now_ns();
       }
     }
     blo += KAFS_BLKMASK_BITS - blor;
   }
+
+  uint64_t t_scan_end = kafs_blk_now_ns();
+  __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_scan, t_scan_end - t_scan_start, __ATOMIC_RELAXED);
 
   return -ENOSPC;
 }

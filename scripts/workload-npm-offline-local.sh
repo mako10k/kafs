@@ -69,7 +69,12 @@ done
 echo "3. Mount KAFS"
 export KAFS_DEBUG=1
 export KAFS_IMAGE="$IMG"
-"$KAFS" "$MNT" -f -s >"$LOG" 2>&1 &
+KAFS_MOUNT_SINGLETHREAD=${KAFS_MOUNT_SINGLETHREAD:-1}
+MOUNT_ARGS=("$MNT" -f)
+if [[ "$KAFS_MOUNT_SINGLETHREAD" != "0" ]]; then
+  MOUNT_ARGS+=(-s)
+fi
+"$KAFS" "${MOUNT_ARGS[@]}" >"$LOG" 2>&1 &
 KAFS_PID=$!
 
 MOUNTED=0
@@ -136,6 +141,11 @@ done
 npm install --no-audit --no-fund --prefer-offline --ignore-scripts >/dev/null
 
 cd "$ROOT_DIR"
+
+echo "5.5. Capturing fsstat (lock counters)"
+echo "=== FSSTAT_JSON_BEGIN ==="
+"$ROOT_DIR/src/kafsctl" fsstat "$MNT" --json 2>/dev/null || true
+echo "=== FSSTAT_JSON_END ==="
 
 echo "6. Unmount and fsck"
 fusermount3 -u "$MNT" 2>/dev/null || umount "$MNT" 2>/dev/null || true
