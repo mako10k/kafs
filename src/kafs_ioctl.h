@@ -62,6 +62,11 @@ struct kafs_stats
   uint64_t pwrite_bytes;
   uint64_t pwrite_ns_iblk_read;
   uint64_t pwrite_ns_iblk_write;
+  uint64_t pwrite_iblk_write_sample_count;
+  uint64_t pwrite_iblk_write_sample_cap;
+  uint64_t pwrite_iblk_write_p50_ns;
+  uint64_t pwrite_iblk_write_p95_ns;
+  uint64_t pwrite_iblk_write_p99_ns;
   uint64_t iblk_write_ns_hrl_put;
   uint64_t iblk_write_ns_legacy_blk_write;
   uint64_t iblk_write_ns_dec_ref;

@@ -707,6 +707,9 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
     double lock_hrl_global_wait_ms = (double)st.lock_hrl_global_wait_ns / 1000000.0;
     double pwrite_iblk_read_ms = (double)st.pwrite_ns_iblk_read / 1000000.0;
     double pwrite_iblk_write_ms = (double)st.pwrite_ns_iblk_write / 1000000.0;
+    double pwrite_iblk_write_p50_ms = (double)st.pwrite_iblk_write_p50_ns / 1000000.0;
+    double pwrite_iblk_write_p95_ms = (double)st.pwrite_iblk_write_p95_ns / 1000000.0;
+    double pwrite_iblk_write_p99_ms = (double)st.pwrite_iblk_write_p99_ns / 1000000.0;
     double iblk_write_hrl_put_ms = (double)st.iblk_write_ns_hrl_put / 1000000.0;
     double iblk_write_legacy_blk_write_ms = (double)st.iblk_write_ns_legacy_blk_write / 1000000.0;
     double iblk_write_dec_ref_ms = (double)st.iblk_write_ns_dec_ref / 1000000.0;
@@ -788,6 +791,13 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
     printf("  \"pwrite_bytes\": %" PRIu64 ",\n", st.pwrite_bytes);
     printf("  \"pwrite_ns_iblk_read\": %" PRIu64 ",\n", st.pwrite_ns_iblk_read);
     printf("  \"pwrite_ns_iblk_write\": %" PRIu64 ",\n", st.pwrite_ns_iblk_write);
+        printf("  \"pwrite_iblk_write_sample_count\": %" PRIu64 ",\n",
+          st.pwrite_iblk_write_sample_count);
+        printf("  \"pwrite_iblk_write_sample_cap\": %" PRIu64 ",\n",
+          st.pwrite_iblk_write_sample_cap);
+        printf("  \"pwrite_iblk_write_p50_ns\": %" PRIu64 ",\n", st.pwrite_iblk_write_p50_ns);
+        printf("  \"pwrite_iblk_write_p95_ns\": %" PRIu64 ",\n", st.pwrite_iblk_write_p95_ns);
+        printf("  \"pwrite_iblk_write_p99_ns\": %" PRIu64 ",\n", st.pwrite_iblk_write_p99_ns);
     printf("  \"iblk_write_ns_hrl_put\": %" PRIu64 ",\n", st.iblk_write_ns_hrl_put);
     printf("  \"iblk_write_ns_legacy_blk_write\": %" PRIu64 ",\n", st.iblk_write_ns_legacy_blk_write);
     printf("  \"iblk_write_ns_dec_ref\": %" PRIu64 ",\n", st.iblk_write_ns_dec_ref);
@@ -804,6 +814,9 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
     printf("  \"blk_set_usage_ns_wtime_update\": %" PRIu64 ",\n", st.blk_set_usage_ns_wtime_update);
     printf("  \"pwrite_iblk_read_ms\": %.3f,\n", pwrite_iblk_read_ms);
     printf("  \"pwrite_iblk_write_ms\": %.3f,\n", pwrite_iblk_write_ms);
+    printf("  \"pwrite_iblk_write_p50_ms\": %.3f,\n", pwrite_iblk_write_p50_ms);
+    printf("  \"pwrite_iblk_write_p95_ms\": %.3f,\n", pwrite_iblk_write_p95_ms);
+    printf("  \"pwrite_iblk_write_p99_ms\": %.3f,\n", pwrite_iblk_write_p99_ms);
     printf("  \"iblk_write_hrl_put_ms\": %.3f,\n", iblk_write_hrl_put_ms);
     printf("  \"iblk_write_legacy_blk_write_ms\": %.3f,\n", iblk_write_legacy_blk_write_ms);
     printf("  \"iblk_write_dec_ref_ms\": %.3f,\n", iblk_write_dec_ref_ms);
@@ -871,6 +884,10 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
       lock_hrl_global_wait_ms);
     printf("  pwrite: calls=%" PRIu64 " bytes=%" PRIu64 " iblk_read_ms=%.3f iblk_write_ms=%.3f\n",
       st.pwrite_calls, st.pwrite_bytes, pwrite_iblk_read_ms, pwrite_iblk_write_ms);
+    printf("          iblk_write_lat: samples=%" PRIu64 "/%" PRIu64
+      " p50_ms=%.3f p95_ms=%.3f p99_ms=%.3f\n",
+      st.pwrite_iblk_write_sample_count, st.pwrite_iblk_write_sample_cap,
+      pwrite_iblk_write_p50_ms, pwrite_iblk_write_p95_ms, pwrite_iblk_write_p99_ms);
     printf("  iblk_write: hrl_put_ms=%.3f legacy_blk_write_ms=%.3f dec_ref_ms=%.3f\n",
       iblk_write_hrl_put_ms, iblk_write_legacy_blk_write_ms, iblk_write_dec_ref_ms);
     printf("  blk_alloc: calls=%" PRIu64 " retries=%" PRIu64 " retry_rate=%.3f scan_ms=%.3f "

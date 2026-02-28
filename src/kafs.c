@@ -71,6 +71,28 @@ static inline uint64_t kafs_now_ns(void)
   return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
+static inline void kafs_stat_record_pwrite_iblk_write_latency(kafs_context_t *ctx, uint64_t ns)
+{
+  if (!ctx)
+    return;
+  const uint32_t cap = (uint32_t)(sizeof(ctx->c_stat_pwrite_iblk_write_samples) /
+                                  sizeof(ctx->c_stat_pwrite_iblk_write_samples[0]));
+  if (cap == 0)
+    return;
+  uint64_t seq = __atomic_fetch_add(&ctx->c_stat_pwrite_iblk_write_sample_seq, 1u,
+                                    __ATOMIC_RELAXED);
+  uint32_t idx = (uint32_t)(seq % (uint64_t)cap);
+  ctx->c_stat_pwrite_iblk_write_samples[idx] = ns;
+  uint32_t prev = __atomic_load_n(&ctx->c_stat_pwrite_iblk_write_sample_count, __ATOMIC_RELAXED);
+  while (prev < cap)
+  {
+    if (__atomic_compare_exchange_n(&ctx->c_stat_pwrite_iblk_write_sample_count, &prev, prev + 1u,
+                                    1, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+      break;
+  }
+  ctx->c_stat_pwrite_iblk_write_sample_cap = cap;
+}
+
 #define KAFS_PENDINGLOG_MAGIC 0x4b504c47u /* 'KPLG' */
 #define KAFS_PENDINGLOG_VERSION 1u
 #define KAFS_PENDING_REF_FLAG 0x80000000u
@@ -1630,7 +1652,9 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
       uint64_t t_w0 = kafs_now_ns();
       KAFS_CALL(kafs_ino_iblk_write, ctx, inoent, iblo, wbuf);
       uint64_t t_w1 = kafs_now_ns();
-      __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_write, t_w1 - t_w0, __ATOMIC_RELAXED);
+      uint64_t d = t_w1 - t_w0;
+      __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_write, d, __ATOMIC_RELAXED);
+      kafs_stat_record_pwrite_iblk_write_latency(ctx, d);
       return size;
     }
     // ブロックの残り分を書き込む
@@ -1638,7 +1662,9 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
     uint64_t t_w0 = kafs_now_ns();
     KAFS_CALL(kafs_ino_iblk_write, ctx, inoent, iblo, wbuf);
     uint64_t t_w1 = kafs_now_ns();
-    __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_write, t_w1 - t_w0, __ATOMIC_RELAXED);
+    uint64_t d = t_w1 - t_w0;
+    __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_write, d, __ATOMIC_RELAXED);
+    kafs_stat_record_pwrite_iblk_write_latency(ctx, d);
     size_written += blksize - offset_blksize;
   }
 
@@ -1656,13 +1682,17 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
       uint64_t t_w0 = kafs_now_ns();
       KAFS_CALL(kafs_ino_iblk_write, ctx, inoent, iblo, wbuf);
       uint64_t t_w1 = kafs_now_ns();
-      __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_write, t_w1 - t_w0, __ATOMIC_RELAXED);
+      uint64_t d = t_w1 - t_w0;
+      __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_write, d, __ATOMIC_RELAXED);
+      kafs_stat_record_pwrite_iblk_write_latency(ctx, d);
       return size;
     }
     uint64_t t_w0 = kafs_now_ns();
     KAFS_CALL(kafs_ino_iblk_write, ctx, inoent, iblo, buf + size_written);
     uint64_t t_w1 = kafs_now_ns();
-    __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_write, t_w1 - t_w0, __ATOMIC_RELAXED);
+    uint64_t d = t_w1 - t_w0;
+    __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_write, d, __ATOMIC_RELAXED);
+    kafs_stat_record_pwrite_iblk_write_latency(ctx, d);
     size_written += blksize;
   }
   return size;
@@ -3298,7 +3328,33 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
   return 0;
 }
 
-#define KAFS_STATS_VERSION 5u
+#define KAFS_STATS_VERSION 6u
+
+static int kafs_u64_cmp(const void *a, const void *b)
+{
+  uint64_t av = *(const uint64_t *)a;
+  uint64_t bv = *(const uint64_t *)b;
+  if (av < bv)
+    return -1;
+  if (av > bv)
+    return 1;
+  return 0;
+}
+
+static uint64_t kafs_percentile_u64(uint64_t *arr, size_t n, double q)
+{
+  if (!arr || n == 0)
+    return 0;
+  if (q <= 0.0)
+    return arr[0];
+  if (q >= 1.0)
+    return arr[n - 1];
+  double pos = q * (double)(n - 1u);
+  size_t idx = (size_t)(pos + 0.5);
+  if (idx >= n)
+    idx = n - 1;
+  return arr[idx];
+}
 
 // Forward decl (used by ioctl implementation)
 static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_inocnt_t *pino_dir,
@@ -3383,6 +3439,24 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
   out->pwrite_bytes = ctx->c_stat_pwrite_bytes;
   out->pwrite_ns_iblk_read = ctx->c_stat_pwrite_ns_iblk_read;
   out->pwrite_ns_iblk_write = ctx->c_stat_pwrite_ns_iblk_write;
+  out->pwrite_iblk_write_sample_count =
+      __atomic_load_n(&ctx->c_stat_pwrite_iblk_write_sample_count, __ATOMIC_RELAXED);
+  out->pwrite_iblk_write_sample_cap =
+      (uint64_t)(sizeof(ctx->c_stat_pwrite_iblk_write_samples) /
+                 sizeof(ctx->c_stat_pwrite_iblk_write_samples[0]));
+  if (out->pwrite_iblk_write_sample_count > out->pwrite_iblk_write_sample_cap)
+    out->pwrite_iblk_write_sample_count = out->pwrite_iblk_write_sample_cap;
+  if (out->pwrite_iblk_write_sample_count > 0)
+  {
+    size_t n = (size_t)out->pwrite_iblk_write_sample_count;
+    uint64_t tmp[n];
+    for (size_t i = 0; i < n; ++i)
+      tmp[i] = ctx->c_stat_pwrite_iblk_write_samples[i];
+    qsort(tmp, n, sizeof(tmp[0]), kafs_u64_cmp);
+    out->pwrite_iblk_write_p50_ns = kafs_percentile_u64(tmp, n, 0.50);
+    out->pwrite_iblk_write_p95_ns = kafs_percentile_u64(tmp, n, 0.95);
+    out->pwrite_iblk_write_p99_ns = kafs_percentile_u64(tmp, n, 0.99);
+  }
   out->iblk_write_ns_hrl_put = ctx->c_stat_iblk_write_ns_hrl_put;
   out->iblk_write_ns_legacy_blk_write = ctx->c_stat_iblk_write_ns_legacy_blk_write;
   out->iblk_write_ns_dec_ref = ctx->c_stat_iblk_write_ns_dec_ref;

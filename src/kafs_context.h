@@ -73,6 +73,10 @@ struct kafs_context
   uint64_t c_stat_pwrite_bytes;
   uint64_t c_stat_pwrite_ns_iblk_read;
   uint64_t c_stat_pwrite_ns_iblk_write;
+  uint64_t c_stat_pwrite_iblk_write_sample_seq;
+  uint32_t c_stat_pwrite_iblk_write_sample_count;
+  uint32_t c_stat_pwrite_iblk_write_sample_cap;
+  uint64_t c_stat_pwrite_iblk_write_samples[1024];
   uint64_t c_stat_iblk_write_ns_hrl_put;
   uint64_t c_stat_iblk_write_ns_legacy_blk_write;
   uint64_t c_stat_iblk_write_ns_dec_ref;
