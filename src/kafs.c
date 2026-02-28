@@ -2154,6 +2154,7 @@ int kafs_core_open_image(const char *image_path, kafs_context_t *ctx)
     }
     else
     {
+      memcpy(ctx->c_meta_bitmap_words, ctx->c_blkmasktbl, words * sizeof(kafs_blkmask_t));
       ctx->c_meta_bitmap_wordcnt = words;
       ctx->c_meta_bitmap_dirty_count = 0;
       ctx->c_meta_bitmap_words_enabled = 1u;
@@ -4618,6 +4619,7 @@ int main(int argc, char **argv)
     }
     else
     {
+      memcpy(ctx.c_meta_bitmap_words, ctx.c_blkmasktbl, words * sizeof(kafs_blkmask_t));
       ctx.c_meta_bitmap_wordcnt = words;
       ctx.c_meta_bitmap_dirty_count = 0;
       ctx.c_meta_bitmap_words_enabled = 1u;
