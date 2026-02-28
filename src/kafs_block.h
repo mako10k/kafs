@@ -133,6 +133,46 @@ static int kafs_blk_set_usage_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo
   return KAFS_SUCCESS;
 }
 
+// Fast claim helper for allocation path (caller must hold bitmap lock).
+// Returns 1 when claimed, 0 when already used.
+static int kafs_blk_try_claim_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo)
+{
+  assert(ctx != NULL);
+  kafs_ssuperblock_t *sb = ctx->c_superblock;
+  assert(blo < kafs_sb_blkcnt_get(sb));
+
+  kafs_blkcnt_t blod = blo >> KAFS_BLKMASK_LOG_BITS;
+  kafs_blkcnt_t blor = blo & KAFS_BLKMASK_MASK_BITS;
+  kafs_blkmask_t bit = (kafs_blkmask_t)1 << blor;
+
+  if ((ctx->c_blkmasktbl[blod] & bit) != 0)
+    return 0;
+
+  __atomic_add_fetch(&ctx->c_stat_blk_set_usage_calls, 1u, __ATOMIC_RELAXED);
+  __atomic_add_fetch(&ctx->c_stat_blk_set_usage_alloc_calls, 1u, __ATOMIC_RELAXED);
+
+  uint64_t t_bit0 = kafs_blk_now_ns();
+  ctx->c_blkmasktbl[blod] |= bit;
+  uint64_t t_bit1 = kafs_blk_now_ns();
+  __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_bit_update, t_bit1 - t_bit0, __ATOMIC_RELAXED);
+
+  uint64_t t_free0 = kafs_blk_now_ns();
+  kafs_blkcnt_t blkcnt_free = kafs_sb_blkcnt_free_get(sb);
+  if (blkcnt_free > 0)
+    kafs_sb_blkcnt_free_set(sb, blkcnt_free - 1);
+  uint64_t t_free1 = kafs_blk_now_ns();
+  __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_freecnt_update, t_free1 - t_free0,
+                     __ATOMIC_RELAXED);
+
+  uint64_t t_wtime0 = kafs_blk_now_ns();
+  kafs_sb_wtime_set(sb, kafs_now());
+  uint64_t t_wtime1 = kafs_blk_now_ns();
+  __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_wtime_update, t_wtime1 - t_wtime0,
+                     __ATOMIC_RELAXED);
+
+  return 1;
+}
+
 // Public wrapper that takes bitmap lock
 __attribute_maybe_unused__ static int kafs_blk_set_usage(struct kafs_context *ctx,
                                                          kafs_blkcnt_t blo, kafs_bool_t usage)
@@ -201,15 +241,15 @@ static int kafs_blk_alloc(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
         // Claim under lock (recheck because scan is lock-free)
         uint64_t t_claim0 = kafs_blk_now_ns();
         kafs_bitmap_lock(ctx);
-        if (kafs_blk_get_usage((const struct kafs_context *)ctx, blo_found) == 0)
+        uint64_t t_set0 = kafs_blk_now_ns();
+        int claimed = kafs_blk_try_claim_nolock(ctx, blo_found);
+        uint64_t t_set1 = kafs_blk_now_ns();
+        __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_set_usage, t_set1 - t_set0,
+                           __ATOMIC_RELAXED);
+        if (claimed)
         {
           ctx->c_blo_search = blo_found;
           *pblo = blo_found;
-          uint64_t t_set0 = kafs_blk_now_ns();
-          KAFS_CALL(kafs_blk_set_usage_nolock, ctx, blo_found, KAFS_TRUE);
-          uint64_t t_set1 = kafs_blk_now_ns();
-          __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_set_usage, t_set1 - t_set0,
-                             __ATOMIC_RELAXED);
           kafs_bitmap_unlock(ctx);
           uint64_t t_claim1 = kafs_blk_now_ns();
           __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_claim, t_claim1 - t_claim0,
