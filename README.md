@@ -4,6 +4,13 @@ KAFS is a FUSE-based filesystem backed by a single image file with a journal and
 optional deduplication features. This repository contains the filesystem
 implementation, tools, and tests.
 
+## Release Highlights (v0.2.0)
+
+- HRL/pending log 非同期化（Stage-A/Stage-B + replay/fsync 連携）
+- 旧フォーマット(v2)の通常起動を停止し、マイグレーションガイダンスを表示
+- `kafsctl migrate <image> [--yes]` を追加
+- `kafs --migrate-v2 [--yes]` による one-shot 自動マイグレーションを追加
+
 ## Features
 
 - FUSE mount backed by an image file
@@ -63,6 +70,10 @@ Mount a filesystem image:
 FUSE options:
 - `-o multi_thread[=N]`: enable multi-thread mode with optional thread count
 
+Migration options:
+- `--migrate-v2`: v2 image を起動時に one-shot で v3 へ移行して終了
+- `--yes`: マイグレーション確認を省略
+
 ### fsck.kafs
 
 Validate or clear the in-image journal:
@@ -84,7 +95,29 @@ Inspect stats and hotplug status:
 ```sh
 ./kafsctl stats /tmp/kafs-mnt --json
 ./kafsctl hotplug status /tmp/kafs-mnt
+./kafsctl migrate /tmp/kafs.img
 ```
+
+`migrate` は v2 イメージを v3 に更新する不可逆操作です。
+`--yes` 未指定時は `YES` 入力による確認を要求します。
+
+## Migration (v2 -> v3)
+
+推奨はオフラインでの明示実行です。
+
+```sh
+./kafsctl migrate /path/to/image.kafs
+./kafsctl migrate /path/to/image.kafs --yes
+```
+
+起動時 one-shot で実行する場合:
+
+```sh
+./kafs --image /path/to/image.kafs --migrate-v2 /mnt/kafs -f
+./kafs --image /path/to/image.kafs --migrate-v2 --yes /mnt/kafs -f
+```
+
+詳細は `docs/migration-v2-to-v3.md` を参照してください。
 
 ## Hotplug Control
 
