@@ -71,6 +71,167 @@ static inline uint64_t kafs_now_ns(void)
   return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
+#define KAFS_PENDINGLOG_MAGIC 0x4b504c47u /* 'KPLG' */
+#define KAFS_PENDINGLOG_VERSION 1u
+
+enum
+{
+  KAFS_PENDING_QUEUED = 1,
+  KAFS_PENDING_HASHED = 2,
+  KAFS_PENDING_RESOLVED = 3,
+  KAFS_PENDING_FAILED = 4,
+};
+
+typedef struct kafs_pendinglog_hdr
+{
+  uint32_t magic;
+  uint16_t version;
+  uint16_t flags;
+  uint32_t entry_size;
+  uint32_t capacity;
+  uint32_t head;
+  uint32_t tail;
+  uint64_t next_pending_id;
+  uint64_t last_seq;
+  uint64_t reserved[4];
+} __attribute__((packed)) kafs_pendinglog_hdr_t;
+
+typedef struct kafs_pendinglog_entry
+{
+  uint64_t pending_id;
+  uint32_t ino;
+  uint32_t iblk;
+  uint32_t temp_blo;
+  uint32_t state;
+  uint32_t target_hrid;
+  uint32_t reserved0;
+  uint64_t seq;
+} __attribute__((packed)) kafs_pendinglog_entry_t;
+
+static int kafs_pendinglog_region(struct kafs_context *ctx, uint64_t *off, uint64_t *size)
+{
+  if (!ctx || !ctx->c_superblock)
+    return -EINVAL;
+  uint64_t p_off = kafs_sb_pendinglog_offset_get(ctx->c_superblock);
+  uint64_t p_size = kafs_sb_pendinglog_size_get(ctx->c_superblock);
+  if (p_off == 0 || p_size < sizeof(kafs_pendinglog_hdr_t) + sizeof(kafs_pendinglog_entry_t))
+    return -ENOENT;
+  if (p_off > (uint64_t)ctx->c_img_size || p_size > (uint64_t)ctx->c_img_size - p_off)
+    return -EINVAL;
+  if (off)
+    *off = p_off;
+  if (size)
+    *size = p_size;
+  return 0;
+}
+
+static kafs_pendinglog_hdr_t *kafs_pendinglog_hdr_ptr(struct kafs_context *ctx)
+{
+  if (!ctx || !ctx->c_pendinglog_enabled || !ctx->c_pendinglog_base)
+    return NULL;
+  return (kafs_pendinglog_hdr_t *)ctx->c_pendinglog_base;
+}
+
+static kafs_pendinglog_entry_t *kafs_pendinglog_entry_ptr(struct kafs_context *ctx, uint32_t idx)
+{
+  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+  if (!hdr || idx >= hdr->capacity)
+    return NULL;
+  char *base = (char *)ctx->c_pendinglog_base + sizeof(*hdr);
+  return (kafs_pendinglog_entry_t *)(base + ((size_t)idx * (size_t)hdr->entry_size));
+}
+
+static int kafs_pendinglog_init_or_load(struct kafs_context *ctx)
+{
+  if (!ctx)
+    return -EINVAL;
+
+  ctx->c_pendinglog_enabled = 0;
+  ctx->c_pendinglog_base = NULL;
+  ctx->c_pendinglog_size = 0;
+  ctx->c_pendinglog_capacity = 0;
+
+  uint64_t off = 0, size = 0;
+  int rc = kafs_pendinglog_region(ctx, &off, &size);
+  if (rc < 0)
+    return 0;
+
+  ctx->c_pendinglog_base = (char *)ctx->c_img_base + off;
+  ctx->c_pendinglog_size = (size_t)size;
+
+  kafs_pendinglog_hdr_t *hdr = (kafs_pendinglog_hdr_t *)ctx->c_pendinglog_base;
+  uint32_t cap = (uint32_t)((ctx->c_pendinglog_size - sizeof(*hdr)) / sizeof(kafs_pendinglog_entry_t));
+  if (cap == 0)
+    return -EINVAL;
+
+  int valid = (hdr->magic == KAFS_PENDINGLOG_MAGIC && hdr->version == KAFS_PENDINGLOG_VERSION &&
+               hdr->entry_size == sizeof(kafs_pendinglog_entry_t) && hdr->capacity == cap &&
+               hdr->head < cap && hdr->tail < cap);
+  if (!valid)
+  {
+    memset(ctx->c_pendinglog_base, 0, ctx->c_pendinglog_size);
+    hdr->magic = KAFS_PENDINGLOG_MAGIC;
+    hdr->version = KAFS_PENDINGLOG_VERSION;
+    hdr->flags = 0;
+    hdr->entry_size = sizeof(kafs_pendinglog_entry_t);
+    hdr->capacity = cap;
+    hdr->head = 0;
+    hdr->tail = 0;
+    hdr->next_pending_id = 1;
+    hdr->last_seq = 0;
+  }
+
+  ctx->c_pendinglog_enabled = 1;
+  ctx->c_pendinglog_capacity = hdr->capacity;
+  return 0;
+}
+
+static uint32_t kafs_pendinglog_count(struct kafs_context *ctx)
+{
+  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+  if (!hdr || hdr->capacity == 0)
+    return 0;
+  if (hdr->tail >= hdr->head)
+    return hdr->tail - hdr->head;
+  return (hdr->capacity - hdr->head) + hdr->tail;
+}
+
+static int kafs_pendinglog_enqueue(struct kafs_context *ctx, const kafs_pendinglog_entry_t *ent,
+                                   uint64_t *pending_id)
+{
+  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+  if (!hdr || !ent)
+    return -ENOSYS;
+
+  uint32_t next = hdr->tail + 1;
+  if (next >= hdr->capacity)
+    next = 0;
+  if (next == hdr->head)
+    return -ENOSPC;
+
+  kafs_pendinglog_entry_t *slot = kafs_pendinglog_entry_ptr(ctx, hdr->tail);
+  if (!slot)
+    return -EIO;
+
+  *slot = *ent;
+  slot->pending_id = hdr->next_pending_id++;
+  hdr->tail = next;
+  if (pending_id)
+    *pending_id = slot->pending_id;
+  return 0;
+}
+
+static int kafs_pendinglog_read(struct kafs_context *ctx, uint32_t idx, kafs_pendinglog_entry_t *out)
+{
+  if (!out)
+    return -EINVAL;
+  kafs_pendinglog_entry_t *slot = kafs_pendinglog_entry_ptr(ctx, idx);
+  if (!slot)
+    return -ENOENT;
+  *out = *slot;
+  return 0;
+}
+
 // ---------------------------------------------------------
 // BLOCK OPERATIONS
 // ---------------------------------------------------------
@@ -2104,14 +2265,19 @@ int kafs_core_open_image(const char *image_path, kafs_context_t *ctx)
     uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
     uint64_t j_off = kafs_sb_journal_offset_get(&sbdisk);
     uint64_t j_size = kafs_sb_journal_size_get(&sbdisk);
+    uint64_t p_off = kafs_sb_pendinglog_offset_get(&sbdisk);
+    uint64_t p_size = kafs_sb_pendinglog_size_get(&sbdisk);
     uint64_t end1 = (idx_off && idx_size) ? (idx_off + idx_size) : 0;
     uint64_t end2 = (ent_off && ent_size) ? (ent_off + ent_size) : 0;
     uint64_t end3 = (j_off && j_size) ? (j_off + j_size) : 0;
+    uint64_t end4 = (p_off && p_size) ? (p_off + p_size) : 0;
     uint64_t max_end = end1;
     if (end2 > max_end)
       max_end = end2;
     if (end3 > max_end)
       max_end = end3;
+    if (end4 > max_end)
+      max_end = end4;
     if ((off_t)max_end > imgsize)
       imgsize = (off_t)max_end;
     imgsize = (imgsize + blksizemask) & ~blksizemask;
@@ -2161,6 +2327,10 @@ int kafs_core_open_image(const char *image_path, kafs_context_t *ctx)
     }
   }
   (void)kafs_journal_replay(ctx, NULL, NULL);
+  (void)kafs_pendinglog_init_or_load(ctx);
+  if (ctx->c_pendinglog_enabled)
+    kafs_journal_note(ctx, "PENDINGLOG", "loaded entries=%u cap=%u", kafs_pendinglog_count(ctx),
+                      ctx->c_pendinglog_capacity);
   return 0;
 }
 
@@ -4568,14 +4738,19 @@ int main(int argc, char **argv)
     uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
     uint64_t j_off = kafs_sb_journal_offset_get(&sbdisk);
     uint64_t j_size = kafs_sb_journal_size_get(&sbdisk);
+    uint64_t p_off = kafs_sb_pendinglog_offset_get(&sbdisk);
+    uint64_t p_size = kafs_sb_pendinglog_size_get(&sbdisk);
     uint64_t end1 = (idx_off && idx_size) ? (idx_off + idx_size) : 0;
     uint64_t end2 = (ent_off && ent_size) ? (ent_off + ent_size) : 0;
     uint64_t end3 = (j_off && j_size) ? (j_off + j_size) : 0;
+    uint64_t end4 = (p_off && p_size) ? (p_off + p_size) : 0;
     uint64_t max_end = end1;
     if (end2 > max_end)
       max_end = end2;
     if (end3 > max_end)
       max_end = end3;
+    if (end4 > max_end)
+      max_end = end4;
     if ((off_t)max_end > imgsize)
       imgsize = (off_t)max_end;
     imgsize = (imgsize + blksizemask) & ~blksizemask;
@@ -4630,6 +4805,10 @@ int main(int argc, char **argv)
 
   // 起動時リプレイ（in-image のみ対象）。致命的ではなくベストエフォート。
   (void)kafs_journal_replay(&ctx, NULL, NULL);
+  (void)kafs_pendinglog_init_or_load(&ctx);
+  if (ctx.c_pendinglog_enabled)
+    kafs_journal_note(&ctx, "PENDINGLOG", "loaded entries=%u cap=%u", kafs_pendinglog_count(&ctx),
+                      ctx.c_pendinglog_capacity);
 
   // 画像ファイルに排他ロック（複数プロセスによる同時RW起動を防止）
   struct flock lk = {0};

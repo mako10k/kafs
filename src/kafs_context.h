@@ -104,6 +104,12 @@ struct kafs_context
   size_t c_meta_bitmap_wordcnt;
   size_t c_meta_bitmap_dirty_count;
 
+  // --- Phase3 pending log runtime state ---
+  uint32_t c_pendinglog_enabled;
+  void *c_pendinglog_base;
+  size_t c_pendinglog_size;
+  uint32_t c_pendinglog_capacity;
+
   // --- Runtime inode open counts (in-memory only) ---
   uint32_t *c_open_cnt; // sized to superblock inocnt (allocated at mount)
 

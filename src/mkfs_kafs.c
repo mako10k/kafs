@@ -74,6 +74,8 @@ struct mkfs_layout
   uint32_t hrl_entry_cnt;
   off_t hrl_entry_off;
   off_t journal_off;
+  size_t pendinglog_size;
+  off_t pendinglog_off;
 };
 
 static void compute_layout(kafs_blkcnt_t blkcnt, kafs_blksize_t blksizemask, kafs_inocnt_t inocnt,
@@ -119,6 +121,12 @@ static void compute_layout(kafs_blkcnt_t blkcnt, kafs_blksize_t blksizemask, kaf
   mapsize += (off_t)journal_bytes;
   mapsize = (mapsize + blksizemask) & ~blksizemask;
 
+  size_t pendinglog_size = 1u << 20; // 1MiB default pending log region
+  pendinglog_size = (pendinglog_size + (size_t)blksizemask) & ~(size_t)blksizemask;
+  off_t pendinglog_off = mapsize;
+  mapsize += (off_t)pendinglog_size;
+  mapsize = (mapsize + blksizemask) & ~blksizemask;
+
   if (out)
   {
     out->mapsize = mapsize;
@@ -132,6 +140,8 @@ static void compute_layout(kafs_blkcnt_t blkcnt, kafs_blksize_t blksizemask, kaf
     out->hrl_entry_cnt = entry_cnt;
     out->hrl_entry_off = hrl_entry_off;
     out->journal_off = journal_off;
+    out->pendinglog_size = pendinglog_size;
+    out->pendinglog_off = pendinglog_off;
   }
 }
 
@@ -342,8 +352,8 @@ int main(int argc, char **argv)
   kafs_sb_allocator_version_set(ctx.c_superblock, 2);
   kafs_sb_allocator_offset_set(ctx.c_superblock, (uint64_t)layout.allocator_off);
   kafs_sb_allocator_size_set(ctx.c_superblock, (uint64_t)layout.allocator_size);
-  kafs_sb_pendinglog_offset_set(ctx.c_superblock, 0);
-  kafs_sb_pendinglog_size_set(ctx.c_superblock, 0);
+  kafs_sb_pendinglog_offset_set(ctx.c_superblock, (uint64_t)layout.pendinglog_off);
+  kafs_sb_pendinglog_size_set(ctx.c_superblock, (uint64_t)layout.pendinglog_size);
   kafs_sb_checkpoint_seq_set(ctx.c_superblock, 0);
   kafs_sb_commit_seq_set(ctx.c_superblock, 0);
   kafs_sb_feature_flags_set(ctx.c_superblock, KAFS_FEATURE_ALLOC_V2);
