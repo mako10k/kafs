@@ -4496,7 +4496,12 @@ int main(int argc, char **argv)
   }
   if (kafs_sb_format_version_get(&sbdisk) != KAFS_FORMAT_VERSION)
   {
-    fprintf(stderr, "unsupported format version. expected %u.\n", (unsigned)KAFS_FORMAT_VERSION);
+    uint32_t fmt_ver = kafs_sb_format_version_get(&sbdisk);
+    if (fmt_ver == KAFS_FORMAT_VERSION_V2)
+      fprintf(stderr, "unsupported format version: v2 is no longer supported; recreate as v3 with mkfs.kafs.\n");
+    else
+      fprintf(stderr, "unsupported format version: %u (expected %u).\n", fmt_ver,
+              (unsigned)KAFS_FORMAT_VERSION);
     exit(2);
   }
   // 読み出し値からレイアウト計算

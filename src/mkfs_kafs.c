@@ -317,6 +317,15 @@ int main(int argc, char **argv)
   kafs_sb_journal_offset_set(ctx.c_superblock, (uint64_t)layout.journal_off);
   kafs_sb_journal_size_set(ctx.c_superblock, (uint64_t)journal_bytes);
   kafs_sb_journal_flags_set(ctx.c_superblock, 0);
+  kafs_sb_allocator_version_set(ctx.c_superblock, 0);
+  kafs_sb_allocator_offset_set(ctx.c_superblock, 0);
+  kafs_sb_allocator_size_set(ctx.c_superblock, 0);
+  kafs_sb_pendinglog_offset_set(ctx.c_superblock, 0);
+  kafs_sb_pendinglog_size_set(ctx.c_superblock, 0);
+  kafs_sb_checkpoint_seq_set(ctx.c_superblock, 0);
+  kafs_sb_commit_seq_set(ctx.c_superblock, 0);
+  kafs_sb_feature_flags_set(ctx.c_superblock, 0);
+  kafs_sb_compat_flags_set(ctx.c_superblock, 0);
 
   // R/O items
   ctx.c_superblock->s_inocnt = kafs_inocnt_htos(inocnt);
