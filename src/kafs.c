@@ -73,6 +73,8 @@ static inline uint64_t kafs_now_ns(void)
 
 #define KAFS_PENDINGLOG_MAGIC 0x4b504c47u /* 'KPLG' */
 #define KAFS_PENDINGLOG_VERSION 1u
+#define KAFS_PENDING_REF_FLAG 0x80000000u
+#define KAFS_PENDING_REF_MASK 0x7fffffffu
 
 enum
 {
@@ -232,6 +234,87 @@ static int kafs_pendinglog_read(struct kafs_context *ctx, uint32_t idx, kafs_pen
   return 0;
 }
 
+static int kafs_pendinglog_find_by_id(struct kafs_context *ctx, uint64_t pending_id,
+                                      kafs_pendinglog_entry_t *out)
+{
+  if (!ctx || !out || pending_id == 0)
+    return -EINVAL;
+  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+  if (!hdr || hdr->capacity == 0)
+    return -ENOENT;
+
+  uint32_t idx = hdr->head;
+  while (idx != hdr->tail)
+  {
+    kafs_pendinglog_entry_t *slot = kafs_pendinglog_entry_ptr(ctx, idx);
+    if (!slot)
+      return -EIO;
+    if (slot->pending_id == pending_id)
+    {
+      *out = *slot;
+      return 0;
+    }
+    idx += 1u;
+    if (idx >= hdr->capacity)
+      idx = 0;
+  }
+  return -ENOENT;
+}
+
+static int kafs_ref_is_pending(kafs_blkcnt_t ref)
+{
+  uint32_t raw = (uint32_t)ref;
+  return (raw & KAFS_PENDING_REF_FLAG) != 0u;
+}
+
+static uint64_t kafs_ref_pending_id(kafs_blkcnt_t ref)
+{
+  uint32_t raw = (uint32_t)ref;
+  return (uint64_t)(raw & KAFS_PENDING_REF_MASK);
+}
+
+__attribute_maybe_unused__ static int kafs_ref_pending_encode(uint64_t pending_id,
+                                                              kafs_blkcnt_t *out_ref)
+{
+  if (!out_ref)
+    return -EINVAL;
+  if (pending_id == 0 || pending_id > (uint64_t)KAFS_PENDING_REF_MASK)
+    return -ERANGE;
+  *out_ref = (kafs_blkcnt_t)(KAFS_PENDING_REF_FLAG | (uint32_t)pending_id);
+  return 0;
+}
+
+static int kafs_ref_resolve_data_blo(struct kafs_context *ctx, kafs_blkcnt_t ref,
+                                     kafs_blkcnt_t *out_blo)
+{
+  if (!out_blo)
+    return -EINVAL;
+  if (ref == KAFS_BLO_NONE)
+  {
+    *out_blo = KAFS_BLO_NONE;
+    return 0;
+  }
+  if (!kafs_ref_is_pending(ref))
+  {
+    *out_blo = ref;
+    return 0;
+  }
+
+  uint64_t pending_id = kafs_ref_pending_id(ref);
+  if (pending_id == 0)
+    return -EIO;
+
+  kafs_pendinglog_entry_t ent;
+  int rc = kafs_pendinglog_find_by_id(ctx, pending_id, &ent);
+  if (rc < 0)
+    return rc;
+
+  if (ent.temp_blo == KAFS_BLO_NONE)
+    return -EIO;
+  *out_blo = (kafs_blkcnt_t)ent.temp_blo;
+  return 0;
+}
+
 // ---------------------------------------------------------
 // BLOCK OPERATIONS
 // ---------------------------------------------------------
@@ -323,14 +406,17 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
 
   if (iblo < 12)
   {
-    kafs_blkcnt_t blo_data = kafs_blkcnt_stoh(inoent->i_blkreftbl[iblo]);
+    kafs_blkcnt_t blo_data_raw = kafs_blkcnt_stoh(inoent->i_blkreftbl[iblo]);
+    kafs_blkcnt_t blo_data = KAFS_BLO_NONE;
     switch (ifunc)
     {
     case KAFS_IBLKREF_FUNC_GET:
+      KAFS_CALL(kafs_ref_resolve_data_blo, ctx, blo_data_raw, &blo_data);
       *pblo = blo_data;
       return KAFS_SUCCESS;
 
     case KAFS_IBLKREF_FUNC_PUT:
+      KAFS_CALL(kafs_ref_resolve_data_blo, ctx, blo_data_raw, &blo_data);
       if (blo_data == KAFS_BLO_NONE)
       {
         KAFS_CALL(kafs_blk_alloc, ctx, &blo_data);
@@ -369,7 +455,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
         return KAFS_SUCCESS;
       }
       KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl, blkreftbl);
-      *pblo = kafs_blkcnt_stoh(blkreftbl[iblo]);
+      KAFS_CALL(kafs_ref_resolve_data_blo, ctx, kafs_blkcnt_stoh(blkreftbl[iblo]), pblo);
       return KAFS_SUCCESS;
 
     case KAFS_IBLKREF_FUNC_PUT:
@@ -384,7 +470,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
       else
       {
         KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl, blkreftbl);
-        blo_data = kafs_blkcnt_stoh(blkreftbl[iblo]);
+        KAFS_CALL(kafs_ref_resolve_data_blo, ctx, kafs_blkcnt_stoh(blkreftbl[iblo]), &blo_data);
       }
       if (blo_data == KAFS_BLO_NONE)
       {
@@ -442,7 +528,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
         return KAFS_SUCCESS;
       }
       KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl2, blkreftbl2);
-      *pblo = kafs_blkcnt_stoh(blkreftbl2[iblo2]);
+      KAFS_CALL(kafs_ref_resolve_data_blo, ctx, kafs_blkcnt_stoh(blkreftbl2[iblo2]), pblo);
       return KAFS_SUCCESS;
 
     case KAFS_IBLKREF_FUNC_PUT:
@@ -469,7 +555,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
       else
       {
         KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl2, blkreftbl2);
-        blo_data = kafs_blkcnt_stoh(blkreftbl2[iblo2]);
+        KAFS_CALL(kafs_ref_resolve_data_blo, ctx, kafs_blkcnt_stoh(blkreftbl2[iblo2]), &blo_data);
       }
       if (blo_data == KAFS_BLO_NONE)
       {
@@ -546,7 +632,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
       return KAFS_SUCCESS;
     }
     KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl3, blkreftbl3);
-    *pblo = kafs_blkcnt_stoh(blkreftbl3[iblo3]);
+    KAFS_CALL(kafs_ref_resolve_data_blo, ctx, kafs_blkcnt_stoh(blkreftbl3[iblo3]), pblo);
     return KAFS_SUCCESS;
 
   case KAFS_IBLKREF_FUNC_PUT:
@@ -586,7 +672,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
     else
     {
       KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl3, blkreftbl3);
-      blo_data = kafs_blkcnt_stoh(blkreftbl3[iblo3]);
+      KAFS_CALL(kafs_ref_resolve_data_blo, ctx, kafs_blkcnt_stoh(blkreftbl3[iblo3]), &blo_data);
     }
     if (blo_data == KAFS_BLO_NONE)
     {
