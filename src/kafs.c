@@ -5014,14 +5014,97 @@ static void usage(const char *prog)
       stderr,
       "Usage: %s [--image <image>|--image=<image>] <mountpoint> [FUSE options...]\n"
       "       %s <image> <mountpoint> [FUSE options...] (mount helper compatible)\n"
+      "       %s [--image <image>] --migrate-v2 [--yes] <mountpoint> [FUSE options...]\n"
       "       env KAFS_IMAGE can be used as fallback image path.\n"
       "       default runs single-threaded; enable MT via -o multi_thread[=N] or env KAFS_MT=1.\n"
       "       MT thread count can be set via -o multi_thread=N (preferred) or env "
       "KAFS_MAX_THREADS.\n"
+      "       migration note: v2 images are refused by default; use kafsctl migrate <image> [--yes]\n"
+      "       or pass --migrate-v2 (optionally --yes) for one-shot startup migration.\n"
       "Examples:\n"
       "  %s --image test.img mnt -f\n"
+      "  %s --image legacy.img --migrate-v2 --yes mnt -f\n"
       "  %s --image test.img mnt -f -o multi_thread=8\n",
-      prog, prog, prog, prog);
+      prog, prog, prog, prog, prog, prog);
+}
+
+static int kafs_confirm_yes_stdin(void)
+{
+  fprintf(stderr,
+          "WARNING: migration is irreversible. type 'YES' to continue: ");
+  fflush(stderr);
+  char buf[32];
+  if (!fgets(buf, sizeof(buf), stdin))
+    return 0;
+  buf[strcspn(buf, "\r\n")] = '\0';
+  return strcmp(buf, "YES") == 0;
+}
+
+static int kafs_migrate_v2_image(const char *image_path, int assume_yes)
+{
+  if (!image_path)
+    return -EINVAL;
+
+  int fd = open(image_path, O_RDWR, 0666);
+  if (fd < 0)
+    return -errno;
+
+  kafs_ssuperblock_t sb;
+  ssize_t r = pread(fd, &sb, sizeof(sb), 0);
+  if (r != (ssize_t)sizeof(sb))
+  {
+    int err = -errno;
+    close(fd);
+    return err ? err : -EIO;
+  }
+  if (kafs_sb_magic_get(&sb) != KAFS_MAGIC)
+  {
+    close(fd);
+    return -EINVAL;
+  }
+
+  uint32_t fmt = kafs_sb_format_version_get(&sb);
+  if (fmt == KAFS_FORMAT_VERSION)
+  {
+    close(fd);
+    return 1;
+  }
+  if (fmt != KAFS_FORMAT_VERSION_V2)
+  {
+    close(fd);
+    return -EPROTONOSUPPORT;
+  }
+
+  if (!assume_yes && !kafs_confirm_yes_stdin())
+  {
+    close(fd);
+    return -ECANCELED;
+  }
+
+  kafs_sb_format_version_set(&sb, KAFS_FORMAT_VERSION);
+  if (kafs_sb_allocator_size_get(&sb) > 0)
+  {
+    if (kafs_sb_allocator_version_get(&sb) < 2u)
+      kafs_sb_allocator_version_set(&sb, 2u);
+    uint64_t ff = kafs_sb_feature_flags_get(&sb);
+    kafs_sb_feature_flags_set(&sb, ff | KAFS_FEATURE_ALLOC_V2);
+  }
+
+  if (pwrite(fd, &sb, sizeof(sb), 0) != (ssize_t)sizeof(sb))
+  {
+    int err = -errno;
+    close(fd);
+    return err ? err : -EIO;
+  }
+  if (fsync(fd) != 0)
+  {
+    int err = -errno;
+    close(fd);
+    return err;
+  }
+
+  close(fd);
+  return 0;
 }
 
 static void kafs_signal_handler(int sig)
@@ -5061,6 +5144,8 @@ int main(int argc, char **argv)
   kafs_install_crash_handlers();
   // 画像ファイル指定を受け取る: --image <path> または --image=<path>、環境変数 KAFS_IMAGE
   const char *image_path = getenv("KAFS_IMAGE");
+  kafs_bool_t auto_migrate_v2 = KAFS_FALSE;
+  kafs_bool_t migrate_yes = KAFS_FALSE;
   // argv から --image と --help を取り除き fuse_main へは渡さない
   char *argv_clean[argc];
   int argc_clean = 0;
@@ -5071,6 +5156,16 @@ int main(int argc, char **argv)
     if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0)
     {
       show_help = KAFS_TRUE;
+      continue;
+    }
+    if (strcmp(a, "--migrate-v2") == 0)
+    {
+      auto_migrate_v2 = KAFS_TRUE;
+      continue;
+    }
+    if (strcmp(a, "--yes") == 0)
+    {
+      migrate_yes = KAFS_TRUE;
       continue;
     }
     if (strcmp(a, "--image") == 0)
@@ -5399,7 +5494,35 @@ int main(int argc, char **argv)
   {
     uint32_t fmt_ver = kafs_sb_format_version_get(&sbdisk);
     if (fmt_ver == KAFS_FORMAT_VERSION_V2)
-      fprintf(stderr, "unsupported format version: v2 is no longer supported; recreate as v3 with mkfs.kafs.\n");
+    {
+      if (auto_migrate_v2)
+      {
+        int mrc = kafs_migrate_v2_image(image_path, migrate_yes ? 1 : 0);
+        if (mrc == 0)
+        {
+          fprintf(stderr, "migration completed: v2 -> v3. please restart mount.\n");
+          exit(0);
+        }
+        if (mrc == 1)
+        {
+          fprintf(stderr, "image already v3; continue normal mount without --migrate-v2.\n");
+          exit(0);
+        }
+        if (mrc == -ECANCELED)
+          fprintf(stderr, "migration canceled by user.\n");
+        else
+          fprintf(stderr, "migration failed rc=%d.\n", mrc);
+        exit(2);
+      }
+      fprintf(stderr,
+              "unsupported format version: v2.\n"
+              "migration guidance:\n"
+              "  1) offline migrate command (recommended):\n"
+              "     kafsctl migrate %s [--yes]\n"
+              "  2) one-shot startup migration:\n"
+              "     kafs --image %s --migrate-v2 [--yes] <mountpoint> [FUSE options]\n",
+              image_path, image_path);
+    }
     else
       fprintf(stderr, "unsupported format version: %u (expected %u).\n", fmt_ver,
               (unsigned)KAFS_FORMAT_VERSION);

@@ -1,5 +1,6 @@
 #include "kafs_ioctl.h"
 #include "kafs_rpc.h"
+#include "kafs_superblock.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -71,6 +72,7 @@ static void usage(const char *prog)
 {
   fprintf(stderr,
           "Usage:\n"
+          "  %s migrate <image> [--yes]\n"
           "  %s fsstat <mountpoint> [--json] [--bytes|--mib|--gib]   (alias: stats)\n"
       "  %s hotplug status <mountpoint> [--json]\n"
       "  %s hotplug restart-back <mountpoint>\n"
@@ -93,7 +95,96 @@ static void usage(const char *prog)
           "  %s chmod <mountpoint> <octal_mode> <path>\n"
           "  %s touch <mountpoint> <path>\n",
           prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog,
-          prog, prog, prog, prog, prog, prog, prog);
+          prog, prog, prog, prog, prog, prog, prog, prog);
+}
+
+static int confirm_yes_stdin(void)
+{
+  fprintf(stderr, "WARNING: migration is irreversible. type 'YES' to continue: ");
+  fflush(stderr);
+  char buf[32];
+  if (!fgets(buf, sizeof(buf), stdin))
+    return 0;
+  buf[strcspn(buf, "\r\n")] = '\0';
+  return strcmp(buf, "YES") == 0;
+}
+
+static int cmd_migrate(const char *image, int assume_yes)
+{
+  if (!image || !*image)
+  {
+    fprintf(stderr, "invalid image path\n");
+    return 2;
+  }
+
+  int fd = open(image, O_RDWR, 0);
+  if (fd < 0)
+  {
+    perror("open");
+    return 1;
+  }
+
+  kafs_ssuperblock_t sb;
+  if (pread(fd, &sb, sizeof(sb), 0) != (ssize_t)sizeof(sb))
+  {
+    perror("pread superblock");
+    close(fd);
+    return 1;
+  }
+  if (kafs_sb_magic_get(&sb) != KAFS_MAGIC)
+  {
+    fprintf(stderr, "invalid magic: not a KAFS image\n");
+    close(fd);
+    return 2;
+  }
+
+  uint32_t fmt = kafs_sb_format_version_get(&sb);
+  if (fmt == KAFS_FORMAT_VERSION)
+  {
+    fprintf(stderr, "already v%u: no migration needed\n", (unsigned)KAFS_FORMAT_VERSION);
+    close(fd);
+    return 0;
+  }
+  if (fmt != KAFS_FORMAT_VERSION_V2)
+  {
+    fprintf(stderr, "unsupported format version: %u\n", (unsigned)fmt);
+    close(fd);
+    return 2;
+  }
+
+  if (!assume_yes && !confirm_yes_stdin())
+  {
+    fprintf(stderr, "migration canceled\n");
+    close(fd);
+    return 2;
+  }
+
+  kafs_sb_format_version_set(&sb, KAFS_FORMAT_VERSION);
+  if (kafs_sb_allocator_size_get(&sb) > 0)
+  {
+    if (kafs_sb_allocator_version_get(&sb) < 2u)
+      kafs_sb_allocator_version_set(&sb, 2u);
+    uint64_t ff = kafs_sb_feature_flags_get(&sb);
+    kafs_sb_feature_flags_set(&sb, ff | KAFS_FEATURE_ALLOC_V2);
+  }
+
+  if (pwrite(fd, &sb, sizeof(sb), 0) != (ssize_t)sizeof(sb))
+  {
+    perror("pwrite superblock");
+    close(fd);
+    return 1;
+  }
+  if (fsync(fd) != 0)
+  {
+    perror("fsync");
+    close(fd);
+    return 1;
+  }
+
+  close(fd);
+  fprintf(stderr, "migration completed: v2 -> v%u (%s)\n", (unsigned)KAFS_FORMAT_VERSION,
+          image);
+  return 0;
 }
 
 static const char *hotplug_state_str(uint32_t state)
@@ -1513,6 +1604,22 @@ int main(int argc, char **argv)
   {
     usage(argv[0]);
     return 2;
+  }
+
+  if (strcmp(argv[1], "migrate") == 0)
+  {
+    int assume_yes = 0;
+    for (int i = 3; i < argc; ++i)
+    {
+      if (strcmp(argv[i], "--yes") == 0)
+        assume_yes = 1;
+      else
+      {
+        usage(argv[0]);
+        return 2;
+      }
+    }
+    return cmd_migrate(argv[2], assume_yes);
   }
 
   if (strcmp(argv[1], "fsstat") == 0 || strcmp(argv[1], "stats") == 0)
