@@ -344,6 +344,88 @@ static void kafs_pending_worker_notify(struct kafs_context *ctx)
   pthread_mutex_unlock(&ctx->c_pending_worker_lock);
 }
 
+static void kafs_pending_worker_notify_all(struct kafs_context *ctx)
+{
+  if (!ctx || !ctx->c_pending_worker_lock_init)
+    return;
+  pthread_mutex_lock(&ctx->c_pending_worker_lock);
+  pthread_cond_broadcast(&ctx->c_pending_worker_cond);
+  pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+}
+
+static int kafs_pendinglog_inode_state_locked(struct kafs_context *ctx, uint32_t ino,
+                                              int *has_pending, int *has_failed)
+{
+  if (!has_pending || !has_failed)
+    return -EINVAL;
+  *has_pending = 0;
+  *has_failed = 0;
+
+  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+  if (!hdr || hdr->capacity == 0)
+    return 0;
+
+  uint32_t idx = hdr->head;
+  while (idx != hdr->tail)
+  {
+    kafs_pendinglog_entry_t *slot = kafs_pendinglog_entry_ptr(ctx, idx);
+    if (!slot)
+      return -EIO;
+    if (slot->ino == ino)
+    {
+      if (slot->state == KAFS_PENDING_FAILED)
+        *has_failed = 1;
+      else if (slot->state != KAFS_PENDING_RESOLVED)
+        *has_pending = 1;
+    }
+    idx = kafs_pendinglog_next_idx(hdr, idx);
+  }
+  return 0;
+}
+
+static int kafs_pendinglog_drain_inode(struct kafs_context *ctx, uint32_t ino)
+{
+  if (!ctx || !ctx->c_pendinglog_enabled || !ctx->c_pending_worker_running ||
+      !ctx->c_pending_worker_lock_init)
+    return 0;
+
+  struct timespec deadline;
+  clock_gettime(CLOCK_REALTIME, &deadline);
+  deadline.tv_sec += 5;
+
+  pthread_mutex_lock(&ctx->c_pending_worker_lock);
+  for (;;)
+  {
+    int has_pending = 0;
+    int has_failed = 0;
+    int rc = kafs_pendinglog_inode_state_locked(ctx, ino, &has_pending, &has_failed);
+    if (rc < 0)
+    {
+      pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+      return rc;
+    }
+    if (has_failed)
+    {
+      pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+      return -EIO;
+    }
+    if (!has_pending)
+    {
+      pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+      return 0;
+    }
+
+    pthread_cond_signal(&ctx->c_pending_worker_cond);
+    int tw = pthread_cond_timedwait(&ctx->c_pending_worker_cond, &ctx->c_pending_worker_lock,
+                                    &deadline);
+    if (tw == ETIMEDOUT)
+    {
+      pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+      return -ETIMEDOUT;
+    }
+  }
+}
+
 static void *kafs_pending_worker_main(void *arg)
 {
   kafs_context_t *ctx = (kafs_context_t *)arg;
@@ -446,6 +528,7 @@ static void *kafs_pending_worker_main(void *arg)
           if (hdr->head == idx)
             hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
         }
+        pthread_cond_broadcast(&ctx->c_pending_worker_cond);
         pthread_mutex_unlock(&ctx->c_pending_worker_lock);
         continue;
       }
@@ -467,6 +550,7 @@ static void *kafs_pending_worker_main(void *arg)
           hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
       }
     }
+    pthread_cond_broadcast(&ctx->c_pending_worker_cond);
     pthread_mutex_unlock(&ctx->c_pending_worker_lock);
 
     if (retry > 0)
@@ -4636,11 +4720,28 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
 {
   (void)path;
   (void)isdatasync;
-  (void)fi;
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
   if (!ctx || ctx->c_fd < 0)
     return 0;
+
+  uint32_t ino = KAFS_INO_NONE;
+  if (fi)
+    ino = (uint32_t)fi->fh;
+  else if (path && path[0] != '\0')
+  {
+    kafs_sinode_t *inoent = NULL;
+    int arc = kafs_access(fctx, ctx, path, fi, F_OK, &inoent);
+    if (arc == 0 && inoent)
+      ino = (uint32_t)(inoent - ctx->c_inotbl);
+  }
+  if (ino != KAFS_INO_NONE)
+  {
+    int drc = kafs_pendinglog_drain_inode(ctx, ino);
+    if (drc < 0)
+      return drc;
+  }
+
   kafs_journal_force_flush(ctx);
   if (ctx->c_img_base && ctx->c_img_size)
   {
