@@ -98,6 +98,11 @@ struct kafs_context
   int64_t c_meta_delta_free_blocks;
   uint32_t c_meta_delta_wtime_dirty;
   kafs_time_t c_meta_delta_last_wtime;
+  uint32_t c_meta_bitmap_words_enabled;
+  kafs_blkmask_t *c_meta_bitmap_words;
+  uint8_t *c_meta_bitmap_dirty;
+  size_t c_meta_bitmap_wordcnt;
+  size_t c_meta_bitmap_dirty_count;
 
   // --- Runtime inode open counts (in-memory only) ---
   uint32_t *c_open_cnt; // sized to superblock inocnt (allocated at mount)

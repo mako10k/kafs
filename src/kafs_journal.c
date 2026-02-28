@@ -67,6 +67,20 @@ static void kj_apply_meta_delta(struct kafs_context *ctx)
   uint32_t wtime_dirty = ctx->c_meta_delta_wtime_dirty;
   kafs_time_t wtime = ctx->c_meta_delta_last_wtime;
 
+  if (ctx->c_meta_bitmap_words_enabled && ctx->c_meta_bitmap_dirty &&
+      ctx->c_meta_bitmap_words && ctx->c_meta_bitmap_wordcnt > 0 &&
+      ctx->c_meta_bitmap_dirty_count > 0)
+  {
+    for (size_t i = 0; i < ctx->c_meta_bitmap_wordcnt; ++i)
+    {
+      if (!ctx->c_meta_bitmap_dirty[i])
+        continue;
+      ctx->c_blkmasktbl[i] = ctx->c_meta_bitmap_words[i];
+      ctx->c_meta_bitmap_dirty[i] = 0;
+    }
+    ctx->c_meta_bitmap_dirty_count = 0;
+  }
+
   if (free_delta != 0)
   {
     kafs_blkcnt_t free_now = kafs_sb_blkcnt_free_get(ctx->c_superblock);

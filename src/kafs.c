@@ -2135,6 +2135,30 @@ int kafs_core_open_image(const char *image_path, kafs_context_t *ctx)
   (void)kafs_hrl_open(ctx);
   (void)kafs_journal_init(ctx, image_path);
   ctx->c_meta_delta_enabled = (uint32_t)kafs_journal_is_enabled(ctx);
+  if (ctx->c_meta_delta_enabled)
+  {
+    size_t bits = sizeof(kafs_blkmask_t) * 8u;
+    size_t words = ((size_t)r_blkcnt + bits - 1u) / bits;
+    ctx->c_meta_bitmap_words = calloc(words, sizeof(kafs_blkmask_t));
+    ctx->c_meta_bitmap_dirty = calloc(words, sizeof(uint8_t));
+    if (!ctx->c_meta_bitmap_words || !ctx->c_meta_bitmap_dirty)
+    {
+      free(ctx->c_meta_bitmap_words);
+      free(ctx->c_meta_bitmap_dirty);
+      ctx->c_meta_bitmap_words = NULL;
+      ctx->c_meta_bitmap_dirty = NULL;
+      ctx->c_meta_bitmap_wordcnt = 0;
+      ctx->c_meta_bitmap_dirty_count = 0;
+      ctx->c_meta_bitmap_words_enabled = 0;
+      ctx->c_meta_delta_enabled = 0;
+    }
+    else
+    {
+      ctx->c_meta_bitmap_wordcnt = words;
+      ctx->c_meta_bitmap_dirty_count = 0;
+      ctx->c_meta_bitmap_words_enabled = 1u;
+    }
+  }
   (void)kafs_journal_replay(ctx, NULL, NULL);
   return 0;
 }
@@ -2145,6 +2169,13 @@ void kafs_core_close_image(kafs_context_t *ctx)
     return;
   (void)kafs_journal_shutdown(ctx);
   (void)kafs_hrl_close(ctx);
+  free(ctx->c_meta_bitmap_words);
+  free(ctx->c_meta_bitmap_dirty);
+  ctx->c_meta_bitmap_words = NULL;
+  ctx->c_meta_bitmap_dirty = NULL;
+  ctx->c_meta_bitmap_wordcnt = 0;
+  ctx->c_meta_bitmap_dirty_count = 0;
+  ctx->c_meta_bitmap_words_enabled = 0;
   if (ctx->c_img_base && ctx->c_img_base != MAP_FAILED)
     munmap(ctx->c_img_base, ctx->c_img_size);
   if (ctx->c_fd >= 0)
@@ -4568,6 +4599,30 @@ int main(int argc, char **argv)
   // Journal 初期化（KAFS_JOURNAL=0/1/パス）
   (void)kafs_journal_init(&ctx, image_path);
   ctx.c_meta_delta_enabled = (uint32_t)kafs_journal_is_enabled(&ctx);
+  if (ctx.c_meta_delta_enabled)
+  {
+    size_t bits = sizeof(kafs_blkmask_t) * 8u;
+    size_t words = ((size_t)r_blkcnt + bits - 1u) / bits;
+    ctx.c_meta_bitmap_words = calloc(words, sizeof(kafs_blkmask_t));
+    ctx.c_meta_bitmap_dirty = calloc(words, sizeof(uint8_t));
+    if (!ctx.c_meta_bitmap_words || !ctx.c_meta_bitmap_dirty)
+    {
+      free(ctx.c_meta_bitmap_words);
+      free(ctx.c_meta_bitmap_dirty);
+      ctx.c_meta_bitmap_words = NULL;
+      ctx.c_meta_bitmap_dirty = NULL;
+      ctx.c_meta_bitmap_wordcnt = 0;
+      ctx.c_meta_bitmap_dirty_count = 0;
+      ctx.c_meta_bitmap_words_enabled = 0;
+      ctx.c_meta_delta_enabled = 0;
+    }
+    else
+    {
+      ctx.c_meta_bitmap_wordcnt = words;
+      ctx.c_meta_bitmap_dirty_count = 0;
+      ctx.c_meta_bitmap_words_enabled = 1u;
+    }
+  }
 
   // 起動時リプレイ（in-image のみ対象）。致命的ではなくベストエフォート。
   (void)kafs_journal_replay(&ctx, NULL, NULL);
@@ -4667,6 +4722,8 @@ int main(int argc, char **argv)
     pthread_cond_destroy(&ctx.c_hotplug_wait_cond);
     pthread_mutex_destroy(&ctx.c_hotplug_wait_lock);
   }
+  free(ctx.c_meta_bitmap_words);
+  free(ctx.c_meta_bitmap_dirty);
   if (ctx.c_img_base && ctx.c_img_base != MAP_FAILED)
     munmap(ctx.c_img_base, ctx.c_img_size);
   return rc;
