@@ -96,6 +96,8 @@ static void kj_apply_meta_delta(struct kafs_context *ctx)
 
   if (wtime_dirty)
   {
+    if (wtime.tv_sec == 0 && wtime.tv_nsec == 0)
+      clock_gettime(CLOCK_REALTIME, &wtime);
     kafs_sb_wtime_set(ctx->c_superblock, wtime);
     ctx->c_meta_delta_wtime_dirty = 0;
     ctx->c_meta_delta_last_wtime = (kafs_time_t){0};

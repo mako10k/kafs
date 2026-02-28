@@ -220,7 +220,6 @@ static int kafs_blk_set_usage_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo
       if (ctx->c_meta_delta_enabled)
       {
         ctx->c_meta_delta_wtime_dirty = 1u;
-        ctx->c_meta_delta_last_wtime = kafs_now();
       }
       else
       {
@@ -265,7 +264,6 @@ static int kafs_blk_set_usage_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo
       if (ctx->c_meta_delta_enabled)
       {
         ctx->c_meta_delta_wtime_dirty = 1u;
-        ctx->c_meta_delta_last_wtime = kafs_now();
       }
       else
       {
@@ -328,7 +326,6 @@ static int kafs_blk_try_claim_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo
   if (ctx->c_meta_delta_enabled)
   {
     ctx->c_meta_delta_wtime_dirty = 1u;
-    ctx->c_meta_delta_last_wtime = kafs_now();
   }
   else
   {
