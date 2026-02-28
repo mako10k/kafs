@@ -183,11 +183,29 @@ __attribute_maybe_unused__ static int kafs_blk_set_usage(struct kafs_context *ct
   return rc;
 }
 
-/// @brief 未使用のブロック番号を取得し、使用中フラグをつける
+/// @brief v3 allocator backend を使用する条件を満たすか判定する
 /// @param ctx コンテキスト
-/// @param pblo ブロック番号
-/// @return 0: 成功, < 0: 失敗 (-errno)
-static int kafs_blk_alloc(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
+/// @return KAFS_TRUE: v3 backend, KAFS_FALSE: legacy backend
+static int kafs_blk_alloc_backend_is_v3(struct kafs_context *ctx)
+{
+  assert(ctx != NULL);
+  assert(ctx->c_superblock != NULL);
+  if (kafs_sb_format_version_get(ctx->c_superblock) != KAFS_FORMAT_VERSION)
+    return KAFS_FALSE;
+
+  if (kafs_sb_allocator_version_get(ctx->c_superblock) < 2u)
+    return KAFS_FALSE;
+
+  if ((kafs_sb_feature_flags_get(ctx->c_superblock) & KAFS_FEATURE_ALLOC_V2) == 0)
+    return KAFS_FALSE;
+
+  if (kafs_sb_allocator_size_get(ctx->c_superblock) == 0u)
+    return KAFS_FALSE;
+
+  return KAFS_TRUE;
+}
+
+static int kafs_blk_alloc_legacy(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
 {
   assert(ctx != NULL);
   assert(pblo != NULL);
@@ -271,4 +289,16 @@ static int kafs_blk_alloc(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
   __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_scan, t_scan_end - t_scan_start, __ATOMIC_RELAXED);
 
   return -ENOSPC;
+}
+
+static int kafs_blk_alloc_v3(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
+{
+  return kafs_blk_alloc_legacy(ctx, pblo);
+}
+
+static int kafs_blk_alloc(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
+{
+  if (kafs_blk_alloc_backend_is_v3(ctx))
+    return kafs_blk_alloc_v3(ctx, pblo);
+  return kafs_blk_alloc_legacy(ctx, pblo);
 }
