@@ -4040,6 +4040,7 @@ static int kafs_op_flush(const char *path, struct fuse_file_info *fi)
   struct kafs_context *ctx = fctx->private_data;
   if (!ctx || ctx->c_fd < 0)
     return 0;
+  kafs_journal_force_flush(ctx);
   // Ensure mmap'd metadata (superblock/inodes/bitmap/HRL) is persisted.
   if (ctx->c_img_base && ctx->c_img_size)
   {
@@ -4058,6 +4059,7 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
   struct kafs_context *ctx = fctx->private_data;
   if (!ctx || ctx->c_fd < 0)
     return 0;
+  kafs_journal_force_flush(ctx);
   if (ctx->c_img_base && ctx->c_img_size)
   {
     (void)msync((void *)ctx->c_img_base, ctx->c_img_size, MS_SYNC);

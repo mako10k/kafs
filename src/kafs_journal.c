@@ -672,6 +672,30 @@ int kafs_journal_is_enabled(struct kafs_context *ctx)
   return (g_state.ctx == ctx && g_state.j.enabled) ? 1 : 0;
 }
 
+void kafs_journal_force_flush(struct kafs_context *ctx)
+{
+  if (!ctx)
+    return;
+
+  kj_apply_meta_delta(ctx);
+
+  if (g_state.ctx != ctx || !g_state.j.enabled)
+    return;
+
+  kafs_journal_t *j = &g_state.j;
+  jlock(j);
+  if (j->use_inimage)
+  {
+    kj_persist_header(j, 1);
+    j->gc_pending = 0;
+  }
+  else if (j->fd >= 0)
+  {
+    fsync(j->fd);
+  }
+  junlock(j);
+}
+
 uint64_t kafs_journal_begin(struct kafs_context *ctx, const char *op, const char *fmt, ...)
 {
   if (g_state.ctx != ctx || !g_state.j.enabled)
