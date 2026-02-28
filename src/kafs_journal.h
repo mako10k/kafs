@@ -24,6 +24,7 @@ typedef struct kj_header
 #define KJ_TAG_ABR 0x41425232u  /* 'ABR2' */
 #define KJ_TAG_NOTE 0x4e4f5432u /* 'NOT2' */
 #define KJ_TAG_WRAP 0x57524150u /* 'WRAP' */
+#define KJ_TAG_MDT 0x4d445432u  /* 'MDT2' */
 
 typedef struct kj_rec_hdr
 {
