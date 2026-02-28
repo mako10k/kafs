@@ -109,6 +109,13 @@ struct kafs_context
   void *c_pendinglog_base;
   size_t c_pendinglog_size;
   uint32_t c_pendinglog_capacity;
+  pthread_t c_pending_worker_tid;
+  pthread_mutex_t c_pending_worker_lock;
+  pthread_cond_t c_pending_worker_cond;
+  int c_pending_worker_lock_init;
+  int c_pending_worker_running;
+  int c_pending_worker_stop;
+  uint32_t c_pending_worker_backoff_ms;
 
   // --- Runtime inode open counts (in-memory only) ---
   uint32_t *c_open_cnt; // sized to superblock inocnt (allocated at mount)

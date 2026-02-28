@@ -110,6 +110,18 @@ typedef struct kafs_pendinglog_entry
   uint64_t seq;
 } __attribute__((packed)) kafs_pendinglog_entry_t;
 
+typedef enum
+{
+  KAFS_IBLKREF_FUNC_GET_RAW,
+  KAFS_IBLKREF_FUNC_GET,
+  KAFS_IBLKREF_FUNC_PUT,
+  KAFS_IBLKREF_FUNC_SET
+} kafs_iblkref_func_t;
+
+static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_iblkcnt_t iblo,
+                             kafs_blkcnt_t *pblo, kafs_iblkref_func_t ifunc);
+static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf);
+
 static int kafs_pendinglog_region(struct kafs_context *ctx, uint64_t *off, uint64_t *size)
 {
   if (!ctx || !ctx->c_superblock)
@@ -234,6 +246,14 @@ static int kafs_pendinglog_read(struct kafs_context *ctx, uint32_t idx, kafs_pen
   return 0;
 }
 
+static uint32_t kafs_pendinglog_next_idx(const kafs_pendinglog_hdr_t *hdr, uint32_t idx)
+{
+  idx += 1u;
+  if (idx >= hdr->capacity)
+    idx = 0;
+  return idx;
+}
+
 static int kafs_pendinglog_find_by_id(struct kafs_context *ctx, uint64_t pending_id,
                                       kafs_pendinglog_entry_t *out)
 {
@@ -315,6 +335,207 @@ static int kafs_ref_resolve_data_blo(struct kafs_context *ctx, kafs_blkcnt_t ref
   return 0;
 }
 
+static void kafs_pending_worker_notify(struct kafs_context *ctx)
+{
+  if (!ctx || !ctx->c_pending_worker_lock_init)
+    return;
+  pthread_mutex_lock(&ctx->c_pending_worker_lock);
+  pthread_cond_signal(&ctx->c_pending_worker_cond);
+  pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+}
+
+static void *kafs_pending_worker_main(void *arg)
+{
+  kafs_context_t *ctx = (kafs_context_t *)arg;
+  if (!ctx)
+    return NULL;
+
+  for (;;)
+  {
+    uint32_t idx = 0;
+    kafs_pendinglog_entry_t ent;
+    int has_work = 0;
+
+    pthread_mutex_lock(&ctx->c_pending_worker_lock);
+    for (;;)
+    {
+      kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+      if (ctx->c_pending_worker_stop)
+      {
+        pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+        return NULL;
+      }
+      if (hdr && hdr->capacity > 0 && hdr->head != hdr->tail)
+      {
+        idx = hdr->head;
+        kafs_pendinglog_entry_t *slot = kafs_pendinglog_entry_ptr(ctx, idx);
+        if (slot)
+        {
+          ent = *slot;
+          has_work = 1;
+          break;
+        }
+      }
+      pthread_cond_wait(&ctx->c_pending_worker_cond, &ctx->c_pending_worker_lock);
+    }
+    pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+
+    if (!has_work)
+      continue;
+
+    if (ent.state == KAFS_PENDING_RESOLVED || ent.state == KAFS_PENDING_FAILED)
+    {
+      pthread_mutex_lock(&ctx->c_pending_worker_lock);
+      kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+      if (hdr && hdr->capacity > 0 && hdr->head == idx)
+        hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
+      pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+      continue;
+    }
+
+    kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+    char buf[blksize];
+    int rc = kafs_blk_read(ctx, (kafs_blkcnt_t)ent.temp_blo, buf);
+    if (rc == 0)
+    {
+      kafs_hrid_t hrid = 0;
+      int is_new = 0;
+      kafs_blkcnt_t final_blo = KAFS_BLO_NONE;
+      ctx->c_stat_hrl_put_calls++;
+      uint64_t t0 = kafs_now_ns();
+      rc = kafs_hrl_put(ctx, buf, &hrid, &is_new, &final_blo);
+      uint64_t t1 = kafs_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_hrl_put, t1 - t0, __ATOMIC_RELAXED);
+      if (rc == 0)
+      {
+        if (is_new)
+          ctx->c_stat_hrl_put_misses++;
+        else
+          ctx->c_stat_hrl_put_hits++;
+
+        if (ent.ino < kafs_sb_inocnt_get(ctx->c_superblock))
+        {
+          kafs_inode_lock(ctx, ent.ino);
+          kafs_sinode_t *inoent = &ctx->c_inotbl[ent.ino];
+          if (kafs_ino_get_usage(inoent))
+          {
+            kafs_blkcnt_t cur_raw = KAFS_BLO_NONE;
+            if (kafs_ino_ibrk_run(ctx, inoent, ent.iblk, &cur_raw, KAFS_IBLKREF_FUNC_GET_RAW) == 0)
+            {
+              if (kafs_ref_is_pending(cur_raw) &&
+                  kafs_ref_pending_id(cur_raw) == ent.pending_id)
+              {
+                (void)kafs_ino_ibrk_run(ctx, inoent, ent.iblk, &final_blo, KAFS_IBLKREF_FUNC_SET);
+              }
+            }
+          }
+          kafs_inode_unlock(ctx, ent.ino);
+        }
+
+        if ((kafs_blkcnt_t)ent.temp_blo != KAFS_BLO_NONE && (kafs_blkcnt_t)ent.temp_blo != final_blo)
+          (void)kafs_hrl_dec_ref_by_blo(ctx, (kafs_blkcnt_t)ent.temp_blo);
+
+        pthread_mutex_lock(&ctx->c_pending_worker_lock);
+        kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+        kafs_pendinglog_entry_t *slot = hdr ? kafs_pendinglog_entry_ptr(ctx, idx) : NULL;
+        if (hdr && slot)
+        {
+          slot->state = KAFS_PENDING_RESOLVED;
+          slot->target_hrid = (uint32_t)hrid;
+          slot->reserved0 = 0;
+          if (hdr->head == idx)
+            hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
+        }
+        pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+        continue;
+      }
+    }
+
+    pthread_mutex_lock(&ctx->c_pending_worker_lock);
+    kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+    kafs_pendinglog_entry_t *slot = hdr ? kafs_pendinglog_entry_ptr(ctx, idx) : NULL;
+    uint32_t retry = 0;
+    if (slot)
+    {
+      slot->state = KAFS_PENDING_HASHED;
+      slot->reserved0 += 1u;
+      retry = slot->reserved0;
+      if (retry >= 32u)
+      {
+        slot->state = KAFS_PENDING_FAILED;
+        if (hdr && hdr->head == idx)
+          hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
+      }
+    }
+    pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+
+    if (retry > 0)
+    {
+      if (retry > 6u)
+        retry = 6u;
+      uint32_t backoff_ms = 1u << retry;
+      struct timespec ts = {
+          .tv_sec = (time_t)(backoff_ms / 1000u),
+          .tv_nsec = (long)((backoff_ms % 1000u) * 1000000u),
+      };
+      nanosleep(&ts, NULL);
+    }
+  }
+}
+
+static int kafs_pending_worker_start(struct kafs_context *ctx)
+{
+  if (!ctx || !ctx->c_pendinglog_enabled)
+    return 0;
+  if (ctx->c_pending_worker_running)
+    return 0;
+
+  if (!ctx->c_pending_worker_lock_init)
+  {
+    if (pthread_mutex_init(&ctx->c_pending_worker_lock, NULL) != 0)
+      return -EIO;
+    if (pthread_cond_init(&ctx->c_pending_worker_cond, NULL) != 0)
+    {
+      pthread_mutex_destroy(&ctx->c_pending_worker_lock);
+      return -EIO;
+    }
+    ctx->c_pending_worker_lock_init = 1;
+  }
+
+  ctx->c_pending_worker_stop = 0;
+  int prc = pthread_create(&ctx->c_pending_worker_tid, NULL, kafs_pending_worker_main, ctx);
+  if (prc != 0)
+    return -prc;
+
+  ctx->c_pending_worker_running = 1;
+  if (kafs_pendinglog_count(ctx) > 0)
+    kafs_pending_worker_notify(ctx);
+  return 0;
+}
+
+static void kafs_pending_worker_stop(struct kafs_context *ctx)
+{
+  if (!ctx)
+    return;
+
+  if (ctx->c_pending_worker_running)
+  {
+    pthread_mutex_lock(&ctx->c_pending_worker_lock);
+    ctx->c_pending_worker_stop = 1;
+    pthread_cond_broadcast(&ctx->c_pending_worker_cond);
+    pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+    pthread_join(ctx->c_pending_worker_tid, NULL);
+    ctx->c_pending_worker_running = 0;
+  }
+
+  if (ctx->c_pending_worker_lock_init)
+  {
+    pthread_cond_destroy(&ctx->c_pending_worker_cond);
+    pthread_mutex_destroy(&ctx->c_pending_worker_lock);
+    ctx->c_pending_worker_lock_init = 0;
+  }
+}
+
 // ---------------------------------------------------------
 // BLOCK OPERATIONS
 // ---------------------------------------------------------
@@ -379,13 +600,6 @@ static int kafs_blk_write(struct kafs_context *ctx, kafs_blkcnt_t blo, const voi
 // INODE BLOCK OPERATIONS
 // ---------------------------------------------------------
 
-typedef enum
-{
-  KAFS_IBLKREF_FUNC_GET,
-  KAFS_IBLKREF_FUNC_PUT,
-  KAFS_IBLKREF_FUNC_SET
-} kafs_iblkref_func_t;
-
 static int kafs_blk_is_zero(const void *buf, size_t len)
 {
   const char *c = buf;
@@ -410,6 +624,10 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
     kafs_blkcnt_t blo_data = KAFS_BLO_NONE;
     switch (ifunc)
     {
+    case KAFS_IBLKREF_FUNC_GET_RAW:
+      *pblo = blo_data_raw;
+      return KAFS_SUCCESS;
+
     case KAFS_IBLKREF_FUNC_GET:
       KAFS_CALL(kafs_ref_resolve_data_blo, ctx, blo_data_raw, &blo_data);
       *pblo = blo_data;
@@ -448,6 +666,16 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
 
     switch (ifunc)
     {
+    case KAFS_IBLKREF_FUNC_GET_RAW:
+      if (blo_blkreftbl == KAFS_BLO_NONE)
+      {
+        *pblo = KAFS_BLO_NONE;
+        return KAFS_SUCCESS;
+      }
+      KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl, blkreftbl);
+      *pblo = kafs_blkcnt_stoh(blkreftbl[iblo]);
+      return KAFS_SUCCESS;
+
     case KAFS_IBLKREF_FUNC_GET:
       if (blo_blkreftbl == KAFS_BLO_NONE)
       {
@@ -514,6 +742,23 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
 
     switch (ifunc)
     {
+    case KAFS_IBLKREF_FUNC_GET_RAW:
+      if (blo_blkreftbl1 == KAFS_BLO_NONE)
+      {
+        *pblo = KAFS_BLO_NONE;
+        return KAFS_SUCCESS;
+      }
+      KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl1, blkreftbl1);
+      blo_blkreftbl2 = kafs_blkcnt_stoh(blkreftbl1[iblo1]);
+      if (blo_blkreftbl2 == KAFS_BLO_NONE)
+      {
+        *pblo = KAFS_BLO_NONE;
+        return KAFS_SUCCESS;
+      }
+      KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl2, blkreftbl2);
+      *pblo = kafs_blkcnt_stoh(blkreftbl2[iblo2]);
+      return KAFS_SUCCESS;
+
     case KAFS_IBLKREF_FUNC_GET:
       if (blo_blkreftbl1 == KAFS_BLO_NONE)
       {
@@ -611,6 +856,30 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
 
   switch (ifunc)
   {
+  case KAFS_IBLKREF_FUNC_GET_RAW:
+    if (blo_blkreftbl1 == KAFS_BLO_NONE)
+    {
+      *pblo = KAFS_BLO_NONE;
+      return KAFS_SUCCESS;
+    }
+    KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl1, blkreftbl1);
+    blo_blkreftbl2 = kafs_blkcnt_stoh(blkreftbl1[iblo1]);
+    if (blo_blkreftbl2 == KAFS_BLO_NONE)
+    {
+      *pblo = KAFS_BLO_NONE;
+      return KAFS_SUCCESS;
+    }
+    KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl2, blkreftbl2);
+    blo_blkreftbl3 = kafs_blkcnt_stoh(blkreftbl2[iblo2]);
+    if (blo_blkreftbl3 == KAFS_BLO_NONE)
+    {
+      *pblo = KAFS_BLO_NONE;
+      return KAFS_SUCCESS;
+    }
+    KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl3, blkreftbl3);
+    *pblo = kafs_blkcnt_stoh(blkreftbl3[iblo3]);
+    return KAFS_SUCCESS;
+
   case KAFS_IBLKREF_FUNC_GET:
     if (blo_blkreftbl1 == KAFS_BLO_NONE)
     {
@@ -875,6 +1144,59 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
   // 注意: kafs_blk_is_zero は「非ゼロを含むと1、全ゼロで0」を返す
   if (kafs_blk_is_zero(buf, blksize))
   {
+    if (ctx->c_pendinglog_enabled && ctx->c_pending_worker_running)
+    {
+      kafs_blkcnt_t temp_blo = KAFS_BLO_NONE;
+      KAFS_CALL(kafs_blk_alloc, ctx, &temp_blo);
+      uint64_t t_lw0 = kafs_now_ns();
+      KAFS_CALL(kafs_blk_write, ctx, temp_blo, buf);
+      uint64_t t_lw1 = kafs_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_legacy_blk_write, t_lw1 - t_lw0,
+                         __ATOMIC_RELAXED);
+
+      uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
+      kafs_blkcnt_t old_raw = KAFS_BLO_NONE;
+      kafs_blkcnt_t old_blo = KAFS_BLO_NONE;
+      KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old_raw, KAFS_IBLKREF_FUNC_GET_RAW);
+      KAFS_CALL(kafs_ref_resolve_data_blo, ctx, old_raw, &old_blo);
+
+      kafs_pendinglog_entry_t ent = {0};
+      ent.ino = ino_idx;
+      ent.iblk = (uint32_t)iblo;
+      ent.temp_blo = (uint32_t)temp_blo;
+      ent.state = KAFS_PENDING_QUEUED;
+
+      uint64_t pending_id = 0;
+      if (ctx->c_pending_worker_lock_init)
+        pthread_mutex_lock(&ctx->c_pending_worker_lock);
+      int qrc = kafs_pendinglog_enqueue(ctx, &ent, &pending_id);
+      if (ctx->c_pending_worker_lock_init)
+        pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+      if (qrc < 0)
+      {
+        (void)kafs_hrl_dec_ref_by_blo(ctx, temp_blo);
+        return qrc;
+      }
+
+      kafs_blkcnt_t pref = KAFS_BLO_NONE;
+      KAFS_CALL(kafs_ref_pending_encode, pending_id, &pref);
+      KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &pref, KAFS_IBLKREF_FUNC_SET);
+
+      if (old_blo != KAFS_BLO_NONE && old_blo != temp_blo)
+      {
+        kafs_inode_unlock(ctx, ino_idx);
+        uint64_t t_dec0 = kafs_now_ns();
+        (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
+        uint64_t t_dec1 = kafs_now_ns();
+        __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0,
+                           __ATOMIC_RELAXED);
+        kafs_inode_lock(ctx, ino_idx);
+      }
+
+      kafs_pending_worker_notify(ctx);
+      return KAFS_SUCCESS;
+    }
+
     // 非ゼロ: HRL 経路（失敗時は従来経路）。
     kafs_hrid_t hrid;
     int is_new = 0;
@@ -2415,8 +2737,11 @@ int kafs_core_open_image(const char *image_path, kafs_context_t *ctx)
   (void)kafs_journal_replay(ctx, NULL, NULL);
   (void)kafs_pendinglog_init_or_load(ctx);
   if (ctx->c_pendinglog_enabled)
+  {
+    (void)kafs_pending_worker_start(ctx);
     kafs_journal_note(ctx, "PENDINGLOG", "loaded entries=%u cap=%u", kafs_pendinglog_count(ctx),
                       ctx->c_pendinglog_capacity);
+  }
   return 0;
 }
 
@@ -2424,6 +2749,7 @@ void kafs_core_close_image(kafs_context_t *ctx)
 {
   if (!ctx)
     return;
+  kafs_pending_worker_stop(ctx);
   (void)kafs_journal_shutdown(ctx);
   (void)kafs_hrl_close(ctx);
   free(ctx->c_meta_bitmap_words);
@@ -4893,8 +5219,11 @@ int main(int argc, char **argv)
   (void)kafs_journal_replay(&ctx, NULL, NULL);
   (void)kafs_pendinglog_init_or_load(&ctx);
   if (ctx.c_pendinglog_enabled)
+  {
+    (void)kafs_pending_worker_start(&ctx);
     kafs_journal_note(&ctx, "PENDINGLOG", "loaded entries=%u cap=%u", kafs_pendinglog_count(&ctx),
                       ctx.c_pendinglog_capacity);
+  }
 
   // 画像ファイルに排他ロック（複数プロセスによる同時RW起動を防止）
   struct flock lk = {0};
@@ -4978,6 +5307,7 @@ int main(int argc, char **argv)
   }
   argv_fuse[argc_fuse] = NULL; // ensure NULL-terminated argv for libfuse safety
   int rc = fuse_main(argc_fuse, argv_fuse, &kafs_operations, &ctx);
+  kafs_pending_worker_stop(&ctx);
   kafs_journal_shutdown(&ctx);
   if (ctx.c_hotplug_fd >= 0)
     close(ctx.c_hotplug_fd);
