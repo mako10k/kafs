@@ -426,6 +426,112 @@ static int kafs_pendinglog_drain_inode(struct kafs_context *ctx, uint32_t ino)
   }
 }
 
+static int kafs_pendinglog_inode_has_pending_id(struct kafs_context *ctx, uint32_t ino,
+                                                uint32_t iblk, uint64_t pending_id,
+                                                int *is_pending)
+{
+  if (!ctx || !is_pending)
+    return -EINVAL;
+  *is_pending = 0;
+  if (pending_id == 0)
+    return 0;
+  if (ino >= kafs_sb_inocnt_get(ctx->c_superblock))
+    return 0;
+
+  kafs_inode_lock(ctx, ino);
+  kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+  if (kafs_ino_get_usage(inoent))
+  {
+    kafs_blkcnt_t cur_raw = KAFS_BLO_NONE;
+    if (kafs_ino_ibrk_run(ctx, inoent, (kafs_iblkcnt_t)iblk, &cur_raw, KAFS_IBLKREF_FUNC_GET_RAW) ==
+        0)
+    {
+      if (kafs_ref_is_pending(cur_raw) && kafs_ref_pending_id(cur_raw) == pending_id)
+        *is_pending = 1;
+    }
+  }
+  kafs_inode_unlock(ctx, ino);
+  return 0;
+}
+
+static int kafs_pendinglog_replay_mount(struct kafs_context *ctx)
+{
+  if (!ctx || !ctx->c_pendinglog_enabled)
+    return 0;
+
+  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+  if (!hdr || hdr->capacity == 0)
+    return 0;
+
+  uint32_t replay_requeued = 0;
+  uint32_t replay_dropped = 0;
+
+  uint32_t idx = hdr->head;
+  while (idx != hdr->tail)
+  {
+    kafs_pendinglog_entry_t *slot = kafs_pendinglog_entry_ptr(ctx, idx);
+    if (!slot)
+      return -EIO;
+
+    if (slot->state == KAFS_PENDING_HASHED)
+    {
+      slot->state = KAFS_PENDING_QUEUED;
+      replay_requeued++;
+    }
+    else if (slot->state == KAFS_PENDING_RESOLVED)
+    {
+      int still_pending = 0;
+      (void)kafs_pendinglog_inode_has_pending_id(ctx, slot->ino, slot->iblk, slot->pending_id,
+                                                 &still_pending);
+      if (still_pending)
+      {
+        slot->state = KAFS_PENDING_QUEUED;
+        replay_requeued++;
+      }
+    }
+    idx = kafs_pendinglog_next_idx(hdr, idx);
+  }
+
+  while (hdr->head != hdr->tail)
+  {
+    kafs_pendinglog_entry_t *slot = kafs_pendinglog_entry_ptr(ctx, hdr->head);
+    if (!slot)
+      return -EIO;
+
+    if (slot->state == KAFS_PENDING_FAILED)
+    {
+      hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
+      replay_dropped++;
+      continue;
+    }
+
+    if (slot->state == KAFS_PENDING_RESOLVED)
+    {
+      int still_pending = 0;
+      (void)kafs_pendinglog_inode_has_pending_id(ctx, slot->ino, slot->iblk, slot->pending_id,
+                                                 &still_pending);
+      if (!still_pending)
+      {
+        hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
+        replay_dropped++;
+        continue;
+      }
+      slot->state = KAFS_PENDING_QUEUED;
+      replay_requeued++;
+    }
+
+    break;
+  }
+
+  if (replay_requeued || replay_dropped)
+  {
+    kafs_journal_note(ctx, "PENDINGLOG",
+                      "replay: requeued=%u dropped=%u remain=%u",
+                      replay_requeued, replay_dropped, kafs_pendinglog_count(ctx));
+  }
+  return 0;
+}
+
 static void *kafs_pending_worker_main(void *arg)
 {
   kafs_context_t *ctx = (kafs_context_t *)arg;
@@ -2822,6 +2928,7 @@ int kafs_core_open_image(const char *image_path, kafs_context_t *ctx)
   (void)kafs_pendinglog_init_or_load(ctx);
   if (ctx->c_pendinglog_enabled)
   {
+    (void)kafs_pendinglog_replay_mount(ctx);
     (void)kafs_pending_worker_start(ctx);
     kafs_journal_note(ctx, "PENDINGLOG", "loaded entries=%u cap=%u", kafs_pendinglog_count(ctx),
                       ctx->c_pendinglog_capacity);
@@ -5321,6 +5428,7 @@ int main(int argc, char **argv)
   (void)kafs_pendinglog_init_or_load(&ctx);
   if (ctx.c_pendinglog_enabled)
   {
+    (void)kafs_pendinglog_replay_mount(&ctx);
     (void)kafs_pending_worker_start(&ctx);
     kafs_journal_note(&ctx, "PENDINGLOG", "loaded entries=%u cap=%u", kafs_pendinglog_count(&ctx),
                       ctx.c_pendinglog_capacity);
