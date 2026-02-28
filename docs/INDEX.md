@@ -26,6 +26,7 @@ design and policy notes.
 - [perf-discrepancy-analysis-20260228.md](perf-discrepancy-analysis-20260228.md)
 - [format-v3-123-spec.md](format-v3-123-spec.md)
 - [format-v3-123-tickets.md](format-v3-123-tickets.md)
+- [phase1-validation-20260228.md](phase1-validation-20260228.md)
 - [static-checks.md](static-checks.md)
 - [tools-suite.md](tools-suite.md)
 - [STRACE_ANALYSIS_INDEX.md](STRACE_ANALYSIS_INDEX.md)
