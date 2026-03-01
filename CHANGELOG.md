@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.2 - 2026-03-01
+- pending 非同期処理の競合対策を強化（inode epoch 楽観ガード導入、stale pending の適用抑止）。
+- pending 上書き時の二重 `dec_ref` を防止し、参照寿命の不整合を修正。
+- `truncate` の中間 unlock/relock 競合窓を縮小（解放候補を遅延収集し一括 `dec_ref`）。
+- stress 条件（`profile=stress`, `par=2`, `plain`）で 5-run 連続 PASS を確認。
+
 ## v0.2.1 - 2026-02-28
 - README に v0.2.0 の移行導線（`kafsctl migrate` / `kafs --migrate-v2`）を追記。
 - man ページ（`kafs(1)`, `kafsctl(1)`）を v0.2.0 仕様に同期。

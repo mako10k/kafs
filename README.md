@@ -4,12 +4,12 @@ KAFS is a FUSE-based filesystem backed by a single image file with a journal and
 optional deduplication features. This repository contains the filesystem
 implementation, tools, and tests.
 
-## Release Highlights (v0.2.0)
+## Release Highlights (v0.2.2)
 
-- HRL/pending log 非同期化（Stage-A/Stage-B + replay/fsync 連携）
-- 旧フォーマット(v2)の通常起動を停止し、マイグレーションガイダンスを表示
-- `kafsctl migrate <image> [--yes]` を追加
-- `kafs --migrate-v2 [--yes]` による one-shot 自動マイグレーションを追加
+- pending 競合対策を強化（inode epoch 楽観ガード + stale pending 抑止）
+- pending 上書き時の二重 `dec_ref` を防止し、参照寿命不整合を修正
+- `truncate` の競合窓を縮小し、並列 stress での安定性を改善
+- stress 条件で 5-run 連続 PASS（`invalid block ref=0`）
 
 ## Features
 
