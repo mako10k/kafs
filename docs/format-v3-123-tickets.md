@@ -1,6 +1,6 @@
 # KAFS Format v3 実装チケット（1→2→3）
 
-最終更新: 2026-02-28
+最終更新: 2026-03-01
 
 対象仕様: [format-v3-123-spec.md](format-v3-123-spec.md)
 
@@ -166,3 +166,29 @@
 3. P1-T3 Allocator API 抽象化
 
 この3件が完了すると、以降の性能改善チケットを安全に積める。
+
+---
+
+## 直近メモ（2026-03-01）
+
+### P3 安定化（stale pending / 競合窓）
+- 実施内容:
+  - inode epoch による楽観ガードを追加（pending enqueue時に epoch を記録し、worker 適用時に一致検証）
+  - pending 上書き時の二重 `dec_ref` を抑止（旧参照が pending の場合は旧 blo 解決/解放をしない）
+  - `truncate` の中間 unlock/relock 窓を縮小（解放候補を遅延収集し、メタ更新後に一括 `dec_ref`）
+- 影響範囲:
+  - [src/kafs.c](../src/kafs.c)
+  - [src/kafs_context.h](../src/kafs_context.h)
+
+### 検証結果（stress 5-run）
+- 条件: `profile=stress`, `codec=plain`, `par=2`, `mode=normal`
+- 結果: 5/5 PASS
+  - `job_fail=0`（全run）
+  - `extract_ok=2/2`（全run）
+  - `front_alive=1`（全run）
+  - `invalid block ref=0`（全run, 合計0）
+- 所要時間: avg `144.0741s` / median `144.9335s` / min `126.1205s` / max `170.6956s`
+
+### 次アクション
+- 同条件での夜間長時間（例: 20-run）を追加し、再現ゼロ継続を確認
+- 問題再発時は `kafs_pwrite` 周辺の参照更新順序を重点的に再点検
