@@ -55,7 +55,8 @@ enum
   KAFS_RPC_OP_CTL_SET_TIMEOUT = 53,
   KAFS_RPC_OP_CTL_ENV_LIST = 54,
   KAFS_RPC_OP_CTL_ENV_SET = 55,
-  KAFS_RPC_OP_CTL_ENV_UNSET = 56
+  KAFS_RPC_OP_CTL_ENV_UNSET = 56,
+  KAFS_RPC_OP_CTL_SET_DEDUP_PRIO = 57
 };
 
 enum
@@ -146,12 +147,25 @@ typedef struct
   uint32_t back_features;
   uint32_t compat_result;
   int32_t compat_reason;
+  uint32_t pending_worker_prio_mode;
+  int32_t pending_worker_nice;
+  int32_t pending_worker_prio_apply_error;
 } kafs_rpc_hotplug_status_t;
 
 typedef struct
 {
   uint32_t timeout_ms;
 } kafs_rpc_set_timeout_t;
+
+typedef struct
+{
+  uint32_t mode;
+  int32_t nice_value;
+  uint32_t flags;
+  uint32_t reserved;
+} kafs_rpc_set_dedup_prio_t;
+
+#define KAFS_RPC_SET_DEDUP_PRIO_F_HAS_NICE 0x1u
 
 typedef struct
 {

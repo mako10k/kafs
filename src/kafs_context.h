@@ -120,6 +120,10 @@ struct kafs_context
   int c_pending_worker_running;
   int c_pending_worker_stop;
   uint32_t c_pending_worker_backoff_ms;
+  uint32_t c_pending_worker_prio_mode;
+  int32_t c_pending_worker_nice;
+  int32_t c_pending_worker_prio_apply_error;
+  uint32_t c_pending_worker_prio_dirty;
 
   // --- Runtime inode open counts (in-memory only) ---
   uint32_t *c_open_cnt; // sized to superblock inocnt (allocated at mount)

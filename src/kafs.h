@@ -135,6 +135,9 @@ typedef uint_fast32_t kafs_hrid_t;
 #define KAFS_HASH_FAST_XXH64 1u
 #define KAFS_HASH_STRONG_BLAKE3_256 1u
 
+#define KAFS_PENDING_WORKER_PRIO_NORMAL 0u
+#define KAFS_PENDING_WORKER_PRIO_IDLE 1u
+
 #define KAFS_FEATURE_ALLOC_V2 (1ull << 0)
 #define KAFS_FEATURE_META_BATCH (1ull << 1)
 #define KAFS_FEATURE_ASYNC_DEDUP (1ull << 2)

@@ -24,16 +24,19 @@
 #include <sys/socket.h>
 #include <sys/mman.h>
 #include <sys/statvfs.h>
+#include <sys/resource.h>
 #include <sys/un.h>
 #include <stdlib.h>
 #include <stddef.h>
 #include <signal.h>
 #include <limits.h>
 #include <poll.h>
+#include <sched.h>
 #include <time.h>
 #ifdef __linux__
 #include <execinfo.h>
 #include <linux/fs.h>
+#include <sys/syscall.h>
 #endif
 
 #ifdef DEBUG
@@ -554,11 +557,81 @@ static int kafs_pendinglog_replay_mount(struct kafs_context *ctx)
   return 0;
 }
 
+static int kafs_pending_worker_prio_mode_parse(const char *s, uint32_t *mode)
+{
+  if (!s || !mode)
+    return -EINVAL;
+  if (strcmp(s, "normal") == 0)
+  {
+    *mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
+    return 0;
+  }
+  if (strcmp(s, "idle") == 0)
+  {
+    *mode = KAFS_PENDING_WORKER_PRIO_IDLE;
+    return 0;
+  }
+  return -EINVAL;
+}
+
+static int kafs_pending_worker_apply_priority_self(kafs_context_t *ctx)
+{
+  if (!ctx)
+    return -EINVAL;
+
+  int err = 0;
+  if (ctx->c_pending_worker_prio_mode == KAFS_PENDING_WORKER_PRIO_IDLE)
+  {
+#ifdef SCHED_IDLE
+    struct sched_param sp;
+    memset(&sp, 0, sizeof(sp));
+    int prc = pthread_setschedparam(pthread_self(), SCHED_IDLE, &sp);
+    if (prc != 0)
+      err = -prc;
+#else
+    err = -ENOTSUP;
+#endif
+  }
+  else
+  {
+    struct sched_param sp;
+    memset(&sp, 0, sizeof(sp));
+    int prc = pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp);
+    if (prc != 0)
+      err = -prc;
+  }
+
+  if (ctx->c_pending_worker_nice < 0 || ctx->c_pending_worker_nice > 19)
+  {
+    if (err == 0)
+      err = -ERANGE;
+  }
+  else
+  {
+#ifdef __linux__
+    long tid = syscall(SYS_gettid);
+    if (tid <= 0)
+      tid = 0;
+    if (setpriority(PRIO_PROCESS, (id_t)tid, ctx->c_pending_worker_nice) != 0 && err == 0)
+      err = -errno;
+#else
+    if (setpriority(PRIO_PROCESS, 0, ctx->c_pending_worker_nice) != 0 && err == 0)
+      err = -errno;
+#endif
+  }
+
+  ctx->c_pending_worker_prio_apply_error = err;
+  ctx->c_pending_worker_prio_dirty = 0;
+  return err;
+}
+
 static void *kafs_pending_worker_main(void *arg)
 {
   kafs_context_t *ctx = (kafs_context_t *)arg;
   if (!ctx)
     return NULL;
+
+  (void)kafs_pending_worker_apply_priority_self(ctx);
 
   for (;;)
   {
@@ -589,6 +662,9 @@ static void *kafs_pending_worker_main(void *arg)
       pthread_cond_wait(&ctx->c_pending_worker_cond, &ctx->c_pending_worker_lock);
     }
     pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+
+    if (ctx->c_pending_worker_prio_dirty)
+      (void)kafs_pending_worker_apply_priority_self(ctx);
 
     if (!has_work)
       continue;
@@ -3745,6 +3821,9 @@ static void kafs_ctl_fill_status(const kafs_context_t *ctx, kafs_rpc_hotplug_sta
   out->back_features = ctx->c_hotplug_back_features;
   out->compat_result = ctx->c_hotplug_compat_result;
   out->compat_reason = ctx->c_hotplug_compat_reason;
+  out->pending_worker_prio_mode = ctx->c_pending_worker_prio_mode;
+  out->pending_worker_nice = ctx->c_pending_worker_nice;
+  out->pending_worker_prio_apply_error = ctx->c_pending_worker_prio_apply_error;
 }
 
 static int kafs_ctl_handle_request(kafs_context_t *ctx, kafs_ctl_session_t *sess,
@@ -3827,6 +3906,32 @@ static int kafs_ctl_handle_request(kafs_context_t *ctx, kafs_ctl_session_t *sess
     {
       const kafs_rpc_env_update_t *req = (const kafs_rpc_env_update_t *)payload;
       result = kafs_hotplug_env_unset(ctx, req->key);
+    }
+    break;
+  case KAFS_RPC_OP_CTL_SET_DEDUP_PRIO:
+    if (hdr.payload_len != sizeof(kafs_rpc_set_dedup_prio_t))
+      result = -EINVAL;
+    else
+    {
+      const kafs_rpc_set_dedup_prio_t *req = (const kafs_rpc_set_dedup_prio_t *)payload;
+      if (req->mode != KAFS_PENDING_WORKER_PRIO_NORMAL &&
+          req->mode != KAFS_PENDING_WORKER_PRIO_IDLE)
+      {
+        result = -EINVAL;
+      }
+      else if ((req->flags & KAFS_RPC_SET_DEDUP_PRIO_F_HAS_NICE) != 0 &&
+               (req->nice_value < 0 || req->nice_value > 19))
+      {
+        result = -ERANGE;
+      }
+      else
+      {
+        ctx->c_pending_worker_prio_mode = req->mode;
+        if ((req->flags & KAFS_RPC_SET_DEDUP_PRIO_F_HAS_NICE) != 0)
+          ctx->c_pending_worker_nice = req->nice_value;
+        ctx->c_pending_worker_prio_dirty = 1;
+        kafs_pending_worker_notify_all(ctx);
+      }
     }
     break;
   default:
@@ -5021,6 +5126,8 @@ static void usage(const char *prog)
       "KAFS_MAX_THREADS.\n"
       "       migration note: v2 images are refused by default; use kafsctl migrate <image> [--yes]\n"
       "       or pass --migrate-v2 (optionally --yes) for one-shot startup migration.\n"
+      "       pending worker priority: -o pending_worker_prio=<normal|idle>,\n"
+      "       -o pending_worker_nice=<0..19>, env KAFS_PENDING_WORKER_PRIO / KAFS_PENDING_WORKER_NICE.\n"
       "Examples:\n"
       "  %s --image test.img mnt -f\n"
       "  %s --image legacy.img --migrate-v2 --yes mnt -f\n"
@@ -5211,6 +5318,30 @@ int main(int argc, char **argv)
   unsigned mt_cnt_override = 0;
   int mt_cnt_override_set = 0;
   int saw_max_threads = 0;
+  uint32_t pending_worker_prio_mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
+  int pending_worker_nice = 0;
+
+  const char *pprio = getenv("KAFS_PENDING_WORKER_PRIO");
+  if (pprio && *pprio)
+  {
+    if (kafs_pending_worker_prio_mode_parse(pprio, &pending_worker_prio_mode) != 0)
+    {
+      fprintf(stderr, "invalid KAFS_PENDING_WORKER_PRIO: '%s'\n", pprio);
+      return 2;
+    }
+  }
+  const char *pnice = getenv("KAFS_PENDING_WORKER_NICE");
+  if (pnice && *pnice)
+  {
+    char *endp = NULL;
+    long v = strtol(pnice, &endp, 10);
+    if (!endp || *endp != '\0' || v < 0 || v > 19)
+    {
+      fprintf(stderr, "invalid KAFS_PENDING_WORKER_NICE: '%s'\n", pnice);
+      return 2;
+    }
+    pending_worker_nice = (int)v;
+  }
 
   // Custom -o option: multi_thread[=N] (alias: multi-thread, multithread).
   // Strip it from argv before passing to libfuse, and translate to max_threads=.
@@ -5292,6 +5423,41 @@ int main(int argc, char **argv)
             mt_cnt_override = (unsigned)v;
             mt_cnt_override_set = 1;
             want_mt = 1;
+            continue;
+          }
+
+          const char *prio_str = NULL;
+          if (strncmp(tok, "pending_worker_prio=", 20) == 0)
+            prio_str = tok + 20;
+          else if (strncmp(tok, "dedup_worker_prio=", 18) == 0)
+            prio_str = tok + 18;
+          if (prio_str)
+          {
+            if (kafs_pending_worker_prio_mode_parse(prio_str, &pending_worker_prio_mode) != 0)
+            {
+              fprintf(stderr, "invalid -o pending_worker_prio: '%s'\n", prio_str);
+              free(dup);
+              return 2;
+            }
+            continue;
+          }
+
+          const char *nice_str = NULL;
+          if (strncmp(tok, "pending_worker_nice=", 20) == 0)
+            nice_str = tok + 20;
+          else if (strncmp(tok, "dedup_worker_nice=", 18) == 0)
+            nice_str = tok + 18;
+          if (nice_str)
+          {
+            char *endp = NULL;
+            long v = strtol(nice_str, &endp, 10);
+            if (!endp || *endp != '\0' || v < 0 || v > 19)
+            {
+              fprintf(stderr, "invalid -o pending_worker_nice: '%s'\n", nice_str);
+              free(dup);
+              return 2;
+            }
+            pending_worker_nice = (int)v;
             continue;
           }
 
@@ -5405,6 +5571,10 @@ int main(int argc, char **argv)
   ctx.c_hotplug_back_features = 0;
   ctx.c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_UNKNOWN;
   ctx.c_hotplug_compat_reason = 0;
+  ctx.c_pending_worker_prio_mode = pending_worker_prio_mode;
+  ctx.c_pending_worker_nice = pending_worker_nice;
+  ctx.c_pending_worker_prio_apply_error = 0;
+  ctx.c_pending_worker_prio_dirty = 1;
 
   const char *data_mode = getenv("KAFS_HOTPLUG_DATA_MODE");
   if (data_mode)

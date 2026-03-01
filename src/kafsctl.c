@@ -78,6 +78,7 @@ static void usage(const char *prog)
       "  %s hotplug restart-back <mountpoint>\n"
       "  %s hotplug compat <mountpoint> [--json]\n"
       "  %s hotplug set-timeout <mountpoint> <ms>\n"
+      "  %s hotplug set-dedup-priority <mountpoint> <normal|idle> [nice(0..19)]\n"
       "  %s hotplug env list <mountpoint>\n"
       "  %s hotplug env set <mountpoint> <key>=<value>\n"
       "  %s hotplug env unset <mountpoint> <key>\n"
@@ -95,7 +96,7 @@ static void usage(const char *prog)
           "  %s chmod <mountpoint> <octal_mode> <path>\n"
           "  %s touch <mountpoint> <path>\n",
           prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog,
-          prog, prog, prog, prog, prog, prog, prog, prog);
+          prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 static int confirm_yes_stdin(void)
@@ -250,6 +251,18 @@ static const char *hotplug_compat_reason_str(int32_t reason)
   }
 }
 
+static const char *pending_worker_prio_mode_str(uint32_t mode)
+{
+  switch (mode)
+  {
+  case KAFS_PENDING_WORKER_PRIO_IDLE:
+    return "idle";
+  case KAFS_PENDING_WORKER_PRIO_NORMAL:
+  default:
+    return "normal";
+  }
+}
+
 #define KAFS_CTL_REL ".kafs.sock"
 
 static int write_full(int fd, const void *buf, size_t len)
@@ -400,6 +413,9 @@ static void hotplug_status_from_rpc(kafs_hotplug_status_t *out,
   out->back_features = in->back_features;
   out->compat_result = in->compat_result;
   out->compat_reason = in->compat_reason;
+  out->pending_worker_prio_mode = in->pending_worker_prio_mode;
+  out->pending_worker_nice = in->pending_worker_nice;
+  out->pending_worker_prio_apply_error = in->pending_worker_prio_apply_error;
 }
 
 static int get_hotplug_status(const char *mnt, kafs_hotplug_status_t *out)
@@ -454,7 +470,12 @@ static int cmd_hotplug_status(const char *mnt, int json)
     printf("  \"compat_result\": %u,\n", st.compat_result);
     printf("  \"compat_result_str\": \"%s\",\n", hotplug_compat_str(st.compat_result));
     printf("  \"compat_reason\": %d,\n", st.compat_reason);
-    printf("  \"compat_reason_str\": \"%s\"\n", hotplug_compat_reason_str(st.compat_reason));
+        printf("  \"compat_reason_str\": \"%s\",\n", hotplug_compat_reason_str(st.compat_reason));
+        printf("  \"pending_worker_prio_mode\": %u,\n", st.pending_worker_prio_mode);
+        printf("  \"pending_worker_prio_mode_str\": \"%s\",\n",
+          pending_worker_prio_mode_str(st.pending_worker_prio_mode));
+        printf("  \"pending_worker_nice\": %d,\n", st.pending_worker_nice);
+        printf("  \"pending_worker_prio_apply_error\": %d\n", st.pending_worker_prio_apply_error);
     printf("}\n");
     return 0;
   }
@@ -475,6 +496,10 @@ static int cmd_hotplug_status(const char *mnt, int json)
   printf("  compat_result: %u (%s)\n", st.compat_result, hotplug_compat_str(st.compat_result));
   printf("  compat_reason: %d (%s)\n", st.compat_reason,
          hotplug_compat_reason_str(st.compat_reason));
+    printf("  pending_worker_prio_mode: %u (%s)\n", st.pending_worker_prio_mode,
+      pending_worker_prio_mode_str(st.pending_worker_prio_mode));
+    printf("  pending_worker_nice: %d\n", st.pending_worker_nice);
+    printf("  pending_worker_prio_apply_error: %d\n", st.pending_worker_prio_apply_error);
   return 0;
 }
 
@@ -564,6 +589,57 @@ static int cmd_hotplug_set_timeout(const char *mnt, const char *timeout_str)
   if (resp_result != 0)
   {
     fprintf(stderr, "hotplug set-timeout failed: %s\n", strerror(-resp_result));
+    return 1;
+  }
+  return 0;
+}
+
+static int cmd_hotplug_set_dedup_priority(const char *mnt, const char *mode_str,
+                                          const char *nice_str)
+{
+  if (!mode_str)
+  {
+    fprintf(stderr, "invalid mode\n");
+    return 2;
+  }
+
+  kafs_rpc_set_dedup_prio_t req;
+  memset(&req, 0, sizeof(req));
+  if (strcmp(mode_str, "normal") == 0)
+    req.mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
+  else if (strcmp(mode_str, "idle") == 0)
+    req.mode = KAFS_PENDING_WORKER_PRIO_IDLE;
+  else
+  {
+    fprintf(stderr, "invalid mode: %s\n", mode_str);
+    return 2;
+  }
+
+  if (nice_str)
+  {
+    char *endp = NULL;
+    long v = strtol(nice_str, &endp, 10);
+    if (!endp || *endp != '\0' || v < 0 || v > 19)
+    {
+      fprintf(stderr, "invalid nice value: %s\n", nice_str);
+      return 2;
+    }
+    req.flags |= KAFS_RPC_SET_DEDUP_PRIO_F_HAS_NICE;
+    req.nice_value = (int32_t)v;
+  }
+
+  uint32_t resp_len = 0;
+  int32_t resp_result = 0;
+  int rc = hotplug_ctl_exchange(mnt, KAFS_RPC_OP_CTL_SET_DEDUP_PRIO, &req, sizeof(req), NULL, 0,
+                                &resp_len, &resp_result);
+  if (rc != 0)
+  {
+    fprintf(stderr, "hotplug set-dedup-priority failed: %s\n", strerror(-rc));
+    return 1;
+  }
+  if (resp_result != 0)
+  {
+    fprintf(stderr, "hotplug set-dedup-priority failed: %s\n", strerror(-resp_result));
     return 1;
   }
   return 0;
@@ -1699,6 +1775,15 @@ int main(int argc, char **argv)
         return 2;
       }
       return cmd_hotplug_set_timeout(argv[3], argv[4]);
+    }
+    if (strcmp(argv[2], "set-dedup-priority") == 0)
+    {
+      if (argc != 5 && argc != 6)
+      {
+        usage(argv[0]);
+        return 2;
+      }
+      return cmd_hotplug_set_dedup_priority(argv[3], argv[4], argc == 6 ? argv[5] : NULL);
     }
     if (strcmp(argv[2], "env") == 0)
     {
