@@ -128,6 +128,7 @@ typedef struct kafs_pendinglog_entry
   uint64_t pending_id;
   uint32_t ino;
   uint32_t iblk;
+  uint32_t ino_epoch;
   uint32_t temp_blo;
   uint32_t state;
   uint32_t target_hrid;
@@ -284,26 +285,70 @@ static int kafs_pendinglog_find_by_id(struct kafs_context *ctx, uint64_t pending
 {
   if (!ctx || !out || pending_id == 0)
     return -EINVAL;
+
+  int need_unlock = 0;
+  if (ctx->c_pending_worker_lock_init)
+  {
+    pthread_mutex_lock(&ctx->c_pending_worker_lock);
+    need_unlock = 1;
+  }
+
   kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
   if (!hdr || hdr->capacity == 0)
+  {
+    if (need_unlock)
+      pthread_mutex_unlock(&ctx->c_pending_worker_lock);
     return -ENOENT;
+  }
 
   uint32_t idx = hdr->head;
   while (idx != hdr->tail)
   {
     kafs_pendinglog_entry_t *slot = kafs_pendinglog_entry_ptr(ctx, idx);
     if (!slot)
+    {
+      if (need_unlock)
+        pthread_mutex_unlock(&ctx->c_pending_worker_lock);
       return -EIO;
+    }
     if (slot->pending_id == pending_id)
     {
       *out = *slot;
+      if (need_unlock)
+        pthread_mutex_unlock(&ctx->c_pending_worker_lock);
       return 0;
     }
     idx += 1u;
     if (idx >= hdr->capacity)
       idx = 0;
   }
+  if (need_unlock)
+    pthread_mutex_unlock(&ctx->c_pending_worker_lock);
   return -ENOENT;
+}
+
+static uint32_t kafs_inode_epoch_get(struct kafs_context *ctx, uint32_t ino)
+{
+  if (!ctx || !ctx->c_ino_epoch)
+    return 0;
+  if (ino >= kafs_sb_inocnt_get(ctx->c_superblock))
+    return 0;
+  return __atomic_load_n(&ctx->c_ino_epoch[ino], __ATOMIC_RELAXED);
+}
+
+static uint32_t kafs_inode_epoch_bump(struct kafs_context *ctx, uint32_t ino)
+{
+  if (!ctx || !ctx->c_ino_epoch)
+    return 0;
+  if (ino >= kafs_sb_inocnt_get(ctx->c_superblock))
+    return 0;
+  uint32_t v = __atomic_add_fetch(&ctx->c_ino_epoch[ino], 1u, __ATOMIC_RELAXED);
+  if (v == 0)
+  {
+    __atomic_store_n(&ctx->c_ino_epoch[ino], 1u, __ATOMIC_RELAXED);
+    v = 1u;
+  }
+  return v;
 }
 
 static int kafs_ref_is_pending(kafs_blkcnt_t ref)
@@ -467,12 +512,21 @@ static int kafs_pendinglog_inode_has_pending_id(struct kafs_context *ctx, uint32
   kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
   if (kafs_ino_get_usage(inoent))
   {
-    kafs_blkcnt_t cur_raw = KAFS_BLO_NONE;
-    if (kafs_ino_ibrk_run(ctx, inoent, (kafs_iblkcnt_t)iblk, &cur_raw, KAFS_IBLKREF_FUNC_GET_RAW) ==
-        0)
+    kafs_off_t cur_size = kafs_ino_size_get(inoent);
+    if (cur_size > KAFS_DIRECT_SIZE)
     {
-      if (kafs_ref_is_pending(cur_raw) && kafs_ref_pending_id(cur_raw) == pending_id)
-        *is_pending = 1;
+      kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
+      kafs_iblkcnt_t iblocnt = (kafs_iblkcnt_t)((cur_size + bs - 1) / bs);
+      if ((kafs_iblkcnt_t)iblk < iblocnt)
+      {
+        kafs_blkcnt_t cur_raw = KAFS_BLO_NONE;
+        if (kafs_ino_ibrk_run(ctx, inoent, (kafs_iblkcnt_t)iblk, &cur_raw,
+                              KAFS_IBLKREF_FUNC_GET_RAW) == 0)
+        {
+          if (kafs_ref_is_pending(cur_raw) && kafs_ref_pending_id(cur_raw) == pending_id)
+            *is_pending = 1;
+        }
+      }
     }
   }
   kafs_inode_unlock(ctx, ino);
@@ -687,6 +741,7 @@ static void *kafs_pending_worker_main(void *arg)
       kafs_hrid_t hrid = 0;
       int is_new = 0;
       kafs_blkcnt_t final_blo = KAFS_BLO_NONE;
+      int installed = 0;
       ctx->c_stat_hrl_put_calls++;
       uint64_t t0 = kafs_now_ns();
       rc = kafs_hrl_put(ctx, buf, &hrid, &is_new, &final_blo);
@@ -705,21 +760,42 @@ static void *kafs_pending_worker_main(void *arg)
           kafs_sinode_t *inoent = &ctx->c_inotbl[ent.ino];
           if (kafs_ino_get_usage(inoent))
           {
-            kafs_blkcnt_t cur_raw = KAFS_BLO_NONE;
-            if (kafs_ino_ibrk_run(ctx, inoent, ent.iblk, &cur_raw, KAFS_IBLKREF_FUNC_GET_RAW) == 0)
+            uint32_t cur_epoch = kafs_inode_epoch_get(ctx, ent.ino);
+            if (ent.ino_epoch == 0 || ent.ino_epoch != cur_epoch)
             {
-              if (kafs_ref_is_pending(cur_raw) &&
-                  kafs_ref_pending_id(cur_raw) == ent.pending_id)
+              kafs_inode_unlock(ctx, ent.ino);
+              goto pending_finalize;
+            }
+            kafs_off_t cur_size = kafs_ino_size_get(inoent);
+            if (cur_size > KAFS_DIRECT_SIZE)
+            {
+              kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
+              kafs_iblkcnt_t iblocnt = (kafs_iblkcnt_t)((cur_size + bs - 1) / bs);
+              if (ent.iblk < iblocnt)
               {
-                (void)kafs_ino_ibrk_run(ctx, inoent, ent.iblk, &final_blo, KAFS_IBLKREF_FUNC_SET);
+                kafs_blkcnt_t cur_raw = KAFS_BLO_NONE;
+                if (kafs_ino_ibrk_run(ctx, inoent, ent.iblk, &cur_raw,
+                                      KAFS_IBLKREF_FUNC_GET_RAW) == 0)
+                {
+                  if (kafs_ref_is_pending(cur_raw) &&
+                      kafs_ref_pending_id(cur_raw) == ent.pending_id)
+                  {
+                    if (kafs_ino_ibrk_run(ctx, inoent, ent.iblk, &final_blo,
+                                          KAFS_IBLKREF_FUNC_SET) == 0)
+                      installed = 1;
+                  }
+                }
               }
             }
           }
           kafs_inode_unlock(ctx, ent.ino);
         }
 
+      pending_finalize:
+        ;
+
         kafs_blkcnt_t old_blo = (kafs_blkcnt_t)ent.target_hrid;
-        if (old_blo != KAFS_BLO_NONE && old_blo != (kafs_blkcnt_t)ent.temp_blo &&
+        if (installed && old_blo != KAFS_BLO_NONE && old_blo != (kafs_blkcnt_t)ent.temp_blo &&
             old_blo != final_blo)
         {
           uint64_t t_dec0 = kafs_now_ns();
@@ -728,6 +804,9 @@ static void *kafs_pending_worker_main(void *arg)
           __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0,
                              __ATOMIC_RELAXED);
         }
+
+        if (!installed && final_blo != KAFS_BLO_NONE && final_blo != (kafs_blkcnt_t)ent.temp_blo)
+          (void)kafs_hrl_dec_ref_by_blo(ctx, final_blo);
 
         if ((kafs_blkcnt_t)ent.temp_blo != KAFS_BLO_NONE && (kafs_blkcnt_t)ent.temp_blo != final_blo)
           (void)kafs_hrl_dec_ref_by_blo(ctx, (kafs_blkcnt_t)ent.temp_blo);
@@ -847,10 +926,33 @@ static void kafs_pending_worker_stop(struct kafs_context *ctx)
 // cppcheck-suppress constParameterCallback
 static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
 {
+  static uint32_t s_invalid_blkref_bt_emitted = 0;
   kafs_dlog(3, "%s(blo = %" PRIuFAST32 ")\n", __func__, blo);
   assert(ctx != NULL);
   assert(buf != NULL);
-  assert(blo < kafs_sb_r_blkcnt_get(ctx->c_superblock));
+  kafs_blkcnt_t max_blo = kafs_sb_r_blkcnt_get(ctx->c_superblock);
+  if (blo != KAFS_BLO_NONE && blo >= max_blo)
+  {
+    kafs_log(KAFS_LOG_ERR,
+             "%s: invalid block ref blo=%" PRIuFAST32 " (max=%" PRIuFAST32 ")\n",
+             __func__, blo, max_blo);
+#ifdef __linux__
+    uint32_t c = __atomic_fetch_add(&s_invalid_blkref_bt_emitted, 1u, __ATOMIC_RELAXED);
+    if (c < 3u)
+    {
+      void *bt[20];
+      int n = backtrace(bt, (int)(sizeof(bt) / sizeof(bt[0])));
+      char **syms = backtrace_symbols(bt, n);
+      if (syms)
+      {
+        for (int i = 0; i < n; ++i)
+          kafs_log(KAFS_LOG_ERR, "  invalid-blo bt[%d]=%s\n", i, syms[i]);
+        free(syms);
+      }
+    }
+#endif
+    return -EIO;
+  }
   kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
   if (blo == KAFS_BLO_NONE)
@@ -877,7 +979,14 @@ static int kafs_blk_write(struct kafs_context *ctx, kafs_blkcnt_t blo, const voi
   assert(ctx != NULL);
   assert(buf != NULL);
   assert(blo != KAFS_INO_NONE);
-  assert(blo < kafs_sb_r_blkcnt_get(ctx->c_superblock));
+  kafs_blkcnt_t max_blo = kafs_sb_r_blkcnt_get(ctx->c_superblock);
+  if (blo != KAFS_BLO_NONE && blo >= max_blo)
+  {
+    kafs_log(KAFS_LOG_ERR,
+             "%s: invalid block ref blo=%" PRIuFAST32 " (max=%" PRIuFAST32 ")\n",
+             __func__, blo, max_blo);
+    return -EIO;
+  }
   kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
   if (blo == KAFS_BLO_NONE)
@@ -1456,12 +1565,15 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
       uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
       kafs_blkcnt_t old_raw = KAFS_BLO_NONE;
       kafs_blkcnt_t old_blo = KAFS_BLO_NONE;
+      uint32_t ino_epoch = kafs_inode_epoch_get(ctx, ino_idx);
       KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old_raw, KAFS_IBLKREF_FUNC_GET_RAW);
-      KAFS_CALL(kafs_ref_resolve_data_blo, ctx, old_raw, &old_blo);
+      if (!kafs_ref_is_pending(old_raw))
+        KAFS_CALL(kafs_ref_resolve_data_blo, ctx, old_raw, &old_blo);
 
       kafs_pendinglog_entry_t ent = {0};
       ent.ino = ino_idx;
       ent.iblk = (uint32_t)iblo;
+      ent.ino_epoch = ino_epoch;
       ent.temp_blo = (uint32_t)temp_blo;
       ent.state = KAFS_PENDING_QUEUED;
       ent.target_hrid = (uint32_t)old_blo;
@@ -1787,6 +1899,31 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
   kafs_off_t filesize_orig = kafs_ino_size_get(inoent);
   if (filesize_orig == filesize_new)
     return KAFS_SUCCESS;
+  kafs_blkcnt_t *deferred_free = NULL;
+  size_t deferred_free_cnt = 0;
+  size_t deferred_free_cap = 0;
+  #define KAFS_TRUNC_PUSH_FREE(_blo)                                                                \
+    do                                                                                              \
+    {                                                                                               \
+      kafs_blkcnt_t __b = (_blo);                                                                   \
+      if (__b != KAFS_BLO_NONE)                                                                     \
+      {                                                                                             \
+        if (deferred_free_cnt == deferred_free_cap)                                                 \
+        {                                                                                           \
+          size_t new_cap = deferred_free_cap ? (deferred_free_cap << 1) : 256u;                    \
+          kafs_blkcnt_t *nw = realloc(deferred_free, new_cap * sizeof(*nw));                       \
+          if (!nw)                                                                                  \
+          {                                                                                         \
+            free(deferred_free);                                                                    \
+            return -ENOMEM;                                                                         \
+          }                                                                                         \
+          deferred_free = nw;                                                                       \
+          deferred_free_cap = new_cap;                                                              \
+        }                                                                                           \
+        deferred_free[deferred_free_cnt++] = __b;                                                   \
+      }                                                                                             \
+    } while (0)
+  (void)kafs_inode_epoch_bump(ctx, (uint32_t)(inoent - ctx->c_inotbl));
   if (filesize_new > filesize_orig)
   {
     if (filesize_orig <= KAFS_DIRECT_SIZE && filesize_new > KAFS_DIRECT_SIZE)
@@ -1853,10 +1990,8 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
 
       if (to_free_cnt)
       {
-        kafs_inode_unlock(ctx, ino_idx);
         for (size_t i = 0; i < to_free_cnt; i++)
-          (void)kafs_hrl_dec_ref_by_blo(ctx, to_free[i]);
-        kafs_inode_lock(ctx, ino_idx);
+          KAFS_TRUNC_PUSH_FREE(to_free[i]);
       }
       cur = end;
     }
@@ -1864,6 +1999,14 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
     memcpy(inoent->i_blkreftbl, buf, (size_t)filesize_new);
     if (filesize_new < KAFS_DIRECT_SIZE)
       memset((void *)inoent->i_blkreftbl + filesize_new, 0, KAFS_DIRECT_SIZE - filesize_new);
+    if (deferred_free_cnt)
+    {
+      kafs_inode_unlock(ctx, ino_idx);
+      for (size_t i = 0; i < deferred_free_cnt; ++i)
+        (void)kafs_hrl_dec_ref_by_blo(ctx, deferred_free[i]);
+      kafs_inode_lock(ctx, ino_idx);
+    }
+    free(deferred_free);
     return KAFS_SUCCESS;
   }
 
@@ -1909,14 +2052,21 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
 
     if (to_free_cnt)
     {
-      kafs_inode_unlock(ctx, ino_idx);
       for (size_t i = 0; i < to_free_cnt; i++)
-        (void)kafs_hrl_dec_ref_by_blo(ctx, to_free[i]);
-      kafs_inode_lock(ctx, ino_idx);
+        KAFS_TRUNC_PUSH_FREE(to_free[i]);
     }
     iblooff = end;
   }
 
+  if (deferred_free_cnt)
+  {
+    kafs_inode_unlock(ctx, ino_idx);
+    for (size_t i = 0; i < deferred_free_cnt; ++i)
+      (void)kafs_hrl_dec_ref_by_blo(ctx, deferred_free[i]);
+    kafs_inode_lock(ctx, ino_idx);
+  }
+  free(deferred_free);
+  #undef KAFS_TRUNC_PUSH_FREE
   return KAFS_SUCCESS;
 }
 
@@ -4774,7 +4924,10 @@ static int kafs_op_unlink(const char *path)
   kafs_sinode_t *t = &ctx->c_inotbl[removed_ino];
   kafs_linkcnt_t nl = kafs_ino_linkcnt_decr(t);
   if (nl == 0)
+  {
+    (void)kafs_inode_epoch_bump(ctx, (uint32_t)removed_ino);
     kafs_ino_dtime_set(t, kafs_now());
+  }
   kafs_inode_unlock(ctx, (uint32_t)removed_ino);
 
   kafs_journal_commit(ctx, jseq);
@@ -5064,6 +5217,7 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
       kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
       if (kafs_ino_get_usage(inoent) && kafs_ino_linkcnt_get(inoent) == 0)
       {
+        (void)kafs_inode_epoch_bump(ctx, (uint32_t)ino);
         (void)kafs_truncate(ctx, inoent, 0);
         memset(inoent, 0, sizeof(*inoent));
         reclaimed = 1;
@@ -5757,6 +5911,12 @@ int main(int argc, char **argv)
   ctx.c_mapsize = (size_t)mapsize; // metadata region length (subset of img)
   ctx.c_blkmasktbl = (void *)ctx.c_superblock + (intptr_t)blkmask_off;
   ctx.c_inotbl = (void *)ctx.c_superblock + (intptr_t)inotbl_off;
+  ctx.c_ino_epoch = calloc((size_t)inocnt, sizeof(uint32_t));
+  if (ctx.c_ino_epoch)
+  {
+    for (kafs_inocnt_t i = 0; i < inocnt; ++i)
+      ctx.c_ino_epoch[i] = 1u;
+  }
   ctx.c_alloc_v3_summary_dirty = 1;
 
   // HRL オープン
@@ -5900,6 +6060,7 @@ int main(int argc, char **argv)
   }
   free(ctx.c_meta_bitmap_words);
   free(ctx.c_meta_bitmap_dirty);
+  free(ctx.c_ino_epoch);
   if (ctx.c_img_base && ctx.c_img_base != MAP_FAILED)
     munmap(ctx.c_img_base, ctx.c_img_size);
   return rc;
