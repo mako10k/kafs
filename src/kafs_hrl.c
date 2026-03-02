@@ -4,6 +4,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <time.h>
 
 // In-memory helpers derived from superblock HRL fields (entry type is declared in kafs_hash.h)
 
@@ -26,6 +27,13 @@ static inline uint32_t hrl_bucket_count(kafs_context_t *ctx) { return ctx->c_hrl
 static inline kafs_blksize_t hrl_blksize(kafs_context_t *ctx)
 {
   return kafs_sb_blksize_get(ctx->c_superblock);
+}
+
+static inline uint64_t hrl_now_ns(void)
+{
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
 static inline kafs_logblksize_t hrl_log_blksize(kafs_context_t *ctx)
@@ -120,14 +128,23 @@ static int hrl_find_by_hash(kafs_context_t *ctx, uint64_t fast, const void *buf,
   // Guard against corrupted/looping chains: cap iterations.
   for (uint32_t steps = 0; head != 0 && steps < cap; ++steps)
   {
+    __atomic_add_fetch(&ctx->c_stat_hrl_put_chain_steps, 1u, __ATOMIC_RELAXED);
     uint32_t i = head - 1u;
     if (i >= cap)
       return -EIO;
     kafs_hrl_entry_t *e = &ents[i];
-    if (e->refcnt != 0 && hrl_entry_cmp_content(ctx, e, buf, fast))
+    if (e->refcnt != 0)
     {
-      *out_index = i;
-      return 0;
+      __atomic_add_fetch(&ctx->c_stat_hrl_put_cmp_calls, 1u, __ATOMIC_RELAXED);
+      uint64_t t_cmp0 = hrl_now_ns();
+      int match = hrl_entry_cmp_content(ctx, e, buf, fast);
+      uint64_t t_cmp1 = hrl_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_hrl_put_ns_cmp_content, t_cmp1 - t_cmp0, __ATOMIC_RELAXED);
+      if (match)
+      {
+        *out_index = i;
+        return 0;
+      }
     }
     head = e->next_plus1;
   }
@@ -236,12 +253,19 @@ int kafs_hrl_put(kafs_context_t *ctx, const void *block_data, kafs_hrid_t *out_h
   if (ctx->c_hrl_bucket_cnt == 0 || hrl_capacity(ctx) == 0)
     return -ENOSYS;
 
+  uint64_t t_hash0 = hrl_now_ns();
   uint64_t fast = hrl_hash64(block_data, hrl_blksize(ctx));
+  uint64_t t_hash1 = hrl_now_ns();
+  __atomic_add_fetch(&ctx->c_stat_hrl_put_ns_hash, t_hash1 - t_hash0, __ATOMIC_RELAXED);
   uint32_t idx;
   int b = hrl_bucket_index(ctx, fast);
 
   kafs_hrl_bucket_lock(ctx, (uint32_t)b);
-  if (hrl_find_by_hash(ctx, fast, block_data, &idx) == 0)
+  uint64_t t_find0 = hrl_now_ns();
+  int find_rc = hrl_find_by_hash(ctx, fast, block_data, &idx);
+  uint64_t t_find1 = hrl_now_ns();
+  __atomic_add_fetch(&ctx->c_stat_hrl_put_ns_find, t_find1 - t_find0, __ATOMIC_RELAXED);
+  if (find_rc == 0)
   {
     kafs_hrl_entry_t *e = hrl_entries_tbl(ctx) + idx;
     if (e->refcnt == 0xFFFFFFFFu)
@@ -259,7 +283,11 @@ int kafs_hrl_put(kafs_context_t *ctx, const void *block_data, kafs_hrid_t *out_h
 
   // allocate entry (must be globally serialized; refcnt==0 is treated as free)
   kafs_hrl_global_lock(ctx);
-  if (hrl_find_free_slot(ctx, &idx) != 0)
+  uint64_t t_slot0 = hrl_now_ns();
+  int slot_rc = hrl_find_free_slot(ctx, &idx);
+  uint64_t t_slot1 = hrl_now_ns();
+  __atomic_add_fetch(&ctx->c_stat_hrl_put_ns_slot_alloc, t_slot1 - t_slot0, __ATOMIC_RELAXED);
+  if (slot_rc != 0)
   {
     kafs_hrl_global_unlock(ctx);
     kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
@@ -272,7 +300,11 @@ int kafs_hrl_put(kafs_context_t *ctx, const void *block_data, kafs_hrid_t *out_h
 
   // allocate physical block and write
   kafs_blkcnt_t blo = KAFS_BLO_NONE;
+  uint64_t t_blk_alloc0 = hrl_now_ns();
   int rc = kafs_blk_alloc(ctx, &blo);
+  uint64_t t_blk_alloc1 = hrl_now_ns();
+  __atomic_add_fetch(&ctx->c_stat_hrl_put_ns_blk_alloc, t_blk_alloc1 - t_blk_alloc0,
+                     __ATOMIC_RELAXED);
   if (rc != 0)
   {
     kafs_hrl_global_lock(ctx);
@@ -281,7 +313,11 @@ int kafs_hrl_put(kafs_context_t *ctx, const void *block_data, kafs_hrid_t *out_h
     kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
     return rc;
   }
+  uint64_t t_blk_write0 = hrl_now_ns();
   rc = hrl_write_blo(ctx, blo, block_data);
+  uint64_t t_blk_write1 = hrl_now_ns();
+  __atomic_add_fetch(&ctx->c_stat_hrl_put_ns_blk_write, t_blk_write1 - t_blk_write0,
+                     __ATOMIC_RELAXED);
   if (rc != 0)
   {
     (void)hrl_release_blo(ctx, &blo);

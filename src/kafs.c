@@ -24,16 +24,19 @@
 #include <sys/socket.h>
 #include <sys/mman.h>
 #include <sys/statvfs.h>
+#include <sys/resource.h>
 #include <sys/un.h>
 #include <stdlib.h>
 #include <stddef.h>
 #include <signal.h>
 #include <limits.h>
 #include <poll.h>
+#include <sched.h>
 #include <time.h>
 #ifdef __linux__
 #include <execinfo.h>
 #include <linux/fs.h>
+#include <sys/syscall.h>
 #endif
 
 #ifdef DEBUG
@@ -64,6 +67,853 @@ static void *memcpy_orig(void *d, const void *s, size_t l)
   })
 #endif
 
+static inline uint64_t kafs_now_ns(void)
+{
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static inline void kafs_stat_record_pwrite_iblk_write_latency(kafs_context_t *ctx, uint64_t ns)
+{
+  if (!ctx)
+    return;
+  const uint32_t cap = (uint32_t)(sizeof(ctx->c_stat_pwrite_iblk_write_samples) /
+                                  sizeof(ctx->c_stat_pwrite_iblk_write_samples[0]));
+  if (cap == 0)
+    return;
+  uint64_t seq = __atomic_fetch_add(&ctx->c_stat_pwrite_iblk_write_sample_seq, 1u,
+                                    __ATOMIC_RELAXED);
+  uint32_t idx = (uint32_t)(seq % (uint64_t)cap);
+  ctx->c_stat_pwrite_iblk_write_samples[idx] = ns;
+  uint32_t prev = __atomic_load_n(&ctx->c_stat_pwrite_iblk_write_sample_count, __ATOMIC_RELAXED);
+  while (prev < cap)
+  {
+    if (__atomic_compare_exchange_n(&ctx->c_stat_pwrite_iblk_write_sample_count, &prev, prev + 1u,
+                                    1, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+      break;
+  }
+  ctx->c_stat_pwrite_iblk_write_sample_cap = cap;
+}
+
+#define KAFS_PENDINGLOG_MAGIC 0x4b504c47u /* 'KPLG' */
+#define KAFS_PENDINGLOG_VERSION 1u
+#define KAFS_PENDING_REF_FLAG 0x80000000u
+#define KAFS_PENDING_REF_MASK 0x7fffffffu
+
+enum
+{
+  KAFS_PENDING_QUEUED = 1,
+  KAFS_PENDING_HASHED = 2,
+  KAFS_PENDING_RESOLVED = 3,
+  KAFS_PENDING_FAILED = 4,
+};
+
+typedef struct kafs_pendinglog_hdr
+{
+  uint32_t magic;
+  uint16_t version;
+  uint16_t flags;
+  uint32_t entry_size;
+  uint32_t capacity;
+  uint32_t head;
+  uint32_t tail;
+  uint64_t next_pending_id;
+  uint64_t last_seq;
+  uint64_t reserved[4];
+} __attribute__((packed)) kafs_pendinglog_hdr_t;
+
+typedef struct kafs_pendinglog_entry
+{
+  uint64_t pending_id;
+  uint32_t ino;
+  uint32_t iblk;
+  uint32_t ino_epoch;
+  uint32_t temp_blo;
+  uint32_t state;
+  uint32_t target_hrid;
+  uint32_t reserved0;
+  uint64_t seq;
+} __attribute__((packed)) kafs_pendinglog_entry_t;
+
+typedef enum
+{
+  KAFS_IBLKREF_FUNC_GET_RAW,
+  KAFS_IBLKREF_FUNC_GET,
+  KAFS_IBLKREF_FUNC_PUT,
+  KAFS_IBLKREF_FUNC_SET
+} kafs_iblkref_func_t;
+
+static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_iblkcnt_t iblo,
+                             kafs_blkcnt_t *pblo, kafs_iblkref_func_t ifunc);
+static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf);
+
+static int kafs_pendinglog_region(struct kafs_context *ctx, uint64_t *off, uint64_t *size)
+{
+  if (!ctx || !ctx->c_superblock)
+    return -EINVAL;
+  uint64_t p_off = kafs_sb_pendinglog_offset_get(ctx->c_superblock);
+  uint64_t p_size = kafs_sb_pendinglog_size_get(ctx->c_superblock);
+  if (p_off == 0 || p_size < sizeof(kafs_pendinglog_hdr_t) + sizeof(kafs_pendinglog_entry_t))
+    return -ENOENT;
+  if (p_off > (uint64_t)ctx->c_img_size || p_size > (uint64_t)ctx->c_img_size - p_off)
+    return -EINVAL;
+  if (off)
+    *off = p_off;
+  if (size)
+    *size = p_size;
+  return 0;
+}
+
+static kafs_pendinglog_hdr_t *kafs_pendinglog_hdr_ptr(struct kafs_context *ctx)
+{
+  if (!ctx || !ctx->c_pendinglog_enabled || !ctx->c_pendinglog_base)
+    return NULL;
+  return (kafs_pendinglog_hdr_t *)ctx->c_pendinglog_base;
+}
+
+static kafs_pendinglog_entry_t *kafs_pendinglog_entry_ptr(struct kafs_context *ctx, uint32_t idx)
+{
+  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+  if (!hdr || idx >= hdr->capacity)
+    return NULL;
+  char *base = (char *)ctx->c_pendinglog_base + sizeof(*hdr);
+  return (kafs_pendinglog_entry_t *)(base + ((size_t)idx * (size_t)hdr->entry_size));
+}
+
+static int kafs_pendinglog_init_or_load(struct kafs_context *ctx)
+{
+  if (!ctx)
+    return -EINVAL;
+
+  ctx->c_pendinglog_enabled = 0;
+  ctx->c_pendinglog_base = NULL;
+  ctx->c_pendinglog_size = 0;
+  ctx->c_pendinglog_capacity = 0;
+
+  uint64_t off = 0, size = 0;
+  int rc = kafs_pendinglog_region(ctx, &off, &size);
+  if (rc < 0)
+    return 0;
+
+  ctx->c_pendinglog_base = (char *)ctx->c_img_base + off;
+  ctx->c_pendinglog_size = (size_t)size;
+
+  kafs_pendinglog_hdr_t *hdr = (kafs_pendinglog_hdr_t *)ctx->c_pendinglog_base;
+  uint32_t cap = (uint32_t)((ctx->c_pendinglog_size - sizeof(*hdr)) / sizeof(kafs_pendinglog_entry_t));
+  if (cap == 0)
+    return -EINVAL;
+
+  int valid = (hdr->magic == KAFS_PENDINGLOG_MAGIC && hdr->version == KAFS_PENDINGLOG_VERSION &&
+               hdr->entry_size == sizeof(kafs_pendinglog_entry_t) && hdr->capacity == cap &&
+               hdr->head < cap && hdr->tail < cap);
+  if (!valid)
+  {
+    memset(ctx->c_pendinglog_base, 0, ctx->c_pendinglog_size);
+    hdr->magic = KAFS_PENDINGLOG_MAGIC;
+    hdr->version = KAFS_PENDINGLOG_VERSION;
+    hdr->flags = 0;
+    hdr->entry_size = sizeof(kafs_pendinglog_entry_t);
+    hdr->capacity = cap;
+    hdr->head = 0;
+    hdr->tail = 0;
+    hdr->next_pending_id = 1;
+    hdr->last_seq = 0;
+  }
+
+  ctx->c_pendinglog_enabled = 1;
+  ctx->c_pendinglog_capacity = hdr->capacity;
+  return 0;
+}
+
+static uint32_t kafs_pendinglog_count(struct kafs_context *ctx)
+{
+  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+  if (!hdr || hdr->capacity == 0)
+    return 0;
+  if (hdr->tail >= hdr->head)
+    return hdr->tail - hdr->head;
+  return (hdr->capacity - hdr->head) + hdr->tail;
+}
+
+static int kafs_pendinglog_enqueue(struct kafs_context *ctx, const kafs_pendinglog_entry_t *ent,
+                                   uint64_t *pending_id)
+{
+  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+  if (!hdr || !ent)
+    return -ENOSYS;
+
+  uint32_t next = hdr->tail + 1;
+  if (next >= hdr->capacity)
+    next = 0;
+  if (next == hdr->head)
+    return -ENOSPC;
+
+  kafs_pendinglog_entry_t *slot = kafs_pendinglog_entry_ptr(ctx, hdr->tail);
+  if (!slot)
+    return -EIO;
+
+  *slot = *ent;
+  slot->pending_id = hdr->next_pending_id++;
+  hdr->tail = next;
+  if (pending_id)
+    *pending_id = slot->pending_id;
+  return 0;
+}
+
+static int kafs_pendinglog_read(struct kafs_context *ctx, uint32_t idx, kafs_pendinglog_entry_t *out)
+{
+  if (!out)
+    return -EINVAL;
+  kafs_pendinglog_entry_t *slot = kafs_pendinglog_entry_ptr(ctx, idx);
+  if (!slot)
+    return -ENOENT;
+  *out = *slot;
+  return 0;
+}
+
+static uint32_t kafs_pendinglog_next_idx(const kafs_pendinglog_hdr_t *hdr, uint32_t idx)
+{
+  idx += 1u;
+  if (idx >= hdr->capacity)
+    idx = 0;
+  return idx;
+}
+
+static int kafs_pendinglog_find_by_id(struct kafs_context *ctx, uint64_t pending_id,
+                                      kafs_pendinglog_entry_t *out)
+{
+  if (!ctx || !out || pending_id == 0)
+    return -EINVAL;
+
+  int need_unlock = 0;
+  if (ctx->c_pending_worker_lock_init)
+  {
+    pthread_mutex_lock(&ctx->c_pending_worker_lock);
+    need_unlock = 1;
+  }
+
+  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+  if (!hdr || hdr->capacity == 0)
+  {
+    if (need_unlock)
+      pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+    return -ENOENT;
+  }
+
+  uint32_t idx = hdr->head;
+  while (idx != hdr->tail)
+  {
+    kafs_pendinglog_entry_t *slot = kafs_pendinglog_entry_ptr(ctx, idx);
+    if (!slot)
+    {
+      if (need_unlock)
+        pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+      return -EIO;
+    }
+    if (slot->pending_id == pending_id)
+    {
+      *out = *slot;
+      if (need_unlock)
+        pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+      return 0;
+    }
+    idx += 1u;
+    if (idx >= hdr->capacity)
+      idx = 0;
+  }
+  if (need_unlock)
+    pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+  return -ENOENT;
+}
+
+static uint32_t kafs_inode_epoch_get(struct kafs_context *ctx, uint32_t ino)
+{
+  if (!ctx || !ctx->c_ino_epoch)
+    return 0;
+  if (ino >= kafs_sb_inocnt_get(ctx->c_superblock))
+    return 0;
+  return __atomic_load_n(&ctx->c_ino_epoch[ino], __ATOMIC_RELAXED);
+}
+
+static uint32_t kafs_inode_epoch_bump(struct kafs_context *ctx, uint32_t ino)
+{
+  if (!ctx || !ctx->c_ino_epoch)
+    return 0;
+  if (ino >= kafs_sb_inocnt_get(ctx->c_superblock))
+    return 0;
+  uint32_t v = __atomic_add_fetch(&ctx->c_ino_epoch[ino], 1u, __ATOMIC_RELAXED);
+  if (v == 0)
+  {
+    __atomic_store_n(&ctx->c_ino_epoch[ino], 1u, __ATOMIC_RELAXED);
+    v = 1u;
+  }
+  return v;
+}
+
+static int kafs_ref_is_pending(kafs_blkcnt_t ref)
+{
+  uint32_t raw = (uint32_t)ref;
+  return (raw & KAFS_PENDING_REF_FLAG) != 0u;
+}
+
+static uint64_t kafs_ref_pending_id(kafs_blkcnt_t ref)
+{
+  uint32_t raw = (uint32_t)ref;
+  return (uint64_t)(raw & KAFS_PENDING_REF_MASK);
+}
+
+__attribute_maybe_unused__ static int kafs_ref_pending_encode(uint64_t pending_id,
+                                                              kafs_blkcnt_t *out_ref)
+{
+  if (!out_ref)
+    return -EINVAL;
+  if (pending_id == 0 || pending_id > (uint64_t)KAFS_PENDING_REF_MASK)
+    return -ERANGE;
+  *out_ref = (kafs_blkcnt_t)(KAFS_PENDING_REF_FLAG | (uint32_t)pending_id);
+  return 0;
+}
+
+static int kafs_ref_resolve_data_blo(struct kafs_context *ctx, kafs_blkcnt_t ref,
+                                     kafs_blkcnt_t *out_blo)
+{
+  if (!out_blo)
+    return -EINVAL;
+  if (ref == KAFS_BLO_NONE)
+  {
+    *out_blo = KAFS_BLO_NONE;
+    return 0;
+  }
+  if (!kafs_ref_is_pending(ref))
+  {
+    *out_blo = ref;
+    return 0;
+  }
+
+  uint64_t pending_id = kafs_ref_pending_id(ref);
+  if (pending_id == 0)
+    return -EIO;
+
+  kafs_pendinglog_entry_t ent;
+  int rc = kafs_pendinglog_find_by_id(ctx, pending_id, &ent);
+  if (rc < 0)
+    return rc;
+
+  if (ent.temp_blo == KAFS_BLO_NONE)
+    return -EIO;
+  *out_blo = (kafs_blkcnt_t)ent.temp_blo;
+  return 0;
+}
+
+static void kafs_pending_worker_notify(struct kafs_context *ctx)
+{
+  if (!ctx || !ctx->c_pending_worker_lock_init)
+    return;
+  pthread_mutex_lock(&ctx->c_pending_worker_lock);
+  pthread_cond_signal(&ctx->c_pending_worker_cond);
+  pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+}
+
+static void kafs_pending_worker_notify_all(struct kafs_context *ctx)
+{
+  if (!ctx || !ctx->c_pending_worker_lock_init)
+    return;
+  pthread_mutex_lock(&ctx->c_pending_worker_lock);
+  pthread_cond_broadcast(&ctx->c_pending_worker_cond);
+  pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+}
+
+static int kafs_pendinglog_inode_state_locked(struct kafs_context *ctx, uint32_t ino,
+                                              int *has_pending, int *has_failed)
+{
+  if (!has_pending || !has_failed)
+    return -EINVAL;
+  *has_pending = 0;
+  *has_failed = 0;
+
+  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+  if (!hdr || hdr->capacity == 0)
+    return 0;
+
+  uint32_t idx = hdr->head;
+  while (idx != hdr->tail)
+  {
+    kafs_pendinglog_entry_t *slot = kafs_pendinglog_entry_ptr(ctx, idx);
+    if (!slot)
+      return -EIO;
+    if (slot->ino == ino)
+    {
+      if (slot->state == KAFS_PENDING_FAILED)
+        *has_failed = 1;
+      else if (slot->state != KAFS_PENDING_RESOLVED)
+        *has_pending = 1;
+    }
+    idx = kafs_pendinglog_next_idx(hdr, idx);
+  }
+  return 0;
+}
+
+static int kafs_pendinglog_drain_inode(struct kafs_context *ctx, uint32_t ino)
+{
+  if (!ctx || !ctx->c_pendinglog_enabled || !ctx->c_pending_worker_running ||
+      !ctx->c_pending_worker_lock_init)
+    return 0;
+
+  struct timespec deadline;
+  clock_gettime(CLOCK_REALTIME, &deadline);
+  deadline.tv_sec += 5;
+
+  pthread_mutex_lock(&ctx->c_pending_worker_lock);
+  for (;;)
+  {
+    int has_pending = 0;
+    int has_failed = 0;
+    int rc = kafs_pendinglog_inode_state_locked(ctx, ino, &has_pending, &has_failed);
+    if (rc < 0)
+    {
+      pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+      return rc;
+    }
+    if (has_failed)
+    {
+      pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+      return -EIO;
+    }
+    if (!has_pending)
+    {
+      pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+      return 0;
+    }
+
+    pthread_cond_signal(&ctx->c_pending_worker_cond);
+    int tw = pthread_cond_timedwait(&ctx->c_pending_worker_cond, &ctx->c_pending_worker_lock,
+                                    &deadline);
+    if (tw == ETIMEDOUT)
+    {
+      pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+      return -ETIMEDOUT;
+    }
+  }
+}
+
+static int kafs_pendinglog_inode_has_pending_id(struct kafs_context *ctx, uint32_t ino,
+                                                uint32_t iblk, uint64_t pending_id,
+                                                int *is_pending)
+{
+  if (!ctx || !is_pending)
+    return -EINVAL;
+  *is_pending = 0;
+  if (pending_id == 0)
+    return 0;
+  if (ino >= kafs_sb_inocnt_get(ctx->c_superblock))
+    return 0;
+
+  kafs_inode_lock(ctx, ino);
+  kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+  if (kafs_ino_get_usage(inoent))
+  {
+    kafs_off_t cur_size = kafs_ino_size_get(inoent);
+    if (cur_size > KAFS_DIRECT_SIZE)
+    {
+      kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
+      kafs_iblkcnt_t iblocnt = (kafs_iblkcnt_t)((cur_size + bs - 1) / bs);
+      if ((kafs_iblkcnt_t)iblk < iblocnt)
+      {
+        kafs_blkcnt_t cur_raw = KAFS_BLO_NONE;
+        if (kafs_ino_ibrk_run(ctx, inoent, (kafs_iblkcnt_t)iblk, &cur_raw,
+                              KAFS_IBLKREF_FUNC_GET_RAW) == 0)
+        {
+          if (kafs_ref_is_pending(cur_raw) && kafs_ref_pending_id(cur_raw) == pending_id)
+            *is_pending = 1;
+        }
+      }
+    }
+  }
+  kafs_inode_unlock(ctx, ino);
+  return 0;
+}
+
+static int kafs_pendinglog_replay_mount(struct kafs_context *ctx)
+{
+  if (!ctx || !ctx->c_pendinglog_enabled)
+    return 0;
+
+  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+  if (!hdr || hdr->capacity == 0)
+    return 0;
+
+  uint32_t replay_requeued = 0;
+  uint32_t replay_dropped = 0;
+
+  uint32_t idx = hdr->head;
+  while (idx != hdr->tail)
+  {
+    kafs_pendinglog_entry_t *slot = kafs_pendinglog_entry_ptr(ctx, idx);
+    if (!slot)
+      return -EIO;
+
+    if (slot->state == KAFS_PENDING_HASHED)
+    {
+      slot->state = KAFS_PENDING_QUEUED;
+      replay_requeued++;
+    }
+    else if (slot->state == KAFS_PENDING_RESOLVED)
+    {
+      int still_pending = 0;
+      (void)kafs_pendinglog_inode_has_pending_id(ctx, slot->ino, slot->iblk, slot->pending_id,
+                                                 &still_pending);
+      if (still_pending)
+      {
+        slot->state = KAFS_PENDING_QUEUED;
+        replay_requeued++;
+      }
+    }
+    idx = kafs_pendinglog_next_idx(hdr, idx);
+  }
+
+  while (hdr->head != hdr->tail)
+  {
+    kafs_pendinglog_entry_t *slot = kafs_pendinglog_entry_ptr(ctx, hdr->head);
+    if (!slot)
+      return -EIO;
+
+    if (slot->state == KAFS_PENDING_FAILED)
+    {
+      hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
+      replay_dropped++;
+      continue;
+    }
+
+    if (slot->state == KAFS_PENDING_RESOLVED)
+    {
+      int still_pending = 0;
+      (void)kafs_pendinglog_inode_has_pending_id(ctx, slot->ino, slot->iblk, slot->pending_id,
+                                                 &still_pending);
+      if (!still_pending)
+      {
+        hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
+        replay_dropped++;
+        continue;
+      }
+      slot->state = KAFS_PENDING_QUEUED;
+      replay_requeued++;
+    }
+
+    break;
+  }
+
+  if (replay_requeued || replay_dropped)
+  {
+    kafs_journal_note(ctx, "PENDINGLOG",
+                      "replay: requeued=%u dropped=%u remain=%u",
+                      replay_requeued, replay_dropped, kafs_pendinglog_count(ctx));
+  }
+  return 0;
+}
+
+static int kafs_pending_worker_prio_mode_parse(const char *s, uint32_t *mode)
+{
+  if (!s || !mode)
+    return -EINVAL;
+  if (strcmp(s, "normal") == 0)
+  {
+    *mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
+    return 0;
+  }
+  if (strcmp(s, "idle") == 0)
+  {
+    *mode = KAFS_PENDING_WORKER_PRIO_IDLE;
+    return 0;
+  }
+  return -EINVAL;
+}
+
+static int kafs_pending_worker_apply_priority_self(kafs_context_t *ctx)
+{
+  if (!ctx)
+    return -EINVAL;
+
+  int err = 0;
+  if (ctx->c_pending_worker_prio_mode == KAFS_PENDING_WORKER_PRIO_IDLE)
+  {
+#ifdef SCHED_IDLE
+    struct sched_param sp;
+    memset(&sp, 0, sizeof(sp));
+    int prc = pthread_setschedparam(pthread_self(), SCHED_IDLE, &sp);
+    if (prc != 0)
+      err = -prc;
+#else
+    err = -ENOTSUP;
+#endif
+  }
+  else
+  {
+    struct sched_param sp;
+    memset(&sp, 0, sizeof(sp));
+    int prc = pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp);
+    if (prc != 0)
+      err = -prc;
+  }
+
+  if (ctx->c_pending_worker_nice < 0 || ctx->c_pending_worker_nice > 19)
+  {
+    if (err == 0)
+      err = -ERANGE;
+  }
+  else
+  {
+#ifdef __linux__
+    long tid = syscall(SYS_gettid);
+    if (tid <= 0)
+      tid = 0;
+    if (setpriority(PRIO_PROCESS, (id_t)tid, ctx->c_pending_worker_nice) != 0 && err == 0)
+      err = -errno;
+#else
+    if (setpriority(PRIO_PROCESS, 0, ctx->c_pending_worker_nice) != 0 && err == 0)
+      err = -errno;
+#endif
+  }
+
+  ctx->c_pending_worker_prio_apply_error = err;
+  ctx->c_pending_worker_prio_dirty = 0;
+  return err;
+}
+
+static void *kafs_pending_worker_main(void *arg)
+{
+  kafs_context_t *ctx = (kafs_context_t *)arg;
+  if (!ctx)
+    return NULL;
+
+  (void)kafs_pending_worker_apply_priority_self(ctx);
+
+  for (;;)
+  {
+    uint32_t idx = 0;
+    kafs_pendinglog_entry_t ent;
+    int has_work = 0;
+
+    pthread_mutex_lock(&ctx->c_pending_worker_lock);
+    for (;;)
+    {
+      kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+      if (ctx->c_pending_worker_stop)
+      {
+        pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+        return NULL;
+      }
+      if (hdr && hdr->capacity > 0 && hdr->head != hdr->tail)
+      {
+        idx = hdr->head;
+        kafs_pendinglog_entry_t *slot = kafs_pendinglog_entry_ptr(ctx, idx);
+        if (slot)
+        {
+          ent = *slot;
+          has_work = 1;
+          break;
+        }
+      }
+      pthread_cond_wait(&ctx->c_pending_worker_cond, &ctx->c_pending_worker_lock);
+    }
+    pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+
+    if (ctx->c_pending_worker_prio_dirty)
+      (void)kafs_pending_worker_apply_priority_self(ctx);
+
+    if (!has_work)
+      continue;
+
+    if (ent.state == KAFS_PENDING_RESOLVED || ent.state == KAFS_PENDING_FAILED)
+    {
+      pthread_mutex_lock(&ctx->c_pending_worker_lock);
+      kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+      if (hdr && hdr->capacity > 0 && hdr->head == idx)
+        hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
+      pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+      continue;
+    }
+
+    kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+    char buf[blksize];
+    int rc = kafs_blk_read(ctx, (kafs_blkcnt_t)ent.temp_blo, buf);
+    if (rc == 0)
+    {
+      kafs_hrid_t hrid = 0;
+      int is_new = 0;
+      kafs_blkcnt_t final_blo = KAFS_BLO_NONE;
+      int installed = 0;
+      ctx->c_stat_hrl_put_calls++;
+      uint64_t t0 = kafs_now_ns();
+      rc = kafs_hrl_put(ctx, buf, &hrid, &is_new, &final_blo);
+      uint64_t t1 = kafs_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_hrl_put, t1 - t0, __ATOMIC_RELAXED);
+      if (rc == 0)
+      {
+        if (is_new)
+          ctx->c_stat_hrl_put_misses++;
+        else
+          ctx->c_stat_hrl_put_hits++;
+
+        if (ent.ino < kafs_sb_inocnt_get(ctx->c_superblock))
+        {
+          kafs_inode_lock(ctx, ent.ino);
+          kafs_sinode_t *inoent = &ctx->c_inotbl[ent.ino];
+          if (kafs_ino_get_usage(inoent))
+          {
+            uint32_t cur_epoch = kafs_inode_epoch_get(ctx, ent.ino);
+            if (ent.ino_epoch == 0 || ent.ino_epoch != cur_epoch)
+            {
+              kafs_inode_unlock(ctx, ent.ino);
+              goto pending_finalize;
+            }
+            kafs_off_t cur_size = kafs_ino_size_get(inoent);
+            if (cur_size > KAFS_DIRECT_SIZE)
+            {
+              kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
+              kafs_iblkcnt_t iblocnt = (kafs_iblkcnt_t)((cur_size + bs - 1) / bs);
+              if (ent.iblk < iblocnt)
+              {
+                kafs_blkcnt_t cur_raw = KAFS_BLO_NONE;
+                if (kafs_ino_ibrk_run(ctx, inoent, ent.iblk, &cur_raw,
+                                      KAFS_IBLKREF_FUNC_GET_RAW) == 0)
+                {
+                  if (kafs_ref_is_pending(cur_raw) &&
+                      kafs_ref_pending_id(cur_raw) == ent.pending_id)
+                  {
+                    if (kafs_ino_ibrk_run(ctx, inoent, ent.iblk, &final_blo,
+                                          KAFS_IBLKREF_FUNC_SET) == 0)
+                      installed = 1;
+                  }
+                }
+              }
+            }
+          }
+          kafs_inode_unlock(ctx, ent.ino);
+        }
+
+      pending_finalize:
+        ;
+
+        kafs_blkcnt_t old_blo = (kafs_blkcnt_t)ent.target_hrid;
+        if (installed && old_blo != KAFS_BLO_NONE && old_blo != (kafs_blkcnt_t)ent.temp_blo &&
+            old_blo != final_blo)
+        {
+          uint64_t t_dec0 = kafs_now_ns();
+          (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
+          uint64_t t_dec1 = kafs_now_ns();
+          __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0,
+                             __ATOMIC_RELAXED);
+        }
+
+        if (!installed && final_blo != KAFS_BLO_NONE && final_blo != (kafs_blkcnt_t)ent.temp_blo)
+          (void)kafs_hrl_dec_ref_by_blo(ctx, final_blo);
+
+        if ((kafs_blkcnt_t)ent.temp_blo != KAFS_BLO_NONE && (kafs_blkcnt_t)ent.temp_blo != final_blo)
+          (void)kafs_hrl_dec_ref_by_blo(ctx, (kafs_blkcnt_t)ent.temp_blo);
+
+        pthread_mutex_lock(&ctx->c_pending_worker_lock);
+        kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+        kafs_pendinglog_entry_t *slot = hdr ? kafs_pendinglog_entry_ptr(ctx, idx) : NULL;
+        if (hdr && slot)
+        {
+          slot->state = KAFS_PENDING_RESOLVED;
+          slot->target_hrid = (uint32_t)hrid;
+          slot->reserved0 = 0;
+          if (hdr->head == idx)
+            hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
+        }
+        pthread_cond_broadcast(&ctx->c_pending_worker_cond);
+        pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+        continue;
+      }
+    }
+
+    pthread_mutex_lock(&ctx->c_pending_worker_lock);
+    kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+    kafs_pendinglog_entry_t *slot = hdr ? kafs_pendinglog_entry_ptr(ctx, idx) : NULL;
+    uint32_t retry = 0;
+    if (slot)
+    {
+      slot->state = KAFS_PENDING_HASHED;
+      slot->reserved0 += 1u;
+      retry = slot->reserved0;
+      if (retry >= 32u)
+      {
+        slot->state = KAFS_PENDING_FAILED;
+        if (hdr && hdr->head == idx)
+          hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
+      }
+    }
+    pthread_cond_broadcast(&ctx->c_pending_worker_cond);
+    pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+
+    if (retry > 0)
+    {
+      if (retry > 6u)
+        retry = 6u;
+      uint32_t backoff_ms = 1u << retry;
+      struct timespec ts = {
+          .tv_sec = (time_t)(backoff_ms / 1000u),
+          .tv_nsec = (long)((backoff_ms % 1000u) * 1000000u),
+      };
+      nanosleep(&ts, NULL);
+    }
+  }
+}
+
+static int kafs_pending_worker_start(struct kafs_context *ctx)
+{
+  if (!ctx || !ctx->c_pendinglog_enabled)
+    return 0;
+  if (ctx->c_pending_worker_running)
+    return 0;
+
+  if (!ctx->c_pending_worker_lock_init)
+  {
+    if (pthread_mutex_init(&ctx->c_pending_worker_lock, NULL) != 0)
+      return -EIO;
+    if (pthread_cond_init(&ctx->c_pending_worker_cond, NULL) != 0)
+    {
+      pthread_mutex_destroy(&ctx->c_pending_worker_lock);
+      return -EIO;
+    }
+    ctx->c_pending_worker_lock_init = 1;
+  }
+
+  ctx->c_pending_worker_stop = 0;
+  int prc = pthread_create(&ctx->c_pending_worker_tid, NULL, kafs_pending_worker_main, ctx);
+  if (prc != 0)
+    return -prc;
+
+  ctx->c_pending_worker_running = 1;
+  if (kafs_pendinglog_count(ctx) > 0)
+    kafs_pending_worker_notify(ctx);
+  return 0;
+}
+
+static void kafs_pending_worker_stop(struct kafs_context *ctx)
+{
+  if (!ctx)
+    return;
+
+  if (ctx->c_pending_worker_running)
+  {
+    pthread_mutex_lock(&ctx->c_pending_worker_lock);
+    ctx->c_pending_worker_stop = 1;
+    pthread_cond_broadcast(&ctx->c_pending_worker_cond);
+    pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+    pthread_join(ctx->c_pending_worker_tid, NULL);
+    ctx->c_pending_worker_running = 0;
+  }
+
+  if (ctx->c_pending_worker_lock_init)
+  {
+    pthread_cond_destroy(&ctx->c_pending_worker_cond);
+    pthread_mutex_destroy(&ctx->c_pending_worker_lock);
+    ctx->c_pending_worker_lock_init = 0;
+  }
+}
+
 // ---------------------------------------------------------
 // BLOCK OPERATIONS
 // ---------------------------------------------------------
@@ -76,10 +926,33 @@ static void *memcpy_orig(void *d, const void *s, size_t l)
 // cppcheck-suppress constParameterCallback
 static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
 {
+  static uint32_t s_invalid_blkref_bt_emitted = 0;
   kafs_dlog(3, "%s(blo = %" PRIuFAST32 ")\n", __func__, blo);
   assert(ctx != NULL);
   assert(buf != NULL);
-  assert(blo < kafs_sb_r_blkcnt_get(ctx->c_superblock));
+  kafs_blkcnt_t max_blo = kafs_sb_r_blkcnt_get(ctx->c_superblock);
+  if (blo != KAFS_BLO_NONE && blo >= max_blo)
+  {
+    kafs_log(KAFS_LOG_ERR,
+             "%s: invalid block ref blo=%" PRIuFAST32 " (max=%" PRIuFAST32 ")\n",
+             __func__, blo, max_blo);
+#ifdef __linux__
+    uint32_t c = __atomic_fetch_add(&s_invalid_blkref_bt_emitted, 1u, __ATOMIC_RELAXED);
+    if (c < 3u)
+    {
+      void *bt[20];
+      int n = backtrace(bt, (int)(sizeof(bt) / sizeof(bt[0])));
+      char **syms = backtrace_symbols(bt, n);
+      if (syms)
+      {
+        for (int i = 0; i < n; ++i)
+          kafs_log(KAFS_LOG_ERR, "  invalid-blo bt[%d]=%s\n", i, syms[i]);
+        free(syms);
+      }
+    }
+#endif
+    return -EIO;
+  }
   kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
   if (blo == KAFS_BLO_NONE)
@@ -106,7 +979,14 @@ static int kafs_blk_write(struct kafs_context *ctx, kafs_blkcnt_t blo, const voi
   assert(ctx != NULL);
   assert(buf != NULL);
   assert(blo != KAFS_INO_NONE);
-  assert(blo < kafs_sb_r_blkcnt_get(ctx->c_superblock));
+  kafs_blkcnt_t max_blo = kafs_sb_r_blkcnt_get(ctx->c_superblock);
+  if (blo != KAFS_BLO_NONE && blo >= max_blo)
+  {
+    kafs_log(KAFS_LOG_ERR,
+             "%s: invalid block ref blo=%" PRIuFAST32 " (max=%" PRIuFAST32 ")\n",
+             __func__, blo, max_blo);
+    return -EIO;
+  }
   kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
   if (blo == KAFS_BLO_NONE)
@@ -128,13 +1008,6 @@ static int kafs_blk_write(struct kafs_context *ctx, kafs_blkcnt_t blo, const voi
 // INODE BLOCK OPERATIONS
 // ---------------------------------------------------------
 
-typedef enum
-{
-  KAFS_IBLKREF_FUNC_GET,
-  KAFS_IBLKREF_FUNC_PUT,
-  KAFS_IBLKREF_FUNC_SET
-} kafs_iblkref_func_t;
-
 static int kafs_blk_is_zero(const void *buf, size_t len)
 {
   const char *c = buf;
@@ -155,14 +1028,21 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
 
   if (iblo < 12)
   {
-    kafs_blkcnt_t blo_data = kafs_blkcnt_stoh(inoent->i_blkreftbl[iblo]);
+    kafs_blkcnt_t blo_data_raw = kafs_blkcnt_stoh(inoent->i_blkreftbl[iblo]);
+    kafs_blkcnt_t blo_data = KAFS_BLO_NONE;
     switch (ifunc)
     {
+    case KAFS_IBLKREF_FUNC_GET_RAW:
+      *pblo = blo_data_raw;
+      return KAFS_SUCCESS;
+
     case KAFS_IBLKREF_FUNC_GET:
+      KAFS_CALL(kafs_ref_resolve_data_blo, ctx, blo_data_raw, &blo_data);
       *pblo = blo_data;
       return KAFS_SUCCESS;
 
     case KAFS_IBLKREF_FUNC_PUT:
+      KAFS_CALL(kafs_ref_resolve_data_blo, ctx, blo_data_raw, &blo_data);
       if (blo_data == KAFS_BLO_NONE)
       {
         KAFS_CALL(kafs_blk_alloc, ctx, &blo_data);
@@ -194,7 +1074,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
 
     switch (ifunc)
     {
-    case KAFS_IBLKREF_FUNC_GET:
+    case KAFS_IBLKREF_FUNC_GET_RAW:
       if (blo_blkreftbl == KAFS_BLO_NONE)
       {
         *pblo = KAFS_BLO_NONE;
@@ -202,6 +1082,16 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
       }
       KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl, blkreftbl);
       *pblo = kafs_blkcnt_stoh(blkreftbl[iblo]);
+      return KAFS_SUCCESS;
+
+    case KAFS_IBLKREF_FUNC_GET:
+      if (blo_blkreftbl == KAFS_BLO_NONE)
+      {
+        *pblo = KAFS_BLO_NONE;
+        return KAFS_SUCCESS;
+      }
+      KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl, blkreftbl);
+      KAFS_CALL(kafs_ref_resolve_data_blo, ctx, kafs_blkcnt_stoh(blkreftbl[iblo]), pblo);
       return KAFS_SUCCESS;
 
     case KAFS_IBLKREF_FUNC_PUT:
@@ -216,7 +1106,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
       else
       {
         KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl, blkreftbl);
-        blo_data = kafs_blkcnt_stoh(blkreftbl[iblo]);
+        KAFS_CALL(kafs_ref_resolve_data_blo, ctx, kafs_blkcnt_stoh(blkreftbl[iblo]), &blo_data);
       }
       if (blo_data == KAFS_BLO_NONE)
       {
@@ -260,7 +1150,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
 
     switch (ifunc)
     {
-    case KAFS_IBLKREF_FUNC_GET:
+    case KAFS_IBLKREF_FUNC_GET_RAW:
       if (blo_blkreftbl1 == KAFS_BLO_NONE)
       {
         *pblo = KAFS_BLO_NONE;
@@ -275,6 +1165,23 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
       }
       KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl2, blkreftbl2);
       *pblo = kafs_blkcnt_stoh(blkreftbl2[iblo2]);
+      return KAFS_SUCCESS;
+
+    case KAFS_IBLKREF_FUNC_GET:
+      if (blo_blkreftbl1 == KAFS_BLO_NONE)
+      {
+        *pblo = KAFS_BLO_NONE;
+        return KAFS_SUCCESS;
+      }
+      KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl1, blkreftbl1);
+      blo_blkreftbl2 = kafs_blkcnt_stoh(blkreftbl1[iblo1]);
+      if (blo_blkreftbl2 == KAFS_BLO_NONE)
+      {
+        *pblo = KAFS_BLO_NONE;
+        return KAFS_SUCCESS;
+      }
+      KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl2, blkreftbl2);
+      KAFS_CALL(kafs_ref_resolve_data_blo, ctx, kafs_blkcnt_stoh(blkreftbl2[iblo2]), pblo);
       return KAFS_SUCCESS;
 
     case KAFS_IBLKREF_FUNC_PUT:
@@ -301,7 +1208,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
       else
       {
         KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl2, blkreftbl2);
-        blo_data = kafs_blkcnt_stoh(blkreftbl2[iblo2]);
+        KAFS_CALL(kafs_ref_resolve_data_blo, ctx, kafs_blkcnt_stoh(blkreftbl2[iblo2]), &blo_data);
       }
       if (blo_data == KAFS_BLO_NONE)
       {
@@ -357,7 +1264,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
 
   switch (ifunc)
   {
-  case KAFS_IBLKREF_FUNC_GET:
+  case KAFS_IBLKREF_FUNC_GET_RAW:
     if (blo_blkreftbl1 == KAFS_BLO_NONE)
     {
       *pblo = KAFS_BLO_NONE;
@@ -379,6 +1286,30 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
     }
     KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl3, blkreftbl3);
     *pblo = kafs_blkcnt_stoh(blkreftbl3[iblo3]);
+    return KAFS_SUCCESS;
+
+  case KAFS_IBLKREF_FUNC_GET:
+    if (blo_blkreftbl1 == KAFS_BLO_NONE)
+    {
+      *pblo = KAFS_BLO_NONE;
+      return KAFS_SUCCESS;
+    }
+    KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl1, blkreftbl1);
+    blo_blkreftbl2 = kafs_blkcnt_stoh(blkreftbl1[iblo1]);
+    if (blo_blkreftbl2 == KAFS_BLO_NONE)
+    {
+      *pblo = KAFS_BLO_NONE;
+      return KAFS_SUCCESS;
+    }
+    KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl2, blkreftbl2);
+    blo_blkreftbl3 = kafs_blkcnt_stoh(blkreftbl2[iblo2]);
+    if (blo_blkreftbl3 == KAFS_BLO_NONE)
+    {
+      *pblo = KAFS_BLO_NONE;
+      return KAFS_SUCCESS;
+    }
+    KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl3, blkreftbl3);
+    KAFS_CALL(kafs_ref_resolve_data_blo, ctx, kafs_blkcnt_stoh(blkreftbl3[iblo3]), pblo);
     return KAFS_SUCCESS;
 
   case KAFS_IBLKREF_FUNC_PUT:
@@ -418,7 +1349,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
     else
     {
       KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl3, blkreftbl3);
-      blo_data = kafs_blkcnt_stoh(blkreftbl3[iblo3]);
+      KAFS_CALL(kafs_ref_resolve_data_blo, ctx, kafs_blkcnt_stoh(blkreftbl3[iblo3]), &blo_data);
     }
     if (blo_data == KAFS_BLO_NONE)
     {
@@ -621,12 +1552,61 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
   // 注意: kafs_blk_is_zero は「非ゼロを含むと1、全ゼロで0」を返す
   if (kafs_blk_is_zero(buf, blksize))
   {
+    if (ctx->c_pendinglog_enabled && ctx->c_pending_worker_running)
+    {
+      kafs_blkcnt_t temp_blo = KAFS_BLO_NONE;
+      KAFS_CALL(kafs_blk_alloc, ctx, &temp_blo);
+      uint64_t t_lw0 = kafs_now_ns();
+      KAFS_CALL(kafs_blk_write, ctx, temp_blo, buf);
+      uint64_t t_lw1 = kafs_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_legacy_blk_write, t_lw1 - t_lw0,
+                         __ATOMIC_RELAXED);
+
+      uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
+      kafs_blkcnt_t old_raw = KAFS_BLO_NONE;
+      kafs_blkcnt_t old_blo = KAFS_BLO_NONE;
+      uint32_t ino_epoch = kafs_inode_epoch_get(ctx, ino_idx);
+      KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old_raw, KAFS_IBLKREF_FUNC_GET_RAW);
+      if (!kafs_ref_is_pending(old_raw))
+        KAFS_CALL(kafs_ref_resolve_data_blo, ctx, old_raw, &old_blo);
+
+      kafs_pendinglog_entry_t ent = {0};
+      ent.ino = ino_idx;
+      ent.iblk = (uint32_t)iblo;
+      ent.ino_epoch = ino_epoch;
+      ent.temp_blo = (uint32_t)temp_blo;
+      ent.state = KAFS_PENDING_QUEUED;
+      ent.target_hrid = (uint32_t)old_blo;
+
+      uint64_t pending_id = 0;
+      if (ctx->c_pending_worker_lock_init)
+        pthread_mutex_lock(&ctx->c_pending_worker_lock);
+      int qrc = kafs_pendinglog_enqueue(ctx, &ent, &pending_id);
+      if (ctx->c_pending_worker_lock_init)
+        pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+      if (qrc < 0)
+      {
+        (void)kafs_hrl_dec_ref_by_blo(ctx, temp_blo);
+        return qrc;
+      }
+
+      kafs_blkcnt_t pref = KAFS_BLO_NONE;
+      KAFS_CALL(kafs_ref_pending_encode, pending_id, &pref);
+      KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &pref, KAFS_IBLKREF_FUNC_SET);
+
+      kafs_pending_worker_notify(ctx);
+      return KAFS_SUCCESS;
+    }
+
     // 非ゼロ: HRL 経路（失敗時は従来経路）。
     kafs_hrid_t hrid;
     int is_new = 0;
     kafs_blkcnt_t new_blo = KAFS_BLO_NONE;
     ctx->c_stat_hrl_put_calls++;
+    uint64_t t_hrl0 = kafs_now_ns();
     int rc = kafs_hrl_put(ctx, buf, &hrid, &is_new, &new_blo);
+    uint64_t t_hrl1 = kafs_now_ns();
+    __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_hrl_put, t_hrl1 - t_hrl0, __ATOMIC_RELAXED);
     if (rc == 0)
     {
       if (is_new)
@@ -642,7 +1622,10 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
       if (old_blo != KAFS_BLO_NONE && old_blo != new_blo)
       {
         kafs_inode_unlock(ctx, ino_idx);
+        uint64_t t_dec0 = kafs_now_ns();
         (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
+        uint64_t t_dec1 = kafs_now_ns();
+        __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
         kafs_inode_lock(ctx, ino_idx);
       }
       return KAFS_SUCCESS;
@@ -653,7 +1636,11 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
     kafs_blkcnt_t new_blo2 = KAFS_BLO_NONE;
     KAFS_CALL(kafs_blk_alloc, ctx, &new_blo2);
     // 先にデータを書き込む（読取り側はまだ旧参照を見続ける）
+    uint64_t t_lw0 = kafs_now_ns();
     KAFS_CALL(kafs_blk_write, ctx, new_blo2, buf);
+    uint64_t t_lw1 = kafs_now_ns();
+    __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_legacy_blk_write, t_lw1 - t_lw0,
+               __ATOMIC_RELAXED);
     kafs_blkcnt_t old_blo2;
     KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old_blo2, KAFS_IBLKREF_FUNC_GET);
     KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &new_blo2, KAFS_IBLKREF_FUNC_SET);
@@ -662,7 +1649,10 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
     {
       uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
       kafs_inode_unlock(ctx, ino_idx);
+      uint64_t t_dec0 = kafs_now_ns();
       (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo2);
+      uint64_t t_dec1 = kafs_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
       kafs_inode_lock(ctx, ino_idx);
     }
     return KAFS_SUCCESS;
@@ -682,6 +1672,7 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
       // 参照減算は inode ロック外
       uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
       kafs_inode_unlock(ctx, ino_idx);
+      uint64_t t_dec0 = kafs_now_ns();
       (void)kafs_hrl_dec_ref_by_blo(ctx, old);
       if (f1 != KAFS_BLO_NONE)
         (void)kafs_hrl_dec_ref_by_blo(ctx, f1);
@@ -689,6 +1680,8 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
         (void)kafs_hrl_dec_ref_by_blo(ctx, f2);
       if (f3 != KAFS_BLO_NONE)
         (void)kafs_hrl_dec_ref_by_blo(ctx, f3);
+      uint64_t t_dec1 = kafs_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
       kafs_inode_lock(ctx, ino_idx);
     }
   }
@@ -803,6 +1796,9 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
   if (size == 0)
     return 0;
 
+  __atomic_add_fetch(&ctx->c_stat_pwrite_calls, 1u, __ATOMIC_RELAXED);
+  __atomic_add_fetch(&ctx->c_stat_pwrite_bytes, (uint64_t)size, __ATOMIC_RELAXED);
+
   if (filesize < filesize_new)
   {
     // サイズ拡大時
@@ -834,17 +1830,30 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
     kafs_iblkcnt_t iblo = offset >> log_blksize;
     // 書き戻しバッファ
     char wbuf[blksize];
+    uint64_t t_r0 = kafs_now_ns();
     KAFS_CALL(kafs_ino_iblk_read, ctx, inoent, iblo, wbuf);
+    uint64_t t_r1 = kafs_now_ns();
+    __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_read, t_r1 - t_r0, __ATOMIC_RELAXED);
     if (size < blksize - offset_blksize)
     {
       // 1ブロックのみの場合
       memcpy(wbuf + offset_blksize, buf, size);
+      uint64_t t_w0 = kafs_now_ns();
       KAFS_CALL(kafs_ino_iblk_write, ctx, inoent, iblo, wbuf);
+      uint64_t t_w1 = kafs_now_ns();
+      uint64_t d = t_w1 - t_w0;
+      __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_write, d, __ATOMIC_RELAXED);
+      kafs_stat_record_pwrite_iblk_write_latency(ctx, d);
       return size;
     }
     // ブロックの残り分を書き込む
     memcpy(wbuf + offset_blksize, buf, blksize - offset_blksize);
+    uint64_t t_w0 = kafs_now_ns();
     KAFS_CALL(kafs_ino_iblk_write, ctx, inoent, iblo, wbuf);
+    uint64_t t_w1 = kafs_now_ns();
+    uint64_t d = t_w1 - t_w0;
+    __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_write, d, __ATOMIC_RELAXED);
+    kafs_stat_record_pwrite_iblk_write_latency(ctx, d);
     size_written += blksize - offset_blksize;
   }
 
@@ -854,12 +1863,25 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
     if (size - size_written < blksize)
     {
       char wbuf[blksize];
+      uint64_t t_r0 = kafs_now_ns();
       KAFS_CALL(kafs_ino_iblk_read, ctx, inoent, iblo, wbuf);
+      uint64_t t_r1 = kafs_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_read, t_r1 - t_r0, __ATOMIC_RELAXED);
       memcpy(wbuf, buf + size_written, size - size_written);
+      uint64_t t_w0 = kafs_now_ns();
       KAFS_CALL(kafs_ino_iblk_write, ctx, inoent, iblo, wbuf);
+      uint64_t t_w1 = kafs_now_ns();
+      uint64_t d = t_w1 - t_w0;
+      __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_write, d, __ATOMIC_RELAXED);
+      kafs_stat_record_pwrite_iblk_write_latency(ctx, d);
       return size;
     }
+    uint64_t t_w0 = kafs_now_ns();
     KAFS_CALL(kafs_ino_iblk_write, ctx, inoent, iblo, buf + size_written);
+    uint64_t t_w1 = kafs_now_ns();
+    uint64_t d = t_w1 - t_w0;
+    __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_write, d, __ATOMIC_RELAXED);
+    kafs_stat_record_pwrite_iblk_write_latency(ctx, d);
     size_written += blksize;
   }
   return size;
@@ -877,6 +1899,31 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
   kafs_off_t filesize_orig = kafs_ino_size_get(inoent);
   if (filesize_orig == filesize_new)
     return KAFS_SUCCESS;
+  kafs_blkcnt_t *deferred_free = NULL;
+  size_t deferred_free_cnt = 0;
+  size_t deferred_free_cap = 0;
+  #define KAFS_TRUNC_PUSH_FREE(_blo)                                                                \
+    do                                                                                              \
+    {                                                                                               \
+      kafs_blkcnt_t __b = (_blo);                                                                   \
+      if (__b != KAFS_BLO_NONE)                                                                     \
+      {                                                                                             \
+        if (deferred_free_cnt == deferred_free_cap)                                                 \
+        {                                                                                           \
+          size_t new_cap = deferred_free_cap ? (deferred_free_cap << 1) : 256u;                    \
+          kafs_blkcnt_t *nw = realloc(deferred_free, new_cap * sizeof(*nw));                       \
+          if (!nw)                                                                                  \
+          {                                                                                         \
+            free(deferred_free);                                                                    \
+            return -ENOMEM;                                                                         \
+          }                                                                                         \
+          deferred_free = nw;                                                                       \
+          deferred_free_cap = new_cap;                                                              \
+        }                                                                                           \
+        deferred_free[deferred_free_cnt++] = __b;                                                   \
+      }                                                                                             \
+    } while (0)
+  (void)kafs_inode_epoch_bump(ctx, (uint32_t)(inoent - ctx->c_inotbl));
   if (filesize_new > filesize_orig)
   {
     if (filesize_orig <= KAFS_DIRECT_SIZE && filesize_new > KAFS_DIRECT_SIZE)
@@ -943,10 +1990,8 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
 
       if (to_free_cnt)
       {
-        kafs_inode_unlock(ctx, ino_idx);
         for (size_t i = 0; i < to_free_cnt; i++)
-          (void)kafs_hrl_dec_ref_by_blo(ctx, to_free[i]);
-        kafs_inode_lock(ctx, ino_idx);
+          KAFS_TRUNC_PUSH_FREE(to_free[i]);
       }
       cur = end;
     }
@@ -954,6 +1999,14 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
     memcpy(inoent->i_blkreftbl, buf, (size_t)filesize_new);
     if (filesize_new < KAFS_DIRECT_SIZE)
       memset((void *)inoent->i_blkreftbl + filesize_new, 0, KAFS_DIRECT_SIZE - filesize_new);
+    if (deferred_free_cnt)
+    {
+      kafs_inode_unlock(ctx, ino_idx);
+      for (size_t i = 0; i < deferred_free_cnt; ++i)
+        (void)kafs_hrl_dec_ref_by_blo(ctx, deferred_free[i]);
+      kafs_inode_lock(ctx, ino_idx);
+    }
+    free(deferred_free);
     return KAFS_SUCCESS;
   }
 
@@ -999,14 +2052,21 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
 
     if (to_free_cnt)
     {
-      kafs_inode_unlock(ctx, ino_idx);
       for (size_t i = 0; i < to_free_cnt; i++)
-        (void)kafs_hrl_dec_ref_by_blo(ctx, to_free[i]);
-      kafs_inode_lock(ctx, ino_idx);
+        KAFS_TRUNC_PUSH_FREE(to_free[i]);
     }
     iblooff = end;
   }
 
+  if (deferred_free_cnt)
+  {
+    kafs_inode_unlock(ctx, ino_idx);
+    for (size_t i = 0; i < deferred_free_cnt; ++i)
+      (void)kafs_hrl_dec_ref_by_blo(ctx, deferred_free[i]);
+    kafs_inode_lock(ctx, ino_idx);
+  }
+  free(deferred_free);
+  #undef KAFS_TRUNC_PUSH_FREE
   return KAFS_SUCCESS;
 }
 
@@ -1144,6 +2204,13 @@ static ssize_t kafs_dirent_read(struct kafs_context *ctx, kafs_sinode_t *inoent_
   return r1 + r2;
 }
 
+static int kafs_dir_snapshot(struct kafs_context *ctx, kafs_sinode_t *inoent_dir, char **out,
+                             size_t *out_len);
+
+static int kafs_dirent_iter_next(const char *buf, size_t len, size_t off, kafs_inocnt_t *out_ino,
+                                 kafs_filenamelen_t *out_namelen, const char **out_name,
+                                 size_t *out_rec_len);
+
 /// @brief ディレクトリエントリから対象のファイル名を探す
 /// @param ctx コンテキスト
 /// @param name ファイル名
@@ -1165,25 +2232,38 @@ static int kafs_dirent_search(struct kafs_context *ctx, kafs_sinode_t *inoent, c
   kafs_mode_t mode = kafs_ino_mode_get(inoent);
   if (!S_ISDIR(mode))
     return -ENOTDIR;
-  struct kafs_sdirent dirent;
-  off_t offset = 0;
+  char *snap = NULL;
+  size_t snap_len = 0;
+  int rc = kafs_dir_snapshot(ctx, inoent, &snap, &snap_len);
+  if (rc < 0)
+    return rc;
+
+  size_t off = 0;
   while (1)
   {
-    ssize_t r = KAFS_CALL(kafs_dirent_read, ctx, inoent, &dirent, offset);
-    if (r == 0)
+    kafs_inocnt_t d_ino;
+    kafs_filenamelen_t d_filenamelen;
+    const char *d_filename;
+    size_t rec_len;
+    int step = kafs_dirent_iter_next(snap, snap_len, off, &d_ino, &d_filenamelen, &d_filename,
+                                     &rec_len);
+    if (step == 0)
       break;
-    kafs_inocnt_t d_ino = kafs_dirent_ino_get(&dirent);
-    kafs_filenamelen_t d_filenamelen = kafs_dirent_filenamelen_get(&dirent);
-    const char *d_filename = dirent.d_filename;
-    if (r != (ssize_t)(offsetof(kafs_sdirent_t, d_filename) + d_filenamelen))
+    if (step < 0)
+    {
+      free(snap);
       return -EIO;
+    }
+
     if (d_filenamelen == filenamelen && memcmp(d_filename, filename, filenamelen) == 0)
     {
       *pinoent_found = &ctx->c_inotbl[d_ino];
+      free(snap);
       return KAFS_SUCCESS;
     }
-    offset += r;
+    off += rec_len;
   }
+  free(snap);
   return -ENOENT;
 }
 
@@ -1568,7 +2648,10 @@ static int kafs_access(struct fuse_context *fctx, kafs_context_t *ctx, const cha
   return KAFS_SUCCESS;
 }
 
-static int kafs_hotplug_should_fallback(int rc) { return rc == -ENOSYS || rc == -EOPNOTSUPP; }
+static int kafs_hotplug_should_fallback(int rc)
+{
+  return rc == -ENOSYS || rc == -EOPNOTSUPP;
+}
 
 #define KAFS_HOTPLUG_WAIT_TIMEOUT_MS_DEFAULT 2000u
 #define KAFS_HOTPLUG_WAIT_QUEUE_LIMIT_DEFAULT 64u
@@ -1705,7 +2788,8 @@ static int kafs_hotplug_wait_for_back(kafs_context_t *ctx, const char *uds_path,
   struct sockaddr_un addr;
   memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
-  if (snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", uds_path) >= (int)sizeof(addr.sun_path))
+  if (snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", uds_path) >=
+      (int)sizeof(addr.sun_path))
   {
     close(srv);
     ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
@@ -1917,8 +3001,8 @@ static int kafs_hotplug_wait_ready(kafs_context_t *ctx)
   pthread_mutex_lock(&ctx->c_hotplug_wait_lock);
   while (!kafs_hotplug_enabled(ctx))
   {
-    int tw =
-        pthread_cond_timedwait(&ctx->c_hotplug_wait_cond, &ctx->c_hotplug_wait_lock, &deadline);
+    int tw = pthread_cond_timedwait(&ctx->c_hotplug_wait_cond, &ctx->c_hotplug_wait_lock,
+                                    &deadline);
     if (tw == ETIMEDOUT)
     {
       ctx->c_hotplug_last_error = -ETIMEDOUT;
@@ -1950,9 +3034,9 @@ static int kafs_hotplug_call_getattr(struct fuse_context *fctx, kafs_context_t *
 
   if (ctx->c_hotplug_lock_init)
     pthread_mutex_lock(&ctx->c_hotplug_lock);
-  int rc =
-      kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_GETATTR, KAFS_RPC_FLAG_ENDIAN_HOST, req_id,
-                        ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, &req, sizeof(req));
+  int rc = kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_GETATTR, KAFS_RPC_FLAG_ENDIAN_HOST,
+                             req_id, ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, &req,
+                             sizeof(req));
   if (rc == 0)
   {
     kafs_rpc_resp_hdr_t resp_hdr;
@@ -2036,14 +3120,19 @@ int kafs_core_open_image(const char *image_path, kafs_context_t *ctx)
     uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
     uint64_t j_off = kafs_sb_journal_offset_get(&sbdisk);
     uint64_t j_size = kafs_sb_journal_size_get(&sbdisk);
+    uint64_t p_off = kafs_sb_pendinglog_offset_get(&sbdisk);
+    uint64_t p_size = kafs_sb_pendinglog_size_get(&sbdisk);
     uint64_t end1 = (idx_off && idx_size) ? (idx_off + idx_size) : 0;
     uint64_t end2 = (ent_off && ent_size) ? (ent_off + ent_size) : 0;
     uint64_t end3 = (j_off && j_size) ? (j_off + j_size) : 0;
+    uint64_t end4 = (p_off && p_size) ? (p_off + p_size) : 0;
     uint64_t max_end = end1;
     if (end2 > max_end)
       max_end = end2;
     if (end3 > max_end)
       max_end = end3;
+    if (end4 > max_end)
+      max_end = end4;
     if ((off_t)max_end > imgsize)
       imgsize = (off_t)max_end;
     imgsize = (imgsize + blksizemask) & ~blksizemask;
@@ -2062,10 +3151,45 @@ int kafs_core_open_image(const char *image_path, kafs_context_t *ctx)
   ctx->c_mapsize = (size_t)mapsize;
   ctx->c_blkmasktbl = (void *)ctx->c_superblock + (intptr_t)blkmask_off;
   ctx->c_inotbl = (void *)ctx->c_superblock + (intptr_t)inotbl_off;
+  ctx->c_alloc_v3_summary_dirty = 1;
 
   (void)kafs_hrl_open(ctx);
   (void)kafs_journal_init(ctx, image_path);
+  ctx->c_meta_delta_enabled = (uint32_t)kafs_journal_is_enabled(ctx);
+  if (ctx->c_meta_delta_enabled)
+  {
+    size_t bits = sizeof(kafs_blkmask_t) * 8u;
+    size_t words = ((size_t)r_blkcnt + bits - 1u) / bits;
+    ctx->c_meta_bitmap_words = calloc(words, sizeof(kafs_blkmask_t));
+    ctx->c_meta_bitmap_dirty = calloc(words, sizeof(uint8_t));
+    if (!ctx->c_meta_bitmap_words || !ctx->c_meta_bitmap_dirty)
+    {
+      free(ctx->c_meta_bitmap_words);
+      free(ctx->c_meta_bitmap_dirty);
+      ctx->c_meta_bitmap_words = NULL;
+      ctx->c_meta_bitmap_dirty = NULL;
+      ctx->c_meta_bitmap_wordcnt = 0;
+      ctx->c_meta_bitmap_dirty_count = 0;
+      ctx->c_meta_bitmap_words_enabled = 0;
+      ctx->c_meta_delta_enabled = 0;
+    }
+    else
+    {
+      memcpy(ctx->c_meta_bitmap_words, ctx->c_blkmasktbl, words * sizeof(kafs_blkmask_t));
+      ctx->c_meta_bitmap_wordcnt = words;
+      ctx->c_meta_bitmap_dirty_count = 0;
+      ctx->c_meta_bitmap_words_enabled = 1u;
+    }
+  }
   (void)kafs_journal_replay(ctx, NULL, NULL);
+  (void)kafs_pendinglog_init_or_load(ctx);
+  if (ctx->c_pendinglog_enabled)
+  {
+    (void)kafs_pendinglog_replay_mount(ctx);
+    (void)kafs_pending_worker_start(ctx);
+    kafs_journal_note(ctx, "PENDINGLOG", "loaded entries=%u cap=%u", kafs_pendinglog_count(ctx),
+                      ctx->c_pendinglog_capacity);
+  }
   return 0;
 }
 
@@ -2073,8 +3197,16 @@ void kafs_core_close_image(kafs_context_t *ctx)
 {
   if (!ctx)
     return;
+  kafs_pending_worker_stop(ctx);
   (void)kafs_journal_shutdown(ctx);
   (void)kafs_hrl_close(ctx);
+  free(ctx->c_meta_bitmap_words);
+  free(ctx->c_meta_bitmap_dirty);
+  ctx->c_meta_bitmap_words = NULL;
+  ctx->c_meta_bitmap_dirty = NULL;
+  ctx->c_meta_bitmap_wordcnt = 0;
+  ctx->c_meta_bitmap_dirty_count = 0;
+  ctx->c_meta_bitmap_words_enabled = 0;
   if (ctx->c_img_base && ctx->c_img_base != MAP_FAILED)
     munmap(ctx->c_img_base, ctx->c_img_size);
   if (ctx->c_fd >= 0)
@@ -2110,7 +3242,8 @@ int kafs_core_getattr(kafs_context_t *ctx, kafs_inocnt_t ino, struct stat *st)
   return 0;
 }
 
-ssize_t kafs_core_read(kafs_context_t *ctx, kafs_inocnt_t ino, void *buf, size_t size, off_t offset)
+ssize_t kafs_core_read(kafs_context_t *ctx, kafs_inocnt_t ino, void *buf, size_t size,
+                       off_t offset)
 {
   if (!ctx || !buf)
     return -EINVAL;
@@ -2172,8 +3305,9 @@ static ssize_t kafs_hotplug_call_read(struct fuse_context *fctx, kafs_context_t 
   uint8_t resp_buf[KAFS_RPC_MAX_PAYLOAD];
   if (ctx->c_hotplug_lock_init)
     pthread_mutex_lock(&ctx->c_hotplug_lock);
-  int rc = kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_READ, KAFS_RPC_FLAG_ENDIAN_HOST, req_id,
-                             ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, &req, sizeof(req));
+  int rc = kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_READ, KAFS_RPC_FLAG_ENDIAN_HOST,
+                             req_id, ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, &req,
+                             sizeof(req));
   int need_local = 0;
   if (rc == 0)
   {
@@ -2260,9 +3394,9 @@ static ssize_t kafs_hotplug_call_write(struct fuse_context *fctx, kafs_context_t
 
   if (ctx->c_hotplug_lock_init)
     pthread_mutex_lock(&ctx->c_hotplug_lock);
-  int rc =
-      kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_WRITE, KAFS_RPC_FLAG_ENDIAN_HOST, req_id,
-                        ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, payload, payload_len);
+  int rc = kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_WRITE, KAFS_RPC_FLAG_ENDIAN_HOST,
+                             req_id, ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, payload,
+                             payload_len);
   int need_local = 0;
   if (rc == 0)
   {
@@ -2317,9 +3451,9 @@ static int kafs_hotplug_call_truncate(struct fuse_context *fctx, kafs_context_t 
 
   if (ctx->c_hotplug_lock_init)
     pthread_mutex_lock(&ctx->c_hotplug_lock);
-  int rc =
-      kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_TRUNCATE, KAFS_RPC_FLAG_ENDIAN_HOST, req_id,
-                        ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, &req, sizeof(req));
+  int rc = kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_TRUNCATE, KAFS_RPC_FLAG_ENDIAN_HOST,
+                             req_id, ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, &req,
+                             sizeof(req));
   if (rc == 0)
   {
     kafs_rpc_resp_hdr_t resp_hdr;
@@ -2421,7 +3555,33 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
   return 0;
 }
 
-#define KAFS_STATS_VERSION 1u
+#define KAFS_STATS_VERSION 6u
+
+static int kafs_u64_cmp(const void *a, const void *b)
+{
+  uint64_t av = *(const uint64_t *)a;
+  uint64_t bv = *(const uint64_t *)b;
+  if (av < bv)
+    return -1;
+  if (av > bv)
+    return 1;
+  return 0;
+}
+
+static uint64_t kafs_percentile_u64(uint64_t *arr, size_t n, double q)
+{
+  if (!arr || n == 0)
+    return 0;
+  if (q <= 0.0)
+    return arr[0];
+  if (q >= 1.0)
+    return arr[n - 1];
+  double pos = q * (double)(n - 1u);
+  size_t idx = (size_t)(pos + 0.5);
+  if (idx >= n)
+    idx = n - 1;
+  return arr[idx];
+}
 
 // Forward decl (used by ioctl implementation)
 static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_inocnt_t *pino_dir,
@@ -2477,6 +3637,69 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
   out->hrl_put_hits = ctx->c_stat_hrl_put_hits;
   out->hrl_put_misses = ctx->c_stat_hrl_put_misses;
   out->hrl_put_fallback_legacy = ctx->c_stat_hrl_put_fallback_legacy;
+  out->hrl_put_ns_hash = ctx->c_stat_hrl_put_ns_hash;
+  out->hrl_put_ns_find = ctx->c_stat_hrl_put_ns_find;
+  out->hrl_put_ns_cmp_content = ctx->c_stat_hrl_put_ns_cmp_content;
+  out->hrl_put_ns_slot_alloc = ctx->c_stat_hrl_put_ns_slot_alloc;
+  out->hrl_put_ns_blk_alloc = ctx->c_stat_hrl_put_ns_blk_alloc;
+  out->hrl_put_ns_blk_write = ctx->c_stat_hrl_put_ns_blk_write;
+  out->hrl_put_chain_steps = ctx->c_stat_hrl_put_chain_steps;
+  out->hrl_put_cmp_calls = ctx->c_stat_hrl_put_cmp_calls;
+
+  out->lock_hrl_bucket_acquire = ctx->c_stat_lock_hrl_bucket_acquire;
+  out->lock_hrl_bucket_contended = ctx->c_stat_lock_hrl_bucket_contended;
+  out->lock_hrl_bucket_wait_ns = ctx->c_stat_lock_hrl_bucket_wait_ns;
+  out->lock_hrl_global_acquire = ctx->c_stat_lock_hrl_global_acquire;
+  out->lock_hrl_global_contended = ctx->c_stat_lock_hrl_global_contended;
+  out->lock_hrl_global_wait_ns = ctx->c_stat_lock_hrl_global_wait_ns;
+  out->lock_bitmap_acquire = ctx->c_stat_lock_bitmap_acquire;
+  out->lock_bitmap_contended = ctx->c_stat_lock_bitmap_contended;
+  out->lock_bitmap_wait_ns = ctx->c_stat_lock_bitmap_wait_ns;
+  out->lock_inode_acquire = ctx->c_stat_lock_inode_acquire;
+  out->lock_inode_contended = ctx->c_stat_lock_inode_contended;
+  out->lock_inode_wait_ns = ctx->c_stat_lock_inode_wait_ns;
+  out->lock_inode_alloc_acquire = ctx->c_stat_lock_inode_alloc_acquire;
+  out->lock_inode_alloc_contended = ctx->c_stat_lock_inode_alloc_contended;
+  out->lock_inode_alloc_wait_ns = ctx->c_stat_lock_inode_alloc_wait_ns;
+
+  out->pwrite_calls = ctx->c_stat_pwrite_calls;
+  out->pwrite_bytes = ctx->c_stat_pwrite_bytes;
+  out->pwrite_ns_iblk_read = ctx->c_stat_pwrite_ns_iblk_read;
+  out->pwrite_ns_iblk_write = ctx->c_stat_pwrite_ns_iblk_write;
+  out->pwrite_iblk_write_sample_count =
+      __atomic_load_n(&ctx->c_stat_pwrite_iblk_write_sample_count, __ATOMIC_RELAXED);
+  out->pwrite_iblk_write_sample_cap =
+      (uint64_t)(sizeof(ctx->c_stat_pwrite_iblk_write_samples) /
+                 sizeof(ctx->c_stat_pwrite_iblk_write_samples[0]));
+  if (out->pwrite_iblk_write_sample_count > out->pwrite_iblk_write_sample_cap)
+    out->pwrite_iblk_write_sample_count = out->pwrite_iblk_write_sample_cap;
+  if (out->pwrite_iblk_write_sample_count > 0)
+  {
+    size_t n = (size_t)out->pwrite_iblk_write_sample_count;
+    uint64_t tmp[n];
+    for (size_t i = 0; i < n; ++i)
+      tmp[i] = ctx->c_stat_pwrite_iblk_write_samples[i];
+    qsort(tmp, n, sizeof(tmp[0]), kafs_u64_cmp);
+    out->pwrite_iblk_write_p50_ns = kafs_percentile_u64(tmp, n, 0.50);
+    out->pwrite_iblk_write_p95_ns = kafs_percentile_u64(tmp, n, 0.95);
+    out->pwrite_iblk_write_p99_ns = kafs_percentile_u64(tmp, n, 0.99);
+  }
+  out->iblk_write_ns_hrl_put = ctx->c_stat_iblk_write_ns_hrl_put;
+  out->iblk_write_ns_legacy_blk_write = ctx->c_stat_iblk_write_ns_legacy_blk_write;
+  out->iblk_write_ns_dec_ref = ctx->c_stat_iblk_write_ns_dec_ref;
+
+  out->blk_alloc_calls = ctx->c_stat_blk_alloc_calls;
+  out->blk_alloc_claim_retries = ctx->c_stat_blk_alloc_claim_retries;
+  out->blk_alloc_ns_scan = ctx->c_stat_blk_alloc_ns_scan;
+  out->blk_alloc_ns_claim = ctx->c_stat_blk_alloc_ns_claim;
+  out->blk_alloc_ns_set_usage = ctx->c_stat_blk_alloc_ns_set_usage;
+
+  out->blk_set_usage_calls = ctx->c_stat_blk_set_usage_calls;
+  out->blk_set_usage_alloc_calls = ctx->c_stat_blk_set_usage_alloc_calls;
+  out->blk_set_usage_free_calls = ctx->c_stat_blk_set_usage_free_calls;
+  out->blk_set_usage_ns_bit_update = ctx->c_stat_blk_set_usage_ns_bit_update;
+  out->blk_set_usage_ns_freecnt_update = ctx->c_stat_blk_set_usage_ns_freecnt_update;
+  out->blk_set_usage_ns_wtime_update = ctx->c_stat_blk_set_usage_ns_wtime_update;
 }
 
 #ifdef __linux__
@@ -2631,7 +3854,10 @@ typedef struct
   unsigned char resp[KAFS_CTL_MAX_RESP];
 } kafs_ctl_session_t;
 
-static int kafs_is_ctl_path(const char *path) { return path && strcmp(path, KAFS_CTL_PATH) == 0; }
+static int kafs_is_ctl_path(const char *path)
+{
+  return path && strcmp(path, KAFS_CTL_PATH) == 0;
+}
 
 static int kafs_hotplug_env_key_len(const char *key)
 {
@@ -2745,6 +3971,9 @@ static void kafs_ctl_fill_status(const kafs_context_t *ctx, kafs_rpc_hotplug_sta
   out->back_features = ctx->c_hotplug_back_features;
   out->compat_result = ctx->c_hotplug_compat_result;
   out->compat_reason = ctx->c_hotplug_compat_reason;
+  out->pending_worker_prio_mode = ctx->c_pending_worker_prio_mode;
+  out->pending_worker_nice = ctx->c_pending_worker_nice;
+  out->pending_worker_prio_apply_error = ctx->c_pending_worker_prio_apply_error;
 }
 
 static int kafs_ctl_handle_request(kafs_context_t *ctx, kafs_ctl_session_t *sess,
@@ -2827,6 +4056,32 @@ static int kafs_ctl_handle_request(kafs_context_t *ctx, kafs_ctl_session_t *sess
     {
       const kafs_rpc_env_update_t *req = (const kafs_rpc_env_update_t *)payload;
       result = kafs_hotplug_env_unset(ctx, req->key);
+    }
+    break;
+  case KAFS_RPC_OP_CTL_SET_DEDUP_PRIO:
+    if (hdr.payload_len != sizeof(kafs_rpc_set_dedup_prio_t))
+      result = -EINVAL;
+    else
+    {
+      const kafs_rpc_set_dedup_prio_t *req = (const kafs_rpc_set_dedup_prio_t *)payload;
+      if (req->mode != KAFS_PENDING_WORKER_PRIO_NORMAL &&
+          req->mode != KAFS_PENDING_WORKER_PRIO_IDLE)
+      {
+        result = -EINVAL;
+      }
+      else if ((req->flags & KAFS_RPC_SET_DEDUP_PRIO_F_HAS_NICE) != 0 &&
+               (req->nice_value < 0 || req->nice_value > 19))
+      {
+        result = -ERANGE;
+      }
+      else
+      {
+        ctx->c_pending_worker_prio_mode = req->mode;
+        if ((req->flags & KAFS_RPC_SET_DEDUP_PRIO_F_HAS_NICE) != 0)
+          ctx->c_pending_worker_nice = req->nice_value;
+        ctx->c_pending_worker_prio_dirty = 1;
+        kafs_pending_worker_notify_all(ctx);
+      }
     }
     break;
   default:
@@ -3101,26 +4356,49 @@ static int kafs_op_readdir(const char *path, void *buf, fuse_fill_dir_t filler, 
   uint32_t ino_dir = (uint32_t)(inoent_dir - ctx->c_inotbl);
 
   kafs_inode_lock(ctx, ino_dir);
-  off_t filesize = kafs_ino_size_get(inoent_dir);
-  off_t o = 0;
-  kafs_sdirent_t dirent;
+  char *snap = NULL;
+  size_t snap_len = 0;
+  int rc = kafs_dir_snapshot(ctx, inoent_dir, &snap, &snap_len);
+  if (rc < 0)
+  {
+    kafs_inode_unlock(ctx, ino_dir);
+    return rc;
+  }
   if (filler(buf, ".", NULL, 0, 0))
   {
+    free(snap);
     kafs_inode_unlock(ctx, ino_dir);
     return -ENOENT;
   }
-  while (o < filesize)
+  size_t o = 0;
+  while (1)
   {
-    ssize_t r = KAFS_CALL(kafs_dirent_read, ctx, inoent_dir, &dirent, o);
-    if (r == 0)
+    kafs_inocnt_t d_ino;
+    kafs_filenamelen_t d_filenamelen;
+    const char *d_filename;
+    size_t rec_len;
+    int step = kafs_dirent_iter_next(snap, snap_len, o, &d_ino, &d_filenamelen, &d_filename,
+                                     &rec_len);
+    if (step == 0)
       break;
-    if (filler(buf, dirent.d_filename, NULL, 0, 0))
+    if (step < 0)
     {
+      free(snap);
+      kafs_inode_unlock(ctx, ino_dir);
+      return -EIO;
+    }
+    char name[FILENAME_MAX];
+    memcpy(name, d_filename, d_filenamelen);
+    name[d_filenamelen] = '\0';
+    if (filler(buf, name, NULL, 0, 0))
+    {
+      free(snap);
       kafs_inode_unlock(ctx, ino_dir);
       return -ENOENT;
     }
-    o += r;
+    o += rec_len;
   }
+  free(snap);
   kafs_inode_unlock(ctx, ino_dir);
   return 0;
 }
@@ -3646,7 +4924,10 @@ static int kafs_op_unlink(const char *path)
   kafs_sinode_t *t = &ctx->c_inotbl[removed_ino];
   kafs_linkcnt_t nl = kafs_ino_linkcnt_decr(t);
   if (nl == 0)
+  {
+    (void)kafs_inode_epoch_bump(ctx, (uint32_t)removed_ino);
     kafs_ino_dtime_set(t, kafs_now());
+  }
   kafs_inode_unlock(ctx, (uint32_t)removed_ino);
 
   kafs_journal_commit(ctx, jseq);
@@ -3963,6 +5244,7 @@ static int kafs_op_flush(const char *path, struct fuse_file_info *fi)
   struct kafs_context *ctx = fctx->private_data;
   if (!ctx || ctx->c_fd < 0)
     return 0;
+  kafs_journal_force_flush(ctx);
   // Ensure mmap'd metadata (superblock/inodes/bitmap/HRL) is persisted.
   if (ctx->c_img_base && ctx->c_img_size)
   {
@@ -3976,11 +5258,29 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
 {
   (void)path;
   (void)isdatasync;
-  (void)fi;
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
   if (!ctx || ctx->c_fd < 0)
     return 0;
+
+  uint32_t ino = KAFS_INO_NONE;
+  if (fi)
+    ino = (uint32_t)fi->fh;
+  else if (path && path[0] != '\0')
+  {
+    kafs_sinode_t *inoent = NULL;
+    int arc = kafs_access(fctx, ctx, path, fi, F_OK, &inoent);
+    if (arc == 0 && inoent)
+      ino = (uint32_t)(inoent - ctx->c_inotbl);
+  }
+  if (ino != KAFS_INO_NONE)
+  {
+    int drc = kafs_pendinglog_drain_inode(ctx, ino);
+    if (drc < 0)
+      return drc;
+  }
+
+  kafs_journal_force_flush(ctx);
   if (ctx->c_img_base && ctx->c_img_size)
   {
     (void)msync((void *)ctx->c_img_base, ctx->c_img_size, MS_SYNC);
@@ -4015,6 +5315,7 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
       kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
       if (kafs_ino_get_usage(inoent) && kafs_ino_linkcnt_get(inoent) == 0)
       {
+        (void)kafs_inode_epoch_bump(ctx, (uint32_t)ino);
         (void)kafs_truncate(ctx, inoent, 0);
         memset(inoent, 0, sizeof(*inoent));
         reclaimed = 1;
@@ -4062,7 +5363,7 @@ static struct fuse_operations kafs_operations = {
     .ioctl = kafs_op_ioctl,
     .copy_file_range = kafs_op_copy_file_range,
 };
-#endif
+  #endif
 
 static void usage(const char *prog)
 {
@@ -4070,14 +5371,99 @@ static void usage(const char *prog)
       stderr,
       "Usage: %s [--image <image>|--image=<image>] <mountpoint> [FUSE options...]\n"
       "       %s <image> <mountpoint> [FUSE options...] (mount helper compatible)\n"
+      "       %s [--image <image>] --migrate-v2 [--yes] <mountpoint> [FUSE options...]\n"
       "       env KAFS_IMAGE can be used as fallback image path.\n"
       "       default runs single-threaded; enable MT via -o multi_thread[=N] or env KAFS_MT=1.\n"
       "       MT thread count can be set via -o multi_thread=N (preferred) or env "
       "KAFS_MAX_THREADS.\n"
+      "       migration note: v2 images are refused by default; use kafsctl migrate <image> [--yes]\n"
+      "       or pass --migrate-v2 (optionally --yes) for one-shot startup migration.\n"
+      "       pending worker priority: -o pending_worker_prio=<normal|idle>,\n"
+      "       -o pending_worker_nice=<0..19>, env KAFS_PENDING_WORKER_PRIO / KAFS_PENDING_WORKER_NICE.\n"
       "Examples:\n"
       "  %s --image test.img mnt -f\n"
+      "  %s --image legacy.img --migrate-v2 --yes mnt -f\n"
       "  %s --image test.img mnt -f -o multi_thread=8\n",
-      prog, prog, prog, prog);
+      prog, prog, prog, prog, prog, prog);
+}
+
+static int kafs_confirm_yes_stdin(void)
+{
+  fprintf(stderr,
+          "WARNING: migration is irreversible. type 'YES' to continue: ");
+  fflush(stderr);
+  char buf[32];
+  if (!fgets(buf, sizeof(buf), stdin))
+    return 0;
+  buf[strcspn(buf, "\r\n")] = '\0';
+  return strcmp(buf, "YES") == 0;
+}
+
+static int kafs_migrate_v2_image(const char *image_path, int assume_yes)
+{
+  if (!image_path)
+    return -EINVAL;
+
+  int fd = open(image_path, O_RDWR, 0666);
+  if (fd < 0)
+    return -errno;
+
+  kafs_ssuperblock_t sb;
+  ssize_t r = pread(fd, &sb, sizeof(sb), 0);
+  if (r != (ssize_t)sizeof(sb))
+  {
+    int err = -errno;
+    close(fd);
+    return err ? err : -EIO;
+  }
+  if (kafs_sb_magic_get(&sb) != KAFS_MAGIC)
+  {
+    close(fd);
+    return -EINVAL;
+  }
+
+  uint32_t fmt = kafs_sb_format_version_get(&sb);
+  if (fmt == KAFS_FORMAT_VERSION)
+  {
+    close(fd);
+    return 1;
+  }
+  if (fmt != KAFS_FORMAT_VERSION_V2)
+  {
+    close(fd);
+    return -EPROTONOSUPPORT;
+  }
+
+  if (!assume_yes && !kafs_confirm_yes_stdin())
+  {
+    close(fd);
+    return -ECANCELED;
+  }
+
+  kafs_sb_format_version_set(&sb, KAFS_FORMAT_VERSION);
+  if (kafs_sb_allocator_size_get(&sb) > 0)
+  {
+    if (kafs_sb_allocator_version_get(&sb) < 2u)
+      kafs_sb_allocator_version_set(&sb, 2u);
+    uint64_t ff = kafs_sb_feature_flags_get(&sb);
+    kafs_sb_feature_flags_set(&sb, ff | KAFS_FEATURE_ALLOC_V2);
+  }
+
+  if (pwrite(fd, &sb, sizeof(sb), 0) != (ssize_t)sizeof(sb))
+  {
+    int err = -errno;
+    close(fd);
+    return err ? err : -EIO;
+  }
+  if (fsync(fd) != 0)
+  {
+    int err = -errno;
+    close(fd);
+    return err;
+  }
+
+  close(fd);
+  return 0;
 }
 
 static void kafs_signal_handler(int sig)
@@ -4117,6 +5503,8 @@ int main(int argc, char **argv)
   kafs_install_crash_handlers();
   // 画像ファイル指定を受け取る: --image <path> または --image=<path>、環境変数 KAFS_IMAGE
   const char *image_path = getenv("KAFS_IMAGE");
+  kafs_bool_t auto_migrate_v2 = KAFS_FALSE;
+  kafs_bool_t migrate_yes = KAFS_FALSE;
   // argv から --image と --help を取り除き fuse_main へは渡さない
   char *argv_clean[argc];
   int argc_clean = 0;
@@ -4127,6 +5515,16 @@ int main(int argc, char **argv)
     if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0)
     {
       show_help = KAFS_TRUE;
+      continue;
+    }
+    if (strcmp(a, "--migrate-v2") == 0)
+    {
+      auto_migrate_v2 = KAFS_TRUE;
+      continue;
+    }
+    if (strcmp(a, "--yes") == 0)
+    {
+      migrate_yes = KAFS_TRUE;
       continue;
     }
     if (strcmp(a, "--image") == 0)
@@ -4172,6 +5570,30 @@ int main(int argc, char **argv)
   unsigned mt_cnt_override = 0;
   int mt_cnt_override_set = 0;
   int saw_max_threads = 0;
+  uint32_t pending_worker_prio_mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
+  int pending_worker_nice = 0;
+
+  const char *pprio = getenv("KAFS_PENDING_WORKER_PRIO");
+  if (pprio && *pprio)
+  {
+    if (kafs_pending_worker_prio_mode_parse(pprio, &pending_worker_prio_mode) != 0)
+    {
+      fprintf(stderr, "invalid KAFS_PENDING_WORKER_PRIO: '%s'\n", pprio);
+      return 2;
+    }
+  }
+  const char *pnice = getenv("KAFS_PENDING_WORKER_NICE");
+  if (pnice && *pnice)
+  {
+    char *endp = NULL;
+    long v = strtol(pnice, &endp, 10);
+    if (!endp || *endp != '\0' || v < 0 || v > 19)
+    {
+      fprintf(stderr, "invalid KAFS_PENDING_WORKER_NICE: '%s'\n", pnice);
+      return 2;
+    }
+    pending_worker_nice = (int)v;
+  }
 
   // Custom -o option: multi_thread[=N] (alias: multi-thread, multithread).
   // Strip it from argv before passing to libfuse, and translate to max_threads=.
@@ -4253,6 +5675,41 @@ int main(int argc, char **argv)
             mt_cnt_override = (unsigned)v;
             mt_cnt_override_set = 1;
             want_mt = 1;
+            continue;
+          }
+
+          const char *prio_str = NULL;
+          if (strncmp(tok, "pending_worker_prio=", 20) == 0)
+            prio_str = tok + 20;
+          else if (strncmp(tok, "dedup_worker_prio=", 18) == 0)
+            prio_str = tok + 18;
+          if (prio_str)
+          {
+            if (kafs_pending_worker_prio_mode_parse(prio_str, &pending_worker_prio_mode) != 0)
+            {
+              fprintf(stderr, "invalid -o pending_worker_prio: '%s'\n", prio_str);
+              free(dup);
+              return 2;
+            }
+            continue;
+          }
+
+          const char *nice_str = NULL;
+          if (strncmp(tok, "pending_worker_nice=", 20) == 0)
+            nice_str = tok + 20;
+          else if (strncmp(tok, "dedup_worker_nice=", 18) == 0)
+            nice_str = tok + 18;
+          if (nice_str)
+          {
+            char *endp = NULL;
+            long v = strtol(nice_str, &endp, 10);
+            if (!endp || *endp != '\0' || v < 0 || v > 19)
+            {
+              fprintf(stderr, "invalid -o pending_worker_nice: '%s'\n", nice_str);
+              free(dup);
+              return 2;
+            }
+            pending_worker_nice = (int)v;
             continue;
           }
 
@@ -4366,6 +5823,10 @@ int main(int argc, char **argv)
   ctx.c_hotplug_back_features = 0;
   ctx.c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_UNKNOWN;
   ctx.c_hotplug_compat_reason = 0;
+  ctx.c_pending_worker_prio_mode = pending_worker_prio_mode;
+  ctx.c_pending_worker_nice = pending_worker_nice;
+  ctx.c_pending_worker_prio_apply_error = 0;
+  ctx.c_pending_worker_prio_dirty = 1;
 
   const char *data_mode = getenv("KAFS_HOTPLUG_DATA_MODE");
   if (data_mode)
@@ -4453,7 +5914,40 @@ int main(int argc, char **argv)
   }
   if (kafs_sb_format_version_get(&sbdisk) != KAFS_FORMAT_VERSION)
   {
-    fprintf(stderr, "unsupported format version. expected %u.\n", (unsigned)KAFS_FORMAT_VERSION);
+    uint32_t fmt_ver = kafs_sb_format_version_get(&sbdisk);
+    if (fmt_ver == KAFS_FORMAT_VERSION_V2)
+    {
+      if (auto_migrate_v2)
+      {
+        int mrc = kafs_migrate_v2_image(image_path, migrate_yes ? 1 : 0);
+        if (mrc == 0)
+        {
+          fprintf(stderr, "migration completed: v2 -> v3. please restart mount.\n");
+          exit(0);
+        }
+        if (mrc == 1)
+        {
+          fprintf(stderr, "image already v3; continue normal mount without --migrate-v2.\n");
+          exit(0);
+        }
+        if (mrc == -ECANCELED)
+          fprintf(stderr, "migration canceled by user.\n");
+        else
+          fprintf(stderr, "migration failed rc=%d.\n", mrc);
+        exit(2);
+      }
+      fprintf(stderr,
+              "unsupported format version: v2.\n"
+              "migration guidance:\n"
+              "  1) offline migrate command (recommended):\n"
+              "     kafsctl migrate %s [--yes]\n"
+              "  2) one-shot startup migration:\n"
+              "     kafs --image %s --migrate-v2 [--yes] <mountpoint> [FUSE options]\n",
+              image_path, image_path);
+    }
+    else
+      fprintf(stderr, "unsupported format version: %u (expected %u).\n", fmt_ver,
+              (unsigned)KAFS_FORMAT_VERSION);
     exit(2);
   }
   // 読み出し値からレイアウト計算
@@ -4484,14 +5978,19 @@ int main(int argc, char **argv)
     uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
     uint64_t j_off = kafs_sb_journal_offset_get(&sbdisk);
     uint64_t j_size = kafs_sb_journal_size_get(&sbdisk);
+    uint64_t p_off = kafs_sb_pendinglog_offset_get(&sbdisk);
+    uint64_t p_size = kafs_sb_pendinglog_size_get(&sbdisk);
     uint64_t end1 = (idx_off && idx_size) ? (idx_off + idx_size) : 0;
     uint64_t end2 = (ent_off && ent_size) ? (ent_off + ent_size) : 0;
     uint64_t end3 = (j_off && j_size) ? (j_off + j_size) : 0;
+    uint64_t end4 = (p_off && p_size) ? (p_off + p_size) : 0;
     uint64_t max_end = end1;
     if (end2 > max_end)
       max_end = end2;
     if (end3 > max_end)
       max_end = end3;
+    if (end4 > max_end)
+      max_end = end4;
     if ((off_t)max_end > imgsize)
       imgsize = (off_t)max_end;
     imgsize = (imgsize + blksizemask) & ~blksizemask;
@@ -4510,15 +6009,56 @@ int main(int argc, char **argv)
   ctx.c_mapsize = (size_t)mapsize; // metadata region length (subset of img)
   ctx.c_blkmasktbl = (void *)ctx.c_superblock + (intptr_t)blkmask_off;
   ctx.c_inotbl = (void *)ctx.c_superblock + (intptr_t)inotbl_off;
+  ctx.c_ino_epoch = calloc((size_t)inocnt, sizeof(uint32_t));
+  if (ctx.c_ino_epoch)
+  {
+    for (kafs_inocnt_t i = 0; i < inocnt; ++i)
+      ctx.c_ino_epoch[i] = 1u;
+  }
+  ctx.c_alloc_v3_summary_dirty = 1;
 
   // HRL オープン
   (void)kafs_hrl_open(&ctx);
 
   // Journal 初期化（KAFS_JOURNAL=0/1/パス）
   (void)kafs_journal_init(&ctx, image_path);
+  ctx.c_meta_delta_enabled = (uint32_t)kafs_journal_is_enabled(&ctx);
+  if (ctx.c_meta_delta_enabled)
+  {
+    size_t bits = sizeof(kafs_blkmask_t) * 8u;
+    size_t words = ((size_t)r_blkcnt + bits - 1u) / bits;
+    ctx.c_meta_bitmap_words = calloc(words, sizeof(kafs_blkmask_t));
+    ctx.c_meta_bitmap_dirty = calloc(words, sizeof(uint8_t));
+    if (!ctx.c_meta_bitmap_words || !ctx.c_meta_bitmap_dirty)
+    {
+      free(ctx.c_meta_bitmap_words);
+      free(ctx.c_meta_bitmap_dirty);
+      ctx.c_meta_bitmap_words = NULL;
+      ctx.c_meta_bitmap_dirty = NULL;
+      ctx.c_meta_bitmap_wordcnt = 0;
+      ctx.c_meta_bitmap_dirty_count = 0;
+      ctx.c_meta_bitmap_words_enabled = 0;
+      ctx.c_meta_delta_enabled = 0;
+    }
+    else
+    {
+      memcpy(ctx.c_meta_bitmap_words, ctx.c_blkmasktbl, words * sizeof(kafs_blkmask_t));
+      ctx.c_meta_bitmap_wordcnt = words;
+      ctx.c_meta_bitmap_dirty_count = 0;
+      ctx.c_meta_bitmap_words_enabled = 1u;
+    }
+  }
 
   // 起動時リプレイ（in-image のみ対象）。致命的ではなくベストエフォート。
   (void)kafs_journal_replay(&ctx, NULL, NULL);
+  (void)kafs_pendinglog_init_or_load(&ctx);
+  if (ctx.c_pendinglog_enabled)
+  {
+    (void)kafs_pendinglog_replay_mount(&ctx);
+    (void)kafs_pending_worker_start(&ctx);
+    kafs_journal_note(&ctx, "PENDINGLOG", "loaded entries=%u cap=%u", kafs_pendinglog_count(&ctx),
+                      ctx.c_pendinglog_capacity);
+  }
 
   // 画像ファイルに排他ロック（複数プロセスによる同時RW起動を防止）
   struct flock lk = {0};
@@ -4602,6 +6142,7 @@ int main(int argc, char **argv)
   }
   argv_fuse[argc_fuse] = NULL; // ensure NULL-terminated argv for libfuse safety
   int rc = fuse_main(argc_fuse, argv_fuse, &kafs_operations, &ctx);
+  kafs_pending_worker_stop(&ctx);
   kafs_journal_shutdown(&ctx);
   if (ctx.c_hotplug_fd >= 0)
     close(ctx.c_hotplug_fd);
@@ -4615,6 +6156,9 @@ int main(int argc, char **argv)
     pthread_cond_destroy(&ctx.c_hotplug_wait_cond);
     pthread_mutex_destroy(&ctx.c_hotplug_wait_lock);
   }
+  free(ctx.c_meta_bitmap_words);
+  free(ctx.c_meta_bitmap_dirty);
+  free(ctx.c_ino_epoch);
   if (ctx.c_img_base && ctx.c_img_base != MAP_FAILED)
     munmap(ctx.c_img_base, ctx.c_img_size);
   return rc;

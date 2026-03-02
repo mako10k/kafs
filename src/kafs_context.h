@@ -44,9 +44,90 @@ struct kafs_context
   uint64_t c_stat_hrl_put_hits;
   uint64_t c_stat_hrl_put_misses;
   uint64_t c_stat_hrl_put_fallback_legacy;
+  uint64_t c_stat_hrl_put_ns_hash;
+  uint64_t c_stat_hrl_put_ns_find;
+  uint64_t c_stat_hrl_put_ns_cmp_content;
+  uint64_t c_stat_hrl_put_ns_slot_alloc;
+  uint64_t c_stat_hrl_put_ns_blk_alloc;
+  uint64_t c_stat_hrl_put_ns_blk_write;
+  uint64_t c_stat_hrl_put_chain_steps;
+  uint64_t c_stat_hrl_put_cmp_calls;
+
+  uint64_t c_stat_lock_hrl_bucket_acquire;
+  uint64_t c_stat_lock_hrl_bucket_contended;
+  uint64_t c_stat_lock_hrl_bucket_wait_ns;
+  uint64_t c_stat_lock_hrl_global_acquire;
+  uint64_t c_stat_lock_hrl_global_contended;
+  uint64_t c_stat_lock_hrl_global_wait_ns;
+  uint64_t c_stat_lock_bitmap_acquire;
+  uint64_t c_stat_lock_bitmap_contended;
+  uint64_t c_stat_lock_bitmap_wait_ns;
+  uint64_t c_stat_lock_inode_acquire;
+  uint64_t c_stat_lock_inode_contended;
+  uint64_t c_stat_lock_inode_wait_ns;
+  uint64_t c_stat_lock_inode_alloc_acquire;
+  uint64_t c_stat_lock_inode_alloc_contended;
+  uint64_t c_stat_lock_inode_alloc_wait_ns;
+
+  uint64_t c_stat_pwrite_calls;
+  uint64_t c_stat_pwrite_bytes;
+  uint64_t c_stat_pwrite_ns_iblk_read;
+  uint64_t c_stat_pwrite_ns_iblk_write;
+  uint64_t c_stat_pwrite_iblk_write_sample_seq;
+  uint32_t c_stat_pwrite_iblk_write_sample_count;
+  uint32_t c_stat_pwrite_iblk_write_sample_cap;
+  uint64_t c_stat_pwrite_iblk_write_samples[1024];
+  uint64_t c_stat_iblk_write_ns_hrl_put;
+  uint64_t c_stat_iblk_write_ns_legacy_blk_write;
+  uint64_t c_stat_iblk_write_ns_dec_ref;
+
+  uint64_t c_stat_blk_alloc_calls;
+  uint64_t c_stat_blk_alloc_claim_retries;
+  uint64_t c_stat_blk_alloc_ns_scan;
+  uint64_t c_stat_blk_alloc_ns_claim;
+  uint64_t c_stat_blk_alloc_ns_set_usage;
+
+  uint64_t c_stat_blk_set_usage_calls;
+  uint64_t c_stat_blk_set_usage_alloc_calls;
+  uint64_t c_stat_blk_set_usage_free_calls;
+  uint64_t c_stat_blk_set_usage_ns_bit_update;
+  uint64_t c_stat_blk_set_usage_ns_freecnt_update;
+  uint64_t c_stat_blk_set_usage_ns_wtime_update;
+
+  // --- Allocator v3 runtime state ---
+  uint32_t c_alloc_v3_summary_dirty;
+
+  // --- Phase2 meta delta (runtime batching) ---
+  uint32_t c_meta_delta_enabled;
+  int64_t c_meta_delta_free_blocks;
+  uint32_t c_meta_delta_wtime_dirty;
+  kafs_time_t c_meta_delta_last_wtime;
+  uint32_t c_meta_bitmap_words_enabled;
+  kafs_blkmask_t *c_meta_bitmap_words;
+  uint8_t *c_meta_bitmap_dirty;
+  size_t c_meta_bitmap_wordcnt;
+  size_t c_meta_bitmap_dirty_count;
+
+  // --- Phase3 pending log runtime state ---
+  uint32_t c_pendinglog_enabled;
+  void *c_pendinglog_base;
+  size_t c_pendinglog_size;
+  uint32_t c_pendinglog_capacity;
+  pthread_t c_pending_worker_tid;
+  pthread_mutex_t c_pending_worker_lock;
+  pthread_cond_t c_pending_worker_cond;
+  int c_pending_worker_lock_init;
+  int c_pending_worker_running;
+  int c_pending_worker_stop;
+  uint32_t c_pending_worker_backoff_ms;
+  uint32_t c_pending_worker_prio_mode;
+  int32_t c_pending_worker_nice;
+  int32_t c_pending_worker_prio_apply_error;
+  uint32_t c_pending_worker_prio_dirty;
 
   // --- Runtime inode open counts (in-memory only) ---
   uint32_t *c_open_cnt; // sized to superblock inocnt (allocated at mount)
+  uint32_t *c_ino_epoch; // sized to superblock inocnt (optimistic guard for pending worker)
 
   // --- Mount context ---
   const char *c_mountpoint; // mountpoint path (from argv)

@@ -1,5 +1,41 @@
 # KAFS Reproduction Test - Complete Index
 
+## Project Documentation (General)
+
+This repository also contains design and planning documents. For hotplug and
+RPC-related design notes, see the hotplug documents. For deduplication, see the
+design and policy notes.
+
+- [hotplug-plan.md](hotplug-plan.md)
+- [hotplug-requirements.md](hotplug-requirements.md)
+- [hotplug-design.md](hotplug-design.md)
+- [hotplug-milestones.md](hotplug-milestones.md)
+- [hotplug-tickets.md](hotplug-tickets.md)
+- [hotplug-pipe-plan.md](hotplug-pipe-plan.md)
+- [hotplug-pipe-requirements.md](hotplug-pipe-requirements.md)
+- [hotplug-pipe-design.md](hotplug-pipe-design.md)
+- [hotplug-pipe-milestones.md](hotplug-pipe-milestones.md)
+- [hotplug-pipe-tickets.md](hotplug-pipe-tickets.md)
+- [dedup-design.md](dedup-design.md)
+- [duplicate-policy.md](duplicate-policy.md)
+- [concurrency-plan.md](concurrency-plan.md)
+- [journal-plan.md](journal-plan.md)
+- [write-performance-ideas.md](write-performance-ideas.md)
+- [bottleneck-measurement-plan.md](bottleneck-measurement-plan.md)
+- [perf-evaluation-20260228.md](perf-evaluation-20260228.md)
+- [perf-discrepancy-analysis-20260228.md](perf-discrepancy-analysis-20260228.md)
+- [format-v3-123-spec.md](format-v3-123-spec.md)
+- [format-v3-123-tickets.md](format-v3-123-tickets.md)
+- [migration-v2-to-v3.md](migration-v2-to-v3.md)
+- [phase1-validation-20260228.md](phase1-validation-20260228.md)
+- [phase2-validation-20260228.md](phase2-validation-20260228.md)
+- [phase3-validation-20260228.md](phase3-validation-20260228.md)
+- [release-announcement-v0.2.1.md](release-announcement-v0.2.1.md)
+- [discussion-post-v0.2.1-final.md](discussion-post-v0.2.1-final.md)
+- [static-checks.md](static-checks.md)
+- [tools-suite.md](tools-suite.md)
+- [STRACE_ANALYSIS_INDEX.md](STRACE_ANALYSIS_INDEX.md)
+
 ## Quick Start
 
 **Status**: ✓ **ALL TESTS PASSED** - EIO/SHA1 errors NO LONGER OCCUR

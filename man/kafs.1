@@ -1,11 +1,19 @@
 '.\" -*- nroff -*-
-.TH KAFS 1 "2026-02-08" "kafs 0.1.0" "User Commands"
+.TH KAFS 1 "2026-03-01" "kafs 0.2.2" "User Commands"
 .SH NAME
 kafs \- FUSE-based KAFS filesystem
 .SH SYNOPSIS
 .B kafs
 .RB [ --image
 .IR image ]
+.I mountpoint
+.RI [ FUSE\ options ]
+.PP
+.B kafs
+.RB [ --image
+.IR image ]
+.B --migrate-v2
+.RB [ --yes ]
 .I mountpoint
 .RI [ FUSE\ options ]
 .PP
@@ -29,6 +37,13 @@ and
 .BR multithread .
 If N is omitted, a default is chosen (currently 8) or can be set via
 .BR KAFS_MAX_THREADS .
+.TP
+.B --migrate-v2
+If the image format is v2, perform one-shot migration to v3 and exit.
+This operation is irreversible.
+.TP
+.B --yes
+Skip interactive confirmation for migration.
 .SH ENVIRONMENT
 .TP
 .B KAFS_IMAGE

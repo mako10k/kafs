@@ -24,6 +24,7 @@ typedef struct kj_header
 #define KJ_TAG_ABR 0x41425232u  /* 'ABR2' */
 #define KJ_TAG_NOTE 0x4e4f5432u /* 'NOT2' */
 #define KJ_TAG_WRAP 0x57524150u /* 'WRAP' */
+#define KJ_TAG_MDT 0x4d445432u  /* 'MDT2' */
 
 typedef struct kj_rec_hdr
 {
@@ -83,6 +84,8 @@ typedef struct kafs_journal
 // Initialize journal. In-image journalが存在すれば有効化。KAFS_JOURNAL=0で明示無効。
 int kafs_journal_init(struct kafs_context *ctx, const char *image_path);
 void kafs_journal_shutdown(struct kafs_context *ctx);
+int kafs_journal_is_enabled(struct kafs_context *ctx);
+void kafs_journal_force_flush(struct kafs_context *ctx);
 
 // Start and finish a journal entry. begin returns sequence id (0 when disabled).
 uint64_t kafs_journal_begin(struct kafs_context *ctx, const char *op, const char *fmt, ...);
