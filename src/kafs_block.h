@@ -168,6 +168,58 @@ static int kafs_alloc_v3_summary_sync_one(struct kafs_context *ctx, kafs_blkcnt_
   return 0;
 }
 
+static void kafs_blk_account_bit_update(struct kafs_context *ctx, kafs_blkmask_t *blkmasktbl,
+                                        kafs_blkcnt_t blod, kafs_blkmask_t word)
+{
+  uint64_t t_bit0 = kafs_blk_now_ns();
+  blkmasktbl[blod] = word;
+  kafs_meta_bitmap_mark_dirty(ctx, blod);
+  uint64_t t_bit1 = kafs_blk_now_ns();
+  __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_bit_update, t_bit1 - t_bit0, __ATOMIC_RELAXED);
+}
+
+static void kafs_blk_account_meta_update(struct kafs_context *ctx, kafs_ssuperblock_t *sb,
+                                         kafs_blkcnt_t blo, int free_delta)
+{
+  uint64_t t_free0 = kafs_blk_now_ns();
+  if (ctx->c_meta_delta_enabled)
+  {
+    ctx->c_meta_delta_free_blocks += free_delta;
+  }
+  else
+  {
+    kafs_blkcnt_t blkcnt_free = kafs_sb_blkcnt_free_get(sb);
+    if (free_delta < 0)
+    {
+      if (blkcnt_free > 0)
+        kafs_sb_blkcnt_free_set(sb, blkcnt_free - 1);
+    }
+    else if (free_delta > 0)
+    {
+      kafs_sb_blkcnt_free_set(sb, blkcnt_free + 1);
+    }
+  }
+  uint64_t t_free1 = kafs_blk_now_ns();
+  __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_freecnt_update, t_free1 - t_free0,
+                     __ATOMIC_RELAXED);
+
+  uint64_t t_wtime0 = kafs_blk_now_ns();
+  if (ctx->c_meta_delta_enabled)
+  {
+    ctx->c_meta_delta_wtime_dirty = 1u;
+  }
+  else
+  {
+    kafs_sb_wtime_set(sb, kafs_now());
+  }
+  uint64_t t_wtime1 = kafs_blk_now_ns();
+  __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_wtime_update, t_wtime1 - t_wtime0,
+                     __ATOMIC_RELAXED);
+
+  if (kafs_alloc_v3_summary_sync_one(ctx, blo) < 0)
+    ctx->c_alloc_v3_summary_dirty = 1u;
+}
+
 /// @brief 指定されたブロックの利用状況をセットする
 /// @param ctx コンテキスト
 /// @param blo ブロック番号
@@ -193,44 +245,9 @@ static int kafs_blk_set_usage_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo
     __atomic_add_fetch(&ctx->c_stat_blk_set_usage_alloc_calls, 1u, __ATOMIC_RELAXED);
     if (!was_used)
     {
-      uint64_t t_bit0 = kafs_blk_now_ns();
       word |= bit;
-      blkmasktbl[blod] = word;
-      kafs_meta_bitmap_mark_dirty(ctx, blod);
-      uint64_t t_bit1 = kafs_blk_now_ns();
-      __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_bit_update, t_bit1 - t_bit0,
-                         __ATOMIC_RELAXED);
-
-      uint64_t t_free0 = kafs_blk_now_ns();
-      if (ctx->c_meta_delta_enabled)
-      {
-        ctx->c_meta_delta_free_blocks -= 1;
-      }
-      else
-      {
-        kafs_blkcnt_t blkcnt_free = kafs_sb_blkcnt_free_get(sb);
-        if (blkcnt_free > 0)
-          kafs_sb_blkcnt_free_set(sb, blkcnt_free - 1);
-      }
-      uint64_t t_free1 = kafs_blk_now_ns();
-      __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_freecnt_update, t_free1 - t_free0,
-                         __ATOMIC_RELAXED);
-
-      uint64_t t_wtime0 = kafs_blk_now_ns();
-      if (ctx->c_meta_delta_enabled)
-      {
-        ctx->c_meta_delta_wtime_dirty = 1u;
-      }
-      else
-      {
-        kafs_sb_wtime_set(sb, kafs_now());
-      }
-      uint64_t t_wtime1 = kafs_blk_now_ns();
-      __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_wtime_update, t_wtime1 - t_wtime0,
-                         __ATOMIC_RELAXED);
-
-      if (kafs_alloc_v3_summary_sync_one(ctx, blo) < 0)
-        ctx->c_alloc_v3_summary_dirty = 1u;
+      kafs_blk_account_bit_update(ctx, blkmasktbl, blod, word);
+      kafs_blk_account_meta_update(ctx, sb, blo, -1);
     }
   }
   else
@@ -238,43 +255,9 @@ static int kafs_blk_set_usage_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo
     __atomic_add_fetch(&ctx->c_stat_blk_set_usage_free_calls, 1u, __ATOMIC_RELAXED);
     if (was_used)
     {
-      uint64_t t_bit0 = kafs_blk_now_ns();
       word &= (kafs_blkmask_t)~bit;
-      blkmasktbl[blod] = word;
-      kafs_meta_bitmap_mark_dirty(ctx, blod);
-      uint64_t t_bit1 = kafs_blk_now_ns();
-      __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_bit_update, t_bit1 - t_bit0,
-                         __ATOMIC_RELAXED);
-
-      uint64_t t_free0 = kafs_blk_now_ns();
-      if (ctx->c_meta_delta_enabled)
-      {
-        ctx->c_meta_delta_free_blocks += 1;
-      }
-      else
-      {
-        kafs_blkcnt_t blkcnt_free = kafs_sb_blkcnt_free_get(sb);
-        kafs_sb_blkcnt_free_set(sb, blkcnt_free + 1);
-      }
-      uint64_t t_free1 = kafs_blk_now_ns();
-      __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_freecnt_update, t_free1 - t_free0,
-                         __ATOMIC_RELAXED);
-
-      uint64_t t_wtime0 = kafs_blk_now_ns();
-      if (ctx->c_meta_delta_enabled)
-      {
-        ctx->c_meta_delta_wtime_dirty = 1u;
-      }
-      else
-      {
-        kafs_sb_wtime_set(sb, kafs_now());
-      }
-      uint64_t t_wtime1 = kafs_blk_now_ns();
-      __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_wtime_update, t_wtime1 - t_wtime0,
-                         __ATOMIC_RELAXED);
-
-      if (kafs_alloc_v3_summary_sync_one(ctx, blo) < 0)
-        ctx->c_alloc_v3_summary_dirty = 1u;
+      kafs_blk_account_bit_update(ctx, blkmasktbl, blod, word);
+      kafs_blk_account_meta_update(ctx, sb, blo, +1);
     }
   }
   return KAFS_SUCCESS;
@@ -300,43 +283,9 @@ static int kafs_blk_try_claim_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo
   __atomic_add_fetch(&ctx->c_stat_blk_set_usage_calls, 1u, __ATOMIC_RELAXED);
   __atomic_add_fetch(&ctx->c_stat_blk_set_usage_alloc_calls, 1u, __ATOMIC_RELAXED);
 
-  uint64_t t_bit0 = kafs_blk_now_ns();
   word |= bit;
-  blkmasktbl[blod] = word;
-  kafs_meta_bitmap_mark_dirty(ctx, blod);
-  uint64_t t_bit1 = kafs_blk_now_ns();
-  __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_bit_update, t_bit1 - t_bit0, __ATOMIC_RELAXED);
-
-  uint64_t t_free0 = kafs_blk_now_ns();
-  if (ctx->c_meta_delta_enabled)
-  {
-    ctx->c_meta_delta_free_blocks -= 1;
-  }
-  else
-  {
-    kafs_blkcnt_t blkcnt_free = kafs_sb_blkcnt_free_get(sb);
-    if (blkcnt_free > 0)
-      kafs_sb_blkcnt_free_set(sb, blkcnt_free - 1);
-  }
-  uint64_t t_free1 = kafs_blk_now_ns();
-  __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_freecnt_update, t_free1 - t_free0,
-                     __ATOMIC_RELAXED);
-
-  uint64_t t_wtime0 = kafs_blk_now_ns();
-  if (ctx->c_meta_delta_enabled)
-  {
-    ctx->c_meta_delta_wtime_dirty = 1u;
-  }
-  else
-  {
-    kafs_sb_wtime_set(sb, kafs_now());
-  }
-  uint64_t t_wtime1 = kafs_blk_now_ns();
-  __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_wtime_update, t_wtime1 - t_wtime0,
-                     __ATOMIC_RELAXED);
-
-  if (kafs_alloc_v3_summary_sync_one(ctx, blo) < 0)
-    ctx->c_alloc_v3_summary_dirty = 1u;
+  kafs_blk_account_bit_update(ctx, blkmasktbl, blod, word);
+  kafs_blk_account_meta_update(ctx, sb, blo, -1);
 
   return 1;
 }
