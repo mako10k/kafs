@@ -241,5 +241,6 @@ make check
 - docs/INDEX.md: documentation index
 - docs/hotplug-*.md and docs/hotplug-pipe-*.md: hotplug plans/designs
 - docs/dedup-design.md: deduplication design notes
+- docs/kafsimage-format.md: kafsimage mode semantics and output rules
 - man/: manual pages for kafs, mkfs.kafs, fsck.kafs, kafsctl
 - CHANGELOG.md: release notes
