@@ -15,6 +15,22 @@
 /Makefile
 /Makefile.in
 
+### Intermediate/object artifacts (generic)
+*.o
+*.obj
+*.lo
+*.la
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+*.d
+*.gcno
+*.gcda
+*.gcov
+
 ### Build outputs (src)
 /src/.deps/
 /src/.dirstamp
