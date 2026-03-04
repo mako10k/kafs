@@ -1523,11 +1523,23 @@ static int kafs_ino_iblk_read(struct kafs_context *ctx, kafs_sinode_t *inoent, k
   assert(buf != NULL);
   assert(inoent != NULL);
   assert(kafs_ino_get_usage(inoent));
-  assert(kafs_ino_size_get(inoent) > KAFS_DIRECT_SIZE);
   kafs_blkcnt_t blo;
   KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_GET);
   KAFS_CALL(kafs_blk_read, ctx, blo, buf);
   return KAFS_SUCCESS;
+}
+
+// Read one data block and treat an absent block mapping as a sparse hole.
+static int kafs_ino_iblk_read_or_zero(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                      kafs_iblkcnt_t iblo, void *buf)
+{
+  int rc = kafs_ino_iblk_read(ctx, inoent, iblo, buf);
+  if (rc == -ENOENT)
+  {
+    memset(buf, 0, kafs_sb_blksize_get(ctx->c_superblock));
+    return 0;
+  }
+  return rc;
 }
 
 /// @brief inode毎のデータを書き込む（ブロック単位）
@@ -1544,7 +1556,6 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
   assert(buf != NULL);
   assert(inoent != NULL);
   assert(kafs_ino_get_usage(inoent));
-  assert(kafs_ino_size_get(inoent) > KAFS_DIRECT_SIZE);
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
   // 注意: kafs_blk_is_zero は「非ゼロを含むと1、全ゼロで0」を返す
   if (kafs_blk_is_zero(buf, blksize))
@@ -1743,7 +1754,7 @@ static ssize_t kafs_pread(struct kafs_context *ctx, kafs_sinode_t *inoent, void 
   {
     char rbuf[blksize];
     kafs_iblkcnt_t iblo = offset >> log_blksize;
-    KAFS_CALL(kafs_ino_iblk_read, ctx, inoent, iblo, rbuf);
+    KAFS_CALL(kafs_ino_iblk_read_or_zero, ctx, inoent, iblo, rbuf);
     if (size < blksize - offset_blksize)
     {
       memcpy(buf, rbuf + offset_blksize, size);
@@ -1758,11 +1769,11 @@ static ssize_t kafs_pread(struct kafs_context *ctx, kafs_sinode_t *inoent, void 
     if (size - size_read <= blksize)
     {
       char rbuf[blksize];
-      KAFS_CALL(kafs_ino_iblk_read, ctx, inoent, iblo, rbuf);
+      KAFS_CALL(kafs_ino_iblk_read_or_zero, ctx, inoent, iblo, rbuf);
       memcpy(buf + size_read, rbuf, size - size_read);
       return size;
     }
-    KAFS_CALL(kafs_ino_iblk_read, ctx, inoent, iblo, buf + size_read);
+    KAFS_CALL(kafs_ino_iblk_read_or_zero, ctx, inoent, iblo, buf + size_read);
     size_read += blksize;
   }
   return size;
@@ -1828,7 +1839,7 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
     // 書き戻しバッファ
     char wbuf[blksize];
     uint64_t t_r0 = kafs_now_ns();
-    KAFS_CALL(kafs_ino_iblk_read, ctx, inoent, iblo, wbuf);
+    KAFS_CALL(kafs_ino_iblk_read_or_zero, ctx, inoent, iblo, wbuf);
     uint64_t t_r1 = kafs_now_ns();
     __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_read, t_r1 - t_r0, __ATOMIC_RELAXED);
     if (size < blksize - offset_blksize)
@@ -1861,7 +1872,7 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
     {
       char wbuf[blksize];
       uint64_t t_r0 = kafs_now_ns();
-      KAFS_CALL(kafs_ino_iblk_read, ctx, inoent, iblo, wbuf);
+      KAFS_CALL(kafs_ino_iblk_read_or_zero, ctx, inoent, iblo, wbuf);
       uint64_t t_r1 = kafs_now_ns();
       __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_read, t_r1 - t_r0, __ATOMIC_RELAXED);
       memcpy(wbuf, buf + size_written, size - size_written);
@@ -1905,6 +1916,7 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
     kafs_blkcnt_t __b = (_blo);                                                                    \
     if (__b != KAFS_BLO_NONE)                                                                      \
     {                                                                                              \
+      kafs_dlog(2, "%s: ino=%u queue free blo=%" PRIuFAST32 "\n", __func__, ino_idx, __b);      \
       if (deferred_free_cnt == deferred_free_cap)                                                  \
       {                                                                                            \
         size_t new_cap = deferred_free_cap ? (deferred_free_cap << 1) : 256u;                      \
@@ -2013,9 +2025,18 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
   if (off > 0)
   {
     char buf[blksize];
+    kafs_blkcnt_t cur_blo = KAFS_BLO_NONE;
+    (void)kafs_ino_ibrk_run(ctx, inoent, iblooff, &cur_blo, KAFS_IBLKREF_FUNC_GET);
+    kafs_dlog(2,
+              "%s: ino=%u partial-tail iblo=%" PRIuFAST32 " off=%" PRIuFAST16
+              " cur_blo=%" PRIuFAST32 "\n",
+              __func__, ino_idx, iblooff, off, cur_blo);
     KAFS_CALL(kafs_ino_iblk_read, ctx, inoent, iblooff, buf);
     memset(buf + off, 0, blksize - off);
     KAFS_CALL(kafs_ino_iblk_write, ctx, inoent, iblooff, buf);
+    (void)kafs_ino_ibrk_run(ctx, inoent, iblooff, &cur_blo, KAFS_IBLKREF_FUNC_GET);
+    kafs_dlog(2, "%s: ino=%u partial-tail wrote iblo=%" PRIuFAST32 " new_blo=%" PRIuFAST32 "\n",
+              __func__, ino_idx, iblooff, cur_blo);
     iblooff++;
   }
 
@@ -2248,6 +2269,8 @@ static int kafs_dirent_search(struct kafs_context *ctx, kafs_sinode_t *inoent, c
       break;
     if (step < 0)
     {
+      kafs_dlog(1, "%s: parse failed dir_ino=%d off=%zu snap_len=%zu target=%.*s\n", __func__,
+                (int)(inoent - ctx->c_inotbl), off, snap_len, (int)filenamelen, filename);
       free(snap);
       return -EIO;
     }
@@ -2285,6 +2308,8 @@ static int kafs_dir_snapshot(struct kafs_context *ctx, kafs_sinode_t *inoent_dir
   ssize_t r = kafs_pread(ctx, inoent_dir, buf, (kafs_off_t)len, 0);
   if (r < 0 || (size_t)r != len)
   {
+    kafs_dlog(1, "%s: pread failed ino=%d req=%zu got=%zd\n", __func__,
+              (int)(inoent_dir - ctx->c_inotbl), len, r);
     free(buf);
     return -EIO;
   }
@@ -2326,7 +2351,12 @@ static int kafs_dirent_iter_next(const char *buf, size_t len, size_t off, kafs_i
   if (ino == 0 || namelen == 0)
     return 0;
   if (namelen >= FILENAME_MAX)
+  {
+    kafs_dlog(1, "%s: invalid dirent header off=%zu len=%zu ino=%" PRIuFAST16
+                 " namelen=%" PRIuFAST16 "\n",
+              __func__, off, len, (uint_fast16_t)ino, (uint_fast16_t)namelen);
     return -EIO;
+  }
   if (len - off < hdr_sz + (size_t)namelen)
     return 0;
   *out_ino = ino;
@@ -4780,6 +4810,8 @@ static int kafs_op_read(const char *path, char *buf, size_t size, off_t offset,
 static int kafs_op_write(const char *path, const char *buf, size_t size, off_t offset,
                          struct fuse_file_info *fi)
 {
+  kafs_dlog(3, "%s(path=%s, size=%zu, off=%" PRIuFAST64 ")\n", __func__, path ? path : "(null)",
+            size, (uint64_t)offset);
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
   if (kafs_is_ctl_path(path))
@@ -4801,10 +4833,23 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
   if (rc_hp >= 0)
     return (int)rc_hp;
   if (!kafs_hotplug_should_fallback((int)rc_hp))
+  {
+    kafs_log(KAFS_LOG_WARNING,
+             "%s: hotplug write failed path=%s ino=%" PRIuFAST32 " size=%zu off=%" PRIuFAST64
+             " rc=%zd\n",
+             __func__, path ? path : "(null)", ino, size, (uint64_t)offset, rc_hp);
     return (int)rc_hp;
+  }
   kafs_inode_lock(ctx, (uint32_t)ino);
   int rc_write = kafs_pwrite(ctx, &ctx->c_inotbl[ino], buf, size, offset);
   kafs_inode_unlock(ctx, (uint32_t)ino);
+  if (rc_write < 0)
+  {
+    kafs_log(KAFS_LOG_WARNING,
+             "%s: pwrite failed path=%s ino=%" PRIuFAST32 " size=%zu off=%" PRIuFAST64
+             " rc=%d\n",
+             __func__, path ? path : "(null)", (uint32_t)ino, size, (uint64_t)offset, rc_write);
+  }
   return rc_write;
 }
 
@@ -5235,10 +5280,23 @@ static int kafs_op_flush(const char *path, struct fuse_file_info *fi)
   // Ensure mmap'd metadata (superblock/inodes/bitmap/HRL) is persisted.
   if (ctx->c_img_base && ctx->c_img_size)
   {
-    // Best-effort: ignore msync errors and rely on fsync fallback.
-    (void)msync((void *)ctx->c_img_base, ctx->c_img_size, MS_SYNC);
+    if (msync((void *)ctx->c_img_base, ctx->c_img_size, MS_SYNC) != 0)
+    {
+      int e = errno;
+      kafs_log(KAFS_LOG_WARNING, "%s: msync failed path=%s ino=%" PRIuFAST32 " errno=%d\n",
+               __func__, path ? path : "(null)", fi ? (uint32_t)fi->fh : (uint32_t)KAFS_INO_NONE,
+               e);
+    }
   }
-  return (fsync(ctx->c_fd) == 0) ? 0 : -errno;
+  if (fsync(ctx->c_fd) != 0)
+  {
+    int e = errno;
+    kafs_log(KAFS_LOG_WARNING, "%s: fsync failed path=%s ino=%" PRIuFAST32 " errno=%d\n",
+             __func__, path ? path : "(null)", fi ? (uint32_t)fi->fh : (uint32_t)KAFS_INO_NONE,
+             e);
+    return -e;
+  }
+  return 0;
 }
 
 static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info *fi)
@@ -5270,9 +5328,21 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
   kafs_journal_force_flush(ctx);
   if (ctx->c_img_base && ctx->c_img_size)
   {
-    (void)msync((void *)ctx->c_img_base, ctx->c_img_size, MS_SYNC);
+    if (msync((void *)ctx->c_img_base, ctx->c_img_size, MS_SYNC) != 0)
+    {
+      int e = errno;
+      kafs_log(KAFS_LOG_WARNING, "%s: msync failed path=%s ino=%" PRIuFAST32 " errno=%d\n",
+               __func__, path ? path : "(null)", ino, e);
+    }
   }
-  return (fsync(ctx->c_fd) == 0) ? 0 : -errno;
+  if (fsync(ctx->c_fd) != 0)
+  {
+    int e = errno;
+    kafs_log(KAFS_LOG_WARNING, "%s: fsync failed path=%s ino=%" PRIuFAST32 " errno=%d\n",
+             __func__, path ? path : "(null)", ino, e);
+    return -e;
+  }
+  return 0;
 }
 
 static int kafs_op_fsyncdir(const char *path, int isdatasync, struct fuse_file_info *fi)
