@@ -4844,7 +4844,12 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
   }
   kafs_inocnt_t ino = fi->fh;
   if ((fi->flags & O_ACCMODE) == O_RDONLY)
-    return -EACCES;
+  {
+    // Kernel writeback may issue pid=0 WRITE requests even when fi flags look read-only.
+    // Keep userspace O_RDONLY protection, but allow kernel-originated writeback writes.
+    if (!fctx || fctx->pid != 0)
+      return -EACCES;
+  }
   ssize_t rc_hp = kafs_hotplug_call_write(fctx, ctx, ino, buf, size, offset);
   if (rc_hp >= 0)
   {
