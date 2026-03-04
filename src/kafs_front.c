@@ -201,21 +201,10 @@ int main(int argc, char **argv)
   if (!uds_path)
     uds_path = "/tmp/kafs-hotplug.sock";
 
-  for (int i = 1; i < argc; ++i)
   {
-    int consume_next = 0;
-    int exit_code = -1;
-    int handled = kafs_cli_parse_uds_help(argv[i], (i + 1 < argc) ? argv[i + 1] : NULL,
-                                          &uds_path, &consume_next, &exit_code, usage,
-                                          argv[0]);
-    if (handled)
-    {
-      if (exit_code >= 0)
-        return exit_code;
-      if (consume_next)
-        ++i;
-      continue;
-    }
+    int parse_rc = kafs_cli_parse_uds_help_loop(argc, argv, &uds_path, usage, argv[0]);
+    if (parse_rc >= 0)
+      return parse_rc;
   }
 
   pid_t pgid = getpid();
