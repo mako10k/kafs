@@ -48,6 +48,9 @@
 /src/open_unlink_visibility
 /src/host-tmpl-mt/
 /src/mnt-*/
+/src/prune_*
+/src/truncate_*
+/src/reflink_*
 
 ### Build outputs (tests)
 /tests/.deps/
@@ -97,21 +100,6 @@
 ### Local artifacts (debug/repro outputs)
 /.kafs_pid
 /*.log
-/*.txt
-
-# local scripts/docs generated during debugging (keep repo clean)
-/*-strace*.sh
-/force-eio.c
-/force-eio.so
-/minimal-fsck-test.sh
-/reproduce_workload.sh
-/run-eio-test.sh
-/test-*-git-*.sh
-/test-hooks-direct.sh
-/test-semantics-debug.sh
-/trigger-eio.sh
-/*_SUMMARY.md
-/*_REPORT.md
 
 ### Editors/IDEs
 .vscode/
@@ -121,11 +109,3 @@
 ### Local staging (DESTDIR installs)
 /_staging/
 minisrv.log
-
-# Built test binaries (explicit names)
-/src/prune_indirect_single
-/src/prune_indirect_double
-/src/prune_indirect_triple
-/src/truncate_prune
-/src/reflink_clone
-/src/hotplug_rpc

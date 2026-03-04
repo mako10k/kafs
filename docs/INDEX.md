@@ -41,9 +41,9 @@ design and policy notes.
 **Status**: ✓ **ALL TESTS PASSED** - EIO/SHA1 errors NO LONGER OCCUR
 
 **Files to Read** (in order):
-1. `SUMMARY.txt` - Start here for quick overview
-2. `FINAL_REPRODUCTION_REPORT.md` - Comprehensive details
-3. `HOOK_IMPLEMENTATION_DETAILS.txt` - Technical analysis
+1. `README_STRACE_ANALYSIS.md` - Start here for quick overview
+2. `STRACE_MINIMAL_REPRODUCTION_FINAL.md` - Comprehensive details
+3. `STRACE_EIO_ANALYSIS.md` - Technical analysis
 
 ## Documentation Files
 
@@ -51,11 +51,10 @@ design and policy notes.
 
 | File | Size | Purpose | Read Time |
 |------|------|---------|-----------|
-| [SUMMARY.txt](SUMMARY.txt) | 7.7KB | Executive summary | 5 min |
-| [FINAL_REPRODUCTION_REPORT.md](FINAL_REPRODUCTION_REPORT.md) | 6.9KB | Comprehensive report | 10 min |
-| [HOOK_IMPLEMENTATION_DETAILS.txt](HOOK_IMPLEMENTATION_DETAILS.txt) | 7.7KB | Technical details | 10 min |
-| [TEST_RESULTS_SUMMARY.md](TEST_RESULTS_SUMMARY.md) | 4.1KB | Results breakdown | 5 min |
-| [DELIVERABLES.txt](DELIVERABLES.txt) | 8.5KB | Manifest & next steps | 5 min |
+| [README_STRACE_ANALYSIS.md](README_STRACE_ANALYSIS.md) | - | Executive summary | 5 min |
+| [STRACE_MINIMAL_REPRODUCTION_FINAL.md](STRACE_MINIMAL_REPRODUCTION_FINAL.md) | - | Comprehensive report | 10 min |
+| [STRACE_EIO_ANALYSIS.md](STRACE_EIO_ANALYSIS.md) | - | Technical details | 10 min |
+| [STRACE_ANALYSIS_INDEX.md](STRACE_ANALYSIS_INDEX.md) | - | Navigation and quick lookup | 5 min |
 | [INDEX.md](INDEX.md) | This file | Navigation guide | 2 min |
 
 ## Test Scripts (Executable)
@@ -126,13 +125,13 @@ All hooks use `fdatasync()` to ensure data persistence to storage.
 ## How to Read This Report
 
 ### For Quick Understanding (5-10 minutes)
-1. Read `SUMMARY.txt`
+1. Read `README_STRACE_ANALYSIS.md`
 2. Scan test results in this file
 
 ### For Complete Details (20-30 minutes)
-1. Read `SUMMARY.txt`
-2. Read `FINAL_REPRODUCTION_REPORT.md`
-3. Read `HOOK_IMPLEMENTATION_DETAILS.txt`
+1. Read `README_STRACE_ANALYSIS.md`
+2. Read `STRACE_MINIMAL_REPRODUCTION_FINAL.md`
+3. Read `STRACE_EIO_ANALYSIS.md`
 
 ### For Technical Deep-Dive (45+ minutes)
 1. Read all documentation files
@@ -149,7 +148,7 @@ All hooks use `fdatasync()` to ensure data persistence to storage.
 ```bash
 ./scripts/run-all-tests.sh
 ```
-Generates: `TEST_EXECUTION_RESULTS.txt`
+Generates: `report/TEST_EXECUTION_RESULTS.txt`
 
 ### Run Individual Tests
 ```bash
