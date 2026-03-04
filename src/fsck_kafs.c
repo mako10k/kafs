@@ -180,7 +180,7 @@ static int rel_tbl_impl(struct rel_ctx *rctx, kafs_blkcnt_t blo, int depth)
   if (!p)
     return -EIO;
 
-  kafs_sblkcnt_t *tbl = (kafs_sblkcnt_t *)p;
+  const kafs_sblkcnt_t *tbl = (const kafs_sblkcnt_t *)p;
   for (uint32_t i = 0; i < rctx->refs_pb; ++i)
   {
     kafs_blkcnt_t child = kafs_blkcnt_stoh(tbl[i]);
@@ -318,7 +318,7 @@ static int hrl_count_tbl_refs(struct hrl_scan_ctx *sctx, kafs_blkcnt_t tbl_blo, 
   if (!p)
     return -EIO;
 
-  kafs_sblkcnt_t *tbl = (kafs_sblkcnt_t *)p;
+  const kafs_sblkcnt_t *tbl = (const kafs_sblkcnt_t *)p;
   for (uint32_t i = 0; i < sctx->refs_pb; ++i)
   {
     kafs_blkcnt_t child = kafs_blkcnt_stoh(tbl[i]);
@@ -334,7 +334,7 @@ static int hrl_count_tbl_refs(struct hrl_scan_ctx *sctx, kafs_blkcnt_t tbl_blo, 
 
 static int check_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_refcheck_stats *stats)
 {
-  kafs_ssuperblock_t *sb = ctx->c_superblock;
+  const kafs_ssuperblock_t *sb = ctx->c_superblock;
   kafs_blkcnt_t r_blkcnt = kafs_sb_blkcnt_get(sb);
   kafs_inocnt_t inocnt = kafs_sb_inocnt_get(sb);
   kafs_blksize_t blksize = kafs_sb_blksize_get(sb);
@@ -356,7 +356,7 @@ static int check_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_refcheck_stat
 
   for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
   {
-    kafs_sinode_t *e = &ctx->c_inotbl[ino];
+    const kafs_sinode_t *e = &ctx->c_inotbl[ino];
     if (!kafs_ino_get_usage(e))
       continue;
     if (kafs_ino_size_get(e) <= (kafs_off_t)sizeof(e->i_blkreftbl))
@@ -429,7 +429,7 @@ static int check_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_refcheck_stat
 
 static int punch_unreferenced_data_blocks(kafs_context_t *ctx, int fd, struct punch_stats *stats)
 {
-  kafs_ssuperblock_t *sb = ctx->c_superblock;
+  const kafs_ssuperblock_t *sb = ctx->c_superblock;
   kafs_blkcnt_t r_blkcnt = kafs_sb_blkcnt_get(sb);
   kafs_blkcnt_t first_data_block = kafs_sb_first_data_block_get(sb);
   kafs_inocnt_t inocnt = kafs_sb_inocnt_get(sb);
@@ -455,7 +455,7 @@ static int punch_unreferenced_data_blocks(kafs_context_t *ctx, int fd, struct pu
 
   for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
   {
-    kafs_sinode_t *e = &ctx->c_inotbl[ino];
+    const kafs_sinode_t *e = &ctx->c_inotbl[ino];
     if (!kafs_ino_get_usage(e))
       continue;
     if (kafs_ino_size_get(e) <= (kafs_off_t)sizeof(e->i_blkreftbl))

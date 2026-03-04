@@ -354,7 +354,7 @@ __attribute_maybe_unused__ static int kafs_blk_set_usage(struct kafs_context *ct
 /// @brief v3 allocator backend を使用する条件を満たすか判定する
 /// @param ctx コンテキスト
 /// @return KAFS_TRUE: v3 backend, KAFS_FALSE: legacy backend
-static int kafs_blk_alloc_backend_is_v3(struct kafs_context *ctx)
+static int kafs_blk_alloc_backend_is_v3(const struct kafs_context *ctx)
 {
   return kafs_alloc_v3_summary_enabled(ctx);
 }
