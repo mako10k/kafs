@@ -18,6 +18,9 @@
   - `kafsimage`（オフライン image のエクスポート）
     - v0: `--metadata-only` と `--verify` を提供。
     - メタデータ先頭領域 `[0, first_data_block * block_size)` を書き出し。
+  - `kafsresize`（オフライン image の grow-only リサイズ）
+    - v0: `--grow --size-bytes` を提供。
+    - 事前確保ヘッドルーム（`s_blkcnt < s_r_blkcnt`）内の増設のみ対応。
   - `stress_fs` テスト（Automake tests）。マウント/並行操作のストレス検証で PASS。
   - `mkfs.kafs` / `fsck.kafs` は `src/Makefile.am` の `bin_PROGRAMS` に登録済みで、既定ビルド/インストール対象。
   - 実装はそれぞれ `mkfs_kafs.c` / `fsck_kafs.c`。

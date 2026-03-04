@@ -142,6 +142,17 @@ the destination file without mutating the source image.
 `--raw` copies the full source image byte-for-byte.
 `--sparse` copies the selected range while skipping all-zero chunks as holes.
 
+### kafsresize
+
+Grow-only resize for offline images:
+
+```sh
+./kafsresize --grow --size-bytes 2G /tmp/kafs.img
+```
+
+Current v0 constraint: growth is only supported within preallocated headroom
+(`s_blkcnt < s_r_blkcnt`). Shrink is not supported.
+
 ### kafsctl
 
 Inspect stats, migration, and hotplug controls:

@@ -1,0 +1,45 @@
+'.\" -*- nroff -*-
+.TH KAFSRESIZE 8 "2026-03-04" "kafs 0.2.3" "System Administration"
+.SH NAME
+kafsresize \- grow offline KAFS image logical block range (grow-only)
+.SH SYNOPSIS
+.B kafsresize
+.B --grow
+.B --size-bytes
+.I N
+.I image
+.SH DESCRIPTION
+.B kafsresize
+performs grow-only resize for an offline image.
+
+Current v0 implementation is conservative and supports growth only within
+preallocated headroom:
+
+- current logical block count: `s_blkcnt`
+- maximum bitmap-backed block count: `s_r_blkcnt`
+
+`kafsresize` can grow only when `s_blkcnt < s_r_blkcnt` and target blocks do not exceed `s_r_blkcnt`.
+It updates block bitmap bits for the newly exposed range and increments `s_blkcnt_free`.
+.SH OPTIONS
+.TP
+.B --grow
+Enable grow operation (shrink is not supported).
+.TP
+.B --size-bytes N
+Target logical size in bytes (supports `K/M/G` suffixes).
+.SH EXIT STATUS
+.TP
+.B 0
+Resize succeeded.
+.TP
+.B 1
+I/O, bounds, or unsupported-headroom error.
+.TP
+.B 2
+Usage error.
+.SH SEE ALSO
+.BR mkfs.kafs (8),
+.BR fsck.kafs (8),
+.BR kafsimage (8)
+.SH AUTHOR
+kafs project.
