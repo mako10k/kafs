@@ -51,6 +51,34 @@ static int kafs_rpc_discard(int fd, uint32_t len)
   return 0;
 }
 
+static int kafs_rpc_send_with_hdr(int fd, const void *hdr, size_t hdr_len, const void *payload,
+                                  uint32_t payload_len)
+{
+  int rc = kafs_rpc_write_full(fd, hdr, hdr_len);
+  if (rc != 0)
+    return rc;
+  if (payload_len == 0)
+    return 0;
+  return kafs_rpc_write_full(fd, payload, payload_len);
+}
+
+static int kafs_rpc_recv_payload(int fd, uint32_t in_len, void *payload, uint32_t payload_cap,
+                                 uint32_t *payload_len)
+{
+  if (in_len > KAFS_RPC_MAX_PAYLOAD)
+    return -EMSGSIZE;
+  if (payload_len)
+    *payload_len = in_len;
+  if (in_len == 0)
+    return 0;
+  if (in_len > payload_cap)
+  {
+    int drc = kafs_rpc_discard(fd, in_len);
+    return drc != 0 ? drc : -EMSGSIZE;
+  }
+  return kafs_rpc_read_full(fd, payload, in_len);
+}
+
 uint64_t kafs_rpc_next_req_id(void)
 {
   static uint64_t next_id = 0;
@@ -74,12 +102,7 @@ int kafs_rpc_send_msg(int fd, uint16_t op, uint32_t flags, uint64_t req_id, uint
   hdr.session_id = session_id;
   hdr.epoch = epoch;
   hdr.payload_len = payload_len;
-  int rc = kafs_rpc_write_full(fd, &hdr, sizeof(hdr));
-  if (rc != 0)
-    return rc;
-  if (payload_len == 0)
-    return 0;
-  return kafs_rpc_write_full(fd, payload, payload_len);
+  return kafs_rpc_send_with_hdr(fd, &hdr, sizeof(hdr), payload, payload_len);
 }
 
 int kafs_rpc_recv_msg(int fd, kafs_rpc_hdr_t *hdr, void *payload, uint32_t payload_cap,
@@ -94,18 +117,7 @@ int kafs_rpc_recv_msg(int fd, kafs_rpc_hdr_t *hdr, void *payload, uint32_t paylo
     return -EPROTONOSUPPORT;
   if ((hdr->flags & KAFS_RPC_FLAG_ENDIAN_HOST) == 0)
     return -EPROTONOSUPPORT;
-  if (hdr->payload_len > KAFS_RPC_MAX_PAYLOAD)
-    return -EMSGSIZE;
-  if (payload_len)
-    *payload_len = hdr->payload_len;
-  if (hdr->payload_len == 0)
-    return 0;
-  if (hdr->payload_len > payload_cap)
-  {
-    int drc = kafs_rpc_discard(fd, hdr->payload_len);
-    return drc != 0 ? drc : -EMSGSIZE;
-  }
-  return kafs_rpc_read_full(fd, payload, hdr->payload_len);
+  return kafs_rpc_recv_payload(fd, hdr->payload_len, payload, payload_cap, payload_len);
 }
 
 int kafs_rpc_send_resp(int fd, uint64_t req_id, int32_t result, const void *payload,
@@ -119,12 +131,7 @@ int kafs_rpc_send_resp(int fd, uint64_t req_id, int32_t result, const void *payl
   hdr.req_id = req_id;
   hdr.result = result;
   hdr.payload_len = payload_len;
-  int rc = kafs_rpc_write_full(fd, &hdr, sizeof(hdr));
-  if (rc != 0)
-    return rc;
-  if (payload_len == 0)
-    return 0;
-  return kafs_rpc_write_full(fd, payload, payload_len);
+  return kafs_rpc_send_with_hdr(fd, &hdr, sizeof(hdr), payload, payload_len);
 }
 
 int kafs_rpc_recv_resp(int fd, kafs_rpc_resp_hdr_t *hdr, void *payload, uint32_t payload_cap,
@@ -133,16 +140,5 @@ int kafs_rpc_recv_resp(int fd, kafs_rpc_resp_hdr_t *hdr, void *payload, uint32_t
   int rc = kafs_rpc_read_full(fd, hdr, sizeof(*hdr));
   if (rc != 0)
     return rc;
-  if (hdr->payload_len > KAFS_RPC_MAX_PAYLOAD)
-    return -EMSGSIZE;
-  if (payload_len)
-    *payload_len = hdr->payload_len;
-  if (hdr->payload_len == 0)
-    return 0;
-  if (hdr->payload_len > payload_cap)
-  {
-    int drc = kafs_rpc_discard(fd, hdr->payload_len);
-    return drc != 0 ? drc : -EMSGSIZE;
-  }
-  return kafs_rpc_read_full(fd, payload, hdr->payload_len);
+  return kafs_rpc_recv_payload(fd, hdr->payload_len, payload, payload_cap, payload_len);
 }
