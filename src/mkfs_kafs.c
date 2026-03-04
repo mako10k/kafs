@@ -4,6 +4,7 @@
 #include "kafs_block.h"
 #include "kafs_inode.h"
 #include "kafs_hash.h"
+#include "kafs_journal.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -410,6 +411,31 @@ int main(int argc, char **argv)
   ctx.c_hrl_index = (void *)((char *)ctx.c_superblock + layout.hrl_index_off);
   ctx.c_hrl_bucket_cnt = layout.hrl_bucket_cnt;
   (void)kafs_hrl_format(&ctx);
+
+  // Journal header 初期化（fresh image が fsck --fast-check を通る前提）
+  {
+    size_t hsz = kj_header_size();
+    if (journal_bytes > hsz)
+    {
+      kj_header_t jh;
+      memset(&jh, 0, sizeof(jh));
+      jh.magic = KJ_MAGIC;
+      jh.version = KJ_VER;
+      jh.flags = 0;
+      jh.area_size = (uint64_t)journal_bytes - (uint64_t)hsz;
+      jh.write_off = 0;
+      jh.seq = 0;
+      jh.reserved0 = 0;
+      jh.header_crc = 0;
+      jh.header_crc = kj_crc32(&jh, sizeof(jh));
+
+      char *jhdr_ptr = (char *)ctx.c_superblock + layout.journal_off;
+      char *base3 = (char *)ctx.c_superblock;
+      char *end3 = base3 + mapsize;
+      assert(jhdr_ptr >= base3 && jhdr_ptr + sizeof(jh) <= end3);
+      memcpy(jhdr_ptr, &jh, sizeof(jh));
+    }
+  }
 
   munmap(ctx.c_superblock, mapsize);
   close(ctx.c_fd);
