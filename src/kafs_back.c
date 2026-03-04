@@ -55,6 +55,21 @@ static int kafs_back_finalize_rw_result(ssize_t io_len, uint32_t *out_size, uint
   return 0;
 }
 
+static int kafs_back_apply_mode_result(int mrc, int *result)
+{
+  if (mrc > 0)
+  {
+    *result = 0;
+    return 1;
+  }
+  if (mrc < 0)
+  {
+    *result = mrc;
+    return 1;
+  }
+  return 0;
+}
+
 int main(int argc, char **argv)
 {
   const char *fd_env = getenv("KAFS_HOTPLUG_BACK_FD");
@@ -266,14 +281,8 @@ int main(int argc, char **argv)
         kafs_rpc_read_resp_t *resp = (kafs_rpc_read_resp_t *)resp_buf;
         int mrc = kafs_back_prepare_rw_mode(req->data_mode, req->size, &resp->size, &resp_len,
                                             (uint32_t)sizeof(*resp));
-        if (mrc > 0)
+        if (kafs_back_apply_mode_result(mrc, &result))
         {
-          result = 0;
-          break;
-        }
-        if (mrc < 0)
-        {
-          result = mrc;
           break;
         }
 #ifdef KAFS_BACK_ENABLE_IMAGE
@@ -304,14 +313,8 @@ int main(int argc, char **argv)
         kafs_rpc_write_resp_t *resp = (kafs_rpc_write_resp_t *)resp_buf;
         int mrc = kafs_back_prepare_rw_mode(req->data_mode, req->size, &resp->size, &resp_len,
                                             (uint32_t)sizeof(*resp));
-        if (mrc > 0)
+        if (kafs_back_apply_mode_result(mrc, &result))
         {
-          result = 0;
-          break;
-        }
-        if (mrc < 0)
-        {
-          result = mrc;
           break;
         }
 #ifdef KAFS_BACK_ENABLE_IMAGE
