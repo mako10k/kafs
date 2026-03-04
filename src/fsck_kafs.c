@@ -797,8 +797,8 @@ int main(int argc, char **argv)
     ctx.c_img_size = (size_t)imgsize;
     ctx.c_superblock = (kafs_ssuperblock_t *)ctx.c_img_base;
     ctx.c_mapsize = (size_t)mapsize;
-    ctx.c_blkmasktbl = (void *)ctx.c_superblock + (intptr_t)blkmask_off;
-    ctx.c_inotbl = (void *)ctx.c_superblock + (intptr_t)inotbl_off;
+    ctx.c_blkmasktbl = (void *)((char *)ctx.c_superblock + (intptr_t)blkmask_off);
+    ctx.c_inotbl = (void *)((char *)ctx.c_superblock + (intptr_t)inotbl_off);
     ctx.c_blo_search = 0;
     ctx.c_ino_search = 0;
 
@@ -942,22 +942,23 @@ int main(int argc, char **argv)
     return 1;
   }
 
+  int header_ok = 1;
   int ok = 1;
   if (hdr.magic != KJ_MAGIC)
   {
     fprintf(stderr, "Journal: bad magic\n");
-    ok = 0;
+    header_ok = 0;
   }
   if (hdr.version != KJ_VER)
   {
     fprintf(stderr, "Journal: bad version (%u)\n", hdr.version);
-    ok = 0;
+    header_ok = 0;
   }
   if (hdr.area_size != area_size)
   {
     fprintf(stderr, "Journal: area_size mismatch (sb=%" PRIu64 ", hdr=%" PRIu64 ")\n", area_size,
             (uint64_t)hdr.area_size);
-    ok = 0;
+    header_ok = 0;
   }
   {
     kj_header_t tmp = hdr;
@@ -966,9 +967,11 @@ int main(int argc, char **argv)
     if (c != hdr.header_crc)
     {
       fprintf(stderr, "Journal: header CRC mismatch\n");
-      ok = 0;
+      header_ok = 0;
     }
   }
+
+  ok = header_ok;
 
   if (!ok && !do_journal_reset)
   {
@@ -1065,7 +1068,7 @@ int main(int argc, char **argv)
         .flags = 0,
         .area_size = area_size,
         .write_off = 0,
-        .seq = (ok ? hdr.seq : 0),
+        .seq = (header_ok ? hdr.seq : 0),
         .reserved0 = 0,
         .header_crc = 0,
     };
