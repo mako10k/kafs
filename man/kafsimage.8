@@ -8,16 +8,28 @@ kafsimage \- export offline KAFS image data in metadata-only mode
 .RB [ --verify ]
 .I src-image
 .I dst-file
+.PP
+.B kafsimage
+.B --raw
+.RB [ --verify ]
+.I src-image
+.I dst-file
 .SH DESCRIPTION
 .B kafsimage
 reads an offline source image and writes a metadata-only export file.
 Current v0 behavior copies the metadata prefix
 .IR [0, first_data_block * block_size) .
 The source image is never modified.
+With
+.BR --raw ,
+the full source image is copied byte-for-byte.
 .SH OPTIONS
 .TP
 .B --metadata-only
 Enable metadata-only export mode.
+.TP
+.B --raw
+Enable full-image raw copy mode.
 .TP
 .B --verify
 After export, verify destination bytes match the copied source prefix.

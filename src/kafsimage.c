@@ -17,7 +17,11 @@
 
 static void usage(const char *prog)
 {
-  fprintf(stderr, "Usage: %s --metadata-only [--verify] <src-image> <dst-file>\n", prog);
+  fprintf(stderr,
+          "Usage:\n"
+          "  %s --metadata-only [--verify] <src-image> <dst-file>\n"
+          "  %s --raw [--verify] <src-image> <dst-file>\n",
+          prog, prog);
 }
 
 static int pread_all(int fd, void *buf, size_t size, off_t off)
@@ -131,6 +135,7 @@ static int verify_prefix_equal(int fd_src, int fd_dst, uint64_t bytes)
 int main(int argc, char **argv)
 {
   int metadata_only = 0;
+  int raw = 0;
   int verify = 0;
   const char *src_path = NULL;
   const char *dst_path = NULL;
@@ -140,6 +145,11 @@ int main(int argc, char **argv)
     if (strcmp(argv[i], "--metadata-only") == 0)
     {
       metadata_only = 1;
+      continue;
+    }
+    if (strcmp(argv[i], "--raw") == 0)
+    {
+      raw = 1;
       continue;
     }
     if (strcmp(argv[i], "--verify") == 0)
@@ -163,7 +173,7 @@ int main(int argc, char **argv)
     }
   }
 
-  if (!metadata_only || !src_path || !dst_path)
+  if ((metadata_only + raw) != 1 || !src_path || !dst_path)
   {
     usage(argv[0]);
     return 2;
@@ -184,30 +194,44 @@ int main(int argc, char **argv)
     return 1;
   }
 
-  kafs_ssuperblock_t sb;
-  int rc = pread_all(fd_src, &sb, sizeof(sb), 0);
-  if (rc != 0)
+  uint64_t copy_bytes = 0;
+  if (metadata_only)
   {
-    fprintf(stderr, "failed to read superblock: %s\n", strerror(-rc));
-    close(fd_src);
-    return 1;
-  }
+    kafs_ssuperblock_t sb;
+    int rc = pread_all(fd_src, &sb, sizeof(sb), 0);
+    if (rc != 0)
+    {
+      fprintf(stderr, "failed to read superblock: %s\n", strerror(-rc));
+      close(fd_src);
+      return 1;
+    }
 
-  uint64_t blksize = kafs_sb_blksize_get(&sb);
-  uint64_t first_data_block = kafs_sb_first_data_block_get(&sb);
-  if (blksize == 0 || first_data_block > (UINT64_MAX / blksize))
-  {
-    fprintf(stderr, "invalid superblock geometry\n");
-    close(fd_src);
-    return 1;
-  }
+    uint64_t blksize = kafs_sb_blksize_get(&sb);
+    uint64_t first_data_block = kafs_sb_first_data_block_get(&sb);
+    if (blksize == 0 || first_data_block > (UINT64_MAX / blksize))
+    {
+      fprintf(stderr, "invalid superblock geometry\n");
+      close(fd_src);
+      return 1;
+    }
 
-  uint64_t metadata_bytes = first_data_block * blksize;
-  if (metadata_bytes == 0 || metadata_bytes > (uint64_t)st_src.st_size)
+    copy_bytes = first_data_block * blksize;
+    if (copy_bytes == 0 || copy_bytes > (uint64_t)st_src.st_size)
+    {
+      fprintf(stderr, "metadata range is out of source image bounds\n");
+      close(fd_src);
+      return 1;
+    }
+  }
+  else
   {
-    fprintf(stderr, "metadata range is out of source image bounds\n");
-    close(fd_src);
-    return 1;
+    copy_bytes = (uint64_t)st_src.st_size;
+    if (copy_bytes == 0)
+    {
+      fprintf(stderr, "source image is empty\n");
+      close(fd_src);
+      return 1;
+    }
   }
 
   int fd_dst = open(dst_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -226,7 +250,7 @@ int main(int argc, char **argv)
     return 1;
   }
 
-  rc = copy_nbytes(fd_src, fd_dst, metadata_bytes);
+  int rc = copy_nbytes(fd_src, fd_dst, copy_bytes);
   if (rc != 0)
   {
     fprintf(stderr, "copy failed: %s\n", strerror(-rc));
@@ -269,16 +293,16 @@ int main(int argc, char **argv)
       return 1;
     }
 
-    if ((uint64_t)st_dst.st_size != metadata_bytes)
+    if ((uint64_t)st_dst.st_size != copy_bytes)
     {
       fprintf(stderr, "verify failed: size mismatch (%" PRIu64 " != %" PRIu64 ")\n",
-              (uint64_t)st_dst.st_size, metadata_bytes);
+              (uint64_t)st_dst.st_size, copy_bytes);
       close(fd_verify);
       close(fd_src);
       return 1;
     }
 
-    rc = verify_prefix_equal(fd_src, fd_verify, metadata_bytes);
+    rc = verify_prefix_equal(fd_src, fd_verify, copy_bytes);
     if (rc != 0)
     {
       fprintf(stderr, "verify failed: %s\n", strerror(-rc));
@@ -290,10 +314,10 @@ int main(int argc, char **argv)
     close(fd_verify);
   }
 
-  printf("kafsimage: metadata-only export completed\n");
+  printf("kafsimage: %s export completed\n", metadata_only ? "metadata-only" : "raw");
   printf("  src: %s\n", src_path);
   printf("  dst: %s\n", dst_path);
-  printf("  bytes: %" PRIu64 "\n", metadata_bytes);
+  printf("  bytes: %" PRIu64 "\n", copy_bytes);
   printf("  verified: %s\n", verify ? "true" : "false");
 
   close(fd_src);

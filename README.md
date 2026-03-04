@@ -131,10 +131,13 @@ Export metadata-only image payload (e2image-like first step):
 ```sh
 ./kafsimage --metadata-only /tmp/kafs.img /tmp/kafs.meta
 ./kafsimage --metadata-only --verify /tmp/kafs.img /tmp/kafs.meta
+./kafsimage --raw /tmp/kafs.img /tmp/kafs.raw
+./kafsimage --raw --verify /tmp/kafs.img /tmp/kafs.raw
 ```
 
 `--metadata-only` copies the metadata prefix (`[0, first_data_block * block_size)`) to
 the destination file without mutating the source image.
+`--raw` copies the full source image byte-for-byte.
 
 ### kafsctl
 
