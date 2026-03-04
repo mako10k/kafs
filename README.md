@@ -81,13 +81,18 @@ Validate or clear the in-image journal:
 ```sh
 ./fsck.kafs --check-journal /tmp/kafs.img
 ./fsck.kafs --repair-journal-reset /tmp/kafs.img
+./fsck.kafs --check-dirent-ino-orphans /tmp/kafs.img
 ./fsck.kafs --repair-dirent-ino-orphans /tmp/kafs.img
+./fsck.kafs --check-hrl-blo-refcounts /tmp/kafs.img
 ```
 
 Exit status:
 - `0`: validation/repair completed successfully
 - `3`: journal validation failed
 - `4`: journal reset operation failed
+- `5`: dirent->ino check found orphan inconsistencies
+- `6`: dirent->ino repair completed with partial failures
+- `7`: hrl->blo check found refcount mismatches
 
 ### kafsctl
 

@@ -37,7 +37,8 @@
   - `fsck.kafs`
     - スーパーブロック・ビットマップ・inode・HRL の一貫性チェック。
     - ジャーナル CRC 検証と「既定の安全なリプレイ（再適用）」とクリーンアップ。
-    - モード: `--check-journal` / `--repair-journal-reset` / `--repair-dirent-ino-orphans`。
+    - モード: `--check-journal` / `--repair-journal-reset` / `--check-dirent-ino-orphans` /
+      `--repair-dirent-ino-orphans` / `--check-hrl-blo-refcounts`。
 - ジャーナル操作
   - `kafs-journalctl`
     - ジャーナルの列挙・フィルタ（op/time/seq）・簡易集計。
@@ -67,7 +68,9 @@
   - `-f` フォアグラウンド、`-o allow_other,ro,...` FUSE オプション。
   - 環境変数: `KAFS_MT`、`KAFS_MAX_THREADS`、`KAFS_JOURNAL_GC_NS`。
 - `fsck.kafs`
-  - `--check-journal` / `--repair-journal-reset` / `--repair-dirent-ino-orphans` / `-v` 詳細出力。
+  - `--check-journal` / `--repair-journal-reset` /
+    `--check-dirent-ino-orphans` / `--repair-dirent-ino-orphans` /
+    `--check-hrl-blo-refcounts` / `-v` 詳細出力。
 - `kafs-journalctl`
   - `--list`、`--op <name>`、`--seq <a>[:<b>]`、`--since <ts>`、`--until <ts>`、`--stats`。
 - `kafs-journal-clear`

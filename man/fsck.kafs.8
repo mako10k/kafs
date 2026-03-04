@@ -6,7 +6,9 @@ fsck.kafs \- check and repair specific KAFS consistency layers
 .B fsck.kafs
 .RB [ --check-journal ]
 .RB [ --repair-journal-reset ]
+.RB [ --check-dirent-ino-orphans ]
 .RB [ --repair-dirent-ino-orphans ]
+.RB [ --check-hrl-blo-refcounts ]
 .I image
 .SH DESCRIPTION
 .B fsck.kafs
@@ -24,6 +26,14 @@ When journal validation fails, reset the journal ring safely offline
 .B --repair-dirent-ino-orphans
 Repair the dirent->ino layer by reclaiming orphan inodes
 (inodes with link count 0) and releasing their referenced blocks via HRL.
+.TP
+.B --check-dirent-ino-orphans
+Check dirent->ino consistency by scanning orphan inodes
+(inodes with link count 0) without mutating image data.
+.TP
+.B --check-hrl-blo-refcounts
+Check ino->hrl->blo consistency by comparing inode-derived expected block
+references against live HRL entry refcounts.
 .SH EXIT STATUS
 .TP
 .B 0
@@ -34,6 +44,15 @@ Journal validation failed.
 .TP
 .B 4
 Journal reset operation failed.
+.TP
+.B 5
+dirent->ino check found orphan inconsistencies.
+.TP
+.B 6
+dirent->ino repair completed with partial failures.
+.TP
+.B 7
+hrl->blo refcount consistency check found mismatches.
 .SH SEE ALSO
 .BR mkfs.kafs (8),
 .BR kafs (1)
