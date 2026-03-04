@@ -2707,7 +2707,10 @@ static int kafs_access(struct fuse_context *fctx, kafs_context_t *ctx, const cha
   return KAFS_SUCCESS;
 }
 
-static int kafs_hotplug_should_fallback(int rc) { return rc == -ENOSYS || rc == -EOPNOTSUPP; }
+static int kafs_hotplug_should_fallback(int rc)
+{
+  return rc == -ENOSYS || rc == -EOPNOTSUPP || rc == -EIO;
+}
 
 #define KAFS_HOTPLUG_WAIT_TIMEOUT_MS_DEFAULT 2000u
 #define KAFS_HOTPLUG_WAIT_QUEUE_LIMIT_DEFAULT 64u
