@@ -79,14 +79,15 @@ Migration options:
 Validate or clear the in-image journal:
 
 ```sh
-./fsck.kafs --check-only /tmp/kafs.img
-./fsck.kafs --journal-clear /tmp/kafs.img
+./fsck.kafs --check-journal /tmp/kafs.img
+./fsck.kafs --repair-journal-reset /tmp/kafs.img
+./fsck.kafs --repair-dirent-ino-orphans /tmp/kafs.img
 ```
 
 Exit status:
-- `0`: journal OK (or cleared successfully)
+- `0`: validation/repair completed successfully
 - `3`: journal validation failed
-- `4`: clear operation failed
+- `4`: journal reset operation failed
 
 ### kafsctl
 

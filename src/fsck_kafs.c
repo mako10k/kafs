@@ -148,7 +148,7 @@ static int orphan_reclaim(kafs_context_t *ctx, int do_fix)
 static void usage(const char *prog)
 {
   fprintf(stderr,
-          "Usage: %s [--check-only|--journal-only] [--journal-clear] [--orphan-reclaim] <image>\n",
+          "Usage: %s [--check-journal] [--repair-journal-reset] [--repair-dirent-ino-orphans] <image>\n",
           prog);
 }
 
@@ -167,22 +167,22 @@ static int check_region_bounds(const char *name, uint64_t off, uint64_t size, ui
 
 int main(int argc, char **argv)
 {
-  int do_journal_clear = 0;  // optional clear
-  int do_orphan_reclaim = 0; // optional fix
+  int do_journal_reset = 0;         // repair: journal layer
+  int do_dirent_ino_orphans = 0;    // repair: dirent -> ino layer
   const char *img = NULL;
   for (int i = 1; i < argc; ++i)
   {
-    if (strcmp(argv[i], "--check-only") == 0 || strcmp(argv[i], "--journal-only") == 0)
+    if (strcmp(argv[i], "--check-journal") == 0)
     {
-      // no-op: default is check-only
+      // no-op: default behavior is journal validation
     }
-    else if (strcmp(argv[i], "--journal-clear") == 0)
+    else if (strcmp(argv[i], "--repair-journal-reset") == 0)
     {
-      do_journal_clear = 1;
+      do_journal_reset = 1;
     }
-    else if (strcmp(argv[i], "--orphan-reclaim") == 0)
+    else if (strcmp(argv[i], "--repair-dirent-ino-orphans") == 0)
     {
-      do_orphan_reclaim = 1;
+      do_dirent_ino_orphans = 1;
     }
     else if (argv[i][0] != '-' && !img)
     {
@@ -200,7 +200,7 @@ int main(int argc, char **argv)
     return 2;
   }
 
-  int want_write = do_journal_clear || do_orphan_reclaim;
+  int want_write = do_journal_reset || do_dirent_ino_orphans;
   int fd = open(img, want_write ? O_RDWR : O_RDONLY);
   if (fd < 0)
   {
@@ -240,7 +240,7 @@ int main(int argc, char **argv)
   }
 
   // Optional orphan reclaim (mount-time recovery equivalent)
-  if (do_orphan_reclaim)
+  if (do_dirent_ino_orphans)
   {
     kafs_context_t ctx;
     memset(&ctx, 0, sizeof(ctx));
@@ -373,7 +373,7 @@ int main(int argc, char **argv)
     }
   }
 
-  if (!ok && !do_journal_clear)
+  if (!ok && !do_journal_reset)
   {
     close(fd);
     return 3;
@@ -441,7 +441,7 @@ int main(int argc, char **argv)
     }
   }
 
-  if (!ok && do_journal_clear)
+  if (!ok && do_journal_reset)
   {
     // Reset ring: zero data area and write fresh header with write_off=0 (seq preserved if hdr
     // valid) zero data area in chunks

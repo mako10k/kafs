@@ -1,37 +1,39 @@
 '.\" -*- nroff -*-
 .TH FSCK.KAFS 8 "2026-03-01" "kafs 0.2.2" "System Administration"
 .SH NAME
-fsck.kafs \- check and optionally clear KAFS in-image journal
+fsck.kafs \- check and repair specific KAFS consistency layers
 .SH SYNOPSIS
 .B fsck.kafs
-.RB [ --check-only ]
-.RB [ --journal-only ]
-.RB [ --journal-clear ]
+.RB [ --check-journal ]
+.RB [ --repair-journal-reset ]
+.RB [ --repair-dirent-ino-orphans ]
 .I image
 .SH DESCRIPTION
 .B fsck.kafs
-verifies the integrity of the in-image journal (header and record CRCs).
-On request it can clear the journal ring safely offline.
+validates and optionally repairs selected consistency layers.
+By default it validates the in-image journal (header and record CRCs).
 .SH OPTIONS
 .TP
-.B --check-only
-Validate journal CRCs and exit (default behavior).
+.B --check-journal
+Validate the journal layer and exit (default behavior).
 .TP
-.B --journal-only
-Alias of --check-only (reserved for future).
+.B --repair-journal-reset
+When journal validation fails, reset the journal ring safely offline
+(zero data and rewrite header).
 .TP
-.B --journal-clear
-When validation fails, clear the journal ring (zero data and rewrite header).
+.B --repair-dirent-ino-orphans
+Repair the dirent->ino layer by reclaiming orphan inodes
+(inodes with link count 0) and releasing their referenced blocks via HRL.
 .SH EXIT STATUS
 .TP
 .B 0
-Journal OK (or cleared successfully).
+Validation/repair completed successfully.
 .TP
 .B 3
 Journal validation failed.
 .TP
 .B 4
-Clear operation failed.
+Journal reset operation failed.
 .SH SEE ALSO
 .BR mkfs.kafs (8),
 .BR kafs (1)
