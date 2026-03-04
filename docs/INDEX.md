@@ -27,6 +27,7 @@ design and policy notes.
 - [format-v3-123-spec.md](format-v3-123-spec.md)
 - [format-v3-123-tickets.md](format-v3-123-tickets.md)
 - [migration-v2-to-v3.md](migration-v2-to-v3.md)
+- [kafsimage-format.md](kafsimage-format.md)
 - [phase1-validation-20260228.md](phase1-validation-20260228.md)
 - [phase2-validation-20260228.md](phase2-validation-20260228.md)
 - [phase3-validation-20260228.md](phase3-validation-20260228.md)

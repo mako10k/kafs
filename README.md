@@ -4,12 +4,12 @@ KAFS is a FUSE-based filesystem backed by a single image file with a journal and
 optional deduplication features. This repository contains the filesystem
 implementation, tools, and tests.
 
-## Release Highlights (v0.2.2)
+## Release Highlights (v0.2.3)
 
-- Strengthened pending conflict handling (inode epoch optimistic guard + stale pending suppression)
-- Prevented double `dec_ref` on pending overwrite and fixed reference lifetime mismatch
-- Reduced the `truncate` race window and improved stability under parallel stress
-- 5 consecutive runs passed under stress conditions (`invalid block ref=0`)
+- Added integrated `fsck.kafs` modes: `full`, `balanced`, and `fast`
+- Added low-level fsck options: journal replay and unreferenced-block punch-hole
+- Fixed `fsck.kafs` journal link dependency and addressed static-analysis findings
+- Reduced code duplication across RPC/CLI/block/back-end paths and tightened quality gates
 
 ## Features
 
@@ -109,18 +109,70 @@ Exit status:
 - `8`: journal replay failed
 - `9`: punch-hole completed with partial failures
 
-### kafsctl
+### kafsdump
 
-Inspect stats and hotplug status:
+Inspect an offline image without modifying it:
 
 ```sh
-./kafsctl stats /tmp/kafs-mnt --json
+./kafsdump /tmp/kafs.img
+./kafsdump --json /tmp/kafs.img
+```
+
+Output sections:
+- `superblock`: magic/version/block geometry and free counts
+- `inode_summary`: used/free inode counts and `linkcnt==0` in-use count
+- `hrl_summary`: HRL entry/live/refcnt totals
+- `journal_header`: in-image journal header fields and header CRC check result
+
+### kafsimage
+
+Export metadata-only image payload (e2image-like first step):
+
+```sh
+./kafsimage --metadata-only /tmp/kafs.img /tmp/kafs.meta
+./kafsimage --metadata-only --verify /tmp/kafs.img /tmp/kafs.meta
+./kafsimage --raw /tmp/kafs.img /tmp/kafs.raw
+./kafsimage --raw --verify /tmp/kafs.img /tmp/kafs.raw
+./kafsimage --sparse /tmp/kafs.img /tmp/kafs.sparse
+./kafsimage --sparse --verify /tmp/kafs.img /tmp/kafs.sparse
+```
+
+`--metadata-only` copies the metadata prefix (`[0, first_data_block * block_size)`) to
+the destination file without mutating the source image.
+`--raw` copies the full source image byte-for-byte.
+`--sparse` copies the selected range while skipping all-zero chunks as holes.
+
+### kafsresize
+
+Grow-only resize for offline images:
+
+```sh
+./kafsresize --grow --size-bytes 2G /tmp/kafs.img
+```
+
+Current v0 constraint: growth is only supported within preallocated headroom
+(`s_blkcnt < s_r_blkcnt`). Shrink is not supported.
+
+### kafsctl
+
+Inspect stats, migration, and hotplug controls:
+
+```sh
+./kafsctl fsstat /tmp/kafs-mnt --json --mib    # alias: stats
 ./kafsctl hotplug status /tmp/kafs-mnt
+./kafsctl hotplug compat /tmp/kafs-mnt --json
+./kafsctl hotplug set-timeout /tmp/kafs-mnt 2000
+./kafsctl hotplug set-dedup-priority /tmp/kafs-mnt idle 10
+./kafsctl hotplug env list /tmp/kafs-mnt
+./kafsctl hotplug env set /tmp/kafs-mnt KAFS_BACK_ENABLE_IMAGE=1
+./kafsctl hotplug env unset /tmp/kafs-mnt KAFS_BACK_ENABLE_IMAGE
 ./kafsctl migrate /tmp/kafs.img
 ```
 
 `migrate` is an irreversible operation that updates a v2 image to v3.
 When `--yes` is not specified, it requires confirmation by entering `YES`.
+
+`fsstat` supports output units via `--bytes`, `--mib`, and `--gib`.
 
 ## Migration (v2 -> v3)
 
@@ -200,5 +252,6 @@ make check
 - docs/INDEX.md: documentation index
 - docs/hotplug-*.md and docs/hotplug-pipe-*.md: hotplug plans/designs
 - docs/dedup-design.md: deduplication design notes
+- docs/kafsimage-format.md: kafsimage mode semantics and output rules
 - man/: manual pages for kafs, mkfs.kafs, fsck.kafs, kafsctl
 - CHANGELOG.md: release notes

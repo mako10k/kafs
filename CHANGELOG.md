@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.3 - 2026-03-04
+- `fsck.kafs` に統合モード `full` / `balanced` / `fast` を追加。
+- 低レベル修復オプションとしてジャーナル再生と未参照データブロックの punch-hole を追加。
+- `fsck.kafs` の journal リンク不足を修正し、静的解析指摘（条件式/ポインタ演算/const など）へ対応。
+- RPC/CLI/block/back-end の重複コードを削減し、クローン抑止と静的チェックの運用ルールを強化。
+
 ## v0.2.2 - 2026-03-01
 - pending 非同期処理の競合対策を強化（inode epoch 楽観ガード導入、stale pending の適用抑止）。
 - pending 上書き時の二重 `dec_ref` を防止し、参照寿命の不整合を修正。
