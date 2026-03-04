@@ -13,12 +13,14 @@ noinst_HEADERS = test_utils.h
 
 # Provide deterministic paths to the built tools for tests that exec them.
 AM_TESTS_ENVIRONMENT = \
-	KAFS_TEST_KAFS='$(top_builddir)/src/kafs'; \
-	KAFS_TEST_KAFSCTL='$(top_builddir)/src/kafsctl'; \
-	KAFS_TEST_MKFS='$(top_builddir)/src/mkfs.kafs'; \
-	KAFS_TEST_FSCK='$(top_builddir)/src/fsck.kafs'; \
-	KAFS_TEST_KAFS_BACK='$(top_builddir)/src/kafs-back'; \
-	export KAFS_TEST_KAFS KAFS_TEST_KAFSCTL KAFS_TEST_MKFS KAFS_TEST_FSCK KAFS_TEST_KAFS_BACK;
+	KAFS_TEST_KAFS='$(abs_top_builddir)/src/kafs'; \
+	KAFS_TEST_KAFSCTL='$(abs_top_builddir)/src/kafsctl'; \
+	KAFS_TEST_MKFS='$(abs_top_builddir)/src/mkfs.kafs'; \
+	KAFS_TEST_FSCK='$(abs_top_builddir)/src/fsck.kafs'; \
+	KAFS_TEST_KAFSRESIZE='$(abs_top_builddir)/src/kafsresize'; \
+	KAFS_TEST_KAFSDUMP='$(abs_top_builddir)/src/kafsdump'; \
+	KAFS_TEST_KAFS_BACK='$(abs_top_builddir)/src/kafs-back'; \
+	export KAFS_TEST_KAFS KAFS_TEST_KAFSCTL KAFS_TEST_MKFS KAFS_TEST_FSCK KAFS_TEST_KAFSRESIZE KAFS_TEST_KAFSDUMP KAFS_TEST_KAFS_BACK;
 
 # --- Tests ---
 # NOTE: stress_fs mounts in multithread mode and exercises heavier workloads.
@@ -26,7 +28,7 @@ AM_TESTS_ENVIRONMENT = \
 check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured min_git_hooks fs_semantics \
 	clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility \
 	prune_indirect_single prune_indirect_double prune_indirect_triple truncate_prune reflink_clone \
-	stress_fs hotplug_rpc e2e_hotplug
+	stress_fs hotplug_rpc e2e_hotplug kafsresize
 
 TESTS = $(check_PROGRAMS)
 
@@ -117,6 +119,11 @@ e2e_hotplug_SOURCES = tests_e2e_hotplug.c test_utils.c \
 e2e_hotplug_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 
 e2e_hotplug_LDADD = $(KAFS_LIBS)
+
+kafsresize_SOURCES = tests_kafsresize.c test_utils.c \
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+kafsresize_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+kafsresize_LDADD = $(KAFS_LIBS)
 
 # All tests are expected to pass
 XFAIL_TESTS =
