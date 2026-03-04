@@ -11,7 +11,7 @@ mkfs_kafs_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 mkfs_kafs_LDADD = $(KAFS_LIBS)
 
 # fsck.kafs target (journal check/clear + orphan reclaim)
-fsck_kafs_SOURCES = fsck_kafs.c kafs_hrl.c kafs_locks.c
+fsck_kafs_SOURCES = fsck_kafs.c kafs_hrl.c kafs_locks.c kafs_journal.c
 fsck_kafs_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 fsck_kafs_LDADD = $(KAFS_LIBS)
 
