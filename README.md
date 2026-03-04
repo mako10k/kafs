@@ -6,10 +6,10 @@ implementation, tools, and tests.
 
 ## Release Highlights (v0.2.2)
 
-- pending 競合対策を強化（inode epoch 楽観ガード + stale pending 抑止）
-- pending 上書き時の二重 `dec_ref` を防止し、参照寿命不整合を修正
-- `truncate` の競合窓を縮小し、並列 stress での安定性を改善
-- stress 条件で 5-run 連続 PASS（`invalid block ref=0`）
+- Strengthened pending conflict handling (inode epoch optimistic guard + stale pending suppression)
+- Prevented double `dec_ref` on pending overwrite and fixed reference lifetime mismatch
+- Reduced the `truncate` race window and improved stability under parallel stress
+- 5 consecutive runs passed under stress conditions (`invalid block ref=0`)
 
 ## Features
 
@@ -71,8 +71,8 @@ FUSE options:
 - `-o multi_thread[=N]`: enable multi-thread mode with optional thread count
 
 Migration options:
-- `--migrate-v2`: v2 image を起動時に one-shot で v3 へ移行して終了
-- `--yes`: マイグレーション確認を省略
+- `--migrate-v2`: migrate a v2 image to v3 in one-shot mode at startup, then exit
+- `--yes`: skip migration confirmation
 
 ### fsck.kafs
 
@@ -98,26 +98,26 @@ Inspect stats and hotplug status:
 ./kafsctl migrate /tmp/kafs.img
 ```
 
-`migrate` は v2 イメージを v3 に更新する不可逆操作です。
-`--yes` 未指定時は `YES` 入力による確認を要求します。
+`migrate` is an irreversible operation that updates a v2 image to v3.
+When `--yes` is not specified, it requires confirmation by entering `YES`.
 
 ## Migration (v2 -> v3)
 
-推奨はオフラインでの明示実行です。
+Explicit offline execution is recommended.
 
 ```sh
 ./kafsctl migrate /path/to/image.kafs
 ./kafsctl migrate /path/to/image.kafs --yes
 ```
 
-起動時 one-shot で実行する場合:
+To run it as a startup one-shot:
 
 ```sh
 ./kafs --image /path/to/image.kafs --migrate-v2 /mnt/kafs -f
 ./kafs --image /path/to/image.kafs --migrate-v2 --yes /mnt/kafs -f
 ```
 
-詳細は `docs/migration-v2-to-v3.md` を参照してください。
+See `docs/migration-v2-to-v3.md` for details.
 
 ## Hotplug Control
 
