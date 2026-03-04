@@ -1,0 +1,39 @@
+'.\" -*- nroff -*-
+.TH KAFSIMAGE 8 "2026-03-04" "kafs 0.2.3" "System Administration"
+.SH NAME
+kafsimage \- export offline KAFS image data in metadata-only mode
+.SH SYNOPSIS
+.B kafsimage
+.B --metadata-only
+.RB [ --verify ]
+.I src-image
+.I dst-file
+.SH DESCRIPTION
+.B kafsimage
+reads an offline source image and writes a metadata-only export file.
+Current v0 behavior copies the metadata prefix
+.IR [0, first_data_block * block_size) .
+The source image is never modified.
+.SH OPTIONS
+.TP
+.B --metadata-only
+Enable metadata-only export mode.
+.TP
+.B --verify
+After export, verify destination bytes match the copied source prefix.
+.SH EXIT STATUS
+.TP
+.B 0
+Export succeeded.
+.TP
+.B 1
+I/O, bounds, or verification failure.
+.TP
+.B 2
+Usage error.
+.SH SEE ALSO
+.BR kafsdump (8),
+.BR fsck.kafs (8),
+.BR mkfs.kafs (8)
+.SH AUTHOR
+kafs project.

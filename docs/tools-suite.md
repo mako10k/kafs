@@ -15,6 +15,9 @@
   - `kafsdump`（オフライン image の read-only 可視化）
     - `--json` 対応。
     - superblock / inode 集計 / HRL 集計 / journal header(CRC) を出力。
+  - `kafsimage`（オフライン image のエクスポート）
+    - v0: `--metadata-only` と `--verify` を提供。
+    - メタデータ先頭領域 `[0, first_data_block * block_size)` を書き出し。
   - `stress_fs` テスト（Automake tests）。マウント/並行操作のストレス検証で PASS。
   - `mkfs.kafs` / `fsck.kafs` は `src/Makefile.am` の `bin_PROGRAMS` に登録済みで、既定ビルド/インストール対象。
   - 実装はそれぞれ `mkfs_kafs.c` / `fsck_kafs.c`。

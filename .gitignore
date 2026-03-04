@@ -50,6 +50,7 @@
 /src/fsck.kafs
 /src/kafs-info
 /src/kafsdump
+/src/kafsimage
 /src/kafs-front
 /src/kafs-back
 /src/hrl_smoketest

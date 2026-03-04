@@ -124,6 +124,18 @@ Output sections:
 - `hrl_summary`: HRL entry/live/refcnt totals
 - `journal_header`: in-image journal header fields and header CRC check result
 
+### kafsimage
+
+Export metadata-only image payload (e2image-like first step):
+
+```sh
+./kafsimage --metadata-only /tmp/kafs.img /tmp/kafs.meta
+./kafsimage --metadata-only --verify /tmp/kafs.img /tmp/kafs.meta
+```
+
+`--metadata-only` copies the metadata prefix (`[0, first_data_block * block_size)`) to
+the destination file without mutating the source image.
+
 ### kafsctl
 
 Inspect stats, migration, and hotplug controls:
