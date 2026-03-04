@@ -49,6 +49,7 @@
 /src/mkfs.kafs
 /src/fsck.kafs
 /src/kafs-info
+/src/kafsdump
 /src/kafs-front
 /src/kafs-back
 /src/hrl_smoketest

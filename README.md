@@ -109,6 +109,21 @@ Exit status:
 - `8`: journal replay failed
 - `9`: punch-hole completed with partial failures
 
+### kafsdump
+
+Inspect an offline image without modifying it:
+
+```sh
+./kafsdump /tmp/kafs.img
+./kafsdump --json /tmp/kafs.img
+```
+
+Output sections:
+- `superblock`: magic/version/block geometry and free counts
+- `inode_summary`: used/free inode counts and `linkcnt==0` in-use count
+- `hrl_summary`: HRL entry/live/refcnt totals
+- `journal_header`: in-image journal header fields and header CRC check result
+
 ### kafsctl
 
 Inspect stats, migration, and hotplug controls:

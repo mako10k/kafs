@@ -12,6 +12,9 @@
     - サイドカー（外部ファイル）廃止。画像内ジャーナルが無い場合は無効化。
     - リプレイ: マウント時にスキャン・クリーン。既定では「再適用」は実施せず（コールバックIFあり）。
 - ツール/テスト
+  - `kafsdump`（オフライン image の read-only 可視化）
+    - `--json` 対応。
+    - superblock / inode 集計 / HRL 集計 / journal header(CRC) を出力。
   - `stress_fs` テスト（Automake tests）。マウント/並行操作のストレス検証で PASS。
   - `mkfs.kafs` / `fsck.kafs` は `src/Makefile.am` の `bin_PROGRAMS` に登録済みで、既定ビルド/インストール対象。
   - 実装はそれぞれ `mkfs_kafs.c` / `fsck_kafs.c`。

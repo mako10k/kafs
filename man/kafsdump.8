@@ -1,0 +1,46 @@
+'.\" -*- nroff -*-
+.TH KAFSDUMP 8 "2026-03-04" "kafs 0.2.3" "System Administration"
+.SH NAME
+kafsdump \- inspect offline KAFS image metadata without mutation
+.SH SYNOPSIS
+.B kafsdump
+.RB [ --json ]
+.I image
+.SH DESCRIPTION
+.B kafsdump
+reads an offline KAFS image in read-only mode and prints a compact metadata summary.
+The tool never writes image contents.
+.SH OUTPUT
+The dump contains the following sections:
+.TP
+.B superblock
+Magic/version, block geometry, and free counters.
+.TP
+.B inode_summary
+Inode totals, used/free counts, and number of in-use inodes with link count 0.
+.TP
+.B hrl_summary
+HRL entry totals, live entry count, and refcount sum.
+.TP
+.B journal_header
+In-image journal header fields and header CRC validation result.
+.SH OPTIONS
+.TP
+.B --json
+Emit machine-readable JSON instead of text output.
+.SH EXIT STATUS
+.TP
+.B 0
+Dump completed successfully.
+.TP
+.B 1
+I/O or format-boundary error.
+.TP
+.B 2
+Usage error.
+.SH SEE ALSO
+.BR kafs (1),
+.BR mkfs.kafs (8),
+.BR fsck.kafs (8)
+.SH AUTHOR
+kafs project.
