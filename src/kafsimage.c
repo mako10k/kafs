@@ -331,7 +331,8 @@ int main(int argc, char **argv)
     return 1;
   }
 
-  int rc = sparse ? copy_nbytes_sparse(fd_src, fd_dst, copy_bytes) : copy_nbytes(fd_src, fd_dst, copy_bytes);
+  int rc = sparse ? copy_nbytes_sparse(fd_src, fd_dst, copy_bytes)
+                  : copy_nbytes(fd_src, fd_dst, copy_bytes);
   if (rc != 0)
   {
     fprintf(stderr, "copy failed: %s\n", strerror(-rc));

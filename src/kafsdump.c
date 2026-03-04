@@ -38,10 +38,7 @@ struct journal_summary
   kj_header_t header;
 };
 
-static void usage(const char *prog)
-{
-  fprintf(stderr, "Usage: %s [--json] <image>\n", prog);
-}
+static void usage(const char *prog) { fprintf(stderr, "Usage: %s [--json] <image>\n", prog); }
 
 static int pread_all(int fd, void *buf, size_t size, off_t off)
 {

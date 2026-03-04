@@ -103,7 +103,7 @@ static void bitmap_clear_range(uint8_t *bm, uint32_t from_blo, uint32_t to_blo)
   {
     uint32_t byte = b >> 3;
     uint32_t bit = b & 7u;
-    bm[byte] &= (uint8_t)~(1u << bit);
+    bm[byte] &= (uint8_t) ~(1u << bit);
   }
 }
 
