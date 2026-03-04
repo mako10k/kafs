@@ -203,11 +203,19 @@ static int rel_tbl_impl(struct rel_ctx *rctx, kafs_blkcnt_t blo, int depth)
 
 static int orphan_reclaim(kafs_context_t *ctx, int do_fix, struct orphan_stats *stats)
 {
+  enum
+  {
+    ORPHAN_SAMPLE_MAX = 16,
+  };
   kafs_ssuperblock_t *sb = ctx->c_superblock;
   kafs_inocnt_t inocnt = kafs_sb_inocnt_get(sb);
   kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(sb);
   kafs_blksize_t blksize = kafs_sb_blksize_get(sb);
   uint32_t refs_pb = (uint32_t)(blksize / sizeof(kafs_sblkcnt_t));
+  kafs_inocnt_t sample_ino[ORPHAN_SAMPLE_MAX];
+  kafs_mode_t sample_mode[ORPHAN_SAMPLE_MAX];
+  kafs_off_t sample_size[ORPHAN_SAMPLE_MAX];
+  uint32_t sample_count = 0;
 
   int found = 0;
   for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
@@ -221,6 +229,13 @@ static int orphan_reclaim(kafs_context_t *ctx, int do_fix, struct orphan_stats *
     found++;
     if (stats)
       stats->found++;
+    if (sample_count < ORPHAN_SAMPLE_MAX)
+    {
+      sample_ino[sample_count] = ino;
+      sample_mode[sample_count] = kafs_ino_mode_get(e);
+      sample_size[sample_count] = kafs_ino_size_get(e);
+      sample_count++;
+    }
     if (!do_fix)
       continue;
 
@@ -266,7 +281,14 @@ static int orphan_reclaim(kafs_context_t *ctx, int do_fix, struct orphan_stats *
   }
 
   if (found > 0)
+  {
     fprintf(stderr, "Orphan inodes: %d\n", found);
+    for (uint32_t i = 0; i < sample_count; ++i)
+    {
+      fprintf(stderr, "  orphan sample[%u]: ino=%" PRIuFAST32 " mode=%06o size=%" PRIiFAST64 "\n",
+              i, sample_ino[i], (unsigned int)sample_mode[i], (int64_t)sample_size[i]);
+    }
+  }
   return found;
 }
 
