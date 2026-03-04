@@ -8,9 +8,8 @@ typedef void (*kafs_usage_fn_t)(const char *prog);
 // Returns 1 when handled, 0 when not handled.
 // When handled, exit_code >= 0 means caller should exit with that code.
 static inline int kafs_cli_parse_uds_help(const char *arg, const char *next_arg,
-                                          const char **uds_path, int *consume_next,
-                                          int *exit_code, kafs_usage_fn_t usage,
-                                          const char *prog)
+                                          const char **uds_path, int *consume_next, int *exit_code,
+                                          kafs_usage_fn_t usage, const char *prog)
 {
   if (consume_next)
     *consume_next = 0;
@@ -52,8 +51,8 @@ static inline int kafs_cli_parse_uds_help_loop(int argc, char **argv, const char
   {
     int consume_next = 0;
     int exit_code = -1;
-    int handled = kafs_cli_parse_uds_help(argv[i], (i + 1 < argc) ? argv[i + 1] : NULL,
-                                          uds_path, &consume_next, &exit_code, usage, prog);
+    int handled = kafs_cli_parse_uds_help(argv[i], (i + 1 < argc) ? argv[i + 1] : NULL, uds_path,
+                                          &consume_next, &exit_code, usage, prog);
     if (!handled)
       continue;
     if (exit_code >= 0)

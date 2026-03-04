@@ -237,8 +237,8 @@ static int orphan_reclaim(kafs_context_t *ctx, int do_fix, struct orphan_stats *
       }
 
       // Recursive indirect release
-      struct rel_ctx rctx = {ctx, ctx->c_img_base, ctx->c_img_size,
-                 log_blksize, refs_pb, blksize, stats};
+      struct rel_ctx rctx = {ctx,  ctx->c_img_base, ctx->c_img_size, log_blksize, refs_pb, blksize,
+                             stats};
 
       kafs_blkcnt_t si = kafs_blkcnt_stoh(e->i_blkreftbl[12]);
       kafs_blkcnt_t di = kafs_blkcnt_stoh(e->i_blkreftbl[13]);
@@ -374,7 +374,7 @@ static int check_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_refcheck_stat
   uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sb);
   uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
   kafs_hrl_entry_t *ents = (kafs_hrl_entry_t *)img_ptr(ctx->c_img_base, ctx->c_img_size,
-                                                        (off_t)ent_off, (size_t)ent_size);
+                                                       (off_t)ent_off, (size_t)ent_size);
   if (!ents)
   {
     free(expected);
@@ -395,8 +395,8 @@ static int check_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_refcheck_stat
       stats->hrl_invalid_entries++;
       if (shown_invalid < 20)
       {
-        fprintf(stderr, "HRL mismatch: entry=%" PRIu64 " invalid blo=%u refcnt=%u\n", i,
-                ent->blo, ent->refcnt);
+        fprintf(stderr, "HRL mismatch: entry=%" PRIu64 " invalid blo=%u refcnt=%u\n", i, ent->blo,
+                ent->refcnt);
         shown_invalid++;
       }
       continue;
@@ -415,8 +415,7 @@ static int check_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_refcheck_stat
       stats->mismatch_entries++;
       if (shown < 20)
       {
-        fprintf(stderr, "HRL mismatch: blo=%u expected=%u actual=%u\n", (unsigned)blo, exp,
-                act);
+        fprintf(stderr, "HRL mismatch: blo=%u expected=%u actual=%u\n", (unsigned)blo, exp, act);
         shown++;
       }
     }
@@ -473,7 +472,7 @@ static int punch_unreferenced_data_blocks(kafs_context_t *ctx, int fd, struct pu
   uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sb);
   uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
   kafs_hrl_entry_t *ents = (kafs_hrl_entry_t *)img_ptr(ctx->c_img_base, ctx->c_img_size,
-                                                        (off_t)ent_off, (size_t)ent_size);
+                                                       (off_t)ent_off, (size_t)ent_size);
   if (!ents)
   {
     free(expected);
@@ -532,8 +531,7 @@ static void usage(const char *prog)
           "[--check-dirent-ino-orphans] [--repair-dirent-ino-orphans] "
           "[--check-hrl-blo-refcounts] [--replay-journal] "
           "[--punch-hole-unreferenced-data-blocks] <image>\n",
-          prog,
-          prog);
+          prog, prog);
 }
 
 static int check_region_bounds(const char *name, uint64_t off, uint64_t size, uint64_t file_size)
@@ -542,8 +540,8 @@ static int check_region_bounds(const char *name, uint64_t off, uint64_t size, ui
     return 0;
   if (off >= file_size || size > file_size - off)
   {
-    fprintf(stderr, "%s out of range: off=%" PRIu64 " size=%" PRIu64 " file=%" PRIu64 "\n",
-            name, off, size, file_size);
+    fprintf(stderr, "%s out of range: off=%" PRIu64 " size=%" PRIu64 " file=%" PRIu64 "\n", name,
+            off, size, file_size);
     return -1;
   }
   return 0;
@@ -551,7 +549,7 @@ static int check_region_bounds(const char *name, uint64_t off, uint64_t size, ui
 
 int main(int argc, char **argv)
 {
-  int do_journal_reset = 0;         // repair: journal layer
+  int do_journal_reset = 0; // repair: journal layer
   int do_check_dirent_ino_orphans = 0;
   int do_repair_dirent_ino_orphans = 0;
   int do_check_hrl_blo_refcounts = 0;
@@ -888,8 +886,8 @@ int main(int argc, char **argv)
       }
 
       fprintf(stderr,
-              "Punch-hole summary: candidates=%" PRIu64 " already_free=%" PRIu64
-              " punched=%" PRIu64 " punch_failed=%" PRIu64 " mark_failed=%" PRIu64 "\n",
+              "Punch-hole summary: candidates=%" PRIu64 " already_free=%" PRIu64 " punched=%" PRIu64
+              " punch_failed=%" PRIu64 " mark_failed=%" PRIu64 "\n",
               pst.candidates, pst.already_free, pst.punched, pst.punch_failed, pst.mark_failed);
 
       if ((pst.punch_failed > 0 || pst.mark_failed > 0) && exit_code == 0)

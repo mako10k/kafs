@@ -110,5 +110,3 @@ typedef struct kafs_ioctl_copy kafs_ioctl_copy_t;
 #define KAFS_IOCTL_COPY _IOW(KAFS_IOCTL_MAGIC, 2, struct kafs_ioctl_copy)
 
 // Hotplug status (kafsctl) definitions are shared via kafs_hotplug.h
-
-

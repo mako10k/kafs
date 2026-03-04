@@ -82,8 +82,8 @@ static inline void kafs_stat_record_pwrite_iblk_write_latency(kafs_context_t *ct
                                   sizeof(ctx->c_stat_pwrite_iblk_write_samples[0]));
   if (cap == 0)
     return;
-  uint64_t seq = __atomic_fetch_add(&ctx->c_stat_pwrite_iblk_write_sample_seq, 1u,
-                                    __ATOMIC_RELAXED);
+  uint64_t seq =
+      __atomic_fetch_add(&ctx->c_stat_pwrite_iblk_write_sample_seq, 1u, __ATOMIC_RELAXED);
   uint32_t idx = (uint32_t)(seq % (uint64_t)cap);
   ctx->c_stat_pwrite_iblk_write_samples[idx] = ns;
   uint32_t prev = __atomic_load_n(&ctx->c_stat_pwrite_iblk_write_sample_count, __ATOMIC_RELAXED);
@@ -200,7 +200,8 @@ static int kafs_pendinglog_init_or_load(struct kafs_context *ctx)
   ctx->c_pendinglog_size = (size_t)size;
 
   kafs_pendinglog_hdr_t *hdr = (kafs_pendinglog_hdr_t *)ctx->c_pendinglog_base;
-  uint32_t cap = (uint32_t)((ctx->c_pendinglog_size - sizeof(*hdr)) / sizeof(kafs_pendinglog_entry_t));
+  uint32_t cap =
+      (uint32_t)((ctx->c_pendinglog_size - sizeof(*hdr)) / sizeof(kafs_pendinglog_entry_t));
   if (cap == 0)
     return -EINVAL;
 
@@ -261,7 +262,8 @@ static int kafs_pendinglog_enqueue(struct kafs_context *ctx, const kafs_pendingl
   return 0;
 }
 
-static int kafs_pendinglog_read(struct kafs_context *ctx, uint32_t idx, kafs_pendinglog_entry_t *out)
+static int kafs_pendinglog_read(struct kafs_context *ctx, uint32_t idx,
+                                kafs_pendinglog_entry_t *out)
 {
   if (!out)
     return -EINVAL;
@@ -486,8 +488,8 @@ static int kafs_pendinglog_drain_inode(struct kafs_context *ctx, uint32_t ino)
     }
 
     pthread_cond_signal(&ctx->c_pending_worker_cond);
-    int tw = pthread_cond_timedwait(&ctx->c_pending_worker_cond, &ctx->c_pending_worker_lock,
-                                    &deadline);
+    int tw =
+        pthread_cond_timedwait(&ctx->c_pending_worker_cond, &ctx->c_pending_worker_lock, &deadline);
     if (tw == ETIMEDOUT)
     {
       pthread_mutex_unlock(&ctx->c_pending_worker_lock);
@@ -497,8 +499,7 @@ static int kafs_pendinglog_drain_inode(struct kafs_context *ctx, uint32_t ino)
 }
 
 static int kafs_pendinglog_inode_has_pending_id(struct kafs_context *ctx, uint32_t ino,
-                                                uint32_t iblk, uint64_t pending_id,
-                                                int *is_pending)
+                                                uint32_t iblk, uint64_t pending_id, int *is_pending)
 {
   if (!ctx || !is_pending)
     return -EINVAL;
@@ -604,8 +605,7 @@ static int kafs_pendinglog_replay_mount(struct kafs_context *ctx)
 
   if (replay_requeued || replay_dropped)
   {
-    kafs_journal_note(ctx, "PENDINGLOG",
-                      "replay: requeued=%u dropped=%u remain=%u",
+    kafs_journal_note(ctx, "PENDINGLOG", "replay: requeued=%u dropped=%u remain=%u",
                       replay_requeued, replay_dropped, kafs_pendinglog_count(ctx));
   }
   return 0;
@@ -774,8 +774,8 @@ static void *kafs_pending_worker_main(void *arg)
               if (ent.iblk < iblocnt)
               {
                 kafs_blkcnt_t cur_raw = KAFS_BLO_NONE;
-                if (kafs_ino_ibrk_run(ctx, inoent, ent.iblk, &cur_raw,
-                                      KAFS_IBLKREF_FUNC_GET_RAW) == 0)
+                if (kafs_ino_ibrk_run(ctx, inoent, ent.iblk, &cur_raw, KAFS_IBLKREF_FUNC_GET_RAW) ==
+                    0)
                 {
                   if (kafs_ref_is_pending(cur_raw) &&
                       kafs_ref_pending_id(cur_raw) == ent.pending_id)
@@ -791,8 +791,7 @@ static void *kafs_pending_worker_main(void *arg)
           kafs_inode_unlock(ctx, ent.ino);
         }
 
-      pending_finalize:
-        ;
+      pending_finalize:;
 
         kafs_blkcnt_t old_blo = (kafs_blkcnt_t)ent.target_hrid;
         if (installed && old_blo != KAFS_BLO_NONE && old_blo != (kafs_blkcnt_t)ent.temp_blo &&
@@ -801,14 +800,14 @@ static void *kafs_pending_worker_main(void *arg)
           uint64_t t_dec0 = kafs_now_ns();
           (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
           uint64_t t_dec1 = kafs_now_ns();
-          __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0,
-                             __ATOMIC_RELAXED);
+          __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
         }
 
         if (!installed && final_blo != KAFS_BLO_NONE && final_blo != (kafs_blkcnt_t)ent.temp_blo)
           (void)kafs_hrl_dec_ref_by_blo(ctx, final_blo);
 
-        if ((kafs_blkcnt_t)ent.temp_blo != KAFS_BLO_NONE && (kafs_blkcnt_t)ent.temp_blo != final_blo)
+        if ((kafs_blkcnt_t)ent.temp_blo != KAFS_BLO_NONE &&
+            (kafs_blkcnt_t)ent.temp_blo != final_blo)
           (void)kafs_hrl_dec_ref_by_blo(ctx, (kafs_blkcnt_t)ent.temp_blo);
 
         pthread_mutex_lock(&ctx->c_pending_worker_lock);
@@ -933,8 +932,7 @@ static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
   kafs_blkcnt_t max_blo = kafs_sb_r_blkcnt_get(ctx->c_superblock);
   if (blo != KAFS_BLO_NONE && blo >= max_blo)
   {
-    kafs_log(KAFS_LOG_ERR,
-             "%s: invalid block ref blo=%" PRIuFAST32 " (max=%" PRIuFAST32 ")\n",
+    kafs_log(KAFS_LOG_ERR, "%s: invalid block ref blo=%" PRIuFAST32 " (max=%" PRIuFAST32 ")\n",
              __func__, blo, max_blo);
 #ifdef __linux__
     uint32_t c = __atomic_fetch_add(&s_invalid_blkref_bt_emitted, 1u, __ATOMIC_RELAXED);
@@ -982,8 +980,7 @@ static int kafs_blk_write(struct kafs_context *ctx, kafs_blkcnt_t blo, const voi
   kafs_blkcnt_t max_blo = kafs_sb_r_blkcnt_get(ctx->c_superblock);
   if (blo != KAFS_BLO_NONE && blo >= max_blo)
   {
-    kafs_log(KAFS_LOG_ERR,
-             "%s: invalid block ref blo=%" PRIuFAST32 " (max=%" PRIuFAST32 ")\n",
+    kafs_log(KAFS_LOG_ERR, "%s: invalid block ref blo=%" PRIuFAST32 " (max=%" PRIuFAST32 ")\n",
              __func__, blo, max_blo);
     return -EIO;
   }
@@ -1640,7 +1637,7 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
     KAFS_CALL(kafs_blk_write, ctx, new_blo2, buf);
     uint64_t t_lw1 = kafs_now_ns();
     __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_legacy_blk_write, t_lw1 - t_lw0,
-               __ATOMIC_RELAXED);
+                       __ATOMIC_RELAXED);
     kafs_blkcnt_t old_blo2;
     KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old_blo2, KAFS_IBLKREF_FUNC_GET);
     KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &new_blo2, KAFS_IBLKREF_FUNC_SET);
@@ -1902,27 +1899,27 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
   kafs_blkcnt_t *deferred_free = NULL;
   size_t deferred_free_cnt = 0;
   size_t deferred_free_cap = 0;
-  #define KAFS_TRUNC_PUSH_FREE(_blo)                                                                \
-    do                                                                                              \
-    {                                                                                               \
-      kafs_blkcnt_t __b = (_blo);                                                                   \
-      if (__b != KAFS_BLO_NONE)                                                                     \
-      {                                                                                             \
-        if (deferred_free_cnt == deferred_free_cap)                                                 \
-        {                                                                                           \
-          size_t new_cap = deferred_free_cap ? (deferred_free_cap << 1) : 256u;                    \
-          kafs_blkcnt_t *nw = realloc(deferred_free, new_cap * sizeof(*nw));                       \
-          if (!nw)                                                                                  \
-          {                                                                                         \
-            free(deferred_free);                                                                    \
-            return -ENOMEM;                                                                         \
-          }                                                                                         \
-          deferred_free = nw;                                                                       \
-          deferred_free_cap = new_cap;                                                              \
-        }                                                                                           \
-        deferred_free[deferred_free_cnt++] = __b;                                                   \
-      }                                                                                             \
-    } while (0)
+#define KAFS_TRUNC_PUSH_FREE(_blo)                                                                 \
+  do                                                                                               \
+  {                                                                                                \
+    kafs_blkcnt_t __b = (_blo);                                                                    \
+    if (__b != KAFS_BLO_NONE)                                                                      \
+    {                                                                                              \
+      if (deferred_free_cnt == deferred_free_cap)                                                  \
+      {                                                                                            \
+        size_t new_cap = deferred_free_cap ? (deferred_free_cap << 1) : 256u;                      \
+        kafs_blkcnt_t *nw = realloc(deferred_free, new_cap * sizeof(*nw));                         \
+        if (!nw)                                                                                   \
+        {                                                                                          \
+          free(deferred_free);                                                                     \
+          return -ENOMEM;                                                                          \
+        }                                                                                          \
+        deferred_free = nw;                                                                        \
+        deferred_free_cap = new_cap;                                                               \
+      }                                                                                            \
+      deferred_free[deferred_free_cnt++] = __b;                                                    \
+    }                                                                                              \
+  } while (0)
   (void)kafs_inode_epoch_bump(ctx, (uint32_t)(inoent - ctx->c_inotbl));
   if (filesize_new > filesize_orig)
   {
@@ -2066,7 +2063,7 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
     kafs_inode_lock(ctx, ino_idx);
   }
   free(deferred_free);
-  #undef KAFS_TRUNC_PUSH_FREE
+#undef KAFS_TRUNC_PUSH_FREE
   return KAFS_SUCCESS;
 }
 
@@ -2245,8 +2242,8 @@ static int kafs_dirent_search(struct kafs_context *ctx, kafs_sinode_t *inoent, c
     kafs_filenamelen_t d_filenamelen;
     const char *d_filename;
     size_t rec_len;
-    int step = kafs_dirent_iter_next(snap, snap_len, off, &d_ino, &d_filenamelen, &d_filename,
-                                     &rec_len);
+    int step =
+        kafs_dirent_iter_next(snap, snap_len, off, &d_ino, &d_filenamelen, &d_filename, &rec_len);
     if (step == 0)
       break;
     if (step < 0)
@@ -2648,10 +2645,7 @@ static int kafs_access(struct fuse_context *fctx, kafs_context_t *ctx, const cha
   return KAFS_SUCCESS;
 }
 
-static int kafs_hotplug_should_fallback(int rc)
-{
-  return rc == -ENOSYS || rc == -EOPNOTSUPP;
-}
+static int kafs_hotplug_should_fallback(int rc) { return rc == -ENOSYS || rc == -EOPNOTSUPP; }
 
 #define KAFS_HOTPLUG_WAIT_TIMEOUT_MS_DEFAULT 2000u
 #define KAFS_HOTPLUG_WAIT_QUEUE_LIMIT_DEFAULT 64u
@@ -2788,8 +2782,7 @@ static int kafs_hotplug_wait_for_back(kafs_context_t *ctx, const char *uds_path,
   struct sockaddr_un addr;
   memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
-  if (snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", uds_path) >=
-      (int)sizeof(addr.sun_path))
+  if (snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", uds_path) >= (int)sizeof(addr.sun_path))
   {
     close(srv);
     ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
@@ -3001,8 +2994,8 @@ static int kafs_hotplug_wait_ready(kafs_context_t *ctx)
   pthread_mutex_lock(&ctx->c_hotplug_wait_lock);
   while (!kafs_hotplug_enabled(ctx))
   {
-    int tw = pthread_cond_timedwait(&ctx->c_hotplug_wait_cond, &ctx->c_hotplug_wait_lock,
-                                    &deadline);
+    int tw =
+        pthread_cond_timedwait(&ctx->c_hotplug_wait_cond, &ctx->c_hotplug_wait_lock, &deadline);
     if (tw == ETIMEDOUT)
     {
       ctx->c_hotplug_last_error = -ETIMEDOUT;
@@ -3034,9 +3027,9 @@ static int kafs_hotplug_call_getattr(struct fuse_context *fctx, kafs_context_t *
 
   if (ctx->c_hotplug_lock_init)
     pthread_mutex_lock(&ctx->c_hotplug_lock);
-  int rc = kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_GETATTR, KAFS_RPC_FLAG_ENDIAN_HOST,
-                             req_id, ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, &req,
-                             sizeof(req));
+  int rc =
+      kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_GETATTR, KAFS_RPC_FLAG_ENDIAN_HOST, req_id,
+                        ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, &req, sizeof(req));
   if (rc == 0)
   {
     kafs_rpc_resp_hdr_t resp_hdr;
@@ -3242,8 +3235,7 @@ int kafs_core_getattr(kafs_context_t *ctx, kafs_inocnt_t ino, struct stat *st)
   return 0;
 }
 
-ssize_t kafs_core_read(kafs_context_t *ctx, kafs_inocnt_t ino, void *buf, size_t size,
-                       off_t offset)
+ssize_t kafs_core_read(kafs_context_t *ctx, kafs_inocnt_t ino, void *buf, size_t size, off_t offset)
 {
   if (!ctx || !buf)
     return -EINVAL;
@@ -3305,9 +3297,8 @@ static ssize_t kafs_hotplug_call_read(struct fuse_context *fctx, kafs_context_t 
   uint8_t resp_buf[KAFS_RPC_MAX_PAYLOAD];
   if (ctx->c_hotplug_lock_init)
     pthread_mutex_lock(&ctx->c_hotplug_lock);
-  int rc = kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_READ, KAFS_RPC_FLAG_ENDIAN_HOST,
-                             req_id, ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, &req,
-                             sizeof(req));
+  int rc = kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_READ, KAFS_RPC_FLAG_ENDIAN_HOST, req_id,
+                             ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, &req, sizeof(req));
   int need_local = 0;
   if (rc == 0)
   {
@@ -3394,9 +3385,9 @@ static ssize_t kafs_hotplug_call_write(struct fuse_context *fctx, kafs_context_t
 
   if (ctx->c_hotplug_lock_init)
     pthread_mutex_lock(&ctx->c_hotplug_lock);
-  int rc = kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_WRITE, KAFS_RPC_FLAG_ENDIAN_HOST,
-                             req_id, ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, payload,
-                             payload_len);
+  int rc =
+      kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_WRITE, KAFS_RPC_FLAG_ENDIAN_HOST, req_id,
+                        ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, payload, payload_len);
   int need_local = 0;
   if (rc == 0)
   {
@@ -3451,9 +3442,9 @@ static int kafs_hotplug_call_truncate(struct fuse_context *fctx, kafs_context_t 
 
   if (ctx->c_hotplug_lock_init)
     pthread_mutex_lock(&ctx->c_hotplug_lock);
-  int rc = kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_TRUNCATE, KAFS_RPC_FLAG_ENDIAN_HOST,
-                             req_id, ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, &req,
-                             sizeof(req));
+  int rc =
+      kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_TRUNCATE, KAFS_RPC_FLAG_ENDIAN_HOST, req_id,
+                        ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, &req, sizeof(req));
   if (rc == 0)
   {
     kafs_rpc_resp_hdr_t resp_hdr;
@@ -3668,9 +3659,8 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
   out->pwrite_ns_iblk_write = ctx->c_stat_pwrite_ns_iblk_write;
   out->pwrite_iblk_write_sample_count =
       __atomic_load_n(&ctx->c_stat_pwrite_iblk_write_sample_count, __ATOMIC_RELAXED);
-  out->pwrite_iblk_write_sample_cap =
-      (uint64_t)(sizeof(ctx->c_stat_pwrite_iblk_write_samples) /
-                 sizeof(ctx->c_stat_pwrite_iblk_write_samples[0]));
+  out->pwrite_iblk_write_sample_cap = (uint64_t)(sizeof(ctx->c_stat_pwrite_iblk_write_samples) /
+                                                 sizeof(ctx->c_stat_pwrite_iblk_write_samples[0]));
   if (out->pwrite_iblk_write_sample_count > out->pwrite_iblk_write_sample_cap)
     out->pwrite_iblk_write_sample_count = out->pwrite_iblk_write_sample_cap;
   if (out->pwrite_iblk_write_sample_count > 0)
@@ -3854,10 +3844,7 @@ typedef struct
   unsigned char resp[KAFS_CTL_MAX_RESP];
 } kafs_ctl_session_t;
 
-static int kafs_is_ctl_path(const char *path)
-{
-  return path && strcmp(path, KAFS_CTL_PATH) == 0;
-}
+static int kafs_is_ctl_path(const char *path) { return path && strcmp(path, KAFS_CTL_PATH) == 0; }
 
 static int kafs_hotplug_env_key_len(const char *key)
 {
@@ -4377,8 +4364,8 @@ static int kafs_op_readdir(const char *path, void *buf, fuse_fill_dir_t filler, 
     kafs_filenamelen_t d_filenamelen;
     const char *d_filename;
     size_t rec_len;
-    int step = kafs_dirent_iter_next(snap, snap_len, o, &d_ino, &d_filenamelen, &d_filename,
-                                     &rec_len);
+    int step =
+        kafs_dirent_iter_next(snap, snap_len, o, &d_ino, &d_filenamelen, &d_filename, &rec_len);
     if (step == 0)
       break;
     if (step < 0)
@@ -5363,7 +5350,7 @@ static struct fuse_operations kafs_operations = {
     .ioctl = kafs_op_ioctl,
     .copy_file_range = kafs_op_copy_file_range,
 };
-  #endif
+#endif
 
 static void usage(const char *prog)
 {
@@ -5376,10 +5363,12 @@ static void usage(const char *prog)
       "       default runs single-threaded; enable MT via -o multi_thread[=N] or env KAFS_MT=1.\n"
       "       MT thread count can be set via -o multi_thread=N (preferred) or env "
       "KAFS_MAX_THREADS.\n"
-      "       migration note: v2 images are refused by default; use kafsctl migrate <image> [--yes]\n"
+      "       migration note: v2 images are refused by default; use kafsctl migrate <image> "
+      "[--yes]\n"
       "       or pass --migrate-v2 (optionally --yes) for one-shot startup migration.\n"
       "       pending worker priority: -o pending_worker_prio=<normal|idle>,\n"
-      "       -o pending_worker_nice=<0..19>, env KAFS_PENDING_WORKER_PRIO / KAFS_PENDING_WORKER_NICE.\n"
+      "       -o pending_worker_nice=<0..19>, env KAFS_PENDING_WORKER_PRIO / "
+      "KAFS_PENDING_WORKER_NICE.\n"
       "Examples:\n"
       "  %s --image test.img mnt -f\n"
       "  %s --image legacy.img --migrate-v2 --yes mnt -f\n"
@@ -5389,8 +5378,7 @@ static void usage(const char *prog)
 
 static int kafs_confirm_yes_stdin(void)
 {
-  fprintf(stderr,
-          "WARNING: migration is irreversible. type 'YES' to continue: ");
+  fprintf(stderr, "WARNING: migration is irreversible. type 'YES' to continue: ");
   fflush(stderr);
   char buf[32];
   if (!fgets(buf, sizeof(buf), stdin))
