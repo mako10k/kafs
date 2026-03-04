@@ -4597,14 +4597,30 @@ static int kafs_op_truncate(const char *path, off_t size, struct fuse_file_info 
     return -EACCES;
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
+  uint32_t ino = (uint32_t)(inoent - ctx->c_inotbl);
+  kafs_dlog(2, "%s: enter path=%s ino=%" PRIuFAST32 " size=%" PRIuFAST64 "\n", __func__,
+            path ? path : "(null)", ino, (uint64_t)size);
   int rc_hp = kafs_hotplug_call_truncate(fctx, ctx, inoent, size);
   if (rc_hp == 0)
+  {
+    kafs_dlog(2, "%s: exit rc=0 path=%s ino=%" PRIuFAST32 " size=%" PRIuFAST64
+                 " hotplug=1\n",
+              __func__, path ? path : "(null)", ino, (uint64_t)size);
     return 0;
+  }
   if (!kafs_hotplug_should_fallback(rc_hp))
+  {
+    kafs_dlog(2, "%s: exit rc=%d path=%s ino=%" PRIuFAST32 " size=%" PRIuFAST64
+                 " hotplug=err\n",
+              __func__, rc_hp, path ? path : "(null)", ino, (uint64_t)size);
     return rc_hp;
+  }
   kafs_inode_lock(ctx, (uint32_t)(inoent - ctx->c_inotbl));
   int rc = kafs_truncate(ctx, inoent, (kafs_off_t)size);
   kafs_inode_unlock(ctx, (uint32_t)(inoent - ctx->c_inotbl));
+  kafs_dlog(2, "%s: exit rc=%d path=%s ino=%" PRIuFAST32 " size=%" PRIuFAST64
+               " hotplug=fallback\n",
+            __func__, (rc == 0 ? 0 : rc), path ? path : "(null)", ino, (uint64_t)size);
   return rc == 0 ? 0 : rc;
 }
 
@@ -4831,13 +4847,21 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
     return -EACCES;
   ssize_t rc_hp = kafs_hotplug_call_write(fctx, ctx, ino, buf, size, offset);
   if (rc_hp >= 0)
+  {
+    kafs_dlog(2, "%s: exit rc=%zd path=%s ino=%" PRIuFAST32 " size=%zu off=%" PRIuFAST64
+                 " hotplug=1\n",
+              __func__, rc_hp, path ? path : "(null)", ino, size, (uint64_t)offset);
     return (int)rc_hp;
+  }
   if (!kafs_hotplug_should_fallback((int)rc_hp))
   {
     kafs_log(KAFS_LOG_WARNING,
              "%s: hotplug write failed path=%s ino=%" PRIuFAST32 " size=%zu off=%" PRIuFAST64
              " rc=%zd\n",
              __func__, path ? path : "(null)", ino, size, (uint64_t)offset, rc_hp);
+    kafs_dlog(2, "%s: exit rc=%zd path=%s ino=%" PRIuFAST32 " size=%zu off=%" PRIuFAST64
+                 " hotplug=err\n",
+              __func__, rc_hp, path ? path : "(null)", ino, size, (uint64_t)offset);
     return (int)rc_hp;
   }
   kafs_inode_lock(ctx, (uint32_t)ino);
@@ -4850,6 +4874,9 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
              " rc=%d\n",
              __func__, path ? path : "(null)", (uint32_t)ino, size, (uint64_t)offset, rc_write);
   }
+  kafs_dlog(2, "%s: exit rc=%d path=%s ino=%" PRIuFAST32 " size=%zu off=%" PRIuFAST64
+               " hotplug=fallback\n",
+            __func__, rc_write, path ? path : "(null)", (uint32_t)ino, size, (uint64_t)offset);
   return rc_write;
 }
 
@@ -4981,6 +5008,8 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
   // 最小実装: 通常ファイルのみ対応。RENAME_NOREPLACE は尊重。その他のフラグは未対応。
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
+  kafs_dlog(2, "%s: enter from=%s to=%s flags=%u\n", __func__, from ? from : "(null)",
+            to ? to : "(null)", flags);
   if (kafs_is_ctl_path(from) || kafs_is_ctl_path(to))
     return -EACCES;
   if (from == NULL || to == NULL || from[0] != '/' || to[0] != '/')
@@ -5212,6 +5241,7 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
   }
 
   kafs_journal_commit(ctx, jseq);
+  kafs_dlog(2, "%s: exit rc=0 from=%s to=%s flags=%u\n", __func__, from, to, flags);
   return 0;
 }
 
@@ -5270,12 +5300,29 @@ static int kafs_op_symlink(const char *target, const char *linkpath)
 
 static int kafs_op_flush(const char *path, struct fuse_file_info *fi)
 {
-  (void)path;
-  (void)fi;
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
+  uint32_t ino = fi ? (uint32_t)fi->fh : (uint32_t)KAFS_INO_NONE;
+  kafs_dlog(2, "%s: enter path=%s ino=%" PRIuFAST32 "\n", __func__,
+            path ? path : "(null)", ino);
   if (!ctx || ctx->c_fd < 0)
+  {
+    kafs_dlog(2, "%s: exit rc=0 (no backing fd) path=%s ino=%" PRIuFAST32 "\n", __func__,
+              path ? path : "(null)", ino);
     return 0;
+  }
+
+  if (ino != KAFS_INO_NONE)
+  {
+    int drc = kafs_pendinglog_drain_inode(ctx, ino);
+    if (drc < 0)
+    {
+      kafs_dlog(2, "%s: exit rc=%d drain_failed path=%s ino=%" PRIuFAST32 "\n", __func__,
+                drc, path ? path : "(null)", ino);
+      return drc;
+    }
+  }
+
   kafs_journal_force_flush(ctx);
   // Ensure mmap'd metadata (superblock/inodes/bitmap/HRL) is persisted.
   if (ctx->c_img_base && ctx->c_img_size)
@@ -5284,18 +5331,20 @@ static int kafs_op_flush(const char *path, struct fuse_file_info *fi)
     {
       int e = errno;
       kafs_log(KAFS_LOG_WARNING, "%s: msync failed path=%s ino=%" PRIuFAST32 " errno=%d\n",
-               __func__, path ? path : "(null)", fi ? (uint32_t)fi->fh : (uint32_t)KAFS_INO_NONE,
-               e);
+               __func__, path ? path : "(null)", ino, e);
     }
   }
   if (fsync(ctx->c_fd) != 0)
   {
     int e = errno;
     kafs_log(KAFS_LOG_WARNING, "%s: fsync failed path=%s ino=%" PRIuFAST32 " errno=%d\n",
-             __func__, path ? path : "(null)", fi ? (uint32_t)fi->fh : (uint32_t)KAFS_INO_NONE,
-             e);
+             __func__, path ? path : "(null)", ino, e);
+    kafs_dlog(2, "%s: exit rc=%d path=%s ino=%" PRIuFAST32 "\n", __func__, -e,
+              path ? path : "(null)", ino);
     return -e;
   }
+  kafs_dlog(2, "%s: exit rc=0 path=%s ino=%" PRIuFAST32 "\n", __func__,
+            path ? path : "(null)", ino);
   return 0;
 }
 
@@ -5305,8 +5354,14 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
   (void)isdatasync;
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
+  kafs_dlog(2, "%s: enter path=%s isdatasync=%d\n", __func__, path ? path : "(null)",
+            isdatasync);
   if (!ctx || ctx->c_fd < 0)
+  {
+    kafs_dlog(2, "%s: exit rc=0 (no backing fd) path=%s\n", __func__,
+              path ? path : "(null)");
     return 0;
+  }
 
   uint32_t ino = KAFS_INO_NONE;
   if (fi)
@@ -5322,7 +5377,11 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
   {
     int drc = kafs_pendinglog_drain_inode(ctx, ino);
     if (drc < 0)
+    {
+      kafs_dlog(2, "%s: exit rc=%d drain_failed path=%s ino=%" PRIuFAST32 "\n", __func__, drc,
+                path ? path : "(null)", ino);
       return drc;
+    }
   }
 
   kafs_journal_force_flush(ctx);
@@ -5340,8 +5399,12 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
     int e = errno;
     kafs_log(KAFS_LOG_WARNING, "%s: fsync failed path=%s ino=%" PRIuFAST32 " errno=%d\n",
              __func__, path ? path : "(null)", ino, e);
+    kafs_dlog(2, "%s: exit rc=%d path=%s ino=%" PRIuFAST32 "\n", __func__, -e,
+              path ? path : "(null)", ino);
     return -e;
   }
+  kafs_dlog(2, "%s: exit rc=0 path=%s ino=%" PRIuFAST32 "\n", __func__,
+            path ? path : "(null)", ino);
   return 0;
 }
 
@@ -5350,15 +5413,36 @@ static int kafs_op_fsyncdir(const char *path, int isdatasync, struct fuse_file_i
   return kafs_op_fsync(path, isdatasync, fi);
 }
 
+static int g_kafs_writeback_cache_enabled = 1;
+
+static void *kafs_op_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
+{
+  (void)cfg;
+#ifdef FUSE_CAP_WRITEBACK_CACHE
+  if (conn)
+  {
+    if (g_kafs_writeback_cache_enabled)
+      conn->want |= FUSE_CAP_WRITEBACK_CACHE;
+    else
+      conn->want &= ~((uint32_t)FUSE_CAP_WRITEBACK_CACHE);
+  }
+#endif
+  struct fuse_context *fctx = fuse_get_context();
+  return fctx ? fctx->private_data : NULL;
+}
+
 static int kafs_op_release(const char *path, struct fuse_file_info *fi)
 {
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx ? fctx->private_data : NULL;
+  kafs_dlog(2, "%s: enter path=%s ino=%" PRIuFAST32 "\n", __func__, path ? path : "(null)",
+            fi ? (uint32_t)fi->fh : (uint32_t)KAFS_INO_NONE);
   if (kafs_is_ctl_path(path))
   {
     kafs_ctl_session_t *sess = (kafs_ctl_session_t *)(uintptr_t)fi->fh;
     free(sess);
     fi->fh = 0;
+    kafs_dlog(2, "%s: exit rc=0 ctl path=%s\n", __func__, path ? path : "(null)");
     return 0;
   }
   kafs_inocnt_t ino = fi->fh;
@@ -5366,6 +5450,8 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
   if (ctx && ctx->c_open_cnt)
   {
     uint32_t after = __atomic_sub_fetch(&ctx->c_open_cnt[ino], 1u, __ATOMIC_RELAXED);
+    kafs_dlog(2, "%s: open_cnt after dec ino=%" PRIuFAST32 " after=%" PRIu32 "\n", __func__,
+              (uint32_t)ino, after);
     if (after == 0)
     {
       kafs_inode_lock(ctx, (uint32_t)ino);
@@ -5373,7 +5459,12 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
       if (kafs_ino_get_usage(inoent) && kafs_ino_linkcnt_get(inoent) == 0)
       {
         (void)kafs_inode_epoch_bump(ctx, (uint32_t)ino);
-        (void)kafs_truncate(ctx, inoent, 0);
+        int trc = kafs_truncate(ctx, inoent, 0);
+        if (trc < 0)
+        {
+          kafs_log(KAFS_LOG_WARNING, "%s: truncate failed ino=%" PRIuFAST32 " rc=%d\n",
+                   __func__, (uint32_t)ino, trc);
+        }
         memset(inoent, 0, sizeof(*inoent));
         reclaimed = 1;
       }
@@ -5388,11 +5479,15 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
       }
     }
   }
-  return kafs_op_flush(path, fi);
+  int rc = kafs_op_flush(path, fi);
+  kafs_dlog(2, "%s: exit rc=%d path=%s ino=%" PRIuFAST32 " reclaimed=%d\n", __func__, rc,
+            path ? path : "(null)", (uint32_t)ino, reclaimed);
+  return rc;
 }
 
 #ifndef KAFS_NO_MAIN
 static struct fuse_operations kafs_operations = {
+  .init = kafs_op_init,
     .getattr = kafs_op_getattr,
     .statfs = kafs_op_statfs,
     .open = kafs_op_open,
@@ -5430,6 +5525,9 @@ static void usage(const char *prog)
       "       %s <image> <mountpoint> [FUSE options...] (mount helper compatible)\n"
       "       %s [--image <image>] --migrate-v2 [--yes] <mountpoint> [FUSE options...]\n"
       "       env KAFS_IMAGE can be used as fallback image path.\n"
+      "       writeback cache is enabled by default (stability workaround).\n"
+      "       disable via --no-writeback-cache, enable via --writeback-cache,\n"
+      "       or use -o no_writeback_cache / -o writeback_cache.\n"
       "       default runs single-threaded; enable MT via -o multi_thread[=N] or env KAFS_MT=1.\n"
       "       MT thread count can be set via -o multi_thread=N (preferred) or env "
       "KAFS_MAX_THREADS.\n"
@@ -5563,6 +5661,18 @@ int main(int argc, char **argv)
   const char *image_path = getenv("KAFS_IMAGE");
   kafs_bool_t auto_migrate_v2 = KAFS_FALSE;
   kafs_bool_t migrate_yes = KAFS_FALSE;
+  kafs_bool_t writeback_cache_enabled = KAFS_TRUE;
+  kafs_bool_t writeback_cache_explicit = KAFS_FALSE;
+  const char *wbc_env = getenv("KAFS_WRITEBACK_CACHE");
+  if (wbc_env && *wbc_env)
+  {
+    if (strcmp(wbc_env, "0") == 0 || strcasecmp(wbc_env, "false") == 0 ||
+        strcasecmp(wbc_env, "off") == 0 || strcasecmp(wbc_env, "no") == 0)
+      writeback_cache_enabled = KAFS_FALSE;
+    else if (strcmp(wbc_env, "1") == 0 || strcasecmp(wbc_env, "true") == 0 ||
+             strcasecmp(wbc_env, "on") == 0 || strcasecmp(wbc_env, "yes") == 0)
+      writeback_cache_enabled = KAFS_TRUE;
+  }
   // argv から --image と --help を取り除き fuse_main へは渡さない
   char *argv_clean[argc];
   int argc_clean = 0;
@@ -5583,6 +5693,18 @@ int main(int argc, char **argv)
     if (strcmp(a, "--yes") == 0)
     {
       migrate_yes = KAFS_TRUE;
+      continue;
+    }
+    if (strcmp(a, "--no-writeback-cache") == 0)
+    {
+      writeback_cache_enabled = KAFS_FALSE;
+      writeback_cache_explicit = KAFS_TRUE;
+      continue;
+    }
+    if (strcmp(a, "--writeback-cache") == 0)
+    {
+      writeback_cache_enabled = KAFS_TRUE;
+      writeback_cache_explicit = KAFS_TRUE;
       continue;
     }
     if (strcmp(a, "--image") == 0)
@@ -5700,6 +5822,19 @@ int main(int argc, char **argv)
         {
           if (strncmp(tok, "max_threads=", 12) == 0 || strcmp(tok, "max_threads") == 0)
             saw_max_threads = 1;
+
+          if (strcmp(tok, "writeback_cache") == 0)
+          {
+            writeback_cache_enabled = KAFS_TRUE;
+            writeback_cache_explicit = KAFS_TRUE;
+            continue;
+          }
+          if (strcmp(tok, "no_writeback_cache") == 0)
+          {
+            writeback_cache_enabled = KAFS_FALSE;
+            writeback_cache_explicit = KAFS_TRUE;
+            continue;
+          }
 
           if (strcmp(tok, "multi_thread") == 0 || strcmp(tok, "multi-thread") == 0 ||
               strcmp(tok, "multithread") == 0)
@@ -6141,7 +6276,7 @@ int main(int argc, char **argv)
     }
   }
   // 余裕を持って追加オプション(-s, -o max_threads=)用のスロットを確保
-  char *argv_fuse[argc_clean + 6];
+  char *argv_fuse[argc_clean + 10];
   for (int i = 0; i < argc_clean; ++i)
     argv_fuse[i] = argv_clean[i];
   int argc_fuse = argc_clean;
@@ -6188,6 +6323,17 @@ int main(int argc, char **argv)
     argv_fuse[argc_fuse++] = "-o";
     argv_fuse[argc_fuse++] = mt_opt_buf;
     kafs_log(KAFS_LOG_INFO, "kafs: enabling multithread with -o %s\n", mt_opt_buf);
+  }
+  g_kafs_writeback_cache_enabled = writeback_cache_enabled ? 1 : 0;
+  if (writeback_cache_explicit)
+  {
+    kafs_log(KAFS_LOG_INFO, "kafs: writeback_cache %s (explicit)\n",
+             writeback_cache_enabled ? "enabled" : "disabled");
+  }
+  else
+  {
+    kafs_log(KAFS_LOG_INFO, "kafs: writeback_cache %s (default)\n",
+             writeback_cache_enabled ? "enabled" : "disabled");
   }
   // 起動引数を一度だけ情報ログに出力（デバッグ用途）
   if (kafs_debug_level() >= 1)
