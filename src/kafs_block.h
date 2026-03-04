@@ -220,6 +220,32 @@ static void kafs_blk_account_meta_update(struct kafs_context *ctx, kafs_ssuperbl
     ctx->c_alloc_v3_summary_dirty = 1u;
 }
 
+static void kafs_blk_load_word(struct kafs_context *ctx, kafs_blkcnt_t blo,
+                               kafs_ssuperblock_t **out_sb, kafs_blkcnt_t *out_blod,
+                               kafs_blkmask_t *out_bit, kafs_blkmask_t **out_tbl,
+                               kafs_blkmask_t *out_word)
+{
+  assert(ctx != NULL);
+  kafs_ssuperblock_t *sb = ctx->c_superblock;
+  assert(blo < kafs_sb_blkcnt_get(sb));
+
+  kafs_blkcnt_t blod = blo >> KAFS_BLKMASK_LOG_BITS;
+  kafs_blkcnt_t blor = blo & KAFS_BLKMASK_MASK_BITS;
+  kafs_blkmask_t bit = (kafs_blkmask_t)1 << blor;
+  kafs_blkmask_t *blkmasktbl = kafs_meta_bitmap_tbl_mut(ctx);
+
+  if (out_sb)
+    *out_sb = sb;
+  if (out_blod)
+    *out_blod = blod;
+  if (out_bit)
+    *out_bit = bit;
+  if (out_tbl)
+    *out_tbl = blkmasktbl;
+  if (out_word)
+    *out_word = blkmasktbl[blod];
+}
+
 /// @brief 指定されたブロックの利用状況をセットする
 /// @param ctx コンテキスト
 /// @param blo ブロック番号
@@ -230,14 +256,12 @@ static int kafs_blk_set_usage_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo
 {
   kafs_log(KAFS_LOG_DEBUG, "%s(blo=%" PRIuFAST32 ", usage=%s)\n", __func__, blo,
            usage ? "true" : "false");
-  assert(ctx != NULL);
-  kafs_ssuperblock_t *sb = ctx->c_superblock;
-  assert(blo < kafs_sb_blkcnt_get(sb));
-  kafs_blkcnt_t blod = blo >> KAFS_BLKMASK_LOG_BITS;
-  kafs_blkcnt_t blor = blo & KAFS_BLKMASK_MASK_BITS;
-  kafs_blkmask_t bit = (kafs_blkmask_t)1 << blor;
-  kafs_blkmask_t *blkmasktbl = kafs_meta_bitmap_tbl_mut(ctx);
-  kafs_blkmask_t word = blkmasktbl[blod];
+  kafs_ssuperblock_t *sb = NULL;
+  kafs_blkcnt_t blod = 0;
+  kafs_blkmask_t bit = 0;
+  kafs_blkmask_t *blkmasktbl = NULL;
+  kafs_blkmask_t word = 0;
+  kafs_blk_load_word(ctx, blo, &sb, &blod, &bit, &blkmasktbl, &word);
   int was_used = (word & bit) != 0;
   __atomic_add_fetch(&ctx->c_stat_blk_set_usage_calls, 1u, __ATOMIC_RELAXED);
   if (usage == KAFS_TRUE)
@@ -267,16 +291,12 @@ static int kafs_blk_set_usage_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo
 // Returns 1 when claimed, 0 when already used.
 static int kafs_blk_try_claim_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo)
 {
-  assert(ctx != NULL);
-  kafs_ssuperblock_t *sb = ctx->c_superblock;
-  assert(blo < kafs_sb_blkcnt_get(sb));
-
-  kafs_blkcnt_t blod = blo >> KAFS_BLKMASK_LOG_BITS;
-  kafs_blkcnt_t blor = blo & KAFS_BLKMASK_MASK_BITS;
-  kafs_blkmask_t bit = (kafs_blkmask_t)1 << blor;
-
-  kafs_blkmask_t *blkmasktbl = kafs_meta_bitmap_tbl_mut(ctx);
-  kafs_blkmask_t word = blkmasktbl[blod];
+  kafs_ssuperblock_t *sb = NULL;
+  kafs_blkcnt_t blod = 0;
+  kafs_blkmask_t bit = 0;
+  kafs_blkmask_t *blkmasktbl = NULL;
+  kafs_blkmask_t word = 0;
+  kafs_blk_load_word(ctx, blo, &sb, &blod, &bit, &blkmasktbl, &word);
   if ((word & bit) != 0)
     return 0;
 
@@ -288,6 +308,31 @@ static int kafs_blk_try_claim_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo
   kafs_blk_account_meta_update(ctx, sb, blo, -1);
 
   return 1;
+}
+
+static int kafs_blk_claim_candidate(struct kafs_context *ctx, kafs_blkcnt_t candidate,
+                                    kafs_blkcnt_t *pblo)
+{
+  uint64_t t_claim0 = kafs_blk_now_ns();
+  kafs_bitmap_lock(ctx);
+  uint64_t t_set0 = kafs_blk_now_ns();
+  int claimed = kafs_blk_try_claim_nolock(ctx, candidate);
+  uint64_t t_set1 = kafs_blk_now_ns();
+  __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_set_usage, t_set1 - t_set0, __ATOMIC_RELAXED);
+  if (claimed)
+  {
+    ctx->c_blo_search = candidate;
+    *pblo = candidate;
+    kafs_bitmap_unlock(ctx);
+    uint64_t t_claim1 = kafs_blk_now_ns();
+    __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_claim, t_claim1 - t_claim0, __ATOMIC_RELAXED);
+    return 1;
+  }
+  kafs_bitmap_unlock(ctx);
+  uint64_t t_claim1 = kafs_blk_now_ns();
+  __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_claim, t_claim1 - t_claim0, __ATOMIC_RELAXED);
+  __atomic_add_fetch(&ctx->c_stat_blk_alloc_claim_retries, 1u, __ATOMIC_RELAXED);
+  return 0;
 }
 
 // Public wrapper that takes bitmap lock
@@ -360,28 +405,8 @@ static int kafs_blk_alloc_legacy(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
         __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_scan, t_scan_stop - t_scan_start,
                            __ATOMIC_RELAXED);
 
-        uint64_t t_claim0 = kafs_blk_now_ns();
-        kafs_bitmap_lock(ctx);
-        uint64_t t_set0 = kafs_blk_now_ns();
-        int claimed = kafs_blk_try_claim_nolock(ctx, blo_found);
-        uint64_t t_set1 = kafs_blk_now_ns();
-        __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_set_usage, t_set1 - t_set0,
-                           __ATOMIC_RELAXED);
-        if (claimed)
-        {
-          ctx->c_blo_search = blo_found;
-          *pblo = blo_found;
-          kafs_bitmap_unlock(ctx);
-          uint64_t t_claim1 = kafs_blk_now_ns();
-          __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_claim, t_claim1 - t_claim0,
-                             __ATOMIC_RELAXED);
+        if (kafs_blk_claim_candidate(ctx, blo_found, pblo))
           return KAFS_SUCCESS;
-        }
-        kafs_bitmap_unlock(ctx);
-        uint64_t t_claim1 = kafs_blk_now_ns();
-        __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_claim, t_claim1 - t_claim0,
-                           __ATOMIC_RELAXED);
-        __atomic_add_fetch(&ctx->c_stat_blk_alloc_claim_retries, 1u, __ATOMIC_RELAXED);
         t_scan_start = kafs_blk_now_ns();
       }
     }
@@ -570,25 +595,8 @@ static int kafs_blk_alloc_v3(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
     __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_scan, t_scan_stop - t_scan_start,
                        __ATOMIC_RELAXED);
 
-    uint64_t t_claim0 = kafs_blk_now_ns();
-    kafs_bitmap_lock(ctx);
-    uint64_t t_set0 = kafs_blk_now_ns();
-    int claimed = kafs_blk_try_claim_nolock(ctx, candidate);
-    uint64_t t_set1 = kafs_blk_now_ns();
-    __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_set_usage, t_set1 - t_set0, __ATOMIC_RELAXED);
-    if (claimed)
-    {
-      ctx->c_blo_search = candidate;
-      *pblo = candidate;
-      kafs_bitmap_unlock(ctx);
-      uint64_t t_claim1 = kafs_blk_now_ns();
-      __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_claim, t_claim1 - t_claim0, __ATOMIC_RELAXED);
+    if (kafs_blk_claim_candidate(ctx, candidate, pblo))
       return KAFS_SUCCESS;
-    }
-    kafs_bitmap_unlock(ctx);
-    uint64_t t_claim1 = kafs_blk_now_ns();
-    __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_claim, t_claim1 - t_claim0, __ATOMIC_RELAXED);
-    __atomic_add_fetch(&ctx->c_stat_blk_alloc_claim_retries, 1u, __ATOMIC_RELAXED);
 
     search_start = candidate + 1;
     if (search_start < fdb || search_start >= blocnt)
