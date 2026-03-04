@@ -12,9 +12,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <linux/falloc.h>
+#endif
 /* jscpd:ignore-end */
 
 #include "kafs_journal.h"
@@ -27,6 +31,8 @@
 #define FSCK_EXIT_DIRENT_INO_INCONSISTENT 5
 #define FSCK_EXIT_DIRENT_INO_REPAIR_PARTIAL 6
 #define FSCK_EXIT_HRL_BLO_INCONSISTENT 7
+#define FSCK_EXIT_JOURNAL_REPLAY_FAILED 8
+#define FSCK_EXIT_PUNCH_HOLE_PARTIAL 9
 
 #define KAFS_PENDING_REF_FLAG 0x80000000u
 
@@ -45,6 +51,15 @@ struct hrl_refcheck_stats
   uint64_t live_entries;
   uint64_t mismatch_entries;
   uint64_t hrl_invalid_entries;
+};
+
+struct punch_stats
+{
+  uint64_t candidates;
+  uint64_t already_free;
+  uint64_t punched;
+  uint64_t punch_failed;
+  uint64_t mark_failed;
 };
 
 typedef enum fsck_mode
@@ -77,6 +92,27 @@ static int fsck_decode_data_ref(kafs_blkcnt_t raw, kafs_blkcnt_t *out_blo, int *
   *out_blo = raw;
   *out_is_pending = 0;
   return 0;
+}
+
+static int fsck_punch_hole(int fd, off_t off, off_t len)
+{
+#ifdef __linux__
+#ifdef SYS_fallocate
+  if (syscall(SYS_fallocate, fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, off, len) == 0)
+    return 0;
+  return -errno;
+#else
+  (void)fd;
+  (void)off;
+  (void)len;
+  return -ENOSYS;
+#endif
+#else
+  (void)fd;
+  (void)off;
+  (void)len;
+  return -ENOTSUP;
+#endif
 }
 
 static int fsck_hrl_dec_ref_counted(kafs_context_t *ctx, kafs_blkcnt_t raw,
@@ -391,6 +427,102 @@ static int check_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_refcheck_stat
   return 0;
 }
 
+static int punch_unreferenced_data_blocks(kafs_context_t *ctx, int fd, struct punch_stats *stats)
+{
+  kafs_ssuperblock_t *sb = ctx->c_superblock;
+  kafs_blkcnt_t r_blkcnt = kafs_sb_blkcnt_get(sb);
+  kafs_blkcnt_t first_data_block = kafs_sb_first_data_block_get(sb);
+  kafs_inocnt_t inocnt = kafs_sb_inocnt_get(sb);
+  kafs_blksize_t blksize = kafs_sb_blksize_get(sb);
+  kafs_logblksize_t l2 = kafs_sb_log_blksize_get(sb);
+  uint32_t refs_pb = (uint32_t)(blksize / sizeof(kafs_sblkcnt_t));
+
+  if ((size_t)r_blkcnt > SIZE_MAX / sizeof(uint32_t))
+    return -ENOMEM;
+
+  uint32_t *expected = (uint32_t *)calloc((size_t)r_blkcnt, sizeof(uint32_t));
+  uint32_t *actual = (uint32_t *)calloc((size_t)r_blkcnt, sizeof(uint32_t));
+  if (!expected || !actual)
+  {
+    free(expected);
+    free(actual);
+    return -ENOMEM;
+  }
+
+  struct hrl_refcheck_stats hst;
+  memset(&hst, 0, sizeof(hst));
+  struct hrl_scan_ctx sctx = {ctx, r_blkcnt, l2, blksize, refs_pb, expected, &hst};
+
+  for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
+  {
+    kafs_sinode_t *e = &ctx->c_inotbl[ino];
+    if (!kafs_ino_get_usage(e))
+      continue;
+    if (kafs_ino_size_get(e) <= (kafs_off_t)sizeof(e->i_blkreftbl))
+      continue;
+
+    for (uint32_t i = 0; i < 12; ++i)
+      (void)hrl_count_raw_ref(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[i]));
+
+    (void)hrl_count_tbl_refs(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[12]), 1);
+    (void)hrl_count_tbl_refs(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[13]), 2);
+    (void)hrl_count_tbl_refs(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[14]), 3);
+  }
+
+  uint64_t ent_off = kafs_sb_hrl_entry_offset_get(sb);
+  uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sb);
+  uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
+  kafs_hrl_entry_t *ents = (kafs_hrl_entry_t *)img_ptr(ctx->c_img_base, ctx->c_img_size,
+                                                        (off_t)ent_off, (size_t)ent_size);
+  if (!ents)
+  {
+    free(expected);
+    free(actual);
+    return -EIO;
+  }
+
+  for (uint64_t i = 0; i < ent_cnt; ++i)
+  {
+    const kafs_hrl_entry_t *ent = &ents[i];
+    if (ent->refcnt == 0)
+      continue;
+    if (ent->blo >= r_blkcnt)
+      continue;
+    actual[ent->blo] += ent->refcnt;
+  }
+
+  for (kafs_blkcnt_t blo = first_data_block; blo < r_blkcnt; ++blo)
+  {
+    if (expected[blo] != 0 || actual[blo] != 0)
+      continue;
+
+    stats->candidates++;
+    if (!kafs_blk_get_usage(ctx, blo))
+    {
+      stats->already_free++;
+      continue;
+    }
+
+    int prc = fsck_punch_hole(fd, ((off_t)blo << l2), (off_t)blksize);
+    if (prc != 0)
+    {
+      stats->punch_failed++;
+      continue;
+    }
+
+    if (kafs_blk_set_usage(ctx, blo, KAFS_FALSE) != 0)
+    {
+      stats->mark_failed++;
+      continue;
+    }
+    stats->punched++;
+  }
+
+  free(expected);
+  free(actual);
+  return 0;
+}
+
 static void usage(const char *prog)
 {
   fprintf(stderr,
@@ -398,7 +530,8 @@ static void usage(const char *prog)
           "--fast-check|--fast-repair] <image>\n"
           "       %s [--check-journal] [--repair-journal-reset] "
           "[--check-dirent-ino-orphans] [--repair-dirent-ino-orphans] "
-          "[--check-hrl-blo-refcounts] <image>\n",
+          "[--check-hrl-blo-refcounts] [--replay-journal] "
+          "[--punch-hole-unreferenced-data-blocks] <image>\n",
           prog,
           prog);
 }
@@ -422,6 +555,8 @@ int main(int argc, char **argv)
   int do_check_dirent_ino_orphans = 0;
   int do_repair_dirent_ino_orphans = 0;
   int do_check_hrl_blo_refcounts = 0;
+  int do_replay_journal = 0;
+  int do_punch_hole_unreferenced_data_blocks = 0;
   int do_check_journal = 1;
 
   int has_preset_mode = 0;
@@ -485,6 +620,16 @@ int main(int argc, char **argv)
     else if (strcmp(argv[i], "--check-hrl-blo-refcounts") == 0)
     {
       do_check_hrl_blo_refcounts = 1;
+      has_low_level_mode = 1;
+    }
+    else if (strcmp(argv[i], "--replay-journal") == 0)
+    {
+      do_replay_journal = 1;
+      has_low_level_mode = 1;
+    }
+    else if (strcmp(argv[i], "--punch-hole-unreferenced-data-blocks") == 0)
+    {
+      do_punch_hole_unreferenced_data_blocks = 1;
       has_low_level_mode = 1;
     }
     else if (argv[i][0] != '-' && !img)
@@ -554,6 +699,8 @@ int main(int argc, char **argv)
   }
 
   int want_write = do_journal_reset || do_repair_dirent_ino_orphans;
+  if (do_replay_journal || do_punch_hole_unreferenced_data_blocks)
+    want_write = 1;
   int fd = open(img, want_write ? O_RDWR : O_RDONLY);
   if (fd < 0)
   {
@@ -592,7 +739,8 @@ int main(int argc, char **argv)
     return FSCK_EXIT_JOURNAL_CHECK_FAILED;
   }
 
-  if (do_check_dirent_ino_orphans || do_repair_dirent_ino_orphans || do_check_hrl_blo_refcounts)
+  if (do_check_dirent_ino_orphans || do_repair_dirent_ino_orphans || do_check_hrl_blo_refcounts ||
+      do_replay_journal || do_punch_hole_unreferenced_data_blocks)
   {
     kafs_context_t ctx;
     memset(&ctx, 0, sizeof(ctx));
@@ -654,6 +802,18 @@ int main(int argc, char **argv)
     ctx.c_blo_search = 0;
     ctx.c_ino_search = 0;
 
+    if (do_replay_journal)
+    {
+      int rrc = kafs_journal_replay(&ctx, NULL, NULL);
+      if (rrc != 0)
+      {
+        munmap(ctx.c_img_base, ctx.c_img_size);
+        close(fd);
+        return FSCK_EXIT_JOURNAL_REPLAY_FAILED;
+      }
+      fprintf(stderr, "Journal replay: applied pending metadata and cleared ring.\n");
+    }
+
     if (do_check_dirent_ino_orphans || do_repair_dirent_ino_orphans)
     {
       struct orphan_stats ost;
@@ -713,6 +873,27 @@ int main(int argc, char **argv)
         if (exit_code == 0)
           exit_code = FSCK_EXIT_HRL_BLO_INCONSISTENT;
       }
+    }
+
+    if (do_punch_hole_unreferenced_data_blocks)
+    {
+      struct punch_stats pst;
+      memset(&pst, 0, sizeof(pst));
+      int prc = punch_unreferenced_data_blocks(&ctx, fd, &pst);
+      if (prc != 0)
+      {
+        munmap(ctx.c_img_base, ctx.c_img_size);
+        close(fd);
+        return 1;
+      }
+
+      fprintf(stderr,
+              "Punch-hole summary: candidates=%" PRIu64 " already_free=%" PRIu64
+              " punched=%" PRIu64 " punch_failed=%" PRIu64 " mark_failed=%" PRIu64 "\n",
+              pst.candidates, pst.already_free, pst.punched, pst.punch_failed, pst.mark_failed);
+
+      if ((pst.punch_failed > 0 || pst.mark_failed > 0) && exit_code == 0)
+        exit_code = FSCK_EXIT_PUNCH_HOLE_PARTIAL;
     }
 
     if (want_write)

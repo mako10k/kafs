@@ -18,6 +18,8 @@ fsck.kafs \- check and repair specific KAFS consistency layers
 .RB [ --check-dirent-ino-orphans ]
 .RB [ --repair-dirent-ino-orphans ]
 .RB [ --check-hrl-blo-refcounts ]
+.RB [ --replay-journal ]
+.RB [ --punch-hole-unreferenced-data-blocks ]
 .I image
 .SH DESCRIPTION
 .B fsck.kafs
@@ -66,6 +68,14 @@ Check dirent->ino consistency by scanning orphan inodes
 .B --check-hrl-blo-refcounts
 Check ino->hrl->blo consistency by comparing inode-derived expected block
 references against live HRL entry refcounts.
+.TP
+.B --replay-journal
+Replay committed in-image journal metadata deltas and clear the journal ring.
+This is intended for offline recovery paths.
+.TP
+.B --punch-hole-unreferenced-data-blocks
+Punch holes for allocated data blocks that have no inode-derived references and
+no live HRL references, then mark those blocks free in the block bitmap.
 .SH EXIT STATUS
 .TP
 .B 0
@@ -85,6 +95,12 @@ dirent->ino repair completed with partial failures.
 .TP
 .B 7
 hrl->blo refcount consistency check found mismatches.
+.TP
+.B 8
+Journal replay operation failed.
+.TP
+.B 9
+Punch-hole completed with partial failures.
 .SH SEE ALSO
 .BR mkfs.kafs (8),
 .BR kafs (1)

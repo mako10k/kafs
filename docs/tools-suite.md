@@ -74,7 +74,8 @@
     - `--fast-check` / `--fast-repair`
   - `--check-journal` / `--repair-journal-reset` /
     `--check-dirent-ino-orphans` / `--repair-dirent-ino-orphans` /
-    `--check-hrl-blo-refcounts` / `-v` 詳細出力。
+    `--check-hrl-blo-refcounts` / `--replay-journal` /
+    `--punch-hole-unreferenced-data-blocks` / `-v` 詳細出力。
 - `kafs-journalctl`
   - `--list`、`--op <name>`、`--seq <a>[:<b>]`、`--since <ts>`、`--until <ts>`、`--stats`。
 - `kafs-journal-clear`

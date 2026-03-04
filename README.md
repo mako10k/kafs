@@ -95,6 +95,8 @@ Low-level layer options:
 ./fsck.kafs --check-dirent-ino-orphans /tmp/kafs.img
 ./fsck.kafs --repair-dirent-ino-orphans /tmp/kafs.img
 ./fsck.kafs --check-hrl-blo-refcounts /tmp/kafs.img
+./fsck.kafs --replay-journal /tmp/kafs.img
+./fsck.kafs --punch-hole-unreferenced-data-blocks /tmp/kafs.img
 ```
 
 Exit status:
@@ -104,6 +106,8 @@ Exit status:
 - `5`: dirent->ino check found orphan inconsistencies
 - `6`: dirent->ino repair completed with partial failures
 - `7`: hrl->blo check found refcount mismatches
+- `8`: journal replay failed
+- `9`: punch-hole completed with partial failures
 
 ### kafsctl
 
