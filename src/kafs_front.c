@@ -1,4 +1,5 @@
 #include "kafs_rpc.h"
+#include "kafs_cli_opts.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -202,20 +203,18 @@ int main(int argc, char **argv)
 
   for (int i = 1; i < argc; ++i)
   {
-    if (strcmp(argv[i], "--uds") == 0)
+    int consume_next = 0;
+    int exit_code = -1;
+    int handled = kafs_cli_parse_uds_help(argv[i], (i + 1 < argc) ? argv[i + 1] : NULL,
+                                          &uds_path, &consume_next, &exit_code, usage,
+                                          argv[0]);
+    if (handled)
     {
-      if (i + 1 >= argc)
-      {
-        usage(argv[0]);
-        return 2;
-      }
-      uds_path = argv[++i];
+      if (exit_code >= 0)
+        return exit_code;
+      if (consume_next)
+        ++i;
       continue;
-    }
-    if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
-    {
-      usage(argv[0]);
-      return 0;
     }
   }
 
