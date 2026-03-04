@@ -2155,6 +2155,38 @@ __attribute_maybe_unused__ static int kafs_release(struct kafs_context *ctx, kaf
   return KAFS_SUCCESS;
 }
 
+// Requires: caller holds inode lock for ino.
+static int kafs_try_reclaim_unlinked_inode_locked(struct kafs_context *ctx, kafs_inocnt_t ino,
+                                                  int *reclaimed)
+{
+  assert(ctx != NULL);
+  assert(reclaimed != NULL);
+  *reclaimed = 0;
+
+  kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+  if (!kafs_ino_get_usage(inoent))
+    return KAFS_SUCCESS;
+  if (kafs_ino_linkcnt_get(inoent) != 0)
+    return KAFS_SUCCESS;
+  if (ctx->c_open_cnt)
+  {
+    uint32_t open_cnt = __atomic_load_n(&ctx->c_open_cnt[ino], __ATOMIC_RELAXED);
+    if (open_cnt != 0)
+      return KAFS_SUCCESS;
+  }
+
+  (void)kafs_inode_epoch_bump(ctx, (uint32_t)ino);
+  int trc = kafs_truncate(ctx, inoent, 0);
+  if (trc < 0)
+  {
+    kafs_log(KAFS_LOG_WARNING, "%s: truncate failed ino=%" PRIuFAST32 " rc=%d\n", __func__,
+             (uint32_t)ino, trc);
+  }
+  memset(inoent, 0, sizeof(*inoent));
+  *reclaimed = 1;
+  return KAFS_SUCCESS;
+}
+
 /// @brief ディレクトリエントリを読み出す
 /// @param ctx コンテキスト
 /// @param inoent_dir ディレクトリの inodeテーブルのエントリ
@@ -4987,12 +5019,21 @@ static int kafs_op_unlink(const char *path)
   kafs_inode_lock(ctx, (uint32_t)removed_ino);
   kafs_sinode_t *t = &ctx->c_inotbl[removed_ino];
   kafs_linkcnt_t nl = kafs_ino_linkcnt_decr(t);
+  int reclaimed_now = 0;
   if (nl == 0)
   {
-    (void)kafs_inode_epoch_bump(ctx, (uint32_t)removed_ino);
     kafs_ino_dtime_set(t, kafs_now());
+    (void)kafs_try_reclaim_unlinked_inode_locked(ctx, removed_ino, &reclaimed_now);
   }
   kafs_inode_unlock(ctx, (uint32_t)removed_ino);
+
+  if (reclaimed_now)
+  {
+    kafs_inode_alloc_lock(ctx);
+    (void)kafs_sb_inocnt_free_incr(ctx->c_superblock);
+    kafs_sb_wtime_set(ctx->c_superblock, kafs_now());
+    kafs_inode_alloc_unlock(ctx);
+  }
 
   kafs_journal_commit(ctx, jseq);
   return 0;
@@ -5240,9 +5281,21 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
     kafs_inode_lock(ctx, (uint32_t)removed_dst_ino);
     kafs_sinode_t *dst = &ctx->c_inotbl[removed_dst_ino];
     kafs_linkcnt_t nl = kafs_ino_linkcnt_decr(dst);
+    int reclaimed_dst = 0;
     if (nl == 0)
+    {
       kafs_ino_dtime_set(dst, kafs_now());
+      (void)kafs_try_reclaim_unlinked_inode_locked(ctx, removed_dst_ino, &reclaimed_dst);
+    }
     kafs_inode_unlock(ctx, (uint32_t)removed_dst_ino);
+
+    if (reclaimed_dst)
+    {
+      kafs_inode_alloc_lock(ctx);
+      (void)kafs_sb_inocnt_free_incr(ctx->c_superblock);
+      kafs_sb_wtime_set(ctx->c_superblock, kafs_now());
+      kafs_inode_alloc_unlock(ctx);
+    }
   }
 
   kafs_journal_commit(ctx, jseq);
@@ -5460,19 +5513,7 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
     if (after == 0)
     {
       kafs_inode_lock(ctx, (uint32_t)ino);
-      kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
-      if (kafs_ino_get_usage(inoent) && kafs_ino_linkcnt_get(inoent) == 0)
-      {
-        (void)kafs_inode_epoch_bump(ctx, (uint32_t)ino);
-        int trc = kafs_truncate(ctx, inoent, 0);
-        if (trc < 0)
-        {
-          kafs_log(KAFS_LOG_WARNING, "%s: truncate failed ino=%" PRIuFAST32 " rc=%d\n",
-                   __func__, (uint32_t)ino, trc);
-        }
-        memset(inoent, 0, sizeof(*inoent));
-        reclaimed = 1;
-      }
+      (void)kafs_try_reclaim_unlinked_inode_locked(ctx, ino, &reclaimed);
       kafs_inode_unlock(ctx, (uint32_t)ino);
 
       if (reclaimed)
