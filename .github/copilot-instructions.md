@@ -16,9 +16,11 @@ This repository uses the MCP Shell Server.
 - Follow GitHub development rules in .github/github-dev-rules.md.
 
 Validation and quality gates:
+- During implementation, proactively avoid introducing code clones; prefer helper extraction/refactoring when similar logic appears.
 - When editing code, build and run tests.
 - Report PASS/FAIL for build/lint/tests with deltas only.
 - If failures occur, iterate up to three targeted fixes, then summarize.
+- For PR creation/update gates, clone/static checks are mandatory: run `./scripts/clones.sh` and static checks (`./scripts/static-checks.sh` or equivalent component checks), then report PASS/FAIL.
 
 Security and safety:
 - No network calls unless required by the task.
