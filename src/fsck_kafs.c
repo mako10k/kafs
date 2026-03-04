@@ -44,7 +44,19 @@ struct hrl_refcheck_stats
   uint64_t invalid_refs;
   uint64_t live_entries;
   uint64_t mismatch_entries;
+  uint64_t hrl_invalid_entries;
 };
+
+typedef enum fsck_mode
+{
+  FSCK_MODE_UNSET = 0,
+  FSCK_MODE_FAST_CHECK,
+  FSCK_MODE_FAST_REPAIR,
+  FSCK_MODE_BALANCED_CHECK,
+  FSCK_MODE_BALANCED_REPAIR,
+  FSCK_MODE_FULL_CHECK,
+  FSCK_MODE_FULL_REPAIR,
+} fsck_mode_t;
 
 static int fsck_decode_data_ref(kafs_blkcnt_t raw, kafs_blkcnt_t *out_blo, int *out_is_pending)
 {
@@ -296,8 +308,13 @@ static int check_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_refcheck_stat
   if ((size_t)r_blkcnt > SIZE_MAX / sizeof(uint32_t))
     return -ENOMEM;
   uint32_t *expected = (uint32_t *)calloc((size_t)r_blkcnt, sizeof(uint32_t));
-  if (!expected)
+  uint32_t *actual = (uint32_t *)calloc((size_t)r_blkcnt, sizeof(uint32_t));
+  if (!expected || !actual)
+  {
+    free(expected);
+    free(actual);
     return -ENOMEM;
+  }
 
   struct hrl_scan_ctx sctx = {ctx, r_blkcnt, l2, blksize, refs_pb, expected, stats};
 
@@ -325,10 +342,11 @@ static int check_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_refcheck_stat
   if (!ents)
   {
     free(expected);
+    free(actual);
     return -EIO;
   }
 
-  uint64_t shown = 0;
+  uint64_t shown_invalid = 0;
   for (uint64_t i = 0; i < ent_cnt; ++i)
   {
     const kafs_hrl_entry_t *ent = &ents[i];
@@ -338,39 +356,50 @@ static int check_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_refcheck_stat
 
     if (ent->blo >= r_blkcnt)
     {
-      stats->mismatch_entries++;
-      if (shown < 20)
+      stats->hrl_invalid_entries++;
+      if (shown_invalid < 20)
       {
         fprintf(stderr, "HRL mismatch: entry=%" PRIu64 " invalid blo=%u refcnt=%u\n", i,
                 ent->blo, ent->refcnt);
-        shown++;
+        shown_invalid++;
       }
       continue;
     }
 
-    uint32_t exp = expected[ent->blo];
-    if (exp != ent->refcnt)
+    actual[ent->blo] += ent->refcnt;
+  }
+
+  uint64_t shown = 0;
+  for (kafs_blkcnt_t blo = 0; blo < r_blkcnt; ++blo)
+  {
+    uint32_t exp = expected[blo];
+    uint32_t act = actual[blo];
+    if (exp != act)
     {
       stats->mismatch_entries++;
       if (shown < 20)
       {
-        fprintf(stderr,
-                "HRL mismatch: entry=%" PRIu64 " blo=%u expected=%u actual=%u\n",
-                i, ent->blo, exp, ent->refcnt);
+        fprintf(stderr, "HRL mismatch: blo=%u expected=%u actual=%u\n", (unsigned)blo, exp,
+                act);
         shown++;
       }
     }
   }
 
   free(expected);
+  free(actual);
   return 0;
 }
 
 static void usage(const char *prog)
 {
   fprintf(stderr,
-          "Usage: %s [--check-journal] [--repair-journal-reset] [--check-dirent-ino-orphans] "
-          "[--repair-dirent-ino-orphans] [--check-hrl-blo-refcounts] <image>\n",
+          "Usage: %s [--full-check|--full-repair|--balanced-check|--balanced-repair|"
+          "--fast-check|--fast-repair] <image>\n"
+          "       %s [--check-journal] [--repair-journal-reset] "
+          "[--check-dirent-ino-orphans] [--repair-dirent-ino-orphans] "
+          "[--check-hrl-blo-refcounts] <image>\n",
+          prog,
           prog);
 }
 
@@ -393,29 +422,70 @@ int main(int argc, char **argv)
   int do_check_dirent_ino_orphans = 0;
   int do_repair_dirent_ino_orphans = 0;
   int do_check_hrl_blo_refcounts = 0;
+  int do_check_journal = 1;
+
+  int has_preset_mode = 0;
+  int has_low_level_mode = 0;
+  fsck_mode_t mode = FSCK_MODE_UNSET;
+
   int exit_code = 0;
   const char *img = NULL;
   for (int i = 1; i < argc; ++i)
   {
-    if (strcmp(argv[i], "--check-journal") == 0)
+    if (strcmp(argv[i], "--full-check") == 0)
+    {
+      has_preset_mode = 1;
+      mode = FSCK_MODE_FULL_CHECK;
+    }
+    else if (strcmp(argv[i], "--full-repair") == 0)
+    {
+      has_preset_mode = 1;
+      mode = FSCK_MODE_FULL_REPAIR;
+    }
+    else if (strcmp(argv[i], "--balanced-check") == 0)
+    {
+      has_preset_mode = 1;
+      mode = FSCK_MODE_BALANCED_CHECK;
+    }
+    else if (strcmp(argv[i], "--balanced-repair") == 0)
+    {
+      has_preset_mode = 1;
+      mode = FSCK_MODE_BALANCED_REPAIR;
+    }
+    else if (strcmp(argv[i], "--fast-check") == 0)
+    {
+      has_preset_mode = 1;
+      mode = FSCK_MODE_FAST_CHECK;
+    }
+    else if (strcmp(argv[i], "--fast-repair") == 0)
+    {
+      has_preset_mode = 1;
+      mode = FSCK_MODE_FAST_REPAIR;
+    }
+    else if (strcmp(argv[i], "--check-journal") == 0)
     {
       // no-op: default behavior is journal validation
+      has_low_level_mode = 1;
     }
     else if (strcmp(argv[i], "--repair-journal-reset") == 0)
     {
       do_journal_reset = 1;
+      has_low_level_mode = 1;
     }
     else if (strcmp(argv[i], "--repair-dirent-ino-orphans") == 0)
     {
       do_repair_dirent_ino_orphans = 1;
+      has_low_level_mode = 1;
     }
     else if (strcmp(argv[i], "--check-dirent-ino-orphans") == 0)
     {
       do_check_dirent_ino_orphans = 1;
+      has_low_level_mode = 1;
     }
     else if (strcmp(argv[i], "--check-hrl-blo-refcounts") == 0)
     {
       do_check_hrl_blo_refcounts = 1;
+      has_low_level_mode = 1;
     }
     else if (argv[i][0] != '-' && !img)
     {
@@ -431,6 +501,56 @@ int main(int argc, char **argv)
   {
     usage(argv[0]);
     return FSCK_EXIT_USAGE;
+  }
+
+  if (has_preset_mode && has_low_level_mode)
+  {
+    fprintf(stderr, "fsck.kafs: preset mode and low-level flags cannot be mixed\n");
+    usage(argv[0]);
+    return FSCK_EXIT_USAGE;
+  }
+
+  if (has_preset_mode)
+  {
+    do_check_journal = 1;
+    do_journal_reset = 0;
+    do_check_dirent_ino_orphans = 0;
+    do_repair_dirent_ino_orphans = 0;
+    do_check_hrl_blo_refcounts = 0;
+
+    switch (mode)
+    {
+    case FSCK_MODE_FAST_CHECK:
+      break;
+    case FSCK_MODE_FAST_REPAIR:
+      do_journal_reset = 1;
+      break;
+    case FSCK_MODE_BALANCED_CHECK:
+      do_check_dirent_ino_orphans = 1;
+      break;
+    case FSCK_MODE_BALANCED_REPAIR:
+      do_journal_reset = 1;
+      do_repair_dirent_ino_orphans = 1;
+      break;
+    case FSCK_MODE_FULL_CHECK:
+      do_check_dirent_ino_orphans = 1;
+      do_check_hrl_blo_refcounts = 1;
+      break;
+    case FSCK_MODE_FULL_REPAIR:
+      do_journal_reset = 1;
+      do_repair_dirent_ino_orphans = 1;
+      do_check_hrl_blo_refcounts = 1;
+      break;
+    case FSCK_MODE_UNSET:
+    default:
+      break;
+    }
+  }
+  else if (!has_low_level_mode)
+  {
+    // default: balanced check
+    do_check_journal = 1;
+    do_check_dirent_ino_orphans = 1;
   }
 
   int want_write = do_journal_reset || do_repair_dirent_ino_orphans;
@@ -582,11 +702,13 @@ int main(int argc, char **argv)
 
       fprintf(stderr,
               "HRL->BLO check summary: inode_refs=%" PRIu64 " pending_refs=%" PRIu64
-              " invalid_refs=%" PRIu64 " live_entries=%" PRIu64 " mismatches=%" PRIu64 "\n",
+              " invalid_refs=%" PRIu64 " live_entries=%" PRIu64 " invalid_entries=%" PRIu64
+              " mismatches=%" PRIu64 "\n",
               hst.inode_refs, hst.pending_refs, hst.invalid_refs, hst.live_entries,
-              hst.mismatch_entries);
+              hst.hrl_invalid_entries, hst.mismatch_entries);
 
-      if (hst.mismatch_entries > 0 || hst.pending_refs > 0 || hst.invalid_refs > 0)
+      if (hst.mismatch_entries > 0 || hst.pending_refs > 0 || hst.invalid_refs > 0 ||
+          hst.hrl_invalid_entries > 0)
       {
         if (exit_code == 0)
           exit_code = FSCK_EXIT_HRL_BLO_INCONSISTENT;
@@ -599,6 +721,12 @@ int main(int argc, char **argv)
       (void)fsync(fd);
     }
     munmap(ctx.c_img_base, ctx.c_img_size);
+  }
+
+  if (!do_check_journal)
+  {
+    close(fd);
+    return exit_code;
   }
 
   uint64_t joff = kafs_sb_journal_offset_get(&sb);

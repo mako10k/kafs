@@ -4,6 +4,15 @@
 fsck.kafs \- check and repair specific KAFS consistency layers
 .SH SYNOPSIS
 .B fsck.kafs
+.RB [ --full-check ]
+.RB [ --full-repair ]
+.RB [ --balanced-check ]
+.RB [ --balanced-repair ]
+.RB [ --fast-check ]
+.RB [ --fast-repair ]
+.I image
+.br
+.B fsck.kafs
 .RB [ --check-journal ]
 .RB [ --repair-journal-reset ]
 .RB [ --check-dirent-ino-orphans ]
@@ -13,11 +22,34 @@ fsck.kafs \- check and repair specific KAFS consistency layers
 .SH DESCRIPTION
 .B fsck.kafs
 validates and optionally repairs selected consistency layers.
-By default it validates the in-image journal (header and record CRCs).
+By default it runs
+.B --balanced-check
+(journal validation + dirent->ino orphan scan).
 .SH OPTIONS
 .TP
+.B --full-check
+Run all available checks:
+journal, dirent->ino orphan scan, and hrl->blo refcount consistency.
+.TP
+.B --full-repair
+Run all available repair actions and checks:
+journal reset (if needed), dirent->ino orphan reclaim,
+then hrl->blo consistency check.
+.TP
+.B --balanced-check
+Check journal and dirent->ino orphan consistency (default).
+.TP
+.B --balanced-repair
+Repair journal (if needed) and dirent->ino orphans.
+.TP
+.B --fast-check
+Fast journal-layer check only.
+.TP
+.B --fast-repair
+Fast journal-layer repair path (journal reset if needed).
+.TP
 .B --check-journal
-Validate the journal layer and exit (default behavior).
+Low-level flag: validate the journal layer.
 .TP
 .B --repair-journal-reset
 When journal validation fails, reset the journal ring safely offline

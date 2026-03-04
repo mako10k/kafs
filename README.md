@@ -76,7 +76,18 @@ Migration options:
 
 ### fsck.kafs
 
-Validate or clear the in-image journal:
+Typical integrated modes:
+
+```sh
+./fsck.kafs --full-check /tmp/kafs.img
+./fsck.kafs --full-repair /tmp/kafs.img
+./fsck.kafs --balanced-check /tmp/kafs.img      # default when no mode is given
+./fsck.kafs --balanced-repair /tmp/kafs.img
+./fsck.kafs --fast-check /tmp/kafs.img
+./fsck.kafs --fast-repair /tmp/kafs.img
+```
+
+Low-level layer options:
 
 ```sh
 ./fsck.kafs --check-journal /tmp/kafs.img

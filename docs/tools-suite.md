@@ -68,6 +68,10 @@
   - `-f` フォアグラウンド、`-o allow_other,ro,...` FUSE オプション。
   - 環境変数: `KAFS_MT`、`KAFS_MAX_THREADS`、`KAFS_JOURNAL_GC_NS`。
 - `fsck.kafs`
+  - 統合モード:
+    - `--full-check` / `--full-repair`
+    - `--balanced-check` / `--balanced-repair`（既定は `--balanced-check`）
+    - `--fast-check` / `--fast-repair`
   - `--check-journal` / `--repair-journal-reset` /
     `--check-dirent-ino-orphans` / `--repair-dirent-ino-orphans` /
     `--check-hrl-blo-refcounts` / `-v` 詳細出力。
