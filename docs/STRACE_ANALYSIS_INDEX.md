@@ -9,8 +9,7 @@ This directory contains comprehensive analysis of KAFS fsck.kafs syscalls with s
 | File | Purpose | Key Content |
 |------|---------|-------------|
 | **STRACE_MINIMAL_REPRODUCTION_FINAL.md** | Main technical report | Complete analysis with code examples, syscall sequences, error scenarios |
-| **STRACE_SYSCALL_SUMMARY.txt** | Detailed syscall breakdown | Formatted strace output, error patterns, search commands |
-| **EIO_SYSCALL_QUICK_REFERENCE.txt** | Quick lookup | One-page reference with commands, patterns, key syscalls |
+| **README_STRACE_ANALYSIS.md** | Summary report | Consolidated findings and quick references |
 | **STRACE_EIO_ANALYSIS.md** | Methodology | How to reproduce, tables, EIO detection markers |
 
 ---

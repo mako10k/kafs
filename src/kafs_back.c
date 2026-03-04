@@ -1,4 +1,5 @@
 #include "kafs_rpc.h"
+#include "kafs_cli_opts.h"
 #ifdef KAFS_BACK_ENABLE_IMAGE
 #include "kafs_core.h"
 #endif
@@ -22,6 +23,53 @@ static void usage(const char *prog)
 #endif
 }
 
+// Handle common mode gate for READ/WRITE RPCs.
+// Returns 1 when plan-only response is fully handled, 0 when caller should continue,
+// and negative errno on validation error.
+static int kafs_back_prepare_rw_mode(uint32_t data_mode, uint32_t req_size, uint32_t *out_size,
+                                     uint32_t *out_resp_len, uint32_t resp_struct_size)
+{
+  if (data_mode == KAFS_RPC_DATA_PLAN_ONLY)
+  {
+    *out_size = req_size;
+    *out_resp_len = resp_struct_size;
+    return 1;
+  }
+
+  if (data_mode != KAFS_RPC_DATA_INLINE)
+    return -EOPNOTSUPP;
+
+  return 0;
+}
+
+static int kafs_back_finalize_rw_result(ssize_t io_len, uint32_t *out_size, uint32_t *out_resp_len,
+                                        uint32_t resp_struct_size, int include_data_bytes)
+{
+  if (io_len < 0)
+    return (int)io_len;
+
+  *out_size = (uint32_t)io_len;
+  *out_resp_len = resp_struct_size;
+  if (include_data_bytes)
+    *out_resp_len += (uint32_t)io_len;
+  return 0;
+}
+
+static int kafs_back_apply_mode_result(int mrc, int *result)
+{
+  if (mrc > 0)
+  {
+    *result = 0;
+    return 1;
+  }
+  if (mrc < 0)
+  {
+    *result = mrc;
+    return 1;
+  }
+  return 0;
+}
+
 int main(int argc, char **argv)
 {
   const char *fd_env = getenv("KAFS_HOTPLUG_BACK_FD");
@@ -34,14 +82,16 @@ int main(int argc, char **argv)
 
   for (int i = 1; i < argc; ++i)
   {
-    if (strcmp(argv[i], "--uds") == 0)
+    int consume_next = 0;
+    int exit_code = -1;
+    int handled = kafs_cli_parse_uds_help(argv[i], (i + 1 < argc) ? argv[i + 1] : NULL, &uds_path,
+                                          &consume_next, &exit_code, usage, argv[0]);
+    if (handled)
     {
-      if (i + 1 >= argc)
-      {
-        usage(argv[0]);
-        return 2;
-      }
-      uds_path = argv[++i];
+      if (exit_code >= 0)
+        return exit_code;
+      if (consume_next)
+        ++i;
       continue;
     }
 #ifdef KAFS_BACK_ENABLE_IMAGE
@@ -56,11 +106,6 @@ int main(int argc, char **argv)
       continue;
     }
 #endif
-    if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
-    {
-      usage(argv[0]);
-      return 0;
-    }
   }
 
 #ifdef KAFS_BACK_ENABLE_IMAGE
@@ -138,9 +183,9 @@ int main(int argc, char **argv)
   {
     fprintf(stderr, "kafs-back: failed to send hello rc=%d\n", rc);
     close(fd);
-  #ifdef KAFS_BACK_ENABLE_IMAGE
+#ifdef KAFS_BACK_ENABLE_IMAGE
     kafs_core_close_image(&ctx);
-  #endif
+#endif
     return 2;
   }
 
@@ -170,8 +215,8 @@ int main(int argc, char **argv)
   uint64_t session_id = hdr.session_id;
   uint32_t epoch = hdr.epoch;
   uint64_t ready_req_id = kafs_rpc_next_req_id();
-  rc = kafs_rpc_send_msg(fd, KAFS_RPC_OP_READY, KAFS_RPC_FLAG_ENDIAN_HOST, ready_req_id,
-                         session_id, epoch, NULL, 0);
+  rc = kafs_rpc_send_msg(fd, KAFS_RPC_OP_READY, KAFS_RPC_FLAG_ENDIAN_HOST, ready_req_id, session_id,
+                         epoch, NULL, 0);
   if (rc != 0)
   {
     fprintf(stderr, "kafs-back: failed to send ready rc=%d\n", rc);
@@ -233,35 +278,21 @@ int main(int argc, char **argv)
       {
         kafs_rpc_read_req_t *req = (kafs_rpc_read_req_t *)payload;
         kafs_rpc_read_resp_t *resp = (kafs_rpc_read_resp_t *)resp_buf;
-        if (req->data_mode == KAFS_RPC_DATA_PLAN_ONLY)
+        int mrc = kafs_back_prepare_rw_mode(req->data_mode, req->size, &resp->size, &resp_len,
+                                            (uint32_t)sizeof(*resp));
+        if (kafs_back_apply_mode_result(mrc, &result))
         {
-          resp->size = req->size;
-          resp_len = (uint32_t)sizeof(*resp);
-          result = 0;
           break;
         }
 #ifdef KAFS_BACK_ENABLE_IMAGE
-        if (req->data_mode != KAFS_RPC_DATA_INLINE)
-        {
-          result = -EOPNOTSUPP;
-          break;
-        }
         size_t max_data = KAFS_RPC_MAX_PAYLOAD - sizeof(kafs_rpc_read_resp_t);
         size_t want = req->size;
         if (want > max_data)
           want = max_data;
-        ssize_t rlen = kafs_core_read(&ctx, (kafs_inocnt_t)req->ino,
-                                      resp_buf + sizeof(*resp), want, (off_t)req->off);
-        if (rlen >= 0)
-        {
-          resp->size = (uint32_t)rlen;
-          resp_len = (uint32_t)sizeof(*resp) + (uint32_t)rlen;
-          result = 0;
-        }
-        else
-        {
-          result = (int)rlen;
-        }
+        ssize_t rlen = kafs_core_read(&ctx, (kafs_inocnt_t)req->ino, resp_buf + sizeof(*resp), want,
+                                      (off_t)req->off);
+        result =
+            kafs_back_finalize_rw_result(rlen, &resp->size, &resp_len, (uint32_t)sizeof(*resp), 1);
 #else
         (void)resp;
         result = -EOPNOTSUPP;
@@ -279,36 +310,22 @@ int main(int argc, char **argv)
         kafs_rpc_write_req_t *req = (kafs_rpc_write_req_t *)payload;
         uint32_t data_len = req_len - (uint32_t)sizeof(*req);
         kafs_rpc_write_resp_t *resp = (kafs_rpc_write_resp_t *)resp_buf;
-        if (req->data_mode == KAFS_RPC_DATA_PLAN_ONLY)
+        int mrc = kafs_back_prepare_rw_mode(req->data_mode, req->size, &resp->size, &resp_len,
+                                            (uint32_t)sizeof(*resp));
+        if (kafs_back_apply_mode_result(mrc, &result))
         {
-          resp->size = req->size;
-          resp_len = (uint32_t)sizeof(*resp);
-          result = 0;
           break;
         }
 #ifdef KAFS_BACK_ENABLE_IMAGE
-        if (req->data_mode != KAFS_RPC_DATA_INLINE)
-        {
-          result = -EOPNOTSUPP;
-          break;
-        }
         if (req->size > data_len)
         {
           result = -EBADMSG;
           break;
         }
-        ssize_t wlen = kafs_core_write(&ctx, (kafs_inocnt_t)req->ino,
-                                       payload + sizeof(*req), req->size, (off_t)req->off);
-        if (wlen >= 0)
-        {
-          resp->size = (uint32_t)wlen;
-          resp_len = (uint32_t)sizeof(*resp);
-          result = 0;
-        }
-        else
-        {
-          result = (int)wlen;
-        }
+        ssize_t wlen = kafs_core_write(&ctx, (kafs_inocnt_t)req->ino, payload + sizeof(*req),
+                                       req->size, (off_t)req->off);
+        result =
+            kafs_back_finalize_rw_result(wlen, &resp->size, &resp_len, (uint32_t)sizeof(*resp), 0);
 #else
         (void)resp;
         (void)data_len;

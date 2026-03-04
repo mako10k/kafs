@@ -37,7 +37,8 @@
   - `fsck.kafs`
     - スーパーブロック・ビットマップ・inode・HRL の一貫性チェック。
     - ジャーナル CRC 検証と「既定の安全なリプレイ（再適用）」とクリーンアップ。
-    - モード: `--check-only` / `--auto-repair` / `--journal-only`。
+    - モード: `--check-journal` / `--repair-journal-reset` / `--check-dirent-ino-orphans` /
+      `--repair-dirent-ino-orphans` / `--check-hrl-blo-refcounts`。
 - ジャーナル操作
   - `kafs-journalctl`
     - ジャーナルの列挙・フィルタ（op/time/seq）・簡易集計。
@@ -67,7 +68,14 @@
   - `-f` フォアグラウンド、`-o allow_other,ro,...` FUSE オプション。
   - 環境変数: `KAFS_MT`、`KAFS_MAX_THREADS`、`KAFS_JOURNAL_GC_NS`。
 - `fsck.kafs`
-  - `--check-only` / `--auto-repair` / `--journal-only` / `-v` 詳細出力。
+  - 統合モード:
+    - `--full-check` / `--full-repair`
+    - `--balanced-check` / `--balanced-repair`（既定は `--balanced-check`）
+    - `--fast-check` / `--fast-repair`
+  - `--check-journal` / `--repair-journal-reset` /
+    `--check-dirent-ino-orphans` / `--repair-dirent-ino-orphans` /
+    `--check-hrl-blo-refcounts` / `--replay-journal` /
+    `--punch-hole-unreferenced-data-blocks` / `-v` 詳細出力。
 - `kafs-journalctl`
   - `--list`、`--op <name>`、`--seq <a>[:<b>]`、`--since <ts>`、`--until <ts>`、`--stats`。
 - `kafs-journal-clear`
@@ -87,7 +95,7 @@
 
 - ジャーナル
   - 画像内リング（v2）を標準。COMMIT 時のみ耐久化、グループコミット窓でバッチ。
-  - マウント時: 既定はスキャン/クリーン。`fsck.kafs --journal-only` で再適用実施。
+  - マウント時: 既定はスキャン/クリーン。`fsck.kafs --check-journal` でジャーナル検証。
 - 安全モード
   - `ro` マウント時はジャーナル書き込み禁止、リプレイは read-only で可能な範囲のみ。
 - 可観測性
@@ -100,7 +108,7 @@
   2) `fsck.kafs` 雛形（ジャーナル CRC 検証 + クリーン + オプション）
   3) `kafs-journalctl --list/--stats` の最小機能（読み取りのみ）
 - フェーズ B（検査/再適用の完成）
-  4) `fsck.kafs --auto-repair`（安全な再適用と簡易整合性修復）
+  4) `fsck.kafs --repair-journal-reset` / `--repair-dirent-ino-orphans` の拡張
   5) 画像オフラインでの `kafs-journal-clear` 実装
 - フェーズ C（可視化と保守）
   6) `kafs-inspect` 基本ビュー（SB/bitmap/inode/HRL 概要）

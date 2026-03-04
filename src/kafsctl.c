@@ -74,14 +74,14 @@ static void usage(const char *prog)
           "Usage:\n"
           "  %s migrate <image> [--yes]\n"
           "  %s fsstat <mountpoint> [--json] [--bytes|--mib|--gib]   (alias: stats)\n"
-      "  %s hotplug status <mountpoint> [--json]\n"
-      "  %s hotplug restart-back <mountpoint>\n"
-      "  %s hotplug compat <mountpoint> [--json]\n"
-      "  %s hotplug set-timeout <mountpoint> <ms>\n"
-      "  %s hotplug set-dedup-priority <mountpoint> <normal|idle> [nice(0..19)]\n"
-      "  %s hotplug env list <mountpoint>\n"
-      "  %s hotplug env set <mountpoint> <key>=<value>\n"
-      "  %s hotplug env unset <mountpoint> <key>\n"
+          "  %s hotplug status <mountpoint> [--json]\n"
+          "  %s hotplug restart-back <mountpoint>\n"
+          "  %s hotplug compat <mountpoint> [--json]\n"
+          "  %s hotplug set-timeout <mountpoint> <ms>\n"
+          "  %s hotplug set-dedup-priority <mountpoint> <normal|idle> [nice(0..19)]\n"
+          "  %s hotplug env list <mountpoint>\n"
+          "  %s hotplug env set <mountpoint> <key>=<value>\n"
+          "  %s hotplug env unset <mountpoint> <key>\n"
           "  %s stat <mountpoint> <path>\n"
           "  %s cat <mountpoint> <path>\n"
           "  %s write <mountpoint> <path>   (stdin -> file, trunc)\n"
@@ -95,8 +95,8 @@ static void usage(const char *prog)
           "  %s readlink <mountpoint> <path>\n"
           "  %s chmod <mountpoint> <octal_mode> <path>\n"
           "  %s touch <mountpoint> <path>\n",
-          prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog,
-          prog, prog, prog, prog, prog, prog, prog, prog, prog);
+          prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog,
+          prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 static int confirm_yes_stdin(void)
@@ -183,8 +183,7 @@ static int cmd_migrate(const char *image, int assume_yes)
   }
 
   close(fd);
-  fprintf(stderr, "migration completed: v2 -> v%u (%s)\n", (unsigned)KAFS_FORMAT_VERSION,
-          image);
+  fprintf(stderr, "migration completed: v2 -> v%u (%s)\n", (unsigned)KAFS_FORMAT_VERSION, image);
   return 0;
 }
 
@@ -302,9 +301,9 @@ static uint64_t next_req_id(void)
   return __atomic_add_fetch(&rid, 1u, __ATOMIC_RELAXED);
 }
 
-static int hotplug_ctl_exchange(const char *mnt, uint16_t op, const void *req,
-                                uint32_t req_len, void *resp, uint32_t resp_cap,
-                                uint32_t *resp_len, int32_t *resp_result)
+static int hotplug_ctl_exchange(const char *mnt, uint16_t op, const void *req, uint32_t req_len,
+                                void *resp, uint32_t resp_cap, uint32_t *resp_len,
+                                int32_t *resp_result)
 {
   if (req_len > KAFS_RPC_MAX_PAYLOAD)
     return -EMSGSIZE;
@@ -391,8 +390,7 @@ static int hotplug_ctl_exchange(const char *mnt, uint16_t op, const void *req,
   return 0;
 }
 
-static void hotplug_status_from_rpc(kafs_hotplug_status_t *out,
-                                    const kafs_rpc_hotplug_status_t *in)
+static void hotplug_status_from_rpc(kafs_hotplug_status_t *out, const kafs_rpc_hotplug_status_t *in)
 {
   memset(out, 0, sizeof(*out));
   out->struct_size = (uint32_t)sizeof(*out);
@@ -425,8 +423,8 @@ static int get_hotplug_status(const char *mnt, kafs_hotplug_status_t *out)
   kafs_rpc_hotplug_status_t st;
   uint32_t resp_len = 0;
   int32_t resp_result = 0;
-  int rc = hotplug_ctl_exchange(mnt, KAFS_RPC_OP_CTL_STATUS, NULL, 0, &st, sizeof(st),
-                                &resp_len, &resp_result);
+  int rc = hotplug_ctl_exchange(mnt, KAFS_RPC_OP_CTL_STATUS, NULL, 0, &st, sizeof(st), &resp_len,
+                                &resp_result);
   if (rc != 0)
     return rc;
   if (resp_result != 0)
@@ -470,12 +468,12 @@ static int cmd_hotplug_status(const char *mnt, int json)
     printf("  \"compat_result\": %u,\n", st.compat_result);
     printf("  \"compat_result_str\": \"%s\",\n", hotplug_compat_str(st.compat_result));
     printf("  \"compat_reason\": %d,\n", st.compat_reason);
-        printf("  \"compat_reason_str\": \"%s\",\n", hotplug_compat_reason_str(st.compat_reason));
-        printf("  \"pending_worker_prio_mode\": %u,\n", st.pending_worker_prio_mode);
-        printf("  \"pending_worker_prio_mode_str\": \"%s\",\n",
-          pending_worker_prio_mode_str(st.pending_worker_prio_mode));
-        printf("  \"pending_worker_nice\": %d,\n", st.pending_worker_nice);
-        printf("  \"pending_worker_prio_apply_error\": %d\n", st.pending_worker_prio_apply_error);
+    printf("  \"compat_reason_str\": \"%s\",\n", hotplug_compat_reason_str(st.compat_reason));
+    printf("  \"pending_worker_prio_mode\": %u,\n", st.pending_worker_prio_mode);
+    printf("  \"pending_worker_prio_mode_str\": \"%s\",\n",
+           pending_worker_prio_mode_str(st.pending_worker_prio_mode));
+    printf("  \"pending_worker_nice\": %d,\n", st.pending_worker_nice);
+    printf("  \"pending_worker_prio_apply_error\": %d\n", st.pending_worker_prio_apply_error);
     printf("}\n");
     return 0;
   }
@@ -496,10 +494,10 @@ static int cmd_hotplug_status(const char *mnt, int json)
   printf("  compat_result: %u (%s)\n", st.compat_result, hotplug_compat_str(st.compat_result));
   printf("  compat_reason: %d (%s)\n", st.compat_reason,
          hotplug_compat_reason_str(st.compat_reason));
-    printf("  pending_worker_prio_mode: %u (%s)\n", st.pending_worker_prio_mode,
-      pending_worker_prio_mode_str(st.pending_worker_prio_mode));
-    printf("  pending_worker_nice: %d\n", st.pending_worker_nice);
-    printf("  pending_worker_prio_apply_error: %d\n", st.pending_worker_prio_apply_error);
+  printf("  pending_worker_prio_mode: %u (%s)\n", st.pending_worker_prio_mode,
+         pending_worker_prio_mode_str(st.pending_worker_prio_mode));
+  printf("  pending_worker_nice: %d\n", st.pending_worker_nice);
+  printf("  pending_worker_prio_apply_error: %d\n", st.pending_worker_prio_apply_error);
   return 0;
 }
 
@@ -507,8 +505,8 @@ static int cmd_hotplug_restart(const char *mnt)
 {
   uint32_t resp_len = 0;
   int32_t resp_result = 0;
-  int rc = hotplug_ctl_exchange(mnt, KAFS_RPC_OP_CTL_RESTART, NULL, 0, NULL, 0, &resp_len,
-                                &resp_result);
+  int rc =
+      hotplug_ctl_exchange(mnt, KAFS_RPC_OP_CTL_RESTART, NULL, 0, NULL, 0, &resp_len, &resp_result);
   if (rc != 0)
   {
     fprintf(stderr, "hotplug restart failed: %s\n", strerror(-rc));
@@ -694,8 +692,8 @@ static int cmd_hotplug_env_set(const char *mnt, const char *kv)
   snprintf(req.value, sizeof(req.value), "%s", eq + 1);
   uint32_t resp_len = 0;
   int32_t resp_result = 0;
-  int rc = hotplug_ctl_exchange(mnt, KAFS_RPC_OP_CTL_ENV_SET, &req, sizeof(req), NULL, 0,
-                                &resp_len, &resp_result);
+  int rc = hotplug_ctl_exchange(mnt, KAFS_RPC_OP_CTL_ENV_SET, &req, sizeof(req), NULL, 0, &resp_len,
+                                &resp_result);
   if (rc != 0)
   {
     fprintf(stderr, "hotplug env set failed: %s\n", strerror(-rc));
@@ -847,49 +845,46 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
   double hrl_put_avg_cmp_calls =
       (st.hrl_put_calls > 0) ? (double)st.hrl_put_cmp_calls / (double)st.hrl_put_calls : 0.0;
 
-    double lock_inode_cont_rate =
-      (st.lock_inode_acquire > 0)
-        ? (double)st.lock_inode_contended / (double)st.lock_inode_acquire
-        : 0.0;
-    double lock_inode_wait_ms = (double)st.lock_inode_wait_ns / 1000000.0;
-    double lock_inode_alloc_cont_rate =
+  double lock_inode_cont_rate =
+      (st.lock_inode_acquire > 0) ? (double)st.lock_inode_contended / (double)st.lock_inode_acquire
+                                  : 0.0;
+  double lock_inode_wait_ms = (double)st.lock_inode_wait_ns / 1000000.0;
+  double lock_inode_alloc_cont_rate =
       (st.lock_inode_alloc_acquire > 0)
-        ? (double)st.lock_inode_alloc_contended / (double)st.lock_inode_alloc_acquire
-        : 0.0;
-    double lock_inode_alloc_wait_ms = (double)st.lock_inode_alloc_wait_ns / 1000000.0;
-    double lock_bitmap_cont_rate =
-      (st.lock_bitmap_acquire > 0)
-        ? (double)st.lock_bitmap_contended / (double)st.lock_bitmap_acquire
-        : 0.0;
-    double lock_bitmap_wait_ms = (double)st.lock_bitmap_wait_ns / 1000000.0;
-    double lock_hrl_bucket_cont_rate =
+          ? (double)st.lock_inode_alloc_contended / (double)st.lock_inode_alloc_acquire
+          : 0.0;
+  double lock_inode_alloc_wait_ms = (double)st.lock_inode_alloc_wait_ns / 1000000.0;
+  double lock_bitmap_cont_rate = (st.lock_bitmap_acquire > 0) ? (double)st.lock_bitmap_contended /
+                                                                    (double)st.lock_bitmap_acquire
+                                                              : 0.0;
+  double lock_bitmap_wait_ms = (double)st.lock_bitmap_wait_ns / 1000000.0;
+  double lock_hrl_bucket_cont_rate =
       (st.lock_hrl_bucket_acquire > 0)
-        ? (double)st.lock_hrl_bucket_contended / (double)st.lock_hrl_bucket_acquire
-        : 0.0;
-    double lock_hrl_bucket_wait_ms = (double)st.lock_hrl_bucket_wait_ns / 1000000.0;
-    double lock_hrl_global_cont_rate =
+          ? (double)st.lock_hrl_bucket_contended / (double)st.lock_hrl_bucket_acquire
+          : 0.0;
+  double lock_hrl_bucket_wait_ms = (double)st.lock_hrl_bucket_wait_ns / 1000000.0;
+  double lock_hrl_global_cont_rate =
       (st.lock_hrl_global_acquire > 0)
-        ? (double)st.lock_hrl_global_contended / (double)st.lock_hrl_global_acquire
-        : 0.0;
-    double lock_hrl_global_wait_ms = (double)st.lock_hrl_global_wait_ns / 1000000.0;
-    double pwrite_iblk_read_ms = (double)st.pwrite_ns_iblk_read / 1000000.0;
-    double pwrite_iblk_write_ms = (double)st.pwrite_ns_iblk_write / 1000000.0;
-    double pwrite_iblk_write_p50_ms = (double)st.pwrite_iblk_write_p50_ns / 1000000.0;
-    double pwrite_iblk_write_p95_ms = (double)st.pwrite_iblk_write_p95_ns / 1000000.0;
-    double pwrite_iblk_write_p99_ms = (double)st.pwrite_iblk_write_p99_ns / 1000000.0;
-    double iblk_write_hrl_put_ms = (double)st.iblk_write_ns_hrl_put / 1000000.0;
-    double iblk_write_legacy_blk_write_ms = (double)st.iblk_write_ns_legacy_blk_write / 1000000.0;
-    double iblk_write_dec_ref_ms = (double)st.iblk_write_ns_dec_ref / 1000000.0;
-    double blk_alloc_scan_ms = (double)st.blk_alloc_ns_scan / 1000000.0;
-    double blk_alloc_claim_ms = (double)st.blk_alloc_ns_claim / 1000000.0;
-    double blk_alloc_set_usage_ms = (double)st.blk_alloc_ns_set_usage / 1000000.0;
-    double blk_alloc_retry_rate =
-      (st.blk_alloc_calls > 0)
-        ? (double)st.blk_alloc_claim_retries / (double)st.blk_alloc_calls
-        : 0.0;
-    double blk_set_usage_bit_ms = (double)st.blk_set_usage_ns_bit_update / 1000000.0;
-    double blk_set_usage_freecnt_ms = (double)st.blk_set_usage_ns_freecnt_update / 1000000.0;
-    double blk_set_usage_wtime_ms = (double)st.blk_set_usage_ns_wtime_update / 1000000.0;
+          ? (double)st.lock_hrl_global_contended / (double)st.lock_hrl_global_acquire
+          : 0.0;
+  double lock_hrl_global_wait_ms = (double)st.lock_hrl_global_wait_ns / 1000000.0;
+  double pwrite_iblk_read_ms = (double)st.pwrite_ns_iblk_read / 1000000.0;
+  double pwrite_iblk_write_ms = (double)st.pwrite_ns_iblk_write / 1000000.0;
+  double pwrite_iblk_write_p50_ms = (double)st.pwrite_iblk_write_p50_ns / 1000000.0;
+  double pwrite_iblk_write_p95_ms = (double)st.pwrite_iblk_write_p95_ns / 1000000.0;
+  double pwrite_iblk_write_p99_ms = (double)st.pwrite_iblk_write_p99_ns / 1000000.0;
+  double iblk_write_hrl_put_ms = (double)st.iblk_write_ns_hrl_put / 1000000.0;
+  double iblk_write_legacy_blk_write_ms = (double)st.iblk_write_ns_legacy_blk_write / 1000000.0;
+  double iblk_write_dec_ref_ms = (double)st.iblk_write_ns_dec_ref / 1000000.0;
+  double blk_alloc_scan_ms = (double)st.blk_alloc_ns_scan / 1000000.0;
+  double blk_alloc_claim_ms = (double)st.blk_alloc_ns_claim / 1000000.0;
+  double blk_alloc_set_usage_ms = (double)st.blk_alloc_ns_set_usage / 1000000.0;
+  double blk_alloc_retry_rate =
+      (st.blk_alloc_calls > 0) ? (double)st.blk_alloc_claim_retries / (double)st.blk_alloc_calls
+                               : 0.0;
+  double blk_set_usage_bit_ms = (double)st.blk_set_usage_ns_bit_update / 1000000.0;
+  double blk_set_usage_freecnt_ms = (double)st.blk_set_usage_ns_freecnt_update / 1000000.0;
+  double blk_set_usage_wtime_ms = (double)st.blk_set_usage_ns_wtime_update / 1000000.0;
 
   if (json)
   {
@@ -958,15 +953,15 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
     printf("  \"pwrite_bytes\": %" PRIu64 ",\n", st.pwrite_bytes);
     printf("  \"pwrite_ns_iblk_read\": %" PRIu64 ",\n", st.pwrite_ns_iblk_read);
     printf("  \"pwrite_ns_iblk_write\": %" PRIu64 ",\n", st.pwrite_ns_iblk_write);
-        printf("  \"pwrite_iblk_write_sample_count\": %" PRIu64 ",\n",
-          st.pwrite_iblk_write_sample_count);
-        printf("  \"pwrite_iblk_write_sample_cap\": %" PRIu64 ",\n",
-          st.pwrite_iblk_write_sample_cap);
-        printf("  \"pwrite_iblk_write_p50_ns\": %" PRIu64 ",\n", st.pwrite_iblk_write_p50_ns);
-        printf("  \"pwrite_iblk_write_p95_ns\": %" PRIu64 ",\n", st.pwrite_iblk_write_p95_ns);
-        printf("  \"pwrite_iblk_write_p99_ns\": %" PRIu64 ",\n", st.pwrite_iblk_write_p99_ns);
+    printf("  \"pwrite_iblk_write_sample_count\": %" PRIu64 ",\n",
+           st.pwrite_iblk_write_sample_count);
+    printf("  \"pwrite_iblk_write_sample_cap\": %" PRIu64 ",\n", st.pwrite_iblk_write_sample_cap);
+    printf("  \"pwrite_iblk_write_p50_ns\": %" PRIu64 ",\n", st.pwrite_iblk_write_p50_ns);
+    printf("  \"pwrite_iblk_write_p95_ns\": %" PRIu64 ",\n", st.pwrite_iblk_write_p95_ns);
+    printf("  \"pwrite_iblk_write_p99_ns\": %" PRIu64 ",\n", st.pwrite_iblk_write_p99_ns);
     printf("  \"iblk_write_ns_hrl_put\": %" PRIu64 ",\n", st.iblk_write_ns_hrl_put);
-    printf("  \"iblk_write_ns_legacy_blk_write\": %" PRIu64 ",\n", st.iblk_write_ns_legacy_blk_write);
+    printf("  \"iblk_write_ns_legacy_blk_write\": %" PRIu64 ",\n",
+           st.iblk_write_ns_legacy_blk_write);
     printf("  \"iblk_write_ns_dec_ref\": %" PRIu64 ",\n", st.iblk_write_ns_dec_ref);
     printf("  \"blk_alloc_calls\": %" PRIu64 ",\n", st.blk_alloc_calls);
     printf("  \"blk_alloc_claim_retries\": %" PRIu64 ",\n", st.blk_alloc_claim_retries);
@@ -977,7 +972,8 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
     printf("  \"blk_set_usage_alloc_calls\": %" PRIu64 ",\n", st.blk_set_usage_alloc_calls);
     printf("  \"blk_set_usage_free_calls\": %" PRIu64 ",\n", st.blk_set_usage_free_calls);
     printf("  \"blk_set_usage_ns_bit_update\": %" PRIu64 ",\n", st.blk_set_usage_ns_bit_update);
-    printf("  \"blk_set_usage_ns_freecnt_update\": %" PRIu64 ",\n", st.blk_set_usage_ns_freecnt_update);
+    printf("  \"blk_set_usage_ns_freecnt_update\": %" PRIu64 ",\n",
+           st.blk_set_usage_ns_freecnt_update);
     printf("  \"blk_set_usage_ns_wtime_update\": %" PRIu64 ",\n", st.blk_set_usage_ns_wtime_update);
     printf("  \"pwrite_iblk_read_ms\": %.3f,\n", pwrite_iblk_read_ms);
     printf("  \"pwrite_iblk_write_ms\": %.3f,\n", pwrite_iblk_write_ms);
@@ -1025,46 +1021,41 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
          " hit_rate=%.3f\n",
          st.hrl_put_calls, st.hrl_put_hits, st.hrl_put_misses, st.hrl_put_fallback_legacy,
          hit_rate);
-    printf("  hrl_put_decomp: hash_ms=%.3f find_ms=%.3f cmp_ms=%.3f slot_alloc_ms=%.3f "
-      "blk_alloc_ms=%.3f blk_write_ms=%.3f avg_chain_steps=%.3f avg_cmp_calls=%.3f\n",
-      hrl_put_hash_ms, hrl_put_find_ms, hrl_put_cmp_ms, hrl_put_slot_alloc_ms,
-      hrl_put_blk_alloc_ms, hrl_put_blk_write_ms, hrl_put_avg_chain_steps,
-      hrl_put_avg_cmp_calls);
-    printf("  lock[inode]: acquire=%" PRIu64 " contended=%" PRIu64
-      " rate=%.3f wait_ms=%.3f\n",
-      st.lock_inode_acquire, st.lock_inode_contended, lock_inode_cont_rate, lock_inode_wait_ms);
-    printf("  lock[inode_alloc]: acquire=%" PRIu64 " contended=%" PRIu64
-      " rate=%.3f wait_ms=%.3f\n",
-      st.lock_inode_alloc_acquire, st.lock_inode_alloc_contended, lock_inode_alloc_cont_rate,
-      lock_inode_alloc_wait_ms);
-    printf("  lock[bitmap]: acquire=%" PRIu64 " contended=%" PRIu64
-      " rate=%.3f wait_ms=%.3f\n",
-      st.lock_bitmap_acquire, st.lock_bitmap_contended, lock_bitmap_cont_rate,
-      lock_bitmap_wait_ms);
-    printf("  lock[hrl_bucket]: acquire=%" PRIu64 " contended=%" PRIu64
-      " rate=%.3f wait_ms=%.3f\n",
-      st.lock_hrl_bucket_acquire, st.lock_hrl_bucket_contended, lock_hrl_bucket_cont_rate,
-      lock_hrl_bucket_wait_ms);
-    printf("  lock[hrl_global]: acquire=%" PRIu64 " contended=%" PRIu64
-      " rate=%.3f wait_ms=%.3f\n",
-      st.lock_hrl_global_acquire, st.lock_hrl_global_contended, lock_hrl_global_cont_rate,
-      lock_hrl_global_wait_ms);
-    printf("  pwrite: calls=%" PRIu64 " bytes=%" PRIu64 " iblk_read_ms=%.3f iblk_write_ms=%.3f\n",
-      st.pwrite_calls, st.pwrite_bytes, pwrite_iblk_read_ms, pwrite_iblk_write_ms);
-    printf("          iblk_write_lat: samples=%" PRIu64 "/%" PRIu64
-      " p50_ms=%.3f p95_ms=%.3f p99_ms=%.3f\n",
-      st.pwrite_iblk_write_sample_count, st.pwrite_iblk_write_sample_cap,
-      pwrite_iblk_write_p50_ms, pwrite_iblk_write_p95_ms, pwrite_iblk_write_p99_ms);
-    printf("  iblk_write: hrl_put_ms=%.3f legacy_blk_write_ms=%.3f dec_ref_ms=%.3f\n",
-      iblk_write_hrl_put_ms, iblk_write_legacy_blk_write_ms, iblk_write_dec_ref_ms);
-    printf("  blk_alloc: calls=%" PRIu64 " retries=%" PRIu64 " retry_rate=%.3f scan_ms=%.3f "
-      "claim_ms=%.3f set_usage_ms=%.3f\n",
-      st.blk_alloc_calls, st.blk_alloc_claim_retries, blk_alloc_retry_rate, blk_alloc_scan_ms,
-      blk_alloc_claim_ms, blk_alloc_set_usage_ms);
-    printf("  blk_set_usage: calls=%" PRIu64 " alloc_calls=%" PRIu64 " free_calls=%" PRIu64
-      " bit_ms=%.3f freecnt_ms=%.3f wtime_ms=%.3f\n",
-      st.blk_set_usage_calls, st.blk_set_usage_alloc_calls, st.blk_set_usage_free_calls,
-      blk_set_usage_bit_ms, blk_set_usage_freecnt_ms, blk_set_usage_wtime_ms);
+  printf("  hrl_put_decomp: hash_ms=%.3f find_ms=%.3f cmp_ms=%.3f slot_alloc_ms=%.3f "
+         "blk_alloc_ms=%.3f blk_write_ms=%.3f avg_chain_steps=%.3f avg_cmp_calls=%.3f\n",
+         hrl_put_hash_ms, hrl_put_find_ms, hrl_put_cmp_ms, hrl_put_slot_alloc_ms,
+         hrl_put_blk_alloc_ms, hrl_put_blk_write_ms, hrl_put_avg_chain_steps,
+         hrl_put_avg_cmp_calls);
+  printf("  lock[inode]: acquire=%" PRIu64 " contended=%" PRIu64 " rate=%.3f wait_ms=%.3f\n",
+         st.lock_inode_acquire, st.lock_inode_contended, lock_inode_cont_rate, lock_inode_wait_ms);
+  printf("  lock[inode_alloc]: acquire=%" PRIu64 " contended=%" PRIu64 " rate=%.3f wait_ms=%.3f\n",
+         st.lock_inode_alloc_acquire, st.lock_inode_alloc_contended, lock_inode_alloc_cont_rate,
+         lock_inode_alloc_wait_ms);
+  printf("  lock[bitmap]: acquire=%" PRIu64 " contended=%" PRIu64 " rate=%.3f wait_ms=%.3f\n",
+         st.lock_bitmap_acquire, st.lock_bitmap_contended, lock_bitmap_cont_rate,
+         lock_bitmap_wait_ms);
+  printf("  lock[hrl_bucket]: acquire=%" PRIu64 " contended=%" PRIu64 " rate=%.3f wait_ms=%.3f\n",
+         st.lock_hrl_bucket_acquire, st.lock_hrl_bucket_contended, lock_hrl_bucket_cont_rate,
+         lock_hrl_bucket_wait_ms);
+  printf("  lock[hrl_global]: acquire=%" PRIu64 " contended=%" PRIu64 " rate=%.3f wait_ms=%.3f\n",
+         st.lock_hrl_global_acquire, st.lock_hrl_global_contended, lock_hrl_global_cont_rate,
+         lock_hrl_global_wait_ms);
+  printf("  pwrite: calls=%" PRIu64 " bytes=%" PRIu64 " iblk_read_ms=%.3f iblk_write_ms=%.3f\n",
+         st.pwrite_calls, st.pwrite_bytes, pwrite_iblk_read_ms, pwrite_iblk_write_ms);
+  printf("          iblk_write_lat: samples=%" PRIu64 "/%" PRIu64
+         " p50_ms=%.3f p95_ms=%.3f p99_ms=%.3f\n",
+         st.pwrite_iblk_write_sample_count, st.pwrite_iblk_write_sample_cap,
+         pwrite_iblk_write_p50_ms, pwrite_iblk_write_p95_ms, pwrite_iblk_write_p99_ms);
+  printf("  iblk_write: hrl_put_ms=%.3f legacy_blk_write_ms=%.3f dec_ref_ms=%.3f\n",
+         iblk_write_hrl_put_ms, iblk_write_legacy_blk_write_ms, iblk_write_dec_ref_ms);
+  printf("  blk_alloc: calls=%" PRIu64 " retries=%" PRIu64 " retry_rate=%.3f scan_ms=%.3f "
+         "claim_ms=%.3f set_usage_ms=%.3f\n",
+         st.blk_alloc_calls, st.blk_alloc_claim_retries, blk_alloc_retry_rate, blk_alloc_scan_ms,
+         blk_alloc_claim_ms, blk_alloc_set_usage_ms);
+  printf("  blk_set_usage: calls=%" PRIu64 " alloc_calls=%" PRIu64 " free_calls=%" PRIu64
+         " bit_ms=%.3f freecnt_ms=%.3f wtime_ms=%.3f\n",
+         st.blk_set_usage_calls, st.blk_set_usage_alloc_calls, st.blk_set_usage_free_calls,
+         blk_set_usage_bit_ms, blk_set_usage_freecnt_ms, blk_set_usage_wtime_ms);
   return 0;
 }
 

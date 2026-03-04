@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <sys/ioctl.h>
+#include "kafs_hotplug.h"
 
 // Userspace -> KAFS (FUSE ioctl)
 // Note: FUSE may truncate the ioctl request to 32 bits.
@@ -108,50 +109,4 @@ typedef struct kafs_ioctl_copy kafs_ioctl_copy_t;
 #define KAFS_IOCTL_COPY_F_REFLINK 1u
 #define KAFS_IOCTL_COPY _IOW(KAFS_IOCTL_MAGIC, 2, struct kafs_ioctl_copy)
 
-// Hotplug status (kafsctl)
-#define KAFS_HOTPLUG_STATUS_VERSION 4u
-
-enum
-{
-  KAFS_HOTPLUG_STATE_DISABLED = 0,
-  KAFS_HOTPLUG_STATE_WAITING = 1,
-  KAFS_HOTPLUG_STATE_CONNECTED = 2,
-  KAFS_HOTPLUG_STATE_ERROR = 3
-};
-
-enum
-{
-  KAFS_HOTPLUG_COMPAT_UNKNOWN = 0,
-  KAFS_HOTPLUG_COMPAT_OK = 1,
-  KAFS_HOTPLUG_COMPAT_WARN = 2,
-  KAFS_HOTPLUG_COMPAT_REJECT = 3
-};
-
-struct kafs_hotplug_status
-{
-  uint32_t struct_size;
-  uint32_t version;
-  uint32_t state;
-  uint32_t data_mode;
-  uint64_t session_id;
-  uint32_t epoch;
-  int32_t last_error;
-  uint32_t wait_queue_len;
-  uint32_t wait_timeout_ms;
-  uint32_t wait_queue_limit;
-  uint16_t front_major;
-  uint16_t front_minor;
-  uint32_t front_features;
-  uint16_t back_major;
-  uint16_t back_minor;
-  uint32_t back_features;
-  uint32_t compat_result;
-  int32_t compat_reason;
-  uint32_t pending_worker_prio_mode;
-  int32_t pending_worker_nice;
-  int32_t pending_worker_prio_apply_error;
-};
-
-typedef struct kafs_hotplug_status kafs_hotplug_status_t;
-
-
+// Hotplug status (kafsctl) definitions are shared via kafs_hotplug.h

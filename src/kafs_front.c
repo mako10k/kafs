@@ -1,4 +1,5 @@
 #include "kafs_rpc.h"
+#include "kafs_cli_opts.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -15,10 +16,7 @@
 static volatile sig_atomic_t g_restart_requested = 0;
 static volatile sig_atomic_t g_back_exited = 0;
 
-static void usage(const char *prog)
-{
-  fprintf(stderr, "Usage: %s [--uds <path>]\n", prog);
-}
+static void usage(const char *prog) { fprintf(stderr, "Usage: %s [--uds <path>]\n", prog); }
 
 static void kafs_front_request_restart(int signo)
 {
@@ -139,8 +137,7 @@ static int kafs_front_handshake(int cli, uint64_t session_id, uint32_t epoch)
     return -EBADMSG;
   }
 
-  fprintf(stderr, "kafs-front: handshake ok (session=%" PRIu64 " epoch=%u)\n", session_id,
-          epoch);
+  fprintf(stderr, "kafs-front: handshake ok (session=%" PRIu64 " epoch=%u)\n", session_id, epoch);
   return 0;
 }
 
@@ -200,23 +197,10 @@ int main(int argc, char **argv)
   if (!uds_path)
     uds_path = "/tmp/kafs-hotplug.sock";
 
-  for (int i = 1; i < argc; ++i)
   {
-    if (strcmp(argv[i], "--uds") == 0)
-    {
-      if (i + 1 >= argc)
-      {
-        usage(argv[0]);
-        return 2;
-      }
-      uds_path = argv[++i];
-      continue;
-    }
-    if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
-    {
-      usage(argv[0]);
-      return 0;
-    }
+    int parse_rc = kafs_cli_parse_uds_help_loop(argc, argv, &uds_path, usage, argv[0]);
+    if (parse_rc >= 0)
+      return parse_rc;
   }
 
   pid_t pgid = getpid();
@@ -275,8 +259,7 @@ int main(int argc, char **argv)
       {
         if (WIFEXITED(status))
         {
-          fprintf(stderr, "kafs-front: kafs-back exited status=%d\n",
-                  WEXITSTATUS(status));
+          fprintf(stderr, "kafs-front: kafs-back exited status=%d\n", WEXITSTATUS(status));
         }
         else if (WIFSIGNALED(status))
         {

@@ -81,7 +81,6 @@ collect_candidates() {
   for f in \
     minimal-fsck-test.sh \
     reproduce_workload.sh \
-    run-eio-test.sh \
     trigger-eio.sh \
     test-semantics-debug.sh \
     correct-strace.sh \

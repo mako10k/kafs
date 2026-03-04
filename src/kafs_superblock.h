@@ -80,7 +80,7 @@ struct kafs_ssuperblock
   /// @brief 機能フラグ
   kafs_su64_t s_feature_flags; // +176 (8)
   /// @brief 互換フラグ（将来拡張）
-  kafs_su64_t s_compat_flags; // +184 (8)
+  kafs_su64_t s_compat_flags;    // +184 (8)
   uint8_t s_reserved[256 - 192]; // +192 .. +255
 } __attribute__((packed));
 

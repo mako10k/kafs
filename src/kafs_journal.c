@@ -146,8 +146,9 @@ static int kj_write_meta_delta_record(kafs_journal_t *j, uint64_t seq, const kj_
   if (!payload)
     return -ENOMEM;
 
-  int n = snprintf(payload, cap, "free_abs=%" PRIuFAST32 " wtime_dirty=%u wtime_sec=%lld "
-                                 "wtime_nsec=%ld wc=%zu words=",
+  int n = snprintf(payload, cap,
+                   "free_abs=%" PRIuFAST32 " wtime_dirty=%u wtime_sec=%lld "
+                   "wtime_nsec=%ld wc=%zu words=",
                    s->free_abs, s->wtime_dirty, (long long)s->wtime.tv_sec, s->wtime.tv_nsec,
                    s->word_count);
   if (n < 0)
@@ -242,9 +243,8 @@ static void kj_apply_meta_delta(struct kafs_context *ctx)
   uint32_t wtime_dirty = ctx->c_meta_delta_wtime_dirty;
   kafs_time_t wtime = ctx->c_meta_delta_last_wtime;
 
-  if (ctx->c_meta_bitmap_words_enabled && ctx->c_meta_bitmap_dirty &&
-      ctx->c_meta_bitmap_words && ctx->c_meta_bitmap_wordcnt > 0 &&
-      ctx->c_meta_bitmap_dirty_count > 0)
+  if (ctx->c_meta_bitmap_words_enabled && ctx->c_meta_bitmap_dirty && ctx->c_meta_bitmap_words &&
+      ctx->c_meta_bitmap_wordcnt > 0 && ctx->c_meta_bitmap_dirty_count > 0)
   {
     for (size_t i = 0; i < ctx->c_meta_bitmap_wordcnt; ++i)
     {
