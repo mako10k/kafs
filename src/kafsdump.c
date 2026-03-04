@@ -79,6 +79,15 @@ static int check_bounds(uint64_t off, uint64_t len, uint64_t file_size)
   return 0;
 }
 
+static const char *rc_to_text(int rc)
+{
+  if (rc == 0)
+    return "ok";
+  if (rc < 0)
+    return strerror(-rc);
+  return "error";
+}
+
 static int collect_inode_summary(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
                                  struct inode_summary *out)
 {
@@ -199,7 +208,8 @@ static int collect_journal_summary(int fd, const kafs_ssuperblock_t *sb, uint64_
 }
 
 static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary *ino,
-                       const struct hrl_summary *hrl, const struct journal_summary *jr)
+                       const struct hrl_summary *hrl, const struct journal_summary *jr,
+                       int rc_inode, int rc_hrl, int rc_journal)
 {
   uint64_t blksize = kafs_sb_blksize_get(sb);
   uint64_t r_blkcnt = kafs_sb_r_blkcnt_get(sb);
@@ -219,17 +229,20 @@ static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary 
   printf("  data_block_count: %" PRIu64 "\n", data_blocks);
 
   printf("inode_summary:\n");
+  printf("  status: %s\n", rc_to_text(rc_inode));
   printf("  total: %" PRIu64 "\n", ino->total);
   printf("  used: %" PRIu64 "\n", ino->used);
   printf("  free: %" PRIu64 "\n", ino->free);
   printf("  linkcnt_zero_used: %" PRIu64 "\n", ino->linkcnt_zero_used);
 
   printf("hrl_summary:\n");
+  printf("  status: %s\n", rc_to_text(rc_hrl));
   printf("  entries: %" PRIu64 "\n", hrl->entry_count);
   printf("  live_entries: %" PRIu64 "\n", hrl->live_entries);
   printf("  total_refcnt: %" PRIu64 "\n", hrl->total_refcnt);
 
   printf("journal_header:\n");
+  printf("  status: %s\n", rc_to_text(rc_journal));
   printf("  available: %s\n", jr->available ? "true" : "false");
   if (jr->available)
   {
@@ -245,7 +258,8 @@ static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary 
 }
 
 static void print_json(const kafs_ssuperblock_t *sb, const struct inode_summary *ino,
-                       const struct hrl_summary *hrl, const struct journal_summary *jr)
+                       const struct hrl_summary *hrl, const struct journal_summary *jr,
+                       int rc_inode, int rc_hrl, int rc_journal)
 {
   uint64_t blksize = kafs_sb_blksize_get(sb);
   uint64_t r_blkcnt = kafs_sb_r_blkcnt_get(sb);
@@ -267,6 +281,7 @@ static void print_json(const kafs_ssuperblock_t *sb, const struct inode_summary 
   printf("  },\n");
 
   printf("  \"inode_summary\": {\n");
+  printf("    \"status\": \"%s\",\n", rc_to_text(rc_inode));
   printf("    \"total\": %" PRIu64 ",\n", ino->total);
   printf("    \"used\": %" PRIu64 ",\n", ino->used);
   printf("    \"free\": %" PRIu64 ",\n", ino->free);
@@ -274,12 +289,14 @@ static void print_json(const kafs_ssuperblock_t *sb, const struct inode_summary 
   printf("  },\n");
 
   printf("  \"hrl_summary\": {\n");
+  printf("    \"status\": \"%s\",\n", rc_to_text(rc_hrl));
   printf("    \"entries\": %" PRIu64 ",\n", hrl->entry_count);
   printf("    \"live_entries\": %" PRIu64 ",\n", hrl->live_entries);
   printf("    \"total_refcnt\": %" PRIu64 "\n", hrl->total_refcnt);
   printf("  },\n");
 
   printf("  \"journal_header\": {\n");
+  printf("    \"status\": \"%s\",\n", rc_to_text(rc_journal));
   printf("    \"available\": %s", jr->available ? "true" : "false");
   if (jr->available)
   {
@@ -352,36 +369,22 @@ int main(int argc, char **argv)
   struct inode_summary ino;
   struct hrl_summary hrl;
   struct journal_summary jr;
+  int rc_inode = collect_inode_summary(fd, &sb, file_size, &ino);
+  int rc_hrl = collect_hrl_summary(fd, &sb, file_size, &hrl);
+  int rc_journal = collect_journal_summary(fd, &sb, file_size, &jr);
 
-  rc = collect_inode_summary(fd, &sb, file_size, &ino);
-  if (rc != 0)
-  {
-    fprintf(stderr, "failed to collect inode summary: %s\n", strerror(-rc));
-    close(fd);
-    return 1;
-  }
-
-  rc = collect_hrl_summary(fd, &sb, file_size, &hrl);
-  if (rc != 0)
-  {
-    fprintf(stderr, "failed to collect hrl summary: %s\n", strerror(-rc));
-    close(fd);
-    return 1;
-  }
-
-  rc = collect_journal_summary(fd, &sb, file_size, &jr);
-  if (rc != 0)
-  {
-    fprintf(stderr, "failed to collect journal header: %s\n", strerror(-rc));
-    close(fd);
-    return 1;
-  }
+  if (rc_inode != 0)
+    fprintf(stderr, "warning: inode summary unavailable: %s\n", rc_to_text(rc_inode));
+  if (rc_hrl != 0)
+    fprintf(stderr, "warning: hrl summary unavailable: %s\n", rc_to_text(rc_hrl));
+  if (rc_journal != 0)
+    fprintf(stderr, "warning: journal header unavailable: %s\n", rc_to_text(rc_journal));
 
   if (json)
-    print_json(&sb, &ino, &hrl, &jr);
+    print_json(&sb, &ino, &hrl, &jr, rc_inode, rc_hrl, rc_journal);
   else
-    print_text(&sb, &ino, &hrl, &jr);
+    print_text(&sb, &ino, &hrl, &jr, rc_inode, rc_hrl, rc_journal);
 
   close(fd);
-  return 0;
+  return (rc_inode == 0 && rc_hrl == 0 && rc_journal == 0) ? 0 : 1;
 }
