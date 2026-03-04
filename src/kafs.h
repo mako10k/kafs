@@ -374,9 +374,10 @@ static inline kafs_su64_t kafs_u64_htos(uint64_t h)
 // その他
 // ------------------------------------
 
-#define kafs_now()                                                                                 \
-  ({                                                                                               \
-    struct timespec _now;                                                                          \
-    KAFS_IOCALL(clock_gettime, CLOCK_REALTIME, &_now);                                             \
-    _now;                                                                                          \
-  })
+static inline kafs_time_t kafs_now(void)
+{
+  struct timespec now = {0};
+  if (clock_gettime(CLOCK_REALTIME, &now) == -1)
+    return now;
+  return now;
+}
