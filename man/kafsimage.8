@@ -14,6 +14,12 @@ kafsimage \- export offline KAFS image data in metadata-only mode
 .RB [ --verify ]
 .I src-image
 .I dst-file
+.PP
+.B kafsimage
+.B --sparse
+.RB [ --verify ]
+.I src-image
+.I dst-file
 .SH DESCRIPTION
 .B kafsimage
 reads an offline source image and writes a metadata-only export file.
@@ -23,6 +29,9 @@ The source image is never modified.
 With
 .BR --raw ,
 the full source image is copied byte-for-byte.
+With
+.BR --sparse ,
+all-zero chunks are written as sparse holes while preserving logical file size.
 .SH OPTIONS
 .TP
 .B --metadata-only
@@ -31,8 +40,11 @@ Enable metadata-only export mode.
 .B --raw
 Enable full-image raw copy mode.
 .TP
+.B --sparse
+Enable sparse full-image copy mode (zero chunks become holes).
+.TP
 .B --verify
-After export, verify destination bytes match the copied source prefix.
+After export, verify destination bytes match the copied range.
 .SH EXIT STATUS
 .TP
 .B 0

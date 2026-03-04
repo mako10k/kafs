@@ -20,8 +20,9 @@ static void usage(const char *prog)
   fprintf(stderr,
           "Usage:\n"
           "  %s --metadata-only [--verify] <src-image> <dst-file>\n"
-          "  %s --raw [--verify] <src-image> <dst-file>\n",
-          prog, prog);
+          "  %s --raw [--verify] <src-image> <dst-file>\n"
+          "  %s --sparse [--verify] <src-image> <dst-file>\n",
+          prog, prog, prog);
 }
 
 static int pread_all(int fd, void *buf, size_t size, off_t off)
@@ -89,6 +90,80 @@ static int copy_nbytes(int fd_src, int fd_dst, uint64_t bytes)
   return 0;
 }
 
+static int is_zero_buf(const char *buf, size_t len)
+{
+  for (size_t i = 0; i < len; ++i)
+  {
+    if (buf[i] != 0)
+      return 0;
+  }
+  return 1;
+}
+
+static int copy_nbytes_sparse(int fd_src, int fd_dst, uint64_t bytes)
+{
+  char *buf = (char *)malloc(COPY_BUF_SIZE);
+  if (!buf)
+    return -ENOMEM;
+
+  uint64_t written = 0;
+  while (written < bytes)
+  {
+    size_t chunk = (bytes - written > COPY_BUF_SIZE) ? COPY_BUF_SIZE : (size_t)(bytes - written);
+    ssize_t r = read(fd_src, buf, chunk);
+    if (r == 0)
+    {
+      free(buf);
+      return -EIO;
+    }
+    if (r < 0)
+    {
+      if (errno == EINTR)
+        continue;
+      free(buf);
+      return -errno;
+    }
+
+    if (is_zero_buf(buf, (size_t)r))
+    {
+      off_t off = lseek(fd_dst, r, SEEK_CUR);
+      if (off < 0)
+      {
+        free(buf);
+        return -errno;
+      }
+    }
+    else
+    {
+      size_t wr_done = 0;
+      while (wr_done < (size_t)r)
+      {
+        ssize_t w = write(fd_dst, buf + wr_done, (size_t)r - wr_done);
+        if (w < 0)
+        {
+          if (errno == EINTR)
+            continue;
+          free(buf);
+          return -errno;
+        }
+        wr_done += (size_t)w;
+      }
+    }
+
+    written += (uint64_t)r;
+  }
+
+  // Ensure destination logical size matches requested copy range.
+  if (ftruncate(fd_dst, (off_t)bytes) != 0)
+  {
+    free(buf);
+    return -errno;
+  }
+
+  free(buf);
+  return 0;
+}
+
 static int verify_prefix_equal(int fd_src, int fd_dst, uint64_t bytes)
 {
   char *a = (char *)malloc(COPY_BUF_SIZE);
@@ -136,6 +211,7 @@ int main(int argc, char **argv)
 {
   int metadata_only = 0;
   int raw = 0;
+  int sparse = 0;
   int verify = 0;
   const char *src_path = NULL;
   const char *dst_path = NULL;
@@ -150,6 +226,11 @@ int main(int argc, char **argv)
     if (strcmp(argv[i], "--raw") == 0)
     {
       raw = 1;
+      continue;
+    }
+    if (strcmp(argv[i], "--sparse") == 0)
+    {
+      sparse = 1;
       continue;
     }
     if (strcmp(argv[i], "--verify") == 0)
@@ -173,7 +254,7 @@ int main(int argc, char **argv)
     }
   }
 
-  if ((metadata_only + raw) != 1 || !src_path || !dst_path)
+  if ((metadata_only + raw + sparse) != 1 || !src_path || !dst_path)
   {
     usage(argv[0]);
     return 2;
@@ -250,7 +331,7 @@ int main(int argc, char **argv)
     return 1;
   }
 
-  int rc = copy_nbytes(fd_src, fd_dst, copy_bytes);
+  int rc = sparse ? copy_nbytes_sparse(fd_src, fd_dst, copy_bytes) : copy_nbytes(fd_src, fd_dst, copy_bytes);
   if (rc != 0)
   {
     fprintf(stderr, "copy failed: %s\n", strerror(-rc));
@@ -314,7 +395,8 @@ int main(int argc, char **argv)
     close(fd_verify);
   }
 
-  printf("kafsimage: %s export completed\n", metadata_only ? "metadata-only" : "raw");
+  const char *mode_name = metadata_only ? "metadata-only" : (raw ? "raw" : "sparse");
+  printf("kafsimage: %s export completed\n", mode_name);
   printf("  src: %s\n", src_path);
   printf("  dst: %s\n", dst_path);
   printf("  bytes: %" PRIu64 "\n", copy_bytes);
