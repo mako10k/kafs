@@ -5578,7 +5578,8 @@ static void usage(const char *prog)
       "       disable via --no-writeback-cache, enable via --writeback-cache,\n"
       "       or use -o no_writeback_cache / -o writeback_cache.\n"
       "       optional TRIM on freed blocks: --trim-on-free / --no-trim-on-free,\n"
-      "       env KAFS_TRIM_ON_FREE=1/0, or -o trim_on_free / no_trim_on_free.\n"
+      "       env KAFS_TRIM_ON_FREE=1/0, or -o trim_on_free / trim-on-free\n"
+      "       and -o no_trim_on_free / no-trim-on-free.\n"
       "       default runs single-threaded; enable MT via -o multi_thread[=N] or env KAFS_MT=1.\n"
       "       MT thread count can be set via -o multi_thread=N (preferred) or env "
       "KAFS_MAX_THREADS.\n"
@@ -5910,13 +5911,13 @@ int main(int argc, char **argv)
             writeback_cache_explicit = KAFS_TRUE;
             continue;
           }
-          if (strcmp(tok, "trim_on_free") == 0)
+          if (strcmp(tok, "trim_on_free") == 0 || strcmp(tok, "trim-on-free") == 0)
           {
             trim_on_free_enabled = KAFS_TRUE;
             trim_on_free_explicit = KAFS_TRUE;
             continue;
           }
-          if (strcmp(tok, "no_trim_on_free") == 0)
+          if (strcmp(tok, "no_trim_on_free") == 0 || strcmp(tok, "no-trim-on-free") == 0)
           {
             trim_on_free_enabled = KAFS_FALSE;
             trim_on_free_explicit = KAFS_TRUE;
