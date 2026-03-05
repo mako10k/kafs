@@ -23,14 +23,22 @@
 
 static void usage(const char *prog)
 {
-  fprintf(stderr,
-          "Usage: %s <image> [--size-bytes N|-s N] [--blksize-log L|-b L] [--inodes I|-i I] "
-          "[--journal-size-bytes J|-J J] [--trim-data-area]\n",
-          prog);
-  fprintf(stderr, "  defaults: N=1GiB, L=12 (4096B), I=65536, J=1MiB\n");
-  fprintf(stderr, "  sizes accept suffix K/M/G (binary, e.g. 64M = 67108864)\n");
-  fprintf(stderr, "  if image exists and size>0, file size is used (overrides -s)\n");
-  fprintf(stderr, "  --trim-data-area punches holes for the whole free data region after format\n");
+  fprintf(stderr, "Usage:\n");
+  fprintf(stderr, "  %s <image> [options]\n", prog);
+  fprintf(stderr, "\n");
+  fprintf(stderr, "Options:\n");
+  fprintf(stderr, "  [Layout]\n");
+  fprintf(stderr, "    -s, --size-bytes <N>              Total image size (default: 1GiB)\n");
+  fprintf(stderr, "    -b, --blksize-log <L>             Block size log2 (default: 12 => 4096B)\n");
+  fprintf(stderr, "    -i, --inodes <I>                  Inode count (default: 65536)\n");
+  fprintf(stderr, "    -J, --journal-size-bytes <J>      Journal size (default: 1MiB, min: 4KiB)\n");
+  fprintf(stderr, "\n");
+  fprintf(stderr, "  [Space Reclaim]\n");
+  fprintf(stderr, "    --trim-data-area                  Punch holes for free data area after format\n");
+  fprintf(stderr, "\n");
+  fprintf(stderr, "Notes:\n");
+  fprintf(stderr, "    Size values accept K/M/G suffixes (binary units).\n");
+  fprintf(stderr, "    If the image file already exists and has non-zero size, that size overrides -s.\n");
 }
 
 static int mkfs_trim_range(int fd, off_t off, off_t len)

@@ -20,6 +20,7 @@ creates a new KAFS filesystem image file with the specified parameters.
 It initializes superblock, block bitmap, inode table, HRL structures, and an in-image journal region.
 The filesystem root directory is owned by the user running mkfs.kafs (UID/GID).
 .SH OPTIONS
+.SS Layout Options
 .TP
 .BR -s ", " --size-bytes "=" size
 Total image size in bytes (default: 1GiB). K/M/G suffixes are accepted.
@@ -34,6 +35,7 @@ Number of inodes (default: 65536).
 .TP
 .BR -J ", " --journal-size-bytes "=" bytes
 Journal region size (default: 1MiB, minimum 4KiB). K/M/G suffixes are accepted.
+.SS Space Reclaim Option
 .TP
 .B --trim-data-area
 After formatting, issue TRIM (hole punch) for the whole free data region.

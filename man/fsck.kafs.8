@@ -29,6 +29,7 @@ By default it runs
 .B --balanced-check
 (journal validation + dirent->ino orphan scan).
 .SH OPTIONS
+.SS Preset Modes
 .TP
 .B --full-check
 Run all available checks:
@@ -50,6 +51,7 @@ Fast journal-layer check only.
 .TP
 .B --fast-repair
 Fast journal-layer repair path (journal reset if needed).
+.SS Low-level Options
 .TP
 .B --check-journal
 Low-level flag: validate the journal layer.
@@ -81,6 +83,12 @@ no live HRL references, then mark those blocks free in the block bitmap.
 .B --trim-free-data-blocks
 Issue TRIM (hole punch) for all currently free data blocks according to the block bitmap.
 This does not change inode/link semantics; it reclaims backend space only.
+.PP
+Preset mode and low-level options cannot be mixed.
+With no options,
+.B fsck.kafs
+defaults to behavior equivalent to
+.BR --balanced-check .
 .SH EXIT STATUS
 .TP
 .B 0

@@ -576,14 +576,33 @@ static int trim_free_data_blocks(kafs_context_t *ctx, int fd, struct punch_stats
 
 static void usage(const char *prog)
 {
-  fprintf(stderr,
-          "Usage: %s [--full-check|--full-repair|--balanced-check|--balanced-repair|"
-          "--fast-check|--fast-repair] <image>\n"
-          "       %s [--check-journal] [--repair-journal-reset] "
-          "[--check-dirent-ino-orphans] [--repair-dirent-ino-orphans] "
-          "[--check-hrl-blo-refcounts] [--replay-journal] "
-          "[--punch-hole-unreferenced-data-blocks] [--trim-free-data-blocks] <image>\n",
-          prog, prog);
+  fprintf(stderr, "Usage:\n");
+  fprintf(stderr, "  %s [preset-mode] <image>\n", prog);
+  fprintf(stderr, "  %s [low-level-options] <image>\n", prog);
+  fprintf(stderr, "\n");
+  fprintf(stderr, "Options:\n");
+  fprintf(stderr, "  [Preset Modes]\n");
+  fprintf(stderr, "    --fast-check                       Journal check only\n");
+  fprintf(stderr, "    --fast-repair                      Journal reset if needed\n");
+  fprintf(stderr, "    --balanced-check                   Journal + dirent->ino orphan check\n");
+  fprintf(stderr, "    --balanced-repair                  Journal reset + dirent->ino repair\n");
+  fprintf(stderr, "    --full-check                       Balanced check + hrl->blo refcount check\n");
+  fprintf(stderr, "    --full-repair                      Balanced repair + hrl->blo refcount check\n");
+  fprintf(stderr, "\n");
+  fprintf(stderr, "  [Low-level Options]\n");
+  fprintf(stderr, "    --check-journal                    Validate journal layer (default on)\n");
+  fprintf(stderr, "    --repair-journal-reset             Reset journal ring when invalid\n");
+  fprintf(stderr, "    --check-dirent-ino-orphans         Scan orphan inodes (linkcnt==0)\n");
+  fprintf(stderr, "    --repair-dirent-ino-orphans        Reclaim orphan inodes and refs\n");
+  fprintf(stderr, "    --check-hrl-blo-refcounts          Compare inode refs vs HRL refs\n");
+  fprintf(stderr, "    --replay-journal                   Replay in-image journal deltas\n");
+  fprintf(stderr, "    --punch-hole-unreferenced-data-blocks\n");
+  fprintf(stderr, "                                        Punch unreferenced allocated blocks\n");
+  fprintf(stderr, "    --trim-free-data-blocks            Punch all free data blocks\n");
+  fprintf(stderr, "\n");
+  fprintf(stderr, "Notes:\n");
+  fprintf(stderr, "    Preset mode and low-level options cannot be mixed.\n");
+  fprintf(stderr, "    With no options, default is equivalent to --balanced-check.\n");
 }
 
 static int check_region_bounds(const char *name, uint64_t off, uint64_t size, uint64_t file_size)

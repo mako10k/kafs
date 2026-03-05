@@ -26,29 +26,16 @@ kafs \- FUSE-based KAFS filesystem
 mounts a KAFS filesystem image via FUSE.
 An embedded journal region is used when present. Sidecar journals are not supported.
 .SH OPTIONS
+.SS Global Options
 .TP
-.BR "-o multi_thread" "[=N]"
-Enable FUSE multi-thread mode and set the worker thread count.
-This is translated to the FUSE option
-.BR max_threads= .
-Aliases:
-.BR multi-thread
-and
-.BR multithread .
-If N is omitted, a default is chosen (currently 8) or can be set via
-.BR KAFS_MAX_THREADS .
+.BR -h ", " --help
+Show help and exit.
 .TP
-.BR --trim-on-free , " --no-trim-on-free"
-Enable/disable issuing TRIM (hole punch) for data blocks that become free at runtime.
-Equivalent FUSE options:
-.BR trim_on_free
-or
-.BR trim-on-free
-and
-.BR no_trim_on_free
-or
-.BR no-trim-on-free .
-Default is disabled.
+.BR --image " " <image>
+Specify image path.
+.TP
+.BR --image= " <image>
+Specify image path (inline form).
 .TP
 .B --migrate-v2
 If the image format is v2, perform one-shot migration to v3 and exit.
@@ -56,10 +43,73 @@ This operation is irreversible.
 .TP
 .B --yes
 Skip interactive confirmation for migration.
+.SS Cache And TRIM
+.TP
+.BR --writeback-cache
+Enable writeback cache.
+.TP
+.BR --no-writeback-cache
+Disable writeback cache.
+.TP
+.BR --trim-on-free
+Enable TRIM (hole punch) when data blocks become free.
+.TP
+.BR --no-trim-on-free
+Disable TRIM when data blocks become free.
+.TP
+.BR -o " " writeback_cache
+Enable writeback cache via FUSE 
+.B -o
+.
+.TP
+.BR -o " " no_writeback_cache
+Disable writeback cache via FUSE 
+.B -o
+.
+.TP
+.BR -o " " trim_on_free " | " trim-on-free
+Enable runtime TRIM via FUSE 
+.B -o
+.
+.TP
+.BR -o " " no_trim_on_free " | " no-trim-on-free
+Disable runtime TRIM via FUSE 
+.B -o
+.
+.SS Threading And Worker Tuning
+.TP
+.BR "-o multi_thread" "[=N]"
+Enable FUSE multi-thread mode and set worker thread count.
+This is translated to FUSE option
+.BR max_threads= .
+Aliases:
+.BR multi-thread
+and
+.BR multithread .
+.TP
+.BR -o " " pending_worker_prio= "<normal|idle>"
+Set pending worker scheduling mode.
+.TP
+.BR -o " " pending_worker_nice= "<0..19>"
+Set pending worker nice value.
+.TP
+.BR -o " " dedup_worker_prio= "<normal|idle>"
+Alias for
+.BR pending_worker_prio .
+.TP
+.BR -o " " dedup_worker_nice= "<0..19>"
+Alias for
+.BR pending_worker_nice .
 .SH ENVIRONMENT
 .TP
 .B KAFS_IMAGE
 Fallback path to image when --image is not specified.
+.TP
+.B KAFS_WRITEBACK_CACHE
+Default writeback cache mode (1: enabled, 0: disabled).
+.TP
+.B KAFS_TRIM_ON_FREE
+Default TRIM-on-free mode (1: enabled, 0: disabled).
 .TP
 .B KAFS_JOURNAL
 Set to 0 to disable journal even if present.
@@ -71,8 +121,13 @@ Set to 1 to enable FUSE multi-thread mode (same effect as
 .B KAFS_MAX_THREADS
 Default thread count used when multi-thread mode is enabled and N is not specified.
 .TP
-.B KAFS_TRIM_ON_FREE
-Set to 1 to enable runtime TRIM on block free, or 0 to disable.
+.B KAFS_PENDING_WORKER_PRIO
+Default value for
+.BR -o " " pending_worker_prio= .
+.TP
+.B KAFS_PENDING_WORKER_NICE
+Default value for
+.BR -o " " pending_worker_nice= .
 .TP
 .B KAFS_JOURNAL_GC_NS
 Group commit window in nanoseconds (default 10000000ns).
