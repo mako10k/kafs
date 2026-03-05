@@ -53,6 +53,14 @@ struct hrl_refcheck_stats
   uint64_t hrl_invalid_entries;
 };
 
+struct hrl_repair_stats
+{
+  uint64_t inc_attempted;
+  uint64_t inc_failed;
+  uint64_t dec_attempted;
+  uint64_t dec_failed;
+};
+
 struct punch_stats
 {
   uint64_t candidates;
@@ -448,6 +456,103 @@ static int check_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_refcheck_stat
   return 0;
 }
 
+static int repair_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_repair_stats *stats)
+{
+  const kafs_ssuperblock_t *sb = ctx->c_superblock;
+  kafs_blkcnt_t r_blkcnt = kafs_sb_blkcnt_get(sb);
+  kafs_inocnt_t inocnt = kafs_sb_inocnt_get(sb);
+  kafs_blksize_t blksize = kafs_sb_blksize_get(sb);
+  kafs_logblksize_t l2 = kafs_sb_log_blksize_get(sb);
+  uint32_t refs_pb = (uint32_t)(blksize / sizeof(kafs_sblkcnt_t));
+
+  if ((size_t)r_blkcnt > SIZE_MAX / sizeof(uint32_t))
+    return -ENOMEM;
+
+  uint32_t *expected = (uint32_t *)calloc((size_t)r_blkcnt, sizeof(uint32_t));
+  uint32_t *actual = (uint32_t *)calloc((size_t)r_blkcnt, sizeof(uint32_t));
+  if (!expected || !actual)
+  {
+    free(expected);
+    free(actual);
+    return -ENOMEM;
+  }
+
+  struct hrl_refcheck_stats hst;
+  memset(&hst, 0, sizeof(hst));
+  struct hrl_scan_ctx sctx = {ctx, r_blkcnt, l2, blksize, refs_pb, expected, &hst};
+
+  for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
+  {
+    const kafs_sinode_t *e = &ctx->c_inotbl[ino];
+    if (!kafs_ino_get_usage(e))
+      continue;
+    if (kafs_ino_size_get(e) <= (kafs_off_t)sizeof(e->i_blkreftbl))
+      continue;
+
+    for (uint32_t i = 0; i < 12; ++i)
+      (void)hrl_count_raw_ref(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[i]));
+
+    (void)hrl_count_tbl_refs(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[12]), 1);
+    (void)hrl_count_tbl_refs(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[13]), 2);
+    (void)hrl_count_tbl_refs(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[14]), 3);
+  }
+
+  uint64_t ent_off = kafs_sb_hrl_entry_offset_get(sb);
+  uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sb);
+  uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
+  kafs_hrl_entry_t *ents = (kafs_hrl_entry_t *)img_ptr(ctx->c_img_base, ctx->c_img_size,
+                                                       (off_t)ent_off, (size_t)ent_size);
+  if (!ents)
+  {
+    free(expected);
+    free(actual);
+    return -EIO;
+  }
+
+  for (uint64_t i = 0; i < ent_cnt; ++i)
+  {
+    const kafs_hrl_entry_t *ent = &ents[i];
+    if (ent->refcnt == 0)
+      continue;
+    if (ent->blo >= r_blkcnt)
+      continue;
+    actual[ent->blo] += ent->refcnt;
+  }
+
+  for (kafs_blkcnt_t blo = 0; blo < r_blkcnt; ++blo)
+  {
+    uint32_t exp = expected[blo];
+    uint32_t act = actual[blo];
+
+    if (exp > act)
+    {
+      uint32_t delta = exp - act;
+      for (uint32_t i = 0; i < delta; ++i)
+      {
+        stats->inc_attempted++;
+        int rc = kafs_hrl_inc_ref_by_blo(ctx, blo);
+        if (rc != 0)
+          stats->inc_failed++;
+      }
+    }
+    else if (act > exp)
+    {
+      uint32_t delta = act - exp;
+      for (uint32_t i = 0; i < delta; ++i)
+      {
+        stats->dec_attempted++;
+        int rc = kafs_hrl_dec_ref_by_blo(ctx, blo);
+        if (rc != 0)
+          stats->dec_failed++;
+      }
+    }
+  }
+
+  free(expected);
+  free(actual);
+  return 0;
+}
+
 static int punch_unreferenced_data_blocks(kafs_context_t *ctx, int fd, struct punch_stats *stats)
 {
   const kafs_ssuperblock_t *sb = ctx->c_superblock;
@@ -586,8 +691,10 @@ static void usage(const char *prog)
   fprintf(stderr, "    --fast-repair                      Journal reset if needed\n");
   fprintf(stderr, "    --balanced-check                   Journal + dirent->ino orphan check\n");
   fprintf(stderr, "    --balanced-repair                  Journal reset + dirent->ino repair\n");
+  fprintf(stderr, "    --check                            Alias of --balanced-check\n");
+  fprintf(stderr, "    --repair                           Alias of --balanced-repair\n");
   fprintf(stderr, "    --full-check                       Balanced check + hrl->blo refcount check\n");
-  fprintf(stderr, "    --full-repair                      Balanced repair + hrl->blo refcount check\n");
+  fprintf(stderr, "    --full-repair                      Full repair including hrl->blo refcount repair\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "  [Low-level Options]\n");
   fprintf(stderr, "    --check-journal                    Validate journal layer (default on)\n");
@@ -595,6 +702,7 @@ static void usage(const char *prog)
   fprintf(stderr, "    --check-dirent-ino-orphans         Scan orphan inodes (linkcnt==0)\n");
   fprintf(stderr, "    --repair-dirent-ino-orphans        Reclaim orphan inodes and refs\n");
   fprintf(stderr, "    --check-hrl-blo-refcounts          Compare inode refs vs HRL refs\n");
+  fprintf(stderr, "    --repair-hrl-blo-refcounts         Repair HRL refcounts to match inode refs\n");
   fprintf(stderr, "    --replay-journal                   Replay in-image journal deltas\n");
   fprintf(stderr, "    --punch-hole-unreferenced-data-blocks\n");
   fprintf(stderr, "                                        Punch unreferenced allocated blocks\n");
@@ -602,7 +710,7 @@ static void usage(const char *prog)
   fprintf(stderr, "\n");
   fprintf(stderr, "Notes:\n");
   fprintf(stderr, "    Preset mode and low-level options cannot be mixed.\n");
-  fprintf(stderr, "    With no options, default is equivalent to --balanced-check.\n");
+  fprintf(stderr, "    With no options, default is equivalent to --check (--balanced-check).\n");
 }
 
 static int check_region_bounds(const char *name, uint64_t off, uint64_t size, uint64_t file_size)
@@ -624,6 +732,7 @@ int main(int argc, char **argv)
   int do_check_dirent_ino_orphans = 0;
   int do_repair_dirent_ino_orphans = 0;
   int do_check_hrl_blo_refcounts = 0;
+  int do_repair_hrl_blo_refcounts = 0;
   int do_replay_journal = 0;
   int do_punch_hole_unreferenced_data_blocks = 0;
   int do_trim_free_data_blocks = 0;
@@ -652,7 +761,17 @@ int main(int argc, char **argv)
       has_preset_mode = 1;
       mode = FSCK_MODE_BALANCED_CHECK;
     }
+    else if (strcmp(argv[i], "--check") == 0)
+    {
+      has_preset_mode = 1;
+      mode = FSCK_MODE_BALANCED_CHECK;
+    }
     else if (strcmp(argv[i], "--balanced-repair") == 0)
+    {
+      has_preset_mode = 1;
+      mode = FSCK_MODE_BALANCED_REPAIR;
+    }
+    else if (strcmp(argv[i], "--repair") == 0)
     {
       has_preset_mode = 1;
       mode = FSCK_MODE_BALANCED_REPAIR;
@@ -690,6 +809,11 @@ int main(int argc, char **argv)
     else if (strcmp(argv[i], "--check-hrl-blo-refcounts") == 0)
     {
       do_check_hrl_blo_refcounts = 1;
+      has_low_level_mode = 1;
+    }
+    else if (strcmp(argv[i], "--repair-hrl-blo-refcounts") == 0)
+    {
+      do_repair_hrl_blo_refcounts = 1;
       has_low_level_mode = 1;
     }
     else if (strcmp(argv[i], "--replay-journal") == 0)
@@ -737,6 +861,7 @@ int main(int argc, char **argv)
     do_check_dirent_ino_orphans = 0;
     do_repair_dirent_ino_orphans = 0;
     do_check_hrl_blo_refcounts = 0;
+    do_repair_hrl_blo_refcounts = 0;
 
     switch (mode)
     {
@@ -760,6 +885,7 @@ int main(int argc, char **argv)
       do_journal_reset = 1;
       do_repair_dirent_ino_orphans = 1;
       do_check_hrl_blo_refcounts = 1;
+      do_repair_hrl_blo_refcounts = 1;
       break;
     case FSCK_MODE_UNSET:
     default:
@@ -773,7 +899,7 @@ int main(int argc, char **argv)
     do_check_dirent_ino_orphans = 1;
   }
 
-  int want_write = do_journal_reset || do_repair_dirent_ino_orphans;
+  int want_write = do_journal_reset || do_repair_dirent_ino_orphans || do_repair_hrl_blo_refcounts;
   if (do_replay_journal || do_punch_hole_unreferenced_data_blocks || do_trim_free_data_blocks)
     want_write = 1;
   int fd = open(img, want_write ? O_RDWR : O_RDONLY);
@@ -814,8 +940,9 @@ int main(int argc, char **argv)
     return FSCK_EXIT_JOURNAL_CHECK_FAILED;
   }
 
-  if (do_check_dirent_ino_orphans || do_repair_dirent_ino_orphans || do_check_hrl_blo_refcounts ||
-      do_replay_journal || do_punch_hole_unreferenced_data_blocks || do_trim_free_data_blocks)
+    if (do_check_dirent_ino_orphans || do_repair_dirent_ino_orphans || do_check_hrl_blo_refcounts ||
+      do_repair_hrl_blo_refcounts || do_replay_journal ||
+      do_punch_hole_unreferenced_data_blocks || do_trim_free_data_blocks)
   {
     kafs_context_t ctx;
     memset(&ctx, 0, sizeof(ctx));
@@ -921,6 +1048,37 @@ int main(int argc, char **argv)
       {
         exit_code = FSCK_EXIT_DIRENT_INO_INCONSISTENT;
       }
+    }
+
+    if (do_repair_hrl_blo_refcounts)
+    {
+      struct hrl_repair_stats rst;
+      memset(&rst, 0, sizeof(rst));
+
+      int ohrc = kafs_hrl_open(&ctx);
+      if (ohrc != 0)
+      {
+        munmap(ctx.c_img_base, ctx.c_img_size);
+        close(fd);
+        return 1;
+      }
+
+      int rrc = repair_hrl_blo_refcounts(&ctx, &rst);
+      (void)kafs_hrl_close(&ctx);
+      if (rrc != 0)
+      {
+        munmap(ctx.c_img_base, ctx.c_img_size);
+        close(fd);
+        return 1;
+      }
+
+      fprintf(stderr,
+              "HRL->BLO repair summary: inc_attempted=%" PRIu64 " inc_failed=%" PRIu64
+              " dec_attempted=%" PRIu64 " dec_failed=%" PRIu64 "\n",
+              rst.inc_attempted, rst.inc_failed, rst.dec_attempted, rst.dec_failed);
+
+      if ((rst.inc_failed > 0 || rst.dec_failed > 0) && exit_code == 0)
+        exit_code = FSCK_EXIT_HRL_BLO_INCONSISTENT;
     }
 
     if (do_check_hrl_blo_refcounts)

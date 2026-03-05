@@ -8,6 +8,8 @@ fsck.kafs \- check and repair specific KAFS consistency layers
 .RB [ --full-repair ]
 .RB [ --balanced-check ]
 .RB [ --balanced-repair ]
+.RB [ --check ]
+.RB [ --repair ]
 .RB [ --fast-check ]
 .RB [ --fast-repair ]
 .I image
@@ -18,6 +20,7 @@ fsck.kafs \- check and repair specific KAFS consistency layers
 .RB [ --check-dirent-ino-orphans ]
 .RB [ --repair-dirent-ino-orphans ]
 .RB [ --check-hrl-blo-refcounts ]
+.RB [ --repair-hrl-blo-refcounts ]
 .RB [ --replay-journal ]
 .RB [ --punch-hole-unreferenced-data-blocks ]
 .RB [ --trim-free-data-blocks ]
@@ -26,7 +29,9 @@ fsck.kafs \- check and repair specific KAFS consistency layers
 .B fsck.kafs
 validates and optionally repairs selected consistency layers.
 By default it runs
-.B --balanced-check
+.B --check
+(equivalent to
+.BR --balanced-check )
 (journal validation + dirent->ino orphan scan).
 .SH OPTIONS
 .SS Preset Modes
@@ -38,13 +43,22 @@ journal, dirent->ino orphan scan, and hrl->blo refcount consistency.
 .B --full-repair
 Run all available repair actions and checks:
 journal reset (if needed), dirent->ino orphan reclaim,
-then hrl->blo consistency check.
+hrl->blo refcount repair, and hrl->blo consistency check.
 .TP
 .B --balanced-check
 Check journal and dirent->ino orphan consistency (default).
 .TP
 .B --balanced-repair
 Repair journal (if needed) and dirent->ino orphans.
+.TP
+.B --check
+Alias of
+.BR --balanced-check .
+This is also the default when no mode is specified.
+.TP
+.B --repair
+Alias of
+.BR --balanced-repair .
 .TP
 .B --fast-check
 Fast journal-layer check only.
@@ -72,6 +86,10 @@ Check dirent->ino consistency by scanning orphan inodes
 Check ino->hrl->blo consistency by comparing inode-derived expected block
 references against live HRL entry refcounts.
 .TP
+.B --repair-hrl-blo-refcounts
+Repair ino->hrl->blo consistency by adjusting HRL refcounts to match
+inode-derived expected block references.
+.TP
 .B --replay-journal
 Replay committed in-image journal metadata deltas and clear the journal ring.
 This is intended for offline recovery paths.
@@ -88,7 +106,9 @@ Preset mode and low-level options cannot be mixed.
 With no options,
 .B fsck.kafs
 defaults to behavior equivalent to
-.BR --balanced-check .
+.BR --check
+(=
+.BR --balanced-check ).
 .SH EXIT STATUS
 .TP
 .B 0
