@@ -5486,7 +5486,8 @@ static int g_kafs_writeback_cache_enabled = 1;
 
 static void *kafs_op_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 {
-  (void)cfg;
+  if (cfg)
+    cfg->hard_remove = 1;
 #ifdef FUSE_CAP_WRITEBACK_CACHE
   if (conn)
   {
