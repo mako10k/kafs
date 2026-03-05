@@ -38,6 +38,14 @@ and
 If N is omitted, a default is chosen (currently 8) or can be set via
 .BR KAFS_MAX_THREADS .
 .TP
+.BR --trim-on-free , " --no-trim-on-free"
+Enable/disable issuing TRIM (hole punch) for data blocks that become free at runtime.
+Equivalent FUSE options:
+.BR trim_on_free
+and
+.BR no_trim_on_free .
+Default is disabled.
+.TP
 .B --migrate-v2
 If the image format is v2, perform one-shot migration to v3 and exit.
 This operation is irreversible.
@@ -58,6 +66,9 @@ Set to 1 to enable FUSE multi-thread mode (same effect as
 .TP
 .B KAFS_MAX_THREADS
 Default thread count used when multi-thread mode is enabled and N is not specified.
+.TP
+.B KAFS_TRIM_ON_FREE
+Set to 1 to enable runtime TRIM on block free, or 0 to disable.
 .TP
 .B KAFS_JOURNAL_GC_NS
 Group commit window in nanoseconds (default 10000000ns).

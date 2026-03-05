@@ -13,6 +13,7 @@ mkfs.kafs \- create a KAFS filesystem image
 .IR inodes ]
 .RB [ -J
 .IR journalsz ]
+.RB [ --trim-data-area ]
 .SH DESCRIPTION
 .B mkfs.kafs
 creates a new KAFS filesystem image file with the specified parameters.
@@ -33,6 +34,10 @@ Number of inodes (default: 65536).
 .TP
 .BR -J ", " --journal-size-bytes "=" bytes
 Journal region size (default: 1MiB, minimum 4KiB). K/M/G suffixes are accepted.
+.TP
+.B --trim-data-area
+After formatting, issue TRIM (hole punch) for the whole free data region.
+Useful when recreating an existing image file and reclaiming backend storage is desired.
 .SH EXAMPLES
 Create a 2GiB image with 4MiB journal:
 .PP

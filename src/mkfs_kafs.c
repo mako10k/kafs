@@ -16,16 +16,44 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/syscall.h>
+#include <linux/falloc.h>
+#endif
 
 static void usage(const char *prog)
 {
   fprintf(stderr,
           "Usage: %s <image> [--size-bytes N|-s N] [--blksize-log L|-b L] [--inodes I|-i I] "
-          "[--journal-size-bytes J|-J J]\n",
+          "[--journal-size-bytes J|-J J] [--trim-data-area]\n",
           prog);
   fprintf(stderr, "  defaults: N=1GiB, L=12 (4096B), I=65536, J=1MiB\n");
   fprintf(stderr, "  sizes accept suffix K/M/G (binary, e.g. 64M = 67108864)\n");
   fprintf(stderr, "  if image exists and size>0, file size is used (overrides -s)\n");
+  fprintf(stderr, "  --trim-data-area punches holes for the whole free data region after format\n");
+}
+
+static int mkfs_trim_range(int fd, off_t off, off_t len)
+{
+  if (len <= 0)
+    return 0;
+#ifdef __linux__
+#ifdef SYS_fallocate
+  if (syscall(SYS_fallocate, fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, off, len) == 0)
+    return 0;
+  return -errno;
+#else
+  (void)fd;
+  (void)off;
+  (void)len;
+  return -ENOSYS;
+#endif
+#else
+  (void)fd;
+  (void)off;
+  (void)len;
+  return -ENOTSUP;
+#endif
 }
 
 static int parse_size_bytes(const char *arg, unsigned long long *out)
@@ -199,6 +227,7 @@ int main(int argc, char **argv)
   kafs_inocnt_t inocnt = 65536;                 // number of inodes
   size_t journal_bytes = 1u << 20;              // 1MiB default journal region
   int size_arg_provided = 0;
+  int trim_data_area = 0;
 
   for (int i = 1; i < argc; ++i)
   {
@@ -235,6 +264,10 @@ int main(int argc, char **argv)
       journal_bytes = (size_t)tmp;
       if (journal_bytes < 4096)
         journal_bytes = 4096; // minimum
+    }
+    else if (strcmp(argv[i], "--trim-data-area") == 0)
+    {
+      trim_data_area = 1;
     }
     else if (argv[i][0] != '-' && img == NULL)
     {
@@ -434,6 +467,17 @@ int main(int argc, char **argv)
       char *end3 = base3 + mapsize;
       assert(jhdr_ptr >= base3 && jhdr_ptr + sizeof(jh) <= end3);
       memcpy(jhdr_ptr, &jh, sizeof(jh));
+    }
+  }
+
+  if (trim_data_area)
+  {
+    off_t data_off = (off_t)fdb << log_blksize;
+    off_t data_len = ((off_t)blkcnt - (off_t)fdb) << log_blksize;
+    int trc = mkfs_trim_range(ctx.c_fd, data_off, data_len);
+    if (trc != 0)
+    {
+      fprintf(stderr, "warning: --trim-data-area failed rc=%d\n", trc);
     }
   }
 

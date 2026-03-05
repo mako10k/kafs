@@ -8,7 +8,12 @@
 #include <errno.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 #include <fuse.h>
+#ifdef __linux__
+#include <sys/syscall.h>
+#include <linux/falloc.h>
+#endif
 
 /// ブロック番号のうち存在しないことを表す値
 #define KAFS_BLO_NONE ((kafs_blkcnt_t)0)
@@ -282,6 +287,37 @@ static int kafs_blk_set_usage_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo
       word &= (kafs_blkmask_t)~bit;
       kafs_blk_account_bit_update(ctx, blkmasktbl, blod, word);
       kafs_blk_account_meta_update(ctx, sb, blo, +1);
+
+      if (ctx->c_trim_on_free)
+      {
+        kafs_blkcnt_t fdb = kafs_sb_first_data_block_get(sb);
+        if (blo >= fdb)
+        {
+#ifdef __linux__
+#ifdef SYS_fallocate
+          off_t off = (off_t)blo << kafs_sb_log_blksize_get(sb);
+          off_t len = (off_t)kafs_sb_blksize_get(sb);
+          if (syscall(SYS_fallocate, ctx->c_fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, off,
+                      len) == 0)
+          {
+            __atomic_add_fetch(&ctx->c_stat_trim_issued, 1u, __ATOMIC_RELAXED);
+          }
+          else
+          {
+            int e = errno;
+            __atomic_add_fetch(&ctx->c_stat_trim_failed, 1u, __ATOMIC_RELAXED);
+            // EOPNOTSUPP/ENOSYS are expected on some backing filesystems.
+            kafs_log(KAFS_LOG_DEBUG,
+                     "%s: trim failed blo=%" PRIuFAST32 " off=%" PRIuFAST64
+                     " len=%" PRIuFAST64 " errno=%d\n",
+                     __func__, blo, (uint64_t)off, (uint64_t)len, e);
+          }
+#else
+          (void)ctx;
+#endif
+#endif
+        }
+      }
     }
   }
   return KAFS_SUCCESS;

@@ -93,6 +93,11 @@ struct kafs_context
   uint64_t c_stat_blk_set_usage_ns_bit_update;
   uint64_t c_stat_blk_set_usage_ns_freecnt_update;
   uint64_t c_stat_blk_set_usage_ns_wtime_update;
+  uint64_t c_stat_trim_issued;
+  uint64_t c_stat_trim_failed;
+
+  // --- Optional runtime TRIM behavior ---
+  uint32_t c_trim_on_free;
 
   // --- Allocator v3 runtime state ---
   uint32_t c_alloc_v3_summary_dirty;

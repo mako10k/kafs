@@ -5577,6 +5577,8 @@ static void usage(const char *prog)
       "       writeback cache is enabled by default (stability workaround).\n"
       "       disable via --no-writeback-cache, enable via --writeback-cache,\n"
       "       or use -o no_writeback_cache / -o writeback_cache.\n"
+      "       optional TRIM on freed blocks: --trim-on-free / --no-trim-on-free,\n"
+      "       env KAFS_TRIM_ON_FREE=1/0, or -o trim_on_free / no_trim_on_free.\n"
       "       default runs single-threaded; enable MT via -o multi_thread[=N] or env KAFS_MT=1.\n"
       "       MT thread count can be set via -o multi_thread=N (preferred) or env "
       "KAFS_MAX_THREADS.\n"
@@ -5712,6 +5714,8 @@ int main(int argc, char **argv)
   kafs_bool_t migrate_yes = KAFS_FALSE;
   kafs_bool_t writeback_cache_enabled = KAFS_TRUE;
   kafs_bool_t writeback_cache_explicit = KAFS_FALSE;
+  kafs_bool_t trim_on_free_enabled = KAFS_FALSE;
+  kafs_bool_t trim_on_free_explicit = KAFS_FALSE;
   const char *wbc_env = getenv("KAFS_WRITEBACK_CACHE");
   if (wbc_env && *wbc_env)
   {
@@ -5721,6 +5725,16 @@ int main(int argc, char **argv)
     else if (strcmp(wbc_env, "1") == 0 || strcasecmp(wbc_env, "true") == 0 ||
              strcasecmp(wbc_env, "on") == 0 || strcasecmp(wbc_env, "yes") == 0)
       writeback_cache_enabled = KAFS_TRUE;
+  }
+  const char *trim_env = getenv("KAFS_TRIM_ON_FREE");
+  if (trim_env && *trim_env)
+  {
+    if (strcmp(trim_env, "0") == 0 || strcasecmp(trim_env, "false") == 0 ||
+        strcasecmp(trim_env, "off") == 0 || strcasecmp(trim_env, "no") == 0)
+      trim_on_free_enabled = KAFS_FALSE;
+    else if (strcmp(trim_env, "1") == 0 || strcasecmp(trim_env, "true") == 0 ||
+             strcasecmp(trim_env, "on") == 0 || strcasecmp(trim_env, "yes") == 0)
+      trim_on_free_enabled = KAFS_TRUE;
   }
   // argv から --image と --help を取り除き fuse_main へは渡さない
   char *argv_clean[argc];
@@ -5754,6 +5768,18 @@ int main(int argc, char **argv)
     {
       writeback_cache_enabled = KAFS_TRUE;
       writeback_cache_explicit = KAFS_TRUE;
+      continue;
+    }
+    if (strcmp(a, "--trim-on-free") == 0)
+    {
+      trim_on_free_enabled = KAFS_TRUE;
+      trim_on_free_explicit = KAFS_TRUE;
+      continue;
+    }
+    if (strcmp(a, "--no-trim-on-free") == 0)
+    {
+      trim_on_free_enabled = KAFS_FALSE;
+      trim_on_free_explicit = KAFS_TRUE;
       continue;
     }
     if (strcmp(a, "--image") == 0)
@@ -5882,6 +5908,18 @@ int main(int argc, char **argv)
           {
             writeback_cache_enabled = KAFS_FALSE;
             writeback_cache_explicit = KAFS_TRUE;
+            continue;
+          }
+          if (strcmp(tok, "trim_on_free") == 0)
+          {
+            trim_on_free_enabled = KAFS_TRUE;
+            trim_on_free_explicit = KAFS_TRUE;
+            continue;
+          }
+          if (strcmp(tok, "no_trim_on_free") == 0)
+          {
+            trim_on_free_enabled = KAFS_FALSE;
+            trim_on_free_explicit = KAFS_TRUE;
             continue;
           }
 
@@ -6374,6 +6412,7 @@ int main(int argc, char **argv)
     kafs_log(KAFS_LOG_INFO, "kafs: enabling multithread with -o %s\n", mt_opt_buf);
   }
   g_kafs_writeback_cache_enabled = writeback_cache_enabled ? 1 : 0;
+  ctx.c_trim_on_free = trim_on_free_enabled ? 1u : 0u;
   if (writeback_cache_explicit)
   {
     kafs_log(KAFS_LOG_INFO, "kafs: writeback_cache %s (explicit)\n",
@@ -6383,6 +6422,16 @@ int main(int argc, char **argv)
   {
     kafs_log(KAFS_LOG_INFO, "kafs: writeback_cache %s (default)\n",
              writeback_cache_enabled ? "enabled" : "disabled");
+  }
+  if (trim_on_free_explicit)
+  {
+    kafs_log(KAFS_LOG_INFO, "kafs: trim_on_free %s (explicit)\n",
+             trim_on_free_enabled ? "enabled" : "disabled");
+  }
+  else
+  {
+    kafs_log(KAFS_LOG_INFO, "kafs: trim_on_free %s (default)\n",
+             trim_on_free_enabled ? "enabled" : "disabled");
   }
   // 起動引数を一度だけ情報ログに出力（デバッグ用途）
   if (kafs_debug_level() >= 1)

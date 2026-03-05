@@ -544,6 +544,36 @@ static int punch_unreferenced_data_blocks(kafs_context_t *ctx, int fd, struct pu
   return 0;
 }
 
+static int trim_free_data_blocks(kafs_context_t *ctx, int fd, struct punch_stats *stats)
+{
+  if (!ctx || !stats)
+    return -EINVAL;
+
+  memset(stats, 0, sizeof(*stats));
+  kafs_ssuperblock_t *sb = ctx->c_superblock;
+  kafs_blkcnt_t blkcnt = kafs_sb_blkcnt_get(sb);
+  kafs_blkcnt_t fdb = kafs_sb_first_data_block_get(sb);
+  kafs_logblksize_t l2 = kafs_sb_log_blksize_get(sb);
+  kafs_blksize_t blksize = kafs_sb_blksize_get(sb);
+
+  for (kafs_blkcnt_t blo = fdb; blo < blkcnt; ++blo)
+  {
+    if (kafs_blk_get_usage(ctx, blo))
+      continue;
+
+    stats->candidates++;
+    int prc = fsck_punch_hole(fd, ((off_t)blo << l2), (off_t)blksize);
+    if (prc != 0)
+    {
+      stats->punch_failed++;
+      continue;
+    }
+    stats->punched++;
+  }
+
+  return 0;
+}
+
 static void usage(const char *prog)
 {
   fprintf(stderr,
@@ -552,7 +582,7 @@ static void usage(const char *prog)
           "       %s [--check-journal] [--repair-journal-reset] "
           "[--check-dirent-ino-orphans] [--repair-dirent-ino-orphans] "
           "[--check-hrl-blo-refcounts] [--replay-journal] "
-          "[--punch-hole-unreferenced-data-blocks] <image>\n",
+          "[--punch-hole-unreferenced-data-blocks] [--trim-free-data-blocks] <image>\n",
           prog, prog);
 }
 
@@ -577,6 +607,7 @@ int main(int argc, char **argv)
   int do_check_hrl_blo_refcounts = 0;
   int do_replay_journal = 0;
   int do_punch_hole_unreferenced_data_blocks = 0;
+  int do_trim_free_data_blocks = 0;
   int do_check_journal = 1;
 
   int has_preset_mode = 0;
@@ -652,6 +683,11 @@ int main(int argc, char **argv)
       do_punch_hole_unreferenced_data_blocks = 1;
       has_low_level_mode = 1;
     }
+    else if (strcmp(argv[i], "--trim-free-data-blocks") == 0)
+    {
+      do_trim_free_data_blocks = 1;
+      has_low_level_mode = 1;
+    }
     else if (argv[i][0] != '-' && !img)
     {
       img = argv[i];
@@ -719,7 +755,7 @@ int main(int argc, char **argv)
   }
 
   int want_write = do_journal_reset || do_repair_dirent_ino_orphans;
-  if (do_replay_journal || do_punch_hole_unreferenced_data_blocks)
+  if (do_replay_journal || do_punch_hole_unreferenced_data_blocks || do_trim_free_data_blocks)
     want_write = 1;
   int fd = open(img, want_write ? O_RDWR : O_RDONLY);
   if (fd < 0)
@@ -760,7 +796,7 @@ int main(int argc, char **argv)
   }
 
   if (do_check_dirent_ino_orphans || do_repair_dirent_ino_orphans || do_check_hrl_blo_refcounts ||
-      do_replay_journal || do_punch_hole_unreferenced_data_blocks)
+      do_replay_journal || do_punch_hole_unreferenced_data_blocks || do_trim_free_data_blocks)
   {
     kafs_context_t ctx;
     memset(&ctx, 0, sizeof(ctx));
@@ -913,6 +949,26 @@ int main(int argc, char **argv)
               pst.candidates, pst.already_free, pst.punched, pst.punch_failed, pst.mark_failed);
 
       if ((pst.punch_failed > 0 || pst.mark_failed > 0) && exit_code == 0)
+        exit_code = FSCK_EXIT_PUNCH_HOLE_PARTIAL;
+    }
+
+    if (do_trim_free_data_blocks)
+    {
+      struct punch_stats tst;
+      int trc = trim_free_data_blocks(&ctx, fd, &tst);
+      if (trc != 0)
+      {
+        munmap(ctx.c_img_base, ctx.c_img_size);
+        close(fd);
+        return 1;
+      }
+
+      fprintf(stderr,
+              "Trim-free summary: candidates=%" PRIu64 " punched=%" PRIu64
+              " punch_failed=%" PRIu64 "\n",
+              tst.candidates, tst.punched, tst.punch_failed);
+
+      if (tst.punch_failed > 0 && exit_code == 0)
         exit_code = FSCK_EXIT_PUNCH_HOLE_PARTIAL;
     }
 
