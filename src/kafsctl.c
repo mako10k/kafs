@@ -435,13 +435,32 @@ static int get_hotplug_status(const char *mnt, kafs_hotplug_status_t *out)
   return 0;
 }
 
+static void hotplug_print_exchange_error(const char *op, const char *mnt, int rc)
+{
+  if (rc == -ENOENT)
+  {
+    fprintf(stderr,
+            "hotplug %s failed: %s (control endpoint '/.kafs.sock' not found under mountpoint '%s'; ensure it is an active KAFS mount)\n",
+            op, strerror(ENOENT), mnt ? mnt : "(null)");
+    return;
+  }
+  if (rc == -ENOSYS)
+  {
+    fprintf(stderr,
+            "hotplug %s failed: %s (hotplug control is disabled on this mount; restart KAFS with KAFS_HOTPLUG_UDS set, then run kafs-back)\n",
+            op, strerror(ENOSYS));
+    return;
+  }
+  fprintf(stderr, "hotplug %s failed: %s\n", op, strerror(-rc));
+}
+
 static int cmd_hotplug_status(const char *mnt, int json)
 {
   kafs_hotplug_status_t st;
   int rc = get_hotplug_status(mnt, &st);
   if (rc != 0)
   {
-    fprintf(stderr, "hotplug status failed: %s\n", strerror(-rc));
+    hotplug_print_exchange_error("status", mnt, rc);
     return 1;
   }
 
@@ -509,7 +528,7 @@ static int cmd_hotplug_restart(const char *mnt)
       hotplug_ctl_exchange(mnt, KAFS_RPC_OP_CTL_RESTART, NULL, 0, NULL, 0, &resp_len, &resp_result);
   if (rc != 0)
   {
-    fprintf(stderr, "hotplug restart failed: %s\n", strerror(-rc));
+    hotplug_print_exchange_error("restart", mnt, rc);
     return 1;
   }
   if (resp_result != 0)
@@ -526,7 +545,7 @@ static int cmd_hotplug_compat(const char *mnt, int json)
   int rc = get_hotplug_status(mnt, &st);
   if (rc != 0)
   {
-    fprintf(stderr, "hotplug compat failed: %s\n", strerror(-rc));
+    hotplug_print_exchange_error("compat", mnt, rc);
     return 1;
   }
 
@@ -581,7 +600,7 @@ static int cmd_hotplug_set_timeout(const char *mnt, const char *timeout_str)
                                 &resp_len, &resp_result);
   if (rc != 0)
   {
-    fprintf(stderr, "hotplug set-timeout failed: %s\n", strerror(-rc));
+    hotplug_print_exchange_error("set-timeout", mnt, rc);
     return 1;
   }
   if (resp_result != 0)
@@ -632,7 +651,7 @@ static int cmd_hotplug_set_dedup_priority(const char *mnt, const char *mode_str,
                                 &resp_len, &resp_result);
   if (rc != 0)
   {
-    fprintf(stderr, "hotplug set-dedup-priority failed: %s\n", strerror(-rc));
+    hotplug_print_exchange_error("set-dedup-priority", mnt, rc);
     return 1;
   }
   if (resp_result != 0)
@@ -652,7 +671,7 @@ static int cmd_hotplug_env_list(const char *mnt)
                                 &resp_len, &resp_result);
   if (rc != 0)
   {
-    fprintf(stderr, "hotplug env list failed: %s\n", strerror(-rc));
+    hotplug_print_exchange_error("env list", mnt, rc);
     return 1;
   }
   if (resp_result != 0)
@@ -696,7 +715,7 @@ static int cmd_hotplug_env_set(const char *mnt, const char *kv)
                                 &resp_result);
   if (rc != 0)
   {
-    fprintf(stderr, "hotplug env set failed: %s\n", strerror(-rc));
+    hotplug_print_exchange_error("env set", mnt, rc);
     return 1;
   }
   if (resp_result != 0)
@@ -723,7 +742,7 @@ static int cmd_hotplug_env_unset(const char *mnt, const char *key)
                                 &resp_len, &resp_result);
   if (rc != 0)
   {
-    fprintf(stderr, "hotplug env unset failed: %s\n", strerror(-rc));
+    hotplug_print_exchange_error("env unset", mnt, rc);
     return 1;
   }
   if (resp_result != 0)

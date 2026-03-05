@@ -203,6 +203,16 @@ export KAFS_HOTPLUG_UDS=/tmp/kafs-hotplug.sock
 ./kafs-back
 ```
 
+You can also enable hotplug explicitly at mount time (including `mount -o ...` style):
+
+```sh
+./kafs --image /tmp/kafs.img --hotplug /tmp/kafs-mnt -f
+./kafs --image /tmp/kafs.img --hotplug=/run/kafs/hotplug.sock /tmp/kafs-mnt -f
+./kafs --image /tmp/kafs.img /tmp/kafs-mnt -f -o hotplug
+./kafs --image /tmp/kafs.img /tmp/kafs-mnt -f -o hotplug_uds=/run/kafs/hotplug.sock
+./kafs --image /tmp/kafs.img /tmp/kafs-mnt -f -o hotplug_back_bin=/usr/local/bin/kafs-back
+```
+
 Use `kafsctl` to inspect or control hotplug:
 
 ```sh

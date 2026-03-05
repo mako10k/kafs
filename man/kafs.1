@@ -100,6 +100,37 @@ Alias for
 .BR -o " " dedup_worker_nice= "<0..19>"
 Alias for
 .BR pending_worker_nice .
+.SS Hotplug
+.TP
+.B --hotplug
+Enable hotplug using the default UDS endpoint
+.IR /tmp/kafs-hotplug.sock .
+.TP
+.BR --hotplug= " <uds>"
+Enable hotplug and set the UDS endpoint path.
+.TP
+.BR --hotplug-uds " " <uds>
+Set the hotplug UDS endpoint path.
+.TP
+.BR --hotplug-back-bin " " <path>
+Set backend binary path hint stored in hotplug env
+.RB ( KAFS_HOTPLUG_BACK_BIN ).
+.TP
+.BR -o " " hotplug "[=" "<uds>" "]"
+Alias for
+.BR --hotplug .
+When
+.I <uds>
+is specified, it is equivalent to
+.BR --hotplug= .
+.TP
+.BR -o " " hotplug_uds= "<uds>"
+Alias for
+.BR --hotplug-uds .
+.TP
+.BR -o " " hotplug_back_bin= "<path>"
+Alias for
+.BR --hotplug-back-bin .
 .SH ENVIRONMENT
 .TP
 .B KAFS_IMAGE
@@ -128,6 +159,12 @@ Default value for
 .B KAFS_PENDING_WORKER_NICE
 Default value for
 .BR -o " " pending_worker_nice= .
+.TP
+.B KAFS_HOTPLUG_UDS
+Hotplug UDS endpoint path used when explicit hotplug options are not provided.
+.TP
+.B KAFS_HOTPLUG_BACK_BIN
+Backend binary path hint exposed via hotplug env list.
 .TP
 .B KAFS_JOURNAL_GC_NS
 Group commit window in nanoseconds (default 10000000ns).

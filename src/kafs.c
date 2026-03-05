@@ -2714,6 +2714,7 @@ static int kafs_hotplug_should_fallback(int rc)
 
 #define KAFS_HOTPLUG_WAIT_TIMEOUT_MS_DEFAULT 2000u
 #define KAFS_HOTPLUG_WAIT_QUEUE_LIMIT_DEFAULT 64u
+#define KAFS_HOTPLUG_UDS_DEFAULT "/tmp/kafs-hotplug.sock"
 
 static int kafs_hotplug_enabled(const kafs_context_t *ctx)
 {
@@ -5608,6 +5609,15 @@ static void usage(const char *prog)
   "multithread)\n"
   "                                      Default: single-threaded unless enabled\n"
   "\n"
+  "  [Hotplug]\n"
+  "    --hotplug                         Enable hotplug using default UDS\n"
+  "    --hotplug=<uds>                   Enable hotplug and set UDS path\n"
+  "    --hotplug-uds <uds>               Hotplug UDS path (explicit form)\n"
+  "    --hotplug-back-bin <path>         Backend binary path hint\n"
+  "    -o hotplug[=<uds>]                Same as --hotplug[=<uds>]\n"
+  "    -o hotplug_uds=<uds>              Same as --hotplug-uds\n"
+  "    -o hotplug_back_bin=<path>        Same as --hotplug-back-bin\n"
+  "\n"
   "  [Pending Worker]\n"
   "    -o pending_worker_prio=<normal|idle>\n"
   "                                      Set pending worker scheduling mode\n"
@@ -5623,6 +5633,8 @@ static void usage(const char *prog)
   "    KAFS_MAX_THREADS=<N>              Default MT worker count\n"
   "    KAFS_PENDING_WORKER_PRIO          pending_worker_prio default\n"
   "    KAFS_PENDING_WORKER_NICE          pending_worker_nice default\n"
+  "    KAFS_HOTPLUG_UDS                  Hotplug UDS path (legacy/env)\n"
+  "    KAFS_HOTPLUG_BACK_BIN             Backend binary path hint\n"
   "\n"
   "Notes:\n"
   "    v2 images are refused by default. Use `kafsctl migrate <image> [--yes]`\n"
@@ -5756,6 +5768,10 @@ int main(int argc, char **argv)
   kafs_bool_t writeback_cache_explicit = KAFS_FALSE;
   kafs_bool_t trim_on_free_enabled = KAFS_FALSE;
   kafs_bool_t trim_on_free_explicit = KAFS_FALSE;
+  char hotplug_uds_opt[sizeof(((struct sockaddr_un *)0)->sun_path)];
+  hotplug_uds_opt[0] = '\0';
+  char hotplug_back_bin_opt[PATH_MAX];
+  hotplug_back_bin_opt[0] = '\0';
   const char *wbc_env = getenv("KAFS_WRITEBACK_CACHE");
   if (wbc_env && *wbc_env)
   {
@@ -5820,6 +5836,78 @@ int main(int argc, char **argv)
     {
       trim_on_free_enabled = KAFS_FALSE;
       trim_on_free_explicit = KAFS_TRUE;
+      continue;
+    }
+    if (strcmp(a, "--hotplug") == 0)
+    {
+      snprintf(hotplug_uds_opt, sizeof(hotplug_uds_opt), "%s", KAFS_HOTPLUG_UDS_DEFAULT);
+      continue;
+    }
+    if (strncmp(a, "--hotplug=", 10) == 0)
+    {
+      const char *v = a + 10;
+      if (!*v || snprintf(hotplug_uds_opt, sizeof(hotplug_uds_opt), "%s", v) >=
+                    (int)sizeof(hotplug_uds_opt))
+      {
+        fprintf(stderr, "invalid --hotplug value\n");
+        return 2;
+      }
+      continue;
+    }
+    if (strcmp(a, "--hotplug-uds") == 0)
+    {
+      if (i + 1 < argc)
+      {
+        const char *v = argv[++i];
+        if (!*v || snprintf(hotplug_uds_opt, sizeof(hotplug_uds_opt), "%s", v) >=
+                      (int)sizeof(hotplug_uds_opt))
+        {
+          fprintf(stderr, "invalid --hotplug-uds value\n");
+          return 2;
+        }
+        continue;
+      }
+      fprintf(stderr, "--hotplug-uds requires a path argument.\n");
+      usage(argv[0]);
+      return 2;
+    }
+    if (strncmp(a, "--hotplug-uds=", 14) == 0)
+    {
+      const char *v = a + 14;
+      if (!*v || snprintf(hotplug_uds_opt, sizeof(hotplug_uds_opt), "%s", v) >=
+                    (int)sizeof(hotplug_uds_opt))
+      {
+        fprintf(stderr, "invalid --hotplug-uds value\n");
+        return 2;
+      }
+      continue;
+    }
+    if (strcmp(a, "--hotplug-back-bin") == 0)
+    {
+      if (i + 1 < argc)
+      {
+        const char *v = argv[++i];
+        if (!*v || snprintf(hotplug_back_bin_opt, sizeof(hotplug_back_bin_opt), "%s", v) >=
+                      (int)sizeof(hotplug_back_bin_opt))
+        {
+          fprintf(stderr, "invalid --hotplug-back-bin value\n");
+          return 2;
+        }
+        continue;
+      }
+      fprintf(stderr, "--hotplug-back-bin requires a path argument.\n");
+      usage(argv[0]);
+      return 2;
+    }
+    if (strncmp(a, "--hotplug-back-bin=", 19) == 0)
+    {
+      const char *v = a + 19;
+      if (!*v || snprintf(hotplug_back_bin_opt, sizeof(hotplug_back_bin_opt), "%s", v) >=
+                    (int)sizeof(hotplug_back_bin_opt))
+      {
+        fprintf(stderr, "invalid --hotplug-back-bin value\n");
+        return 2;
+      }
       continue;
     }
     if (strcmp(a, "--image") == 0)
@@ -5960,6 +6048,50 @@ int main(int argc, char **argv)
           {
             trim_on_free_enabled = KAFS_FALSE;
             trim_on_free_explicit = KAFS_TRUE;
+            continue;
+          }
+
+          if (strcmp(tok, "hotplug") == 0)
+          {
+            snprintf(hotplug_uds_opt, sizeof(hotplug_uds_opt), "%s", KAFS_HOTPLUG_UDS_DEFAULT);
+            continue;
+          }
+
+          const char *hotplug_uds_v = NULL;
+          if (strncmp(tok, "hotplug=", 8) == 0)
+            hotplug_uds_v = tok + 8;
+          else if (strncmp(tok, "hotplug_uds=", 12) == 0)
+            hotplug_uds_v = tok + 12;
+          else if (strncmp(tok, "hotplug-uds=", 12) == 0)
+            hotplug_uds_v = tok + 12;
+          if (hotplug_uds_v)
+          {
+            if (!*hotplug_uds_v ||
+                snprintf(hotplug_uds_opt, sizeof(hotplug_uds_opt), "%s", hotplug_uds_v) >=
+                    (int)sizeof(hotplug_uds_opt))
+            {
+              fprintf(stderr, "invalid -o hotplug uds path: '%s'\n", hotplug_uds_v);
+              free(dup);
+              return 2;
+            }
+            continue;
+          }
+
+          const char *hotplug_back_bin_v = NULL;
+          if (strncmp(tok, "hotplug_back_bin=", 17) == 0)
+            hotplug_back_bin_v = tok + 17;
+          else if (strncmp(tok, "hotplug-back-bin=", 17) == 0)
+            hotplug_back_bin_v = tok + 17;
+          if (hotplug_back_bin_v)
+          {
+            if (!*hotplug_back_bin_v ||
+                snprintf(hotplug_back_bin_opt, sizeof(hotplug_back_bin_opt), "%s",
+                         hotplug_back_bin_v) >= (int)sizeof(hotplug_back_bin_opt))
+            {
+              fprintf(stderr, "invalid -o hotplug_back_bin path: '%s'\n", hotplug_back_bin_v);
+              free(dup);
+              return 2;
+            }
             continue;
           }
 
@@ -6177,11 +6309,16 @@ int main(int argc, char **argv)
       ctx.c_hotplug_wait_queue_limit = (uint32_t)v;
   }
 
-  const char *hotplug_uds = getenv("KAFS_HOTPLUG_UDS");
+  const char *hotplug_uds = hotplug_uds_opt[0] != '\0' ? hotplug_uds_opt : getenv("KAFS_HOTPLUG_UDS");
+  const char *hotplug_back_bin =
+      hotplug_back_bin_opt[0] != '\0' ? hotplug_back_bin_opt : getenv("KAFS_HOTPLUG_BACK_BIN");
   if (hotplug_uds)
   {
     ctx.c_hotplug_state = KAFS_HOTPLUG_STATE_WAITING;
     snprintf(ctx.c_hotplug_uds_path, sizeof(ctx.c_hotplug_uds_path), "%s", hotplug_uds);
+    (void)kafs_hotplug_env_set(&ctx, "KAFS_HOTPLUG_UDS", hotplug_uds);
+    if (hotplug_back_bin && *hotplug_back_bin)
+      (void)kafs_hotplug_env_set(&ctx, "KAFS_HOTPLUG_BACK_BIN", hotplug_back_bin);
     if (!ctx.c_hotplug_wait_lock_init)
     {
       if (pthread_mutex_init(&ctx.c_hotplug_wait_lock, NULL) == 0 &&
