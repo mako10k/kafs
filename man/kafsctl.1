@@ -44,7 +44,14 @@ interactive confirmation is required.
 Show hotplug status, including session/epoch and compatibility.
 .TP
 .B hotplug restart-back
-Request a hotplug reconnect by transitioning the front to waiting state.
+Request a hotplug reconnect and back process restart.
+The mounted
+.B kafs
+front spawns
+.B kafs-back
+by default, or
+.B KAFS_HOTPLUG_BACK_BIN
+when configured via hotplug env.
 .TP
 .B hotplug compat
 Show front/back version compatibility.

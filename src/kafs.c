@@ -25,6 +25,7 @@
 #include <sys/mman.h>
 #include <sys/statvfs.h>
 #include <sys/resource.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <stdlib.h>
 #include <stddef.h>
@@ -2747,6 +2748,171 @@ static int kafs_hotplug_is_disconnect_error(int rc)
 }
 
 static int kafs_hotplug_wait_for_back(kafs_context_t *ctx, const char *uds_path, int timeout_ms);
+static void kafs_hotplug_env_lock(kafs_context_t *ctx);
+static void kafs_hotplug_env_unlock(kafs_context_t *ctx);
+
+static void kafs_hotplug_set_fd_timeout_ms(int fd, uint32_t timeout_ms)
+{
+  if (fd < 0)
+    return;
+  if (timeout_ms == 0)
+    timeout_ms = KAFS_HOTPLUG_WAIT_TIMEOUT_MS_DEFAULT;
+  struct timeval tv;
+  tv.tv_sec = (time_t)(timeout_ms / 1000u);
+  tv.tv_usec = (suseconds_t)((timeout_ms % 1000u) * 1000u);
+  (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+}
+
+static int kafs_hotplug_complete_handshake(kafs_context_t *ctx, int cli)
+{
+  kafs_rpc_hdr_t hdr;
+  kafs_rpc_hello_t hello;
+  uint32_t payload_len = 0;
+  int rc = kafs_rpc_recv_msg(cli, &hdr, &hello, sizeof(hello), &payload_len);
+  if (rc != 0 || hdr.op != KAFS_RPC_OP_HELLO)
+  {
+    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
+    ctx->c_hotplug_last_error = rc != 0 ? rc : -EBADMSG;
+    ctx->c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_REJECT;
+    ctx->c_hotplug_compat_reason = rc != 0 ? rc : -EBADMSG;
+    return rc != 0 ? rc : -EBADMSG;
+  }
+  if (payload_len != sizeof(hello))
+  {
+    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
+    ctx->c_hotplug_last_error = -EBADMSG;
+    ctx->c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_REJECT;
+    ctx->c_hotplug_compat_reason = -EBADMSG;
+    return -EBADMSG;
+  }
+  ctx->c_hotplug_back_major = hello.major;
+  ctx->c_hotplug_back_minor = hello.minor;
+  ctx->c_hotplug_back_features = hello.feature_flags;
+  if (hello.major != KAFS_RPC_HELLO_MAJOR || hello.minor != KAFS_RPC_HELLO_MINOR ||
+      (hello.feature_flags & ~KAFS_RPC_HELLO_FEATURES) != 0)
+  {
+    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
+    ctx->c_hotplug_last_error = -EPROTONOSUPPORT;
+    ctx->c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_REJECT;
+    ctx->c_hotplug_compat_reason = -EPROTONOSUPPORT;
+    return -EPROTONOSUPPORT;
+  }
+  ctx->c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_OK;
+  ctx->c_hotplug_compat_reason = 0;
+
+  uint64_t session_id = ctx->c_hotplug_session_id;
+  uint32_t next_epoch = ctx->c_hotplug_epoch;
+  if (session_id == 0)
+  {
+    session_id = kafs_rpc_next_req_id();
+    next_epoch = 0u;
+  }
+  else
+  {
+    next_epoch = ctx->c_hotplug_epoch + 1u;
+  }
+
+  kafs_rpc_session_restore_t restore;
+  restore.open_handle_count = 0u;
+  uint64_t req_id = kafs_rpc_next_req_id();
+  rc = kafs_rpc_send_msg(cli, KAFS_RPC_OP_SESSION_RESTORE, KAFS_RPC_FLAG_ENDIAN_HOST, req_id,
+                         session_id, next_epoch, &restore, sizeof(restore));
+  if (rc != 0)
+  {
+    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
+    ctx->c_hotplug_last_error = rc;
+    return rc;
+  }
+
+  kafs_rpc_hdr_t ready_hdr;
+  uint32_t ready_len = 0;
+  rc = kafs_rpc_recv_msg(cli, &ready_hdr, NULL, 0, &ready_len);
+  if (rc != 0 || ready_hdr.op != KAFS_RPC_OP_READY)
+  {
+    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
+    ctx->c_hotplug_last_error = rc != 0 ? rc : -EBADMSG;
+    return rc != 0 ? rc : -EBADMSG;
+  }
+  if (ready_len != 0)
+  {
+    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
+    ctx->c_hotplug_last_error = -EBADMSG;
+    return -EBADMSG;
+  }
+
+  ctx->c_hotplug_fd = cli;
+  ctx->c_hotplug_active = 1;
+  ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_CONNECTED;
+  ctx->c_hotplug_last_error = 0;
+  ctx->c_hotplug_session_id = session_id;
+  ctx->c_hotplug_epoch = next_epoch;
+  if (!ctx->c_hotplug_lock_init)
+  {
+    if (pthread_mutex_init(&ctx->c_hotplug_lock, NULL) == 0)
+      ctx->c_hotplug_lock_init = 1;
+  }
+  kafs_hotplug_wait_notify(ctx);
+  return 0;
+}
+
+static int kafs_hotplug_spawn_back_for_restart(kafs_context_t *ctx, int *out_front_fd)
+{
+  if (!ctx || !out_front_fd)
+    return -EINVAL;
+
+  kafs_hotplug_env_entry_t envs[KAFS_HOTPLUG_ENV_MAX];
+  uint32_t env_count = 0;
+  char back_bin_buf[PATH_MAX];
+  snprintf(back_bin_buf, sizeof(back_bin_buf), "%s", "kafs-back");
+
+  kafs_hotplug_env_lock(ctx);
+  env_count = ctx->c_hotplug_env_count;
+  if (env_count > KAFS_HOTPLUG_ENV_MAX)
+    env_count = KAFS_HOTPLUG_ENV_MAX;
+  for (uint32_t i = 0; i < env_count; ++i)
+  {
+    envs[i] = ctx->c_hotplug_env[i];
+    if (strcmp(envs[i].key, "KAFS_HOTPLUG_BACK_BIN") == 0 && envs[i].value[0] != '\0')
+      snprintf(back_bin_buf, sizeof(back_bin_buf), "%s", envs[i].value);
+  }
+  kafs_hotplug_env_unlock(ctx);
+
+  int fds[2];
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0)
+    return -errno;
+
+  pid_t pid = fork();
+  if (pid < 0)
+  {
+    int rc = -errno;
+    close(fds[0]);
+    close(fds[1]);
+    return rc;
+  }
+  if (pid == 0)
+  {
+    close(fds[0]);
+    char fd_buf[32];
+    snprintf(fd_buf, sizeof(fd_buf), "%d", fds[1]);
+    (void)setenv("KAFS_HOTPLUG_BACK_FD", fd_buf, 1);
+    if (ctx->c_hotplug_uds_path[0] != '\0')
+      (void)setenv("KAFS_HOTPLUG_UDS", ctx->c_hotplug_uds_path, 1);
+    for (uint32_t i = 0; i < env_count; ++i)
+      (void)setenv(envs[i].key, envs[i].value, 1);
+
+    char *args[] = {back_bin_buf, NULL};
+    if (strchr(back_bin_buf, '/') != NULL)
+      execv(back_bin_buf, args);
+    else
+      execvp(back_bin_buf, args);
+    _exit(127);
+  }
+
+  close(fds[1]);
+  *out_front_fd = fds[0];
+  return 0;
+}
 
 static void *kafs_hotplug_relisten_thread(void *arg)
 {
@@ -2812,7 +2978,7 @@ static void kafs_hotplug_schedule_relisten(kafs_context_t *ctx)
   pthread_mutex_unlock(&ctx->c_hotplug_wait_lock);
 }
 
-static void kafs_hotplug_mark_disconnected(kafs_context_t *ctx, int rc)
+static void kafs_hotplug_mark_disconnected_internal(kafs_context_t *ctx, int rc, int schedule_relisten)
 {
   if (!ctx)
     return;
@@ -2823,7 +2989,13 @@ static void kafs_hotplug_mark_disconnected(kafs_context_t *ctx, int rc)
   ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_WAITING;
   ctx->c_hotplug_last_error = rc;
   kafs_hotplug_wait_notify(ctx);
-  kafs_hotplug_schedule_relisten(ctx);
+  if (schedule_relisten)
+    kafs_hotplug_schedule_relisten(ctx);
+}
+
+static void kafs_hotplug_mark_disconnected(kafs_context_t *ctx, int rc)
+{
+  kafs_hotplug_mark_disconnected_internal(ctx, rc, 1);
 }
 
 static int kafs_hotplug_wait_for_back(kafs_context_t *ctx, const char *uds_path, int timeout_ms)
@@ -2911,99 +3083,12 @@ static int kafs_hotplug_wait_for_back(kafs_context_t *ctx, const char *uds_path,
   }
   close(srv);
 
-  kafs_rpc_hdr_t hdr;
-  kafs_rpc_hello_t hello;
-  uint32_t payload_len = 0;
-  int rc = kafs_rpc_recv_msg(cli, &hdr, &hello, sizeof(hello), &payload_len);
-  if (rc != 0 || hdr.op != KAFS_RPC_OP_HELLO)
-  {
-    close(cli);
-    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
-    ctx->c_hotplug_last_error = rc != 0 ? rc : -EBADMSG;
-    ctx->c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_REJECT;
-    ctx->c_hotplug_compat_reason = rc != 0 ? rc : -EBADMSG;
-    return rc != 0 ? rc : -EBADMSG;
-  }
-  if (payload_len != sizeof(hello))
-  {
-    close(cli);
-    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
-    ctx->c_hotplug_last_error = -EBADMSG;
-    ctx->c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_REJECT;
-    ctx->c_hotplug_compat_reason = -EBADMSG;
-    return -EBADMSG;
-  }
-  ctx->c_hotplug_back_major = hello.major;
-  ctx->c_hotplug_back_minor = hello.minor;
-  ctx->c_hotplug_back_features = hello.feature_flags;
-  if (hello.major != KAFS_RPC_HELLO_MAJOR || hello.minor != KAFS_RPC_HELLO_MINOR ||
-      (hello.feature_flags & ~KAFS_RPC_HELLO_FEATURES) != 0)
-  {
-    close(cli);
-    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
-    ctx->c_hotplug_last_error = -EPROTONOSUPPORT;
-    ctx->c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_REJECT;
-    ctx->c_hotplug_compat_reason = -EPROTONOSUPPORT;
-    return -EPROTONOSUPPORT;
-  }
-  ctx->c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_OK;
-  ctx->c_hotplug_compat_reason = 0;
-
-  uint64_t session_id = ctx->c_hotplug_session_id;
-  uint32_t next_epoch = ctx->c_hotplug_epoch;
-  if (session_id == 0)
-  {
-    session_id = kafs_rpc_next_req_id();
-    next_epoch = 0u;
-  }
-  else
-  {
-    next_epoch = ctx->c_hotplug_epoch + 1u;
-  }
-
-  kafs_rpc_session_restore_t restore;
-  restore.open_handle_count = 0u;
-  uint64_t req_id = kafs_rpc_next_req_id();
-  rc = kafs_rpc_send_msg(cli, KAFS_RPC_OP_SESSION_RESTORE, KAFS_RPC_FLAG_ENDIAN_HOST, req_id,
-                         session_id, next_epoch, &restore, sizeof(restore));
+  int rc = kafs_hotplug_complete_handshake(ctx, cli);
   if (rc != 0)
   {
     close(cli);
-    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
-    ctx->c_hotplug_last_error = rc;
     return rc;
   }
-
-  kafs_rpc_hdr_t ready_hdr;
-  uint32_t ready_len = 0;
-  rc = kafs_rpc_recv_msg(cli, &ready_hdr, NULL, 0, &ready_len);
-  if (rc != 0 || ready_hdr.op != KAFS_RPC_OP_READY)
-  {
-    close(cli);
-    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
-    ctx->c_hotplug_last_error = rc != 0 ? rc : -EBADMSG;
-    return rc != 0 ? rc : -EBADMSG;
-  }
-  if (ready_len != 0)
-  {
-    close(cli);
-    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
-    ctx->c_hotplug_last_error = -EBADMSG;
-    return -EBADMSG;
-  }
-
-  ctx->c_hotplug_fd = cli;
-  ctx->c_hotplug_active = 1;
-  ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_CONNECTED;
-  ctx->c_hotplug_last_error = 0;
-  ctx->c_hotplug_session_id = session_id;
-  ctx->c_hotplug_epoch = next_epoch;
-  if (!ctx->c_hotplug_lock_init)
-  {
-    if (pthread_mutex_init(&ctx->c_hotplug_lock, NULL) == 0)
-      ctx->c_hotplug_lock_init = 1;
-  }
-  kafs_hotplug_wait_notify(ctx);
   return 0;
 }
 
@@ -3076,6 +3161,37 @@ static int kafs_hotplug_wait_ready(kafs_context_t *ctx)
   if (rc == 0 && !kafs_hotplug_enabled(ctx))
     rc = -EIO;
   return rc;
+}
+
+static int kafs_hotplug_restart_back(kafs_context_t *ctx)
+{
+  if (!ctx)
+    return -EINVAL;
+  if (ctx->c_hotplug_state == KAFS_HOTPLUG_STATE_DISABLED)
+    return -ENOSYS;
+
+  // For explicit restart, stop current channel without scheduling background relisten;
+  // we proactively spawn and re-handshake with kafs-back below.
+  kafs_hotplug_mark_disconnected_internal(ctx, -ECONNRESET, 0);
+
+  int front_fd = -1;
+  int rc = kafs_hotplug_spawn_back_for_restart(ctx, &front_fd);
+  if (rc != 0)
+  {
+    ctx->c_hotplug_last_error = rc;
+    kafs_hotplug_schedule_relisten(ctx);
+    return rc;
+  }
+
+  kafs_hotplug_set_fd_timeout_ms(front_fd, ctx->c_hotplug_wait_timeout_ms);
+  rc = kafs_hotplug_complete_handshake(ctx, front_fd);
+  if (rc != 0)
+  {
+    close(front_fd);
+    kafs_hotplug_schedule_relisten(ctx);
+    return rc;
+  }
+  return 0;
 }
 
 static int kafs_hotplug_call_getattr(struct fuse_context *fctx, kafs_context_t *ctx,
@@ -4063,10 +4179,7 @@ static int kafs_ctl_handle_request(kafs_context_t *ctx, kafs_ctl_session_t *sess
     break;
   }
   case KAFS_RPC_OP_CTL_RESTART:
-    if (ctx->c_hotplug_state == KAFS_HOTPLUG_STATE_DISABLED)
-      result = -ENOSYS;
-    else
-      kafs_hotplug_mark_disconnected(ctx, -ECONNRESET);
+    result = kafs_hotplug_restart_back(ctx);
     break;
   case KAFS_RPC_OP_CTL_SET_TIMEOUT:
     if (hdr.payload_len != sizeof(kafs_rpc_set_timeout_t))

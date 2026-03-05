@@ -195,12 +195,11 @@ See `docs/migration-v2-to-v3.md` for details.
 ## Hotplug Control
 
 Hotplug control is exposed via the hidden `/.kafs.sock` endpoint. To enable the
-front/back connection, set a UDS path and start `kafs-back` separately:
+front/back connection, set a UDS path when mounting:
 
 ```sh
 export KAFS_HOTPLUG_UDS=/tmp/kafs-hotplug.sock
 ./kafs --image /tmp/kafs.img /tmp/kafs-mnt -f
-./kafs-back
 ```
 
 You can also enable hotplug explicitly at mount time (including `mount -o ...` style):
@@ -222,6 +221,10 @@ Use `kafsctl` to inspect or control hotplug:
 ./kafsctl hotplug set-timeout /tmp/kafs-mnt 2000
 ./kafsctl hotplug env list /tmp/kafs-mnt
 ```
+
+`hotplug restart-back` now asks the mounted `kafs` front to restart the back process.
+The executable defaults to `kafs-back`; override it with `--hotplug-back-bin`,
+`-o hotplug_back_bin=...`, or `kafsctl hotplug env set <mountpoint> KAFS_HOTPLUG_BACK_BIN=...`.
 
 Hotplug flow example:
 
