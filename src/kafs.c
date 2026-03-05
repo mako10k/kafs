@@ -4987,7 +4987,15 @@ static int kafs_op_unlink(const char *path)
   }
 
   kafs_sinode_t *inoent_dir;
-  KAFS_CALL(kafs_access, fctx, ctx, dirpath, NULL, W_OK, &inoent_dir);
+  // Requests issued from kernel/internal context (pid==0) may not carry caller uid/gid
+  // suitable for W_OK checks. For those internal requests, parent existence is sufficient.
+  int need_mode = (fctx && fctx->pid == 0) ? F_OK : W_OK;
+  int arc = kafs_access(fctx, ctx, dirpath, NULL, need_mode, &inoent_dir);
+  if (arc < 0)
+  {
+    kafs_journal_abort(ctx, jseq, "parent access=%d", arc);
+    return arc;
+  }
   uint32_t ino_dir = (uint32_t)(inoent_dir - ctx->c_inotbl);
 
   kafs_inocnt_t target_ino = KAFS_INO_NONE;
