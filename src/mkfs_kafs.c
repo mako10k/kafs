@@ -393,6 +393,9 @@ int main(int argc, char **argv)
     perror("mmap");
     return 1;
   }
+  // Reformat safety: clear the full metadata mapping so stale pendinglog/journal/HRL
+  // state from previous formats cannot survive when the superblock shape remains valid.
+  memset(ctx.c_superblock, 0, (size_t)mapsize);
   // 先頭アドレスにオフセットを加算（byte単位）
   ctx.c_blkmasktbl = (kafs_blkmask_t *)((char *)ctx.c_superblock + (intptr_t)ctx.c_blkmasktbl);
   ctx.c_inotbl = (kafs_sinode_t *)((char *)ctx.c_superblock + (intptr_t)ctx.c_inotbl);
