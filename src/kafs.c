@@ -5666,57 +5666,12 @@ static int kafs_op_symlink(const char *target, const char *linkpath)
 static int kafs_op_flush(const char *path, struct fuse_file_info *fi)
 {
   struct fuse_context *fctx = fuse_get_context();
-  struct kafs_context *ctx = fctx->private_data;
+  struct kafs_context *ctx = fctx ? fctx->private_data : NULL;
   uint32_t ino = fi ? (uint32_t)fi->fh : (uint32_t)KAFS_INO_NONE;
   kafs_dlog(2, "%s: enter path=%s ino=%" PRIuFAST32 "\n", __func__, path ? path : "(null)", ino);
-  if (!ctx || ctx->c_fd < 0)
-  {
-    kafs_dlog(2, "%s: exit rc=0 (no backing fd) path=%s ino=%" PRIuFAST32 "\n", __func__,
-              path ? path : "(null)", ino);
-    return 0;
-  }
-
-  if (ino != KAFS_INO_NONE)
-  {
-    int drc = kafs_pendinglog_drain_inode(ctx, ino);
-    if (drc < 0)
-    {
-      if (drc == -ETIMEDOUT)
-      {
-        // Avoid surfacing transient worker backlog as close(2) failure.
-        kafs_log(KAFS_LOG_WARNING,
-                 "%s: pending drain timeout path=%s ino=%" PRIuFAST32 " (continue)\n",
-                 __func__, path ? path : "(null)", ino);
-      }
-      else
-      {
-      kafs_dlog(2, "%s: exit rc=%d drain_failed path=%s ino=%" PRIuFAST32 "\n", __func__, drc,
-                path ? path : "(null)", ino);
-      return drc;
-      }
-    }
-  }
-
-  kafs_journal_force_flush(ctx);
-  // Ensure mmap'd metadata (superblock/inodes/bitmap/HRL) is persisted.
-  if (ctx->c_img_base && ctx->c_img_size)
-  {
-    if (msync((void *)ctx->c_img_base, ctx->c_img_size, MS_SYNC) != 0)
-    {
-      int e = errno;
-      kafs_log(KAFS_LOG_WARNING, "%s: msync failed path=%s ino=%" PRIuFAST32 " errno=%d\n",
-               __func__, path ? path : "(null)", ino, e);
-    }
-  }
-  if (fsync(ctx->c_fd) != 0)
-  {
-    int e = errno;
-    kafs_log(KAFS_LOG_WARNING, "%s: fsync failed path=%s ino=%" PRIuFAST32 " errno=%d\n", __func__,
-             path ? path : "(null)", ino, e);
-    kafs_dlog(2, "%s: exit rc=%d path=%s ino=%" PRIuFAST32 "\n", __func__, -e,
-              path ? path : "(null)", ino);
-    return -e;
-  }
+  // POSIX-minimal behavior: close/flush should not force global durability sync.
+  // Durability is guaranteed by explicit fsync/fdatasync paths.
+  (void)ctx;
   kafs_dlog(2, "%s: exit rc=0 path=%s ino=%" PRIuFAST32 "\n", __func__, path ? path : "(null)",
             ino);
   return 0;
@@ -5724,8 +5679,6 @@ static int kafs_op_flush(const char *path, struct fuse_file_info *fi)
 
 static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info *fi)
 {
-  (void)path;
-  (void)isdatasync;
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
   kafs_dlog(2, "%s: enter path=%s isdatasync=%d\n", __func__, path ? path : "(null)", isdatasync);
@@ -5759,28 +5712,20 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
       }
       else
       {
-      kafs_dlog(2, "%s: exit rc=%d drain_failed path=%s ino=%" PRIuFAST32 "\n", __func__, drc,
-                path ? path : "(null)", ino);
-      return drc;
+        kafs_dlog(2, "%s: exit rc=%d drain_failed path=%s ino=%" PRIuFAST32 "\n", __func__, drc,
+                  path ? path : "(null)", ino);
+        return drc;
       }
     }
   }
 
   kafs_journal_force_flush(ctx);
-  if (ctx->c_img_base && ctx->c_img_size)
-  {
-    if (msync((void *)ctx->c_img_base, ctx->c_img_size, MS_SYNC) != 0)
-    {
-      int e = errno;
-      kafs_log(KAFS_LOG_WARNING, "%s: msync failed path=%s ino=%" PRIuFAST32 " errno=%d\n",
-               __func__, path ? path : "(null)", ino, e);
-    }
-  }
-  if (fsync(ctx->c_fd) != 0)
+  int src = isdatasync ? fdatasync(ctx->c_fd) : fsync(ctx->c_fd);
+  if (src != 0)
   {
     int e = errno;
-    kafs_log(KAFS_LOG_WARNING, "%s: fsync failed path=%s ino=%" PRIuFAST32 " errno=%d\n", __func__,
-             path ? path : "(null)", ino, e);
+    kafs_log(KAFS_LOG_WARNING, "%s: %s failed path=%s ino=%" PRIuFAST32 " errno=%d\n", __func__,
+             isdatasync ? "fdatasync" : "fsync", path ? path : "(null)", ino, e);
     kafs_dlog(2, "%s: exit rc=%d path=%s ino=%" PRIuFAST32 "\n", __func__, -e,
               path ? path : "(null)", ino);
     return -e;
