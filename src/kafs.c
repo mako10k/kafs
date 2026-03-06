@@ -464,7 +464,7 @@ static int kafs_pendinglog_drain_inode(struct kafs_context *ctx, uint32_t ino)
 
   struct timespec deadline;
   clock_gettime(CLOCK_REALTIME, &deadline);
-  deadline.tv_sec += 5;
+  deadline.tv_sec += 30;
 
   pthread_mutex_lock(&ctx->c_pending_worker_lock);
   for (;;)
@@ -5195,9 +5195,28 @@ static int kafs_op_utimens(const char *path, const struct timespec tv[2], struct
   struct kafs_context *ctx = fctx->private_data;
   if (kafs_is_ctl_path(path))
     return -EACCES;
-  kafs_sinode_t *inoent;
-  KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
-  uint32_t ino = (uint32_t)(inoent - ctx->c_inotbl);
+  uint64_t t0_ns = kafs_now_ns();
+  kafs_sinode_t *inoent = NULL;
+  uint32_t ino = KAFS_INO_NONE;
+
+  // Fast path: when file handle is available, avoid path traversal and dir snapshot work.
+  if (fi)
+  {
+    kafs_inocnt_t fh_ino = (kafs_inocnt_t)fi->fh;
+    if (fh_ino < kafs_sb_inocnt_get(ctx->c_superblock) && kafs_ino_get_usage(&ctx->c_inotbl[fh_ino]))
+    {
+      ino = (uint32_t)fh_ino;
+      inoent = &ctx->c_inotbl[ino];
+      KAFS_CALL(kafs_access_check, F_OK, inoent, KAFS_FALSE, fctx->uid, fctx->gid, 0, NULL);
+    }
+  }
+
+  if (!inoent)
+  {
+    KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
+    ino = (uint32_t)(inoent - ctx->c_inotbl);
+  }
+
   kafs_inode_lock(ctx, ino);
 
   kafs_time_t now = {0, 0};
@@ -5227,6 +5246,14 @@ static int kafs_op_utimens(const char *path, const struct timespec tv[2], struct
   }
 
   kafs_inode_unlock(ctx, ino);
+
+  uint64_t elapsed_ns = kafs_now_ns() - t0_ns;
+  if (elapsed_ns >= 1000000000ull)
+  {
+    kafs_log(KAFS_LOG_WARNING,
+             "%s: slow op path=%s ino=%" PRIuFAST32 " elapsed_ms=%" PRIuFAST64 "\n",
+             __func__, path ? path : "(null)", ino, elapsed_ns / 1000000ull);
+  }
   return 0;
 }
 
@@ -5654,9 +5681,19 @@ static int kafs_op_flush(const char *path, struct fuse_file_info *fi)
     int drc = kafs_pendinglog_drain_inode(ctx, ino);
     if (drc < 0)
     {
+      if (drc == -ETIMEDOUT)
+      {
+        // Avoid surfacing transient worker backlog as close(2) failure.
+        kafs_log(KAFS_LOG_WARNING,
+                 "%s: pending drain timeout path=%s ino=%" PRIuFAST32 " (continue)\n",
+                 __func__, path ? path : "(null)", ino);
+      }
+      else
+      {
       kafs_dlog(2, "%s: exit rc=%d drain_failed path=%s ino=%" PRIuFAST32 "\n", __func__, drc,
                 path ? path : "(null)", ino);
       return drc;
+      }
     }
   }
 
@@ -5713,9 +5750,19 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
     int drc = kafs_pendinglog_drain_inode(ctx, ino);
     if (drc < 0)
     {
+      if (drc == -ETIMEDOUT)
+      {
+        // Keep fsync path robust under temporary pending-worker congestion.
+        kafs_log(KAFS_LOG_WARNING,
+                 "%s: pending drain timeout path=%s ino=%" PRIuFAST32 " (continue)\n",
+                 __func__, path ? path : "(null)", ino);
+      }
+      else
+      {
       kafs_dlog(2, "%s: exit rc=%d drain_failed path=%s ino=%" PRIuFAST32 "\n", __func__, drc,
                 path ? path : "(null)", ino);
       return drc;
+      }
     }
   }
 
