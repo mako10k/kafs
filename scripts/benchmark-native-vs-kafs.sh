@@ -7,7 +7,7 @@ cd "$ROOT_DIR"
 usage() {
   cat <<'USAGEEOF'
 Usage:
-  scripts/benchmark-native-vs-kafs.sh [--quick|--full] [--repeats N] [--cache-bust-mb N]
+  scripts/benchmark-native-vs-kafs.sh [--quick|--full] [--repeats N] [--cache-bust|--no-cache-bust] [--cache-bust-mb N] [-o opts]
 
 Description:
   Compare native directory vs KAFS mount variants across workload patterns:
@@ -18,13 +18,51 @@ Description:
   - high-load mixed workload
 
 Options:
-  --cache-bust-mb N   Read N MiB cache-buster file before read-heavy workloads (default: 0)
+  --cache-bust        Force enable cache-buster reads
+  --no-cache-bust     Force disable cache-buster reads
+  --cache-bust-mb N   Cache-buster size in MiB (0 means disabled; default: 256)
+  -o opts             Comma-separated options:
+                      cache-bust,no-cache-bust,cache-bust-mb=<N>
 USAGEEOF
 }
 
 PROFILE="quick"
 REPEATS=1
-CACHE_BUST_MB=0
+CACHE_BUST_MB=256
+CACHE_BUST_OVERRIDE=""
+CACHE_BUST_ENABLED=0
+
+apply_o_opts() {
+  local opts="$1"
+  local tok=""
+  local val=""
+  IFS=',' read -r -a arr <<<"$opts"
+  for tok in "${arr[@]}"; do
+    if [[ -z "$tok" ]]; then
+      continue
+    fi
+    case "$tok" in
+      cache-bust)
+        CACHE_BUST_OVERRIDE="1"
+        ;;
+      no-cache-bust)
+        CACHE_BUST_OVERRIDE="0"
+        ;;
+      cache-bust-mb=*)
+        val=${tok#cache-bust-mb=}
+        if [[ -z "$val" ]]; then
+          echo "invalid -o option: $tok" >&2
+          exit 2
+        fi
+        CACHE_BUST_MB="$val"
+        ;;
+      *)
+        echo "unknown -o option: $tok" >&2
+        exit 2
+        ;;
+    esac
+  done
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -37,11 +75,35 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --repeats)
+      if [[ $# -lt 2 ]]; then
+        echo "missing value for --repeats" >&2
+        exit 2
+      fi
       REPEATS="$2"
       shift 2
       ;;
     --cache-bust-mb)
+      if [[ $# -lt 2 ]]; then
+        echo "missing value for --cache-bust-mb" >&2
+        exit 2
+      fi
       CACHE_BUST_MB="$2"
+      shift 2
+      ;;
+    --cache-bust)
+      CACHE_BUST_OVERRIDE="1"
+      shift
+      ;;
+    --no-cache-bust)
+      CACHE_BUST_OVERRIDE="0"
+      shift
+      ;;
+    -o)
+      if [[ $# -lt 2 ]]; then
+        echo "missing value for -o" >&2
+        exit 2
+      fi
+      apply_o_opts "$2"
       shift 2
       ;;
     -h|--help)
@@ -62,6 +124,17 @@ if ! [[ "$REPEATS" =~ ^[0-9]+$ ]] || [[ "$REPEATS" -lt 1 ]]; then
 fi
 if ! [[ "$CACHE_BUST_MB" =~ ^[0-9]+$ ]]; then
   echo "invalid cache-bust-mb: $CACHE_BUST_MB" >&2
+  exit 2
+fi
+
+if [[ -n "$CACHE_BUST_OVERRIDE" ]]; then
+  CACHE_BUST_ENABLED="$CACHE_BUST_OVERRIDE"
+else
+  CACHE_BUST_ENABLED=0
+fi
+
+if [[ "$CACHE_BUST_ENABLED" -eq 1 && "$CACHE_BUST_MB" -eq 0 ]]; then
+  echo "cache-bust is enabled but cache-bust-mb is 0; set --cache-bust-mb > 0 or use --no-cache-bust" >&2
   exit 2
 fi
 
@@ -123,14 +196,14 @@ TMP_BASE=$(mktemp -d "${TMPDIR:-/tmp}/kafs-native-vs.XXXXXX")
 CACHE_BUST_FILE="$TMP_BASE/cache-bust.bin"
 
 prepare_cache_bust_file() {
-  if [[ "$CACHE_BUST_MB" -le 0 ]]; then
+  if [[ "$CACHE_BUST_ENABLED" -ne 1 ]]; then
     return 0
   fi
   dd if=/dev/zero of="$CACHE_BUST_FILE" bs=1M count="$CACHE_BUST_MB" status=none
 }
 
 run_cache_bust() {
-  if [[ "$CACHE_BUST_MB" -le 0 ]]; then
+  if [[ "$CACHE_BUST_ENABLED" -ne 1 ]]; then
     return 0
   fi
   dd if="$CACHE_BUST_FILE" of=/dev/null bs=4M status=none
@@ -435,6 +508,7 @@ unmount_kafs_target() {
 }
 
 echo "[bench] profile=$PROFILE repeats=$REPEATS"
+echo "[bench] cache_bust_enabled=$CACHE_BUST_ENABLED"
 echo "[bench] cache_bust_mb=$CACHE_BUST_MB"
 echo "[bench] output=$OUT_DIR"
 
@@ -460,13 +534,13 @@ for ent in "${KAFS_TARGETS[@]}"; do
   fi
 done
 
-python3 - "$RESULT_CSV" "$COPY_FASTPATH_CSV" "$SUMMARY_MD" "$PROFILE" "$REPEATS" "$CACHE_BUST_MB" <<'PY'
+python3 - "$RESULT_CSV" "$COPY_FASTPATH_CSV" "$SUMMARY_MD" "$PROFILE" "$REPEATS" "$CACHE_BUST_MB" "$CACHE_BUST_ENABLED" <<'PY'
 import csv
 import statistics
 import sys
 from collections import defaultdict
 
-csv_path, copy_csv, out_md, profile, repeats, cache_bust_mb = sys.argv[1:]
+csv_path, copy_csv, out_md, profile, repeats, cache_bust_mb, cache_bust_enabled = sys.argv[1:]
 rows = []
 with open(csv_path, newline="") as f:
     for r in csv.DictReader(f):
@@ -500,6 +574,7 @@ with open(out_md, "w", encoding="utf-8") as out:
     out.write(f"# Native vs KAFS Pattern Benchmark\\n\\n")
     out.write(f"- profile: {profile}\\n")
     out.write(f"- repeats: {repeats}\\n")
+    out.write(f"- cache_bust_enabled: {cache_bust_enabled}\\n")
     out.write(f"- cache_bust_mb: {cache_bust_mb}\\n")
     out.write(f"- raw: `{csv_path}`\\n")
     out.write(f"- copy_fastpath_raw: `{copy_csv}`\\n\\n")
