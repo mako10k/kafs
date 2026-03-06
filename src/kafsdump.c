@@ -12,9 +12,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <linux/fs.h>
+#endif
 
 struct inode_summary
 {
@@ -352,7 +356,32 @@ int main(int argc, char **argv)
     close(fd);
     return 1;
   }
-  uint64_t file_size = (uint64_t)st.st_size;
+  uint64_t file_size = 0;
+  if (S_ISREG(st.st_mode))
+  {
+    file_size = (uint64_t)st.st_size;
+  }
+  else if (S_ISBLK(st.st_mode))
+  {
+#ifdef __linux__
+    if (ioctl(fd, BLKGETSIZE64, &file_size) != 0)
+    {
+      perror("ioctl(BLKGETSIZE64)");
+      close(fd);
+      return 1;
+    }
+#else
+    fprintf(stderr, "block devices are not supported on this platform\n");
+    close(fd);
+    return 1;
+#endif
+  }
+  else
+  {
+    fprintf(stderr, "unsupported file type\n");
+    close(fd);
+    return 1;
+  }
 
   kafs_ssuperblock_t sb;
   int rc = pread_all(fd, &sb, sizeof(sb), 0);
