@@ -426,6 +426,53 @@ static void kafs_pending_worker_notify_all(struct kafs_context *ctx)
   pthread_mutex_unlock(&ctx->c_pending_worker_lock);
 }
 
+static void kafs_pending_worker_begin_boost(struct kafs_context *ctx, uint32_t *saved_mode,
+                                            int *saved_nice, int *changed)
+{
+  if (!changed)
+    return;
+  *changed = 0;
+  if (saved_mode)
+    *saved_mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
+  if (saved_nice)
+    *saved_nice = 0;
+  if (!ctx || !ctx->c_pending_worker_lock_init || !ctx->c_pending_worker_running)
+    return;
+
+  pthread_mutex_lock(&ctx->c_pending_worker_lock);
+  if (saved_mode)
+    *saved_mode = ctx->c_pending_worker_prio_mode;
+  if (saved_nice)
+    *saved_nice = ctx->c_pending_worker_nice;
+
+  if (ctx->c_pending_worker_prio_mode != KAFS_PENDING_WORKER_PRIO_NORMAL ||
+      ctx->c_pending_worker_nice != 0)
+  {
+    ctx->c_pending_worker_prio_mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
+    ctx->c_pending_worker_nice = 0;
+    ctx->c_pending_worker_prio_dirty = 1;
+    pthread_cond_signal(&ctx->c_pending_worker_cond);
+    *changed = 1;
+  }
+  pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+}
+
+static void kafs_pending_worker_end_boost(struct kafs_context *ctx, uint32_t saved_mode,
+                                          int saved_nice, int changed)
+{
+  if (!changed)
+    return;
+  if (!ctx || !ctx->c_pending_worker_lock_init || !ctx->c_pending_worker_running)
+    return;
+
+  pthread_mutex_lock(&ctx->c_pending_worker_lock);
+  ctx->c_pending_worker_prio_mode = saved_mode;
+  ctx->c_pending_worker_nice = saved_nice;
+  ctx->c_pending_worker_prio_dirty = 1;
+  pthread_cond_signal(&ctx->c_pending_worker_cond);
+  pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+}
+
 static int kafs_pendinglog_inode_state_locked(struct kafs_context *ctx, uint32_t ino,
                                               int *has_pending, int *has_failed)
 {
@@ -5700,7 +5747,14 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
   }
   if (ino != KAFS_INO_NONE)
   {
+    uint32_t saved_mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
+    int saved_nice = 0;
+    int boosted = 0;
+    // If caller is about to block for pending-drain, temporarily boost worker priority.
+    kafs_pending_worker_begin_boost(ctx, &saved_mode, &saved_nice, &boosted);
+
     int drc = kafs_pendinglog_drain_inode(ctx, ino);
+    kafs_pending_worker_end_boost(ctx, saved_mode, saved_nice, boosted);
     if (drc < 0)
     {
       if (drc == -ETIMEDOUT)
