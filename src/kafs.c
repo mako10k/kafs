@@ -3728,7 +3728,7 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
   return 0;
 }
 
-#define KAFS_STATS_VERSION 6u
+#define KAFS_STATS_VERSION 7u
 
 static int kafs_u64_cmp(const void *a, const void *b)
 {
@@ -3872,6 +3872,12 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
   out->blk_set_usage_ns_bit_update = ctx->c_stat_blk_set_usage_ns_bit_update;
   out->blk_set_usage_ns_freecnt_update = ctx->c_stat_blk_set_usage_ns_freecnt_update;
   out->blk_set_usage_ns_wtime_update = ctx->c_stat_blk_set_usage_ns_wtime_update;
+
+  out->copy_share_attempt_blocks = ctx->c_stat_copy_share_attempt_blocks;
+  out->copy_share_done_blocks = ctx->c_stat_copy_share_done_blocks;
+  out->copy_share_fallback_blocks = ctx->c_stat_copy_share_fallback_blocks;
+  out->copy_share_skip_unaligned = ctx->c_stat_copy_share_skip_unaligned;
+  out->copy_share_skip_dst_inline = ctx->c_stat_copy_share_skip_dst_inline;
 }
 
 #ifdef __linux__
@@ -4035,13 +4041,19 @@ static int kafs_copy_share_one_iblk_locked(kafs_context_t *ctx, kafs_sinode_t *s
     return rc;
 
   if (old_blo == src_blo)
+  {
+    __atomic_add_fetch(&ctx->c_stat_copy_share_done_blocks, 1u, __ATOMIC_RELAXED);
     return 0;
+  }
 
   if (src_blo != KAFS_BLO_NONE)
   {
     int irc = kafs_hrl_inc_ref_by_blo(ctx, src_blo);
     if (irc == -ENOENT || irc == -ENOSYS)
+    {
+      __atomic_add_fetch(&ctx->c_stat_copy_share_fallback_blocks, 1u, __ATOMIC_RELAXED);
       return -EAGAIN;
+    }
     if (irc < 0)
       return irc;
   }
@@ -4082,6 +4094,7 @@ static int kafs_copy_share_one_iblk_locked(kafs_context_t *ctx, kafs_sinode_t *s
       (void)kafs_hrl_dec_ref_by_blo(ctx, release_list[i]);
     kafs_inode_lock(ctx, ino_dst);
   }
+  __atomic_add_fetch(&ctx->c_stat_copy_share_done_blocks, 1u, __ATOMIC_RELAXED);
   return 0;
 }
 
@@ -4524,11 +4537,17 @@ static ssize_t kafs_op_copy_file_range(const char *path_in, struct fuse_file_inf
           dst_is_block_backed = 1;
           dst_empty_converted = 1;
         }
+        else
+        {
+          __atomic_add_fetch(&ctx->c_stat_copy_share_skip_dst_inline, 1u, __ATOMIC_RELAXED);
+        }
       }
 
       if (dst_is_block_backed)
       {
         size_t blocks = (size_t)(remain >> log_blksize);
+        __atomic_add_fetch(&ctx->c_stat_copy_share_attempt_blocks, (uint64_t)blocks,
+                           __ATOMIC_RELAXED);
         size_t copied_blocks = 0;
         for (size_t i = 0; i < blocks; ++i)
         {
@@ -4563,6 +4582,10 @@ static ssize_t kafs_op_copy_file_range(const char *path_in, struct fuse_file_inf
           memset(ino_out->i_blkreftbl, 0, sizeof(ino_out->i_blkreftbl));
         }
       }
+    }
+    else
+    {
+      __atomic_add_fetch(&ctx->c_stat_copy_share_skip_unaligned, 1u, __ATOMIC_RELAXED);
     }
 
     size_t want = (size_t)((max - done) < (kafs_off_t)bufsz ? (max - done) : (kafs_off_t)bufsz);

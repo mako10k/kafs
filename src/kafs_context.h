@@ -93,6 +93,13 @@ struct kafs_context
   uint64_t c_stat_blk_set_usage_ns_bit_update;
   uint64_t c_stat_blk_set_usage_ns_freecnt_update;
   uint64_t c_stat_blk_set_usage_ns_wtime_update;
+
+  // copy_file_range fast path stats (best-effort)
+  uint64_t c_stat_copy_share_attempt_blocks;
+  uint64_t c_stat_copy_share_done_blocks;
+  uint64_t c_stat_copy_share_fallback_blocks;
+  uint64_t c_stat_copy_share_skip_unaligned;
+  uint64_t c_stat_copy_share_skip_dst_inline;
   uint64_t c_stat_trim_issued;
   uint64_t c_stat_trim_failed;
 

@@ -84,6 +84,12 @@ struct kafs_stats
   uint64_t blk_set_usage_ns_bit_update;
   uint64_t blk_set_usage_ns_freecnt_update;
   uint64_t blk_set_usage_ns_wtime_update;
+
+  uint64_t copy_share_attempt_blocks;
+  uint64_t copy_share_done_blocks;
+  uint64_t copy_share_fallback_blocks;
+  uint64_t copy_share_skip_unaligned;
+  uint64_t copy_share_skip_dst_inline;
 };
 
 typedef struct kafs_stats kafs_stats_t;
