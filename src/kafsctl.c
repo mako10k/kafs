@@ -440,14 +440,16 @@ static void hotplug_print_exchange_error(const char *op, const char *mnt, int rc
   if (rc == -ENOENT)
   {
     fprintf(stderr,
-            "hotplug %s failed: %s (control endpoint '/.kafs.sock' not found under mountpoint '%s'; ensure it is an active KAFS mount)\n",
+            "hotplug %s failed: %s (control endpoint '/.kafs.sock' not found under mountpoint "
+            "'%s'; ensure it is an active KAFS mount)\n",
             op, strerror(ENOENT), mnt ? mnt : "(null)");
     return;
   }
   if (rc == -ENOSYS)
   {
     fprintf(stderr,
-            "hotplug %s failed: %s (hotplug control is disabled on this mount; restart KAFS with KAFS_HOTPLUG_UDS set, then run kafs-back)\n",
+            "hotplug %s failed: %s (hotplug control is disabled on this mount; restart KAFS with "
+            "KAFS_HOTPLUG_UDS set, then run kafs-back)\n",
             op, strerror(ENOSYS));
     return;
   }
@@ -1085,11 +1087,10 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
          " bit_ms=%.3f freecnt_ms=%.3f wtime_ms=%.3f\n",
          st.blk_set_usage_calls, st.blk_set_usage_alloc_calls, st.blk_set_usage_free_calls,
          blk_set_usage_bit_ms, blk_set_usage_freecnt_ms, blk_set_usage_wtime_ms);
-    printf("  copy_share: attempt_blocks=%" PRIu64 " done_blocks=%" PRIu64
-      " fallback_blocks=%" PRIu64 " skip_unaligned=%" PRIu64
-      " skip_dst_inline=%" PRIu64 " hit_rate=%.3f\n",
-      st.copy_share_attempt_blocks, st.copy_share_done_blocks, st.copy_share_fallback_blocks,
-      st.copy_share_skip_unaligned, st.copy_share_skip_dst_inline, copy_share_hit_rate);
+  printf("  copy_share: attempt_blocks=%" PRIu64 " done_blocks=%" PRIu64 " fallback_blocks=%" PRIu64
+         " skip_unaligned=%" PRIu64 " skip_dst_inline=%" PRIu64 " hit_rate=%.3f\n",
+         st.copy_share_attempt_blocks, st.copy_share_done_blocks, st.copy_share_fallback_blocks,
+         st.copy_share_skip_unaligned, st.copy_share_skip_dst_inline, copy_share_hit_rate);
   return 0;
 }
 
