@@ -13,10 +13,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 #ifdef __linux__
+#include <linux/fs.h>
 #include <sys/syscall.h>
 #include <linux/falloc.h>
 #endif
@@ -303,24 +305,8 @@ int main(int argc, char **argv)
     perror("stat");
     return 1;
   }
-  if (have_stat && S_ISREG(st.st_mode) && st.st_size > 0)
-  {
-    if (size_arg_provided)
-      fprintf(stderr, "warning: size overridden by existing file size\n");
-    total_bytes = st.st_size;
-  }
-
-  struct mkfs_layout layout = {0};
-  kafs_blkcnt_t blkcnt = 0;
-  if (compute_blkcnt_for_total(total_bytes, log_blksize, blksizemask, inocnt, journal_bytes,
-                               &blkcnt, &layout) != 0)
-  {
-    fprintf(stderr, "invalid total size: %lld\n", (long long)total_bytes);
-    return 2;
-  }
-
   kafs_context_t ctx = {0};
-  ctx.c_fd = open(img, O_RDWR | O_CREAT, 0666);
+  ctx.c_fd = open(img, O_RDWR | (have_stat ? 0 : O_CREAT), 0666);
   if (ctx.c_fd < 0)
   {
     perror("open");
@@ -329,7 +315,56 @@ int main(int argc, char **argv)
   ctx.c_blo_search = 0;
   ctx.c_ino_search = 0;
 
-  if (have_stat && st.st_size >= (off_t)sizeof(kafs_ssuperblock_t))
+  if (fstat(ctx.c_fd, &st) != 0)
+  {
+    perror("fstat");
+    close(ctx.c_fd);
+    return 1;
+  }
+
+  if (S_ISREG(st.st_mode) && st.st_size > 0)
+  {
+    if (size_arg_provided)
+      fprintf(stderr, "warning: size overridden by existing file size\n");
+    total_bytes = st.st_size;
+  }
+  else if (S_ISBLK(st.st_mode))
+  {
+#ifdef __linux__
+    uint64_t dev_bytes = 0;
+    if (ioctl(ctx.c_fd, BLKGETSIZE64, &dev_bytes) != 0)
+    {
+      perror("ioctl(BLKGETSIZE64)");
+      close(ctx.c_fd);
+      return 1;
+    }
+    if (dev_bytes == 0)
+    {
+      fprintf(stderr, "invalid block device size: 0\n");
+      close(ctx.c_fd);
+      return 1;
+    }
+    if (size_arg_provided)
+      fprintf(stderr, "warning: size overridden by block device size\n");
+    total_bytes = (off_t)dev_bytes;
+#else
+    fprintf(stderr, "block devices are not supported on this platform\n");
+    close(ctx.c_fd);
+    return 1;
+#endif
+  }
+
+  struct mkfs_layout layout = {0};
+  kafs_blkcnt_t blkcnt = 0;
+  if (compute_blkcnt_for_total(total_bytes, log_blksize, blksizemask, inocnt, journal_bytes,
+                               &blkcnt, &layout) != 0)
+  {
+    fprintf(stderr, "invalid total size: %lld\n", (long long)total_bytes);
+    close(ctx.c_fd);
+    return 2;
+  }
+
+  if (total_bytes >= (off_t)sizeof(kafs_ssuperblock_t))
   {
     kafs_ssuperblock_t sbcheck;
     if (pread(ctx.c_fd, &sbcheck, sizeof(sbcheck), 0) == (ssize_t)sizeof(sbcheck))
@@ -340,9 +375,10 @@ int main(int argc, char **argv)
     }
   }
 
-  if (ftruncate(ctx.c_fd, total_bytes) < 0)
+  if (S_ISREG(st.st_mode) && ftruncate(ctx.c_fd, total_bytes) < 0)
   {
     perror("ftruncate");
+    close(ctx.c_fd);
     return 1;
   }
 
