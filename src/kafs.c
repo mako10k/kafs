@@ -2767,6 +2767,18 @@ static int kafs_access_check(int ok, kafs_sinode_t *inoent, kafs_bool_t is_dir, 
   }
   if (ok == F_OK)
     return KAFS_SUCCESS;
+
+  // Superuser semantics (uid 0): bypass R/W checks. For X_OK, require at least one
+  // execute bit on non-directories; directories remain traversable.
+  if (uid == 0)
+  {
+    if (!(ok & X_OK))
+      return KAFS_SUCCESS;
+    if (is_dir || (mode & (S_IXUSR | S_IXGRP | S_IXOTH)))
+      return KAFS_SUCCESS;
+    return -EACCES;
+  }
+
   if (ok & R_OK)
   {
     kafs_bool_t result = KAFS_FALSE;
