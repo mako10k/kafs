@@ -1917,7 +1917,7 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
     kafs_blkcnt_t __b = (_blo);                                                                    \
     if (__b != KAFS_BLO_NONE)                                                                      \
     {                                                                                              \
-      kafs_dlog(2, "%s: ino=%u queue free blo=%" PRIuFAST32 "\n", __func__, ino_idx, __b);      \
+      kafs_dlog(2, "%s: ino=%u queue free blo=%" PRIuFAST32 "\n", __func__, ino_idx, __b);         \
       if (deferred_free_cnt == deferred_free_cap)                                                  \
       {                                                                                            \
         size_t new_cap = deferred_free_cap ? (deferred_free_cap << 1) : 256u;                      \
@@ -2385,8 +2385,9 @@ static int kafs_dirent_iter_next(const char *buf, size_t len, size_t off, kafs_i
     return 0;
   if (namelen >= FILENAME_MAX)
   {
-    kafs_dlog(1, "%s: invalid dirent header off=%zu len=%zu ino=%" PRIuFAST16
-                 " namelen=%" PRIuFAST16 "\n",
+    kafs_dlog(1,
+              "%s: invalid dirent header off=%zu len=%zu ino=%" PRIuFAST16 " namelen=%" PRIuFAST16
+              "\n",
               __func__, off, len, (uint_fast16_t)ino, (uint_fast16_t)namelen);
     return -EIO;
   }
@@ -2978,7 +2979,8 @@ static void kafs_hotplug_schedule_relisten(kafs_context_t *ctx)
   pthread_mutex_unlock(&ctx->c_hotplug_wait_lock);
 }
 
-static void kafs_hotplug_mark_disconnected_internal(kafs_context_t *ctx, int rc, int schedule_relisten)
+static void kafs_hotplug_mark_disconnected_internal(kafs_context_t *ctx, int rc,
+                                                    int schedule_relisten)
 {
   if (!ctx)
     return;
@@ -3728,7 +3730,7 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
   return 0;
 }
 
-#define KAFS_STATS_VERSION 6u
+#define KAFS_STATS_VERSION 7u
 
 static int kafs_u64_cmp(const void *a, const void *b)
 {
@@ -3872,6 +3874,12 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
   out->blk_set_usage_ns_bit_update = ctx->c_stat_blk_set_usage_ns_bit_update;
   out->blk_set_usage_ns_freecnt_update = ctx->c_stat_blk_set_usage_ns_freecnt_update;
   out->blk_set_usage_ns_wtime_update = ctx->c_stat_blk_set_usage_ns_wtime_update;
+
+  out->copy_share_attempt_blocks = ctx->c_stat_copy_share_attempt_blocks;
+  out->copy_share_done_blocks = ctx->c_stat_copy_share_done_blocks;
+  out->copy_share_fallback_blocks = ctx->c_stat_copy_share_fallback_blocks;
+  out->copy_share_skip_unaligned = ctx->c_stat_copy_share_skip_unaligned;
+  out->copy_share_skip_dst_inline = ctx->c_stat_copy_share_skip_dst_inline;
 }
 
 #ifdef __linux__
@@ -4013,6 +4021,82 @@ static int kafs_reflink_clone(kafs_context_t *ctx, kafs_sinode_t *src, kafs_sino
   kafs_ino_ctime_set(dst, now);
   kafs_inode_unlock(ctx, ino_dst);
   free(blos);
+  return 0;
+}
+
+// Copy one full block by sharing HRL reference instead of read+hash+write.
+// Caller must hold src/dst inode locks.
+static int kafs_copy_share_one_iblk_locked(kafs_context_t *ctx, kafs_sinode_t *src,
+                                           kafs_sinode_t *dst, kafs_iblkcnt_t src_iblo,
+                                           kafs_iblkcnt_t dst_iblo, uint32_t ino_dst)
+{
+  kafs_blkcnt_t release_list[4];
+  size_t release_cnt = 0;
+  kafs_blkcnt_t src_blo = KAFS_BLO_NONE;
+  int rc = kafs_ino_ibrk_run(ctx, src, src_iblo, &src_blo, KAFS_IBLKREF_FUNC_GET);
+  if (rc < 0)
+    return rc;
+
+  kafs_blkcnt_t old_blo = KAFS_BLO_NONE;
+  rc = kafs_ino_ibrk_run(ctx, dst, dst_iblo, &old_blo, KAFS_IBLKREF_FUNC_GET);
+  if (rc < 0)
+    return rc;
+
+  if (old_blo == src_blo)
+  {
+    __atomic_add_fetch(&ctx->c_stat_copy_share_done_blocks, 1u, __ATOMIC_RELAXED);
+    return 0;
+  }
+
+  if (src_blo != KAFS_BLO_NONE)
+  {
+    int irc = kafs_hrl_inc_ref_by_blo(ctx, src_blo);
+    if (irc == -ENOENT || irc == -ENOSYS)
+    {
+      __atomic_add_fetch(&ctx->c_stat_copy_share_fallback_blocks, 1u, __ATOMIC_RELAXED);
+      return -EAGAIN;
+    }
+    if (irc < 0)
+      return irc;
+  }
+
+  kafs_blkcnt_t set_blo = src_blo;
+  rc = kafs_ino_ibrk_run(ctx, dst, dst_iblo, &set_blo, KAFS_IBLKREF_FUNC_SET);
+  if (rc < 0)
+  {
+    if (src_blo != KAFS_BLO_NONE)
+      (void)kafs_hrl_dec_ref_by_blo(ctx, src_blo);
+    return rc;
+  }
+
+  if (src_blo == KAFS_BLO_NONE)
+  {
+    kafs_blkcnt_t f1 = KAFS_BLO_NONE;
+    kafs_blkcnt_t f2 = KAFS_BLO_NONE;
+    kafs_blkcnt_t f3 = KAFS_BLO_NONE;
+    rc = kafs_ino_prune_empty_indirects(ctx, dst, dst_iblo, &f1, &f2, &f3);
+    if (rc < 0)
+      return rc;
+    if (f1 != KAFS_BLO_NONE)
+      release_list[release_cnt++] = f1;
+    if (f2 != KAFS_BLO_NONE)
+      release_list[release_cnt++] = f2;
+    if (f3 != KAFS_BLO_NONE)
+      release_list[release_cnt++] = f3;
+  }
+
+  if (old_blo != KAFS_BLO_NONE)
+    release_list[release_cnt++] = old_blo;
+
+  if (release_cnt != 0)
+  {
+    // Keep existing lock ordering: dec_ref runs outside inode lock.
+    kafs_inode_unlock(ctx, ino_dst);
+    for (size_t i = 0; i < release_cnt; ++i)
+      (void)kafs_hrl_dec_ref_by_blo(ctx, release_list[i]);
+    kafs_inode_lock(ctx, ino_dst);
+  }
+  __atomic_add_fetch(&ctx->c_stat_copy_share_done_blocks, 1u, __ATOMIC_RELAXED);
   return 0;
 }
 
@@ -4420,6 +4504,12 @@ static ssize_t kafs_op_copy_file_range(const char *path_in, struct fuse_file_inf
   if ((kafs_off_t)size < max)
     max = (kafs_off_t)size;
 
+  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
+  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+  kafs_off_t dst_size = kafs_ino_size_get(ino_out);
+  int dst_is_block_backed = (dst_size > (kafs_off_t)KAFS_DIRECT_SIZE);
+  int dst_empty_converted = 0;
+
   const size_t bufsz = 128u * 1024u;
   char *buf = (char *)malloc(bufsz);
   if (!buf)
@@ -4432,6 +4522,74 @@ static ssize_t kafs_op_copy_file_range(const char *path_in, struct fuse_file_inf
   kafs_off_t done = 0;
   while (done < max)
   {
+    kafs_off_t src_off = (kafs_off_t)offset_in + done;
+    kafs_off_t dst_off = (kafs_off_t)offset_out + done;
+    kafs_off_t remain = max - done;
+
+    if (ctx->c_hrl_bucket_cnt != 0 && remain >= (kafs_off_t)blksize &&
+        ((src_off & ((kafs_off_t)blksize - 1)) == 0) &&
+        ((dst_off & ((kafs_off_t)blksize - 1)) == 0))
+    {
+      // Avoid interpreting inline payload as block references.
+      if (!dst_is_block_backed)
+      {
+        if (dst_size == 0 && (kafs_off_t)offset_out == 0)
+        {
+          memset(ino_out->i_blkreftbl, 0, sizeof(ino_out->i_blkreftbl));
+          dst_is_block_backed = 1;
+          dst_empty_converted = 1;
+        }
+        else
+        {
+          __atomic_add_fetch(&ctx->c_stat_copy_share_skip_dst_inline, 1u, __ATOMIC_RELAXED);
+        }
+      }
+
+      if (dst_is_block_backed)
+      {
+        size_t blocks = (size_t)(remain >> log_blksize);
+        __atomic_add_fetch(&ctx->c_stat_copy_share_attempt_blocks, (uint64_t)blocks,
+                           __ATOMIC_RELAXED);
+        size_t copied_blocks = 0;
+        for (size_t i = 0; i < blocks; ++i)
+        {
+          kafs_iblkcnt_t src_iblo = (kafs_iblkcnt_t)(src_off >> log_blksize) + (kafs_iblkcnt_t)i;
+          kafs_iblkcnt_t dst_iblo = (kafs_iblkcnt_t)(dst_off >> log_blksize) + (kafs_iblkcnt_t)i;
+          int frc =
+              kafs_copy_share_one_iblk_locked(ctx, ino_in, ino_out, src_iblo, dst_iblo, ino_dst);
+          if (frc == -EAGAIN)
+            break;
+          if (frc < 0)
+          {
+            free(buf);
+            kafs_inode_unlock(ctx, ino_src);
+            kafs_inode_unlock(ctx, ino_dst);
+            return frc;
+          }
+          copied_blocks++;
+          done += (kafs_off_t)blksize;
+        }
+
+        if (copied_blocks > 0)
+        {
+          kafs_off_t end = (kafs_off_t)offset_out + done;
+          if (kafs_ino_size_get(ino_out) < end)
+            kafs_ino_size_set(ino_out, end);
+          continue;
+        }
+
+        if (dst_empty_converted)
+        {
+          // Keep inode shape consistent if we converted an empty inline inode but couldn't share.
+          memset(ino_out->i_blkreftbl, 0, sizeof(ino_out->i_blkreftbl));
+        }
+      }
+    }
+    else
+    {
+      __atomic_add_fetch(&ctx->c_stat_copy_share_skip_unaligned, 1u, __ATOMIC_RELAXED);
+    }
+
     size_t want = (size_t)((max - done) < (kafs_off_t)bufsz ? (max - done) : (kafs_off_t)bufsz);
     ssize_t r = kafs_pread(ctx, ino_in, buf, (kafs_off_t)want, (kafs_off_t)offset_in + done);
     if (r < 0)
@@ -4752,23 +4910,20 @@ static int kafs_op_truncate(const char *path, off_t size, struct fuse_file_info 
   int rc_hp = kafs_hotplug_call_truncate(fctx, ctx, inoent, size);
   if (rc_hp == 0)
   {
-    kafs_dlog(2, "%s: exit rc=0 path=%s ino=%" PRIuFAST32 " size=%" PRIuFAST64
-                 " hotplug=1\n",
+    kafs_dlog(2, "%s: exit rc=0 path=%s ino=%" PRIuFAST32 " size=%" PRIuFAST64 " hotplug=1\n",
               __func__, path ? path : "(null)", ino, (uint64_t)size);
     return 0;
   }
   if (!kafs_hotplug_should_fallback(rc_hp))
   {
-    kafs_dlog(2, "%s: exit rc=%d path=%s ino=%" PRIuFAST32 " size=%" PRIuFAST64
-                 " hotplug=err\n",
+    kafs_dlog(2, "%s: exit rc=%d path=%s ino=%" PRIuFAST32 " size=%" PRIuFAST64 " hotplug=err\n",
               __func__, rc_hp, path ? path : "(null)", ino, (uint64_t)size);
     return rc_hp;
   }
   kafs_inode_lock(ctx, (uint32_t)(inoent - ctx->c_inotbl));
   int rc = kafs_truncate(ctx, inoent, (kafs_off_t)size);
   kafs_inode_unlock(ctx, (uint32_t)(inoent - ctx->c_inotbl));
-  kafs_dlog(2, "%s: exit rc=%d path=%s ino=%" PRIuFAST32 " size=%" PRIuFAST64
-               " hotplug=fallback\n",
+  kafs_dlog(2, "%s: exit rc=%d path=%s ino=%" PRIuFAST32 " size=%" PRIuFAST64 " hotplug=fallback\n",
             __func__, (rc == 0 ? 0 : rc), path ? path : "(null)", ino, (uint64_t)size);
   return rc == 0 ? 0 : rc;
 }
@@ -5002,9 +5157,9 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
   ssize_t rc_hp = kafs_hotplug_call_write(fctx, ctx, ino, buf, size, offset);
   if (rc_hp >= 0)
   {
-    kafs_dlog(2, "%s: exit rc=%zd path=%s ino=%" PRIuFAST32 " size=%zu off=%" PRIuFAST64
-                 " hotplug=1\n",
-              __func__, rc_hp, path ? path : "(null)", ino, size, (uint64_t)offset);
+    kafs_dlog(
+        2, "%s: exit rc=%zd path=%s ino=%" PRIuFAST32 " size=%zu off=%" PRIuFAST64 " hotplug=1\n",
+        __func__, rc_hp, path ? path : "(null)", ino, size, (uint64_t)offset);
     return (int)rc_hp;
   }
   if (!kafs_hotplug_should_fallback((int)rc_hp))
@@ -5013,9 +5168,9 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
              "%s: hotplug write failed path=%s ino=%" PRIuFAST32 " size=%zu off=%" PRIuFAST64
              " rc=%zd\n",
              __func__, path ? path : "(null)", ino, size, (uint64_t)offset, rc_hp);
-    kafs_dlog(2, "%s: exit rc=%zd path=%s ino=%" PRIuFAST32 " size=%zu off=%" PRIuFAST64
-                 " hotplug=err\n",
-              __func__, rc_hp, path ? path : "(null)", ino, size, (uint64_t)offset);
+    kafs_dlog(
+        2, "%s: exit rc=%zd path=%s ino=%" PRIuFAST32 " size=%zu off=%" PRIuFAST64 " hotplug=err\n",
+        __func__, rc_hp, path ? path : "(null)", ino, size, (uint64_t)offset);
     return (int)rc_hp;
   }
   kafs_inode_lock(ctx, (uint32_t)ino);
@@ -5024,12 +5179,12 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
   if (rc_write < 0)
   {
     kafs_log(KAFS_LOG_WARNING,
-             "%s: pwrite failed path=%s ino=%" PRIuFAST32 " size=%zu off=%" PRIuFAST64
-             " rc=%d\n",
+             "%s: pwrite failed path=%s ino=%" PRIuFAST32 " size=%zu off=%" PRIuFAST64 " rc=%d\n",
              __func__, path ? path : "(null)", (uint32_t)ino, size, (uint64_t)offset, rc_write);
   }
-  kafs_dlog(2, "%s: exit rc=%d path=%s ino=%" PRIuFAST32 " size=%zu off=%" PRIuFAST64
-               " hotplug=fallback\n",
+  kafs_dlog(2,
+            "%s: exit rc=%d path=%s ino=%" PRIuFAST32 " size=%zu off=%" PRIuFAST64
+            " hotplug=fallback\n",
             __func__, rc_write, path ? path : "(null)", (uint32_t)ino, size, (uint64_t)offset);
   return rc_write;
 }
@@ -5486,8 +5641,7 @@ static int kafs_op_flush(const char *path, struct fuse_file_info *fi)
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
   uint32_t ino = fi ? (uint32_t)fi->fh : (uint32_t)KAFS_INO_NONE;
-  kafs_dlog(2, "%s: enter path=%s ino=%" PRIuFAST32 "\n", __func__,
-            path ? path : "(null)", ino);
+  kafs_dlog(2, "%s: enter path=%s ino=%" PRIuFAST32 "\n", __func__, path ? path : "(null)", ino);
   if (!ctx || ctx->c_fd < 0)
   {
     kafs_dlog(2, "%s: exit rc=0 (no backing fd) path=%s ino=%" PRIuFAST32 "\n", __func__,
@@ -5500,8 +5654,8 @@ static int kafs_op_flush(const char *path, struct fuse_file_info *fi)
     int drc = kafs_pendinglog_drain_inode(ctx, ino);
     if (drc < 0)
     {
-      kafs_dlog(2, "%s: exit rc=%d drain_failed path=%s ino=%" PRIuFAST32 "\n", __func__,
-                drc, path ? path : "(null)", ino);
+      kafs_dlog(2, "%s: exit rc=%d drain_failed path=%s ino=%" PRIuFAST32 "\n", __func__, drc,
+                path ? path : "(null)", ino);
       return drc;
     }
   }
@@ -5520,14 +5674,14 @@ static int kafs_op_flush(const char *path, struct fuse_file_info *fi)
   if (fsync(ctx->c_fd) != 0)
   {
     int e = errno;
-    kafs_log(KAFS_LOG_WARNING, "%s: fsync failed path=%s ino=%" PRIuFAST32 " errno=%d\n",
-             __func__, path ? path : "(null)", ino, e);
+    kafs_log(KAFS_LOG_WARNING, "%s: fsync failed path=%s ino=%" PRIuFAST32 " errno=%d\n", __func__,
+             path ? path : "(null)", ino, e);
     kafs_dlog(2, "%s: exit rc=%d path=%s ino=%" PRIuFAST32 "\n", __func__, -e,
               path ? path : "(null)", ino);
     return -e;
   }
-  kafs_dlog(2, "%s: exit rc=0 path=%s ino=%" PRIuFAST32 "\n", __func__,
-            path ? path : "(null)", ino);
+  kafs_dlog(2, "%s: exit rc=0 path=%s ino=%" PRIuFAST32 "\n", __func__, path ? path : "(null)",
+            ino);
   return 0;
 }
 
@@ -5537,12 +5691,10 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
   (void)isdatasync;
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
-  kafs_dlog(2, "%s: enter path=%s isdatasync=%d\n", __func__, path ? path : "(null)",
-            isdatasync);
+  kafs_dlog(2, "%s: enter path=%s isdatasync=%d\n", __func__, path ? path : "(null)", isdatasync);
   if (!ctx || ctx->c_fd < 0)
   {
-    kafs_dlog(2, "%s: exit rc=0 (no backing fd) path=%s\n", __func__,
-              path ? path : "(null)");
+    kafs_dlog(2, "%s: exit rc=0 (no backing fd) path=%s\n", __func__, path ? path : "(null)");
     return 0;
   }
 
@@ -5580,14 +5732,14 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
   if (fsync(ctx->c_fd) != 0)
   {
     int e = errno;
-    kafs_log(KAFS_LOG_WARNING, "%s: fsync failed path=%s ino=%" PRIuFAST32 " errno=%d\n",
-             __func__, path ? path : "(null)", ino, e);
+    kafs_log(KAFS_LOG_WARNING, "%s: fsync failed path=%s ino=%" PRIuFAST32 " errno=%d\n", __func__,
+             path ? path : "(null)", ino, e);
     kafs_dlog(2, "%s: exit rc=%d path=%s ino=%" PRIuFAST32 "\n", __func__, -e,
               path ? path : "(null)", ino);
     return -e;
   }
-  kafs_dlog(2, "%s: exit rc=0 path=%s ino=%" PRIuFAST32 "\n", __func__,
-            path ? path : "(null)", ino);
+  kafs_dlog(2, "%s: exit rc=0 path=%s ino=%" PRIuFAST32 "\n", __func__, path ? path : "(null)",
+            ino);
   return 0;
 }
 
@@ -5659,7 +5811,7 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
 
 #ifndef KAFS_NO_MAIN
 static struct fuse_operations kafs_operations = {
-  .init = kafs_op_init,
+    .init = kafs_op_init,
     .getattr = kafs_op_getattr,
     .statfs = kafs_op_statfs,
     .open = kafs_op_open,
@@ -5691,73 +5843,72 @@ static struct fuse_operations kafs_operations = {
 
 static void usage(const char *prog)
 {
-  fprintf(
-      stderr,
-  "Usage:\n"
-  "  %s [global-options] <mountpoint> [FUSE options...]\n"
-  "  %s <image> <mountpoint> [FUSE options...]\n"
-  "  %s [--image <image>] --migrate-v2 [--yes] <mountpoint> [FUSE options...]\n"
-  "\n"
-  "Options:\n"
-  "  [Global]\n"
-  "    -h, --help                        Show this help and exit\n"
-  "    --image <image>                   Image path\n"
-  "    --image=<image>                   Image path (inline form)\n"
-  "    --migrate-v2                      One-shot v2->v3 migration, then exit\n"
-  "    --yes                             Skip migration confirmation prompt\n"
-  "\n"
-  "  [Cache/TRIM]\n"
-  "    --writeback-cache                 Enable writeback cache\n"
-  "    --no-writeback-cache              Disable writeback cache\n"
-  "    --trim-on-free                    Enable TRIM on freed data blocks\n"
-  "    --no-trim-on-free                 Disable TRIM on freed data blocks\n"
-  "    -o writeback_cache                Enable writeback cache (FUSE -o)\n"
-  "    -o no_writeback_cache             Disable writeback cache (FUSE -o)\n"
-  "    -o trim_on_free | trim-on-free    Enable TRIM (FUSE -o)\n"
-  "    -o no_trim_on_free | no-trim-on-free\n"
-  "                                      Disable TRIM (FUSE -o)\n"
-  "\n"
-  "  [Threading]\n"
-  "    -o multi_thread[=N]               Enable MT mode (alias: multi-thread, "
-  "multithread)\n"
-  "                                      Default: single-threaded unless enabled\n"
-  "\n"
-  "  [Hotplug]\n"
-  "    --hotplug                         Enable hotplug using default UDS\n"
-  "    --hotplug=<uds>                   Enable hotplug and set UDS path\n"
-  "    --hotplug-uds <uds>               Hotplug UDS path (explicit form)\n"
-  "    --hotplug-back-bin <path>         Backend binary path hint\n"
-  "    -o hotplug[=<uds>]                Same as --hotplug[=<uds>]\n"
-  "    -o hotplug_uds=<uds>              Same as --hotplug-uds\n"
-  "    -o hotplug_back_bin=<path>        Same as --hotplug-back-bin\n"
-  "\n"
-  "  [Pending Worker]\n"
-  "    -o pending_worker_prio=<normal|idle>\n"
-  "                                      Set pending worker scheduling mode\n"
-  "    -o pending_worker_nice=<0..19>    Set pending worker nice value\n"
-  "    -o dedup_worker_prio=...          Alias of pending_worker_prio\n"
-  "    -o dedup_worker_nice=...          Alias of pending_worker_nice\n"
-  "\n"
-  "Environment:\n"
-  "    KAFS_IMAGE                        Fallback image path\n"
-  "    KAFS_WRITEBACK_CACHE=0|1          Default writeback cache mode\n"
-  "    KAFS_TRIM_ON_FREE=0|1             Default TRIM on free mode\n"
-  "    KAFS_MT=1                         Enable multi-thread mode\n"
-  "    KAFS_MAX_THREADS=<N>              Default MT worker count\n"
-  "    KAFS_PENDING_WORKER_PRIO          pending_worker_prio default\n"
-  "    KAFS_PENDING_WORKER_NICE          pending_worker_nice default\n"
-  "    KAFS_HOTPLUG_UDS                  Hotplug UDS path (legacy/env)\n"
-  "    KAFS_HOTPLUG_BACK_BIN             Backend binary path hint\n"
-  "\n"
-  "Notes:\n"
-  "    v2 images are refused by default. Use `kafsctl migrate <image> [--yes]`\n"
-  "    or `--migrate-v2` for startup migration.\n"
-  "\n"
-  "Examples:\n"
-      "  %s --image test.img mnt -f\n"
-      "  %s --image legacy.img --migrate-v2 --yes mnt -f\n"
-      "  %s --image test.img mnt -f -o multi_thread=8\n",
-      prog, prog, prog, prog, prog, prog);
+  fprintf(stderr,
+          "Usage:\n"
+          "  %s [global-options] <mountpoint> [FUSE options...]\n"
+          "  %s <image> <mountpoint> [FUSE options...]\n"
+          "  %s [--image <image>] --migrate-v2 [--yes] <mountpoint> [FUSE options...]\n"
+          "\n"
+          "Options:\n"
+          "  [Global]\n"
+          "    -h, --help                        Show this help and exit\n"
+          "    --image <image>                   Image path\n"
+          "    --image=<image>                   Image path (inline form)\n"
+          "    --migrate-v2                      One-shot v2->v3 migration, then exit\n"
+          "    --yes                             Skip migration confirmation prompt\n"
+          "\n"
+          "  [Cache/TRIM]\n"
+          "    --writeback-cache                 Enable writeback cache\n"
+          "    --no-writeback-cache              Disable writeback cache\n"
+          "    --trim-on-free                    Enable TRIM on freed data blocks\n"
+          "    --no-trim-on-free                 Disable TRIM on freed data blocks\n"
+          "    -o writeback_cache                Enable writeback cache (FUSE -o)\n"
+          "    -o no_writeback_cache             Disable writeback cache (FUSE -o)\n"
+          "    -o trim_on_free | trim-on-free    Enable TRIM (FUSE -o)\n"
+          "    -o no_trim_on_free | no-trim-on-free\n"
+          "                                      Disable TRIM (FUSE -o)\n"
+          "\n"
+          "  [Threading]\n"
+          "    -o multi_thread[=N]               Enable MT mode (alias: multi-thread, "
+          "multithread)\n"
+          "                                      Default: single-threaded unless enabled\n"
+          "\n"
+          "  [Hotplug]\n"
+          "    --hotplug                         Enable hotplug using default UDS\n"
+          "    --hotplug=<uds>                   Enable hotplug and set UDS path\n"
+          "    --hotplug-uds <uds>               Hotplug UDS path (explicit form)\n"
+          "    --hotplug-back-bin <path>         Backend binary path hint\n"
+          "    -o hotplug[=<uds>]                Same as --hotplug[=<uds>]\n"
+          "    -o hotplug_uds=<uds>              Same as --hotplug-uds\n"
+          "    -o hotplug_back_bin=<path>        Same as --hotplug-back-bin\n"
+          "\n"
+          "  [Pending Worker]\n"
+          "    -o pending_worker_prio=<normal|idle>\n"
+          "                                      Set pending worker scheduling mode\n"
+          "    -o pending_worker_nice=<0..19>    Set pending worker nice value\n"
+          "    -o dedup_worker_prio=...          Alias of pending_worker_prio\n"
+          "    -o dedup_worker_nice=...          Alias of pending_worker_nice\n"
+          "\n"
+          "Environment:\n"
+          "    KAFS_IMAGE                        Fallback image path\n"
+          "    KAFS_WRITEBACK_CACHE=0|1          Default writeback cache mode\n"
+          "    KAFS_TRIM_ON_FREE=0|1             Default TRIM on free mode\n"
+          "    KAFS_MT=1                         Enable multi-thread mode\n"
+          "    KAFS_MAX_THREADS=<N>              Default MT worker count\n"
+          "    KAFS_PENDING_WORKER_PRIO          pending_worker_prio default\n"
+          "    KAFS_PENDING_WORKER_NICE          pending_worker_nice default\n"
+          "    KAFS_HOTPLUG_UDS                  Hotplug UDS path (legacy/env)\n"
+          "    KAFS_HOTPLUG_BACK_BIN             Backend binary path hint\n"
+          "\n"
+          "Notes:\n"
+          "    v2 images are refused by default. Use `kafsctl migrate <image> [--yes]`\n"
+          "    or `--migrate-v2` for startup migration.\n"
+          "\n"
+          "Examples:\n"
+          "  %s --image test.img mnt -f\n"
+          "  %s --image legacy.img --migrate-v2 --yes mnt -f\n"
+          "  %s --image test.img mnt -f -o multi_thread=8\n",
+          prog, prog, prog, prog, prog, prog);
 }
 
 static int kafs_confirm_yes_stdin(void)
@@ -5960,7 +6111,7 @@ int main(int argc, char **argv)
     {
       const char *v = a + 10;
       if (!*v || snprintf(hotplug_uds_opt, sizeof(hotplug_uds_opt), "%s", v) >=
-                    (int)sizeof(hotplug_uds_opt))
+                     (int)sizeof(hotplug_uds_opt))
       {
         fprintf(stderr, "invalid --hotplug value\n");
         return 2;
@@ -5973,7 +6124,7 @@ int main(int argc, char **argv)
       {
         const char *v = argv[++i];
         if (!*v || snprintf(hotplug_uds_opt, sizeof(hotplug_uds_opt), "%s", v) >=
-                      (int)sizeof(hotplug_uds_opt))
+                       (int)sizeof(hotplug_uds_opt))
         {
           fprintf(stderr, "invalid --hotplug-uds value\n");
           return 2;
@@ -5988,7 +6139,7 @@ int main(int argc, char **argv)
     {
       const char *v = a + 14;
       if (!*v || snprintf(hotplug_uds_opt, sizeof(hotplug_uds_opt), "%s", v) >=
-                    (int)sizeof(hotplug_uds_opt))
+                     (int)sizeof(hotplug_uds_opt))
       {
         fprintf(stderr, "invalid --hotplug-uds value\n");
         return 2;
@@ -6001,7 +6152,7 @@ int main(int argc, char **argv)
       {
         const char *v = argv[++i];
         if (!*v || snprintf(hotplug_back_bin_opt, sizeof(hotplug_back_bin_opt), "%s", v) >=
-                      (int)sizeof(hotplug_back_bin_opt))
+                       (int)sizeof(hotplug_back_bin_opt))
         {
           fprintf(stderr, "invalid --hotplug-back-bin value\n");
           return 2;
@@ -6016,7 +6167,7 @@ int main(int argc, char **argv)
     {
       const char *v = a + 19;
       if (!*v || snprintf(hotplug_back_bin_opt, sizeof(hotplug_back_bin_opt), "%s", v) >=
-                    (int)sizeof(hotplug_back_bin_opt))
+                     (int)sizeof(hotplug_back_bin_opt))
       {
         fprintf(stderr, "invalid --hotplug-back-bin value\n");
         return 2;
@@ -6179,9 +6330,8 @@ int main(int argc, char **argv)
             hotplug_uds_v = tok + 12;
           if (hotplug_uds_v)
           {
-            if (!*hotplug_uds_v ||
-                snprintf(hotplug_uds_opt, sizeof(hotplug_uds_opt), "%s", hotplug_uds_v) >=
-                    (int)sizeof(hotplug_uds_opt))
+            if (!*hotplug_uds_v || snprintf(hotplug_uds_opt, sizeof(hotplug_uds_opt), "%s",
+                                            hotplug_uds_v) >= (int)sizeof(hotplug_uds_opt))
             {
               fprintf(stderr, "invalid -o hotplug uds path: '%s'\n", hotplug_uds_v);
               free(dup);
@@ -6422,7 +6572,8 @@ int main(int argc, char **argv)
       ctx.c_hotplug_wait_queue_limit = (uint32_t)v;
   }
 
-  const char *hotplug_uds = hotplug_uds_opt[0] != '\0' ? hotplug_uds_opt : getenv("KAFS_HOTPLUG_UDS");
+  const char *hotplug_uds =
+      hotplug_uds_opt[0] != '\0' ? hotplug_uds_opt : getenv("KAFS_HOTPLUG_UDS");
   const char *hotplug_back_bin =
       hotplug_back_bin_opt[0] != '\0' ? hotplug_back_bin_opt : getenv("KAFS_HOTPLUG_BACK_BIN");
   if (hotplug_uds)

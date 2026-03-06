@@ -308,8 +308,8 @@ static int kafs_blk_set_usage_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo
             __atomic_add_fetch(&ctx->c_stat_trim_failed, 1u, __ATOMIC_RELAXED);
             // EOPNOTSUPP/ENOSYS are expected on some backing filesystems.
             kafs_log(KAFS_LOG_DEBUG,
-                     "%s: trim failed blo=%" PRIuFAST32 " off=%" PRIuFAST64
-                     " len=%" PRIuFAST64 " errno=%d\n",
+                     "%s: trim failed blo=%" PRIuFAST32 " off=%" PRIuFAST64 " len=%" PRIuFAST64
+                     " errno=%d\n",
                      __func__, blo, (uint64_t)off, (uint64_t)len, e);
           }
 #else

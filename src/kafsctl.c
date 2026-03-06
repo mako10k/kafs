@@ -440,14 +440,16 @@ static void hotplug_print_exchange_error(const char *op, const char *mnt, int rc
   if (rc == -ENOENT)
   {
     fprintf(stderr,
-            "hotplug %s failed: %s (control endpoint '/.kafs.sock' not found under mountpoint '%s'; ensure it is an active KAFS mount)\n",
+            "hotplug %s failed: %s (control endpoint '/.kafs.sock' not found under mountpoint "
+            "'%s'; ensure it is an active KAFS mount)\n",
             op, strerror(ENOENT), mnt ? mnt : "(null)");
     return;
   }
   if (rc == -ENOSYS)
   {
     fprintf(stderr,
-            "hotplug %s failed: %s (hotplug control is disabled on this mount; restart KAFS with KAFS_HOTPLUG_UDS set, then run kafs-back)\n",
+            "hotplug %s failed: %s (hotplug control is disabled on this mount; restart KAFS with "
+            "KAFS_HOTPLUG_UDS set, then run kafs-back)\n",
             op, strerror(ENOSYS));
     return;
   }
@@ -904,6 +906,10 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
   double blk_set_usage_bit_ms = (double)st.blk_set_usage_ns_bit_update / 1000000.0;
   double blk_set_usage_freecnt_ms = (double)st.blk_set_usage_ns_freecnt_update / 1000000.0;
   double blk_set_usage_wtime_ms = (double)st.blk_set_usage_ns_wtime_update / 1000000.0;
+  double copy_share_hit_rate =
+      (st.copy_share_attempt_blocks > 0)
+          ? (double)st.copy_share_done_blocks / (double)st.copy_share_attempt_blocks
+          : 0.0;
 
   if (json)
   {
@@ -994,6 +1000,12 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
     printf("  \"blk_set_usage_ns_freecnt_update\": %" PRIu64 ",\n",
            st.blk_set_usage_ns_freecnt_update);
     printf("  \"blk_set_usage_ns_wtime_update\": %" PRIu64 ",\n", st.blk_set_usage_ns_wtime_update);
+    printf("  \"copy_share_attempt_blocks\": %" PRIu64 ",\n", st.copy_share_attempt_blocks);
+    printf("  \"copy_share_done_blocks\": %" PRIu64 ",\n", st.copy_share_done_blocks);
+    printf("  \"copy_share_fallback_blocks\": %" PRIu64 ",\n", st.copy_share_fallback_blocks);
+    printf("  \"copy_share_skip_unaligned\": %" PRIu64 ",\n", st.copy_share_skip_unaligned);
+    printf("  \"copy_share_skip_dst_inline\": %" PRIu64 ",\n", st.copy_share_skip_dst_inline);
+    printf("  \"copy_share_hit_rate\": %.6f,\n", copy_share_hit_rate);
     printf("  \"pwrite_iblk_read_ms\": %.3f,\n", pwrite_iblk_read_ms);
     printf("  \"pwrite_iblk_write_ms\": %.3f,\n", pwrite_iblk_write_ms);
     printf("  \"pwrite_iblk_write_p50_ms\": %.3f,\n", pwrite_iblk_write_p50_ms);
@@ -1075,6 +1087,10 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
          " bit_ms=%.3f freecnt_ms=%.3f wtime_ms=%.3f\n",
          st.blk_set_usage_calls, st.blk_set_usage_alloc_calls, st.blk_set_usage_free_calls,
          blk_set_usage_bit_ms, blk_set_usage_freecnt_ms, blk_set_usage_wtime_ms);
+  printf("  copy_share: attempt_blocks=%" PRIu64 " done_blocks=%" PRIu64 " fallback_blocks=%" PRIu64
+         " skip_unaligned=%" PRIu64 " skip_dst_inline=%" PRIu64 " hit_rate=%.3f\n",
+         st.copy_share_attempt_blocks, st.copy_share_done_blocks, st.copy_share_fallback_blocks,
+         st.copy_share_skip_unaligned, st.copy_share_skip_dst_inline, copy_share_hit_rate);
   return 0;
 }
 

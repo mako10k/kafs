@@ -693,8 +693,11 @@ static void usage(const char *prog)
   fprintf(stderr, "    --balanced-repair                  Journal reset + dirent->ino repair\n");
   fprintf(stderr, "    --check                            Alias of --balanced-check\n");
   fprintf(stderr, "    --repair                           Alias of --balanced-repair\n");
-  fprintf(stderr, "    --full-check                       Balanced check + hrl->blo refcount check\n");
-  fprintf(stderr, "    --full-repair                      Full repair including hrl->blo refcount repair\n");
+  fprintf(stderr,
+          "    --full-check                       Balanced check + hrl->blo refcount check\n");
+  fprintf(
+      stderr,
+      "    --full-repair                      Full repair including hrl->blo refcount repair\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "  [Low-level Options]\n");
   fprintf(stderr, "    --check-journal                    Validate journal layer (default on)\n");
@@ -702,7 +705,8 @@ static void usage(const char *prog)
   fprintf(stderr, "    --check-dirent-ino-orphans         Scan orphan inodes (linkcnt==0)\n");
   fprintf(stderr, "    --repair-dirent-ino-orphans        Reclaim orphan inodes and refs\n");
   fprintf(stderr, "    --check-hrl-blo-refcounts          Compare inode refs vs HRL refs\n");
-  fprintf(stderr, "    --repair-hrl-blo-refcounts         Repair HRL refcounts to match inode refs\n");
+  fprintf(stderr,
+          "    --repair-hrl-blo-refcounts         Repair HRL refcounts to match inode refs\n");
   fprintf(stderr, "    --replay-journal                   Replay in-image journal deltas\n");
   fprintf(stderr, "    --punch-hole-unreferenced-data-blocks\n");
   fprintf(stderr, "                                        Punch unreferenced allocated blocks\n");
@@ -940,9 +944,9 @@ int main(int argc, char **argv)
     return FSCK_EXIT_JOURNAL_CHECK_FAILED;
   }
 
-    if (do_check_dirent_ino_orphans || do_repair_dirent_ino_orphans || do_check_hrl_blo_refcounts ||
-      do_repair_hrl_blo_refcounts || do_replay_journal ||
-      do_punch_hole_unreferenced_data_blocks || do_trim_free_data_blocks)
+  if (do_check_dirent_ino_orphans || do_repair_dirent_ino_orphans || do_check_hrl_blo_refcounts ||
+      do_repair_hrl_blo_refcounts || do_replay_journal || do_punch_hole_unreferenced_data_blocks ||
+      do_trim_free_data_blocks)
   {
     kafs_context_t ctx;
     memset(&ctx, 0, sizeof(ctx));
@@ -1141,8 +1145,8 @@ int main(int argc, char **argv)
       }
 
       fprintf(stderr,
-              "Trim-free summary: candidates=%" PRIu64 " punched=%" PRIu64
-              " punch_failed=%" PRIu64 "\n",
+              "Trim-free summary: candidates=%" PRIu64 " punched=%" PRIu64 " punch_failed=%" PRIu64
+              "\n",
               tst.candidates, tst.punched, tst.punch_failed);
 
       if (tst.punch_failed > 0 && exit_code == 0)

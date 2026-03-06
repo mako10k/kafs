@@ -31,14 +31,17 @@ static void usage(const char *prog)
   fprintf(stderr, "    -s, --size-bytes <N>              Total image size (default: 1GiB)\n");
   fprintf(stderr, "    -b, --blksize-log <L>             Block size log2 (default: 12 => 4096B)\n");
   fprintf(stderr, "    -i, --inodes <I>                  Inode count (default: 65536)\n");
-  fprintf(stderr, "    -J, --journal-size-bytes <J>      Journal size (default: 1MiB, min: 4KiB)\n");
+  fprintf(stderr,
+          "    -J, --journal-size-bytes <J>      Journal size (default: 1MiB, min: 4KiB)\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "  [Space Reclaim]\n");
-  fprintf(stderr, "    --trim-data-area                  Punch holes for free data area after format\n");
+  fprintf(stderr,
+          "    --trim-data-area                  Punch holes for free data area after format\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "Notes:\n");
   fprintf(stderr, "    Size values accept K/M/G suffixes (binary units).\n");
-  fprintf(stderr, "    If the image file already exists and has non-zero size, that size overrides -s.\n");
+  fprintf(stderr,
+          "    If the image file already exists and has non-zero size, that size overrides -s.\n");
 }
 
 static int mkfs_trim_range(int fd, off_t off, off_t len)
