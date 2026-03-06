@@ -56,7 +56,8 @@ enum
   KAFS_RPC_OP_CTL_ENV_LIST = 54,
   KAFS_RPC_OP_CTL_ENV_SET = 55,
   KAFS_RPC_OP_CTL_ENV_UNSET = 56,
-  KAFS_RPC_OP_CTL_SET_DEDUP_PRIO = 57
+  KAFS_RPC_OP_CTL_SET_DEDUP_PRIO = 57,
+  KAFS_RPC_OP_CTL_SET_RUNTIME = 58
 };
 
 enum
@@ -144,6 +145,18 @@ typedef struct
 } kafs_rpc_set_dedup_prio_t;
 
 #define KAFS_RPC_SET_DEDUP_PRIO_F_HAS_NICE 0x1u
+
+typedef struct
+{
+  uint32_t flags;
+  uint32_t fsync_policy;
+  uint32_t pending_ttl_soft_ms;
+  uint32_t pending_ttl_hard_ms;
+} kafs_rpc_set_runtime_t;
+
+#define KAFS_RPC_SET_RUNTIME_F_HAS_FSYNC_POLICY 0x1u
+#define KAFS_RPC_SET_RUNTIME_F_HAS_PENDING_TTL_SOFT_MS 0x2u
+#define KAFS_RPC_SET_RUNTIME_F_HAS_PENDING_TTL_HARD_MS 0x4u
 
 typedef struct
 {

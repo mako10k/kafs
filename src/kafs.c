@@ -75,6 +75,13 @@ static inline uint64_t kafs_now_ns(void)
   return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
+static inline uint64_t kafs_now_realtime_ns(void)
+{
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
 static inline void kafs_stat_record_pwrite_iblk_write_latency(kafs_context_t *ctx, uint64_t ns)
 {
   if (!ctx)
@@ -443,9 +450,34 @@ static void kafs_pending_worker_adjust_priority_locked(struct kafs_context *ctx)
     high_wm = low_wm + 1u;
 
   uint32_t qcnt = kafs_pendinglog_count(ctx);
+  uint64_t oldest_age_ms = 0;
+  uint32_t over_soft = 0;
+  uint32_t over_hard = 0;
+
+  if (qcnt > 0)
+  {
+    kafs_pendinglog_entry_t *head = kafs_pendinglog_entry_ptr(ctx, hdr->head);
+    uint64_t now_rt_ns = kafs_now_realtime_ns();
+    if (head && head->seq > 0)
+    {
+      // If timestamp looks far in the future (clock jump/corruption), ignore this sample.
+      if (head->seq <= now_rt_ns + 300000000000ull && now_rt_ns >= head->seq)
+        oldest_age_ms = (now_rt_ns - head->seq) / 1000000ull;
+    }
+  }
+
+  if (ctx->c_pending_ttl_soft_ms > 0 && oldest_age_ms >= (uint64_t)ctx->c_pending_ttl_soft_ms)
+    over_soft = 1;
+  if (ctx->c_pending_ttl_hard_ms > 0 && oldest_age_ms >= (uint64_t)ctx->c_pending_ttl_hard_ms)
+    over_hard = 1;
+
+  ctx->c_pending_oldest_age_ms = oldest_age_ms;
+  ctx->c_pending_ttl_over_soft = over_soft;
+  ctx->c_pending_ttl_over_hard = over_hard;
+
   if (!ctx->c_pending_worker_auto_boosted)
   {
-    if (qcnt >= high_wm &&
+    if ((qcnt >= high_wm || over_soft) &&
         (ctx->c_pending_worker_prio_base_mode != KAFS_PENDING_WORKER_PRIO_NORMAL ||
          ctx->c_pending_worker_nice_base != 0))
     {
@@ -457,7 +489,7 @@ static void kafs_pending_worker_adjust_priority_locked(struct kafs_context *ctx)
     return;
   }
 
-  if (qcnt <= low_wm)
+  if (qcnt <= low_wm && !over_soft)
   {
     ctx->c_pending_worker_prio_mode = ctx->c_pending_worker_prio_base_mode;
     ctx->c_pending_worker_nice = ctx->c_pending_worker_nice_base;
@@ -627,6 +659,8 @@ static int kafs_pendinglog_replay_mount(struct kafs_context *ctx)
   if (!ctx || !ctx->c_pendinglog_enabled)
     return 0;
 
+  uint64_t now_rt_ns = kafs_now_realtime_ns();
+
   kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
   if (!hdr || hdr->capacity == 0)
     return 0;
@@ -644,6 +678,8 @@ static int kafs_pendinglog_replay_mount(struct kafs_context *ctx)
     if (slot->state == KAFS_PENDING_HASHED)
     {
       slot->state = KAFS_PENDING_QUEUED;
+      if (slot->seq == 0)
+        slot->seq = now_rt_ns;
       replay_requeued++;
     }
     else if (slot->state == KAFS_PENDING_RESOLVED)
@@ -654,6 +690,8 @@ static int kafs_pendinglog_replay_mount(struct kafs_context *ctx)
       if (still_pending)
       {
         slot->state = KAFS_PENDING_QUEUED;
+        if (slot->seq == 0)
+          slot->seq = now_rt_ns;
         replay_requeued++;
       }
     }
@@ -685,6 +723,8 @@ static int kafs_pendinglog_replay_mount(struct kafs_context *ctx)
         continue;
       }
       slot->state = KAFS_PENDING_QUEUED;
+      if (slot->seq == 0)
+        slot->seq = now_rt_ns;
       replay_requeued++;
     }
 
@@ -696,6 +736,43 @@ static int kafs_pendinglog_replay_mount(struct kafs_context *ctx)
     kafs_journal_note(ctx, "PENDINGLOG", "replay: requeued=%u dropped=%u remain=%u",
                       replay_requeued, replay_dropped, kafs_pendinglog_count(ctx));
   }
+  return 0;
+}
+
+static int kafs_fsync_policy_parse(const char *s, uint32_t *policy)
+{
+  if (!s || !policy)
+    return -EINVAL;
+  if (strcmp(s, "full") == 0)
+  {
+    *policy = KAFS_FSYNC_POLICY_FULL;
+    return 0;
+  }
+  if (strcmp(s, "journal_only") == 0 || strcmp(s, "journal-only") == 0 ||
+      strcmp(s, "journal") == 0)
+  {
+    *policy = KAFS_FSYNC_POLICY_JOURNAL_ONLY;
+    return 0;
+  }
+  if (strcmp(s, "adaptive") == 0)
+  {
+    *policy = KAFS_FSYNC_POLICY_ADAPTIVE;
+    return 0;
+  }
+  return -EINVAL;
+}
+
+static int kafs_parse_u32_range(const char *s, uint32_t minv, uint32_t maxv, uint32_t *out)
+{
+  if (!s || !out)
+    return -EINVAL;
+  char *endp = NULL;
+  unsigned long v = strtoul(s, &endp, 10);
+  if (!endp || *endp != '\0')
+    return -EINVAL;
+  if (v < (unsigned long)minv || v > (unsigned long)maxv)
+    return -ERANGE;
+  *out = (uint32_t)v;
   return 0;
 }
 
@@ -939,6 +1016,17 @@ static void *kafs_pending_worker_main(void *arg)
 
     if (retry > 0)
     {
+      if (ctx->c_pending_ttl_hard_ms > 0 && ent.seq > 0)
+      {
+        uint64_t now_rt_ns = kafs_now_realtime_ns();
+        if (now_rt_ns >= ent.seq)
+        {
+          uint64_t age_ms = (now_rt_ns - ent.seq) / 1000000ull;
+          if (age_ms >= (uint64_t)ctx->c_pending_ttl_hard_ms)
+            continue;
+        }
+      }
+
       if (retry > 6u)
         retry = 6u;
       uint32_t backoff_ms = 1u << retry;
@@ -1677,6 +1765,7 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
       ent.temp_blo = (uint32_t)temp_blo;
       ent.state = KAFS_PENDING_QUEUED;
       ent.target_hrid = (uint32_t)old_blo;
+      ent.seq = kafs_now_realtime_ns();
 
       uint64_t pending_id = 0;
       if (ctx->c_pending_worker_lock_init)
@@ -4333,6 +4422,12 @@ static void kafs_ctl_fill_status(const kafs_context_t *ctx, kafs_rpc_hotplug_sta
   out->pending_worker_prio_mode = ctx->c_pending_worker_prio_mode;
   out->pending_worker_nice = ctx->c_pending_worker_nice;
   out->pending_worker_prio_apply_error = ctx->c_pending_worker_prio_apply_error;
+  out->fsync_policy = ctx->c_fsync_policy;
+  out->pending_ttl_soft_ms = ctx->c_pending_ttl_soft_ms;
+  out->pending_ttl_hard_ms = ctx->c_pending_ttl_hard_ms;
+  out->pending_oldest_age_ms = ctx->c_pending_oldest_age_ms;
+  out->pending_ttl_over_soft = ctx->c_pending_ttl_over_soft;
+  out->pending_ttl_over_hard = ctx->c_pending_ttl_over_hard;
 }
 
 static int kafs_ctl_handle_request(kafs_context_t *ctx, kafs_ctl_session_t *sess,
@@ -4451,6 +4546,54 @@ static int kafs_ctl_handle_request(kafs_context_t *ctx, kafs_ctl_session_t *sess
         }
         ctx->c_pending_worker_prio_dirty = 1;
         kafs_pending_worker_notify_all(ctx);
+      }
+    }
+    break;
+  case KAFS_RPC_OP_CTL_SET_RUNTIME:
+    if (hdr.payload_len != sizeof(kafs_rpc_set_runtime_t))
+      result = -EINVAL;
+    else
+    {
+      const kafs_rpc_set_runtime_t *req = (const kafs_rpc_set_runtime_t *)payload;
+      uint32_t next_policy = ctx->c_fsync_policy;
+      uint32_t next_soft = ctx->c_pending_ttl_soft_ms;
+      uint32_t next_hard = ctx->c_pending_ttl_hard_ms;
+
+      if ((req->flags & KAFS_RPC_SET_RUNTIME_F_HAS_FSYNC_POLICY) != 0)
+      {
+        if (req->fsync_policy != KAFS_FSYNC_POLICY_FULL &&
+            req->fsync_policy != KAFS_FSYNC_POLICY_JOURNAL_ONLY &&
+            req->fsync_policy != KAFS_FSYNC_POLICY_ADAPTIVE)
+        {
+          result = -EINVAL;
+          break;
+        }
+        next_policy = req->fsync_policy;
+      }
+
+      if ((req->flags & KAFS_RPC_SET_RUNTIME_F_HAS_PENDING_TTL_SOFT_MS) != 0)
+        next_soft = req->pending_ttl_soft_ms;
+
+      if ((req->flags & KAFS_RPC_SET_RUNTIME_F_HAS_PENDING_TTL_HARD_MS) != 0)
+        next_hard = req->pending_ttl_hard_ms;
+
+      if (next_soft > 0 && next_hard > 0 && next_hard < next_soft)
+      {
+        result = -ERANGE;
+        break;
+      }
+
+      ctx->c_fsync_policy = next_policy;
+      ctx->c_pending_ttl_soft_ms = next_soft;
+      ctx->c_pending_ttl_hard_ms = next_hard;
+
+      if (ctx->c_pending_worker_lock_init)
+      {
+        pthread_mutex_lock(&ctx->c_pending_worker_lock);
+        kafs_pending_worker_adjust_priority_locked(ctx);
+        if (ctx->c_pending_worker_prio_dirty)
+          pthread_cond_broadcast(&ctx->c_pending_worker_cond);
+        pthread_mutex_unlock(&ctx->c_pending_worker_lock);
       }
     }
     break;
@@ -5846,15 +5989,31 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
     }
   }
 
-  // Aggressive durability policy:
-  // if journaling is enabled, treat fsync/fdatasync as "journal durability barrier".
-  // Data reconstruction is replay-based, so we avoid an extra full-image sync here.
-  if (kafs_journal_is_enabled(ctx))
+  // Runtime fsync policy:
+  // - full: always issue backing fsync/fdatasync
+  // - journal_only: journal durability barrier only
+  // - adaptive: journal_only for fdatasync and during pending-TTL pressure, else full
+  uint32_t policy = ctx->c_fsync_policy;
+  int journal_enabled = kafs_journal_is_enabled(ctx) ? 1 : 0;
+  int journal_only_mode = 0;
+  if (journal_enabled)
+  {
+    if (policy == KAFS_FSYNC_POLICY_JOURNAL_ONLY)
+      journal_only_mode = 1;
+    else if (policy == KAFS_FSYNC_POLICY_ADAPTIVE)
+    {
+      if (isdatasync || ctx->c_pending_ttl_over_soft || ctx->c_pending_ttl_over_hard)
+        journal_only_mode = 1;
+    }
+  }
+
+  if (journal_only_mode)
   {
     kafs_journal_force_flush(ctx);
     kafs_dlog(2,
-              "%s: exit rc=0 path=%s ino=%" PRIuFAST32 " mode=journal-only isdatasync=%d\n",
-              __func__, path ? path : "(null)", ino, isdatasync);
+              "%s: exit rc=0 path=%s ino=%" PRIuFAST32
+              " mode=journal-only isdatasync=%d policy=%" PRIuFAST32 "\n",
+              __func__, path ? path : "(null)", ino, isdatasync, policy);
     return 0;
   }
 
@@ -6019,6 +6178,12 @@ static void usage(const char *prog)
           "    -o pending_worker_nice=<0..19>    Set pending worker nice value\n"
           "    -o dedup_worker_prio=...          Alias of pending_worker_prio\n"
           "    -o dedup_worker_nice=...          Alias of pending_worker_nice\n"
+          "    -o pending_ttl_soft_ms=<N>        Soft TTL for pending entries (ms)\n"
+          "    -o pending_ttl_hard_ms=<N>        Hard TTL for pending entries (ms)\n"
+          "\n"
+          "  [Sync Policy]\n"
+          "    -o fsync_policy=<journal_only|full|adaptive>\n"
+          "                                      fsync/fdatasync runtime policy\n"
           "\n"
           "Environment:\n"
           "    KAFS_IMAGE                        Fallback image path\n"
@@ -6028,6 +6193,9 @@ static void usage(const char *prog)
           "    KAFS_MAX_THREADS=<N>              Default MT worker count\n"
           "    KAFS_PENDING_WORKER_PRIO          pending_worker_prio default\n"
           "    KAFS_PENDING_WORKER_NICE          pending_worker_nice default\n"
+          "    KAFS_PENDING_TTL_SOFT_MS          pending soft TTL (ms)\n"
+          "    KAFS_PENDING_TTL_HARD_MS          pending hard TTL (ms)\n"
+          "    KAFS_FSYNC_POLICY                 fsync policy default\n"
           "    KAFS_HOTPLUG_UDS                  Hotplug UDS path (legacy/env)\n"
           "    KAFS_HOTPLUG_BACK_BIN             Backend binary path hint\n"
           "\n"
@@ -6350,6 +6518,9 @@ int main(int argc, char **argv)
   int saw_max_threads = 0;
   uint32_t pending_worker_prio_mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
   int pending_worker_nice = 0;
+  uint32_t pending_ttl_soft_ms = 5000;
+  uint32_t pending_ttl_hard_ms = 30000;
+  uint32_t fsync_policy = KAFS_FSYNC_POLICY_JOURNAL_ONLY;
 
   const char *pprio = getenv("KAFS_PENDING_WORKER_PRIO");
   if (pprio && *pprio)
@@ -6371,6 +6542,42 @@ int main(int argc, char **argv)
       return 2;
     }
     pending_worker_nice = (int)v;
+  }
+
+  const char *pttl_soft = getenv("KAFS_PENDING_TTL_SOFT_MS");
+  if (pttl_soft && *pttl_soft)
+  {
+    if (kafs_parse_u32_range(pttl_soft, 0, 3600000u, &pending_ttl_soft_ms) != 0)
+    {
+      fprintf(stderr, "invalid KAFS_PENDING_TTL_SOFT_MS: '%s'\n", pttl_soft);
+      return 2;
+    }
+  }
+
+  const char *pttl_hard = getenv("KAFS_PENDING_TTL_HARD_MS");
+  if (pttl_hard && *pttl_hard)
+  {
+    if (kafs_parse_u32_range(pttl_hard, 0, 3600000u, &pending_ttl_hard_ms) != 0)
+    {
+      fprintf(stderr, "invalid KAFS_PENDING_TTL_HARD_MS: '%s'\n", pttl_hard);
+      return 2;
+    }
+  }
+
+  if (pending_ttl_soft_ms > 0 && pending_ttl_hard_ms > 0 && pending_ttl_hard_ms < pending_ttl_soft_ms)
+  {
+    fprintf(stderr, "invalid pending TTL env: hard must be >= soft\n");
+    return 2;
+  }
+
+  const char *fsp = getenv("KAFS_FSYNC_POLICY");
+  if (fsp && *fsp)
+  {
+    if (kafs_fsync_policy_parse(fsp, &fsync_policy) != 0)
+    {
+      fprintf(stderr, "invalid KAFS_FSYNC_POLICY: '%s'\n", fsp);
+      return 2;
+    }
   }
 
   // Custom -o option: multi_thread[=N] (alias: multi-thread, multithread).
@@ -6559,6 +6766,48 @@ int main(int argc, char **argv)
             continue;
           }
 
+          const char *ttl_soft_str = NULL;
+          if (strncmp(tok, "pending_ttl_soft_ms=", 20) == 0)
+            ttl_soft_str = tok + 20;
+          if (ttl_soft_str)
+          {
+            if (kafs_parse_u32_range(ttl_soft_str, 0, 3600000u, &pending_ttl_soft_ms) != 0)
+            {
+              fprintf(stderr, "invalid -o pending_ttl_soft_ms: '%s'\n", ttl_soft_str);
+              free(dup);
+              return 2;
+            }
+            continue;
+          }
+
+          const char *ttl_hard_str = NULL;
+          if (strncmp(tok, "pending_ttl_hard_ms=", 20) == 0)
+            ttl_hard_str = tok + 20;
+          if (ttl_hard_str)
+          {
+            if (kafs_parse_u32_range(ttl_hard_str, 0, 3600000u, &pending_ttl_hard_ms) != 0)
+            {
+              fprintf(stderr, "invalid -o pending_ttl_hard_ms: '%s'\n", ttl_hard_str);
+              free(dup);
+              return 2;
+            }
+            continue;
+          }
+
+          const char *fsp_str = NULL;
+          if (strncmp(tok, "fsync_policy=", 13) == 0)
+            fsp_str = tok + 13;
+          if (fsp_str)
+          {
+            if (kafs_fsync_policy_parse(fsp_str, &fsync_policy) != 0)
+            {
+              fprintf(stderr, "invalid -o fsync_policy: '%s'\n", fsp_str);
+              free(dup);
+              return 2;
+            }
+            continue;
+          }
+
           // keep other options
           size_t tlen = strlen(tok);
           size_t need = tlen + (used ? 1 : 0);
@@ -6621,6 +6870,12 @@ int main(int argc, char **argv)
     (void)o_owned_cnt;
   }
 
+  if (pending_ttl_soft_ms > 0 && pending_ttl_hard_ms > 0 && pending_ttl_hard_ms < pending_ttl_soft_ms)
+  {
+    fprintf(stderr, "invalid pending TTL: hard must be >= soft\n");
+    return 2;
+  }
+
   static kafs_context_t ctx;
   static char mnt_abs[PATH_MAX];
   char hotplug_uds_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
@@ -6674,8 +6929,14 @@ int main(int argc, char **argv)
   ctx.c_pending_worker_prio_base_mode = pending_worker_prio_mode;
   ctx.c_pending_worker_nice_base = pending_worker_nice;
   ctx.c_pending_worker_auto_boosted = 0;
+  ctx.c_pending_ttl_soft_ms = pending_ttl_soft_ms;
+  ctx.c_pending_ttl_hard_ms = pending_ttl_hard_ms;
+  ctx.c_pending_oldest_age_ms = 0;
+  ctx.c_pending_ttl_over_soft = 0;
+  ctx.c_pending_ttl_over_hard = 0;
   ctx.c_pending_worker_prio_apply_error = 0;
   ctx.c_pending_worker_prio_dirty = 1;
+  ctx.c_fsync_policy = fsync_policy;
 
   const char *data_mode = getenv("KAFS_HOTPLUG_DATA_MODE");
   if (data_mode)

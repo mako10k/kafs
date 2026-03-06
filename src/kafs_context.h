@@ -137,8 +137,16 @@ struct kafs_context
   uint32_t c_pending_worker_prio_base_mode;
   int32_t c_pending_worker_nice_base;
   uint32_t c_pending_worker_auto_boosted;
+  uint32_t c_pending_ttl_soft_ms;
+  uint32_t c_pending_ttl_hard_ms;
+  uint64_t c_pending_oldest_age_ms;
+  uint32_t c_pending_ttl_over_soft;
+  uint32_t c_pending_ttl_over_hard;
   int32_t c_pending_worker_prio_apply_error;
   uint32_t c_pending_worker_prio_dirty;
+
+  // fsync/fdatasync behavior policy
+  uint32_t c_fsync_policy;
 
   // --- Runtime inode open counts (in-memory only) ---
   uint32_t *c_open_cnt;  // sized to superblock inocnt (allocated at mount)

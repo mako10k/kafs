@@ -79,6 +79,8 @@ static void usage(const char *prog)
           "  %s hotplug compat <mountpoint> [--json]\n"
           "  %s hotplug set-timeout <mountpoint> <ms>\n"
           "  %s hotplug set-dedup-priority <mountpoint> <normal|idle> [nice(0..19)]\n"
+          "  %s hotplug set-runtime <mountpoint> [--fsync-policy=<journal_only|full|adaptive>]"
+          " [--pending-ttl-soft-ms=<ms>] [--pending-ttl-hard-ms=<ms>]\n"
           "  %s hotplug env list <mountpoint>\n"
           "  %s hotplug env set <mountpoint> <key>=<value>\n"
           "  %s hotplug env unset <mountpoint> <key>\n"
@@ -96,7 +98,7 @@ static void usage(const char *prog)
           "  %s chmod <mountpoint> <octal_mode> <path>\n"
           "  %s touch <mountpoint> <path>\n",
           prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog,
-          prog, prog, prog, prog, prog, prog, prog, prog);
+          prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 static int confirm_yes_stdin(void)
@@ -262,6 +264,129 @@ static const char *pending_worker_prio_mode_str(uint32_t mode)
   }
 }
 
+static int hotplug_ctl_exchange(const char *mnt, uint16_t op, const void *req, uint32_t req_len,
+                                void *resp, uint32_t resp_cap, uint32_t *resp_len,
+                                int32_t *resp_result);
+static void hotplug_print_exchange_error(const char *op, const char *mnt, int rc);
+
+static const char *fsync_policy_str(uint32_t policy)
+{
+  switch (policy)
+  {
+  case KAFS_FSYNC_POLICY_FULL:
+    return "full";
+  case KAFS_FSYNC_POLICY_ADAPTIVE:
+    return "adaptive";
+  case KAFS_FSYNC_POLICY_JOURNAL_ONLY:
+  default:
+    return "journal_only";
+  }
+}
+
+static int parse_fsync_policy(const char *s, uint32_t *out)
+{
+  if (!s || !out)
+    return -EINVAL;
+  if (strcmp(s, "full") == 0)
+  {
+    *out = KAFS_FSYNC_POLICY_FULL;
+    return 0;
+  }
+  if (strcmp(s, "journal_only") == 0 || strcmp(s, "journal-only") == 0 ||
+      strcmp(s, "journal") == 0)
+  {
+    *out = KAFS_FSYNC_POLICY_JOURNAL_ONLY;
+    return 0;
+  }
+  if (strcmp(s, "adaptive") == 0)
+  {
+    *out = KAFS_FSYNC_POLICY_ADAPTIVE;
+    return 0;
+  }
+  return -EINVAL;
+}
+
+static int cmd_hotplug_set_runtime(const char *mnt, int argc, char **argv)
+{
+  kafs_rpc_set_runtime_t req;
+  memset(&req, 0, sizeof(req));
+
+  for (int i = 0; i < argc; ++i)
+  {
+    const char *a = argv[i];
+    if (strncmp(a, "--fsync-policy=", 15) == 0)
+    {
+      if (parse_fsync_policy(a + 15, &req.fsync_policy) != 0)
+      {
+        fprintf(stderr, "invalid fsync policy: %s\n", a + 15);
+        return 2;
+      }
+      req.flags |= KAFS_RPC_SET_RUNTIME_F_HAS_FSYNC_POLICY;
+      continue;
+    }
+    if (strncmp(a, "--pending-ttl-soft-ms=", 22) == 0)
+    {
+      char *endp = NULL;
+      unsigned long v = strtoul(a + 22, &endp, 10);
+      if (!endp || *endp != '\0' || v > UINT32_MAX)
+      {
+        fprintf(stderr, "invalid pending ttl soft: %s\n", a + 22);
+        return 2;
+      }
+      req.pending_ttl_soft_ms = (uint32_t)v;
+      req.flags |= KAFS_RPC_SET_RUNTIME_F_HAS_PENDING_TTL_SOFT_MS;
+      continue;
+    }
+    if (strncmp(a, "--pending-ttl-hard-ms=", 22) == 0)
+    {
+      char *endp = NULL;
+      unsigned long v = strtoul(a + 22, &endp, 10);
+      if (!endp || *endp != '\0' || v > UINT32_MAX)
+      {
+        fprintf(stderr, "invalid pending ttl hard: %s\n", a + 22);
+        return 2;
+      }
+      req.pending_ttl_hard_ms = (uint32_t)v;
+      req.flags |= KAFS_RPC_SET_RUNTIME_F_HAS_PENDING_TTL_HARD_MS;
+      continue;
+    }
+
+    fprintf(stderr, "unknown option: %s\n", a);
+    return 2;
+  }
+
+  if (req.flags == 0)
+  {
+    fprintf(stderr, "set-runtime requires at least one option\n");
+    return 2;
+  }
+
+  if ((req.flags & KAFS_RPC_SET_RUNTIME_F_HAS_PENDING_TTL_SOFT_MS) != 0 &&
+      (req.flags & KAFS_RPC_SET_RUNTIME_F_HAS_PENDING_TTL_HARD_MS) != 0 &&
+      req.pending_ttl_soft_ms > 0 && req.pending_ttl_hard_ms > 0 &&
+      req.pending_ttl_hard_ms < req.pending_ttl_soft_ms)
+  {
+    fprintf(stderr, "invalid ttl: hard must be >= soft\n");
+    return 2;
+  }
+
+  uint32_t resp_len = 0;
+  int32_t resp_result = 0;
+  int rc = hotplug_ctl_exchange(mnt, KAFS_RPC_OP_CTL_SET_RUNTIME, &req, sizeof(req), NULL, 0,
+                                &resp_len, &resp_result);
+  if (rc != 0)
+  {
+    hotplug_print_exchange_error("set-runtime", mnt, rc);
+    return 1;
+  }
+  if (resp_result != 0)
+  {
+    fprintf(stderr, "hotplug set-runtime failed: %s\n", strerror(-resp_result));
+    return 1;
+  }
+  return 0;
+}
+
 #define KAFS_CTL_REL ".kafs.sock"
 
 static int write_full(int fd, const void *buf, size_t len)
@@ -414,6 +539,12 @@ static void hotplug_status_from_rpc(kafs_hotplug_status_t *out, const kafs_rpc_h
   out->pending_worker_prio_mode = in->pending_worker_prio_mode;
   out->pending_worker_nice = in->pending_worker_nice;
   out->pending_worker_prio_apply_error = in->pending_worker_prio_apply_error;
+  out->fsync_policy = in->fsync_policy;
+  out->pending_ttl_soft_ms = in->pending_ttl_soft_ms;
+  out->pending_ttl_hard_ms = in->pending_ttl_hard_ms;
+  out->pending_oldest_age_ms = in->pending_oldest_age_ms;
+  out->pending_ttl_over_soft = in->pending_ttl_over_soft;
+  out->pending_ttl_over_hard = in->pending_ttl_over_hard;
 }
 
 static int get_hotplug_status(const char *mnt, kafs_hotplug_status_t *out)
@@ -494,7 +625,14 @@ static int cmd_hotplug_status(const char *mnt, int json)
     printf("  \"pending_worker_prio_mode_str\": \"%s\",\n",
            pending_worker_prio_mode_str(st.pending_worker_prio_mode));
     printf("  \"pending_worker_nice\": %d,\n", st.pending_worker_nice);
-    printf("  \"pending_worker_prio_apply_error\": %d\n", st.pending_worker_prio_apply_error);
+    printf("  \"pending_worker_prio_apply_error\": %d,\n", st.pending_worker_prio_apply_error);
+    printf("  \"fsync_policy\": %u,\n", st.fsync_policy);
+    printf("  \"fsync_policy_str\": \"%s\",\n", fsync_policy_str(st.fsync_policy));
+    printf("  \"pending_ttl_soft_ms\": %u,\n", st.pending_ttl_soft_ms);
+    printf("  \"pending_ttl_hard_ms\": %u,\n", st.pending_ttl_hard_ms);
+    printf("  \"pending_oldest_age_ms\": %" PRIu64 ",\n", st.pending_oldest_age_ms);
+    printf("  \"pending_ttl_over_soft\": %u,\n", st.pending_ttl_over_soft);
+    printf("  \"pending_ttl_over_hard\": %u\n", st.pending_ttl_over_hard);
     printf("}\n");
     return 0;
   }
@@ -519,6 +657,12 @@ static int cmd_hotplug_status(const char *mnt, int json)
          pending_worker_prio_mode_str(st.pending_worker_prio_mode));
   printf("  pending_worker_nice: %d\n", st.pending_worker_nice);
   printf("  pending_worker_prio_apply_error: %d\n", st.pending_worker_prio_apply_error);
+  printf("  fsync_policy: %u (%s)\n", st.fsync_policy, fsync_policy_str(st.fsync_policy));
+  printf("  pending_ttl_soft_ms: %u\n", st.pending_ttl_soft_ms);
+  printf("  pending_ttl_hard_ms: %u\n", st.pending_ttl_hard_ms);
+  printf("  pending_oldest_age_ms: %" PRIu64 "\n", st.pending_oldest_age_ms);
+  printf("  pending_ttl_over_soft: %u\n", st.pending_ttl_over_soft);
+  printf("  pending_ttl_over_hard: %u\n", st.pending_ttl_over_hard);
   return 0;
 }
 
@@ -1810,6 +1954,15 @@ int main(int argc, char **argv)
         return 2;
       }
       return cmd_hotplug_set_dedup_priority(argv[3], argv[4], argc == 6 ? argv[5] : NULL);
+    }
+    if (strcmp(argv[2], "set-runtime") == 0)
+    {
+      if (argc < 5)
+      {
+        usage(argv[0]);
+        return 2;
+      }
+      return cmd_hotplug_set_runtime(argv[3], argc - 4, &argv[4]);
     }
     if (strcmp(argv[2], "env") == 0)
     {

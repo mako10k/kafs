@@ -5,7 +5,7 @@
 #define KAFS_HOTPLUG_ENV_VALUE_MAX 256
 #define KAFS_HOTPLUG_ENV_MAX 32
 
-#define KAFS_HOTPLUG_STATUS_VERSION 4u
+#define KAFS_HOTPLUG_STATUS_VERSION 5u
 
 enum
 {
@@ -52,4 +52,10 @@ typedef struct kafs_hotplug_status
   uint32_t pending_worker_prio_mode;
   int32_t pending_worker_nice;
   int32_t pending_worker_prio_apply_error;
+  uint32_t fsync_policy;
+  uint32_t pending_ttl_soft_ms;
+  uint32_t pending_ttl_hard_ms;
+  uint64_t pending_oldest_age_ms;
+  uint32_t pending_ttl_over_soft;
+  uint32_t pending_ttl_over_hard;
 } kafs_hotplug_status_t;
