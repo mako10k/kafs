@@ -544,6 +544,68 @@ with open(out_md, "w", encoding="utf-8") as out:
     else:
         out.write("| none | - | - | - | - | - | - | - |\\n")
 
+        out.write("\\n## Copy Fastpath Correlation (copy_heavy)\\n\\n")
+        out.write("| target | samples | mean_copy_heavy_sec | mean_hit_rate | mean_sec_per_done_block |\\n")
+        out.write("|---|---|---|---|---|\\n")
+
+        copy_heavy_by_key = {}
+        for r in rows:
+          if r["workload"] != "copy_heavy" or r["status"] != "ok":
+            continue
+          try:
+            copy_heavy_by_key[(r["target"], r["repeat"])] = float(r["seconds"])
+          except ValueError:
+            continue
+
+        agg = defaultdict(list)
+        for r in copy_rows:
+          target = r["target"]
+          rep = r["repeat"]
+          key = (target, rep)
+          if key not in copy_heavy_by_key:
+            continue
+          attempt = int(r["attempt_blocks"])
+          done = int(r["done_blocks"])
+          sec = copy_heavy_by_key[key]
+          hit_rate = (done / attempt) if attempt > 0 else 0.0
+          sec_per_done = (sec / done) if done > 0 else 0.0
+          agg[target].append((sec, hit_rate, sec_per_done))
+
+        if agg:
+          for target in sorted(agg.keys()):
+            vals = agg[target]
+            mean_sec = statistics.mean(v[0] for v in vals)
+            mean_hit = statistics.mean(v[1] for v in vals)
+            mean_eff = statistics.mean(v[2] for v in vals)
+            out.write(
+              f"| {target} | {len(vals)} | {mean_sec:.3f} | {mean_hit:.3f} | {mean_eff:.6f} |\\n"
+            )
+
+          points = []
+          for vals in agg.values():
+            for sec, hit, _ in vals:
+              points.append((hit, sec))
+          if len(points) >= 2:
+            x_mean = statistics.mean(p[0] for p in points)
+            y_mean = statistics.mean(p[1] for p in points)
+            cov = sum((p[0] - x_mean) * (p[1] - y_mean) for p in points)
+            var_x = sum((p[0] - x_mean) ** 2 for p in points)
+            var_y = sum((p[1] - y_mean) ** 2 for p in points)
+            if var_x > 0 and var_y > 0:
+              corr = cov / ((var_x ** 0.5) * (var_y ** 0.5))
+              out.write(
+                f"\\n- pearson_corr(hit_rate, copy_heavy_sec): {corr:.6f} (n={len(points)})\\n"
+              )
+            else:
+              out.write(
+                f"\\n- pearson_corr(hit_rate, copy_heavy_sec): N/A (zero variance, n={len(points)})\\n"
+              )
+          else:
+            out.write("\\n- pearson_corr(hit_rate, copy_heavy_sec): N/A (insufficient samples)\\n")
+        else:
+          out.write("| none | - | - | - | - |\\n")
+          out.write("\\n- pearson_corr(hit_rate, copy_heavy_sec): N/A (no matched samples)\\n")
+
 print(out_md)
 PY
 
