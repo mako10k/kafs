@@ -4016,6 +4016,75 @@ static int kafs_reflink_clone(kafs_context_t *ctx, kafs_sinode_t *src, kafs_sino
   return 0;
 }
 
+// Copy one full block by sharing HRL reference instead of read+hash+write.
+// Caller must hold src/dst inode locks.
+static int kafs_copy_share_one_iblk_locked(kafs_context_t *ctx, kafs_sinode_t *src,
+                                           kafs_sinode_t *dst, kafs_iblkcnt_t src_iblo,
+                                           kafs_iblkcnt_t dst_iblo, uint32_t ino_dst)
+{
+  kafs_blkcnt_t release_list[4];
+  size_t release_cnt = 0;
+  kafs_blkcnt_t src_blo = KAFS_BLO_NONE;
+  int rc = kafs_ino_ibrk_run(ctx, src, src_iblo, &src_blo, KAFS_IBLKREF_FUNC_GET);
+  if (rc < 0)
+    return rc;
+
+  kafs_blkcnt_t old_blo = KAFS_BLO_NONE;
+  rc = kafs_ino_ibrk_run(ctx, dst, dst_iblo, &old_blo, KAFS_IBLKREF_FUNC_GET);
+  if (rc < 0)
+    return rc;
+
+  if (old_blo == src_blo)
+    return 0;
+
+  if (src_blo != KAFS_BLO_NONE)
+  {
+    int irc = kafs_hrl_inc_ref_by_blo(ctx, src_blo);
+    if (irc == -ENOENT || irc == -ENOSYS)
+      return -EAGAIN;
+    if (irc < 0)
+      return irc;
+  }
+
+  kafs_blkcnt_t set_blo = src_blo;
+  rc = kafs_ino_ibrk_run(ctx, dst, dst_iblo, &set_blo, KAFS_IBLKREF_FUNC_SET);
+  if (rc < 0)
+  {
+    if (src_blo != KAFS_BLO_NONE)
+      (void)kafs_hrl_dec_ref_by_blo(ctx, src_blo);
+    return rc;
+  }
+
+  if (src_blo == KAFS_BLO_NONE)
+  {
+    kafs_blkcnt_t f1 = KAFS_BLO_NONE;
+    kafs_blkcnt_t f2 = KAFS_BLO_NONE;
+    kafs_blkcnt_t f3 = KAFS_BLO_NONE;
+    rc = kafs_ino_prune_empty_indirects(ctx, dst, dst_iblo, &f1, &f2, &f3);
+    if (rc < 0)
+      return rc;
+    if (f1 != KAFS_BLO_NONE)
+      release_list[release_cnt++] = f1;
+    if (f2 != KAFS_BLO_NONE)
+      release_list[release_cnt++] = f2;
+    if (f3 != KAFS_BLO_NONE)
+      release_list[release_cnt++] = f3;
+  }
+
+  if (old_blo != KAFS_BLO_NONE)
+    release_list[release_cnt++] = old_blo;
+
+  if (release_cnt != 0)
+  {
+    // Keep existing lock ordering: dec_ref runs outside inode lock.
+    kafs_inode_unlock(ctx, ino_dst);
+    for (size_t i = 0; i < release_cnt; ++i)
+      (void)kafs_hrl_dec_ref_by_blo(ctx, release_list[i]);
+    kafs_inode_lock(ctx, ino_dst);
+  }
+  return 0;
+}
+
 #define KAFS_CTL_PATH "/.kafs.sock"
 #define KAFS_CTL_MAX_REQ (sizeof(kafs_rpc_hdr_t) + KAFS_RPC_MAX_PAYLOAD)
 #define KAFS_CTL_MAX_RESP (sizeof(kafs_rpc_resp_hdr_t) + KAFS_RPC_MAX_PAYLOAD)
@@ -4420,6 +4489,12 @@ static ssize_t kafs_op_copy_file_range(const char *path_in, struct fuse_file_inf
   if ((kafs_off_t)size < max)
     max = (kafs_off_t)size;
 
+  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
+  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+  kafs_off_t dst_size = kafs_ino_size_get(ino_out);
+  int dst_is_block_backed = (dst_size > (kafs_off_t)KAFS_DIRECT_SIZE);
+  int dst_empty_converted = 0;
+
   const size_t bufsz = 128u * 1024u;
   char *buf = (char *)malloc(bufsz);
   if (!buf)
@@ -4432,6 +4507,64 @@ static ssize_t kafs_op_copy_file_range(const char *path_in, struct fuse_file_inf
   kafs_off_t done = 0;
   while (done < max)
   {
+    kafs_off_t src_off = (kafs_off_t)offset_in + done;
+    kafs_off_t dst_off = (kafs_off_t)offset_out + done;
+    kafs_off_t remain = max - done;
+
+    if (ctx->c_hrl_bucket_cnt != 0 && src_off >= 0 && dst_off >= 0 && remain >= (kafs_off_t)blksize &&
+        ((src_off & ((kafs_off_t)blksize - 1)) == 0) &&
+        ((dst_off & ((kafs_off_t)blksize - 1)) == 0))
+    {
+      // Avoid interpreting inline payload as block references.
+      if (!dst_is_block_backed)
+      {
+        if (dst_size == 0 && (kafs_off_t)offset_out == 0)
+        {
+          memset(ino_out->i_blkreftbl, 0, sizeof(ino_out->i_blkreftbl));
+          dst_is_block_backed = 1;
+          dst_empty_converted = 1;
+        }
+      }
+
+      if (dst_is_block_backed)
+      {
+        size_t blocks = (size_t)(remain >> log_blksize);
+        size_t copied_blocks = 0;
+        for (size_t i = 0; i < blocks; ++i)
+        {
+          kafs_iblkcnt_t src_iblo = (kafs_iblkcnt_t)(src_off >> log_blksize) + (kafs_iblkcnt_t)i;
+          kafs_iblkcnt_t dst_iblo = (kafs_iblkcnt_t)(dst_off >> log_blksize) + (kafs_iblkcnt_t)i;
+          int frc = kafs_copy_share_one_iblk_locked(ctx, ino_in, ino_out, src_iblo, dst_iblo,
+                                                    ino_dst);
+          if (frc == -EAGAIN)
+            break;
+          if (frc < 0)
+          {
+            free(buf);
+            kafs_inode_unlock(ctx, ino_src);
+            kafs_inode_unlock(ctx, ino_dst);
+            return frc;
+          }
+          copied_blocks++;
+          done += (kafs_off_t)blksize;
+        }
+
+        if (copied_blocks > 0)
+        {
+          kafs_off_t end = (kafs_off_t)offset_out + done;
+          if (kafs_ino_size_get(ino_out) < end)
+            kafs_ino_size_set(ino_out, end);
+          continue;
+        }
+
+        if (dst_empty_converted)
+        {
+          // Keep inode shape consistent if we converted an empty inline inode but couldn't share.
+          memset(ino_out->i_blkreftbl, 0, sizeof(ino_out->i_blkreftbl));
+        }
+      }
+    }
+
     size_t want = (size_t)((max - done) < (kafs_off_t)bufsz ? (max - done) : (kafs_off_t)bufsz);
     ssize_t r = kafs_pread(ctx, ino_in, buf, (kafs_off_t)want, (kafs_off_t)offset_in + done);
     if (r < 0)
