@@ -1016,6 +1016,7 @@ static void *kafs_pending_worker_main(void *arg)
 
     if (retry > 0)
     {
+      int hard_ttl_exceeded = 0;
       if (ctx->c_pending_ttl_hard_ms > 0 && ent.seq > 0)
       {
         uint64_t now_rt_ns = kafs_now_realtime_ns();
@@ -1023,13 +1024,22 @@ static void *kafs_pending_worker_main(void *arg)
         {
           uint64_t age_ms = (now_rt_ns - ent.seq) / 1000000ull;
           if (age_ms >= (uint64_t)ctx->c_pending_ttl_hard_ms)
-            continue;
+            hard_ttl_exceeded = 1;
         }
       }
 
-      if (retry > 6u)
-        retry = 6u;
-      uint32_t backoff_ms = 1u << retry;
+      uint32_t backoff_ms;
+      if (hard_ttl_exceeded)
+      {
+        // Keep drain aggressive under hard TTL pressure, but avoid hot-spin starvation.
+        backoff_ms = 1u;
+      }
+      else
+      {
+        if (retry > 6u)
+          retry = 6u;
+        backoff_ms = 1u << retry;
+      }
       struct timespec ts = {
           .tv_sec = (time_t)(backoff_ms / 1000u),
           .tv_nsec = (long)((backoff_ms % 1000u) * 1000000u),
