@@ -426,6 +426,46 @@ static void kafs_pending_worker_notify_all(struct kafs_context *ctx)
   pthread_mutex_unlock(&ctx->c_pending_worker_lock);
 }
 
+static void kafs_pending_worker_adjust_priority_locked(struct kafs_context *ctx)
+{
+  if (!ctx || !ctx->c_pending_worker_running)
+    return;
+
+  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+  if (!hdr || hdr->capacity == 0)
+    return;
+
+  // Hysteresis: boost near full, restore after queue is drained enough.
+  uint32_t cap = hdr->capacity;
+  uint32_t high_wm = cap - (cap / 8u); // 87.5%
+  uint32_t low_wm = cap / 2u;          // 50%
+  if (high_wm <= low_wm)
+    high_wm = low_wm + 1u;
+
+  uint32_t qcnt = kafs_pendinglog_count(ctx);
+  if (!ctx->c_pending_worker_auto_boosted)
+  {
+    if (qcnt >= high_wm &&
+        (ctx->c_pending_worker_prio_base_mode != KAFS_PENDING_WORKER_PRIO_NORMAL ||
+         ctx->c_pending_worker_nice_base != 0))
+    {
+      ctx->c_pending_worker_prio_mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
+      ctx->c_pending_worker_nice = 0;
+      ctx->c_pending_worker_prio_dirty = 1;
+      ctx->c_pending_worker_auto_boosted = 1;
+    }
+    return;
+  }
+
+  if (qcnt <= low_wm)
+  {
+    ctx->c_pending_worker_prio_mode = ctx->c_pending_worker_prio_base_mode;
+    ctx->c_pending_worker_nice = ctx->c_pending_worker_nice_base;
+    ctx->c_pending_worker_prio_dirty = 1;
+    ctx->c_pending_worker_auto_boosted = 0;
+  }
+}
+
 static void kafs_pending_worker_begin_boost(struct kafs_context *ctx, uint32_t *saved_mode,
                                             int *saved_nice, int *changed)
 {
@@ -777,6 +817,7 @@ static void *kafs_pending_worker_main(void *arg)
       kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
       if (hdr && hdr->capacity > 0 && hdr->head == idx)
         hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
+      kafs_pending_worker_adjust_priority_locked(ctx);
       pthread_mutex_unlock(&ctx->c_pending_worker_lock);
       continue;
     }
@@ -869,6 +910,7 @@ static void *kafs_pending_worker_main(void *arg)
           if (hdr->head == idx)
             hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
         }
+        kafs_pending_worker_adjust_priority_locked(ctx);
         pthread_cond_broadcast(&ctx->c_pending_worker_cond);
         pthread_mutex_unlock(&ctx->c_pending_worker_lock);
         continue;
@@ -891,6 +933,7 @@ static void *kafs_pending_worker_main(void *arg)
           hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
       }
     }
+    kafs_pending_worker_adjust_priority_locked(ctx);
     pthread_cond_broadcast(&ctx->c_pending_worker_cond);
     pthread_mutex_unlock(&ctx->c_pending_worker_lock);
 
@@ -1599,6 +1642,7 @@ static int kafs_ino_iblk_read_or_zero(struct kafs_context *ctx, kafs_sinode_t *i
 static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_iblkcnt_t iblo,
                                const void *buf)
 {
+  static uint32_t s_pendinglog_full_warned = 0;
   kafs_dlog(3, "%s(ino = %d, iblo = %" PRIuFAST32 ")\n", __func__, inoent - ctx->c_inotbl, iblo);
   assert(ctx != NULL);
   assert(buf != NULL);
@@ -1639,19 +1683,34 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
         pthread_mutex_lock(&ctx->c_pending_worker_lock);
       int qrc = kafs_pendinglog_enqueue(ctx, &ent, &pending_id);
       if (ctx->c_pending_worker_lock_init)
+      {
+        kafs_pending_worker_adjust_priority_locked(ctx);
         pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+      }
       if (qrc < 0)
       {
         (void)kafs_hrl_dec_ref_by_blo(ctx, temp_blo);
-        return qrc;
+        if (qrc != -ENOSPC)
+          return qrc;
+
+        uint32_t c = __atomic_fetch_add(&s_pendinglog_full_warned, 1u, __ATOMIC_RELAXED);
+        if (c < 8u)
+        {
+          kafs_log(KAFS_LOG_WARNING,
+                   "%s: pendinglog full (ino=%" PRIu32 ", iblk=%" PRIu32 "), fallback to sync write\n",
+                   __func__, ino_idx, (uint32_t)iblo);
+        }
       }
 
-      kafs_blkcnt_t pref = KAFS_BLO_NONE;
-      KAFS_CALL(kafs_ref_pending_encode, pending_id, &pref);
-      KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &pref, KAFS_IBLKREF_FUNC_SET);
+      if (qrc == 0)
+      {
+        kafs_blkcnt_t pref = KAFS_BLO_NONE;
+        KAFS_CALL(kafs_ref_pending_encode, pending_id, &pref);
+        KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &pref, KAFS_IBLKREF_FUNC_SET);
 
-      kafs_pending_worker_notify(ctx);
-      return KAFS_SUCCESS;
+        kafs_pending_worker_notify(ctx);
+        return KAFS_SUCCESS;
+      }
     }
 
     // 非ゼロ: HRL 経路（失敗時は従来経路）。
@@ -4376,6 +4435,20 @@ static int kafs_ctl_handle_request(kafs_context_t *ctx, kafs_ctl_session_t *sess
         ctx->c_pending_worker_prio_mode = req->mode;
         if ((req->flags & KAFS_RPC_SET_DEDUP_PRIO_F_HAS_NICE) != 0)
           ctx->c_pending_worker_nice = req->nice_value;
+        ctx->c_pending_worker_prio_base_mode = req->mode;
+        if ((req->flags & KAFS_RPC_SET_DEDUP_PRIO_F_HAS_NICE) != 0)
+          ctx->c_pending_worker_nice_base = req->nice_value;
+
+        if (ctx->c_pending_worker_auto_boosted)
+        {
+          ctx->c_pending_worker_prio_mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
+          ctx->c_pending_worker_nice = 0;
+        }
+        else
+        {
+          ctx->c_pending_worker_prio_mode = ctx->c_pending_worker_prio_base_mode;
+          ctx->c_pending_worker_nice = ctx->c_pending_worker_nice_base;
+        }
         ctx->c_pending_worker_prio_dirty = 1;
         kafs_pending_worker_notify_all(ctx);
       }
@@ -5773,6 +5846,18 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
     }
   }
 
+  // Aggressive durability policy:
+  // if journaling is enabled, treat fsync/fdatasync as "journal durability barrier".
+  // Data reconstruction is replay-based, so we avoid an extra full-image sync here.
+  if (kafs_journal_is_enabled(ctx))
+  {
+    kafs_journal_force_flush(ctx);
+    kafs_dlog(2,
+              "%s: exit rc=0 path=%s ino=%" PRIuFAST32 " mode=journal-only isdatasync=%d\n",
+              __func__, path ? path : "(null)", ino, isdatasync);
+    return 0;
+  }
+
   kafs_journal_force_flush(ctx);
   int src = isdatasync ? fdatasync(ctx->c_fd) : fsync(ctx->c_fd);
   if (src != 0)
@@ -6586,6 +6671,9 @@ int main(int argc, char **argv)
   ctx.c_hotplug_compat_reason = 0;
   ctx.c_pending_worker_prio_mode = pending_worker_prio_mode;
   ctx.c_pending_worker_nice = pending_worker_nice;
+  ctx.c_pending_worker_prio_base_mode = pending_worker_prio_mode;
+  ctx.c_pending_worker_nice_base = pending_worker_nice;
+  ctx.c_pending_worker_auto_boosted = 0;
   ctx.c_pending_worker_prio_apply_error = 0;
   ctx.c_pending_worker_prio_dirty = 1;
 

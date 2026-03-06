@@ -134,6 +134,9 @@ struct kafs_context
   uint32_t c_pending_worker_backoff_ms;
   uint32_t c_pending_worker_prio_mode;
   int32_t c_pending_worker_nice;
+  uint32_t c_pending_worker_prio_base_mode;
+  int32_t c_pending_worker_nice_base;
+  uint32_t c_pending_worker_auto_boosted;
   int32_t c_pending_worker_prio_apply_error;
   uint32_t c_pending_worker_prio_dirty;
 
