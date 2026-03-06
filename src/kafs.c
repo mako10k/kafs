@@ -4524,7 +4524,7 @@ static ssize_t kafs_op_copy_file_range(const char *path_in, struct fuse_file_inf
     kafs_off_t dst_off = (kafs_off_t)offset_out + done;
     kafs_off_t remain = max - done;
 
-    if (ctx->c_hrl_bucket_cnt != 0 && src_off >= 0 && dst_off >= 0 && remain >= (kafs_off_t)blksize &&
+    if (ctx->c_hrl_bucket_cnt != 0 && remain >= (kafs_off_t)blksize &&
         ((src_off & ((kafs_off_t)blksize - 1)) == 0) &&
         ((dst_off & ((kafs_off_t)blksize - 1)) == 0))
     {
