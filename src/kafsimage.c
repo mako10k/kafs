@@ -1,5 +1,6 @@
 #include "kafs.h"
 #include "kafs_superblock.h"
+#include "kafs_tool_util.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -25,13 +26,28 @@ static void usage(const char *prog)
           prog, prog, prog);
 }
 
-static int pread_all(int fd, void *buf, size_t size, off_t off)
+static int write_all_retry(int fd, const char *buf, size_t len)
 {
-  char *p = (char *)buf;
-  size_t done = 0;
-  while (done < size)
+  size_t wr_done = 0;
+  while (wr_done < len)
   {
-    ssize_t r = pread(fd, p + done, size - done, off + (off_t)done);
+    ssize_t w = write(fd, buf + wr_done, len - wr_done);
+    if (w < 0)
+    {
+      if (errno == EINTR)
+        continue;
+      return -errno;
+    }
+    wr_done += (size_t)w;
+  }
+  return 0;
+}
+
+static int read_retry(int fd, char *buf, size_t chunk, size_t *out_read)
+{
+  while (1)
+  {
+    ssize_t r = read(fd, buf, chunk);
     if (r == 0)
       return -EIO;
     if (r < 0)
@@ -40,9 +56,9 @@ static int pread_all(int fd, void *buf, size_t size, off_t off)
         continue;
       return -errno;
     }
-    done += (size_t)r;
+    *out_read = (size_t)r;
+    return 0;
   }
-  return 0;
 }
 
 static int copy_nbytes(int fd_src, int fd_dst, uint64_t bytes)
@@ -55,35 +71,22 @@ static int copy_nbytes(int fd_src, int fd_dst, uint64_t bytes)
   while (left > 0)
   {
     size_t chunk = (left > COPY_BUF_SIZE) ? COPY_BUF_SIZE : (size_t)left;
-    ssize_t r = read(fd_src, buf, chunk);
-    if (r == 0)
+    size_t read_len = 0;
+    int rc = read_retry(fd_src, buf, chunk, &read_len);
+    if (rc != 0)
     {
       free(buf);
-      return -EIO;
+      return rc;
     }
-    if (r < 0)
+
+    rc = write_all_retry(fd_dst, buf, read_len);
+    if (rc != 0)
     {
-      if (errno == EINTR)
-        continue;
       free(buf);
-      return -errno;
+      return rc;
     }
 
-    size_t wr_done = 0;
-    while (wr_done < (size_t)r)
-    {
-      ssize_t w = write(fd_dst, buf + wr_done, (size_t)r - wr_done);
-      if (w < 0)
-      {
-        if (errno == EINTR)
-          continue;
-        free(buf);
-        return -errno;
-      }
-      wr_done += (size_t)w;
-    }
-
-    left -= (uint64_t)r;
+    left -= (uint64_t)read_len;
   }
 
   free(buf);
@@ -110,23 +113,17 @@ static int copy_nbytes_sparse(int fd_src, int fd_dst, uint64_t bytes)
   while (written < bytes)
   {
     size_t chunk = (bytes - written > COPY_BUF_SIZE) ? COPY_BUF_SIZE : (size_t)(bytes - written);
-    ssize_t r = read(fd_src, buf, chunk);
-    if (r == 0)
+    size_t read_len = 0;
+    int rc = read_retry(fd_src, buf, chunk, &read_len);
+    if (rc != 0)
     {
       free(buf);
-      return -EIO;
-    }
-    if (r < 0)
-    {
-      if (errno == EINTR)
-        continue;
-      free(buf);
-      return -errno;
+      return rc;
     }
 
-    if (is_zero_buf(buf, (size_t)r))
+    if (is_zero_buf(buf, read_len))
     {
-      off_t off = lseek(fd_dst, r, SEEK_CUR);
+      off_t off = lseek(fd_dst, (off_t)read_len, SEEK_CUR);
       if (off < 0)
       {
         free(buf);
@@ -135,25 +132,17 @@ static int copy_nbytes_sparse(int fd_src, int fd_dst, uint64_t bytes)
     }
     else
     {
-      size_t wr_done = 0;
-      while (wr_done < (size_t)r)
+      rc = write_all_retry(fd_dst, buf, read_len);
+      if (rc != 0)
       {
-        ssize_t w = write(fd_dst, buf + wr_done, (size_t)r - wr_done);
-        if (w < 0)
-        {
-          if (errno == EINTR)
-            continue;
-          free(buf);
-          return -errno;
-        }
-        wr_done += (size_t)w;
+        free(buf);
+        return rc;
       }
     }
 
-    written += (uint64_t)r;
+    written += (uint64_t)read_len;
   }
 
-  // Ensure destination logical size matches requested copy range.
   if (ftruncate(fd_dst, (off_t)bytes) != 0)
   {
     free(buf);
@@ -179,14 +168,14 @@ static int verify_prefix_equal(int fd_src, int fd_dst, uint64_t bytes)
   while (checked < bytes)
   {
     size_t chunk = (bytes - checked > COPY_BUF_SIZE) ? COPY_BUF_SIZE : (size_t)(bytes - checked);
-    int rc = pread_all(fd_src, a, chunk, (off_t)checked);
+    int rc = kafs_pread_all(fd_src, a, chunk, (off_t)checked);
     if (rc != 0)
     {
       free(a);
       free(b);
       return rc;
     }
-    rc = pread_all(fd_dst, b, chunk, (off_t)checked);
+    rc = kafs_pread_all(fd_dst, b, chunk, (off_t)checked);
     if (rc != 0)
     {
       free(a);
@@ -279,7 +268,7 @@ int main(int argc, char **argv)
   if (metadata_only)
   {
     kafs_ssuperblock_t sb;
-    int rc = pread_all(fd_src, &sb, sizeof(sb), 0);
+    int rc = kafs_pread_all(fd_src, &sb, sizeof(sb), 0);
     if (rc != 0)
     {
       fprintf(stderr, "failed to read superblock: %s\n", strerror(-rc));

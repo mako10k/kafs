@@ -3,6 +3,7 @@
 #include "kafs_inode.h"
 #include "kafs_journal.h"
 #include "kafs_superblock.h"
+#include "kafs_tool_util.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -42,27 +43,15 @@ struct journal_summary
   kj_header_t header;
 };
 
-static void usage(const char *prog) { fprintf(stderr, "Usage: %s [--json] <image>\n", prog); }
-
-static int pread_all(int fd, void *buf, size_t size, off_t off)
+struct sb_geometry
 {
-  char *p = (char *)buf;
-  size_t done = 0;
-  while (done < size)
-  {
-    ssize_t r = pread(fd, p + done, size - done, off + (off_t)done);
-    if (r == 0)
-      return -EIO;
-    if (r < 0)
-    {
-      if (errno == EINTR)
-        continue;
-      return -errno;
-    }
-    done += (size_t)r;
-  }
-  return 0;
-}
+  uint64_t blksize;
+  uint64_t r_blkcnt;
+  uint64_t first_data;
+  uint64_t data_blocks;
+};
+
+static void usage(const char *prog) { fprintf(stderr, "Usage: %s [--json] <image>\n", prog); }
 
 static uint64_t align_up_u64(uint64_t v, uint64_t align)
 {
@@ -87,6 +76,24 @@ static const char *rc_to_text(int rc)
   if (rc < 0)
     return strerror(-rc);
   return "error";
+}
+
+static struct sb_geometry superblock_geometry(const kafs_ssuperblock_t *sb)
+{
+  struct sb_geometry g;
+  g.blksize = kafs_sb_blksize_get(sb);
+  g.r_blkcnt = kafs_sb_r_blkcnt_get(sb);
+  g.first_data = kafs_sb_first_data_block_get(sb);
+  g.data_blocks = (g.r_blkcnt > g.first_data) ? (g.r_blkcnt - g.first_data) : 0;
+  return g;
+}
+
+static int load_superblock(int fd, kafs_ssuperblock_t *sb)
+{
+  int rc = kafs_pread_all(fd, sb, sizeof(*sb), 0);
+  if (rc != 0)
+    return rc;
+  return 0;
 }
 
 static int collect_inode_summary(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
@@ -114,7 +121,7 @@ static int collect_inode_summary(int fd, const kafs_ssuperblock_t *sb, uint64_t 
   if (!inotbl)
     return -ENOMEM;
 
-  int rc = pread_all(fd, inotbl, (size_t)inotbl_bytes, (off_t)inotbl_off);
+  int rc = kafs_pread_all(fd, inotbl, (size_t)inotbl_bytes, (off_t)inotbl_off);
   if (rc != 0)
   {
     free(inotbl);
@@ -160,7 +167,7 @@ static int collect_hrl_summary(int fd, const kafs_ssuperblock_t *sb, uint64_t fi
   if (!ents)
     return -ENOMEM;
 
-  int rc = pread_all(fd, ents, (size_t)ent_bytes, (off_t)ent_off);
+  int rc = kafs_pread_all(fd, ents, (size_t)ent_bytes, (off_t)ent_off);
   if (rc != 0)
   {
     free(ents);
@@ -195,7 +202,7 @@ static int collect_journal_summary(int fd, const kafs_ssuperblock_t *sb, uint64_
   if (check_bounds(j_off, sizeof(kj_header_t), file_size) != 0)
     return -ERANGE;
 
-  int rc = pread_all(fd, &out->header, sizeof(out->header), (off_t)j_off);
+  int rc = kafs_pread_all(fd, &out->header, sizeof(out->header), (off_t)j_off);
   if (rc != 0)
     return rc;
 
@@ -212,22 +219,19 @@ static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary 
                        const struct hrl_summary *hrl, const struct journal_summary *jr,
                        int rc_inode, int rc_hrl, int rc_journal)
 {
-  uint64_t blksize = kafs_sb_blksize_get(sb);
-  uint64_t r_blkcnt = kafs_sb_r_blkcnt_get(sb);
-  uint64_t first_data = kafs_sb_first_data_block_get(sb);
-  uint64_t data_blocks = (r_blkcnt > first_data) ? (r_blkcnt - first_data) : 0;
+  struct sb_geometry g = superblock_geometry(sb);
 
   printf("superblock:\n");
   printf("  magic: 0x%08" PRIx32 "\n", kafs_sb_magic_get(sb));
   printf("  format_version: %" PRIu32 "\n", kafs_sb_format_version_get(sb));
-  printf("  block_size: %" PRIu64 "\n", blksize);
+  printf("  block_size: %" PRIu64 "\n", g.blksize);
   printf("  inode_count: %" PRIu64 "\n", (uint64_t)kafs_sb_inocnt_get(sb));
   printf("  inode_free: %" PRIu64 "\n", (uint64_t)kafs_sb_inocnt_free_get(sb));
   printf("  blkcnt_user: %" PRIu64 "\n", (uint64_t)kafs_sb_blkcnt_get(sb));
-  printf("  blkcnt_root: %" PRIu64 "\n", r_blkcnt);
+  printf("  blkcnt_root: %" PRIu64 "\n", g.r_blkcnt);
   printf("  blkcnt_free: %" PRIu64 "\n", (uint64_t)kafs_sb_blkcnt_free_get(sb));
-  printf("  first_data_block: %" PRIu64 "\n", first_data);
-  printf("  data_block_count: %" PRIu64 "\n", data_blocks);
+  printf("  first_data_block: %" PRIu64 "\n", g.first_data);
+  printf("  data_block_count: %" PRIu64 "\n", g.data_blocks);
 
   printf("inode_summary:\n");
   printf("  status: %s\n", rc_to_text(rc_inode));
@@ -262,23 +266,20 @@ static void print_json(const kafs_ssuperblock_t *sb, const struct inode_summary 
                        const struct hrl_summary *hrl, const struct journal_summary *jr,
                        int rc_inode, int rc_hrl, int rc_journal)
 {
-  uint64_t blksize = kafs_sb_blksize_get(sb);
-  uint64_t r_blkcnt = kafs_sb_r_blkcnt_get(sb);
-  uint64_t first_data = kafs_sb_first_data_block_get(sb);
-  uint64_t data_blocks = (r_blkcnt > first_data) ? (r_blkcnt - first_data) : 0;
+  const struct sb_geometry g = superblock_geometry(sb);
 
   printf("{\n");
   printf("  \"superblock\": {\n");
   printf("    \"magic\": %" PRIu32 ",\n", kafs_sb_magic_get(sb));
   printf("    \"format_version\": %" PRIu32 ",\n", kafs_sb_format_version_get(sb));
-  printf("    \"block_size\": %" PRIu64 ",\n", blksize);
+  printf("    \"block_size\": %" PRIu64 ",\n", g.blksize);
   printf("    \"inode_count\": %" PRIu64 ",\n", (uint64_t)kafs_sb_inocnt_get(sb));
   printf("    \"inode_free\": %" PRIu64 ",\n", (uint64_t)kafs_sb_inocnt_free_get(sb));
   printf("    \"blkcnt_user\": %" PRIu64 ",\n", (uint64_t)kafs_sb_blkcnt_get(sb));
-  printf("    \"blkcnt_root\": %" PRIu64 ",\n", r_blkcnt);
+  printf("    \"blkcnt_root\": %" PRIu64 ",\n", g.r_blkcnt);
   printf("    \"blkcnt_free\": %" PRIu64 ",\n", (uint64_t)kafs_sb_blkcnt_free_get(sb));
-  printf("    \"first_data_block\": %" PRIu64 ",\n", first_data);
-  printf("    \"data_block_count\": %" PRIu64 "\n", data_blocks);
+  printf("    \"first_data_block\": %" PRIu64 ",\n", g.first_data);
+  printf("    \"data_block_count\": %" PRIu64 "\n", g.data_blocks);
   printf("  },\n");
 
   printf("  \"inode_summary\": {\n");
@@ -384,7 +385,7 @@ int main(int argc, char **argv)
   }
 
   kafs_ssuperblock_t sb;
-  int rc = pread_all(fd, &sb, sizeof(sb), 0);
+  int rc = load_superblock(fd, &sb);
   if (rc != 0)
   {
     fprintf(stderr, "failed to read superblock: %s\n", strerror(-rc));

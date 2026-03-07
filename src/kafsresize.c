@@ -1,5 +1,6 @@
 #include "kafs.h"
 #include "kafs_superblock.h"
+#include "kafs_tool_util.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -22,81 +23,6 @@ static void usage(const char *prog)
           prog);
 }
 
-static int parse_size_bytes(const char *arg, uint64_t *out)
-{
-  if (!arg || !out || *arg == '\0')
-    return -1;
-  char *endp = NULL;
-  errno = 0;
-  unsigned long long v = strtoull(arg, &endp, 0);
-  if (errno != 0 || endp == arg)
-    return -1;
-  if (*endp == '\0')
-  {
-    *out = (uint64_t)v;
-    return 0;
-  }
-  if (endp[1] != '\0')
-    return -1;
-  switch (*endp)
-  {
-  case 'K':
-  case 'k':
-    v <<= 10;
-    break;
-  case 'M':
-  case 'm':
-    v <<= 20;
-    break;
-  case 'G':
-  case 'g':
-    v <<= 30;
-    break;
-  default:
-    return -1;
-  }
-  *out = (uint64_t)v;
-  return 0;
-}
-
-static int pread_all(int fd, void *buf, size_t sz, off_t off)
-{
-  char *p = (char *)buf;
-  size_t done = 0;
-  while (done < sz)
-  {
-    ssize_t r = pread(fd, p + done, sz - done, off + (off_t)done);
-    if (r == 0)
-      return -EIO;
-    if (r < 0)
-    {
-      if (errno == EINTR)
-        continue;
-      return -errno;
-    }
-    done += (size_t)r;
-  }
-  return 0;
-}
-
-static int pwrite_all(int fd, const void *buf, size_t sz, off_t off)
-{
-  const char *p = (const char *)buf;
-  size_t done = 0;
-  while (done < sz)
-  {
-    ssize_t w = pwrite(fd, p + done, sz - done, off + (off_t)done);
-    if (w < 0)
-    {
-      if (errno == EINTR)
-        continue;
-      return -errno;
-    }
-    done += (size_t)w;
-  }
-  return 0;
-}
-
 static void bitmap_clear_range(uint8_t *bm, uint32_t from_blo, uint32_t to_blo)
 {
   for (uint32_t b = from_blo; b < to_blo; ++b)
@@ -105,6 +31,16 @@ static void bitmap_clear_range(uint8_t *bm, uint32_t from_blo, uint32_t to_blo)
     uint32_t bit = b & 7u;
     bm[byte] &= (uint8_t) ~(1u << bit);
   }
+}
+
+static int load_superblock_checked(int fd, kafs_ssuperblock_t *sb)
+{
+  int rc = kafs_pread_all(fd, sb, sizeof(*sb), 0);
+  if (rc != 0)
+    return rc;
+  if (kafs_sb_magic_get(sb) != KAFS_MAGIC || kafs_sb_format_version_get(sb) != KAFS_FORMAT_VERSION)
+    return -EINVAL;
+  return 0;
 }
 
 int main(int argc, char **argv)
@@ -122,7 +58,7 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[i], "--size-bytes") == 0 && i + 1 < argc)
     {
-      if (parse_size_bytes(argv[++i], &target_bytes) != 0)
+      if (kafs_parse_size_bytes_u64(argv[++i], &target_bytes) != 0)
       {
         fprintf(stderr, "invalid size-bytes: %s\n", argv[i]);
         return 2;
@@ -151,18 +87,13 @@ int main(int argc, char **argv)
   }
 
   kafs_ssuperblock_t sb;
-  int rc = pread_all(fd, &sb, sizeof(sb), 0);
+  int rc = load_superblock_checked(fd, &sb);
   if (rc != 0)
   {
-    fprintf(stderr, "failed to read superblock: %s\n", strerror(-rc));
-    close(fd);
-    return 1;
-  }
-
-  if (kafs_sb_magic_get(&sb) != KAFS_MAGIC ||
-      kafs_sb_format_version_get(&sb) != KAFS_FORMAT_VERSION)
-  {
-    fprintf(stderr, "unsupported or invalid image format\n");
+    if (rc == -EINVAL)
+      fprintf(stderr, "unsupported or invalid image format\n");
+    else
+      fprintf(stderr, "failed to read superblock: %s\n", strerror(-rc));
     close(fd);
     return 1;
   }
@@ -225,7 +156,6 @@ int main(int argc, char **argv)
     }
   }
 
-  // Bitmap layout is fixed by s_r_blkcnt at format time.
   uint64_t mapsize = sizeof(kafs_ssuperblock_t);
   uint64_t align = blksize - 1u;
   mapsize = (mapsize + align) & ~align;
@@ -240,7 +170,7 @@ int main(int argc, char **argv)
     return 1;
   }
 
-  rc = pread_all(fd, bm, (size_t)blkmask_bytes, (off_t)blkmask_off);
+  rc = kafs_pread_all(fd, bm, (size_t)blkmask_bytes, (off_t)blkmask_off);
   if (rc != 0)
   {
     fprintf(stderr, "failed to read block bitmap: %s\n", strerror(-rc));
@@ -251,7 +181,7 @@ int main(int argc, char **argv)
 
   bitmap_clear_range(bm, old_blkcnt, target_blkcnt);
 
-  rc = pwrite_all(fd, bm, (size_t)blkmask_bytes, (off_t)blkmask_off);
+  rc = kafs_pwrite_all(fd, bm, (size_t)blkmask_bytes, (off_t)blkmask_off);
   if (rc != 0)
   {
     fprintf(stderr, "failed to write block bitmap: %s\n", strerror(-rc));
@@ -274,7 +204,7 @@ int main(int argc, char **argv)
   sb.s_blkcnt_free = kafs_blkcnt_htos((kafs_blkcnt_t)(old_free + delta));
   kafs_sb_wtime_set(&sb, kafs_now());
 
-  rc = pwrite_all(fd, &sb, sizeof(sb), 0);
+  rc = kafs_pwrite_all(fd, &sb, sizeof(sb), 0);
   if (rc != 0)
   {
     fprintf(stderr, "failed to write superblock: %s\n", strerror(-rc));

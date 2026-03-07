@@ -5,6 +5,7 @@
 #include "kafs_inode.h"
 #include "kafs_hash.h"
 #include "kafs_journal.h"
+#include "kafs_tool_util.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -67,40 +68,6 @@ static int mkfs_trim_range(int fd, off_t off, off_t len)
   (void)len;
   return -ENOTSUP;
 #endif
-}
-
-static int parse_size_bytes(const char *arg, unsigned long long *out)
-{
-  if (!arg || !out || *arg == '\0')
-    return -1;
-  char *endp = NULL;
-  errno = 0;
-  unsigned long long v = strtoull(arg, &endp, 0);
-  if (errno != 0 || endp == arg)
-    return -1;
-  if (*endp == '\0')
-  {
-    *out = v;
-    return 0;
-  }
-  if (endp[1] != '\0')
-    return -1;
-  switch ((int)tolower((unsigned char)endp[0]))
-  {
-  case 'k':
-    v <<= 10;
-    break;
-  case 'm':
-    v <<= 20;
-    break;
-  case 'g':
-    v <<= 30;
-    break;
-  default:
-    return -1;
-  }
-  *out = v;
-  return 0;
 }
 
 struct mkfs_layout
@@ -246,8 +213,8 @@ int main(int argc, char **argv)
   {
     if ((strcmp(argv[i], "--size-bytes") == 0 || strcmp(argv[i], "-s") == 0) && i + 1 < argc)
     {
-      unsigned long long tmp = 0;
-      if (parse_size_bytes(argv[++i], &tmp) != 0)
+      uint64_t tmp = 0;
+      if (kafs_parse_size_bytes_u64(argv[++i], &tmp) != 0)
       {
         fprintf(stderr, "invalid size: %s\n", argv[i]);
         return 2;
@@ -268,8 +235,8 @@ int main(int argc, char **argv)
     else if ((strcmp(argv[i], "--journal-size-bytes") == 0 || strcmp(argv[i], "-J") == 0) &&
              i + 1 < argc)
     {
-      unsigned long long tmp = 0;
-      if (parse_size_bytes(argv[++i], &tmp) != 0)
+      uint64_t tmp = 0;
+      if (kafs_parse_size_bytes_u64(argv[++i], &tmp) != 0)
       {
         fprintf(stderr, "invalid journal size: %s\n", argv[i]);
         return 2;
