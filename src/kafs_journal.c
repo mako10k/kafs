@@ -451,7 +451,7 @@ static int kj_init_or_load(kafs_journal_t *j)
       uint32_t c = kj_crc32(&tmp, sizeof(tmp));
       if (c == hdr.header_crc)
       {
-        j->write_off = hdr.write_off < j->area_size ? hdr.write_off : 0;
+        j->write_off = hdr.write_off <= j->area_size ? hdr.write_off : 0;
         j->seq = hdr.seq;
         return 0;
       }

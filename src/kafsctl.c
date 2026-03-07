@@ -292,8 +292,7 @@ static int parse_fsync_policy(const char *s, uint32_t *out)
     *out = KAFS_FSYNC_POLICY_FULL;
     return 0;
   }
-  if (strcmp(s, "journal_only") == 0 || strcmp(s, "journal-only") == 0 ||
-      strcmp(s, "journal") == 0)
+  if (strcmp(s, "journal_only") == 0 || strcmp(s, "journal-only") == 0 || strcmp(s, "journal") == 0)
   {
     *out = KAFS_FSYNC_POLICY_JOURNAL_ONLY;
     return 0;

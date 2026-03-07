@@ -748,8 +748,7 @@ static int kafs_fsync_policy_parse(const char *s, uint32_t *policy)
     *policy = KAFS_FSYNC_POLICY_FULL;
     return 0;
   }
-  if (strcmp(s, "journal_only") == 0 || strcmp(s, "journal-only") == 0 ||
-      strcmp(s, "journal") == 0)
+  if (strcmp(s, "journal_only") == 0 || strcmp(s, "journal-only") == 0 || strcmp(s, "journal") == 0)
   {
     *policy = KAFS_FSYNC_POLICY_JOURNAL_ONLY;
     return 0;
@@ -1796,7 +1795,8 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
         if (c < 8u)
         {
           kafs_log(KAFS_LOG_WARNING,
-                   "%s: pendinglog full (ino=%" PRIu32 ", iblk=%" PRIu32 "), fallback to sync write\n",
+                   "%s: pendinglog full (ino=%" PRIu32 ", iblk=%" PRIu32
+                   "), fallback to sync write\n",
                    __func__, ino_idx, (uint32_t)iblo);
         }
       }
@@ -5488,7 +5488,8 @@ static int kafs_op_utimens(const char *path, const struct timespec tv[2], struct
   if (fi)
   {
     kafs_inocnt_t fh_ino = (kafs_inocnt_t)fi->fh;
-    if (fh_ino < kafs_sb_inocnt_get(ctx->c_superblock) && kafs_ino_get_usage(&ctx->c_inotbl[fh_ino]))
+    if (fh_ino < kafs_sb_inocnt_get(ctx->c_superblock) &&
+        kafs_ino_get_usage(&ctx->c_inotbl[fh_ino]))
     {
       ino = (uint32_t)fh_ino;
       inoent = &ctx->c_inotbl[ino];
@@ -5536,8 +5537,8 @@ static int kafs_op_utimens(const char *path, const struct timespec tv[2], struct
   if (elapsed_ns >= 1000000000ull)
   {
     kafs_log(KAFS_LOG_WARNING,
-             "%s: slow op path=%s ino=%" PRIuFAST32 " elapsed_ms=%" PRIuFAST64 "\n",
-             __func__, path ? path : "(null)", ino, elapsed_ns / 1000000ull);
+             "%s: slow op path=%s ino=%" PRIuFAST32 " elapsed_ms=%" PRIuFAST64 "\n", __func__,
+             path ? path : "(null)", ino, elapsed_ns / 1000000ull);
   }
   return 0;
 }
@@ -5999,8 +6000,8 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
       {
         // Keep fsync path robust under temporary pending-worker congestion.
         kafs_log(KAFS_LOG_WARNING,
-                 "%s: pending drain timeout path=%s ino=%" PRIuFAST32 " (continue)\n",
-                 __func__, path ? path : "(null)", ino);
+                 "%s: pending drain timeout path=%s ino=%" PRIuFAST32 " (continue)\n", __func__,
+                 path ? path : "(null)", ino);
       }
       else
       {
@@ -6586,7 +6587,8 @@ int main(int argc, char **argv)
     }
   }
 
-  if (pending_ttl_soft_ms > 0 && pending_ttl_hard_ms > 0 && pending_ttl_hard_ms < pending_ttl_soft_ms)
+  if (pending_ttl_soft_ms > 0 && pending_ttl_hard_ms > 0 &&
+      pending_ttl_hard_ms < pending_ttl_soft_ms)
   {
     fprintf(stderr, "invalid pending TTL env: hard must be >= soft\n");
     return 2;
@@ -6892,7 +6894,8 @@ int main(int argc, char **argv)
     (void)o_owned_cnt;
   }
 
-  if (pending_ttl_soft_ms > 0 && pending_ttl_hard_ms > 0 && pending_ttl_hard_ms < pending_ttl_soft_ms)
+  if (pending_ttl_soft_ms > 0 && pending_ttl_hard_ms > 0 &&
+      pending_ttl_hard_ms < pending_ttl_soft_ms)
   {
     fprintf(stderr, "invalid pending TTL: hard must be >= soft\n");
     return 2;
