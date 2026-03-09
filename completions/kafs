@@ -5,6 +5,89 @@ _kafs__path_complete() {
   COMPREPLY=( $(compgen -f -- "${2}") )
 }
 
+_kafs__value_candidates_for_key() {
+  local key
+  key="$1"
+  case "${key}" in
+    fsync_policy)
+      echo "journal_only full adaptive"
+      ;;
+    pending_worker_prio|dedup_worker_prio)
+      echo "normal idle"
+      ;;
+    hotplug|hotplug_uds|hotplug_back_bin|modules)
+      echo "__PATH__"
+      ;;
+    multi_thread|multi-thread|multithread|max_threads|pending_worker_nice|dedup_worker_nice|pending_ttl_soft_ms|pending_ttl_hard_ms|intr_signal|remember|max_read|max_readahead|max_write|blksize|uid|gid|umask|entry_timeout|negative_timeout|attr_timeout|ac_attr_timeout)
+      echo "__NUMBER__"
+      ;;
+    fsname|subtype)
+      echo "__FREE__"
+      ;;
+    *)
+      echo ""
+      ;;
+  esac
+}
+
+_kafs__complete_o_token() {
+  local token oopts key val cands i
+  token="$1"
+  oopts="$2"
+
+  if [[ "${token}" != *=* ]]; then
+    COMPREPLY=( $(compgen -W "${oopts}" -- "${token}") )
+    return
+  fi
+
+  key="${token%%=*}"
+  val="${token#*=}"
+  cands="$(_kafs__value_candidates_for_key "${key}")"
+
+  case "${cands}" in
+    "__PATH__")
+      compopt -o filenames 2>/dev/null
+      COMPREPLY=( $(compgen -f -- "${val}") )
+      for i in "${!COMPREPLY[@]}"; do
+        COMPREPLY[$i]="${key}=${COMPREPLY[$i]}"
+      done
+      ;;
+    "__NUMBER__")
+      COMPREPLY=()
+      ;;
+    "__FREE__")
+      COMPREPLY=()
+      ;;
+    "")
+      COMPREPLY=()
+      ;;
+    *)
+      COMPREPLY=( $(compgen -W "${cands}" -- "${val}") )
+      for i in "${!COMPREPLY[@]}"; do
+        COMPREPLY[$i]="${key}=${COMPREPLY[$i]}"
+      done
+      ;;
+  esac
+}
+
+_kafs__comma_complete() {
+  local cur candidates prefix token i
+  cur="$1"
+  candidates="$2"
+
+  if [[ "${cur}" == *,* ]]; then
+    prefix="${cur%,*},"
+    token="${cur##*,}"
+    _kafs__complete_o_token "${token}" "${candidates}"
+    for i in "${!COMPREPLY[@]}"; do
+      COMPREPLY[$i]="${prefix}${COMPREPLY[$i]}"
+    done
+    return
+  fi
+
+  _kafs__complete_o_token "${cur}" "${candidates}"
+}
+
 _kafs() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
@@ -17,9 +100,26 @@ _kafs() {
     return
   fi
 
-  if [[ "${prev}" == "-o" || "${prev}" == -o* ]]; then
-    local oopts="writeback_cache no_writeback_cache trim_on_free trim-on-free no_trim_on_free no-trim-on-free multi_thread multi_thread= multi-thread multi-thread= multithread multithread= max_threads= hotplug hotplug= hotplug_uds= hotplug_back_bin= pending_worker_prio= pending_worker_nice= dedup_worker_prio= dedup_worker_nice= pending_ttl_soft_ms= pending_ttl_hard_ms= fsync_policy="
-    COMPREPLY=( $(compgen -W "${oopts}" -- "${cur}") )
+  local oopts="writeback_cache no_writeback_cache trim_on_free trim-on-free no_trim_on_free no-trim-on-free multi_thread multi_thread= multi-thread multi-thread= multithread multithread= max_threads= hotplug hotplug= hotplug_uds= hotplug_back_bin= pending_worker_prio= pending_worker_nice= dedup_worker_prio= dedup_worker_nice= pending_ttl_soft_ms= pending_ttl_hard_ms= fsync_policy= allow_other allow_root auto_unmount default_permissions kernel_cache auto_cache direct_io hard_remove use_ino readdir_ino nonempty big_writes splice_read splice_write splice_move sync_read no_remote_lock no_remote_flock no_remote_posix_lock intr intr_signal= noforget remember= max_read= max_readahead= max_write= blksize= uid= gid= umask= entry_timeout= negative_timeout= attr_timeout= ac_attr_timeout= fsname= subtype= modules="
+
+  if [[ "${prev}" == "-o" ]]; then
+    _kafs__comma_complete "${cur}" "${oopts}"
+    return
+  fi
+
+  if [[ "${cur}" == -o* ]]; then
+    local o_cur
+    local i
+    o_cur="${cur#-o}"
+    _kafs__comma_complete "${o_cur}" "${oopts}"
+    for i in "${!COMPREPLY[@]}"; do
+      COMPREPLY[$i]="-o${COMPREPLY[$i]}"
+    done
+    return
+  fi
+
+  if [[ "${prev}" == -o* ]]; then
+    _kafs__comma_complete "${cur}" "${oopts}"
     return
   fi
 
