@@ -1,0 +1,47 @@
+'.\" -*- nroff -*-
+.TH KAFS-BACK 8 "2026-03-09" "kafs 0.2.3" "System Administration"
+.SH NAME
+kafs-back \- hotplug back process speaking KAFS RPC
+.SH SYNOPSIS
+.B kafs-back
+.RB [ --uds
+.IR path ]
+.RB [ --image
+.IR path ]
+.SH DESCRIPTION
+.B kafs-back
+connects to front side via inherited fd or UDS, completes RPC handshake,
+and serves filesystem RPC requests.
+.PP
+When built with image backend support, an image path is required either via
+.B --image
+or
+.BR KAFS_IMAGE .
+.SH OPTIONS
+.TP
+.BR --uds " " <path>
+Set UDS path when inherited back fd is not available.
+.TP
+.BR --image " " <path>
+Set image path explicitly.
+.TP
+.BR -h ", " --help
+Show help and exit.
+.SH ENVIRONMENT
+.TP
+.B KAFS_HOTPLUG_BACK_FD
+Inherited connected fd from
+.BR kafs-front (8) .
+When valid, UDS connect is skipped.
+.TP
+.B KAFS_HOTPLUG_UDS
+Default UDS path.
+.TP
+.B KAFS_IMAGE
+Default image path (when image backend is enabled).
+.SH SEE ALSO
+.BR kafs (1),
+.BR kafsctl (1),
+.BR kafs-front (8)
+.SH AUTHOR
+kafs project.

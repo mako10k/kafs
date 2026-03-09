@@ -1,12 +1,11 @@
 '.\" -*- nroff -*-
-.TH KAFSCTL 1 "2026-03-04" "kafs 0.2.3" "User Commands"
+.TH KAFSCTL 1 "2026-03-09" "kafs 0.2.3" "User Commands"
 .SH NAME
-kafsctl \- query runtime stats from a mounted kafs filesystem
+kafsctl \- runtime control and maintenance utility for mounted KAFS
 .SH SYNOPSIS
 .B kafsctl
-.B stats
-.I mountpoint
-.RB [ --json ]
+.I command
+.RI [ arguments ... ]
 .PP
 .B kafsctl
 .B migrate
@@ -14,54 +13,123 @@ kafsctl \- query runtime stats from a mounted kafs filesystem
 .RB [ --yes ]
 .PP
 .B kafsctl
-.B hotplug
-.I subcommand
+.RB { fsstat | stats }
 .I mountpoint
+.RB [ --json ]
+.RB [ --bytes | --mib | --gib ]
 .SH DESCRIPTION
 .B kafsctl
-queries a running
+is the operational companion to
 .BR kafs (1)
-instance for filesystem/HRL statistics via FUSE ioctl, and sends hotplug control requests
-via the hidden control endpoint
+and provides:
+.IP \[bu] 2
+offline image migration (v2 \-> v3),
+.IP \[bu] 2
+filesystem statistics and runtime diagnostics,
+.IP \[bu] 2
+hotplug control via the hidden control endpoint
 .IR /.kafs.sock .
+.IP \[bu] 2
+basic file operations on a mounted KAFS tree.
 .SH COMMANDS
 .TP
-.B stats
-Print current stats for the mounted filesystem at
-.IR mountpoint .
-Use
-.B --json
-to emit machine-readable JSON.
-.TP
-.B migrate
-Migrate an offline v2 image to v3.
+.B migrate image [--yes]
+Offline v2\->v3 migration.
 This operation is irreversible.
-Without
-.BR --yes ,
-interactive confirmation is required.
+.TP
+.B fsstat mountpoint [--json] [--bytes|--mib|--gib]
+Print filesystem and dedup/runtime statistics.
+.B stats
+is an alias of
+.BR fsstat .
 .TP
 .B hotplug status
-Show hotplug status, including session/epoch and compatibility.
+Show hotplug status for
+.IR mountpoint .
+Option:
+.BR --json .
 .TP
 .B hotplug restart-back
 Request a hotplug reconnect and back process restart.
-The mounted
-.B kafs
-front spawns
-.B kafs-back
-by default, or
-.B KAFS_HOTPLUG_BACK_BIN
-when configured via hotplug env.
 .TP
 .B hotplug compat
-Show front/back version compatibility.
+Show front/back protocol compatibility.
+Option:
+.BR --json .
 .TP
 .B hotplug set-timeout
 Set the reconnect wait timeout (milliseconds).
 .TP
-.B hotplug env list|set|unset
-Manage environment variables passed to the back process on restart.
+.B hotplug set-dedup-priority
+Set dedup worker priority for hotplug back process.
+Usage:
+.B set-dedup-priority mountpoint <normal|idle> [nice]
+.TP
+.B hotplug set-runtime
+Set runtime policy on mounted KAFS instance.
+Options:
+.BR --fsync-policy= "" <journal_only|full|adaptive>,
+.BR --pending-ttl-soft-ms= "" <ms>,
+.BR --pending-ttl-hard-ms= "" <ms>.
+.TP
+.B hotplug env list mountpoint
+List env variables passed to back process on restart.
+.TP
+.B hotplug env set mountpoint key=value
+Set env variable passed to back process on restart.
+.TP
+.B hotplug env unset mountpoint key
+Unset env variable passed to back process on restart.
+.TP
+.B stat mountpoint path
+Print file metadata.
+.TP
+.B cat mountpoint path
+Print file contents to stdout.
+.TP
+.B write mountpoint path
+Write stdin to file (truncate/replace).
+.TP
+.B cp mountpoint src dst [--reflink]
+Copy file inside mounted KAFS. Use
+.B --reflink
+to request clone-like copy.
+.TP
+.B mv mountpoint src dst
+Rename/move path inside mounted KAFS.
+.TP
+.B rm mountpoint path
+Remove file.
+.TP
+.B mkdir mountpoint path
+Create directory.
+.TP
+.B rmdir mountpoint path
+Remove empty directory.
+.TP
+.B ln mountpoint src dst
+Create hard link.
+.TP
+.B symlink mountpoint target linkpath
+Create symbolic link.
+.TP
+.B readlink mountpoint path
+Read symlink target.
+.TP
+.B chmod mountpoint octal_mode path
+Change mode bits.
+.TP
+.B touch mountpoint path
+Update file timestamps or create empty file.
 .SH SEE ALSO
-.BR kafs (1)
+.BR kafs (1),
+.BR mkfs.kafs (8),
+.BR fsck.kafs (8),
+.BR kafsdump (8),
+.BR kafsimage (8),
+.BR kafsresize (8),
+.BR kafs-info (8),
+.BR kafs-front (8),
+.BR kafs-back (8)
 .SH AUTHOR
 kafs project.

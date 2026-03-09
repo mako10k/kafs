@@ -1,0 +1,40 @@
+'.\" -*- nroff -*-
+.TH KAFS-INFO 8 "2026-03-09" "kafs 0.2.3" "System Administration"
+.SH NAME
+kafs-info \- print basic superblock and HRL summary from an offline KAFS image
+.SH SYNOPSIS
+.B kafs-info
+.I image
+.SH DESCRIPTION
+.B kafs-info
+opens a KAFS image read-only and prints basic metadata, including:
+.IP \[bu] 2
+superblock magic/version and block geometry,
+.IP \[bu] 2
+inode/block counters,
+.IP \[bu] 2
+hash settings,
+.IP \[bu] 2
+HRL index/entry region summary.
+.PP
+This command does not modify image contents.
+.SH EXIT STATUS
+.TP
+.B 0
+Completed successfully.
+.TP
+.B 1
+I/O or parse error.
+.TP
+.B 2
+Usage error.
+.SH SEE ALSO
+.BR kafs (1),
+.BR kafsctl (1),
+.BR mkfs.kafs (8),
+.BR fsck.kafs (8),
+.BR kafsdump (8),
+.BR kafsimage (8),
+.BR kafsresize (8)
+.SH AUTHOR
+kafs project.
