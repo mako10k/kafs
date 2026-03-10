@@ -155,11 +155,32 @@ static int hrl_find_free_slot(kafs_context_t *ctx, uint32_t *out_index)
 {
   kafs_hrl_entry_t *ents = hrl_entries_tbl(ctx);
   uint32_t cap = hrl_capacity(ctx);
-  for (uint32_t i = 0; i < cap; ++i)
+  if (cap == 0)
+    return -ENOSPC;
+
+  uint32_t start = ctx->c_hrl_next_free_hint;
+  if (start >= cap)
+    start = 0;
+
+  for (uint32_t n = 0; n < cap; ++n)
   {
-    if (ents[i].refcnt == 0)
+    uint32_t i = start + n;
+    if (i >= cap)
+      i -= cap;
+    // A slot is reusable only after full clear (refcnt/blo/next are all zero-like).
+    if (__atomic_load_n(&ents[i].refcnt, __ATOMIC_ACQUIRE) != 0)
+      continue;
+    if (__atomic_load_n(&ents[i].next_plus1, __ATOMIC_RELAXED) != 0)
+      continue;
+    if (__atomic_load_n(&ents[i].blo, __ATOMIC_RELAXED) != KAFS_BLO_NONE)
+      continue;
+
+    uint32_t expected = 0;
+    if (__atomic_compare_exchange_n(&ents[i].refcnt, &expected, 1u, 0, __ATOMIC_ACQ_REL,
+                                    __ATOMIC_RELAXED))
     {
       *out_index = i;
+      ctx->c_hrl_next_free_hint = (i + 1u < cap) ? (i + 1u) : 0u;
       return 0;
     }
   }
@@ -215,10 +236,12 @@ int kafs_hrl_open(kafs_context_t *ctx)
   {
     ctx->c_hrl_index = NULL;
     ctx->c_hrl_bucket_cnt = 0;
+    ctx->c_hrl_next_free_hint = 0;
     return 0;
   }
   ctx->c_hrl_index = (void *)(base + index_off);
   ctx->c_hrl_bucket_cnt = (uint32_t)(index_size / sizeof(uint32_t));
+  ctx->c_hrl_next_free_hint = 0;
   (void)kafs_ctx_locks_init(ctx);
   return 0;
 }
@@ -242,6 +265,8 @@ int kafs_hrl_format(kafs_context_t *ctx)
     memset((void *)(base + index_off), 0, (size_t)index_size);
   if (entry_off && entry_cnt)
     memset((void *)(base + entry_off), 0, (size_t)entry_cnt * sizeof(kafs_hrl_entry_t));
+  if (ctx)
+    ctx->c_hrl_next_free_hint = 0;
   return 0;
 }
 
@@ -281,22 +306,18 @@ int kafs_hrl_put(kafs_context_t *ctx, const void *block_data, kafs_hrid_t *out_h
     return 0;
   }
 
-  // allocate entry (must be globally serialized; refcnt==0 is treated as free)
-  kafs_hrl_global_lock(ctx);
+  // allocate entry by CAS reservation (refcnt 0 -> 1)
   uint64_t t_slot0 = hrl_now_ns();
   int slot_rc = hrl_find_free_slot(ctx, &idx);
   uint64_t t_slot1 = hrl_now_ns();
   __atomic_add_fetch(&ctx->c_stat_hrl_put_ns_slot_alloc, t_slot1 - t_slot0, __ATOMIC_RELAXED);
   if (slot_rc != 0)
   {
-    kafs_hrl_global_unlock(ctx);
     kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
     return -ENOSPC;
   }
   kafs_hrl_entry_t *e = hrl_entries_tbl(ctx) + idx;
-  e->refcnt = 1u; // reserve slot and take one reference for caller
   e->next_plus1 = 0;
-  kafs_hrl_global_unlock(ctx);
 
   // allocate physical block and write
   kafs_blkcnt_t blo = KAFS_BLO_NONE;
@@ -307,9 +328,7 @@ int kafs_hrl_put(kafs_context_t *ctx, const void *block_data, kafs_hrid_t *out_h
                      __ATOMIC_RELAXED);
   if (rc != 0)
   {
-    kafs_hrl_global_lock(ctx);
     memset(e, 0, sizeof(*e));
-    kafs_hrl_global_unlock(ctx);
     kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
     return rc;
   }
@@ -321,9 +340,7 @@ int kafs_hrl_put(kafs_context_t *ctx, const void *block_data, kafs_hrid_t *out_h
   if (rc != 0)
   {
     (void)hrl_release_blo(ctx, &blo);
-    kafs_hrl_global_lock(ctx);
     memset(e, 0, sizeof(*e));
-    kafs_hrl_global_unlock(ctx);
     kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
     return rc;
   }
