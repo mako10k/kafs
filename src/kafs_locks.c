@@ -385,15 +385,7 @@ int kafs_ctx_locks_init(struct kafs_context *ctx)
   ctx->c_open_cnt = (uint32_t *)calloc(st->inode_cnt, sizeof(uint32_t));
   st->inode_mutexes = (pthread_mutex_t *)calloc(st->inode_cnt, sizeof(pthread_mutex_t));
   if (!st->inode_mutexes)
-  {
-    for (uint32_t i = 0; i < st->bucket_cnt; ++i)
-      pthread_mutex_destroy(&st->buckets[i]);
-    free(st->buckets);
-    pthread_mutex_destroy(&st->bitmap);
-    pthread_mutex_destroy(&st->global);
-    free(st);
-    return -1;
-  }
+    goto fail_cleanup_buckets;
   for (uint32_t i = 0; i < st->inode_cnt; ++i)
   {
     if (kafs_mutex_init_checked(&st->inode_mutexes[i], "inode") != 0)
@@ -415,19 +407,22 @@ int kafs_ctx_locks_init(struct kafs_context *ctx)
     for (uint32_t i = 0; i < st->inode_cnt; ++i)
       pthread_mutex_destroy(&st->inode_mutexes[i]);
     free(st->inode_mutexes);
-    for (uint32_t i = 0; i < st->bucket_cnt; ++i)
-      pthread_mutex_destroy(&st->buckets[i]);
-    free(st->buckets);
-    pthread_mutex_destroy(&st->bitmap);
-    pthread_mutex_destroy(&st->global);
-    free(st);
-    return -1;
+    goto fail_cleanup_buckets;
   }
   ctx->c_lock_hrl_global = st;
   ctx->c_lock_hrl_buckets = st; // same state pointer
   ctx->c_lock_bitmap = st;
   ctx->c_lock_inode = st;
   return 0;
+
+fail_cleanup_buckets:
+  for (uint32_t i = 0; i < st->bucket_cnt; ++i)
+    pthread_mutex_destroy(&st->buckets[i]);
+  free(st->buckets);
+  pthread_mutex_destroy(&st->bitmap);
+  pthread_mutex_destroy(&st->global);
+  free(st);
+  return -1;
 }
 
 void kafs_ctx_locks_destroy(struct kafs_context *ctx)
