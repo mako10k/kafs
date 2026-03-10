@@ -11,18 +11,23 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <linux/fs.h>
+#endif
 
 static void usage(const char *prog)
 {
   fprintf(stderr,
           "Usage: %s --grow --size-bytes N <image>\n"
-          "       %s --migrate-create --dst-image <image> --size-bytes N --inodes I [options]\n"
+          "       %s --migrate-create --dst-image <image> [--size-bytes N] --inodes I [options]\n"
           "  notes:\n"
           "    - grow-only (no shrink)\n"
           "    - v0 grow supports only preallocated headroom (s_blkcnt < s_r_blkcnt)\n"
           "    - migrate-create builds a new image with target size/inodes via mkfs.kafs\n"
+          "    - migrate-create without --size-bytes auto-detects size from --dst-image\n"
           "  options for --migrate-create:\n"
           "    --journal-size-bytes N   journal size passed to mkfs.kafs\n"
           "    --blksize-log L          block-size log2 passed to mkfs.kafs\n"
@@ -96,6 +101,49 @@ static int load_superblock_checked(int fd, kafs_ssuperblock_t *sb)
   if (kafs_sb_magic_get(sb) != KAFS_MAGIC || kafs_sb_format_version_get(sb) != KAFS_FORMAT_VERSION)
     return -EINVAL;
   return 0;
+}
+
+static int detect_dst_size_bytes(const char *path, uint64_t *out_size)
+{
+  if (!path || !out_size)
+    return -EINVAL;
+
+  struct stat st;
+  if (stat(path, &st) != 0)
+    return -errno;
+
+  if (S_ISREG(st.st_mode))
+  {
+    if (st.st_size <= 0)
+      return -EINVAL;
+    *out_size = (uint64_t)st.st_size;
+    return 0;
+  }
+
+  if (S_ISBLK(st.st_mode))
+  {
+#ifdef __linux__
+    int fd = open(path, O_RDONLY);
+    if (fd < 0)
+      return -errno;
+    uint64_t dev_bytes = 0;
+    if (ioctl(fd, BLKGETSIZE64, &dev_bytes) != 0)
+    {
+      int e = errno;
+      close(fd);
+      return -e;
+    }
+    close(fd);
+    if (dev_bytes == 0)
+      return -EINVAL;
+    *out_size = dev_bytes;
+    return 0;
+#else
+    return -ENOTSUP;
+#endif
+  }
+
+  return -EINVAL;
 }
 
 static int cmd_grow(const char *image, uint64_t target_bytes)
@@ -257,22 +305,58 @@ static int cmd_migrate_create(const char *dst_image, uint64_t size_bytes, uint32
                               uint64_t journal_bytes, int blksize_log, const char *src_mount,
                               const char *dst_mount, int assume_yes, int force)
 {
+  if (!dst_image || !*dst_image)
+  {
+    fprintf(stderr, "invalid --dst-image\n");
+    return 2;
+  }
+
+  struct stat dst_st;
+  int dst_exists = (stat(dst_image, &dst_st) == 0);
+  int dst_is_reg = dst_exists && S_ISREG(dst_st.st_mode);
+  int dst_is_blk = dst_exists && S_ISBLK(dst_st.st_mode);
+
+  if (size_bytes == 0)
+  {
+    uint64_t auto_size = 0;
+    int drc = detect_dst_size_bytes(dst_image, &auto_size);
+    if (drc != 0)
+    {
+      fprintf(stderr, "failed to auto-detect size from --dst-image '%s' (use --size-bytes): %s\n",
+              dst_image, strerror(-drc));
+      return 2;
+    }
+    size_bytes = auto_size;
+  }
+
   if (!assume_yes && !confirm_yes_stdin())
   {
     fprintf(stderr, "aborted\n");
     return 2;
   }
 
-  if (access(dst_image, F_OK) == 0)
+  if (dst_exists)
   {
-    if (!force)
+    if (dst_is_blk)
     {
-      fprintf(stderr, "destination image exists: %s (use --force to overwrite)\n", dst_image);
-      return 1;
+      // block device is expected to exist; force flag is not required.
     }
-    if (unlink(dst_image) != 0)
+    else if (dst_is_reg)
     {
-      perror("unlink(dst-image)");
+      if (!force)
+      {
+        fprintf(stderr, "destination image exists: %s (use --force to overwrite)\n", dst_image);
+        return 1;
+      }
+      if (unlink(dst_image) != 0)
+      {
+        perror("unlink(dst-image)");
+        return 1;
+      }
+    }
+    else
+    {
+      fprintf(stderr, "unsupported destination type: %s\n", dst_image);
       return 1;
     }
   }
@@ -464,7 +548,7 @@ int main(int argc, char **argv)
 
   if (do_migrate_create)
   {
-    if (target_bytes == 0 || inodes == 0 || !dst_image)
+    if (inodes == 0 || !dst_image)
     {
       usage(argv[0]);
       return 2;

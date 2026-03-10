@@ -13,8 +13,7 @@ kafsresize \- grow offline KAFS image logical block range (grow-only)
 .B --migrate-create
 .B --dst-image
 .I image
-.B --size-bytes
-.I N
+.RI [ --size-bytes " " N ]
 .B --inodes
 .I I
 .RI [ options ]
@@ -43,10 +42,19 @@ Enable grow operation (shrink is not supported).
 .B --migrate-create
 Create a new destination image for migration using
 .BR mkfs.kafs (8)
-with explicit size and inode count.
+with inode count and target size.
+When
+.B --size-bytes
+is omitted, size is auto-detected from
+.B --dst-image
+(block device capacity on Linux, or regular file size).
 .TP
 .B --size-bytes N
 Target logical size in bytes (supports `K/M/G` suffixes).
+For
+.BR --migrate-create ,
+this is optional and defaults to auto-detect from
+.BR --dst-image .
 .TP
 .B --dst-image image
 Destination image path used by
