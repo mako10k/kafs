@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -158,6 +159,31 @@ int main(void)
   if (lseek(fd, (off_t)bs, SEEK_HOLE) != (off_t)bs)
     rc = 1;
   if (lseek(fd, (off_t)bs, SEEK_DATA) != (off_t)(2 * bs))
+    rc = 1;
+
+  // 拡大方向: 元 EOF 以降は hole として疎拡張されることを確認。
+  off_t old_eof = (off_t)(3 * bs);
+  off_t grow_off = old_eof + (off_t)123;
+  off_t grow_len = (off_t)(2 * bs);
+  if (fallocate(fd, 0, grow_off, grow_len) != 0)
+  {
+    rc = 1;
+    goto out_buf;
+  }
+  if (fstat(fd, &st) != 0 || st.st_size != grow_off + grow_len)
+    rc = 1;
+
+  uint8_t tail[128];
+  if (pread(fd, tail, sizeof(tail), old_eof) != (ssize_t)sizeof(tail))
+    rc = 1;
+  for (size_t i = 0; i < sizeof(tail); ++i)
+    if (tail[i] != 0)
+      rc = 1;
+
+  errno = 0;
+  if (lseek(fd, old_eof, SEEK_DATA) != -1 || errno != ENXIO)
+    rc = 1;
+  if (lseek(fd, old_eof, SEEK_HOLE) != old_eof)
     rc = 1;
 
 out_buf:

@@ -5297,13 +5297,13 @@ static int kafs_op_fallocate(const char *path, int mode, off_t offset, off_t len
   if (length == 0)
     return 0;
 
+  kafs_off_t end_req = (kafs_off_t)offset + (kafs_off_t)length;
+  if (end_req < (kafs_off_t)offset)
+    return -EOVERFLOW;
+
 #ifdef FALLOC_FL_PUNCH_HOLE
   const int supported = FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE;
   if ((mode & ~supported) != 0)
-    return -EOPNOTSUPP;
-  if ((mode & FALLOC_FL_PUNCH_HOLE) == 0)
-    return -EOPNOTSUPP;
-  if ((mode & FALLOC_FL_KEEP_SIZE) == 0)
     return -EOPNOTSUPP;
 #else
   (void)mode;
@@ -5314,6 +5314,26 @@ static int kafs_op_fallocate(const char *path, int mode, off_t offset, off_t len
   KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
   uint32_t ino = (uint32_t)(inoent - ctx->c_inotbl);
 
+#ifdef FALLOC_FL_PUNCH_HOLE
+  if ((mode & FALLOC_FL_PUNCH_HOLE) == 0)
+  {
+    // 拡大系: 元 EOF 以降は hole とみなし、必要時のみ疎拡張する。
+    if ((mode & FALLOC_FL_KEEP_SIZE) != 0)
+      return 0;
+
+    kafs_inode_lock(ctx, ino);
+    kafs_off_t filesize = kafs_ino_size_get(inoent);
+    int rc = 0;
+    if (end_req > filesize)
+      rc = kafs_truncate(ctx, inoent, end_req);
+    kafs_inode_unlock(ctx, ino);
+    return rc;
+  }
+
+  if ((mode & FALLOC_FL_KEEP_SIZE) == 0)
+    return -EOPNOTSUPP;
+#endif
+
   kafs_inode_lock(ctx, ino);
   kafs_off_t filesize = kafs_ino_size_get(inoent);
   if ((kafs_off_t)offset >= filesize)
@@ -5322,12 +5342,7 @@ static int kafs_op_fallocate(const char *path, int mode, off_t offset, off_t len
     return 0;
   }
 
-  kafs_off_t end = (kafs_off_t)offset + (kafs_off_t)length;
-  if (end < (kafs_off_t)offset)
-  {
-    kafs_inode_unlock(ctx, ino);
-    return -EOVERFLOW;
-  }
+  kafs_off_t end = end_req;
   if (end > filesize)
     end = filesize;
 
@@ -5369,11 +5384,32 @@ static int kafs_op_fallocate(const char *path, int mode, off_t offset, off_t len
     if (((kafs_off_t)offset >> log_blksize) != (kafs_off_t)iblo ||
         ((kafs_off_t)offset & ((kafs_off_t)blksize - 1)) == 0)
     {
-      char wbuf[blksize];
-      KAFS_CALL(kafs_ino_iblk_read_or_zero, ctx, inoent, iblo, wbuf);
       kafs_blksize_t e = (kafs_blksize_t)(end & ((kafs_off_t)blksize - 1));
-      memset(wbuf, 0, e);
-      KAFS_CALL(kafs_ino_iblk_write, ctx, inoent, iblo, wbuf);
+      // 右端が EOF の場合、EOF 外は hole とみなし、論理ファイル範囲が全て対象なら穴化する。
+      if (end == filesize)
+      {
+        kafs_blksize_t valid = (kafs_blksize_t)(filesize & ((kafs_off_t)blksize - 1));
+        if (valid == 0)
+          valid = blksize;
+        if (e == valid && filesize > KAFS_DIRECT_SIZE)
+        {
+          KAFS_CALL(kafs_ino_iblk_release, ctx, inoent, iblo);
+        }
+        else
+        {
+          char wbuf[blksize];
+          KAFS_CALL(kafs_ino_iblk_read_or_zero, ctx, inoent, iblo, wbuf);
+          memset(wbuf, 0, e);
+          KAFS_CALL(kafs_ino_iblk_write, ctx, inoent, iblo, wbuf);
+        }
+      }
+      else
+      {
+        char wbuf[blksize];
+        KAFS_CALL(kafs_ino_iblk_read_or_zero, ctx, inoent, iblo, wbuf);
+        memset(wbuf, 0, e);
+        KAFS_CALL(kafs_ino_iblk_write, ctx, inoent, iblo, wbuf);
+      }
     }
   }
 
