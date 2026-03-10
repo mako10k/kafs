@@ -8,6 +8,19 @@ AC_CONFIG_HEADERS([config.h])
 AM_INIT_AUTOMAKE([foreign])
 PKG_CHECK_MODULES([KAFS], [fuse3])
 
+AC_ARG_ENABLE([lto],
+    [AS_HELP_STRING([--enable-lto], [enable link-time optimization (-flto)])],
+    [enable_lto="$enableval"],
+    [enable_lto="no"])
+
+AS_IF([test "x$enable_lto" = "xyes"], [
+    CFLAGS="$CFLAGS -flto"
+    LDFLAGS="$LDFLAGS -flto"
+    AC_MSG_NOTICE([LTO enabled: appending -flto to CFLAGS/LDFLAGS])
+], [
+    AC_MSG_NOTICE([LTO disabled])
+])
+
 # Checks for programs.
 AC_PROG_CC
 
