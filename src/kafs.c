@@ -14,6 +14,7 @@
 #define KAFS_DIRECT_SIZE (sizeof(((struct kafs_sinode *)NULL)->i_blkreftbl))
 
 #include <fuse.h>
+#include <fuse_log.h>
 #include <errno.h>
 #include <string.h>
 #include <unistd.h>
@@ -108,6 +109,19 @@ static inline void kafs_stat_record_pwrite_iblk_write_latency(kafs_context_t *ct
 #define KAFS_PENDINGLOG_VERSION 1u
 #define KAFS_PENDING_REF_FLAG 0x80000000u
 #define KAFS_PENDING_REF_MASK 0x7fffffffu
+#define KAFS_PENDINGLOG_CAPACITY_FLOOR 2u
+
+static uint32_t g_suppress_fuse_max_threads_warn = 1u;
+
+static void kafs_fuse_log_func(enum fuse_log_level level, const char *fmt, va_list ap)
+{
+  if (!fmt)
+    return;
+  if (g_suppress_fuse_max_threads_warn && strstr(fmt, "Ignoring invalid max threads value") != NULL)
+    return;
+  (void)level;
+  vfprintf(stderr, fmt, ap);
+}
 
 enum
 {
@@ -189,6 +203,91 @@ static kafs_pendinglog_entry_t *kafs_pendinglog_entry_ptr(struct kafs_context *c
   return (kafs_pendinglog_entry_t *)(base + ((size_t)idx * (size_t)hdr->entry_size));
 }
 
+static uint32_t kafs_pendinglog_effective_capacity(struct kafs_context *ctx,
+                                                   const kafs_pendinglog_hdr_t *hdr)
+{
+  if (!ctx || !hdr || hdr->capacity == 0)
+    return 0;
+
+  uint32_t hard_cap = hdr->capacity;
+  uint32_t min_cap = ctx->c_pendinglog_capacity_min;
+  uint32_t max_cap = ctx->c_pendinglog_capacity_max;
+  uint32_t cur_cap = ctx->c_pendinglog_capacity;
+
+  if (min_cap == 0)
+    min_cap = KAFS_PENDINGLOG_CAPACITY_FLOOR;
+  if (min_cap > hard_cap)
+    min_cap = hard_cap;
+
+  if (max_cap == 0 || max_cap > hard_cap)
+    max_cap = hard_cap;
+  if (max_cap < min_cap)
+    max_cap = min_cap;
+
+  if (cur_cap == 0)
+    cur_cap = max_cap;
+  if (cur_cap < min_cap)
+    cur_cap = min_cap;
+  if (cur_cap > max_cap)
+    cur_cap = max_cap;
+
+  ctx->c_pendinglog_capacity_min = min_cap;
+  ctx->c_pendinglog_capacity_max = max_cap;
+  ctx->c_pendinglog_capacity = cur_cap;
+  return cur_cap;
+}
+
+static uint32_t kafs_pendinglog_count(struct kafs_context *ctx)
+{
+  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+  if (!hdr || hdr->capacity == 0)
+    return 0;
+  if (hdr->tail >= hdr->head)
+    return hdr->tail - hdr->head;
+  return (hdr->capacity - hdr->head) + hdr->tail;
+}
+
+static void kafs_pendinglog_adapt_capacity_locked(struct kafs_context *ctx)
+{
+  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+  if (!ctx || !hdr || hdr->capacity == 0)
+    return;
+
+  uint32_t cur_cap = kafs_pendinglog_effective_capacity(ctx, hdr);
+  uint32_t min_cap = ctx->c_pendinglog_capacity_min;
+  uint32_t max_cap = ctx->c_pendinglog_capacity_max;
+  uint32_t qcnt = kafs_pendinglog_count(ctx);
+
+  // Grow when queue usage approaches effective limit.
+  if (cur_cap < max_cap && qcnt + (qcnt / 8u) >= cur_cap - 1u)
+  {
+    uint32_t next_cap = cur_cap + (cur_cap / 4u) + 1u;
+    if (next_cap > max_cap)
+      next_cap = max_cap;
+    if (next_cap > cur_cap)
+    {
+      ctx->c_pendinglog_capacity = next_cap;
+      kafs_log(KAFS_LOG_INFO, "kafs: pendinglog capacity grow %u -> %u (qcnt=%u)\n", cur_cap,
+               next_cap, qcnt);
+      return;
+    }
+  }
+
+  // Shrink when queue is consistently low.
+  if (cur_cap > min_cap && qcnt <= (cur_cap / 4u))
+  {
+    uint32_t target = (qcnt * 2u) + 8u;
+    if (target < min_cap)
+      target = min_cap;
+    if (target < cur_cap)
+    {
+      ctx->c_pendinglog_capacity = target;
+      kafs_log(KAFS_LOG_INFO, "kafs: pendinglog capacity shrink %u -> %u (qcnt=%u)\n", cur_cap,
+               target, qcnt);
+    }
+  }
+}
+
 static int kafs_pendinglog_init_or_load(struct kafs_context *ctx)
 {
   if (!ctx)
@@ -231,18 +330,8 @@ static int kafs_pendinglog_init_or_load(struct kafs_context *ctx)
   }
 
   ctx->c_pendinglog_enabled = 1;
-  ctx->c_pendinglog_capacity = hdr->capacity;
+  (void)kafs_pendinglog_effective_capacity(ctx, hdr);
   return 0;
-}
-
-static uint32_t kafs_pendinglog_count(struct kafs_context *ctx)
-{
-  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
-  if (!hdr || hdr->capacity == 0)
-    return 0;
-  if (hdr->tail >= hdr->head)
-    return hdr->tail - hdr->head;
-  return (hdr->capacity - hdr->head) + hdr->tail;
 }
 
 static int kafs_pendinglog_enqueue(struct kafs_context *ctx, const kafs_pendinglog_entry_t *ent,
@@ -252,11 +341,17 @@ static int kafs_pendinglog_enqueue(struct kafs_context *ctx, const kafs_pendingl
   if (!hdr || !ent)
     return -ENOSYS;
 
+  (void)kafs_pendinglog_effective_capacity(ctx, hdr);
+  kafs_pendinglog_adapt_capacity_locked(ctx);
+  uint32_t eff_cap = ctx->c_pendinglog_capacity;
+  if (eff_cap < KAFS_PENDINGLOG_CAPACITY_FLOOR)
+    eff_cap = KAFS_PENDINGLOG_CAPACITY_FLOOR;
+  if (kafs_pendinglog_count(ctx) >= eff_cap - 1u)
+    return -ENOSPC;
+
   uint32_t next = hdr->tail + 1;
   if (next >= hdr->capacity)
     next = 0;
-  if (next == hdr->head)
-    return -ENOSPC;
 
   kafs_pendinglog_entry_t *slot = kafs_pendinglog_entry_ptr(ctx, hdr->tail);
   if (!slot)
@@ -443,7 +538,10 @@ static void kafs_pending_worker_adjust_priority_locked(struct kafs_context *ctx)
     return;
 
   // Hysteresis: boost near full, restore after queue is drained enough.
-  uint32_t cap = hdr->capacity;
+  kafs_pendinglog_adapt_capacity_locked(ctx);
+  uint32_t cap = ctx->c_pendinglog_capacity;
+  if (cap < KAFS_PENDINGLOG_CAPACITY_FLOOR)
+    cap = KAFS_PENDINGLOG_CAPACITY_FLOOR;
   uint32_t high_wm = cap - (cap / 8u); // 87.5%
   uint32_t low_wm = cap / 2u;          // 50%
   if (high_wm <= low_wm)
@@ -6203,6 +6301,9 @@ static void usage(const char *prog)
           "    -o dedup_worker_nice=...          Alias of pending_worker_nice\n"
           "    -o pending_ttl_soft_ms=<N>        Soft TTL for pending entries (ms)\n"
           "    -o pending_ttl_hard_ms=<N>        Hard TTL for pending entries (ms)\n"
+          "    -o pendinglog_cap_initial=<N>     Pending queue initial effective capacity\n"
+          "    -o pendinglog_cap_min=<N>         Pending queue minimum effective capacity\n"
+          "    -o pendinglog_cap_max=<N>         Pending queue maximum effective capacity\n"
           "\n"
           "  [Sync Policy]\n"
           "    -o fsync_policy=<journal_only|full|adaptive>\n"
@@ -6218,6 +6319,9 @@ static void usage(const char *prog)
           "    KAFS_PENDING_WORKER_NICE          pending_worker_nice default\n"
           "    KAFS_PENDING_TTL_SOFT_MS          pending soft TTL (ms)\n"
           "    KAFS_PENDING_TTL_HARD_MS          pending hard TTL (ms)\n"
+          "    KAFS_PENDINGLOG_CAP_INITIAL       pending initial effective capacity\n"
+          "    KAFS_PENDINGLOG_CAP_MIN           pending minimum effective capacity\n"
+          "    KAFS_PENDINGLOG_CAP_MAX           pending maximum effective capacity\n"
           "    KAFS_FSYNC_POLICY                 fsync policy default\n"
           "    KAFS_HOTPLUG_UDS                  Hotplug UDS path (legacy/env)\n"
           "    KAFS_HOTPLUG_BACK_BIN             Backend binary path hint\n"
@@ -6543,6 +6647,9 @@ int main(int argc, char **argv)
   int pending_worker_nice = 0;
   uint32_t pending_ttl_soft_ms = 5000;
   uint32_t pending_ttl_hard_ms = 30000;
+  uint32_t pending_cap_initial = 0;
+  uint32_t pending_cap_min = 0;
+  uint32_t pending_cap_max = 0;
   uint32_t fsync_policy = KAFS_FSYNC_POLICY_JOURNAL_ONLY;
 
   const char *pprio = getenv("KAFS_PENDING_WORKER_PRIO");
@@ -6583,6 +6690,42 @@ int main(int argc, char **argv)
     if (kafs_parse_u32_range(pttl_hard, 0, 3600000u, &pending_ttl_hard_ms) != 0)
     {
       fprintf(stderr, "invalid KAFS_PENDING_TTL_HARD_MS: '%s'\n", pttl_hard);
+      return 2;
+    }
+  }
+
+  const char *pcap_initial = getenv("KAFS_PENDINGLOG_CAP_INITIAL");
+  if (!pcap_initial || !*pcap_initial)
+    pcap_initial = getenv("KAFS_PENDING_CAP_INITIAL");
+  if (pcap_initial && *pcap_initial)
+  {
+    if (kafs_parse_u32_range(pcap_initial, 0, 1000000000u, &pending_cap_initial) != 0)
+    {
+      fprintf(stderr, "invalid KAFS_PENDINGLOG_CAP_INITIAL: '%s'\n", pcap_initial);
+      return 2;
+    }
+  }
+
+  const char *pcap_min = getenv("KAFS_PENDINGLOG_CAP_MIN");
+  if (!pcap_min || !*pcap_min)
+    pcap_min = getenv("KAFS_PENDING_CAP_MIN");
+  if (pcap_min && *pcap_min)
+  {
+    if (kafs_parse_u32_range(pcap_min, 0, 1000000000u, &pending_cap_min) != 0)
+    {
+      fprintf(stderr, "invalid KAFS_PENDINGLOG_CAP_MIN: '%s'\n", pcap_min);
+      return 2;
+    }
+  }
+
+  const char *pcap_max = getenv("KAFS_PENDINGLOG_CAP_MAX");
+  if (!pcap_max || !*pcap_max)
+    pcap_max = getenv("KAFS_PENDING_CAP_MAX");
+  if (pcap_max && *pcap_max)
+  {
+    if (kafs_parse_u32_range(pcap_max, 0, 1000000000u, &pending_cap_max) != 0)
+    {
+      fprintf(stderr, "invalid KAFS_PENDINGLOG_CAP_MAX: '%s'\n", pcap_max);
       return 2;
     }
   }
@@ -6818,6 +6961,54 @@ int main(int argc, char **argv)
             continue;
           }
 
+          const char *pcap_initial_str = NULL;
+          if (strncmp(tok, "pendinglog_cap_initial=", 23) == 0)
+            pcap_initial_str = tok + 23;
+          else if (strncmp(tok, "pending_cap_initial=", 20) == 0)
+            pcap_initial_str = tok + 20;
+          if (pcap_initial_str)
+          {
+            if (kafs_parse_u32_range(pcap_initial_str, 0, 1000000000u, &pending_cap_initial) != 0)
+            {
+              fprintf(stderr, "invalid -o pendinglog_cap_initial: '%s'\n", pcap_initial_str);
+              free(dup);
+              return 2;
+            }
+            continue;
+          }
+
+          const char *pcap_min_str = NULL;
+          if (strncmp(tok, "pendinglog_cap_min=", 19) == 0)
+            pcap_min_str = tok + 19;
+          else if (strncmp(tok, "pending_cap_min=", 16) == 0)
+            pcap_min_str = tok + 16;
+          if (pcap_min_str)
+          {
+            if (kafs_parse_u32_range(pcap_min_str, 0, 1000000000u, &pending_cap_min) != 0)
+            {
+              fprintf(stderr, "invalid -o pendinglog_cap_min: '%s'\n", pcap_min_str);
+              free(dup);
+              return 2;
+            }
+            continue;
+          }
+
+          const char *pcap_max_str = NULL;
+          if (strncmp(tok, "pendinglog_cap_max=", 19) == 0)
+            pcap_max_str = tok + 19;
+          else if (strncmp(tok, "pending_cap_max=", 16) == 0)
+            pcap_max_str = tok + 16;
+          if (pcap_max_str)
+          {
+            if (kafs_parse_u32_range(pcap_max_str, 0, 1000000000u, &pending_cap_max) != 0)
+            {
+              fprintf(stderr, "invalid -o pendinglog_cap_max: '%s'\n", pcap_max_str);
+              free(dup);
+              return 2;
+            }
+            continue;
+          }
+
           const char *fsp_str = NULL;
           if (strncmp(tok, "fsync_policy=", 13) == 0)
             fsp_str = tok + 13;
@@ -6901,6 +7092,12 @@ int main(int argc, char **argv)
     return 2;
   }
 
+  if (pending_cap_min > 0 && pending_cap_max > 0 && pending_cap_max < pending_cap_min)
+  {
+    fprintf(stderr, "invalid pendinglog capacity: max must be >= min\n");
+    return 2;
+  }
+
   static kafs_context_t ctx;
   static char mnt_abs[PATH_MAX];
   char hotplug_uds_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
@@ -6961,6 +7158,9 @@ int main(int argc, char **argv)
   ctx.c_pending_ttl_over_hard = 0;
   ctx.c_pending_worker_prio_apply_error = 0;
   ctx.c_pending_worker_prio_dirty = 1;
+  ctx.c_pendinglog_capacity = pending_cap_initial;
+  ctx.c_pendinglog_capacity_min = pending_cap_min;
+  ctx.c_pendinglog_capacity_max = pending_cap_max;
   ctx.c_fsync_policy = fsync_policy;
 
   const char *data_mode = getenv("KAFS_HOTPLUG_DATA_MODE");
@@ -7304,7 +7504,9 @@ int main(int argc, char **argv)
     }
   }
   argv_fuse[argc_fuse] = NULL; // ensure NULL-terminated argv for libfuse safety
+  fuse_set_log_func(kafs_fuse_log_func);
   int rc = fuse_main(argc_fuse, argv_fuse, &kafs_operations, &ctx);
+  fuse_set_log_func(NULL);
   kafs_pending_worker_stop(&ctx);
   kafs_journal_shutdown(&ctx);
   if (ctx.c_hotplug_fd >= 0)

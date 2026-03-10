@@ -127,6 +127,8 @@ struct kafs_context
   void *c_pendinglog_base;
   size_t c_pendinglog_size;
   uint32_t c_pendinglog_capacity;
+  uint32_t c_pendinglog_capacity_min;
+  uint32_t c_pendinglog_capacity_max;
   pthread_t c_pending_worker_tid;
   pthread_mutex_t c_pending_worker_lock;
   pthread_cond_t c_pending_worker_cond;
