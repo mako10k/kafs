@@ -9,20 +9,24 @@ FAILED_STEPS=0
 run_step(){
 	local name="$1"
 	shift
+	local rc=0
 	echo "[static-checks] start: ${name}"
 	if command -v timeout >/dev/null 2>&1; then
 		if timeout --preserve-status "${STEP_TIMEOUT_SECONDS}s" "$@"; then
 			echo "[static-checks] done: ${name}"
 			return 0
+		else
+			rc=$?
 		fi
 	else
 		if "$@"; then
 			echo "[static-checks] done: ${name}"
 			return 0
+		else
+			rc=$?
 		fi
 	fi
 
-	local rc=$?
 	if [[ $rc -eq 124 || $rc -eq 137 ]]; then
 		echo "[static-checks] timeout: ${name} (${STEP_TIMEOUT_SECONDS}s)" >&2
 	else
