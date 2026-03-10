@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
 #ifdef __linux__
 #include <execinfo.h>
 #include <sys/syscall.h>
@@ -26,10 +27,99 @@ typedef struct
 
 static uint32_t g_robust_unsupported_warned = 0;
 
+typedef enum
+{
+  KAFS_LOCK_RANK_HRL_GLOBAL = 10,
+  KAFS_LOCK_RANK_INODE_ALLOC = 20,
+  KAFS_LOCK_RANK_INODE = 30,
+  KAFS_LOCK_RANK_HRL_BUCKET = 40,
+  KAFS_LOCK_RANK_BITMAP = 50,
+} kafs_lock_rank_t;
+
+static __thread int g_lock_rank_depth = 0;
+static __thread int g_lock_rank_stack[64];
+
 // Prevent thread cancellation while holding internal mutexes.
 // FUSE worker cancellation during a locked critical section can leave stale owners.
 static __thread int g_lock_cancel_depth = 0;
 static __thread int g_lock_cancel_oldstate = PTHREAD_CANCEL_ENABLE;
+
+static long kafs_lock_tid(void);
+static void kafs_lock_dump_backtrace(void);
+
+static inline void kafs_lock_rank_enter(kafs_lock_rank_t rank, const char *name)
+{
+  if (g_lock_rank_depth > 0)
+  {
+    int cur = g_lock_rank_stack[g_lock_rank_depth - 1];
+    if ((int)rank < cur)
+    {
+      kafs_log(KAFS_LOG_ERR,
+               "lock-order-violation: acquire=%s rank=%d while-holding-rank=%d tid=%ld\n",
+               name ? name : "(null)", (int)rank, cur, kafs_lock_tid());
+      kafs_lock_dump_backtrace();
+      abort();
+    }
+  }
+  if (g_lock_rank_depth >= (int)(sizeof(g_lock_rank_stack) / sizeof(g_lock_rank_stack[0])))
+  {
+    kafs_log(KAFS_LOG_ERR, "lock-rank-stack-overflow: tid=%ld\n", kafs_lock_tid());
+    abort();
+  }
+  g_lock_rank_stack[g_lock_rank_depth++] = (int)rank;
+}
+
+static inline void kafs_lock_rank_leave(kafs_lock_rank_t rank, const char *name)
+{
+  if (g_lock_rank_depth <= 0)
+  {
+    kafs_log(KAFS_LOG_ERR, "lock-rank-stack-underflow: release=%s tid=%ld\n",
+             name ? name : "(null)", kafs_lock_tid());
+    abort();
+  }
+  int top = g_lock_rank_stack[g_lock_rank_depth - 1];
+  if (top != (int)rank)
+  {
+    kafs_log(KAFS_LOG_ERR,
+             "lock-rank-mismatch: release=%s rank=%d top=%d tid=%ld\n", name ? name : "(null)",
+             (int)rank, top, kafs_lock_tid());
+    kafs_lock_dump_backtrace();
+    abort();
+  }
+  g_lock_rank_depth--;
+}
+
+static inline long kafs_mutex_owner_tid(const pthread_mutex_t *m)
+{
+#ifdef __linux__
+  return (long)m->__data.__owner;
+#else
+  (void)m;
+  return 0;
+#endif
+}
+
+static inline int kafs_tid_alive(long tid)
+{
+  if (tid <= 0)
+    return 1;
+  if (tid == kafs_lock_tid())
+    return 1;
+  if (kill((pid_t)tid, 0) == 0)
+    return 1;
+  return errno != ESRCH;
+}
+
+static inline void kafs_timespec_add_ms(struct timespec *ts, long ms)
+{
+  ts->tv_sec += ms / 1000;
+  ts->tv_nsec += (ms % 1000) * 1000000L;
+  if (ts->tv_nsec >= 1000000000L)
+  {
+    ts->tv_sec += 1;
+    ts->tv_nsec -= 1000000000L;
+  }
+}
 
 static inline void kafs_lock_cancel_enter(void)
 {
@@ -158,13 +248,14 @@ static inline uint64_t kafs_now_ns(void)
   return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
-static inline void kafs_mutex_lock_stat(pthread_mutex_t *m, const char *name, uint64_t *acq,
-                                        uint64_t *contended, uint64_t *wait_ns)
+static inline void kafs_mutex_lock_stat(pthread_mutex_t *m, const char *name, kafs_lock_rank_t rank,
+                                        uint64_t *acq, uint64_t *contended, uint64_t *wait_ns)
 {
   __atomic_add_fetch(acq, 1u, __ATOMIC_RELAXED);
   int tr = pthread_mutex_trylock(m);
   if (tr == 0)
   {
+    kafs_lock_rank_enter(rank, name);
     kafs_lock_cancel_enter();
     return;
   }
@@ -176,6 +267,7 @@ static inline void kafs_mutex_lock_stat(pthread_mutex_t *m, const char *name, ui
     kafs_lock_dump_backtrace();
     kafs_mutex_mark_consistent_or_panic(m, name);
     __atomic_add_fetch(contended, 1u, __ATOMIC_RELAXED);
+    kafs_lock_rank_enter(rank, name);
     kafs_lock_cancel_enter();
     return;
   }
@@ -184,33 +276,59 @@ static inline void kafs_mutex_lock_stat(pthread_mutex_t *m, const char *name, ui
   if (tr == EBUSY)
   {
     uint64_t t0 = kafs_now_ns();
-    int rc = pthread_mutex_lock(m);
-    uint64_t t1 = kafs_now_ns();
     __atomic_add_fetch(contended, 1u, __ATOMIC_RELAXED);
-    __atomic_add_fetch(wait_ns, t1 - t0, __ATOMIC_RELAXED);
-    if (rc == 0)
+    for (;;)
     {
-      kafs_lock_cancel_enter();
-      return;
+      struct timespec ts;
+      clock_gettime(CLOCK_REALTIME, &ts);
+      kafs_timespec_add_ms(&ts, 200);
+      int rc = pthread_mutex_timedlock(m, &ts);
+      if (rc == 0)
+      {
+        uint64_t t1 = kafs_now_ns();
+        __atomic_add_fetch(wait_ns, t1 - t0, __ATOMIC_RELAXED);
+        kafs_lock_rank_enter(rank, name);
+        kafs_lock_cancel_enter();
+        return;
+      }
+      if (rc == EOWNERDEAD)
+      {
+        uint64_t t1 = kafs_now_ns();
+        __atomic_add_fetch(wait_ns, t1 - t0, __ATOMIC_RELAXED);
+        kafs_log(KAFS_LOG_ERR,
+                 "lock-owner-dead: name=%s tid=%ld path=timedlock (state recovered, investigate)\n",
+                 name ? name : "(null)", kafs_lock_tid());
+        kafs_lock_dump_backtrace();
+        kafs_mutex_mark_consistent_or_panic(m, name);
+        kafs_lock_rank_enter(rank, name);
+        kafs_lock_cancel_enter();
+        return;
+      }
+      if (rc == ETIMEDOUT)
+      {
+        long owner = kafs_mutex_owner_tid(m);
+        if (owner > 0 && !kafs_tid_alive(owner))
+        {
+          kafs_log(KAFS_LOG_ERR,
+                   "lock-stale-owner: name=%s owner=%ld waiter=%ld (hard-fail to avoid infinite hang)\n",
+                   name ? name : "(null)", owner, kafs_lock_tid());
+          kafs_lock_dump_backtrace();
+          abort();
+        }
+        continue;
+      }
+      if (rc == ENOTRECOVERABLE)
+        kafs_lock_panic("timedlock", name, rc);
+      kafs_lock_panic("timedlock", name, rc);
     }
-    if (rc == EOWNERDEAD)
-    {
-      kafs_log(KAFS_LOG_ERR,
-               "lock-owner-dead: name=%s tid=%ld path=lock (state recovered, investigate)\n",
-               name ? name : "(null)", kafs_lock_tid());
-      kafs_lock_dump_backtrace();
-      kafs_mutex_mark_consistent_or_panic(m, name);
-      kafs_lock_cancel_enter();
-      return;
-    }
-    kafs_lock_panic("lock", name, rc);
-    return;
   }
   kafs_lock_panic("trylock", name, tr);
 }
 
-static inline void kafs_mutex_unlock_checked(pthread_mutex_t *m, const char *name)
+static inline void kafs_mutex_unlock_checked(pthread_mutex_t *m, const char *name,
+                                             kafs_lock_rank_t rank)
 {
+  kafs_lock_rank_leave(rank, name);
   kafs_lock_cancel_leave();
   int rc = pthread_mutex_unlock(m);
   if (rc != 0)
@@ -343,6 +461,7 @@ void kafs_hrl_bucket_lock(struct kafs_context *ctx, uint32_t bucket)
     return;
   kafs_lock_state_t *st = (kafs_lock_state_t *)ctx->c_lock_hrl_buckets;
   kafs_mutex_lock_stat(&st->buckets[bucket % st->bucket_cnt], "hrl_bucket",
+                       KAFS_LOCK_RANK_HRL_BUCKET,
                        &ctx->c_stat_lock_hrl_bucket_acquire,
                        &ctx->c_stat_lock_hrl_bucket_contended,
                        &ctx->c_stat_lock_hrl_bucket_wait_ns);
@@ -353,7 +472,8 @@ void kafs_hrl_bucket_unlock(struct kafs_context *ctx, uint32_t bucket)
   if (!ctx || !ctx->c_lock_hrl_buckets)
     return;
   kafs_lock_state_t *st = (kafs_lock_state_t *)ctx->c_lock_hrl_buckets;
-  kafs_mutex_unlock_checked(&st->buckets[bucket % st->bucket_cnt], "hrl_bucket");
+  kafs_mutex_unlock_checked(&st->buckets[bucket % st->bucket_cnt], "hrl_bucket",
+                            KAFS_LOCK_RANK_HRL_BUCKET);
 }
 
 void kafs_hrl_global_lock(struct kafs_context *ctx)
@@ -361,7 +481,8 @@ void kafs_hrl_global_lock(struct kafs_context *ctx)
   if (!ctx || !ctx->c_lock_hrl_global)
     return;
   kafs_lock_state_t *st = (kafs_lock_state_t *)ctx->c_lock_hrl_global;
-  kafs_mutex_lock_stat(&st->global, "hrl_global", &ctx->c_stat_lock_hrl_global_acquire,
+  kafs_mutex_lock_stat(&st->global, "hrl_global", KAFS_LOCK_RANK_HRL_GLOBAL,
+                       &ctx->c_stat_lock_hrl_global_acquire,
                        &ctx->c_stat_lock_hrl_global_contended,
                        &ctx->c_stat_lock_hrl_global_wait_ns);
 }
@@ -371,7 +492,7 @@ void kafs_hrl_global_unlock(struct kafs_context *ctx)
   if (!ctx || !ctx->c_lock_hrl_global)
     return;
   kafs_lock_state_t *st = (kafs_lock_state_t *)ctx->c_lock_hrl_global;
-  kafs_mutex_unlock_checked(&st->global, "hrl_global");
+  kafs_mutex_unlock_checked(&st->global, "hrl_global", KAFS_LOCK_RANK_HRL_GLOBAL);
 }
 
 void kafs_bitmap_lock(struct kafs_context *ctx)
@@ -379,7 +500,8 @@ void kafs_bitmap_lock(struct kafs_context *ctx)
   if (!ctx || !ctx->c_lock_bitmap)
     return;
   kafs_lock_state_t *st = (kafs_lock_state_t *)ctx->c_lock_bitmap;
-  kafs_mutex_lock_stat(&st->bitmap, "bitmap", &ctx->c_stat_lock_bitmap_acquire,
+  kafs_mutex_lock_stat(&st->bitmap, "bitmap", KAFS_LOCK_RANK_BITMAP,
+                       &ctx->c_stat_lock_bitmap_acquire,
                        &ctx->c_stat_lock_bitmap_contended, &ctx->c_stat_lock_bitmap_wait_ns);
 }
 
@@ -388,7 +510,7 @@ void kafs_bitmap_unlock(struct kafs_context *ctx)
   if (!ctx || !ctx->c_lock_bitmap)
     return;
   kafs_lock_state_t *st = (kafs_lock_state_t *)ctx->c_lock_bitmap;
-  kafs_mutex_unlock_checked(&st->bitmap, "bitmap");
+  kafs_mutex_unlock_checked(&st->bitmap, "bitmap", KAFS_LOCK_RANK_BITMAP);
 }
 
 void kafs_inode_lock(struct kafs_context *ctx, uint32_t ino)
@@ -396,7 +518,7 @@ void kafs_inode_lock(struct kafs_context *ctx, uint32_t ino)
   if (!ctx || !ctx->c_lock_inode)
     return;
   kafs_lock_state_t *st = (kafs_lock_state_t *)ctx->c_lock_inode;
-  kafs_mutex_lock_stat(&st->inode_mutexes[ino % st->inode_cnt], "inode",
+  kafs_mutex_lock_stat(&st->inode_mutexes[ino % st->inode_cnt], "inode", KAFS_LOCK_RANK_INODE,
                        &ctx->c_stat_lock_inode_acquire,
                        &ctx->c_stat_lock_inode_contended, &ctx->c_stat_lock_inode_wait_ns);
 }
@@ -406,7 +528,8 @@ void kafs_inode_unlock(struct kafs_context *ctx, uint32_t ino)
   if (!ctx || !ctx->c_lock_inode)
     return;
   kafs_lock_state_t *st = (kafs_lock_state_t *)ctx->c_lock_inode;
-  kafs_mutex_unlock_checked(&st->inode_mutexes[ino % st->inode_cnt], "inode");
+  kafs_mutex_unlock_checked(&st->inode_mutexes[ino % st->inode_cnt], "inode",
+                            KAFS_LOCK_RANK_INODE);
 }
 
 void kafs_inode_alloc_lock(struct kafs_context *ctx)
@@ -414,7 +537,8 @@ void kafs_inode_alloc_lock(struct kafs_context *ctx)
   if (!ctx || !ctx->c_lock_inode)
     return;
   kafs_lock_state_t *st = (kafs_lock_state_t *)ctx->c_lock_inode;
-  kafs_mutex_lock_stat(&st->inode_alloc, "inode_alloc", &ctx->c_stat_lock_inode_alloc_acquire,
+  kafs_mutex_lock_stat(&st->inode_alloc, "inode_alloc", KAFS_LOCK_RANK_INODE_ALLOC,
+                       &ctx->c_stat_lock_inode_alloc_acquire,
                        &ctx->c_stat_lock_inode_alloc_contended,
                        &ctx->c_stat_lock_inode_alloc_wait_ns);
 }
@@ -424,7 +548,7 @@ void kafs_inode_alloc_unlock(struct kafs_context *ctx)
   if (!ctx || !ctx->c_lock_inode)
     return;
   kafs_lock_state_t *st = (kafs_lock_state_t *)ctx->c_lock_inode;
-  kafs_mutex_unlock_checked(&st->inode_alloc, "inode_alloc");
+  kafs_mutex_unlock_checked(&st->inode_alloc, "inode_alloc", KAFS_LOCK_RANK_INODE_ALLOC);
 }
 
 #else
