@@ -101,6 +101,7 @@
 /tests/truncate_prune
 /tests/reflink_clone
 /tests/kafsresize
+/tests/journal_boundary
 
 ### Local mount/test workdirs (repo root)
 /mnt-*/

@@ -1,26 +1,25 @@
 # Copilot Agent Instructions
 
-This repository uses the MCP Shell Server.
+Mandatory rules only.
 
-- Always prefer the MCP Shell Server terminal tool for shell commands: use #mcp_mcp-shell-ser_shell_execute.
-- Do not use other terminal tools unless explicitly requested.
-- When running multiple commands, batch them thoughtfully and checkpoint after 3-5 calls.
-- Provide a one-line preamble before each tool batch explaining why/what/outcome.
-- After results, summarize key findings and next steps succinctly.
-- Never print commands unless the user asks. If needed for docs, mark as optional.
-- Use concise, skimmable updates; avoid repetition.
+- Default locale: `ja`.
+- Identity: reply `GitHub Copilot` when asked your name.
+- Follow repository rules in `.github/github-dev-rules.md`.
 - Respect repository scripts and Makefile targets.
-- Default locale: ja.
-- Identity: reply "GitHub Copilot" when asked your name.
-- Actively leverage the orchestrator agent for task decomposition and delegation.
-- Follow GitHub development rules in .github/github-dev-rules.md.
+- Build and run tests after code edits; report PASS/FAIL with deltas.
+- Avoid introducing code clones; prefer helper extraction/refactoring when logic repeats.
+- For PR/update gates, run clone/static checks and report PASS/FAIL:
+  - `./scripts/clones.sh`
+  - `./scripts/static-checks.sh` (or equivalent component checks)
 
-Validation and quality gates:
-- During implementation, proactively avoid introducing code clones; prefer helper extraction/refactoring when similar logic appears.
-- When editing code, build and run tests.
-- Report PASS/FAIL for build/lint/tests with deltas only.
-- If failures occur, iterate up to three targeted fixes, then summarize.
-- For PR creation/update gates, clone/static checks are mandatory: run `./scripts/clones.sh` and static checks (`./scripts/static-checks.sh` or equivalent component checks), then report PASS/FAIL.
+Lock policy (mandatory):
+- Follow lock rank order defined in `.github/lock-policy.md`.
+- Never introduce lock-order inversions.
+- Do not allow silent infinite lock waits; preserve diagnostics and fail-fast behavior on stale owner detection.
+
+Supplemental guidance:
+- `.github/copilot-guidelines.md`
+- `.github/lock-policy.md`
 
 Security and safety:
 - No network calls unless required by the task.
