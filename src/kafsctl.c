@@ -68,6 +68,13 @@ static void print_bytes(uint64_t bytes, kafs_unit_t unit)
     printf("%.1f%s", v, unit_suffix(unit));
 }
 
+static double pct_u64(uint64_t used, uint64_t total)
+{
+  if (total == 0)
+    return 0.0;
+  return ((double)used * 100.0) / (double)total;
+}
+
 static void usage(const char *prog)
 {
   fprintf(stderr,
@@ -1053,6 +1060,23 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
       (st.copy_share_attempt_blocks > 0)
           ? (double)st.copy_share_done_blocks / (double)st.copy_share_attempt_blocks
           : 0.0;
+    uint64_t fs_blocks_used =
+      (st.fs_blocks_total >= st.fs_blocks_free) ? (st.fs_blocks_total - st.fs_blocks_free) : 0;
+    uint64_t fs_inodes_used =
+      (st.fs_inodes_total >= st.fs_inodes_free) ? (st.fs_inodes_total - st.fs_inodes_free) : 0;
+
+    double fs_blocks_used_pct = pct_u64(fs_blocks_used, st.fs_blocks_total);
+    double fs_inodes_used_pct = pct_u64(fs_inodes_used, st.fs_inodes_total);
+    double hrl_entries_used_pct = pct_u64(st.hrl_entries_used, st.hrl_entries_total);
+
+    uint64_t hrl_or_legacy_total = st.hrl_put_calls + st.hrl_put_fallback_legacy;
+    double hrl_path_rate = pct_u64(st.hrl_put_calls, hrl_or_legacy_total);
+    double legacy_path_rate = pct_u64(st.hrl_put_fallback_legacy, hrl_or_legacy_total);
+    double direct_to_hrl_ratio = (st.hrl_put_calls > 0)
+                     ? (double)st.hrl_put_fallback_legacy / (double)st.hrl_put_calls
+                     : 0.0;
+    double hrl_hit_rate_pct = pct_u64(st.hrl_put_hits, st.hrl_put_calls);
+    double hrl_miss_rate_pct = pct_u64(st.hrl_put_misses, st.hrl_put_calls);
 
   if (json)
   {
@@ -1169,6 +1193,26 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
   }
 
   printf("kafs fsstat v%" PRIu32 "\n", st.version);
+    printf("  summary.capacity:\n");
+    printf("    fs_blocks: used=");
+    print_bytes(fs_blocks_used * (uint64_t)st.blksize, unit);
+    printf(" / total=");
+    print_bytes(st.fs_blocks_total * (uint64_t)st.blksize, unit);
+    printf(" (%.2f%%)\n", fs_blocks_used_pct);
+    printf("    fs_inodes: used=%" PRIu64 " / total=%" PRIu64 " (%.2f%%)\n", fs_inodes_used,
+      st.fs_inodes_total, fs_inodes_used_pct);
+    printf("    hrl_entries: used=%" PRIu64 " / total=%" PRIu64 " (%.2f%%)\n", st.hrl_entries_used,
+      st.hrl_entries_total, hrl_entries_used_pct);
+
+    printf("  summary.ratios:\n");
+    printf("    dedup_ratio: %.3f (logical/unique)\n", dedup_ratio);
+    printf("    write_path: hrl=%.2f%% legacy_direct=%.2f%% (hrl_calls=%" PRIu64
+      " fallback_legacy=%" PRIu64 ")\n",
+      hrl_path_rate, legacy_path_rate, st.hrl_put_calls, st.hrl_put_fallback_legacy);
+    printf("    direct_to_hrl: %.6f (legacy_direct/hrl_calls)\n", direct_to_hrl_ratio);
+    printf("    hrl_hit_miss: hit=%.2f%% miss=%.2f%%\n", hrl_hit_rate_pct, hrl_miss_rate_pct);
+    printf("    copy_share_hit: %.2f%% (done/attempt)\n", copy_share_hit_rate * 100.0);
+
   printf("  blksize: ");
   print_bytes(st.blksize, unit);
   printf("\n");
