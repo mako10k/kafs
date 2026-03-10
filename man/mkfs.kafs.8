@@ -13,6 +13,8 @@ mkfs.kafs \- create a KAFS filesystem image
 .IR inodes ]
 .RB [ -J
 .IR journalsz ]
+.RB [ --hrl-entry-ratio
+.IR ratio ]
 .RB [ --trim-data-area ]
 .SH DESCRIPTION
 .B mkfs.kafs
@@ -35,6 +37,10 @@ Number of inodes (default: 65536).
 .TP
 .BR -J ", " --journal-size-bytes "=" bytes
 Journal region size (default: 1MiB, minimum 4KiB). K/M/G suffixes are accepted.
+.TP
+.BR --hrl-entry-ratio "=" ratio
+HRL entry count ratio against data block count.
+Default is 0.75. Valid range is greater than 0 and less than or equal to 1.0.
 .SS Space Reclaim Option
 .TP
 .B --trim-data-area

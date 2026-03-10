@@ -36,6 +36,8 @@ static void usage(const char *prog)
   fprintf(stderr, "    -i, --inodes <I>                  Inode count (default: 65536)\n");
   fprintf(stderr,
           "    -J, --journal-size-bytes <J>      Journal size (default: 1MiB, min: 4KiB)\n");
+    fprintf(stderr,
+      "    --hrl-entry-ratio <R>             HRL entries/data-block ratio (default: 0.75, range: (0,1])\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "  [Space Reclaim]\n");
   fprintf(stderr,
@@ -88,7 +90,8 @@ struct mkfs_layout
 };
 
 static void compute_layout(kafs_blkcnt_t blkcnt, kafs_blksize_t blksizemask, kafs_inocnt_t inocnt,
-                           size_t journal_bytes, struct mkfs_layout *out)
+                           size_t journal_bytes, double hrl_entry_ratio,
+                           struct mkfs_layout *out)
 {
   off_t mapsize = 0;
   mapsize += sizeof(kafs_ssuperblock_t);
@@ -121,7 +124,12 @@ static void compute_layout(kafs_blkcnt_t blkcnt, kafs_blksize_t blksizemask, kaf
   mapsize += (off_t)hrl_index_size;
   mapsize = (mapsize + 7) & ~7; // 64-bit align
 
-  uint32_t entry_cnt = (uint32_t)(blkcnt / 2);
+  uint64_t entry_cnt_u64 = (uint64_t)((double)blkcnt * hrl_entry_ratio);
+  if (entry_cnt_u64 == 0 && blkcnt > 0)
+    entry_cnt_u64 = 1;
+  if (entry_cnt_u64 > (uint64_t)blkcnt)
+    entry_cnt_u64 = (uint64_t)blkcnt;
+  uint32_t entry_cnt = (uint32_t)entry_cnt_u64;
   off_t hrl_entry_off = mapsize;
   mapsize += (off_t)entry_cnt * (off_t)sizeof(kafs_hrl_entry_t);
   mapsize = (mapsize + blksizemask) & ~blksizemask;
@@ -156,7 +164,8 @@ static void compute_layout(kafs_blkcnt_t blkcnt, kafs_blksize_t blksizemask, kaf
 
 static int compute_blkcnt_for_total(off_t total_bytes, kafs_logblksize_t log_blksize,
                                     kafs_blksize_t blksizemask, kafs_inocnt_t inocnt,
-                                    size_t journal_bytes, kafs_blkcnt_t *out_blkcnt,
+                                    size_t journal_bytes, double hrl_entry_ratio,
+                                    kafs_blkcnt_t *out_blkcnt,
                                     struct mkfs_layout *out_layout)
 {
   if (total_bytes <= 0 || !out_blkcnt)
@@ -169,7 +178,7 @@ static int compute_blkcnt_for_total(off_t total_bytes, kafs_logblksize_t log_blk
   struct mkfs_layout layout = {0};
   for (int i = 0; i < 16; ++i)
   {
-    compute_layout(blkcnt, blksizemask, inocnt, journal_bytes, &layout);
+    compute_layout(blkcnt, blksizemask, inocnt, journal_bytes, hrl_entry_ratio, &layout);
     if (total_bytes <= layout.mapsize)
       return -1;
     kafs_blkcnt_t next = (kafs_blkcnt_t)((total_bytes - layout.mapsize) >> log_blksize);
@@ -182,7 +191,7 @@ static int compute_blkcnt_for_total(off_t total_bytes, kafs_logblksize_t log_blk
 
   for (;;)
   {
-    compute_layout(blkcnt, blksizemask, inocnt, journal_bytes, &layout);
+    compute_layout(blkcnt, blksizemask, inocnt, journal_bytes, hrl_entry_ratio, &layout);
     off_t imgsize = layout.mapsize + ((off_t)blkcnt << log_blksize);
     if (imgsize <= total_bytes)
       break;
@@ -206,6 +215,7 @@ int main(int argc, char **argv)
   off_t total_bytes = 1024ll * 1024ll * 1024ll; // 1GiB
   kafs_inocnt_t inocnt = 65536;                 // number of inodes
   size_t journal_bytes = 1u << 20;              // 1MiB default journal region
+  double hrl_entry_ratio = 0.75;
   int size_arg_provided = 0;
   int trim_data_area = 0;
 
@@ -244,6 +254,17 @@ int main(int argc, char **argv)
       journal_bytes = (size_t)tmp;
       if (journal_bytes < 4096)
         journal_bytes = 4096; // minimum
+    }
+    else if (strcmp(argv[i], "--hrl-entry-ratio") == 0 && i + 1 < argc)
+    {
+      char *endp = NULL;
+      double v = strtod(argv[++i], &endp);
+      if (!endp || *endp != '\0' || v <= 0.0 || v > 1.0)
+      {
+        fprintf(stderr, "invalid hrl-entry-ratio (expected 0<R<=1): %s\n", argv[i]);
+        return 2;
+      }
+      hrl_entry_ratio = v;
     }
     else if (strcmp(argv[i], "--trim-data-area") == 0)
     {
@@ -324,7 +345,7 @@ int main(int argc, char **argv)
   struct mkfs_layout layout = {0};
   kafs_blkcnt_t blkcnt = 0;
   if (compute_blkcnt_for_total(total_bytes, log_blksize, blksizemask, inocnt, journal_bytes,
-                               &blkcnt, &layout) != 0)
+                               hrl_entry_ratio, &blkcnt, &layout) != 0)
   {
     fprintf(stderr, "invalid total size: %lld\n", (long long)total_bytes);
     close(ctx.c_fd);

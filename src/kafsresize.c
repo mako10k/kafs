@@ -31,6 +31,7 @@ static void usage(const char *prog)
           "  options for --migrate-create:\n"
           "    --journal-size-bytes N   journal size passed to mkfs.kafs\n"
           "    --blksize-log L          block-size log2 passed to mkfs.kafs\n"
+          "    --hrl-entry-ratio R      HRL entries/data-block ratio passed to mkfs.kafs\n"
           "    --src-mount PATH         print suggested rsync source mount\n"
           "    --dst-mount PATH         print suggested destination mount\n"
           "    --yes                    skip confirmation prompt\n"
@@ -302,8 +303,9 @@ static int cmd_grow(const char *image, uint64_t target_bytes)
 }
 
 static int cmd_migrate_create(const char *dst_image, uint64_t size_bytes, uint32_t inodes,
-                              uint64_t journal_bytes, int blksize_log, const char *src_mount,
-                              const char *dst_mount, int assume_yes, int force)
+                              uint64_t journal_bytes, int blksize_log, double hrl_entry_ratio,
+                              const char *src_mount, const char *dst_mount, int assume_yes,
+                              int force)
 {
   if (!dst_image || !*dst_image)
   {
@@ -365,13 +367,15 @@ static int cmd_migrate_create(const char *dst_image, uint64_t size_bytes, uint32
   char inode_buf[32];
   char jbuf[32];
   char lbuf[32];
+  char rbuf[32];
   snprintf(size_buf, sizeof(size_buf), "%" PRIu64, size_bytes);
   snprintf(inode_buf, sizeof(inode_buf), "%" PRIu32, inodes);
   snprintf(jbuf, sizeof(jbuf), "%" PRIu64, journal_bytes);
   snprintf(lbuf, sizeof(lbuf), "%d", blksize_log);
+  snprintf(rbuf, sizeof(rbuf), "%.6f", hrl_entry_ratio);
 
   const char *mkfs = resolve_mkfs_prog();
-  char *argv[16];
+  char *argv[20];
   int ai = 0;
   argv[ai++] = (char *)mkfs;
   argv[ai++] = (char *)dst_image;
@@ -388,6 +392,11 @@ static int cmd_migrate_create(const char *dst_image, uint64_t size_bytes, uint32
   {
     argv[ai++] = "--blksize-log";
     argv[ai++] = lbuf;
+  }
+  if (hrl_entry_ratio > 0.0)
+  {
+    argv[ai++] = "--hrl-entry-ratio";
+    argv[ai++] = rbuf;
   }
   argv[ai] = NULL;
 
@@ -406,6 +415,8 @@ static int cmd_migrate_create(const char *dst_image, uint64_t size_bytes, uint32
     printf("  journal_bytes: %" PRIu64 "\n", journal_bytes);
   if (blksize_log > 0)
     printf("  blksize_log: %d\n", blksize_log);
+  if (hrl_entry_ratio > 0.0)
+    printf("  hrl_entry_ratio: %.6f\n", hrl_entry_ratio);
 
   printf("\nnext steps (manual cutover):\n");
   if (dst_mount && *dst_mount)
@@ -440,6 +451,7 @@ int main(int argc, char **argv)
   uint64_t target_bytes = 0;
   uint64_t journal_bytes = 0;
   int blksize_log = 0;
+  double hrl_entry_ratio = 0.0;
   uint32_t inodes = 0;
   const char *image = NULL;
   const char *dst_image = NULL;
@@ -484,6 +496,18 @@ int main(int argc, char **argv)
         fprintf(stderr, "invalid blksize-log: %s\n", argv[i]);
         return 2;
       }
+      continue;
+    }
+    if (strcmp(argv[i], "--hrl-entry-ratio") == 0 && i + 1 < argc)
+    {
+      char *endp = NULL;
+      double v = strtod(argv[++i], &endp);
+      if (!endp || *endp != '\0' || v <= 0.0 || v > 1.0)
+      {
+        fprintf(stderr, "invalid hrl-entry-ratio (expected 0<R<=1): %s\n", argv[i]);
+        return 2;
+      }
+      hrl_entry_ratio = v;
       continue;
     }
     if (strcmp(argv[i], "--inodes") == 0 && i + 1 < argc)
@@ -554,7 +578,7 @@ int main(int argc, char **argv)
       return 2;
     }
     return cmd_migrate_create(dst_image, target_bytes, inodes, journal_bytes, blksize_log,
-                              src_mount, dst_mount, assume_yes, force);
+                  hrl_entry_ratio, src_mount, dst_mount, assume_yes, force);
   }
 
   usage(argv[0]);

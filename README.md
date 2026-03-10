@@ -58,6 +58,7 @@ Key options:
 - `-b, --blksize-log`: block size as log2 (default 12 = 4096 bytes)
 - `-i, --inodes`: inode count
 - `-J, --journal-size-bytes`: journal size (accepts K/M/G suffixes)
+- `--hrl-entry-ratio`: HRL entries/data-block ratio (default 0.75, range 0<R<=1)
 
 ### kafs
 
@@ -148,6 +149,10 @@ Grow-only resize for offline images:
 
 ```sh
 ./kafsresize --grow --size-bytes 2G /tmp/kafs.img
+
+# Create migration destination image with custom HRL ratio:
+./kafsresize --migrate-create --dst-image /tmp/kafs-new.img --inodes 524288 \
+	--size-bytes 128G --hrl-entry-ratio 0.75 --yes --force
 ```
 
 Current v0 constraint: growth is only supported within preallocated headroom
