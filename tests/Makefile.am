@@ -28,7 +28,7 @@ AM_TESTS_ENVIRONMENT = \
 check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured min_git_hooks fs_semantics \
 	clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility \
 	prune_indirect_single prune_indirect_double prune_indirect_triple truncate_prune reflink_clone \
-	stress_fs hotplug_rpc e2e_hotplug kafsresize journal_boundary
+	stress_fs hotplug_rpc e2e_hotplug kafsresize journal_boundary fallocate_lseek_block
 
 TESTS = $(check_PROGRAMS)
 
@@ -129,6 +129,11 @@ journal_boundary_SOURCES = tests_journal_boundary.c test_utils.c \
 	$(top_srcdir)/src/kafs_journal.c $(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
 journal_boundary_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 journal_boundary_LDADD = $(KAFS_LIBS)
+
+fallocate_lseek_block_SOURCES = tests_fallocate_lseek_block.c test_utils.c \
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+fallocate_lseek_block_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+fallocate_lseek_block_LDADD = $(KAFS_LIBS)
 
 # All tests are expected to pass
 XFAIL_TESTS =
