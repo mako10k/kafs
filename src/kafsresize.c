@@ -11,16 +11,71 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static void usage(const char *prog)
 {
   fprintf(stderr,
           "Usage: %s --grow --size-bytes N <image>\n"
+          "       %s --migrate-create --dst-image <image> --size-bytes N --inodes I [options]\n"
           "  notes:\n"
           "    - grow-only (no shrink)\n"
-          "    - v0 supports growth only within preallocated headroom (s_blkcnt < s_r_blkcnt)\n",
-          prog);
+          "    - v0 grow supports only preallocated headroom (s_blkcnt < s_r_blkcnt)\n"
+          "    - migrate-create builds a new image with target size/inodes via mkfs.kafs\n"
+          "  options for --migrate-create:\n"
+          "    --journal-size-bytes N   journal size passed to mkfs.kafs\n"
+          "    --blksize-log L          block-size log2 passed to mkfs.kafs\n"
+          "    --src-mount PATH         print suggested rsync source mount\n"
+          "    --dst-mount PATH         print suggested destination mount\n"
+          "    --yes                    skip confirmation prompt\n"
+          "    --force                  overwrite existing --dst-image\n",
+          prog, prog);
+}
+
+static int confirm_yes_stdin(void)
+{
+  fprintf(stderr,
+          "WARNING: this operation may overwrite destination image. Type 'YES' to continue: ");
+  fflush(stderr);
+  char buf[32];
+  if (!fgets(buf, sizeof(buf), stdin))
+    return 0;
+  buf[strcspn(buf, "\r\n")] = '\0';
+  return strcmp(buf, "YES") == 0;
+}
+
+static const char *resolve_mkfs_prog(void)
+{
+  if (access("./src/mkfs.kafs", X_OK) == 0)
+    return "./src/mkfs.kafs";
+  return "mkfs.kafs";
+}
+
+static int run_command(const char *prog, char *const argv[])
+{
+  pid_t pid = fork();
+  if (pid < 0)
+  {
+    perror("fork");
+    return 1;
+  }
+  if (pid == 0)
+  {
+    execvp(prog, argv);
+    perror("execvp");
+    _exit(127);
+  }
+
+  int status = 0;
+  if (waitpid(pid, &status, 0) < 0)
+  {
+    perror("waitpid");
+    return 1;
+  }
+  if (WIFEXITED(status))
+    return WEXITSTATUS(status);
+  return 1;
 }
 
 static void bitmap_clear_range(uint8_t *bm, uint32_t from_blo, uint32_t to_blo)
@@ -43,42 +98,8 @@ static int load_superblock_checked(int fd, kafs_ssuperblock_t *sb)
   return 0;
 }
 
-int main(int argc, char **argv)
+static int cmd_grow(const char *image, uint64_t target_bytes)
 {
-  int do_grow = 0;
-  uint64_t target_bytes = 0;
-  const char *image = NULL;
-
-  for (int i = 1; i < argc; ++i)
-  {
-    if (strcmp(argv[i], "--grow") == 0)
-    {
-      do_grow = 1;
-      continue;
-    }
-    if (strcmp(argv[i], "--size-bytes") == 0 && i + 1 < argc)
-    {
-      if (kafs_parse_size_bytes_u64(argv[++i], &target_bytes) != 0)
-      {
-        fprintf(stderr, "invalid size-bytes: %s\n", argv[i]);
-        return 2;
-      }
-      continue;
-    }
-    if (argv[i][0] == '-')
-    {
-      usage(argv[0]);
-      return 2;
-    }
-    image = argv[i];
-  }
-
-  if (!do_grow || target_bytes == 0 || !image)
-  {
-    usage(argv[0]);
-    return 2;
-  }
-
   int fd = open(image, O_RDWR);
   if (fd < 0)
   {
@@ -230,4 +251,228 @@ int main(int argc, char **argv)
 
   close(fd);
   return 0;
+}
+
+static int cmd_migrate_create(const char *dst_image, uint64_t size_bytes, uint32_t inodes,
+                              uint64_t journal_bytes, int blksize_log, const char *src_mount,
+                              const char *dst_mount, int assume_yes, int force)
+{
+  if (!assume_yes && !confirm_yes_stdin())
+  {
+    fprintf(stderr, "aborted\n");
+    return 2;
+  }
+
+  if (access(dst_image, F_OK) == 0)
+  {
+    if (!force)
+    {
+      fprintf(stderr, "destination image exists: %s (use --force to overwrite)\n", dst_image);
+      return 1;
+    }
+    if (unlink(dst_image) != 0)
+    {
+      perror("unlink(dst-image)");
+      return 1;
+    }
+  }
+
+  char size_buf[32];
+  char inode_buf[32];
+  char jbuf[32];
+  char lbuf[32];
+  snprintf(size_buf, sizeof(size_buf), "%" PRIu64, size_bytes);
+  snprintf(inode_buf, sizeof(inode_buf), "%" PRIu32, inodes);
+  snprintf(jbuf, sizeof(jbuf), "%" PRIu64, journal_bytes);
+  snprintf(lbuf, sizeof(lbuf), "%d", blksize_log);
+
+  const char *mkfs = resolve_mkfs_prog();
+  char *argv[16];
+  int ai = 0;
+  argv[ai++] = (char *)mkfs;
+  argv[ai++] = (char *)dst_image;
+  argv[ai++] = "--size-bytes";
+  argv[ai++] = size_buf;
+  argv[ai++] = "--inodes";
+  argv[ai++] = inode_buf;
+  if (journal_bytes > 0)
+  {
+    argv[ai++] = "--journal-size-bytes";
+    argv[ai++] = jbuf;
+  }
+  if (blksize_log > 0)
+  {
+    argv[ai++] = "--blksize-log";
+    argv[ai++] = lbuf;
+  }
+  argv[ai] = NULL;
+
+  int rc = run_command(mkfs, argv);
+  if (rc != 0)
+  {
+    fprintf(stderr, "mkfs.kafs failed with exit code %d\n", rc);
+    return 1;
+  }
+
+  printf("kafsresize: migrate-create completed\n");
+  printf("  dst_image: %s\n", dst_image);
+  printf("  size_bytes: %" PRIu64 "\n", size_bytes);
+  printf("  inodes: %" PRIu32 "\n", inodes);
+  if (journal_bytes > 0)
+    printf("  journal_bytes: %" PRIu64 "\n", journal_bytes);
+  if (blksize_log > 0)
+    printf("  blksize_log: %d\n", blksize_log);
+
+  printf("\nnext steps (manual cutover):\n");
+  if (dst_mount && *dst_mount)
+  {
+    printf("  1) sudo mkdir -p %s\n", dst_mount);
+    printf("  2) sudo kafs %s %s\n", dst_image, dst_mount);
+    if (src_mount && *src_mount)
+    {
+      printf("  3) sudo rsync -aHAX --numeric-ids --delete %s/ %s/\n", src_mount, dst_mount);
+      printf("  4) verify then switch mountpoint\n");
+    }
+    else
+    {
+      printf("  3) copy data from source mount to %s\n", dst_mount);
+      printf("  4) verify then switch mountpoint\n");
+    }
+  }
+  else
+  {
+    printf("  - mount destination image and copy data from source filesystem\n");
+  }
+
+  return 0;
+}
+
+int main(int argc, char **argv)
+{
+  int do_grow = 0;
+  int do_migrate_create = 0;
+  int assume_yes = 0;
+  int force = 0;
+  uint64_t target_bytes = 0;
+  uint64_t journal_bytes = 0;
+  int blksize_log = 0;
+  uint32_t inodes = 0;
+  const char *image = NULL;
+  const char *dst_image = NULL;
+  const char *src_mount = NULL;
+  const char *dst_mount = NULL;
+
+  for (int i = 1; i < argc; ++i)
+  {
+    if (strcmp(argv[i], "--grow") == 0)
+    {
+      do_grow = 1;
+      continue;
+    }
+    if (strcmp(argv[i], "--migrate-create") == 0)
+    {
+      do_migrate_create = 1;
+      continue;
+    }
+    if (strcmp(argv[i], "--size-bytes") == 0 && i + 1 < argc)
+    {
+      if (kafs_parse_size_bytes_u64(argv[++i], &target_bytes) != 0)
+      {
+        fprintf(stderr, "invalid size-bytes: %s\n", argv[i]);
+        return 2;
+      }
+      continue;
+    }
+    if (strcmp(argv[i], "--journal-size-bytes") == 0 && i + 1 < argc)
+    {
+      if (kafs_parse_size_bytes_u64(argv[++i], &journal_bytes) != 0)
+      {
+        fprintf(stderr, "invalid journal-size-bytes: %s\n", argv[i]);
+        return 2;
+      }
+      continue;
+    }
+    if (strcmp(argv[i], "--blksize-log") == 0 && i + 1 < argc)
+    {
+      blksize_log = atoi(argv[++i]);
+      if (blksize_log <= 0)
+      {
+        fprintf(stderr, "invalid blksize-log: %s\n", argv[i]);
+        return 2;
+      }
+      continue;
+    }
+    if (strcmp(argv[i], "--inodes") == 0 && i + 1 < argc)
+    {
+      unsigned long long v = strtoull(argv[++i], NULL, 0);
+      if (v == 0 || v > UINT32_MAX)
+      {
+        fprintf(stderr, "invalid inodes: %s\n", argv[i]);
+        return 2;
+      }
+      inodes = (uint32_t)v;
+      continue;
+    }
+    if (strcmp(argv[i], "--dst-image") == 0 && i + 1 < argc)
+    {
+      dst_image = argv[++i];
+      continue;
+    }
+    if (strcmp(argv[i], "--src-mount") == 0 && i + 1 < argc)
+    {
+      src_mount = argv[++i];
+      continue;
+    }
+    if (strcmp(argv[i], "--dst-mount") == 0 && i + 1 < argc)
+    {
+      dst_mount = argv[++i];
+      continue;
+    }
+    if (strcmp(argv[i], "--yes") == 0)
+    {
+      assume_yes = 1;
+      continue;
+    }
+    if (strcmp(argv[i], "--force") == 0)
+    {
+      force = 1;
+      continue;
+    }
+    if (argv[i][0] == '-')
+    {
+      usage(argv[0]);
+      return 2;
+    }
+    image = argv[i];
+  }
+
+  if (do_grow && do_migrate_create)
+  {
+    fprintf(stderr, "--grow and --migrate-create are mutually exclusive\n");
+    return 2;
+  }
+
+  if (do_grow)
+  {
+    if (target_bytes == 0 || !image)
+    {
+      usage(argv[0]);
+      return 2;
+    }
+    return cmd_grow(image, target_bytes);
+  }
+
+  if (do_migrate_create)
+  {
+    if (target_bytes == 0 || inodes == 0 || !dst_image)
+    {
+      usage(argv[0]);
+      return 2;
+    }
+    return cmd_migrate_create(dst_image, target_bytes, inodes, journal_bytes, blksize_log,
+                              src_mount, dst_mount, assume_yes, force);
+  }
+
+  usage(argv[0]);
+  return 2;
 }

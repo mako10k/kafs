@@ -8,9 +8,24 @@ kafsresize \- grow offline KAFS image logical block range (grow-only)
 .B --size-bytes
 .I N
 .I image
+.br
+.B kafsresize
+.B --migrate-create
+.B --dst-image
+.I image
+.B --size-bytes
+.I N
+.B --inodes
+.I I
+.RI [ options ]
 .SH DESCRIPTION
 .B kafsresize
 performs grow-only resize for an offline image.
+
+It also supports creating a migration target image with new geometry
+(size/inode count) via
+.B --migrate-create
+for cutover workflows.
 
 Current v0 implementation is conservative and supports growth only within
 preallocated headroom:
@@ -25,15 +40,50 @@ It updates block bitmap bits for the newly exposed range and increments `s_blkcn
 .B --grow
 Enable grow operation (shrink is not supported).
 .TP
+.B --migrate-create
+Create a new destination image for migration using
+.BR mkfs.kafs (8)
+with explicit size and inode count.
+.TP
 .B --size-bytes N
 Target logical size in bytes (supports `K/M/G` suffixes).
+.TP
+.B --dst-image image
+Destination image path used by
+.BR --migrate-create .
+.TP
+.B --inodes I
+Destination inode count for
+.BR --migrate-create .
+.TP
+.B --journal-size-bytes N
+Optional journal size forwarded to
+.BR mkfs.kafs .
+.TP
+.B --blksize-log L
+Optional log2 block size forwarded to
+.BR mkfs.kafs .
+.TP
+.B --src-mount PATH
+Optional source mount path; printed in suggested rsync command.
+.TP
+.B --dst-mount PATH
+Optional destination mount path; printed in suggested mount/rsync commands.
+.TP
+.B --yes
+Skip confirmation prompt for
+.BR --migrate-create .
+.TP
+.B --force
+Overwrite existing destination image for
+.BR --migrate-create .
 .SH EXIT STATUS
 .TP
 .B 0
 Resize succeeded.
 .TP
 .B 1
-I/O, bounds, or unsupported-headroom error.
+I/O, bounds, unsupported-headroom, or migration-create execution error.
 .TP
 .B 2
 Usage error.
