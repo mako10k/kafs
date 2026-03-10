@@ -12,6 +12,12 @@ Mandatory rules only.
   - `./scripts/clones.sh`
   - `./scripts/static-checks.sh` (or equivalent component checks)
 
+Project direction (mandatory):
+- Performance optimization baseline: prefer enabling LTO (`./configure --enable-lto`) over removing `static inline` hints wholesale.
+- Filesystem geometry changes (size/inode count): prefer offline rebuild/migration workflow (`kafsresize --migrate-create`) over in-place metadata relocation.
+- Treat in-place inode-table expansion as out-of-scope unless user explicitly requests high-risk migration logic.
+- For flaky long-running checks, use timeout-controlled script paths and report which step timed out/failed instead of leaving checks hanging.
+
 Lock policy (mandatory):
 - Follow lock rank order defined in `.github/lock-policy.md`.
 - Never introduce lock-order inversions.
