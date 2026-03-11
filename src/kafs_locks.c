@@ -11,6 +11,12 @@
 #endif
 #include <time.h>
 
+#if defined(__GNUC__) || defined(__clang__)
+#define KAFS_NOINLINE __attribute__((noinline))
+#else
+#define KAFS_NOINLINE
+#endif
+
 #if KAFS_HAS_PTHREAD
 #include <pthread.h>
 
@@ -49,7 +55,7 @@ static long kafs_lock_tid(void);
 static void kafs_lock_dump_backtrace(void);
 static void kafs_lock_dump_rank_stack(void);
 
-static inline void kafs_lock_rank_enter(kafs_lock_rank_t rank, const char *name)
+static KAFS_NOINLINE void kafs_lock_rank_enter(kafs_lock_rank_t rank, const char *name)
 {
   if (g_lock_rank_depth > 0)
   {
@@ -72,7 +78,7 @@ static inline void kafs_lock_rank_enter(kafs_lock_rank_t rank, const char *name)
   g_lock_rank_stack[g_lock_rank_depth++] = (int)rank;
 }
 
-static inline void kafs_lock_rank_leave(kafs_lock_rank_t rank, const char *name)
+static KAFS_NOINLINE void kafs_lock_rank_leave(kafs_lock_rank_t rank, const char *name)
 {
   if (g_lock_rank_depth <= 0)
   {
@@ -261,8 +267,9 @@ static inline uint64_t kafs_now_ns(void)
   return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
-static inline void kafs_mutex_lock_stat(pthread_mutex_t *m, const char *name, kafs_lock_rank_t rank,
-                                        uint64_t *acq, uint64_t *contended, uint64_t *wait_ns)
+static KAFS_NOINLINE void kafs_mutex_lock_stat(pthread_mutex_t *m, const char *name,
+                                               kafs_lock_rank_t rank, uint64_t *acq,
+                                               uint64_t *contended, uint64_t *wait_ns)
 {
   __atomic_add_fetch(acq, 1u, __ATOMIC_RELAXED);
   int tr = pthread_mutex_trylock(m);
@@ -344,8 +351,8 @@ static inline void kafs_mutex_lock_stat(pthread_mutex_t *m, const char *name, ka
   kafs_lock_panic("trylock", name, tr);
 }
 
-static inline void kafs_mutex_unlock_checked(pthread_mutex_t *m, const char *name,
-                                             kafs_lock_rank_t rank)
+static KAFS_NOINLINE void kafs_mutex_unlock_checked(pthread_mutex_t *m, const char *name,
+                                                    kafs_lock_rank_t rank)
 {
   kafs_lock_rank_leave(rank, name);
   kafs_lock_cancel_leave();
