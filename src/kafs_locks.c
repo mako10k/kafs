@@ -1,5 +1,6 @@
 #include "kafs_locks.h"
 #include <errno.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -46,6 +47,7 @@ static __thread int g_lock_cancel_oldstate = PTHREAD_CANCEL_ENABLE;
 
 static long kafs_lock_tid(void);
 static void kafs_lock_dump_backtrace(void);
+static void kafs_lock_dump_rank_stack(void);
 
 static inline void kafs_lock_rank_enter(kafs_lock_rank_t rank, const char *name)
 {
@@ -57,6 +59,7 @@ static inline void kafs_lock_rank_enter(kafs_lock_rank_t rank, const char *name)
       kafs_log(KAFS_LOG_ERR,
                "lock-order-violation: acquire=%s rank=%d while-holding-rank=%d tid=%ld\n",
                name ? name : "(null)", (int)rank, cur, kafs_lock_tid());
+      kafs_lock_dump_rank_stack();
       kafs_lock_dump_backtrace();
       abort();
     }
@@ -75,6 +78,7 @@ static inline void kafs_lock_rank_leave(kafs_lock_rank_t rank, const char *name)
   {
     kafs_log(KAFS_LOG_ERR, "lock-rank-stack-underflow: release=%s tid=%ld\n",
              name ? name : "(null)", kafs_lock_tid());
+    kafs_lock_dump_rank_stack();
     abort();
   }
   int top = g_lock_rank_stack[g_lock_rank_depth - 1];
@@ -82,6 +86,7 @@ static inline void kafs_lock_rank_leave(kafs_lock_rank_t rank, const char *name)
   {
     kafs_log(KAFS_LOG_ERR, "lock-rank-mismatch: release=%s rank=%d top=%d tid=%ld\n",
              name ? name : "(null)", (int)rank, top, kafs_lock_tid());
+    kafs_lock_dump_rank_stack();
     kafs_lock_dump_backtrace();
     abort();
   }
@@ -163,10 +168,18 @@ static void kafs_lock_dump_backtrace(void)
 #endif
 }
 
+static void kafs_lock_dump_rank_stack(void)
+{
+  kafs_log(KAFS_LOG_ERR, "lock-rank-stack: depth=%d tid=%ld\n", g_lock_rank_depth, kafs_lock_tid());
+  for (int i = 0; i < g_lock_rank_depth; ++i)
+    kafs_log(KAFS_LOG_ERR, "lock-rank-stack[%d]=%d\n", i, g_lock_rank_stack[i]);
+}
+
 static void kafs_lock_panic(const char *op, const char *name, int rc)
 {
   kafs_log(KAFS_LOG_ERR, "lock-%s failed: name=%s tid=%ld rc=%d (%s)\n", op, name ? name : "(null)",
            kafs_lock_tid(), rc, strerror(rc));
+  kafs_lock_dump_rank_stack();
   kafs_lock_dump_backtrace();
   abort();
 }
@@ -307,12 +320,17 @@ static inline void kafs_mutex_lock_stat(pthread_mutex_t *m, const char *name, ka
       if (rc == ETIMEDOUT)
       {
         long owner = kafs_mutex_owner_tid(m);
+        uint64_t waited_ns = kafs_now_ns() - t0;
+        kafs_log(KAFS_LOG_WARNING,
+                 "lock-wait-timeout: name=%s owner=%ld waiter=%ld waited_ms=%" PRIu64 "\n",
+                 name ? name : "(null)", owner, kafs_lock_tid(), waited_ns / 1000000ull);
         if (owner > 0 && !kafs_tid_alive(owner))
         {
           kafs_log(
               KAFS_LOG_ERR,
               "lock-stale-owner: name=%s owner=%ld waiter=%ld (hard-fail to avoid infinite hang)\n",
               name ? name : "(null)", owner, kafs_lock_tid());
+          kafs_lock_dump_rank_stack();
           kafs_lock_dump_backtrace();
           abort();
         }
