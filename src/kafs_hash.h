@@ -45,8 +45,7 @@ int kafs_hrl_dec_ref_by_blo(kafs_context_t *ctx, kafs_blkcnt_t blo);
 // 内容一致する既存 HRL ブロック（exclude_blo 以外）を探索し、見つかれば refcnt を増やす。
 // 戻り値: 0=found, -ENOENT=not found
 int kafs_hrl_match_inc_by_block_excluding_blo(kafs_context_t *ctx, const void *block_data,
-                                              kafs_blkcnt_t exclude_blo,
-                                              kafs_blkcnt_t *out_blo);
+                                              kafs_blkcnt_t exclude_blo, kafs_blkcnt_t *out_blo);
 
 // HRL 内の refcnt==1 エントリを 1 件だけ index から外し、DIRECT 管理へ押し出す。
 // 物理ブロックは解放しない。戻り値: 0=evicted, -ENOENT=候補なし

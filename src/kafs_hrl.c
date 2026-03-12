@@ -530,8 +530,7 @@ int kafs_hrl_dec_ref_by_blo(kafs_context_t *ctx, kafs_blkcnt_t blo)
 }
 
 int kafs_hrl_match_inc_by_block_excluding_blo(kafs_context_t *ctx, const void *block_data,
-                                              kafs_blkcnt_t exclude_blo,
-                                              kafs_blkcnt_t *out_blo)
+                                              kafs_blkcnt_t exclude_blo, kafs_blkcnt_t *out_blo)
 {
   if (!ctx || !block_data || !out_blo)
     return -EINVAL;

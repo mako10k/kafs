@@ -36,8 +36,8 @@ static void usage(const char *prog)
   fprintf(stderr, "    -i, --inodes <I>                  Inode count (default: 65536)\n");
   fprintf(stderr,
           "    -J, --journal-size-bytes <J>      Journal size (default: 1MiB, min: 4KiB)\n");
-    fprintf(stderr,
-      "    --hrl-entry-ratio <R>             HRL entries/data-block ratio (default: 0.75, range: (0,1])\n");
+  fprintf(stderr, "    --hrl-entry-ratio <R>             HRL entries/data-block ratio (default: "
+                  "0.75, range: (0,1])\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "  [Space Reclaim]\n");
   fprintf(stderr,
@@ -90,8 +90,7 @@ struct mkfs_layout
 };
 
 static void compute_layout(kafs_blkcnt_t blkcnt, kafs_blksize_t blksizemask, kafs_inocnt_t inocnt,
-                           size_t journal_bytes, double hrl_entry_ratio,
-                           struct mkfs_layout *out)
+                           size_t journal_bytes, double hrl_entry_ratio, struct mkfs_layout *out)
 {
   off_t mapsize = 0;
   mapsize += sizeof(kafs_ssuperblock_t);
@@ -165,8 +164,7 @@ static void compute_layout(kafs_blkcnt_t blkcnt, kafs_blksize_t blksizemask, kaf
 static int compute_blkcnt_for_total(off_t total_bytes, kafs_logblksize_t log_blksize,
                                     kafs_blksize_t blksizemask, kafs_inocnt_t inocnt,
                                     size_t journal_bytes, double hrl_entry_ratio,
-                                    kafs_blkcnt_t *out_blkcnt,
-                                    struct mkfs_layout *out_layout)
+                                    kafs_blkcnt_t *out_blkcnt, struct mkfs_layout *out_layout)
 {
   if (total_bytes <= 0 || !out_blkcnt)
     return -1;

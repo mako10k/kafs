@@ -968,14 +968,12 @@ static void kafs_bg_recent_note(struct kafs_context *ctx, uint64_t fast, kafs_bl
 {
   if (!ctx || blo == KAFS_BLO_NONE)
     return;
-  uint32_t pos = ctx->c_bg_dedup_recent_pos %
-                 (uint32_t)(sizeof(ctx->c_bg_dedup_recent_fast) /
-                            sizeof(ctx->c_bg_dedup_recent_fast[0]));
+  uint32_t pos = ctx->c_bg_dedup_recent_pos % (uint32_t)(sizeof(ctx->c_bg_dedup_recent_fast) /
+                                                         sizeof(ctx->c_bg_dedup_recent_fast[0]));
   ctx->c_bg_dedup_recent_fast[pos] = fast;
   ctx->c_bg_dedup_recent_blo[pos] = (uint32_t)blo;
-  ctx->c_bg_dedup_recent_pos = (pos + 1u) %
-                               (uint32_t)(sizeof(ctx->c_bg_dedup_recent_fast) /
-                                          sizeof(ctx->c_bg_dedup_recent_fast[0]));
+  ctx->c_bg_dedup_recent_pos = (pos + 1u) % (uint32_t)(sizeof(ctx->c_bg_dedup_recent_fast) /
+                                                       sizeof(ctx->c_bg_dedup_recent_fast[0]));
 }
 
 static kafs_blkcnt_t kafs_bg_recent_find_dup_blo(struct kafs_context *ctx, uint64_t fast,
@@ -1065,7 +1063,8 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
       uint32_t next_iblk = (iblk + 1u < direct_cnt) ? (iblk + 1u) : 0u;
 
       kafs_blkcnt_t raw = KAFS_BLO_NONE;
-      if (kafs_ino_ibrk_run(ctx, inoent, (kafs_iblkcnt_t)iblk, &raw, KAFS_IBLKREF_FUNC_GET_RAW) != 0)
+      if (kafs_ino_ibrk_run(ctx, inoent, (kafs_iblkcnt_t)iblk, &raw, KAFS_IBLKREF_FUNC_GET_RAW) !=
+          0)
         continue;
       if (kafs_ref_is_pending(raw))
         continue;
@@ -1083,7 +1082,8 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
       if (mrc == 0 && match_blo != KAFS_BLO_NONE)
       {
         kafs_blkcnt_t set_blo = match_blo;
-        if (kafs_ino_ibrk_run(ctx, inoent, (kafs_iblkcnt_t)iblk, &set_blo, KAFS_IBLKREF_FUNC_SET) == 0)
+        if (kafs_ino_ibrk_run(ctx, inoent, (kafs_iblkcnt_t)iblk, &set_blo, KAFS_IBLKREF_FUNC_SET) ==
+            0)
         {
           kafs_inode_unlock(ctx, ino);
           (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
@@ -1115,7 +1115,8 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
       if (prc == 0 && final_blo != KAFS_BLO_NONE && final_blo != old_blo)
       {
         kafs_blkcnt_t set_blo = final_blo;
-        if (kafs_ino_ibrk_run(ctx, inoent, (kafs_iblkcnt_t)iblk, &set_blo, KAFS_IBLKREF_FUNC_SET) == 0)
+        if (kafs_ino_ibrk_run(ctx, inoent, (kafs_iblkcnt_t)iblk, &set_blo, KAFS_IBLKREF_FUNC_SET) ==
+            0)
         {
           kafs_inode_unlock(ctx, ino);
           (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
@@ -1179,8 +1180,8 @@ static void *kafs_pending_worker_main(void *arg)
         wake.tv_nsec -= 1000000000l;
       }
 
-      int wrc = pthread_cond_timedwait(&ctx->c_pending_worker_cond, &ctx->c_pending_worker_lock,
-                                       &wake);
+      int wrc =
+          pthread_cond_timedwait(&ctx->c_pending_worker_cond, &ctx->c_pending_worker_lock, &wake);
       if (wrc == ETIMEDOUT)
         break;
     }

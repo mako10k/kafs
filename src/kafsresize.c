@@ -578,7 +578,7 @@ int main(int argc, char **argv)
       return 2;
     }
     return cmd_migrate_create(dst_image, target_bytes, inodes, journal_bytes, blksize_log,
-                  hrl_entry_ratio, src_mount, dst_mount, assume_yes, force);
+                              hrl_entry_ratio, src_mount, dst_mount, assume_yes, force);
   }
 
   usage(argv[0]);
