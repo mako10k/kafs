@@ -118,11 +118,14 @@ static inline void kafs_stat_record_pwrite_iblk_write_latency(kafs_context_t *ct
 #define KAFS_PENDING_REF_FLAG 0x80000000u
 #define KAFS_PENDING_REF_MASK 0x7fffffffu
 #define KAFS_PENDINGLOG_CAPACITY_FLOOR 2u
-#define KAFS_BG_DEDUP_INTERVAL_MS_DEFAULT 250u
+#define KAFS_BG_DEDUP_INTERVAL_MS_DEFAULT 2000u
 #define KAFS_BG_DEDUP_INTERVAL_MS_MIN 1u
 #define KAFS_BG_DEDUP_INTERVAL_MS_MAX 60000u
-#define KAFS_BG_DEDUP_IDLE_BURST_STEPS 64u
-#define KAFS_BG_DEDUP_PENDING_STRIDE 32u
+#define KAFS_BG_DEDUP_QUIET_INTERVAL_MS_DEFAULT 5000u
+#define KAFS_BG_DEDUP_PRESSURE_INTERVAL_MS_DEFAULT 100u
+#define KAFS_BG_DEDUP_START_USED_PCT_DEFAULT 85u
+#define KAFS_BG_DEDUP_PRESSURE_USED_PCT_DEFAULT 95u
+#define KAFS_BG_DEDUP_PRESSURE_BURST_STEPS 16u
 #define KAFS_BG_DEDUP_COOLDOWN_MS 2000u
 
 static uint32_t g_suppress_fuse_max_threads_warn = 1u;
@@ -185,6 +188,8 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
 static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf);
 static int kafs_pending_worker_start(struct kafs_context *ctx);
 static void kafs_pending_worker_stop(struct kafs_context *ctx);
+static int kafs_bg_dedup_worker_start(struct kafs_context *ctx);
+static void kafs_bg_dedup_worker_stop(struct kafs_context *ctx);
 
 static int kafs_pendinglog_region(struct kafs_context *ctx, uint64_t *off, uint64_t *size)
 {
@@ -925,13 +930,10 @@ static int kafs_pending_worker_prio_mode_parse(const char *s, uint32_t *mode)
   return -EINVAL;
 }
 
-static int kafs_pending_worker_apply_priority_self(kafs_context_t *ctx)
+static int kafs_apply_worker_priority_self(uint32_t prio_mode, int nice_value)
 {
-  if (!ctx)
-    return -EINVAL;
-
   int err = 0;
-  if (ctx->c_pending_worker_prio_mode == KAFS_PENDING_WORKER_PRIO_IDLE)
+  if (prio_mode == KAFS_PENDING_WORKER_PRIO_IDLE)
   {
 #ifdef SCHED_IDLE
     struct sched_param sp;
@@ -952,27 +954,48 @@ static int kafs_pending_worker_apply_priority_self(kafs_context_t *ctx)
       err = -prc;
   }
 
-  if (ctx->c_pending_worker_nice < 0 || ctx->c_pending_worker_nice > 19)
+  if (nice_value < 0 || nice_value > 19)
   {
     if (err == 0)
       err = -ERANGE;
+    return err;
   }
-  else
-  {
+
 #ifdef __linux__
-    long tid = syscall(SYS_gettid);
-    if (tid <= 0)
-      tid = 0;
-    if (setpriority(PRIO_PROCESS, (id_t)tid, ctx->c_pending_worker_nice) != 0 && err == 0)
-      err = -errno;
+  long tid = syscall(SYS_gettid);
+  if (tid <= 0)
+    tid = 0;
+  if (setpriority(PRIO_PROCESS, (id_t)tid, nice_value) != 0 && err == 0)
+    err = -errno;
 #else
-    if (setpriority(PRIO_PROCESS, 0, ctx->c_pending_worker_nice) != 0 && err == 0)
-      err = -errno;
+  if (setpriority(PRIO_PROCESS, 0, nice_value) != 0 && err == 0)
+    err = -errno;
 #endif
-  }
+  return err;
+}
+
+static int kafs_pending_worker_apply_priority_self(kafs_context_t *ctx)
+{
+  if (!ctx)
+    return -EINVAL;
+
+  int err =
+      kafs_apply_worker_priority_self(ctx->c_pending_worker_prio_mode, ctx->c_pending_worker_nice);
 
   ctx->c_pending_worker_prio_apply_error = err;
   ctx->c_pending_worker_prio_dirty = 0;
+  return err;
+}
+
+static int kafs_bg_dedup_worker_apply_priority_self(kafs_context_t *ctx)
+{
+  if (!ctx)
+    return -EINVAL;
+
+  int err = kafs_apply_worker_priority_self(ctx->c_bg_dedup_worker_prio_mode,
+                                            ctx->c_bg_dedup_worker_nice);
+  ctx->c_bg_dedup_worker_prio_apply_error = err;
+  ctx->c_bg_dedup_worker_prio_dirty = 0;
   return err;
 }
 
@@ -1132,17 +1155,17 @@ static int kafs_bg_advance_cursor(struct kafs_context *ctx, kafs_inocnt_t inocnt
   return 0;
 }
 
-static void kafs_bg_enter_cooldown(struct kafs_context *ctx)
+static void kafs_bg_enter_cooldown(struct kafs_context *ctx, int pressure_mode)
 {
   if (!ctx)
     return;
-  ctx->c_bg_dedup_cooldown_until_ns =
-      kafs_now_ns() + (uint64_t)KAFS_BG_DEDUP_COOLDOWN_MS * 1000000ull;
+  uint32_t cooldown_ms = pressure_mode ? 100u : KAFS_BG_DEDUP_COOLDOWN_MS;
+  ctx->c_bg_dedup_cooldown_until_ns = kafs_now_ns() + (uint64_t)cooldown_ms * 1000000ull;
   kafs_bg_index_clear(ctx);
   __atomic_add_fetch(&ctx->c_stat_bg_dedup_cooldowns, 1u, __ATOMIC_RELAXED);
 }
 
-static void kafs_bg_dedup_step(struct kafs_context *ctx)
+static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
 {
   if (!ctx || !ctx->c_superblock)
     return;
@@ -1154,7 +1177,7 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
     return;
 
   uint64_t now_ns = kafs_now_ns();
-  if (ctx->c_bg_dedup_cooldown_until_ns > now_ns)
+  if (!pressure_mode && ctx->c_bg_dedup_cooldown_until_ns > now_ns)
     return;
 
   __atomic_add_fetch(&ctx->c_stat_bg_dedup_steps, 1u, __ATOMIC_RELAXED);
@@ -1173,7 +1196,7 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
       if (scanned == 0)
       {
         if (kafs_bg_advance_cursor(ctx, inocnt, 0))
-          kafs_bg_enter_cooldown(ctx);
+          kafs_bg_enter_cooldown(ctx, pressure_mode);
       }
       continue;
     }
@@ -1185,7 +1208,7 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
       if (scanned == 0)
       {
         if (kafs_bg_advance_cursor(ctx, inocnt, 0))
-          kafs_bg_enter_cooldown(ctx);
+          kafs_bg_enter_cooldown(ctx, pressure_mode);
       }
       continue;
     }
@@ -1198,7 +1221,7 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
       if (scanned == 0)
       {
         if (kafs_bg_advance_cursor(ctx, inocnt, 0))
-          kafs_bg_enter_cooldown(ctx);
+          kafs_bg_enter_cooldown(ctx, pressure_mode);
       }
       continue;
     }
@@ -1225,7 +1248,7 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
       __atomic_add_fetch(&ctx->c_stat_bg_dedup_scanned_blocks, 1u, __ATOMIC_RELAXED);
 
       if (kafs_bg_advance_cursor(ctx, inocnt, next_iblk))
-        kafs_bg_enter_cooldown(ctx);
+        kafs_bg_enter_cooldown(ctx, pressure_mode);
 
       kafs_blkcnt_t match_blo = KAFS_BLO_NONE;
       int mrc = kafs_hrl_match_inc_by_block_excluding_blo(ctx, buf, old_blo, &match_blo);
@@ -1296,26 +1319,9 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
     if (scanned == 0)
     {
       if (kafs_bg_advance_cursor(ctx, inocnt, 0))
-        kafs_bg_enter_cooldown(ctx);
+        kafs_bg_enter_cooldown(ctx, pressure_mode);
     }
   }
-}
-
-static inline void kafs_pending_worker_bg_interleave_step(kafs_context_t *ctx,
-                                                          uint32_t *pending_counter)
-{
-  if (!ctx || !pending_counter)
-    return;
-  if (!ctx->c_bg_dedup_enabled || ctx->c_bg_dedup_interval_ms == 0)
-    return;
-
-  uint32_t next = *pending_counter + 1u;
-  *pending_counter = next;
-  if (next < KAFS_BG_DEDUP_PENDING_STRIDE)
-    return;
-
-  *pending_counter = 0;
-  kafs_bg_dedup_step(ctx);
 }
 
 static void *kafs_pending_worker_main(void *arg)
@@ -1329,7 +1335,6 @@ static void *kafs_pending_worker_main(void *arg)
   __atomic_add_fetch(&ctx->c_stat_pending_worker_main_entries, 1u, __ATOMIC_RELAXED);
 
   (void)kafs_pending_worker_apply_priority_self(ctx);
-  uint32_t pending_bg_stride_counter = 0;
 
   for (;;)
   {
@@ -1359,27 +1364,7 @@ static void *kafs_pending_worker_main(void *arg)
           break;
         }
       }
-
-      if (!ctx->c_bg_dedup_enabled || ctx->c_bg_dedup_interval_ms == 0)
-      {
-        pthread_cond_wait(&ctx->c_pending_worker_cond, &ctx->c_pending_worker_lock);
-        continue;
-      }
-
-      struct timespec wake;
-      clock_gettime(CLOCK_REALTIME, &wake);
-      wake.tv_nsec += (long)(ctx->c_bg_dedup_interval_ms % 1000u) * 1000000l;
-      wake.tv_sec += (time_t)(ctx->c_bg_dedup_interval_ms / 1000u);
-      if (wake.tv_nsec >= 1000000000l)
-      {
-        wake.tv_sec += 1;
-        wake.tv_nsec -= 1000000000l;
-      }
-
-      int wrc =
-          pthread_cond_timedwait(&ctx->c_pending_worker_cond, &ctx->c_pending_worker_lock, &wake);
-      if (wrc == ETIMEDOUT)
-        break;
+      pthread_cond_wait(&ctx->c_pending_worker_cond, &ctx->c_pending_worker_lock);
     }
     pthread_mutex_unlock(&ctx->c_pending_worker_lock);
 
@@ -1387,51 +1372,7 @@ static void *kafs_pending_worker_main(void *arg)
       (void)kafs_pending_worker_apply_priority_self(ctx);
 
     if (!has_work)
-    {
-      if (ctx->c_bg_dedup_enabled)
-      {
-        // Idle windowでは64ステップ単位で進め、各チャンクごとに
-        // pendingキューを再確認して、空なら連続実行する。
-        for (;;)
-        {
-          for (uint32_t i = 0; i < KAFS_BG_DEDUP_IDLE_BURST_STEPS; ++i)
-            kafs_bg_dedup_step(ctx);
-
-          int keep_scanning = 0;
-          pthread_mutex_lock(&ctx->c_pending_worker_lock);
-          kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
-          if (ctx->c_pending_worker_stop)
-          {
-            pthread_mutex_unlock(&ctx->c_pending_worker_lock);
-            __atomic_store_n(&ctx->c_stat_pending_worker_lwp_tid, 0, __ATOMIC_RELAXED);
-            __atomic_add_fetch(&ctx->c_stat_pending_worker_main_exits, 1u, __ATOMIC_RELAXED);
-            return NULL;
-          }
-
-          if (hdr && hdr->capacity > 0 && hdr->head != hdr->tail)
-          {
-            idx = hdr->head;
-            kafs_pendinglog_entry_t *slot = kafs_pendinglog_entry_ptr(ctx, idx);
-            if (slot)
-            {
-              ent = *slot;
-              has_work = 1;
-            }
-          }
-          else if (ctx->c_bg_dedup_enabled && ctx->c_bg_dedup_interval_ms > 0)
-          {
-            keep_scanning = 1;
-          }
-          pthread_mutex_unlock(&ctx->c_pending_worker_lock);
-
-          if (has_work || !keep_scanning)
-            break;
-        }
-      }
-
-      if (!has_work)
-        continue;
-    }
+      continue;
 
     if (ent.state == KAFS_PENDING_RESOLVED || ent.state == KAFS_PENDING_FAILED)
     {
@@ -1441,7 +1382,6 @@ static void *kafs_pending_worker_main(void *arg)
         hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
       kafs_pending_worker_adjust_priority_locked(ctx);
       pthread_mutex_unlock(&ctx->c_pending_worker_lock);
-      kafs_pending_worker_bg_interleave_step(ctx, &pending_bg_stride_counter);
       continue;
     }
 
@@ -1538,7 +1478,6 @@ static void *kafs_pending_worker_main(void *arg)
         kafs_pending_worker_adjust_priority_locked(ctx);
         pthread_cond_broadcast(&ctx->c_pending_worker_cond);
         pthread_mutex_unlock(&ctx->c_pending_worker_lock);
-        kafs_pending_worker_bg_interleave_step(ctx, &pending_bg_stride_counter);
         continue;
       }
     }
@@ -1595,8 +1534,6 @@ static void *kafs_pending_worker_main(void *arg)
       };
       nanosleep(&ts, NULL);
     }
-
-    kafs_pending_worker_bg_interleave_step(ctx, &pending_bg_stride_counter);
   }
 }
 
@@ -1663,6 +1600,183 @@ static void kafs_pending_worker_stop(struct kafs_context *ctx)
     pthread_cond_destroy(&ctx->c_pending_worker_cond);
     pthread_mutex_destroy(&ctx->c_pending_worker_lock);
     ctx->c_pending_worker_lock_init = 0;
+  }
+}
+
+static uint32_t kafs_bg_dedup_used_pct(kafs_context_t *ctx)
+{
+  if (!ctx || !ctx->c_superblock)
+    return 0;
+
+  uint64_t total = (uint64_t)kafs_sb_blkcnt_get(ctx->c_superblock);
+  if (total == 0)
+    return 0;
+
+  kafs_bitmap_lock(ctx);
+  uint64_t free_blocks = (uint64_t)kafs_sb_blkcnt_free_get(ctx->c_superblock);
+  kafs_bitmap_unlock(ctx);
+  if (free_blocks > total)
+    free_blocks = total;
+
+  uint64_t used = total - free_blocks;
+  if (used >= total)
+    return 100u;
+  return (uint32_t)((used * 100u) / total);
+}
+
+static void kafs_bg_dedup_worker_adjust_priority_locked(kafs_context_t *ctx, uint32_t used_pct)
+{
+  if (!ctx || !ctx->c_bg_dedup_worker_running)
+    return;
+
+  int pressure = 0;
+  if (ctx->c_bg_dedup_pressure_used_pct > 0 && used_pct >= ctx->c_bg_dedup_pressure_used_pct)
+    pressure = 1;
+
+  uint32_t target_mode = ctx->c_bg_dedup_worker_prio_base_mode;
+  int target_nice = ctx->c_bg_dedup_worker_nice_base;
+  if (pressure)
+  {
+    target_mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
+    target_nice = 0;
+  }
+
+  if (ctx->c_bg_dedup_worker_prio_mode != target_mode || ctx->c_bg_dedup_worker_nice != target_nice)
+  {
+    ctx->c_bg_dedup_worker_prio_mode = target_mode;
+    ctx->c_bg_dedup_worker_nice = target_nice;
+    ctx->c_bg_dedup_worker_prio_dirty = 1;
+  }
+  ctx->c_bg_dedup_worker_auto_boosted = pressure ? 1u : 0u;
+}
+
+static void *kafs_bg_dedup_worker_main(void *arg)
+{
+  kafs_context_t *ctx = (kafs_context_t *)arg;
+  if (!ctx)
+    return NULL;
+
+  (void)kafs_bg_dedup_worker_apply_priority_self(ctx);
+
+  for (;;)
+  {
+    uint32_t sleep_ms = ctx->c_bg_dedup_quiet_interval_ms;
+    int run_scan = 0;
+    int pressure_mode = 0;
+    int apply_prio = 0;
+
+    pthread_mutex_lock(&ctx->c_bg_dedup_worker_lock);
+    if (ctx->c_bg_dedup_worker_stop)
+    {
+      pthread_mutex_unlock(&ctx->c_bg_dedup_worker_lock);
+      return NULL;
+    }
+
+    if (ctx->c_bg_dedup_enabled && ctx->c_bg_dedup_interval_ms > 0)
+    {
+      uint32_t used_pct = kafs_bg_dedup_used_pct(ctx);
+      pressure_mode =
+          (ctx->c_bg_dedup_pressure_used_pct > 0 && used_pct >= ctx->c_bg_dedup_pressure_used_pct);
+      int over_start =
+          (ctx->c_bg_dedup_start_used_pct == 0 || used_pct >= ctx->c_bg_dedup_start_used_pct);
+
+      if (pressure_mode)
+      {
+        run_scan = 1;
+        sleep_ms = ctx->c_bg_dedup_pressure_interval_ms;
+      }
+      else if (over_start)
+      {
+        run_scan = 1;
+        sleep_ms = ctx->c_bg_dedup_interval_ms;
+      }
+
+      kafs_bg_dedup_worker_adjust_priority_locked(ctx, used_pct);
+    }
+
+    apply_prio = (ctx->c_bg_dedup_worker_prio_dirty != 0);
+    pthread_mutex_unlock(&ctx->c_bg_dedup_worker_lock);
+
+    if (apply_prio)
+      (void)kafs_bg_dedup_worker_apply_priority_self(ctx);
+
+    if (run_scan)
+    {
+      uint32_t steps = pressure_mode ? KAFS_BG_DEDUP_PRESSURE_BURST_STEPS : 1u;
+      for (uint32_t i = 0; i < steps; ++i)
+        kafs_bg_dedup_step(ctx, pressure_mode);
+    }
+
+    pthread_mutex_lock(&ctx->c_bg_dedup_worker_lock);
+    if (ctx->c_bg_dedup_worker_stop)
+    {
+      pthread_mutex_unlock(&ctx->c_bg_dedup_worker_lock);
+      return NULL;
+    }
+
+    struct timespec wake;
+    clock_gettime(CLOCK_REALTIME, &wake);
+    wake.tv_nsec += (long)(sleep_ms % 1000u) * 1000000l;
+    wake.tv_sec += (time_t)(sleep_ms / 1000u);
+    if (wake.tv_nsec >= 1000000000l)
+    {
+      wake.tv_sec += 1;
+      wake.tv_nsec -= 1000000000l;
+    }
+
+    (void)pthread_cond_timedwait(&ctx->c_bg_dedup_worker_cond, &ctx->c_bg_dedup_worker_lock, &wake);
+    pthread_mutex_unlock(&ctx->c_bg_dedup_worker_lock);
+  }
+}
+
+static int kafs_bg_dedup_worker_start(struct kafs_context *ctx)
+{
+  if (!ctx || !ctx->c_bg_dedup_enabled)
+    return 0;
+  if (ctx->c_bg_dedup_worker_running)
+    return 0;
+
+  if (!ctx->c_bg_dedup_worker_lock_init)
+  {
+    if (pthread_mutex_init(&ctx->c_bg_dedup_worker_lock, NULL) != 0)
+      return -EIO;
+    if (pthread_cond_init(&ctx->c_bg_dedup_worker_cond, NULL) != 0)
+    {
+      pthread_mutex_destroy(&ctx->c_bg_dedup_worker_lock);
+      return -EIO;
+    }
+    ctx->c_bg_dedup_worker_lock_init = 1;
+  }
+
+  ctx->c_bg_dedup_worker_stop = 0;
+  int prc = pthread_create(&ctx->c_bg_dedup_worker_tid, NULL, kafs_bg_dedup_worker_main, ctx);
+  if (prc != 0)
+    return -prc;
+
+  ctx->c_bg_dedup_worker_running = 1;
+  return 0;
+}
+
+static void kafs_bg_dedup_worker_stop(struct kafs_context *ctx)
+{
+  if (!ctx)
+    return;
+
+  if (ctx->c_bg_dedup_worker_running)
+  {
+    pthread_mutex_lock(&ctx->c_bg_dedup_worker_lock);
+    ctx->c_bg_dedup_worker_stop = 1;
+    pthread_cond_broadcast(&ctx->c_bg_dedup_worker_cond);
+    pthread_mutex_unlock(&ctx->c_bg_dedup_worker_lock);
+    pthread_join(ctx->c_bg_dedup_worker_tid, NULL);
+    ctx->c_bg_dedup_worker_running = 0;
+  }
+
+  if (ctx->c_bg_dedup_worker_lock_init)
+  {
+    pthread_cond_destroy(&ctx->c_bg_dedup_worker_cond);
+    pthread_mutex_destroy(&ctx->c_bg_dedup_worker_lock);
+    ctx->c_bg_dedup_worker_lock_init = 0;
   }
 }
 
@@ -5137,6 +5251,28 @@ static int kafs_ctl_handle_request(kafs_context_t *ctx, kafs_ctl_session_t *sess
         }
         ctx->c_pending_worker_prio_dirty = 1;
         kafs_pending_worker_notify_all(ctx);
+
+        ctx->c_bg_dedup_worker_prio_base_mode = req->mode;
+        if ((req->flags & KAFS_RPC_SET_DEDUP_PRIO_F_HAS_NICE) != 0)
+          ctx->c_bg_dedup_worker_nice_base = req->nice_value;
+
+        if (ctx->c_bg_dedup_worker_auto_boosted)
+        {
+          ctx->c_bg_dedup_worker_prio_mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
+          ctx->c_bg_dedup_worker_nice = 0;
+        }
+        else
+        {
+          ctx->c_bg_dedup_worker_prio_mode = ctx->c_bg_dedup_worker_prio_base_mode;
+          ctx->c_bg_dedup_worker_nice = ctx->c_bg_dedup_worker_nice_base;
+        }
+        ctx->c_bg_dedup_worker_prio_dirty = 1;
+        if (ctx->c_bg_dedup_worker_lock_init)
+        {
+          pthread_mutex_lock(&ctx->c_bg_dedup_worker_lock);
+          pthread_cond_broadcast(&ctx->c_bg_dedup_worker_cond);
+          pthread_mutex_unlock(&ctx->c_bg_dedup_worker_lock);
+        }
       }
     }
     break;
@@ -6868,6 +7004,12 @@ static void *kafs_op_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
       kafs_log(KAFS_LOG_WARNING, "kafs: pending worker start failed in init rc=%d\n", prc);
     }
   }
+  if (ctx && ctx->c_bg_dedup_enabled)
+  {
+    int brc = kafs_bg_dedup_worker_start(ctx);
+    if (brc < 0)
+      kafs_log(KAFS_LOG_WARNING, "kafs: bg dedup worker start failed in init rc=%d\n", brc);
+  }
   return ctx;
 }
 
@@ -6876,6 +7018,7 @@ static void kafs_op_destroy(void *private_data)
   kafs_context_t *ctx = (kafs_context_t *)private_data;
   if (!ctx)
     return;
+  kafs_bg_dedup_worker_stop(ctx);
   kafs_pending_worker_stop(ctx);
 }
 
@@ -7010,8 +7153,18 @@ static void usage(const char *prog)
           "    -o pendinglog_cap_max=<N>         Pending queue maximum effective capacity\n"
           "    -o bg_dedup_scan=<on|off>         Enable/disable idle background dedup scan\n"
           "    -o dedup_scan=<on|off>            Alias of bg_dedup_scan (default: on)\n"
-          "    -o bg_dedup_interval_ms=<N>       Idle dedup scan interval (ms)\n"
+          "    -o bg_dedup_interval_ms=<N>       Dedup scan interval (ms, over start threshold)\n"
           "    -o dedup_interval_ms=<N>          Alias of bg_dedup_interval_ms\n"
+          "    -o bg_dedup_quiet_interval_ms=<N> Recheck interval below start threshold (ms)\n"
+          "    -o dedup_quiet_interval_ms=<N>    Alias of bg_dedup_quiet_interval_ms\n"
+          "    -o bg_dedup_pressure_interval_ms=<N> Dedup interval under capacity pressure (ms)\n"
+          "    -o dedup_pressure_interval_ms=<N> Alias of bg_dedup_pressure_interval_ms\n"
+          "    -o bg_dedup_start_used_pct=<0..100> Start dedup when used-block ratio reaches N%%\n"
+          "    -o dedup_start_used_pct=<0..100> Alias of bg_dedup_start_used_pct\n"
+          "    -o bg_dedup_pressure_used_pct=<0..100> Pressure threshold ratio (auto boost)\n"
+          "    -o dedup_pressure_used_pct=<0..100> Alias of bg_dedup_pressure_used_pct\n"
+          "    -o bg_dedup_worker_prio=<normal|idle> Dedicated bg-dedup worker scheduling mode\n"
+          "    -o bg_dedup_worker_nice=<0..19>  Dedicated bg-dedup worker nice value\n"
           "\n"
           "  [Sync Policy]\n"
           "    -o fsync_policy=<journal_only|full|adaptive>\n"
@@ -7031,7 +7184,13 @@ static void usage(const char *prog)
           "    KAFS_PENDINGLOG_CAP_MIN           pending minimum effective capacity\n"
           "    KAFS_PENDINGLOG_CAP_MAX           pending maximum effective capacity\n"
           "    KAFS_BG_DEDUP_SCAN                idle background dedup scan on/off (default: on)\n"
-          "    KAFS_BG_DEDUP_INTERVAL_MS         idle dedup scan interval (ms)\n"
+          "    KAFS_BG_DEDUP_INTERVAL_MS         dedup scan interval (ms)\n"
+          "    KAFS_BG_DEDUP_QUIET_INTERVAL_MS   recheck interval below start threshold (ms)\n"
+          "    KAFS_BG_DEDUP_PRESSURE_INTERVAL_MS dedup interval under pressure (ms)\n"
+          "    KAFS_BG_DEDUP_START_USED_PCT      start threshold by used-block ratio (%%)\n"
+          "    KAFS_BG_DEDUP_PRESSURE_USED_PCT   pressure threshold by used-block ratio (%%)\n"
+          "    KAFS_BG_DEDUP_WORKER_PRIO         dedicated bg-dedup worker prio mode\n"
+          "    KAFS_BG_DEDUP_WORKER_NICE         dedicated bg-dedup worker nice value\n"
           "    KAFS_FSYNC_POLICY                 fsync policy default\n"
           "    KAFS_HOTPLUG_UDS                  Hotplug UDS path (legacy/env)\n"
           "    KAFS_HOTPLUG_BACK_BIN             Backend binary path hint\n"
@@ -7380,6 +7539,12 @@ int main(int argc, char **argv)
   uint32_t pending_cap_max = 0;
   uint32_t bg_dedup_scan_enabled = 1u;
   uint32_t bg_dedup_interval_ms = KAFS_BG_DEDUP_INTERVAL_MS_DEFAULT;
+  uint32_t bg_dedup_quiet_interval_ms = KAFS_BG_DEDUP_QUIET_INTERVAL_MS_DEFAULT;
+  uint32_t bg_dedup_pressure_interval_ms = KAFS_BG_DEDUP_PRESSURE_INTERVAL_MS_DEFAULT;
+  uint32_t bg_dedup_start_used_pct = KAFS_BG_DEDUP_START_USED_PCT_DEFAULT;
+  uint32_t bg_dedup_pressure_used_pct = KAFS_BG_DEDUP_PRESSURE_USED_PCT_DEFAULT;
+  uint32_t bg_dedup_worker_prio_mode = KAFS_PENDING_WORKER_PRIO_IDLE;
+  int bg_dedup_worker_nice = 19;
   uint32_t fsync_policy = KAFS_FSYNC_POLICY_JOURNAL_ONLY;
 
   const char *pprio = getenv("KAFS_PENDING_WORKER_PRIO");
@@ -7479,6 +7644,71 @@ int main(int argc, char **argv)
       fprintf(stderr, "invalid KAFS_BG_DEDUP_INTERVAL_MS: '%s'\n", bg_interval);
       return 2;
     }
+  }
+
+  const char *bg_quiet_interval = getenv("KAFS_BG_DEDUP_QUIET_INTERVAL_MS");
+  if (bg_quiet_interval && *bg_quiet_interval)
+  {
+    if (kafs_parse_u32_range(bg_quiet_interval, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
+                             KAFS_BG_DEDUP_INTERVAL_MS_MAX, &bg_dedup_quiet_interval_ms) != 0)
+    {
+      fprintf(stderr, "invalid KAFS_BG_DEDUP_QUIET_INTERVAL_MS: '%s'\n", bg_quiet_interval);
+      return 2;
+    }
+  }
+
+  const char *bg_pressure_interval = getenv("KAFS_BG_DEDUP_PRESSURE_INTERVAL_MS");
+  if (bg_pressure_interval && *bg_pressure_interval)
+  {
+    if (kafs_parse_u32_range(bg_pressure_interval, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
+                             KAFS_BG_DEDUP_INTERVAL_MS_MAX, &bg_dedup_pressure_interval_ms) != 0)
+    {
+      fprintf(stderr, "invalid KAFS_BG_DEDUP_PRESSURE_INTERVAL_MS: '%s'\n", bg_pressure_interval);
+      return 2;
+    }
+  }
+
+  const char *bg_start_pct = getenv("KAFS_BG_DEDUP_START_USED_PCT");
+  if (bg_start_pct && *bg_start_pct)
+  {
+    if (kafs_parse_u32_range(bg_start_pct, 0, 100u, &bg_dedup_start_used_pct) != 0)
+    {
+      fprintf(stderr, "invalid KAFS_BG_DEDUP_START_USED_PCT: '%s'\n", bg_start_pct);
+      return 2;
+    }
+  }
+
+  const char *bg_pressure_pct = getenv("KAFS_BG_DEDUP_PRESSURE_USED_PCT");
+  if (bg_pressure_pct && *bg_pressure_pct)
+  {
+    if (kafs_parse_u32_range(bg_pressure_pct, 0, 100u, &bg_dedup_pressure_used_pct) != 0)
+    {
+      fprintf(stderr, "invalid KAFS_BG_DEDUP_PRESSURE_USED_PCT: '%s'\n", bg_pressure_pct);
+      return 2;
+    }
+  }
+
+  const char *bg_prio = getenv("KAFS_BG_DEDUP_WORKER_PRIO");
+  if (bg_prio && *bg_prio)
+  {
+    if (kafs_pending_worker_prio_mode_parse(bg_prio, &bg_dedup_worker_prio_mode) != 0)
+    {
+      fprintf(stderr, "invalid KAFS_BG_DEDUP_WORKER_PRIO: '%s'\n", bg_prio);
+      return 2;
+    }
+  }
+
+  const char *bg_nice = getenv("KAFS_BG_DEDUP_WORKER_NICE");
+  if (bg_nice && *bg_nice)
+  {
+    char *endp = NULL;
+    long v = strtol(bg_nice, &endp, 10);
+    if (!endp || *endp != '\0' || v < 0 || v > 19)
+    {
+      fprintf(stderr, "invalid KAFS_BG_DEDUP_WORKER_NICE: '%s'\n", bg_nice);
+      return 2;
+    }
+    bg_dedup_worker_nice = (int)v;
   }
 
   if (pending_ttl_soft_ms > 0 && pending_ttl_hard_ms > 0 &&
@@ -7821,6 +8051,119 @@ int main(int argc, char **argv)
             continue;
           }
 
+          const char *bg_quiet_interval_str = NULL;
+          if (strncmp(tok, "bg_dedup_quiet_interval_ms=", 27) == 0)
+            bg_quiet_interval_str = tok + 27;
+          else if (strncmp(tok, "dedup_quiet_interval_ms=", 24) == 0)
+            bg_quiet_interval_str = tok + 24;
+          if (bg_quiet_interval_str)
+          {
+            if (kafs_parse_u32_range(bg_quiet_interval_str, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
+                                     KAFS_BG_DEDUP_INTERVAL_MS_MAX,
+                                     &bg_dedup_quiet_interval_ms) != 0)
+            {
+              fprintf(stderr,
+                      "invalid -o dedup_quiet_interval_ms/bg_dedup_quiet_interval_ms: '%s'\n",
+                      bg_quiet_interval_str);
+              free(dup);
+              return 2;
+            }
+            continue;
+          }
+
+          const char *bg_pressure_interval_str = NULL;
+          if (strncmp(tok, "bg_dedup_pressure_interval_ms=", 30) == 0)
+            bg_pressure_interval_str = tok + 30;
+          else if (strncmp(tok, "dedup_pressure_interval_ms=", 27) == 0)
+            bg_pressure_interval_str = tok + 27;
+          if (bg_pressure_interval_str)
+          {
+            if (kafs_parse_u32_range(bg_pressure_interval_str, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
+                                     KAFS_BG_DEDUP_INTERVAL_MS_MAX,
+                                     &bg_dedup_pressure_interval_ms) != 0)
+            {
+              fprintf(stderr,
+                      "invalid -o dedup_pressure_interval_ms/bg_dedup_pressure_interval_ms: '%s'\n",
+                      bg_pressure_interval_str);
+              free(dup);
+              return 2;
+            }
+            continue;
+          }
+
+          const char *bg_start_pct_str = NULL;
+          if (strncmp(tok, "bg_dedup_start_used_pct=", 24) == 0)
+            bg_start_pct_str = tok + 24;
+          else if (strncmp(tok, "dedup_start_used_pct=", 21) == 0)
+            bg_start_pct_str = tok + 21;
+          if (bg_start_pct_str)
+          {
+            if (kafs_parse_u32_range(bg_start_pct_str, 0, 100u, &bg_dedup_start_used_pct) != 0)
+            {
+              fprintf(stderr, "invalid -o dedup_start_used_pct/bg_dedup_start_used_pct: '%s'\n",
+                      bg_start_pct_str);
+              free(dup);
+              return 2;
+            }
+            continue;
+          }
+
+          const char *bg_pressure_pct_str = NULL;
+          if (strncmp(tok, "bg_dedup_pressure_used_pct=", 27) == 0)
+            bg_pressure_pct_str = tok + 27;
+          else if (strncmp(tok, "dedup_pressure_used_pct=", 24) == 0)
+            bg_pressure_pct_str = tok + 24;
+          if (bg_pressure_pct_str)
+          {
+            if (kafs_parse_u32_range(bg_pressure_pct_str, 0, 100u, &bg_dedup_pressure_used_pct) !=
+                0)
+            {
+              fprintf(stderr,
+                      "invalid -o dedup_pressure_used_pct/bg_dedup_pressure_used_pct: '%s'\n",
+                      bg_pressure_pct_str);
+              free(dup);
+              return 2;
+            }
+            continue;
+          }
+
+          const char *bg_prio_str = NULL;
+          if (strncmp(tok, "bg_dedup_worker_prio=", 21) == 0)
+            bg_prio_str = tok + 21;
+          else if (strncmp(tok, "dedup_scan_worker_prio=", 23) == 0)
+            bg_prio_str = tok + 23;
+          if (bg_prio_str)
+          {
+            if (kafs_pending_worker_prio_mode_parse(bg_prio_str, &bg_dedup_worker_prio_mode) != 0)
+            {
+              fprintf(stderr, "invalid -o bg_dedup_worker_prio/dedup_scan_worker_prio: '%s'\n",
+                      bg_prio_str);
+              free(dup);
+              return 2;
+            }
+            continue;
+          }
+
+          const char *bg_nice_str = NULL;
+          if (strncmp(tok, "bg_dedup_worker_nice=", 21) == 0)
+            bg_nice_str = tok + 21;
+          else if (strncmp(tok, "dedup_scan_worker_nice=", 23) == 0)
+            bg_nice_str = tok + 23;
+          if (bg_nice_str)
+          {
+            char *endp = NULL;
+            long v = strtol(bg_nice_str, &endp, 10);
+            if (!endp || *endp != '\0' || v < 0 || v > 19)
+            {
+              fprintf(stderr, "invalid -o bg_dedup_worker_nice/dedup_scan_worker_nice: '%s'\n",
+                      bg_nice_str);
+              free(dup);
+              return 2;
+            }
+            bg_dedup_worker_nice = (int)v;
+            continue;
+          }
+
           // keep other options
           size_t tlen = strlen(tok);
           size_t need = tlen + (used ? 1 : 0);
@@ -7896,6 +8239,13 @@ int main(int argc, char **argv)
     return 2;
   }
 
+  if (bg_dedup_pressure_used_pct > 0 && bg_dedup_start_used_pct > 0 &&
+      bg_dedup_pressure_used_pct < bg_dedup_start_used_pct)
+  {
+    fprintf(stderr, "invalid bg dedup thresholds: pressure_used_pct must be >= start_used_pct\n");
+    return 2;
+  }
+
   static kafs_context_t ctx;
   static char mnt_abs[PATH_MAX];
   char hotplug_uds_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
@@ -7961,6 +8311,17 @@ int main(int argc, char **argv)
   ctx.c_pendinglog_capacity_max = pending_cap_max;
   ctx.c_bg_dedup_enabled = bg_dedup_scan_enabled;
   ctx.c_bg_dedup_interval_ms = bg_dedup_interval_ms;
+  ctx.c_bg_dedup_quiet_interval_ms = bg_dedup_quiet_interval_ms;
+  ctx.c_bg_dedup_pressure_interval_ms = bg_dedup_pressure_interval_ms;
+  ctx.c_bg_dedup_start_used_pct = bg_dedup_start_used_pct;
+  ctx.c_bg_dedup_pressure_used_pct = bg_dedup_pressure_used_pct;
+  ctx.c_bg_dedup_worker_prio_mode = bg_dedup_worker_prio_mode;
+  ctx.c_bg_dedup_worker_nice = bg_dedup_worker_nice;
+  ctx.c_bg_dedup_worker_prio_base_mode = bg_dedup_worker_prio_mode;
+  ctx.c_bg_dedup_worker_nice_base = bg_dedup_worker_nice;
+  ctx.c_bg_dedup_worker_auto_boosted = 0;
+  ctx.c_bg_dedup_worker_prio_apply_error = 0;
+  ctx.c_bg_dedup_worker_prio_dirty = 1;
   ctx.c_fsync_policy = fsync_policy;
 
   const char *data_mode = getenv("KAFS_HOTPLUG_DATA_MODE");
@@ -8306,6 +8667,7 @@ int main(int argc, char **argv)
   fuse_set_log_func(kafs_fuse_log_func);
   int rc = fuse_main(argc_fuse, argv_fuse, &kafs_operations, &ctx);
   fuse_set_log_func(NULL);
+  kafs_bg_dedup_worker_stop(&ctx);
   kafs_pending_worker_stop(&ctx);
   kafs_journal_shutdown(&ctx);
   if (ctx.c_hotplug_fd >= 0)

@@ -169,6 +169,23 @@ struct kafs_context
   // --- Idle background dedup scan runtime config ---
   uint32_t c_bg_dedup_enabled;
   uint32_t c_bg_dedup_interval_ms;
+  uint32_t c_bg_dedup_quiet_interval_ms;
+  uint32_t c_bg_dedup_pressure_interval_ms;
+  uint32_t c_bg_dedup_start_used_pct;
+  uint32_t c_bg_dedup_pressure_used_pct;
+  pthread_t c_bg_dedup_worker_tid;
+  pthread_mutex_t c_bg_dedup_worker_lock;
+  pthread_cond_t c_bg_dedup_worker_cond;
+  int c_bg_dedup_worker_lock_init;
+  int c_bg_dedup_worker_running;
+  int c_bg_dedup_worker_stop;
+  uint32_t c_bg_dedup_worker_prio_mode;
+  int32_t c_bg_dedup_worker_nice;
+  uint32_t c_bg_dedup_worker_prio_base_mode;
+  int32_t c_bg_dedup_worker_nice_base;
+  uint32_t c_bg_dedup_worker_auto_boosted;
+  int32_t c_bg_dedup_worker_prio_apply_error;
+  uint32_t c_bg_dedup_worker_prio_dirty;
 
   // --- Idle background dedup scan state ---
   uint32_t c_bg_dedup_ino_cursor;
