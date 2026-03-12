@@ -88,7 +88,9 @@ while true; do
       (.pending_worker_start_last_error // 0),
       (.pending_worker_lwp_tid // 0),
       (.pending_worker_main_entries // 0),
-      (.pending_worker_main_exits // 0)
+      (.pending_worker_main_exits // 0),
+      (.pending_resolved // 0),
+      (.pending_old_block_freed // 0)
     ] | .[]')
 
   ver="${vals[0]}"
@@ -115,6 +117,8 @@ while true; do
   pending_lwp_tid="${vals[21]}"
   pending_main_entries="${vals[22]}"
   pending_main_exits="${vals[23]}"
+  pending_resolved="${vals[24]}"
+  pending_old_block_freed="${vals[25]}"
 
   d_steps=0
   d_scanned=0
@@ -153,6 +157,7 @@ while true; do
   echo "  pending_queue=$pending_depth/$pending_cap (head=$pending_head tail=$pending_tail)"
   echo "  pending_worker: running=$pending_running stop=$pending_stop start_calls=$pending_start_calls start_failures=$pending_start_failures last_error=$pending_last_error lwp_tid=$pending_lwp_tid"
   echo "  pending_worker_main: entries=$pending_main_entries exits=$pending_main_exits"
+  echo "  pending_progress: resolved=$pending_resolved old_block_freed=$pending_old_block_freed"
   echo
   echo "[delta since last tick]"
   echo "  d_steps=$d_steps  d_scanned=$d_scanned  d_replacements=$d_repl"

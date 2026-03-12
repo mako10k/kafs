@@ -117,6 +117,8 @@ struct kafs_context
   int32_t c_stat_pending_worker_lwp_tid;
   uint64_t c_stat_pending_worker_main_entries;
   uint64_t c_stat_pending_worker_main_exits;
+  uint64_t c_stat_pending_resolved;
+  uint64_t c_stat_pending_old_block_freed;
   uint64_t c_stat_trim_issued;
   uint64_t c_stat_trim_failed;
 

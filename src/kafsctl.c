@@ -1206,6 +1206,8 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
     printf("  \"pending_worker_stop_flag\": %" PRId32 ",\n", st.pending_worker_stop_flag);
     printf("  \"pending_worker_main_entries\": %" PRIu64 ",\n", st.pending_worker_main_entries);
     printf("  \"pending_worker_main_exits\": %" PRIu64 ",\n", st.pending_worker_main_exits);
+    printf("  \"pending_resolved\": %" PRIu64 ",\n", st.pending_resolved);
+    printf("  \"pending_old_block_freed\": %" PRIu64 ",\n", st.pending_old_block_freed);
     printf("  \"bg_dedup_retry_rate\": %.6f,\n", bg_dedup_retry_rate);
     printf("  \"copy_share_hit_rate\": %.6f,\n", copy_share_hit_rate);
     printf("  \"pwrite_iblk_read_ms\": %.3f,\n", pwrite_iblk_read_ms);
@@ -1332,6 +1334,8 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
          st.pending_worker_start_last_error, st.pending_worker_lwp_tid);
   printf("           worker_main entries=%" PRIu64 " exits=%" PRIu64 "\n",
          st.pending_worker_main_entries, st.pending_worker_main_exits);
+  printf("           pending_resolved=%" PRIu64 " old_block_freed=%" PRIu64 "\n",
+         st.pending_resolved, st.pending_old_block_freed);
   return 0;
 }
 

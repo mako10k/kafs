@@ -122,6 +122,7 @@ static inline void kafs_stat_record_pwrite_iblk_write_latency(kafs_context_t *ct
 #define KAFS_BG_DEDUP_INTERVAL_MS_MIN 1u
 #define KAFS_BG_DEDUP_INTERVAL_MS_MAX 60000u
 #define KAFS_BG_DEDUP_IDLE_BURST_STEPS 64u
+#define KAFS_BG_DEDUP_PENDING_STRIDE 32u
 #define KAFS_BG_DEDUP_COOLDOWN_MS 2000u
 
 static uint32_t g_suppress_fuse_max_threads_warn = 1u;
@@ -1237,6 +1238,7 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
           __atomic_add_fetch(&ctx->c_stat_bg_dedup_replacements, 1u, __ATOMIC_RELAXED);
           kafs_inode_unlock(ctx, ino);
           (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
+          __atomic_add_fetch(&ctx->c_stat_pending_old_block_freed, 1u, __ATOMIC_RELAXED);
           return;
         }
         (void)kafs_hrl_dec_ref_by_blo(ctx, match_blo);
@@ -1280,6 +1282,7 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
           __atomic_add_fetch(&ctx->c_stat_bg_dedup_replacements, 1u, __ATOMIC_RELAXED);
           kafs_inode_unlock(ctx, ino);
           (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
+          __atomic_add_fetch(&ctx->c_stat_pending_old_block_freed, 1u, __ATOMIC_RELAXED);
           return;
         }
         (void)kafs_hrl_dec_ref_by_blo(ctx, final_blo);
@@ -1298,6 +1301,23 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
   }
 }
 
+static inline void kafs_pending_worker_bg_interleave_step(kafs_context_t *ctx,
+                                                          uint32_t *pending_counter)
+{
+  if (!ctx || !pending_counter)
+    return;
+  if (!ctx->c_bg_dedup_enabled || ctx->c_bg_dedup_interval_ms == 0)
+    return;
+
+  uint32_t next = *pending_counter + 1u;
+  *pending_counter = next;
+  if (next < KAFS_BG_DEDUP_PENDING_STRIDE)
+    return;
+
+  *pending_counter = 0;
+  kafs_bg_dedup_step(ctx);
+}
+
 static void *kafs_pending_worker_main(void *arg)
 {
   kafs_context_t *ctx = (kafs_context_t *)arg;
@@ -1309,6 +1329,7 @@ static void *kafs_pending_worker_main(void *arg)
   __atomic_add_fetch(&ctx->c_stat_pending_worker_main_entries, 1u, __ATOMIC_RELAXED);
 
   (void)kafs_pending_worker_apply_priority_self(ctx);
+  uint32_t pending_bg_stride_counter = 0;
 
   for (;;)
   {
@@ -1420,6 +1441,7 @@ static void *kafs_pending_worker_main(void *arg)
         hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
       kafs_pending_worker_adjust_priority_locked(ctx);
       pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+      kafs_pending_worker_bg_interleave_step(ctx, &pending_bg_stride_counter);
       continue;
     }
 
@@ -1489,6 +1511,7 @@ static void *kafs_pending_worker_main(void *arg)
         {
           uint64_t t_dec0 = kafs_now_ns();
           (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
+          __atomic_add_fetch(&ctx->c_stat_pending_old_block_freed, 1u, __ATOMIC_RELAXED);
           uint64_t t_dec1 = kafs_now_ns();
           __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
         }
@@ -1506,6 +1529,7 @@ static void *kafs_pending_worker_main(void *arg)
         if (hdr && slot)
         {
           slot->state = KAFS_PENDING_RESOLVED;
+          __atomic_add_fetch(&ctx->c_stat_pending_resolved, 1u, __ATOMIC_RELAXED);
           slot->target_hrid = (uint32_t)hrid;
           slot->reserved0 = 0;
           if (hdr->head == idx)
@@ -1514,6 +1538,7 @@ static void *kafs_pending_worker_main(void *arg)
         kafs_pending_worker_adjust_priority_locked(ctx);
         pthread_cond_broadcast(&ctx->c_pending_worker_cond);
         pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+        kafs_pending_worker_bg_interleave_step(ctx, &pending_bg_stride_counter);
         continue;
       }
     }
@@ -1570,6 +1595,8 @@ static void *kafs_pending_worker_main(void *arg)
       };
       nanosleep(&ts, NULL);
     }
+
+    kafs_pending_worker_bg_interleave_step(ctx, &pending_bg_stride_counter);
   }
 }
 
@@ -4451,7 +4478,7 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
   return 0;
 }
 
-#define KAFS_STATS_VERSION 10u
+#define KAFS_STATS_VERSION 11u
 
 static int kafs_u64_cmp(const void *a, const void *b)
 {
@@ -4625,6 +4652,9 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
       __atomic_load_n(&ctx->c_stat_pending_worker_main_entries, __ATOMIC_RELAXED);
   out->pending_worker_main_exits =
       __atomic_load_n(&ctx->c_stat_pending_worker_main_exits, __ATOMIC_RELAXED);
+  out->pending_resolved = __atomic_load_n(&ctx->c_stat_pending_resolved, __ATOMIC_RELAXED);
+  out->pending_old_block_freed =
+      __atomic_load_n(&ctx->c_stat_pending_old_block_freed, __ATOMIC_RELAXED);
 
   pthread_mutex_lock(&ctx->c_pending_worker_lock);
   kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);

@@ -113,6 +113,8 @@ struct kafs_stats
   int32_t pending_reserved1;
   uint64_t pending_worker_main_entries;
   uint64_t pending_worker_main_exits;
+  uint64_t pending_resolved;
+  uint64_t pending_old_block_freed;
 };
 
 typedef struct kafs_stats kafs_stats_t;
