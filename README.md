@@ -189,6 +189,21 @@ When `--yes` is not specified, it requires confirmation by entering `YES`.
 
 `fsstat` supports output units via `--bytes`, `--mib`, and `--gib`.
 
+Background dedup observability (live dashboard):
+
+```sh
+scripts/watch-bg-dedup.sh /tmp/kafs-mnt
+scripts/watch-bg-dedup.sh /tmp/kafs-mnt 0.5
+```
+
+This monitor prints cumulative and delta values for:
+- `bg_dedup_steps`
+- `bg_dedup_scanned_blocks`
+- `bg_dedup_replacements`
+- `bg_dedup_direct_candidates` / `bg_dedup_direct_hits`
+- `bg_dedup_index_evicts`
+- `bg_dedup_cooldowns`
+
 ## Migration (v2 -> v3)
 
 Explicit offline execution is recommended.

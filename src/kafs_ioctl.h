@@ -99,6 +99,20 @@ struct kafs_stats
   uint64_t bg_dedup_direct_hits;
   uint64_t bg_dedup_index_evicts;
   uint64_t bg_dedup_cooldowns;
+
+  uint64_t pending_queue_depth;
+  uint64_t pending_queue_capacity;
+  uint64_t pending_queue_head;
+  uint64_t pending_queue_tail;
+  uint64_t pending_worker_start_calls;
+  uint64_t pending_worker_start_failures;
+  int32_t pending_worker_start_last_error;
+  int32_t pending_worker_lwp_tid;
+  int32_t pending_worker_running;
+  int32_t pending_worker_stop_flag;
+  int32_t pending_reserved1;
+  uint64_t pending_worker_main_entries;
+  uint64_t pending_worker_main_exits;
 };
 
 typedef struct kafs_stats kafs_stats_t;

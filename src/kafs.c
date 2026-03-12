@@ -1302,6 +1302,10 @@ static void *kafs_pending_worker_main(void *arg)
   if (!ctx)
     return NULL;
 
+  __atomic_store_n(&ctx->c_stat_pending_worker_lwp_tid, (int32_t)syscall(SYS_gettid),
+                   __ATOMIC_RELAXED);
+  __atomic_add_fetch(&ctx->c_stat_pending_worker_main_entries, 1u, __ATOMIC_RELAXED);
+
   (void)kafs_pending_worker_apply_priority_self(ctx);
 
   for (;;)
@@ -1317,6 +1321,8 @@ static void *kafs_pending_worker_main(void *arg)
       if (ctx->c_pending_worker_stop)
       {
         pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+        __atomic_store_n(&ctx->c_stat_pending_worker_lwp_tid, 0, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&ctx->c_stat_pending_worker_main_exits, 1u, __ATOMIC_RELAXED);
         return NULL;
       }
       if (hdr && hdr->capacity > 0 && hdr->head != hdr->tail)
@@ -1374,6 +1380,8 @@ static void *kafs_pending_worker_main(void *arg)
           if (ctx->c_pending_worker_stop)
           {
             pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+            __atomic_store_n(&ctx->c_stat_pending_worker_lwp_tid, 0, __ATOMIC_RELAXED);
+            __atomic_add_fetch(&ctx->c_stat_pending_worker_main_exits, 1u, __ATOMIC_RELAXED);
             return NULL;
           }
 
@@ -1570,13 +1578,21 @@ static int kafs_pending_worker_start(struct kafs_context *ctx)
   if (ctx->c_pending_worker_running)
     return 0;
 
+  __atomic_add_fetch(&ctx->c_stat_pending_worker_start_calls, 1u, __ATOMIC_RELAXED);
+
   if (!ctx->c_pending_worker_lock_init)
   {
     if (pthread_mutex_init(&ctx->c_pending_worker_lock, NULL) != 0)
+    {
+      __atomic_add_fetch(&ctx->c_stat_pending_worker_start_failures, 1u, __ATOMIC_RELAXED);
+      __atomic_store_n(&ctx->c_stat_pending_worker_start_last_error, -EIO, __ATOMIC_RELAXED);
       return -EIO;
+    }
     if (pthread_cond_init(&ctx->c_pending_worker_cond, NULL) != 0)
     {
       pthread_mutex_destroy(&ctx->c_pending_worker_lock);
+      __atomic_add_fetch(&ctx->c_stat_pending_worker_start_failures, 1u, __ATOMIC_RELAXED);
+      __atomic_store_n(&ctx->c_stat_pending_worker_start_last_error, -EIO, __ATOMIC_RELAXED);
       return -EIO;
     }
     ctx->c_pending_worker_lock_init = 1;
@@ -1585,9 +1601,14 @@ static int kafs_pending_worker_start(struct kafs_context *ctx)
   ctx->c_pending_worker_stop = 0;
   int prc = pthread_create(&ctx->c_pending_worker_tid, NULL, kafs_pending_worker_main, ctx);
   if (prc != 0)
+  {
+    __atomic_add_fetch(&ctx->c_stat_pending_worker_start_failures, 1u, __ATOMIC_RELAXED);
+    __atomic_store_n(&ctx->c_stat_pending_worker_start_last_error, -prc, __ATOMIC_RELAXED);
     return -prc;
+  }
 
   ctx->c_pending_worker_running = 1;
+  __atomic_store_n(&ctx->c_stat_pending_worker_start_last_error, 0, __ATOMIC_RELAXED);
   if (kafs_pendinglog_count(ctx) > 0)
     kafs_pending_worker_notify(ctx);
   return 0;
@@ -4428,7 +4449,7 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
   return 0;
 }
 
-#define KAFS_STATS_VERSION 9u
+#define KAFS_STATS_VERSION 10u
 
 static int kafs_u64_cmp(const void *a, const void *b)
 {
@@ -4587,6 +4608,31 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
   out->bg_dedup_direct_hits = ctx->c_stat_bg_dedup_direct_hits;
   out->bg_dedup_index_evicts = ctx->c_stat_bg_dedup_index_evicts;
   out->bg_dedup_cooldowns = ctx->c_stat_bg_dedup_cooldowns;
+
+  out->pending_worker_start_calls =
+      __atomic_load_n(&ctx->c_stat_pending_worker_start_calls, __ATOMIC_RELAXED);
+  out->pending_worker_start_failures =
+      __atomic_load_n(&ctx->c_stat_pending_worker_start_failures, __ATOMIC_RELAXED);
+  out->pending_worker_start_last_error =
+      __atomic_load_n(&ctx->c_stat_pending_worker_start_last_error, __ATOMIC_RELAXED);
+    out->pending_worker_lwp_tid = __atomic_load_n(&ctx->c_stat_pending_worker_lwp_tid, __ATOMIC_RELAXED);
+  out->pending_worker_running = ctx->c_pending_worker_running;
+  out->pending_worker_stop_flag = ctx->c_pending_worker_stop;
+  out->pending_worker_main_entries =
+      __atomic_load_n(&ctx->c_stat_pending_worker_main_entries, __ATOMIC_RELAXED);
+  out->pending_worker_main_exits =
+      __atomic_load_n(&ctx->c_stat_pending_worker_main_exits, __ATOMIC_RELAXED);
+
+  pthread_mutex_lock(&ctx->c_pending_worker_lock);
+  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+  if (hdr)
+  {
+    out->pending_queue_depth = kafs_pendinglog_count(ctx);
+    out->pending_queue_capacity = hdr->capacity;
+    out->pending_queue_head = hdr->head;
+    out->pending_queue_tail = hdr->tail;
+  }
+  pthread_mutex_unlock(&ctx->c_pending_worker_lock);
 }
 
 #ifdef __linux__

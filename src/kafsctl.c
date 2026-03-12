@@ -1067,6 +1067,10 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
       (st.bg_dedup_direct_candidates > 0)
           ? (double)st.bg_dedup_direct_hits / (double)st.bg_dedup_direct_candidates
           : 0.0;
+  double pending_worker_start_fail_rate =
+      (st.pending_worker_start_calls > 0)
+          ? (double)st.pending_worker_start_failures / (double)st.pending_worker_start_calls
+          : 0.0;
   uint64_t fs_blocks_used =
       (st.fs_blocks_total >= st.fs_blocks_free) ? (st.fs_blocks_total - st.fs_blocks_free) : 0;
   uint64_t fs_inodes_used =
@@ -1188,6 +1192,20 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
     printf("  \"bg_dedup_direct_hit_rate\": %.6f,\n", bg_dedup_direct_hit_rate);
     printf("  \"bg_dedup_index_evicts\": %" PRIu64 ",\n", st.bg_dedup_index_evicts);
     printf("  \"bg_dedup_cooldowns\": %" PRIu64 ",\n", st.bg_dedup_cooldowns);
+    printf("  \"pending_queue_depth\": %" PRIu64 ",\n", st.pending_queue_depth);
+    printf("  \"pending_queue_capacity\": %" PRIu64 ",\n", st.pending_queue_capacity);
+    printf("  \"pending_queue_head\": %" PRIu64 ",\n", st.pending_queue_head);
+    printf("  \"pending_queue_tail\": %" PRIu64 ",\n", st.pending_queue_tail);
+    printf("  \"pending_worker_start_calls\": %" PRIu64 ",\n", st.pending_worker_start_calls);
+    printf("  \"pending_worker_start_failures\": %" PRIu64 ",\n", st.pending_worker_start_failures);
+    printf("  \"pending_worker_start_fail_rate\": %.6f,\n", pending_worker_start_fail_rate);
+    printf("  \"pending_worker_start_last_error\": %" PRId32 ",\n",
+           st.pending_worker_start_last_error);
+        printf("  \"pending_worker_lwp_tid\": %" PRId32 ",\n", st.pending_worker_lwp_tid);
+    printf("  \"pending_worker_running\": %" PRId32 ",\n", st.pending_worker_running);
+    printf("  \"pending_worker_stop_flag\": %" PRId32 ",\n", st.pending_worker_stop_flag);
+    printf("  \"pending_worker_main_entries\": %" PRIu64 ",\n", st.pending_worker_main_entries);
+    printf("  \"pending_worker_main_exits\": %" PRIu64 ",\n", st.pending_worker_main_exits);
     printf("  \"bg_dedup_retry_rate\": %.6f,\n", bg_dedup_retry_rate);
     printf("  \"copy_share_hit_rate\": %.6f,\n", copy_share_hit_rate);
     printf("  \"pwrite_iblk_read_ms\": %.3f,\n", pwrite_iblk_read_ms);
@@ -1304,6 +1322,17 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
          st.bg_dedup_steps, st.bg_dedup_scanned_blocks, st.bg_dedup_direct_candidates,
          st.bg_dedup_direct_hits, bg_dedup_direct_hit_rate, st.bg_dedup_index_evicts,
          st.bg_dedup_cooldowns);
+  printf("  pending: depth=%" PRIu64 "/%" PRIu64 " head=%" PRIu64 " tail=%" PRIu64 "\n",
+         st.pending_queue_depth, st.pending_queue_capacity, st.pending_queue_head,
+         st.pending_queue_tail);
+  printf("           worker running=%" PRId32 " stop=%" PRId32 " start_calls=%" PRIu64
+      " start_failures=%" PRIu64 " fail_rate=%.3f last_error=%" PRId32
+      " lwp_tid=%" PRId32 "\n",
+         st.pending_worker_running, st.pending_worker_stop_flag, st.pending_worker_start_calls,
+         st.pending_worker_start_failures, pending_worker_start_fail_rate,
+      st.pending_worker_start_last_error, st.pending_worker_lwp_tid);
+  printf("           worker_main entries=%" PRIu64 " exits=%" PRIu64 "\n",
+         st.pending_worker_main_entries, st.pending_worker_main_exits);
   return 0;
 }
 

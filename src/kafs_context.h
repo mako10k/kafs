@@ -111,6 +111,12 @@ struct kafs_context
   uint64_t c_stat_bg_dedup_direct_hits;
   uint64_t c_stat_bg_dedup_index_evicts;
   uint64_t c_stat_bg_dedup_cooldowns;
+  uint64_t c_stat_pending_worker_start_calls;
+  uint64_t c_stat_pending_worker_start_failures;
+  int32_t c_stat_pending_worker_start_last_error;
+  int32_t c_stat_pending_worker_lwp_tid;
+  uint64_t c_stat_pending_worker_main_entries;
+  uint64_t c_stat_pending_worker_main_exits;
   uint64_t c_stat_trim_issued;
   uint64_t c_stat_trim_failed;
 
