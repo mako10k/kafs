@@ -528,3 +528,85 @@ int kafs_hrl_dec_ref_by_blo(kafs_context_t *ctx, kafs_blkcnt_t blo)
     return 0;
   return hrl_release_blo(ctx, &blo);
 }
+
+int kafs_hrl_match_inc_by_block_excluding_blo(kafs_context_t *ctx, const void *block_data,
+                                              kafs_blkcnt_t exclude_blo,
+                                              kafs_blkcnt_t *out_blo)
+{
+  if (!ctx || !block_data || !out_blo)
+    return -EINVAL;
+  if (ctx->c_hrl_bucket_cnt == 0 || hrl_capacity(ctx) == 0)
+    return -ENOSYS;
+
+  uint64_t fast = hrl_hash64(block_data, hrl_blksize(ctx));
+  int b = hrl_bucket_index(ctx, fast);
+  uint32_t idx = 0;
+
+  kafs_hrl_bucket_lock(ctx, (uint32_t)b);
+  int rc = hrl_find_by_hash(ctx, fast, block_data, &idx);
+  if (rc == 0)
+  {
+    kafs_hrl_entry_t *e = hrl_entries_tbl(ctx) + idx;
+    if (e->refcnt == 0 || e->blo == KAFS_BLO_NONE || e->blo == exclude_blo)
+    {
+      kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
+      return -ENOENT;
+    }
+    if (e->refcnt == 0xFFFFFFFFu)
+    {
+      kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
+      return -EOVERFLOW;
+    }
+    e->refcnt += 1u;
+    *out_blo = e->blo;
+    kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
+    return 0;
+  }
+  kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
+  return (rc == -ENOENT) ? -ENOENT : rc;
+}
+
+int kafs_hrl_evict_ref1_to_direct(kafs_context_t *ctx, kafs_blkcnt_t *out_blo)
+{
+  if (!ctx)
+    return -EINVAL;
+  if (ctx->c_hrl_bucket_cnt == 0 || hrl_capacity(ctx) == 0)
+    return -ENOSYS;
+
+  uint32_t *index = hrl_index_tbl(ctx);
+  kafs_hrl_entry_t *ents = hrl_entries_tbl(ctx);
+  uint32_t cap = hrl_capacity(ctx);
+  uint32_t bcnt = hrl_bucket_count(ctx);
+
+  for (uint32_t b = 0; b < bcnt; ++b)
+  {
+    kafs_hrl_bucket_lock(ctx, b);
+    uint32_t head = index[b];
+    for (uint32_t steps = 0; head != 0 && steps < cap; ++steps)
+    {
+      uint32_t i = head - 1u;
+      if (i >= cap)
+      {
+        kafs_hrl_bucket_unlock(ctx, b);
+        return -EIO;
+      }
+      kafs_hrl_entry_t *e = &ents[i];
+      if (e->refcnt == 1u && e->blo != KAFS_BLO_NONE)
+      {
+        kafs_blkcnt_t blo = e->blo;
+        (void)hrl_chain_remove(ctx, i, e->fast);
+        memset(e, 0, sizeof(*e));
+        kafs_hrl_bucket_unlock(ctx, b);
+        if (out_blo)
+          *out_blo = blo;
+        return 0;
+      }
+      head = e->next_plus1;
+    }
+    kafs_hrl_bucket_unlock(ctx, b);
+    if (head != 0)
+      return -EIO;
+  }
+
+  return -ENOENT;
+}

@@ -149,6 +149,13 @@ struct kafs_context
   int32_t c_pending_worker_prio_apply_error;
   uint32_t c_pending_worker_prio_dirty;
 
+  // --- Idle background dedup scan state ---
+  uint32_t c_bg_dedup_ino_cursor;
+  uint32_t c_bg_dedup_iblk_cursor;
+  uint32_t c_bg_dedup_recent_pos;
+  uint64_t c_bg_dedup_recent_fast[64];
+  uint32_t c_bg_dedup_recent_blo[64];
+
   // fsync/fdatasync behavior policy
   uint32_t c_fsync_policy;
 

@@ -118,6 +118,7 @@ static inline void kafs_stat_record_pwrite_iblk_write_latency(kafs_context_t *ct
 #define KAFS_PENDING_REF_FLAG 0x80000000u
 #define KAFS_PENDING_REF_MASK 0x7fffffffu
 #define KAFS_PENDINGLOG_CAPACITY_FLOOR 2u
+#define KAFS_BG_DEDUP_WAIT_MS 250u
 
 static uint32_t g_suppress_fuse_max_threads_warn = 1u;
 
@@ -949,6 +950,190 @@ static int kafs_pending_worker_apply_priority_self(kafs_context_t *ctx)
   return err;
 }
 
+// Keep a tiny rolling cache to cheaply spot DIRECT duplicates that are not yet in HRL.
+static uint64_t kafs_bg_hash64(const void *buf, size_t len)
+{
+  const unsigned char *p = (const unsigned char *)buf;
+  uint64_t h = 1469598103934665603ull;
+  const uint64_t prime = 1099511628211ull;
+  for (size_t i = 0; i < len; ++i)
+  {
+    h ^= p[i];
+    h *= prime;
+  }
+  return h;
+}
+
+static void kafs_bg_recent_note(struct kafs_context *ctx, uint64_t fast, kafs_blkcnt_t blo)
+{
+  if (!ctx || blo == KAFS_BLO_NONE)
+    return;
+  uint32_t pos = ctx->c_bg_dedup_recent_pos %
+                 (uint32_t)(sizeof(ctx->c_bg_dedup_recent_fast) /
+                            sizeof(ctx->c_bg_dedup_recent_fast[0]));
+  ctx->c_bg_dedup_recent_fast[pos] = fast;
+  ctx->c_bg_dedup_recent_blo[pos] = (uint32_t)blo;
+  ctx->c_bg_dedup_recent_pos = (pos + 1u) %
+                               (uint32_t)(sizeof(ctx->c_bg_dedup_recent_fast) /
+                                          sizeof(ctx->c_bg_dedup_recent_fast[0]));
+}
+
+static kafs_blkcnt_t kafs_bg_recent_find_dup_blo(struct kafs_context *ctx, uint64_t fast,
+                                                 kafs_blkcnt_t self_blo, const void *buf)
+{
+  if (!ctx || !buf)
+    return KAFS_BLO_NONE;
+  kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
+  char tmp[bs];
+  uint32_t n =
+      (uint32_t)(sizeof(ctx->c_bg_dedup_recent_fast) / sizeof(ctx->c_bg_dedup_recent_fast[0]));
+  for (uint32_t i = 0; i < n; ++i)
+  {
+    if (ctx->c_bg_dedup_recent_fast[i] != fast)
+      continue;
+    kafs_blkcnt_t cand = (kafs_blkcnt_t)ctx->c_bg_dedup_recent_blo[i];
+    if (cand == KAFS_BLO_NONE || cand == self_blo)
+      continue;
+    if (kafs_blk_read(ctx, cand, tmp) != 0)
+      continue;
+    if (memcmp(tmp, buf, bs) == 0)
+      return cand;
+  }
+  return KAFS_BLO_NONE;
+}
+
+static void kafs_bg_advance_cursor(struct kafs_context *ctx, kafs_inocnt_t inocnt,
+                                   uint32_t next_iblk)
+{
+  if (!ctx || inocnt == 0)
+    return;
+  ctx->c_bg_dedup_iblk_cursor = next_iblk;
+  if (next_iblk == 0)
+    ctx->c_bg_dedup_ino_cursor = (ctx->c_bg_dedup_ino_cursor + 1u) % inocnt;
+}
+
+static void kafs_bg_dedup_step(struct kafs_context *ctx)
+{
+  if (!ctx || !ctx->c_superblock)
+    return;
+  if (ctx->c_hrl_bucket_cnt == 0)
+    return;
+
+  kafs_inocnt_t inocnt = kafs_sb_inocnt_get(ctx->c_superblock);
+  if (inocnt == 0)
+    return;
+
+  kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
+  char buf[bs];
+
+  for (kafs_inocnt_t scanned = 0; scanned < inocnt; ++scanned)
+  {
+    uint32_t ino = (ctx->c_bg_dedup_ino_cursor + scanned) % inocnt;
+    kafs_inode_lock(ctx, ino);
+    kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+    if (!kafs_ino_get_usage(inoent))
+    {
+      kafs_inode_unlock(ctx, ino);
+      if (scanned == 0)
+        kafs_bg_advance_cursor(ctx, inocnt, 0);
+      continue;
+    }
+
+    kafs_off_t size = kafs_ino_size_get(inoent);
+    if (size <= KAFS_DIRECT_SIZE)
+    {
+      kafs_inode_unlock(ctx, ino);
+      if (scanned == 0)
+        kafs_bg_advance_cursor(ctx, inocnt, 0);
+      continue;
+    }
+
+    kafs_iblkcnt_t iblocnt = (kafs_iblkcnt_t)((size + bs - 1) / bs);
+    uint32_t direct_cnt = (iblocnt < 12) ? (uint32_t)iblocnt : 12u;
+    if (direct_cnt == 0)
+    {
+      kafs_inode_unlock(ctx, ino);
+      if (scanned == 0)
+        kafs_bg_advance_cursor(ctx, inocnt, 0);
+      continue;
+    }
+
+    uint32_t start = (scanned == 0) ? (ctx->c_bg_dedup_iblk_cursor % direct_cnt) : 0u;
+    for (uint32_t delta = 0; delta < direct_cnt; ++delta)
+    {
+      uint32_t iblk = (start + delta) % direct_cnt;
+      uint32_t next_iblk = (iblk + 1u < direct_cnt) ? (iblk + 1u) : 0u;
+
+      kafs_blkcnt_t raw = KAFS_BLO_NONE;
+      if (kafs_ino_ibrk_run(ctx, inoent, (kafs_iblkcnt_t)iblk, &raw, KAFS_IBLKREF_FUNC_GET_RAW) != 0)
+        continue;
+      if (kafs_ref_is_pending(raw))
+        continue;
+
+      kafs_blkcnt_t old_blo = KAFS_BLO_NONE;
+      if (kafs_ref_resolve_data_blo(ctx, raw, &old_blo) != 0 || old_blo == KAFS_BLO_NONE)
+        continue;
+      if (kafs_blk_read(ctx, old_blo, buf) != 0)
+        continue;
+
+      kafs_bg_advance_cursor(ctx, inocnt, next_iblk);
+
+      kafs_blkcnt_t match_blo = KAFS_BLO_NONE;
+      int mrc = kafs_hrl_match_inc_by_block_excluding_blo(ctx, buf, old_blo, &match_blo);
+      if (mrc == 0 && match_blo != KAFS_BLO_NONE)
+      {
+        kafs_blkcnt_t set_blo = match_blo;
+        if (kafs_ino_ibrk_run(ctx, inoent, (kafs_iblkcnt_t)iblk, &set_blo, KAFS_IBLKREF_FUNC_SET) == 0)
+        {
+          kafs_inode_unlock(ctx, ino);
+          (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
+          return;
+        }
+        (void)kafs_hrl_dec_ref_by_blo(ctx, match_blo);
+      }
+
+      uint64_t fast = kafs_bg_hash64(buf, bs);
+      kafs_blkcnt_t dup_direct = kafs_bg_recent_find_dup_blo(ctx, fast, old_blo, buf);
+      kafs_bg_recent_note(ctx, fast, old_blo);
+      if (dup_direct == KAFS_BLO_NONE)
+      {
+        kafs_inode_unlock(ctx, ino);
+        return;
+      }
+
+      kafs_hrid_t hrid = 0;
+      int is_new = 0;
+      kafs_blkcnt_t final_blo = KAFS_BLO_NONE;
+      int prc = kafs_hrl_put(ctx, buf, &hrid, &is_new, &final_blo);
+      if (prc == -ENOSPC)
+      {
+        kafs_blkcnt_t evicted_blo = KAFS_BLO_NONE;
+        if (kafs_hrl_evict_ref1_to_direct(ctx, &evicted_blo) == 0)
+          prc = kafs_hrl_put(ctx, buf, &hrid, &is_new, &final_blo);
+      }
+
+      if (prc == 0 && final_blo != KAFS_BLO_NONE && final_blo != old_blo)
+      {
+        kafs_blkcnt_t set_blo = final_blo;
+        if (kafs_ino_ibrk_run(ctx, inoent, (kafs_iblkcnt_t)iblk, &set_blo, KAFS_IBLKREF_FUNC_SET) == 0)
+        {
+          kafs_inode_unlock(ctx, ino);
+          (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
+          return;
+        }
+        (void)kafs_hrl_dec_ref_by_blo(ctx, final_blo);
+      }
+
+      kafs_inode_unlock(ctx, ino);
+      return;
+    }
+
+    kafs_inode_unlock(ctx, ino);
+    if (scanned == 0)
+      kafs_bg_advance_cursor(ctx, inocnt, 0);
+  }
+}
+
 static void *kafs_pending_worker_main(void *arg)
 {
   kafs_context_t *ctx = (kafs_context_t *)arg;
@@ -983,7 +1168,21 @@ static void *kafs_pending_worker_main(void *arg)
           break;
         }
       }
-      pthread_cond_wait(&ctx->c_pending_worker_cond, &ctx->c_pending_worker_lock);
+
+      struct timespec wake;
+      clock_gettime(CLOCK_REALTIME, &wake);
+      wake.tv_nsec += (long)(KAFS_BG_DEDUP_WAIT_MS % 1000u) * 1000000l;
+      wake.tv_sec += (time_t)(KAFS_BG_DEDUP_WAIT_MS / 1000u);
+      if (wake.tv_nsec >= 1000000000l)
+      {
+        wake.tv_sec += 1;
+        wake.tv_nsec -= 1000000000l;
+      }
+
+      int wrc = pthread_cond_timedwait(&ctx->c_pending_worker_cond, &ctx->c_pending_worker_lock,
+                                       &wake);
+      if (wrc == ETIMEDOUT)
+        break;
     }
     pthread_mutex_unlock(&ctx->c_pending_worker_lock);
 
@@ -991,7 +1190,10 @@ static void *kafs_pending_worker_main(void *arg)
       (void)kafs_pending_worker_apply_priority_self(ctx);
 
     if (!has_work)
+    {
+      kafs_bg_dedup_step(ctx);
       continue;
+    }
 
     if (ent.state == KAFS_PENDING_RESOLVED || ent.state == KAFS_PENDING_FAILED)
     {
