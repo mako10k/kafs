@@ -35,8 +35,16 @@ Security and safety:
 
 When reporting findings, diagnoses, or causal explanations, the agent MUST explicitly communicate confidence for any statement that is not fully verified.
 
-- If confidence is below 100%, append a clear qualifier such as `(unconfirmed)`, `(inference)`, or `(high confidence, minor unknowns)`.
-- For mixed-evidence claims, include a short note about what is still unknown (for example: timing mismatch, partial logs, missing reproduction, or tool/version mismatch).
+- Use explicit confidence markers (emoji) for non-fully-verified statements:
+  - `🔒` = confirmed by direct, reproducible evidence.
+  - `🟩` = high confidence, minor unknowns remain.
+  - `🟨` = plausible inference from partial evidence.
+  - `🟥` = unconfirmed hypothesis/speculation.
+- Keep confidence markers separate from quality/risk markers:
+  - `✅` = good/acceptable outcome.
+  - `⚠️` = caution/risk.
+  - `❌` = bad/failing outcome.
+- For mixed-evidence claims, add a short unknowns note after the marker (for example: timing mismatch, partial logs, missing reproduction, or tool/version mismatch).
 - Separate observed facts from interpretation:
   - Facts: direct outputs, code references, measured counters.
   - Interpretation: hypotheses or causal conclusions drawn from those facts.
