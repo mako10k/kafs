@@ -623,7 +623,7 @@ int kafs_hrl_evict_ref1_to_direct(kafs_context_t *ctx, kafs_blkcnt_t *out_blo)
       {
         kafs_blkcnt_t blo = e->blo;
         (void)hrl_chain_remove(ctx, i, e->fast);
-          hrl_clear_slot(ctx, e);
+        hrl_clear_slot(ctx, e);
         kafs_hrl_bucket_unlock(ctx, b);
         if (out_blo)
           *out_blo = blo;
