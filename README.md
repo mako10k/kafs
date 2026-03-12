@@ -70,6 +70,16 @@ Mount a filesystem image:
 
 FUSE options:
 - `-o multi_thread[=N]`: enable multi-thread mode with optional thread count
+- `-o bg_dedup_scan=on|off` (alias: `-o dedup_scan=on|off`): idle background dedup scan switch (default: `on`)
+- `-o bg_dedup_interval_ms=N` (alias: `-o dedup_interval_ms=N`): idle background dedup scan interval in ms
+- `--option <opt[,opt...]>` / `--option=<opt[,opt...]>`: long-option alias of `-o`
+
+Example:
+
+```sh
+./kafs --image /tmp/kafs.img /tmp/kafs-mnt -f --option dedup_scan=off
+./kafs --image /tmp/kafs.img /tmp/kafs-mnt -f -o dedup_scan=on,dedup_interval_ms=20
+```
 
 Migration options:
 - `--migrate-v2`: migrate a v2 image to v3 in one-shot mode at startup, then exit
@@ -248,6 +258,8 @@ Hotplug flow example:
 - `KAFS_JOURNAL`: set to `0` to disable journal even if present
 - `KAFS_MT`: set to `1` to enable multi-thread mode
 - `KAFS_MAX_THREADS`: default thread count when multi-thread mode is enabled
+- `KAFS_BG_DEDUP_SCAN`: set idle background dedup scan on/off (default `on`)
+- `KAFS_BG_DEDUP_INTERVAL_MS`: default idle background dedup scan interval in ms
 - `KAFS_JOURNAL_GC_NS`: group commit window in nanoseconds
 
 ### hotplug

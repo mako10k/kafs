@@ -37,6 +37,15 @@ Specify image path.
 .BR --image= " <image>
 Specify image path (inline form).
 .TP
+.BR --option " " <opt[,opt...]>
+Alias for FUSE
+.BR -o .
+Can be specified multiple times.
+.TP
+.BR --option= " <opt[,opt...]>
+Inline form of
+.BR --option .
+.TP
 .B --migrate-v2
 If the image format is v2, perform one-shot migration to v3 and exit.
 This operation is irreversible.
@@ -100,6 +109,22 @@ Alias for
 .BR -o " " dedup_worker_nice= "<0..19>"
 Alias for
 .BR pending_worker_nice .
+.TP
+.BR -o " " bg_dedup_scan= "<on|off>"
+Enable or disable idle background dedup scan.
+Default is
+.BR on .
+.TP
+.BR -o " " dedup_scan= "<on|off>"
+Alias for
+.BR bg_dedup_scan .
+.TP
+.BR -o " " bg_dedup_interval_ms= "<N>"
+Set idle background dedup scan interval in milliseconds.
+.TP
+.BR -o " " dedup_interval_ms= "<N>"
+Alias for
+.BR bg_dedup_interval_ms .
 .SS Hotplug
 .TP
 .B --hotplug
@@ -159,6 +184,12 @@ Default value for
 .B KAFS_PENDING_WORKER_NICE
 Default value for
 .BR -o " " pending_worker_nice= .
+.TP
+.B KAFS_BG_DEDUP_SCAN
+Default on/off switch for idle background dedup scan (default: on).
+.TP
+.B KAFS_BG_DEDUP_INTERVAL_MS
+Default scan interval in milliseconds for idle background dedup.
 .TP
 .B KAFS_HOTPLUG_UDS
 Hotplug UDS endpoint path used when explicit hotplug options are not provided.

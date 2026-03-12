@@ -6734,7 +6734,9 @@ static void usage(const char *prog)
           "    -o pendinglog_cap_min=<N>         Pending queue minimum effective capacity\n"
           "    -o pendinglog_cap_max=<N>         Pending queue maximum effective capacity\n"
           "    -o bg_dedup_scan=<on|off>         Enable/disable idle background dedup scan\n"
+          "    -o dedup_scan=<on|off>            Alias of bg_dedup_scan (default: on)\n"
           "    -o bg_dedup_interval_ms=<N>       Idle dedup scan interval (ms)\n"
+          "    -o dedup_interval_ms=<N>          Alias of bg_dedup_interval_ms\n"
           "\n"
           "  [Sync Policy]\n"
           "    -o fsync_policy=<journal_only|full|adaptive>\n"
@@ -6753,7 +6755,7 @@ static void usage(const char *prog)
           "    KAFS_PENDINGLOG_CAP_INITIAL       pending initial effective capacity\n"
           "    KAFS_PENDINGLOG_CAP_MIN           pending minimum effective capacity\n"
           "    KAFS_PENDINGLOG_CAP_MAX           pending maximum effective capacity\n"
-          "    KAFS_BG_DEDUP_SCAN                idle background dedup scan on/off\n"
+          "    KAFS_BG_DEDUP_SCAN                idle background dedup scan on/off (default: on)\n"
           "    KAFS_BG_DEDUP_INTERVAL_MS         idle dedup scan interval (ms)\n"
           "    KAFS_FSYNC_POLICY                 fsync policy default\n"
           "    KAFS_HOTPLUG_UDS                  Hotplug UDS path (legacy/env)\n"
@@ -7031,6 +7033,24 @@ int main(int argc, char **argv)
         fprintf(stderr, "invalid --hotplug-back-bin value\n");
         return 2;
       }
+      continue;
+    }
+    if (strcmp(a, "--option") == 0)
+    {
+      if (i + 1 < argc)
+      {
+        argv_clean[argc_clean++] = "-o";
+        argv_clean[argc_clean++] = argv[++i];
+        continue;
+      }
+      fprintf(stderr, "--option requires an argument.\n");
+      usage(argv[0]);
+      return 2;
+    }
+    if (strncmp(a, "--option=", 9) == 0)
+    {
+      argv_clean[argc_clean++] = "-o";
+      argv_clean[argc_clean++] = (char *)(a + 9);
       continue;
     }
     if (strcmp(a, "--image") == 0)
@@ -7479,12 +7499,14 @@ int main(int argc, char **argv)
             continue;
           }
 
-          if (strcmp(tok, "bg_dedup_scan") == 0 || strcmp(tok, "bg_dedup_scan=on") == 0)
+          if (strcmp(tok, "bg_dedup_scan") == 0 || strcmp(tok, "bg_dedup_scan=on") == 0 ||
+              strcmp(tok, "dedup_scan") == 0 || strcmp(tok, "dedup_scan=on") == 0)
           {
             bg_dedup_scan_enabled = 1u;
             continue;
           }
-          if (strcmp(tok, "no_bg_dedup_scan") == 0 || strcmp(tok, "bg_dedup_scan=off") == 0)
+          if (strcmp(tok, "no_bg_dedup_scan") == 0 || strcmp(tok, "bg_dedup_scan=off") == 0 ||
+              strcmp(tok, "no_dedup_scan") == 0 || strcmp(tok, "dedup_scan=off") == 0)
           {
             bg_dedup_scan_enabled = 0u;
             continue;
@@ -7493,11 +7515,13 @@ int main(int argc, char **argv)
           const char *bg_scan_str = NULL;
           if (strncmp(tok, "bg_dedup_scan=", 14) == 0)
             bg_scan_str = tok + 14;
+          else if (strncmp(tok, "dedup_scan=", 11) == 0)
+            bg_scan_str = tok + 11;
           if (bg_scan_str)
           {
             if (kafs_parse_onoff(bg_scan_str, &bg_dedup_scan_enabled) != 0)
             {
-              fprintf(stderr, "invalid -o bg_dedup_scan: '%s'\n", bg_scan_str);
+              fprintf(stderr, "invalid -o dedup_scan/bg_dedup_scan: '%s'\n", bg_scan_str);
               free(dup);
               return 2;
             }
@@ -7507,12 +7531,15 @@ int main(int argc, char **argv)
           const char *bg_interval_str = NULL;
           if (strncmp(tok, "bg_dedup_interval_ms=", 21) == 0)
             bg_interval_str = tok + 21;
+          else if (strncmp(tok, "dedup_interval_ms=", 18) == 0)
+            bg_interval_str = tok + 18;
           if (bg_interval_str)
           {
             if (kafs_parse_u32_range(bg_interval_str, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
                                      KAFS_BG_DEDUP_INTERVAL_MS_MAX, &bg_dedup_interval_ms) != 0)
             {
-              fprintf(stderr, "invalid -o bg_dedup_interval_ms: '%s'\n", bg_interval_str);
+              fprintf(stderr, "invalid -o dedup_interval_ms/bg_dedup_interval_ms: '%s'\n",
+                      bg_interval_str);
               free(dup);
               return 2;
             }
