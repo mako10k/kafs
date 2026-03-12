@@ -105,6 +105,12 @@ struct kafs_context
   uint64_t c_stat_bg_dedup_replacements;
   uint64_t c_stat_bg_dedup_evicts;
   uint64_t c_stat_bg_dedup_retries;
+  uint64_t c_stat_bg_dedup_steps;
+  uint64_t c_stat_bg_dedup_scanned_blocks;
+  uint64_t c_stat_bg_dedup_direct_candidates;
+  uint64_t c_stat_bg_dedup_direct_hits;
+  uint64_t c_stat_bg_dedup_index_evicts;
+  uint64_t c_stat_bg_dedup_cooldowns;
   uint64_t c_stat_trim_issued;
   uint64_t c_stat_trim_failed;
 
@@ -159,6 +165,18 @@ struct kafs_context
   // --- Idle background dedup scan state ---
   uint32_t c_bg_dedup_ino_cursor;
   uint32_t c_bg_dedup_iblk_cursor;
+  uint32_t c_bg_dedup_anchor_ino;
+  uint32_t c_bg_dedup_anchor_iblk;
+  uint32_t c_bg_dedup_anchor_valid;
+  uint32_t c_bg_dedup_anchor_advance_count;
+  uint64_t c_bg_dedup_cooldown_until_ns;
+  uint32_t c_bg_dedup_prng;
+
+  uint32_t c_bg_dedup_idx_count;
+  uint32_t c_bg_dedup_idx_next_insert;
+  uint64_t c_bg_dedup_idx_fast[4096];
+  uint32_t c_bg_dedup_idx_blo[4096];
+
   uint32_t c_bg_dedup_recent_pos;
   uint64_t c_bg_dedup_recent_fast[64];
   uint32_t c_bg_dedup_recent_blo[64];

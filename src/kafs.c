@@ -122,6 +122,7 @@ static inline void kafs_stat_record_pwrite_iblk_write_latency(kafs_context_t *ct
 #define KAFS_BG_DEDUP_INTERVAL_MS_MIN 1u
 #define KAFS_BG_DEDUP_INTERVAL_MS_MAX 60000u
 #define KAFS_BG_DEDUP_IDLE_BURST_STEPS 64u
+#define KAFS_BG_DEDUP_COOLDOWN_MS 2000u
 
 static uint32_t g_suppress_fuse_max_threads_warn = 1u;
 
@@ -986,6 +987,82 @@ static uint64_t kafs_bg_hash64(const void *buf, size_t len)
   return h;
 }
 
+static uint32_t kafs_bg_prng_next(struct kafs_context *ctx)
+{
+  if (!ctx)
+    return 0;
+  uint32_t x = ctx->c_bg_dedup_prng;
+  if (x == 0)
+    x = (uint32_t)(kafs_now_ns() & 0xffffffffu) ^ 0x9e3779b9u;
+  x ^= x << 13;
+  x ^= x >> 17;
+  x ^= x << 5;
+  ctx->c_bg_dedup_prng = x;
+  return x;
+}
+
+static void kafs_bg_index_clear(struct kafs_context *ctx)
+{
+  if (!ctx)
+    return;
+  ctx->c_bg_dedup_idx_count = 0;
+  ctx->c_bg_dedup_idx_next_insert = 0;
+}
+
+static void kafs_bg_index_note(struct kafs_context *ctx, uint64_t fast, kafs_blkcnt_t blo)
+{
+  if (!ctx || blo == KAFS_BLO_NONE)
+    return;
+
+  uint32_t cap = (uint32_t)(sizeof(ctx->c_bg_dedup_idx_fast) / sizeof(ctx->c_bg_dedup_idx_fast[0]));
+  if (cap == 0)
+    return;
+
+  uint32_t slot = 0;
+  if (ctx->c_bg_dedup_idx_count < cap)
+  {
+    slot = ctx->c_bg_dedup_idx_next_insert % cap;
+    ctx->c_bg_dedup_idx_next_insert = slot + 1u;
+    ctx->c_bg_dedup_idx_count++;
+  }
+  else
+  {
+    // Intentionally unstable eviction: random replacement gives different coverage each sweep.
+    slot = kafs_bg_prng_next(ctx) % cap;
+    __atomic_add_fetch(&ctx->c_stat_bg_dedup_index_evicts, 1u, __ATOMIC_RELAXED);
+  }
+
+  ctx->c_bg_dedup_idx_fast[slot] = fast;
+  ctx->c_bg_dedup_idx_blo[slot] = (uint32_t)blo;
+}
+
+static kafs_blkcnt_t kafs_bg_index_find_dup_blo(struct kafs_context *ctx, uint64_t fast,
+                                                kafs_blkcnt_t self_blo, const void *buf)
+{
+  if (!ctx || !buf)
+    return KAFS_BLO_NONE;
+  uint32_t n = ctx->c_bg_dedup_idx_count;
+  if (n == 0)
+    return KAFS_BLO_NONE;
+
+  kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
+  char tmp[bs];
+  __atomic_add_fetch(&ctx->c_stat_bg_dedup_direct_candidates, 1u, __ATOMIC_RELAXED);
+  for (uint32_t i = 0; i < n; ++i)
+  {
+    if (ctx->c_bg_dedup_idx_fast[i] != fast)
+      continue;
+    kafs_blkcnt_t cand = (kafs_blkcnt_t)ctx->c_bg_dedup_idx_blo[i];
+    if (cand == KAFS_BLO_NONE || cand == self_blo)
+      continue;
+    if (kafs_blk_read(ctx, cand, tmp) != 0)
+      continue;
+    if (memcmp(tmp, buf, bs) == 0)
+      return cand;
+  }
+  return KAFS_BLO_NONE;
+}
+
 static void kafs_bg_recent_note(struct kafs_context *ctx, uint64_t fast, kafs_blkcnt_t blo)
 {
   if (!ctx || blo == KAFS_BLO_NONE)
@@ -1022,14 +1099,44 @@ static kafs_blkcnt_t kafs_bg_recent_find_dup_blo(struct kafs_context *ctx, uint6
   return KAFS_BLO_NONE;
 }
 
-static void kafs_bg_advance_cursor(struct kafs_context *ctx, kafs_inocnt_t inocnt,
-                                   uint32_t next_iblk)
+static int kafs_bg_advance_cursor(struct kafs_context *ctx, kafs_inocnt_t inocnt,
+                                  uint32_t next_iblk)
 {
   if (!ctx || inocnt == 0)
-    return;
+    return 0;
+
+  if (!ctx->c_bg_dedup_anchor_valid)
+  {
+    ctx->c_bg_dedup_anchor_ino = ctx->c_bg_dedup_ino_cursor;
+    ctx->c_bg_dedup_anchor_iblk = ctx->c_bg_dedup_iblk_cursor;
+    ctx->c_bg_dedup_anchor_advance_count = 0;
+    ctx->c_bg_dedup_anchor_valid = 1u;
+  }
+
   ctx->c_bg_dedup_iblk_cursor = next_iblk;
   if (next_iblk == 0)
     ctx->c_bg_dedup_ino_cursor = (ctx->c_bg_dedup_ino_cursor + 1u) % inocnt;
+
+  ctx->c_bg_dedup_anchor_advance_count++;
+  if (ctx->c_bg_dedup_anchor_advance_count > 0 &&
+      ctx->c_bg_dedup_ino_cursor == ctx->c_bg_dedup_anchor_ino &&
+      ctx->c_bg_dedup_iblk_cursor == ctx->c_bg_dedup_anchor_iblk)
+  {
+    ctx->c_bg_dedup_anchor_valid = 0;
+    ctx->c_bg_dedup_anchor_advance_count = 0;
+    return 1;
+  }
+  return 0;
+}
+
+static void kafs_bg_enter_cooldown(struct kafs_context *ctx)
+{
+  if (!ctx)
+    return;
+  ctx->c_bg_dedup_cooldown_until_ns =
+      kafs_now_ns() + (uint64_t)KAFS_BG_DEDUP_COOLDOWN_MS * 1000000ull;
+  kafs_bg_index_clear(ctx);
+  __atomic_add_fetch(&ctx->c_stat_bg_dedup_cooldowns, 1u, __ATOMIC_RELAXED);
 }
 
 static void kafs_bg_dedup_step(struct kafs_context *ctx)
@@ -1043,6 +1150,12 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
   if (inocnt == 0)
     return;
 
+  uint64_t now_ns = kafs_now_ns();
+  if (ctx->c_bg_dedup_cooldown_until_ns > now_ns)
+    return;
+
+  __atomic_add_fetch(&ctx->c_stat_bg_dedup_steps, 1u, __ATOMIC_RELAXED);
+
   kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
   char buf[bs];
 
@@ -1055,7 +1168,10 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
     {
       kafs_inode_unlock(ctx, ino);
       if (scanned == 0)
-        kafs_bg_advance_cursor(ctx, inocnt, 0);
+      {
+        if (kafs_bg_advance_cursor(ctx, inocnt, 0))
+          kafs_bg_enter_cooldown(ctx);
+      }
       continue;
     }
 
@@ -1064,7 +1180,10 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
     {
       kafs_inode_unlock(ctx, ino);
       if (scanned == 0)
-        kafs_bg_advance_cursor(ctx, inocnt, 0);
+      {
+        if (kafs_bg_advance_cursor(ctx, inocnt, 0))
+          kafs_bg_enter_cooldown(ctx);
+      }
       continue;
     }
 
@@ -1074,7 +1193,10 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
     {
       kafs_inode_unlock(ctx, ino);
       if (scanned == 0)
-        kafs_bg_advance_cursor(ctx, inocnt, 0);
+      {
+        if (kafs_bg_advance_cursor(ctx, inocnt, 0))
+          kafs_bg_enter_cooldown(ctx);
+      }
       continue;
     }
 
@@ -1097,7 +1219,10 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
       if (kafs_blk_read(ctx, old_blo, buf) != 0)
         continue;
 
-      kafs_bg_advance_cursor(ctx, inocnt, next_iblk);
+      __atomic_add_fetch(&ctx->c_stat_bg_dedup_scanned_blocks, 1u, __ATOMIC_RELAXED);
+
+      if (kafs_bg_advance_cursor(ctx, inocnt, next_iblk))
+        kafs_bg_enter_cooldown(ctx);
 
       kafs_blkcnt_t match_blo = KAFS_BLO_NONE;
       int mrc = kafs_hrl_match_inc_by_block_excluding_blo(ctx, buf, old_blo, &match_blo);
@@ -1117,12 +1242,17 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
 
       uint64_t fast = kafs_bg_hash64(buf, bs);
       kafs_blkcnt_t dup_direct = kafs_bg_recent_find_dup_blo(ctx, fast, old_blo, buf);
+      if (dup_direct == KAFS_BLO_NONE)
+        dup_direct = kafs_bg_index_find_dup_blo(ctx, fast, old_blo, buf);
       kafs_bg_recent_note(ctx, fast, old_blo);
+      kafs_bg_index_note(ctx, fast, old_blo);
       if (dup_direct == KAFS_BLO_NONE)
       {
         kafs_inode_unlock(ctx, ino);
         return;
       }
+
+      __atomic_add_fetch(&ctx->c_stat_bg_dedup_direct_hits, 1u, __ATOMIC_RELAXED);
 
       kafs_hrid_t hrid = 0;
       int is_new = 0;
@@ -1159,7 +1289,10 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
 
     kafs_inode_unlock(ctx, ino);
     if (scanned == 0)
-      kafs_bg_advance_cursor(ctx, inocnt, 0);
+    {
+      if (kafs_bg_advance_cursor(ctx, inocnt, 0))
+        kafs_bg_enter_cooldown(ctx);
+    }
   }
 }
 
@@ -4295,7 +4428,7 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
   return 0;
 }
 
-#define KAFS_STATS_VERSION 8u
+#define KAFS_STATS_VERSION 9u
 
 static int kafs_u64_cmp(const void *a, const void *b)
 {
@@ -4448,6 +4581,12 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
   out->bg_dedup_replacements = ctx->c_stat_bg_dedup_replacements;
   out->bg_dedup_evicts = ctx->c_stat_bg_dedup_evicts;
   out->bg_dedup_retries = ctx->c_stat_bg_dedup_retries;
+  out->bg_dedup_steps = ctx->c_stat_bg_dedup_steps;
+  out->bg_dedup_scanned_blocks = ctx->c_stat_bg_dedup_scanned_blocks;
+  out->bg_dedup_direct_candidates = ctx->c_stat_bg_dedup_direct_candidates;
+  out->bg_dedup_direct_hits = ctx->c_stat_bg_dedup_direct_hits;
+  out->bg_dedup_index_evicts = ctx->c_stat_bg_dedup_index_evicts;
+  out->bg_dedup_cooldowns = ctx->c_stat_bg_dedup_cooldowns;
 }
 
 #ifdef __linux__

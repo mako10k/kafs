@@ -1063,6 +1063,10 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
   uint64_t bg_dedup_ops = st.bg_dedup_replacements + st.bg_dedup_retries;
   double bg_dedup_retry_rate =
       (bg_dedup_ops > 0) ? (double)st.bg_dedup_retries / (double)bg_dedup_ops : 0.0;
+  double bg_dedup_direct_hit_rate =
+      (st.bg_dedup_direct_candidates > 0)
+          ? (double)st.bg_dedup_direct_hits / (double)st.bg_dedup_direct_candidates
+          : 0.0;
   uint64_t fs_blocks_used =
       (st.fs_blocks_total >= st.fs_blocks_free) ? (st.fs_blocks_total - st.fs_blocks_free) : 0;
   uint64_t fs_inodes_used =
@@ -1177,6 +1181,13 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
     printf("  \"bg_dedup_replacements\": %" PRIu64 ",\n", st.bg_dedup_replacements);
     printf("  \"bg_dedup_evicts\": %" PRIu64 ",\n", st.bg_dedup_evicts);
     printf("  \"bg_dedup_retries\": %" PRIu64 ",\n", st.bg_dedup_retries);
+    printf("  \"bg_dedup_steps\": %" PRIu64 ",\n", st.bg_dedup_steps);
+    printf("  \"bg_dedup_scanned_blocks\": %" PRIu64 ",\n", st.bg_dedup_scanned_blocks);
+    printf("  \"bg_dedup_direct_candidates\": %" PRIu64 ",\n", st.bg_dedup_direct_candidates);
+    printf("  \"bg_dedup_direct_hits\": %" PRIu64 ",\n", st.bg_dedup_direct_hits);
+    printf("  \"bg_dedup_direct_hit_rate\": %.6f,\n", bg_dedup_direct_hit_rate);
+    printf("  \"bg_dedup_index_evicts\": %" PRIu64 ",\n", st.bg_dedup_index_evicts);
+    printf("  \"bg_dedup_cooldowns\": %" PRIu64 ",\n", st.bg_dedup_cooldowns);
     printf("  \"bg_dedup_retry_rate\": %.6f,\n", bg_dedup_retry_rate);
     printf("  \"copy_share_hit_rate\": %.6f,\n", copy_share_hit_rate);
     printf("  \"pwrite_iblk_read_ms\": %.3f,\n", pwrite_iblk_read_ms);
@@ -1287,6 +1298,12 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
   printf("  bg_dedup: replacements=%" PRIu64 " evicts=%" PRIu64 " retries=%" PRIu64
          " retry_rate=%.3f\n",
          st.bg_dedup_replacements, st.bg_dedup_evicts, st.bg_dedup_retries, bg_dedup_retry_rate);
+  printf("            steps=%" PRIu64 " scanned_blocks=%" PRIu64 " direct_candidates=%" PRIu64
+         " direct_hits=%" PRIu64 " direct_hit_rate=%.3f index_evicts=%" PRIu64 " cooldowns=%" PRIu64
+         "\n",
+         st.bg_dedup_steps, st.bg_dedup_scanned_blocks, st.bg_dedup_direct_candidates,
+         st.bg_dedup_direct_hits, bg_dedup_direct_hit_rate, st.bg_dedup_index_evicts,
+         st.bg_dedup_cooldowns);
   return 0;
 }
 

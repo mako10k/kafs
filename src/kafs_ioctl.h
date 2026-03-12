@@ -93,6 +93,12 @@ struct kafs_stats
   uint64_t bg_dedup_replacements;
   uint64_t bg_dedup_evicts;
   uint64_t bg_dedup_retries;
+  uint64_t bg_dedup_steps;
+  uint64_t bg_dedup_scanned_blocks;
+  uint64_t bg_dedup_direct_candidates;
+  uint64_t bg_dedup_direct_hits;
+  uint64_t bg_dedup_index_evicts;
+  uint64_t bg_dedup_cooldowns;
 };
 
 typedef struct kafs_stats kafs_stats_t;
