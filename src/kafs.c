@@ -121,6 +121,7 @@ static inline void kafs_stat_record_pwrite_iblk_write_latency(kafs_context_t *ct
 #define KAFS_BG_DEDUP_INTERVAL_MS_DEFAULT 250u
 #define KAFS_BG_DEDUP_INTERVAL_MS_MIN 1u
 #define KAFS_BG_DEDUP_INTERVAL_MS_MAX 60000u
+#define KAFS_BG_DEDUP_IDLE_BURST_STEPS 64u
 
 static uint32_t g_suppress_fuse_max_threads_warn = 1u;
 
@@ -1226,8 +1227,46 @@ static void *kafs_pending_worker_main(void *arg)
     if (!has_work)
     {
       if (ctx->c_bg_dedup_enabled)
-        kafs_bg_dedup_step(ctx);
-      continue;
+      {
+        // Idle windowでは64ステップ単位で進め、各チャンクごとに
+        // pendingキューを再確認して、空なら連続実行する。
+        for (;;)
+        {
+          for (uint32_t i = 0; i < KAFS_BG_DEDUP_IDLE_BURST_STEPS; ++i)
+            kafs_bg_dedup_step(ctx);
+
+          int keep_scanning = 0;
+          pthread_mutex_lock(&ctx->c_pending_worker_lock);
+          kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+          if (ctx->c_pending_worker_stop)
+          {
+            pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+            return NULL;
+          }
+
+          if (hdr && hdr->capacity > 0 && hdr->head != hdr->tail)
+          {
+            idx = hdr->head;
+            kafs_pendinglog_entry_t *slot = kafs_pendinglog_entry_ptr(ctx, idx);
+            if (slot)
+            {
+              ent = *slot;
+              has_work = 1;
+            }
+          }
+          else if (ctx->c_bg_dedup_enabled && ctx->c_bg_dedup_interval_ms > 0)
+          {
+            keep_scanning = 1;
+          }
+          pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+
+          if (has_work || !keep_scanning)
+            break;
+        }
+      }
+
+      if (!has_work)
+        continue;
     }
 
     if (ent.state == KAFS_PENDING_RESOLVED || ent.state == KAFS_PENDING_FAILED)
