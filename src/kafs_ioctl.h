@@ -99,6 +99,13 @@ struct kafs_stats
   uint64_t bg_dedup_direct_hits;
   uint64_t bg_dedup_index_evicts;
   uint64_t bg_dedup_cooldowns;
+  uint32_t bg_dedup_mode;
+  uint32_t bg_dedup_telemetry_valid;
+  uint64_t bg_dedup_last_scanned_blocks;
+  uint64_t bg_dedup_last_direct_candidates;
+  uint64_t bg_dedup_last_replacements;
+  uint64_t bg_dedup_idle_skip_streak;
+  uint64_t bg_dedup_cold_start_due_ms;
 
   uint64_t pending_queue_depth;
   uint64_t pending_queue_capacity;

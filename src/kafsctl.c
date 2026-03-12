@@ -271,6 +271,21 @@ static const char *pending_worker_prio_mode_str(uint32_t mode)
   }
 }
 
+static const char *bg_dedup_mode_str(uint32_t mode)
+{
+  switch (mode)
+  {
+  case 1:
+    return "cold";
+  case 2:
+    return "adaptive";
+  case 3:
+    return "pressure";
+  default:
+    return "unknown";
+  }
+}
+
 static int hotplug_ctl_exchange(const char *mnt, uint16_t op, const void *req, uint32_t req_len,
                                 void *resp, uint32_t resp_cap, uint32_t *resp_len,
                                 int32_t *resp_result);
@@ -1192,6 +1207,15 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
     printf("  \"bg_dedup_direct_hit_rate\": %.6f,\n", bg_dedup_direct_hit_rate);
     printf("  \"bg_dedup_index_evicts\": %" PRIu64 ",\n", st.bg_dedup_index_evicts);
     printf("  \"bg_dedup_cooldowns\": %" PRIu64 ",\n", st.bg_dedup_cooldowns);
+    printf("  \"bg_dedup_mode\": %" PRIu32 ",\n", st.bg_dedup_mode);
+    printf("  \"bg_dedup_mode_str\": \"%s\",\n", bg_dedup_mode_str(st.bg_dedup_mode));
+    printf("  \"bg_dedup_telemetry_valid\": %" PRIu32 ",\n", st.bg_dedup_telemetry_valid);
+    printf("  \"bg_dedup_last_scanned_blocks\": %" PRIu64 ",\n", st.bg_dedup_last_scanned_blocks);
+    printf("  \"bg_dedup_last_direct_candidates\": %" PRIu64 ",\n",
+           st.bg_dedup_last_direct_candidates);
+    printf("  \"bg_dedup_last_replacements\": %" PRIu64 ",\n", st.bg_dedup_last_replacements);
+    printf("  \"bg_dedup_idle_skip_streak\": %" PRIu64 ",\n", st.bg_dedup_idle_skip_streak);
+    printf("  \"bg_dedup_cold_start_due_ms\": %" PRIu64 ",\n", st.bg_dedup_cold_start_due_ms);
     printf("  \"pending_queue_depth\": %" PRIu64 ",\n", st.pending_queue_depth);
     printf("  \"pending_queue_capacity\": %" PRIu64 ",\n", st.pending_queue_capacity);
     printf("  \"pending_queue_head\": %" PRIu64 ",\n", st.pending_queue_head);
@@ -1324,6 +1348,13 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
          st.bg_dedup_steps, st.bg_dedup_scanned_blocks, st.bg_dedup_direct_candidates,
          st.bg_dedup_direct_hits, bg_dedup_direct_hit_rate, st.bg_dedup_index_evicts,
          st.bg_dedup_cooldowns);
+  printf("            mode=%" PRIu32 " (%s) telemetry_valid=%" PRIu32 " last_scanned=%" PRIu64
+         " last_direct_candidates=%" PRIu64 " last_replacements=%" PRIu64
+         " idle_skip_streak=%" PRIu64 " cold_due_ms=%" PRIu64 "\n",
+         st.bg_dedup_mode, bg_dedup_mode_str(st.bg_dedup_mode), st.bg_dedup_telemetry_valid,
+         st.bg_dedup_last_scanned_blocks, st.bg_dedup_last_direct_candidates,
+         st.bg_dedup_last_replacements, st.bg_dedup_idle_skip_streak,
+         st.bg_dedup_cold_start_due_ms);
   printf("  pending: depth=%" PRIu64 "/%" PRIu64 " head=%" PRIu64 " tail=%" PRIu64 "\n",
          st.pending_queue_depth, st.pending_queue_capacity, st.pending_queue_head,
          st.pending_queue_tail);

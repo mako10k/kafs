@@ -186,6 +186,13 @@ struct kafs_context
   uint32_t c_bg_dedup_worker_auto_boosted;
   int32_t c_bg_dedup_worker_prio_apply_error;
   uint32_t c_bg_dedup_worker_prio_dirty;
+  uint32_t c_bg_dedup_mode;
+  uint32_t c_bg_dedup_telemetry_valid;
+  uint64_t c_bg_dedup_last_scanned_blocks;
+  uint64_t c_bg_dedup_last_direct_candidates;
+  uint64_t c_bg_dedup_last_replacements;
+  uint32_t c_bg_dedup_idle_skip_streak;
+  uint64_t c_bg_dedup_cold_start_due_ns;
 
   // --- Idle background dedup scan state ---
   uint32_t c_bg_dedup_ino_cursor;

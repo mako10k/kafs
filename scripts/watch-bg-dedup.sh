@@ -73,6 +73,14 @@ while true; do
       (.bg_dedup_direct_hits // 0),
       (.bg_dedup_index_evicts // 0),
       (.bg_dedup_cooldowns // 0),
+      (.bg_dedup_mode // 0),
+      (.bg_dedup_mode_str // "unknown"),
+      (.bg_dedup_telemetry_valid // 0),
+      (.bg_dedup_last_scanned_blocks // 0),
+      (.bg_dedup_last_direct_candidates // 0),
+      (.bg_dedup_last_replacements // 0),
+      (.bg_dedup_idle_skip_streak // 0),
+      (.bg_dedup_cold_start_due_ms // 0),
       (.bg_dedup_retry_rate // 0),
       (.hrl_entries_used // 0),
       (.hrl_entries_total // 0),
@@ -101,24 +109,32 @@ while true; do
   direct_hits="${vals[5]}"
   index_evicts="${vals[6]}"
   cooldowns="${vals[7]}"
-  retry_rate="${vals[8]}"
-  hrl_used="${vals[9]}"
-  hrl_total="${vals[10]}"
-  fallback_legacy="${vals[11]}"
-  pending_depth="${vals[12]}"
-  pending_cap="${vals[13]}"
-  pending_head="${vals[14]}"
-  pending_tail="${vals[15]}"
-  pending_running="${vals[16]}"
-  pending_stop="${vals[17]}"
-  pending_start_calls="${vals[18]}"
-  pending_start_failures="${vals[19]}"
-  pending_last_error="${vals[20]}"
-  pending_lwp_tid="${vals[21]}"
-  pending_main_entries="${vals[22]}"
-  pending_main_exits="${vals[23]}"
-  pending_resolved="${vals[24]}"
-  pending_old_block_freed="${vals[25]}"
+  bg_mode="${vals[8]}"
+  bg_mode_str="${vals[9]}"
+  bg_telemetry_valid="${vals[10]}"
+  bg_last_scanned="${vals[11]}"
+  bg_last_candidates="${vals[12]}"
+  bg_last_replacements="${vals[13]}"
+  bg_idle_skip_streak="${vals[14]}"
+  bg_cold_due_ms="${vals[15]}"
+  retry_rate="${vals[16]}"
+  hrl_used="${vals[17]}"
+  hrl_total="${vals[18]}"
+  fallback_legacy="${vals[19]}"
+  pending_depth="${vals[20]}"
+  pending_cap="${vals[21]}"
+  pending_head="${vals[22]}"
+  pending_tail="${vals[23]}"
+  pending_running="${vals[24]}"
+  pending_stop="${vals[25]}"
+  pending_start_calls="${vals[26]}"
+  pending_start_failures="${vals[27]}"
+  pending_last_error="${vals[28]}"
+  pending_lwp_tid="${vals[29]}"
+  pending_main_entries="${vals[30]}"
+  pending_main_exits="${vals[31]}"
+  pending_resolved="${vals[32]}"
+  pending_old_block_freed="${vals[33]}"
 
   d_steps=0
   d_scanned=0
@@ -153,6 +169,8 @@ while true; do
   echo "  steps=$steps  scanned_blocks=$scanned  replacements=$repl"
   echo "  direct_candidates=$direct_cand  direct_hits=$direct_hits  direct_hit_rate=$direct_hit_rate"
   echo "  index_evicts=$index_evicts  cooldowns=$cooldowns  retry_rate=$retry_rate"
+  echo "  scheduler: mode=$bg_mode ($bg_mode_str) telemetry_valid=$bg_telemetry_valid cold_due_ms=$bg_cold_due_ms"
+  echo "             last_scan: scanned=$bg_last_scanned direct_candidates=$bg_last_candidates replacements=$bg_last_replacements idle_skip_streak=$bg_idle_skip_streak"
   echo "  hrl_used=$hrl_used/$hrl_total (${hrl_fill}%)  fallback_legacy=$fallback_legacy"
   echo "  pending_queue=$pending_depth/$pending_cap (head=$pending_head tail=$pending_tail)"
   echo "  pending_worker: running=$pending_running stop=$pending_stop start_calls=$pending_start_calls start_failures=$pending_start_failures last_error=$pending_last_error lwp_tid=$pending_lwp_tid"
