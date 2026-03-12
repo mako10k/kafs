@@ -1060,6 +1060,9 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
       (st.copy_share_attempt_blocks > 0)
           ? (double)st.copy_share_done_blocks / (double)st.copy_share_attempt_blocks
           : 0.0;
+  uint64_t bg_dedup_ops = st.bg_dedup_replacements + st.bg_dedup_retries;
+  double bg_dedup_retry_rate =
+      (bg_dedup_ops > 0) ? (double)st.bg_dedup_retries / (double)bg_dedup_ops : 0.0;
   uint64_t fs_blocks_used =
       (st.fs_blocks_total >= st.fs_blocks_free) ? (st.fs_blocks_total - st.fs_blocks_free) : 0;
   uint64_t fs_inodes_used =
@@ -1171,6 +1174,10 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
     printf("  \"copy_share_fallback_blocks\": %" PRIu64 ",\n", st.copy_share_fallback_blocks);
     printf("  \"copy_share_skip_unaligned\": %" PRIu64 ",\n", st.copy_share_skip_unaligned);
     printf("  \"copy_share_skip_dst_inline\": %" PRIu64 ",\n", st.copy_share_skip_dst_inline);
+    printf("  \"bg_dedup_replacements\": %" PRIu64 ",\n", st.bg_dedup_replacements);
+    printf("  \"bg_dedup_evicts\": %" PRIu64 ",\n", st.bg_dedup_evicts);
+    printf("  \"bg_dedup_retries\": %" PRIu64 ",\n", st.bg_dedup_retries);
+    printf("  \"bg_dedup_retry_rate\": %.6f,\n", bg_dedup_retry_rate);
     printf("  \"copy_share_hit_rate\": %.6f,\n", copy_share_hit_rate);
     printf("  \"pwrite_iblk_read_ms\": %.3f,\n", pwrite_iblk_read_ms);
     printf("  \"pwrite_iblk_write_ms\": %.3f,\n", pwrite_iblk_write_ms);
@@ -1277,6 +1284,9 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
          " skip_unaligned=%" PRIu64 " skip_dst_inline=%" PRIu64 " hit_rate=%.3f\n",
          st.copy_share_attempt_blocks, st.copy_share_done_blocks, st.copy_share_fallback_blocks,
          st.copy_share_skip_unaligned, st.copy_share_skip_dst_inline, copy_share_hit_rate);
+  printf("  bg_dedup: replacements=%" PRIu64 " evicts=%" PRIu64 " retries=%" PRIu64
+         " retry_rate=%.3f\n",
+         st.bg_dedup_replacements, st.bg_dedup_evicts, st.bg_dedup_retries, bg_dedup_retry_rate);
   return 0;
 }
 

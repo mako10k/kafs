@@ -102,6 +102,9 @@ struct kafs_context
   uint64_t c_stat_copy_share_fallback_blocks;
   uint64_t c_stat_copy_share_skip_unaligned;
   uint64_t c_stat_copy_share_skip_dst_inline;
+  uint64_t c_stat_bg_dedup_replacements;
+  uint64_t c_stat_bg_dedup_evicts;
+  uint64_t c_stat_bg_dedup_retries;
   uint64_t c_stat_trim_issued;
   uint64_t c_stat_trim_failed;
 
@@ -148,6 +151,10 @@ struct kafs_context
   uint32_t c_pending_ttl_over_hard;
   int32_t c_pending_worker_prio_apply_error;
   uint32_t c_pending_worker_prio_dirty;
+
+  // --- Idle background dedup scan runtime config ---
+  uint32_t c_bg_dedup_enabled;
+  uint32_t c_bg_dedup_interval_ms;
 
   // --- Idle background dedup scan state ---
   uint32_t c_bg_dedup_ino_cursor;

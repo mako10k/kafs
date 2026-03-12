@@ -118,7 +118,9 @@ static inline void kafs_stat_record_pwrite_iblk_write_latency(kafs_context_t *ct
 #define KAFS_PENDING_REF_FLAG 0x80000000u
 #define KAFS_PENDING_REF_MASK 0x7fffffffu
 #define KAFS_PENDINGLOG_CAPACITY_FLOOR 2u
-#define KAFS_BG_DEDUP_WAIT_MS 250u
+#define KAFS_BG_DEDUP_INTERVAL_MS_DEFAULT 250u
+#define KAFS_BG_DEDUP_INTERVAL_MS_MIN 1u
+#define KAFS_BG_DEDUP_INTERVAL_MS_MAX 60000u
 
 static uint32_t g_suppress_fuse_max_threads_warn = 1u;
 
@@ -882,6 +884,25 @@ static int kafs_parse_u32_range(const char *s, uint32_t minv, uint32_t maxv, uin
   return 0;
 }
 
+static int kafs_parse_onoff(const char *s, uint32_t *out)
+{
+  if (!s || !out)
+    return -EINVAL;
+  if (strcmp(s, "1") == 0 || strcmp(s, "on") == 0 || strcmp(s, "true") == 0 ||
+      strcmp(s, "yes") == 0 || strcmp(s, "enable") == 0 || strcmp(s, "enabled") == 0)
+  {
+    *out = 1u;
+    return 0;
+  }
+  if (strcmp(s, "0") == 0 || strcmp(s, "off") == 0 || strcmp(s, "false") == 0 ||
+      strcmp(s, "no") == 0 || strcmp(s, "disable") == 0 || strcmp(s, "disabled") == 0)
+  {
+    *out = 0u;
+    return 0;
+  }
+  return -EINVAL;
+}
+
 static int kafs_pending_worker_prio_mode_parse(const char *s, uint32_t *mode)
 {
   if (!s || !mode)
@@ -1085,6 +1106,7 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
         if (kafs_ino_ibrk_run(ctx, inoent, (kafs_iblkcnt_t)iblk, &set_blo, KAFS_IBLKREF_FUNC_SET) ==
             0)
         {
+          __atomic_add_fetch(&ctx->c_stat_bg_dedup_replacements, 1u, __ATOMIC_RELAXED);
           kafs_inode_unlock(ctx, ino);
           (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
           return;
@@ -1109,7 +1131,11 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
       {
         kafs_blkcnt_t evicted_blo = KAFS_BLO_NONE;
         if (kafs_hrl_evict_ref1_to_direct(ctx, &evicted_blo) == 0)
+        {
+          __atomic_add_fetch(&ctx->c_stat_bg_dedup_evicts, 1u, __ATOMIC_RELAXED);
+          __atomic_add_fetch(&ctx->c_stat_bg_dedup_retries, 1u, __ATOMIC_RELAXED);
           prc = kafs_hrl_put(ctx, buf, &hrid, &is_new, &final_blo);
+        }
       }
 
       if (prc == 0 && final_blo != KAFS_BLO_NONE && final_blo != old_blo)
@@ -1118,6 +1144,7 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx)
         if (kafs_ino_ibrk_run(ctx, inoent, (kafs_iblkcnt_t)iblk, &set_blo, KAFS_IBLKREF_FUNC_SET) ==
             0)
         {
+          __atomic_add_fetch(&ctx->c_stat_bg_dedup_replacements, 1u, __ATOMIC_RELAXED);
           kafs_inode_unlock(ctx, ino);
           (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
           return;
@@ -1170,10 +1197,16 @@ static void *kafs_pending_worker_main(void *arg)
         }
       }
 
+      if (!ctx->c_bg_dedup_enabled || ctx->c_bg_dedup_interval_ms == 0)
+      {
+        pthread_cond_wait(&ctx->c_pending_worker_cond, &ctx->c_pending_worker_lock);
+        continue;
+      }
+
       struct timespec wake;
       clock_gettime(CLOCK_REALTIME, &wake);
-      wake.tv_nsec += (long)(KAFS_BG_DEDUP_WAIT_MS % 1000u) * 1000000l;
-      wake.tv_sec += (time_t)(KAFS_BG_DEDUP_WAIT_MS / 1000u);
+      wake.tv_nsec += (long)(ctx->c_bg_dedup_interval_ms % 1000u) * 1000000l;
+      wake.tv_sec += (time_t)(ctx->c_bg_dedup_interval_ms / 1000u);
       if (wake.tv_nsec >= 1000000000l)
       {
         wake.tv_sec += 1;
@@ -1192,7 +1225,8 @@ static void *kafs_pending_worker_main(void *arg)
 
     if (!has_work)
     {
-      kafs_bg_dedup_step(ctx);
+      if (ctx->c_bg_dedup_enabled)
+        kafs_bg_dedup_step(ctx);
       continue;
     }
 
@@ -4222,7 +4256,7 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
   return 0;
 }
 
-#define KAFS_STATS_VERSION 7u
+#define KAFS_STATS_VERSION 8u
 
 static int kafs_u64_cmp(const void *a, const void *b)
 {
@@ -4372,6 +4406,9 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
   out->copy_share_fallback_blocks = ctx->c_stat_copy_share_fallback_blocks;
   out->copy_share_skip_unaligned = ctx->c_stat_copy_share_skip_unaligned;
   out->copy_share_skip_dst_inline = ctx->c_stat_copy_share_skip_dst_inline;
+  out->bg_dedup_replacements = ctx->c_stat_bg_dedup_replacements;
+  out->bg_dedup_evicts = ctx->c_stat_bg_dedup_evicts;
+  out->bg_dedup_retries = ctx->c_stat_bg_dedup_retries;
 }
 
 #ifdef __linux__
@@ -6696,6 +6733,8 @@ static void usage(const char *prog)
           "    -o pendinglog_cap_initial=<N>     Pending queue initial effective capacity\n"
           "    -o pendinglog_cap_min=<N>         Pending queue minimum effective capacity\n"
           "    -o pendinglog_cap_max=<N>         Pending queue maximum effective capacity\n"
+          "    -o bg_dedup_scan=<on|off>         Enable/disable idle background dedup scan\n"
+          "    -o bg_dedup_interval_ms=<N>       Idle dedup scan interval (ms)\n"
           "\n"
           "  [Sync Policy]\n"
           "    -o fsync_policy=<journal_only|full|adaptive>\n"
@@ -6714,6 +6753,8 @@ static void usage(const char *prog)
           "    KAFS_PENDINGLOG_CAP_INITIAL       pending initial effective capacity\n"
           "    KAFS_PENDINGLOG_CAP_MIN           pending minimum effective capacity\n"
           "    KAFS_PENDINGLOG_CAP_MAX           pending maximum effective capacity\n"
+          "    KAFS_BG_DEDUP_SCAN                idle background dedup scan on/off\n"
+          "    KAFS_BG_DEDUP_INTERVAL_MS         idle dedup scan interval (ms)\n"
           "    KAFS_FSYNC_POLICY                 fsync policy default\n"
           "    KAFS_HOTPLUG_UDS                  Hotplug UDS path (legacy/env)\n"
           "    KAFS_HOTPLUG_BACK_BIN             Backend binary path hint\n"
@@ -7042,6 +7083,8 @@ int main(int argc, char **argv)
   uint32_t pending_cap_initial = 0;
   uint32_t pending_cap_min = 0;
   uint32_t pending_cap_max = 0;
+  uint32_t bg_dedup_scan_enabled = 1u;
+  uint32_t bg_dedup_interval_ms = KAFS_BG_DEDUP_INTERVAL_MS_DEFAULT;
   uint32_t fsync_policy = KAFS_FSYNC_POLICY_JOURNAL_ONLY;
 
   const char *pprio = getenv("KAFS_PENDING_WORKER_PRIO");
@@ -7118,6 +7161,27 @@ int main(int argc, char **argv)
     if (kafs_parse_u32_range(pcap_max, 0, 1000000000u, &pending_cap_max) != 0)
     {
       fprintf(stderr, "invalid KAFS_PENDINGLOG_CAP_MAX: '%s'\n", pcap_max);
+      return 2;
+    }
+  }
+
+  const char *bg_scan = getenv("KAFS_BG_DEDUP_SCAN");
+  if (bg_scan && *bg_scan)
+  {
+    if (kafs_parse_onoff(bg_scan, &bg_dedup_scan_enabled) != 0)
+    {
+      fprintf(stderr, "invalid KAFS_BG_DEDUP_SCAN: '%s'\n", bg_scan);
+      return 2;
+    }
+  }
+
+  const char *bg_interval = getenv("KAFS_BG_DEDUP_INTERVAL_MS");
+  if (bg_interval && *bg_interval)
+  {
+    if (kafs_parse_u32_range(bg_interval, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
+                             KAFS_BG_DEDUP_INTERVAL_MS_MAX, &bg_dedup_interval_ms) != 0)
+    {
+      fprintf(stderr, "invalid KAFS_BG_DEDUP_INTERVAL_MS: '%s'\n", bg_interval);
       return 2;
     }
   }
@@ -7415,6 +7479,46 @@ int main(int argc, char **argv)
             continue;
           }
 
+          if (strcmp(tok, "bg_dedup_scan") == 0 || strcmp(tok, "bg_dedup_scan=on") == 0)
+          {
+            bg_dedup_scan_enabled = 1u;
+            continue;
+          }
+          if (strcmp(tok, "no_bg_dedup_scan") == 0 || strcmp(tok, "bg_dedup_scan=off") == 0)
+          {
+            bg_dedup_scan_enabled = 0u;
+            continue;
+          }
+
+          const char *bg_scan_str = NULL;
+          if (strncmp(tok, "bg_dedup_scan=", 14) == 0)
+            bg_scan_str = tok + 14;
+          if (bg_scan_str)
+          {
+            if (kafs_parse_onoff(bg_scan_str, &bg_dedup_scan_enabled) != 0)
+            {
+              fprintf(stderr, "invalid -o bg_dedup_scan: '%s'\n", bg_scan_str);
+              free(dup);
+              return 2;
+            }
+            continue;
+          }
+
+          const char *bg_interval_str = NULL;
+          if (strncmp(tok, "bg_dedup_interval_ms=", 21) == 0)
+            bg_interval_str = tok + 21;
+          if (bg_interval_str)
+          {
+            if (kafs_parse_u32_range(bg_interval_str, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
+                                     KAFS_BG_DEDUP_INTERVAL_MS_MAX, &bg_dedup_interval_ms) != 0)
+            {
+              fprintf(stderr, "invalid -o bg_dedup_interval_ms: '%s'\n", bg_interval_str);
+              free(dup);
+              return 2;
+            }
+            continue;
+          }
+
           // keep other options
           size_t tlen = strlen(tok);
           size_t need = tlen + (used ? 1 : 0);
@@ -7553,6 +7657,8 @@ int main(int argc, char **argv)
   ctx.c_pendinglog_capacity = pending_cap_initial;
   ctx.c_pendinglog_capacity_min = pending_cap_min;
   ctx.c_pendinglog_capacity_max = pending_cap_max;
+  ctx.c_bg_dedup_enabled = bg_dedup_scan_enabled;
+  ctx.c_bg_dedup_interval_ms = bg_dedup_interval_ms;
   ctx.c_fsync_policy = fsync_policy;
 
   const char *data_mode = getenv("KAFS_HOTPLUG_DATA_MODE");

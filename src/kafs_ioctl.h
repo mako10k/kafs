@@ -90,6 +90,9 @@ struct kafs_stats
   uint64_t copy_share_fallback_blocks;
   uint64_t copy_share_skip_unaligned;
   uint64_t copy_share_skip_dst_inline;
+  uint64_t bg_dedup_replacements;
+  uint64_t bg_dedup_evicts;
+  uint64_t bg_dedup_retries;
 };
 
 typedef struct kafs_stats kafs_stats_t;
