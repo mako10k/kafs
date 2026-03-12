@@ -182,6 +182,8 @@ typedef enum
 static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_iblkcnt_t iblo,
                              kafs_blkcnt_t *pblo, kafs_iblkref_func_t ifunc);
 static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf);
+static int kafs_pending_worker_start(struct kafs_context *ctx);
+static void kafs_pending_worker_stop(struct kafs_context *ctx);
 
 static int kafs_pendinglog_region(struct kafs_context *ctx, uint64_t *off, uint64_t *size)
 {
@@ -4615,7 +4617,8 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
       __atomic_load_n(&ctx->c_stat_pending_worker_start_failures, __ATOMIC_RELAXED);
   out->pending_worker_start_last_error =
       __atomic_load_n(&ctx->c_stat_pending_worker_start_last_error, __ATOMIC_RELAXED);
-    out->pending_worker_lwp_tid = __atomic_load_n(&ctx->c_stat_pending_worker_lwp_tid, __ATOMIC_RELAXED);
+  out->pending_worker_lwp_tid =
+      __atomic_load_n(&ctx->c_stat_pending_worker_lwp_tid, __ATOMIC_RELAXED);
   out->pending_worker_running = ctx->c_pending_worker_running;
   out->pending_worker_stop_flag = ctx->c_pending_worker_stop;
   out->pending_worker_main_entries =
@@ -6826,7 +6829,24 @@ static void *kafs_op_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
   }
 #endif
   struct fuse_context *fctx = fuse_get_context();
-  return fctx ? fctx->private_data : NULL;
+  kafs_context_t *ctx = fctx ? (kafs_context_t *)fctx->private_data : NULL;
+  if (ctx && ctx->c_pendinglog_enabled)
+  {
+    int prc = kafs_pending_worker_start(ctx);
+    if (prc < 0)
+    {
+      kafs_log(KAFS_LOG_WARNING, "kafs: pending worker start failed in init rc=%d\n", prc);
+    }
+  }
+  return ctx;
+}
+
+static void kafs_op_destroy(void *private_data)
+{
+  kafs_context_t *ctx = (kafs_context_t *)private_data;
+  if (!ctx)
+    return;
+  kafs_pending_worker_stop(ctx);
 }
 
 static int kafs_op_release(const char *path, struct fuse_file_info *fi)
@@ -6874,6 +6894,7 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
 #ifndef KAFS_NO_MAIN
 static struct fuse_operations kafs_operations = {
     .init = kafs_op_init,
+    .destroy = kafs_op_destroy,
     .getattr = kafs_op_getattr,
     .statfs = kafs_op_statfs,
     .open = kafs_op_open,
@@ -8145,7 +8166,6 @@ int main(int argc, char **argv)
   if (ctx.c_pendinglog_enabled)
   {
     (void)kafs_pendinglog_replay_mount(&ctx);
-    (void)kafs_pending_worker_start(&ctx);
     kafs_journal_note(&ctx, "PENDINGLOG", "loaded entries=%u cap=%u", kafs_pendinglog_count(&ctx),
                       ctx.c_pendinglog_capacity);
   }

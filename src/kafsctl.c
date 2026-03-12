@@ -1201,7 +1201,7 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
     printf("  \"pending_worker_start_fail_rate\": %.6f,\n", pending_worker_start_fail_rate);
     printf("  \"pending_worker_start_last_error\": %" PRId32 ",\n",
            st.pending_worker_start_last_error);
-        printf("  \"pending_worker_lwp_tid\": %" PRId32 ",\n", st.pending_worker_lwp_tid);
+    printf("  \"pending_worker_lwp_tid\": %" PRId32 ",\n", st.pending_worker_lwp_tid);
     printf("  \"pending_worker_running\": %" PRId32 ",\n", st.pending_worker_running);
     printf("  \"pending_worker_stop_flag\": %" PRId32 ",\n", st.pending_worker_stop_flag);
     printf("  \"pending_worker_main_entries\": %" PRIu64 ",\n", st.pending_worker_main_entries);
@@ -1326,11 +1326,10 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
          st.pending_queue_depth, st.pending_queue_capacity, st.pending_queue_head,
          st.pending_queue_tail);
   printf("           worker running=%" PRId32 " stop=%" PRId32 " start_calls=%" PRIu64
-      " start_failures=%" PRIu64 " fail_rate=%.3f last_error=%" PRId32
-      " lwp_tid=%" PRId32 "\n",
+         " start_failures=%" PRIu64 " fail_rate=%.3f last_error=%" PRId32 " lwp_tid=%" PRId32 "\n",
          st.pending_worker_running, st.pending_worker_stop_flag, st.pending_worker_start_calls,
          st.pending_worker_start_failures, pending_worker_start_fail_rate,
-      st.pending_worker_start_last_error, st.pending_worker_lwp_tid);
+         st.pending_worker_start_last_error, st.pending_worker_lwp_tid);
   printf("           worker_main entries=%" PRIu64 " exits=%" PRIu64 "\n",
          st.pending_worker_main_entries, st.pending_worker_main_exits);
   return 0;
