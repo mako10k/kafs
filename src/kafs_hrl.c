@@ -41,6 +41,17 @@ static inline kafs_logblksize_t hrl_log_blksize(kafs_context_t *ctx)
   return kafs_sb_log_blksize_get(ctx->c_superblock);
 }
 
+static inline int hrl_slot_is_reusable(const kafs_hrl_entry_t *e)
+{
+  return e->refcnt == 0 && e->next_plus1 == 0 && e->blo == KAFS_BLO_NONE;
+}
+
+static inline void hrl_clear_slot(kafs_context_t *ctx, kafs_hrl_entry_t *e)
+{
+  memset(e, 0, sizeof(*e));
+  __atomic_add_fetch(&ctx->c_hrl_free_slot_count, 1u, __ATOMIC_RELAXED);
+}
+
 static int hrl_read_blo(kafs_context_t *ctx, kafs_blkcnt_t blo, void *out)
 {
   kafs_blksize_t bs = hrl_blksize(ctx);
@@ -158,6 +169,9 @@ static int hrl_find_free_slot(kafs_context_t *ctx, uint32_t *out_index)
   if (cap == 0)
     return -ENOSPC;
 
+  if (__atomic_load_n(&ctx->c_hrl_free_slot_count, __ATOMIC_RELAXED) == 0)
+    return -ENOSPC;
+
   uint32_t start = ctx->c_hrl_next_free_hint;
   if (start >= cap)
     start = 0;
@@ -179,11 +193,13 @@ static int hrl_find_free_slot(kafs_context_t *ctx, uint32_t *out_index)
     if (__atomic_compare_exchange_n(&ents[i].refcnt, &expected, 1u, 0, __ATOMIC_ACQ_REL,
                                     __ATOMIC_RELAXED))
     {
+      __atomic_sub_fetch(&ctx->c_hrl_free_slot_count, 1u, __ATOMIC_RELAXED);
       *out_index = i;
       ctx->c_hrl_next_free_hint = (i + 1u < cap) ? (i + 1u) : 0u;
       return 0;
     }
   }
+  __atomic_store_n(&ctx->c_hrl_free_slot_count, 0u, __ATOMIC_RELAXED);
   return -ENOSPC;
 }
 
@@ -237,11 +253,21 @@ int kafs_hrl_open(kafs_context_t *ctx)
     ctx->c_hrl_index = NULL;
     ctx->c_hrl_bucket_cnt = 0;
     ctx->c_hrl_next_free_hint = 0;
+    ctx->c_hrl_free_slot_count = 0;
     return 0;
   }
   ctx->c_hrl_index = (void *)(base + index_off);
   ctx->c_hrl_bucket_cnt = (uint32_t)(index_size / sizeof(uint32_t));
   ctx->c_hrl_next_free_hint = 0;
+  uint32_t free_slots = 0;
+  kafs_hrl_entry_t *ents = hrl_entries_tbl(ctx);
+  uint32_t cap = hrl_capacity(ctx);
+  for (uint32_t i = 0; i < cap; ++i)
+  {
+    if (hrl_slot_is_reusable(&ents[i]))
+      ++free_slots;
+  }
+  ctx->c_hrl_free_slot_count = free_slots;
   (void)kafs_ctx_locks_init(ctx);
   return 0;
 }
@@ -266,7 +292,10 @@ int kafs_hrl_format(kafs_context_t *ctx)
   if (entry_off && entry_cnt)
     memset((void *)(base + entry_off), 0, (size_t)entry_cnt * sizeof(kafs_hrl_entry_t));
   if (ctx)
+  {
     ctx->c_hrl_next_free_hint = 0;
+    ctx->c_hrl_free_slot_count = entry_cnt;
+  }
   return 0;
 }
 
@@ -328,7 +357,7 @@ int kafs_hrl_put(kafs_context_t *ctx, const void *block_data, kafs_hrid_t *out_h
                      __ATOMIC_RELAXED);
   if (rc != 0)
   {
-    memset(e, 0, sizeof(*e));
+    hrl_clear_slot(ctx, e);
     kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
     return rc;
   }
@@ -340,7 +369,7 @@ int kafs_hrl_put(kafs_context_t *ctx, const void *block_data, kafs_hrid_t *out_h
   if (rc != 0)
   {
     (void)hrl_release_blo(ctx, &blo);
-    memset(e, 0, sizeof(*e));
+    hrl_clear_slot(ctx, e);
     kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
     return rc;
   }
@@ -394,7 +423,7 @@ int kafs_hrl_dec_ref(kafs_context_t *ctx, kafs_hrid_t hrid)
       return rc;
     }
     (void)hrl_chain_remove(ctx, hrid, e->fast);
-    memset(e, 0, sizeof(*e));
+    hrl_clear_slot(ctx, e);
   }
   kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
   return 0;
@@ -510,7 +539,7 @@ int kafs_hrl_dec_ref_by_blo(kafs_context_t *ctx, kafs_blkcnt_t blo)
           return rc2;
         }
         (void)hrl_chain_remove(ctx, i, e->fast);
-        memset(e, 0, sizeof(*e));
+        hrl_clear_slot(ctx, e);
       }
       kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
       return 0;
@@ -594,7 +623,7 @@ int kafs_hrl_evict_ref1_to_direct(kafs_context_t *ctx, kafs_blkcnt_t *out_blo)
       {
         kafs_blkcnt_t blo = e->blo;
         (void)hrl_chain_remove(ctx, i, e->fast);
-        memset(e, 0, sizeof(*e));
+          hrl_clear_slot(ctx, e);
         kafs_hrl_bucket_unlock(ctx, b);
         if (out_blo)
           *out_blo = blo;

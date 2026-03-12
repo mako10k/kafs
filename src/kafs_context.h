@@ -33,6 +33,8 @@ struct kafs_context
   uint32_t c_hrl_bucket_cnt;
   /// @brief HRL 空きスロット探索の次回開始位置ヒント
   uint32_t c_hrl_next_free_hint;
+  /// @brief HRL 再利用可能スロット数（best-effort）
+  uint32_t c_hrl_free_slot_count;
   // --- Concurrency (optional locks) ---
   void *c_lock_hrl_buckets; // opaque pointer to mutex array
   void *c_lock_hrl_global;  // opaque pointer to global HRL mutex
