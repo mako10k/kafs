@@ -4855,7 +4855,7 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
   return 0;
 }
 
-#define KAFS_STATS_VERSION 12u
+#define KAFS_STATS_VERSION 13u
 
 static int kafs_u64_cmp(const void *a, const void *b)
 {
@@ -4945,6 +4945,9 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
   out->hrl_put_ns_blk_write = ctx->c_stat_hrl_put_ns_blk_write;
   out->hrl_put_chain_steps = ctx->c_stat_hrl_put_chain_steps;
   out->hrl_put_cmp_calls = ctx->c_stat_hrl_put_cmp_calls;
+  out->hrl_rescue_attempts = ctx->c_stat_hrl_rescue_attempts;
+  out->hrl_rescue_hits = ctx->c_stat_hrl_rescue_hits;
+  out->hrl_rescue_evicts = ctx->c_stat_hrl_rescue_evicts;
 
   out->lock_hrl_bucket_acquire = ctx->c_stat_lock_hrl_bucket_acquire;
   out->lock_hrl_bucket_contended = ctx->c_stat_lock_hrl_bucket_contended;
