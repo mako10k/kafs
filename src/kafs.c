@@ -129,6 +129,13 @@ static inline void kafs_stat_record_pwrite_iblk_write_latency(kafs_context_t *ct
 #define KAFS_BG_DEDUP_MONITOR_INTERVAL_MS 500u
 #define KAFS_BG_DEDUP_RESAMPLE_QUIET_CYCLES 12u
 #define KAFS_BG_DEDUP_COOLDOWN_MS 2000u
+#define KAFS_BG_DEDUP_BLOCK_BUDGET_DEFAULT 8u
+#define KAFS_BG_DEDUP_BLOCK_BUDGET_PRESSURE 32u
+#define KAFS_BG_DEDUP_SCAN_WINDOW_DEFAULT 64u
+#define KAFS_BG_DEDUP_SCAN_WINDOW_PRESSURE 256u
+#define KAFS_BG_DEDUP_SWEEP_IDX_CAP_DEFAULT 256u
+#define KAFS_BG_DEDUP_SWEEP_IDX_CAP_PRESSURE 1024u
+#define KAFS_BG_DEDUP_SWEEP_BUCKETS 2048u
 
 #define KAFS_BG_DEDUP_MODE_COLD 1u
 #define KAFS_BG_DEDUP_MODE_ADAPTIVE 2u
@@ -1131,6 +1138,57 @@ static kafs_blkcnt_t kafs_bg_recent_find_dup_blo(struct kafs_context *ctx, uint6
   return KAFS_BLO_NONE;
 }
 
+static kafs_blkcnt_t kafs_bg_sweep_find_dup_blo(struct kafs_context *ctx, uint64_t fast,
+                                                kafs_blkcnt_t self_blo, const void *buf,
+                                                const uint32_t *bucket_heads,
+                                                const uint64_t *entry_fast,
+                                                const uint32_t *entry_blo,
+                                                const uint32_t *entry_next)
+{
+  if (!ctx || !buf || !bucket_heads || !entry_fast || !entry_blo || !entry_next)
+    return KAFS_BLO_NONE;
+
+  kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
+  char tmp[bs];
+  uint32_t bucket = (uint32_t)(fast & (KAFS_BG_DEDUP_SWEEP_BUCKETS - 1u));
+  uint32_t idx = bucket_heads[bucket];
+  while (idx != UINT32_MAX)
+  {
+    if (entry_fast[idx] == fast)
+    {
+      kafs_blkcnt_t cand = (kafs_blkcnt_t)entry_blo[idx];
+      if (cand != KAFS_BLO_NONE && cand != self_blo)
+      {
+        if (kafs_blk_read(ctx, cand, tmp) == 0 && memcmp(tmp, buf, bs) == 0)
+          return cand;
+      }
+    }
+    idx = entry_next[idx];
+  }
+  return KAFS_BLO_NONE;
+}
+
+static void kafs_bg_sweep_note(uint64_t fast, kafs_blkcnt_t blo, uint32_t cap,
+                               uint32_t *entry_count, uint32_t *bucket_heads, uint64_t *entry_fast,
+                               uint32_t *entry_blo, uint32_t *entry_next)
+{
+  if (!entry_count || !bucket_heads || !entry_fast || !entry_blo || !entry_next)
+    return;
+  if (blo == KAFS_BLO_NONE)
+    return;
+  if (*entry_count >= cap)
+    return;
+
+  uint32_t idx = *entry_count;
+  (*entry_count)++;
+
+  uint32_t bucket = (uint32_t)(fast & (KAFS_BG_DEDUP_SWEEP_BUCKETS - 1u));
+  entry_fast[idx] = fast;
+  entry_blo[idx] = (uint32_t)blo;
+  entry_next[idx] = bucket_heads[bucket];
+  bucket_heads[bucket] = idx;
+}
+
 static int kafs_bg_advance_cursor(struct kafs_context *ctx, kafs_inocnt_t inocnt,
                                   uint32_t next_iblk)
 {
@@ -1190,6 +1248,20 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
 
   kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
   char buf[bs];
+  uint32_t block_budget =
+      pressure_mode ? KAFS_BG_DEDUP_BLOCK_BUDGET_PRESSURE : KAFS_BG_DEDUP_BLOCK_BUDGET_DEFAULT;
+  uint32_t scan_window =
+      pressure_mode ? KAFS_BG_DEDUP_SCAN_WINDOW_PRESSURE : KAFS_BG_DEDUP_SCAN_WINDOW_DEFAULT;
+  uint32_t sweep_cap =
+      pressure_mode ? KAFS_BG_DEDUP_SWEEP_IDX_CAP_PRESSURE : KAFS_BG_DEDUP_SWEEP_IDX_CAP_DEFAULT;
+  uint32_t scanned_blocks_this_step = 0;
+  uint32_t sweep_bucket_heads[KAFS_BG_DEDUP_SWEEP_BUCKETS];
+  uint64_t sweep_entry_fast[KAFS_BG_DEDUP_SWEEP_IDX_CAP_PRESSURE];
+  uint32_t sweep_entry_blo[KAFS_BG_DEDUP_SWEEP_IDX_CAP_PRESSURE];
+  uint32_t sweep_entry_next[KAFS_BG_DEDUP_SWEEP_IDX_CAP_PRESSURE];
+  uint32_t sweep_entry_count = 0;
+  for (uint32_t i = 0; i < KAFS_BG_DEDUP_SWEEP_BUCKETS; ++i)
+    sweep_bucket_heads[i] = UINT32_MAX;
 
   for (kafs_inocnt_t scanned = 0; scanned < inocnt; ++scanned)
   {
@@ -1220,7 +1292,7 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
     }
 
     kafs_iblkcnt_t iblocnt = (kafs_iblkcnt_t)((size + bs - 1) / bs);
-    uint32_t direct_cnt = (iblocnt < 12) ? (uint32_t)iblocnt : 12u;
+    uint32_t direct_cnt = (iblocnt < scan_window) ? (uint32_t)iblocnt : scan_window;
     if (direct_cnt == 0)
     {
       kafs_inode_unlock(ctx, ino);
@@ -1252,6 +1324,7 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
         continue;
 
       __atomic_add_fetch(&ctx->c_stat_bg_dedup_scanned_blocks, 1u, __ATOMIC_RELAXED);
+      scanned_blocks_this_step++;
 
       if (kafs_bg_advance_cursor(ctx, inocnt, next_iblk))
         kafs_bg_enter_cooldown(ctx, pressure_mode);
@@ -1274,15 +1347,25 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
       }
 
       uint64_t fast = kafs_bg_hash64(buf, bs);
-      kafs_blkcnt_t dup_direct = kafs_bg_recent_find_dup_blo(ctx, fast, old_blo, buf);
+      kafs_blkcnt_t dup_direct =
+          kafs_bg_sweep_find_dup_blo(ctx, fast, old_blo, buf, sweep_bucket_heads, sweep_entry_fast,
+                                     sweep_entry_blo, sweep_entry_next);
+      if (dup_direct == KAFS_BLO_NONE)
+        dup_direct = kafs_bg_recent_find_dup_blo(ctx, fast, old_blo, buf);
       if (dup_direct == KAFS_BLO_NONE)
         dup_direct = kafs_bg_index_find_dup_blo(ctx, fast, old_blo, buf);
+      kafs_bg_sweep_note(fast, old_blo, sweep_cap, &sweep_entry_count, sweep_bucket_heads,
+                         sweep_entry_fast, sweep_entry_blo, sweep_entry_next);
       kafs_bg_recent_note(ctx, fast, old_blo);
       kafs_bg_index_note(ctx, fast, old_blo);
       if (dup_direct == KAFS_BLO_NONE)
       {
-        kafs_inode_unlock(ctx, ino);
-        return;
+        if (scanned_blocks_this_step >= block_budget)
+        {
+          kafs_inode_unlock(ctx, ino);
+          return;
+        }
+        continue;
       }
 
       __atomic_add_fetch(&ctx->c_stat_bg_dedup_direct_hits, 1u, __ATOMIC_RELAXED);
@@ -1317,8 +1400,11 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
         (void)kafs_hrl_dec_ref_by_blo(ctx, final_blo);
       }
 
-      kafs_inode_unlock(ctx, ino);
-      return;
+      if (scanned_blocks_this_step >= block_budget)
+      {
+        kafs_inode_unlock(ctx, ino);
+        return;
+      }
     }
 
     kafs_inode_unlock(ctx, ino);
