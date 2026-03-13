@@ -6038,7 +6038,6 @@ static int kafs_op_readdir(const char *path, void *buf, fuse_fill_dir_t filler, 
 static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_inocnt_t *pino_dir,
                        kafs_inocnt_t *pino_new)
 {
-  (void)dev;
   assert(path != NULL);
   assert(path[0] == '/');
   assert(path[1] != '\0');
@@ -6110,7 +6109,7 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   kafs_ino_gid_set(inoent_new, fctx->gid);
   kafs_ino_linkcnt_set(inoent_new, 0);
   kafs_ino_blocks_set(inoent_new, 0);
-  kafs_ino_dev_set(inoent_new, 0);
+  kafs_ino_dev_set(inoent_new, dev);
   memset(inoent_new->i_blkreftbl, 0, sizeof(inoent_new->i_blkreftbl));
 
   kafs_inode_alloc_unlock(ctx);
