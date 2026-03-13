@@ -41,6 +41,9 @@ struct kafs_stats
   uint64_t hrl_put_ns_blk_write;
   uint64_t hrl_put_chain_steps;
   uint64_t hrl_put_cmp_calls;
+  uint64_t hrl_rescue_attempts;
+  uint64_t hrl_rescue_hits;
+  uint64_t hrl_rescue_evicts;
 
   // Lock contention snapshot (best-effort, runtime counters)
   uint64_t lock_hrl_bucket_acquire;

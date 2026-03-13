@@ -56,6 +56,9 @@ struct kafs_context
   uint64_t c_stat_hrl_put_ns_blk_write;
   uint64_t c_stat_hrl_put_chain_steps;
   uint64_t c_stat_hrl_put_cmp_calls;
+  uint64_t c_stat_hrl_rescue_attempts;
+  uint64_t c_stat_hrl_rescue_hits;
+  uint64_t c_stat_hrl_rescue_evicts;
 
   uint64_t c_stat_lock_hrl_bucket_acquire;
   uint64_t c_stat_lock_hrl_bucket_contended;
@@ -214,6 +217,11 @@ struct kafs_context
   uint32_t c_bg_dedup_recent_pos;
   uint64_t c_bg_dedup_recent_fast[64];
   uint32_t c_bg_dedup_recent_blo[64];
+
+  // --- ENOSPC rescue cache for foreground writes (best-effort) ---
+  uint32_t c_hrl_rescue_recent_pos;
+  uint64_t c_hrl_rescue_recent_fast[64];
+  uint32_t c_hrl_rescue_recent_blo[64];
 
   // fsync/fdatasync behavior policy
   uint32_t c_fsync_policy;

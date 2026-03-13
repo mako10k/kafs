@@ -1102,6 +1102,9 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
       (st.hrl_put_calls > 0) ? (double)st.hrl_put_fallback_legacy / (double)st.hrl_put_calls : 0.0;
   double hrl_hit_rate_pct = pct_u64(st.hrl_put_hits, st.hrl_put_calls);
   double hrl_miss_rate_pct = pct_u64(st.hrl_put_misses, st.hrl_put_calls);
+  double hrl_rescue_hit_rate = (st.hrl_rescue_attempts > 0)
+                                   ? (double)st.hrl_rescue_hits / (double)st.hrl_rescue_attempts
+                                   : 0.0;
 
   if (json)
   {
@@ -1141,6 +1144,10 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
     printf("  \"hrl_put_avg_chain_steps\": %.3f,\n", hrl_put_avg_chain_steps);
     printf("  \"hrl_put_avg_cmp_calls\": %.3f,\n", hrl_put_avg_cmp_calls);
     printf("  \"hrl_put_hit_rate\": %.6f,\n", hit_rate);
+    printf("  \"hrl_rescue_attempts\": %" PRIu64 ",\n", st.hrl_rescue_attempts);
+    printf("  \"hrl_rescue_hits\": %" PRIu64 ",\n", st.hrl_rescue_hits);
+    printf("  \"hrl_rescue_evicts\": %" PRIu64 ",\n", st.hrl_rescue_evicts);
+    printf("  \"hrl_rescue_hit_rate\": %.6f,\n", hrl_rescue_hit_rate);
     printf("  \"lock_inode_acquire\": %" PRIu64 ",\n", st.lock_inode_acquire);
     printf("  \"lock_inode_contended\": %" PRIu64 ",\n", st.lock_inode_contended);
     printf("  \"lock_inode_wait_ns\": %" PRIu64 ",\n", st.lock_inode_wait_ns);
@@ -1300,6 +1307,8 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
          " hit_rate=%.3f\n",
          st.hrl_put_calls, st.hrl_put_hits, st.hrl_put_misses, st.hrl_put_fallback_legacy,
          hit_rate);
+  printf("  hrl_rescue: attempts=%" PRIu64 " hits=%" PRIu64 " evicts=%" PRIu64 " hit_rate=%.3f\n",
+         st.hrl_rescue_attempts, st.hrl_rescue_hits, st.hrl_rescue_evicts, hrl_rescue_hit_rate);
   printf("  hrl_put_decomp: hash_ms=%.3f find_ms=%.3f cmp_ms=%.3f slot_alloc_ms=%.3f "
          "blk_alloc_ms=%.3f blk_write_ms=%.3f avg_chain_steps=%.3f avg_cmp_calls=%.3f\n",
          hrl_put_hash_ms, hrl_put_find_ms, hrl_put_cmp_ms, hrl_put_slot_alloc_ms,

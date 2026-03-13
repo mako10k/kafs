@@ -136,6 +136,7 @@ static inline void kafs_stat_record_pwrite_iblk_write_latency(kafs_context_t *ct
 #define KAFS_BG_DEDUP_SWEEP_IDX_CAP_DEFAULT 256u
 #define KAFS_BG_DEDUP_SWEEP_IDX_CAP_PRESSURE 1024u
 #define KAFS_BG_DEDUP_SWEEP_BUCKETS 2048u
+#define KAFS_HRL_RESCUE_RECENT_CAP 64u
 
 #define KAFS_BG_DEDUP_MODE_COLD 1u
 #define KAFS_BG_DEDUP_MODE_ADAPTIVE 2u
@@ -1136,6 +1137,71 @@ static kafs_blkcnt_t kafs_bg_recent_find_dup_blo(struct kafs_context *ctx, uint6
       return cand;
   }
   return KAFS_BLO_NONE;
+}
+
+static void kafs_hrl_rescue_recent_note(struct kafs_context *ctx, uint64_t fast, kafs_blkcnt_t blo)
+{
+  if (!ctx || blo == KAFS_BLO_NONE)
+    return;
+  uint32_t pos = __atomic_fetch_add(&ctx->c_hrl_rescue_recent_pos, 1u, __ATOMIC_RELAXED) %
+                 KAFS_HRL_RESCUE_RECENT_CAP;
+  __atomic_store_n(&ctx->c_hrl_rescue_recent_fast[pos], fast, __ATOMIC_RELAXED);
+  __atomic_store_n(&ctx->c_hrl_rescue_recent_blo[pos], (uint32_t)blo, __ATOMIC_RELAXED);
+}
+
+static kafs_blkcnt_t kafs_hrl_rescue_recent_find_dup_blo(struct kafs_context *ctx, uint64_t fast,
+                                                         const void *buf)
+{
+  if (!ctx || !buf)
+    return KAFS_BLO_NONE;
+  kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
+  char tmp[bs];
+  for (uint32_t i = 0; i < KAFS_HRL_RESCUE_RECENT_CAP; ++i)
+  {
+    if (__atomic_load_n(&ctx->c_hrl_rescue_recent_fast[i], __ATOMIC_RELAXED) != fast)
+      continue;
+    kafs_blkcnt_t cand =
+        (kafs_blkcnt_t)__atomic_load_n(&ctx->c_hrl_rescue_recent_blo[i], __ATOMIC_RELAXED);
+    if (cand == KAFS_BLO_NONE)
+      continue;
+    if (kafs_blk_read(ctx, cand, tmp) != 0)
+      continue;
+    if (memcmp(tmp, buf, bs) == 0)
+      return cand;
+  }
+  return KAFS_BLO_NONE;
+}
+
+static int kafs_hrl_try_enospc_rescue(struct kafs_context *ctx, const void *buf,
+                                      kafs_blkcnt_t *out_blo, int *out_is_new)
+{
+  if (!ctx || !buf || !out_blo || !out_is_new)
+    return -EINVAL;
+
+  kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
+  uint64_t fast = kafs_bg_hash64(buf, bs);
+
+  __atomic_add_fetch(&ctx->c_stat_hrl_rescue_attempts, 1u, __ATOMIC_RELAXED);
+  kafs_blkcnt_t nucleus = kafs_hrl_rescue_recent_find_dup_blo(ctx, fast, buf);
+  if (nucleus == KAFS_BLO_NONE)
+    return -ENOENT;
+
+  kafs_blkcnt_t evicted_blo = KAFS_BLO_NONE;
+  if (kafs_hrl_evict_ref1_to_direct(ctx, &evicted_blo) != 0)
+    return -ENOSPC;
+  __atomic_add_fetch(&ctx->c_stat_hrl_rescue_evicts, 1u, __ATOMIC_RELAXED);
+
+  kafs_hrid_t hrid = 0;
+  int is_new = 0;
+  kafs_blkcnt_t new_blo = KAFS_BLO_NONE;
+  int rc = kafs_hrl_put(ctx, buf, &hrid, &is_new, &new_blo);
+  if (rc != 0)
+    return rc;
+
+  __atomic_add_fetch(&ctx->c_stat_hrl_rescue_hits, 1u, __ATOMIC_RELAXED);
+  *out_blo = new_blo;
+  *out_is_new = is_new;
+  return 0;
 }
 
 static kafs_blkcnt_t kafs_bg_sweep_find_dup_blo(struct kafs_context *ctx, uint64_t fast,
@@ -2664,6 +2730,33 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
   int rc = kafs_hrl_put(ctx, buf, &hrid, &is_new, &new_blo);
   uint64_t t_hrl1 = kafs_now_ns();
   __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_hrl_put, t_hrl1 - t_hrl0, __ATOMIC_RELAXED);
+  if (rc == -ENOSPC)
+  {
+    kafs_blkcnt_t rescue_blo = KAFS_BLO_NONE;
+    int rescue_is_new = 0;
+    int rrc = kafs_hrl_try_enospc_rescue(ctx, buf, &rescue_blo, &rescue_is_new);
+    if (rrc == 0)
+    {
+      if (rescue_is_new)
+        ctx->c_stat_hrl_put_misses++;
+      else
+        ctx->c_stat_hrl_put_hits++;
+      kafs_blkcnt_t old_blo;
+      KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old_blo, KAFS_IBLKREF_FUNC_GET);
+      KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &rescue_blo, KAFS_IBLKREF_FUNC_SET);
+      uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
+      if (old_blo != KAFS_BLO_NONE && old_blo != rescue_blo)
+      {
+        kafs_inode_unlock(ctx, ino_idx);
+        uint64_t t_dec0 = kafs_now_ns();
+        (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
+        uint64_t t_dec1 = kafs_now_ns();
+        __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
+        kafs_inode_lock(ctx, ino_idx);
+      }
+      return KAFS_SUCCESS;
+    }
+  }
   if (rc == 0)
   {
     if (is_new)
@@ -2701,6 +2794,8 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
   kafs_blkcnt_t old_blo2;
   KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old_blo2, KAFS_IBLKREF_FUNC_GET);
   KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &new_blo2, KAFS_IBLKREF_FUNC_SET);
+  kafs_hrl_rescue_recent_note(ctx, kafs_bg_hash64(buf, kafs_sb_blksize_get(ctx->c_superblock)),
+                              new_blo2);
   // 旧ブロックの参照を解放（inode ロック外）
   if (old_blo2 != KAFS_BLO_NONE && old_blo2 != new_blo2)
   {
@@ -4760,7 +4855,7 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
   return 0;
 }
 
-#define KAFS_STATS_VERSION 12u
+#define KAFS_STATS_VERSION 13u
 
 static int kafs_u64_cmp(const void *a, const void *b)
 {
@@ -4850,6 +4945,9 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
   out->hrl_put_ns_blk_write = ctx->c_stat_hrl_put_ns_blk_write;
   out->hrl_put_chain_steps = ctx->c_stat_hrl_put_chain_steps;
   out->hrl_put_cmp_calls = ctx->c_stat_hrl_put_cmp_calls;
+  out->hrl_rescue_attempts = ctx->c_stat_hrl_rescue_attempts;
+  out->hrl_rescue_hits = ctx->c_stat_hrl_rescue_hits;
+  out->hrl_rescue_evicts = ctx->c_stat_hrl_rescue_evicts;
 
   out->lock_hrl_bucket_acquire = ctx->c_stat_lock_hrl_bucket_acquire;
   out->lock_hrl_bucket_contended = ctx->c_stat_lock_hrl_bucket_contended;
