@@ -10,6 +10,7 @@
 #include "kafs_mmap_io.h"
 #include "kafs_rpc.h"
 #include "kafs_core.h"
+#include "kafs_crash_diag.h"
 
 #define KAFS_DIRECT_SIZE (sizeof(((struct kafs_sinode *)NULL)->i_blkreftbl))
 
@@ -7561,41 +7562,10 @@ static int kafs_migrate_v2_image(const char *image_path, int assume_yes)
   return 0;
 }
 
-static void kafs_signal_handler(int sig)
-{
-  const char *name = strsignal(sig);
-  kafs_log(KAFS_LOG_ERR, "kafs: caught signal %d (%s)\n", sig, name ? name : "?");
-#ifdef __linux__
-  void *bt[64];
-  int n = backtrace(bt, (int)(sizeof(bt) / sizeof(bt[0])));
-  char **syms = backtrace_symbols(bt, n);
-  if (syms)
-  {
-    for (int i = 0; i < n; ++i)
-      kafs_log(KAFS_LOG_ERR, "  bt[%02d]=%s\n", i, syms[i]);
-  }
-#endif
-  signal(sig, SIG_DFL);
-  raise(sig);
-}
-
-static void kafs_install_crash_handlers(void)
-{
-  struct sigaction sa;
-  memset(&sa, 0, sizeof(sa));
-  sa.sa_handler = kafs_signal_handler;
-  sigemptyset(&sa.sa_mask);
-  sigaction(SIGSEGV, &sa, NULL);
-  sigaction(SIGABRT, &sa, NULL);
-  sigaction(SIGBUS, &sa, NULL);
-  sigaction(SIGILL, &sa, NULL);
-  sigaction(SIGFPE, &sa, NULL);
-}
-
 #ifndef KAFS_NO_MAIN
 int main(int argc, char **argv)
 {
-  kafs_install_crash_handlers();
+  kafs_crash_diag_install("kafs");
   // 画像ファイル指定を受け取る: --image <path> または --image=<path>、環境変数 KAFS_IMAGE
   const char *image_path = getenv("KAFS_IMAGE");
   kafs_bool_t auto_migrate_v2 = KAFS_FALSE;
