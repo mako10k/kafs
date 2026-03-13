@@ -2116,6 +2116,22 @@ static int kafs_blk_is_zero(const void *buf, size_t len)
   return 0;
 }
 
+static void kafs_ino_blocks_adjust(kafs_sinode_t *inoent, int delta)
+{
+  kafs_blkcnt_t cur = kafs_ino_blocks_get(inoent);
+  if (delta > 0)
+  {
+    if (cur < UINT32_MAX)
+      kafs_ino_blocks_set(inoent, cur + 1);
+    return;
+  }
+  if (delta < 0)
+  {
+    if (cur > 0)
+      kafs_ino_blocks_set(inoent, cur - 1);
+  }
+}
+
 static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_iblkcnt_t iblo,
                              kafs_blkcnt_t *pblo, kafs_iblkref_func_t ifunc)
 {
@@ -2152,6 +2168,10 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
 
     case KAFS_IBLKREF_FUNC_SET:
       // 直接参照に new blo を設定（中間テーブル不要）
+      if (blo_data_raw == KAFS_BLO_NONE && *pblo != KAFS_BLO_NONE)
+        kafs_ino_blocks_adjust(inoent, +1);
+      else if (blo_data_raw != KAFS_BLO_NONE && *pblo == KAFS_BLO_NONE)
+        kafs_ino_blocks_adjust(inoent, -1);
       inoent->i_blkreftbl[iblo] = kafs_blkcnt_htos(*pblo);
       return KAFS_SUCCESS;
     }
@@ -2222,12 +2242,18 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
         // 中間テーブルを割り当て
         KAFS_CALL(kafs_blk_alloc, ctx, &blo_blkreftbl);
         inoent->i_blkreftbl[12] = kafs_blkcnt_htos(blo_blkreftbl);
+        kafs_ino_blocks_adjust(inoent, +1);
         memset(blkreftbl, 0, blksize);
       }
       else
       {
         KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl, blkreftbl);
       }
+      blo_data = kafs_blkcnt_stoh(blkreftbl[iblo]);
+      if (blo_data == KAFS_BLO_NONE && *pblo != KAFS_BLO_NONE)
+        kafs_ino_blocks_adjust(inoent, +1);
+      else if (blo_data != KAFS_BLO_NONE && *pblo == KAFS_BLO_NONE)
+        kafs_ino_blocks_adjust(inoent, -1);
       blkreftbl[iblo] = kafs_blkcnt_htos(*pblo);
       KAFS_CALL(kafs_blk_write, ctx, blo_blkreftbl, blkreftbl);
       return KAFS_SUCCESS;
@@ -2322,6 +2348,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
       {
         KAFS_CALL(kafs_blk_alloc, ctx, &blo_blkreftbl1);
         inoent->i_blkreftbl[13] = kafs_blkcnt_htos(blo_blkreftbl1);
+        kafs_ino_blocks_adjust(inoent, +1);
         memset(blkreftbl1, 0, blksize);
         blo_blkreftbl2 = KAFS_BLO_NONE;
       }
@@ -2335,12 +2362,18 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
         KAFS_CALL(kafs_blk_alloc, ctx, &blo_blkreftbl2);
         blkreftbl1[iblo1] = kafs_blkcnt_htos(blo_blkreftbl2);
         KAFS_CALL(kafs_blk_write, ctx, blo_blkreftbl1, blkreftbl1);
+        kafs_ino_blocks_adjust(inoent, +1);
         memset(blkreftbl2, 0, blksize);
       }
       else
       {
         KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl2, blkreftbl2);
       }
+      blo_data = kafs_blkcnt_stoh(blkreftbl2[iblo2]);
+      if (blo_data == KAFS_BLO_NONE && *pblo != KAFS_BLO_NONE)
+        kafs_ino_blocks_adjust(inoent, +1);
+      else if (blo_data != KAFS_BLO_NONE && *pblo == KAFS_BLO_NONE)
+        kafs_ino_blocks_adjust(inoent, -1);
       blkreftbl2[iblo2] = kafs_blkcnt_htos(*pblo);
       KAFS_CALL(kafs_blk_write, ctx, blo_blkreftbl2, blkreftbl2);
       return KAFS_SUCCESS;
@@ -2464,6 +2497,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
     {
       KAFS_CALL(kafs_blk_alloc, ctx, &blo_blkreftbl1);
       inoent->i_blkreftbl[14] = kafs_blkcnt_htos(blo_blkreftbl1);
+      kafs_ino_blocks_adjust(inoent, +1);
       memset(blkreftbl1, 0, blksize);
       blo_blkreftbl2 = KAFS_BLO_NONE;
     }
@@ -2477,6 +2511,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
       KAFS_CALL(kafs_blk_alloc, ctx, &blo_blkreftbl2);
       blkreftbl1[iblo1] = kafs_blkcnt_htos(blo_blkreftbl2);
       KAFS_CALL(kafs_blk_write, ctx, blo_blkreftbl1, blkreftbl1);
+      kafs_ino_blocks_adjust(inoent, +1);
       memset(blkreftbl2, 0, blksize);
       blo_blkreftbl3 = KAFS_BLO_NONE;
     }
@@ -2490,12 +2525,18 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
       KAFS_CALL(kafs_blk_alloc, ctx, &blo_blkreftbl3);
       blkreftbl2[iblo2] = kafs_blkcnt_htos(blo_blkreftbl3);
       KAFS_CALL(kafs_blk_write, ctx, blo_blkreftbl2, blkreftbl2);
+      kafs_ino_blocks_adjust(inoent, +1);
       memset(blkreftbl3, 0, blksize);
     }
     else
     {
       KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl3, blkreftbl3);
     }
+    blo_data = kafs_blkcnt_stoh(blkreftbl3[iblo3]);
+    if (blo_data == KAFS_BLO_NONE && *pblo != KAFS_BLO_NONE)
+      kafs_ino_blocks_adjust(inoent, +1);
+    else if (blo_data != KAFS_BLO_NONE && *pblo == KAFS_BLO_NONE)
+      kafs_ino_blocks_adjust(inoent, -1);
     blkreftbl3[iblo3] = kafs_blkcnt_htos(*pblo);
     KAFS_CALL(kafs_blk_write, ctx, blo_blkreftbl3, blkreftbl3);
     return KAFS_SUCCESS;
@@ -2536,6 +2577,7 @@ static int kafs_ino_prune_empty_indirects(struct kafs_context *ctx, kafs_sinode_
     {
       *free_blo1 = blo_tbl;
       inoent->i_blkreftbl[12] = kafs_blkcnt_htos(KAFS_BLO_NONE);
+      kafs_ino_blocks_adjust(inoent, -1);
     }
     return KAFS_SUCCESS;
   }
@@ -2567,7 +2609,9 @@ static int kafs_ino_prune_empty_indirects(struct kafs_context *ctx, kafs_sinode_
       {
         *free_blo2 = blo_tbl1;
         inoent->i_blkreftbl[13] = kafs_blkcnt_htos(KAFS_BLO_NONE);
+        kafs_ino_blocks_adjust(inoent, -1);
       }
+      kafs_ino_blocks_adjust(inoent, -1);
     }
     return KAFS_SUCCESS;
   }
@@ -2605,8 +2649,11 @@ static int kafs_ino_prune_empty_indirects(struct kafs_context *ctx, kafs_sinode_
       {
         *free_blo3 = blo_tbl1;
         inoent->i_blkreftbl[14] = kafs_blkcnt_htos(KAFS_BLO_NONE);
+        kafs_ino_blocks_adjust(inoent, -1);
       }
+      kafs_ino_blocks_adjust(inoent, -1);
     }
+    kafs_ino_blocks_adjust(inoent, -1);
   }
   return KAFS_SUCCESS;
 }
@@ -4534,11 +4581,8 @@ int kafs_core_getattr(kafs_context_t *ctx, kafs_inocnt_t ino, struct stat *st)
   st->st_rdev = kafs_ino_dev_get(inoent);
   st->st_size = kafs_ino_size_get(inoent);
   st->st_blksize = kafs_sb_blksize_get(ctx->c_superblock);
-
-  const unsigned blksz = (unsigned)st->st_blksize;
-  const unsigned long long alloc =
-      blksz ? ((unsigned long long)st->st_size + blksz - 1) / blksz * blksz : 0;
-  st->st_blocks = (blkcnt_t)(alloc / 512ull);
+  st->st_blocks =
+      (blkcnt_t)((uint64_t)kafs_ino_blocks_get(inoent) * ((uint64_t)st->st_blksize / 512ull));
   st->st_atim = kafs_ino_atime_get(inoent);
   st->st_mtim = kafs_ino_mtime_get(inoent);
   st->st_ctim = kafs_ino_ctime_get(inoent);
@@ -4815,12 +4859,8 @@ static int kafs_op_getattr(const char *path, struct stat *st, struct fuse_file_i
   st->st_rdev = kafs_ino_dev_get(inoent);
   st->st_size = kafs_ino_size_get(inoent);
   st->st_blksize = kafs_sb_blksize_get(ctx->c_superblock);
-
-  /* st_blocks is in 512-byte units; approximate allocation by rounding st_size to fs block size. */
-  const unsigned blksz = (unsigned)st->st_blksize;
-  const unsigned long long alloc =
-      blksz ? ((unsigned long long)st->st_size + blksz - 1) / blksz * blksz : 0;
-  st->st_blocks = (blkcnt_t)(alloc / 512ull);
+  st->st_blocks =
+      (blkcnt_t)((uint64_t)kafs_ino_blocks_get(inoent) * ((uint64_t)st->st_blksize / 512ull));
   st->st_atim = kafs_ino_atime_get(inoent);
   st->st_mtim = kafs_ino_mtime_get(inoent);
   st->st_ctim = kafs_ino_ctime_get(inoent);

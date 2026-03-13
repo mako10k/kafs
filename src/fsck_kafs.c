@@ -35,6 +35,7 @@
 #define FSCK_EXIT_HRL_BLO_INCONSISTENT 7
 #define FSCK_EXIT_JOURNAL_REPLAY_FAILED 8
 #define FSCK_EXIT_PUNCH_HOLE_PARTIAL 9
+#define FSCK_EXIT_INODE_BLOCKS_INCONSISTENT 10
 
 #define KAFS_PENDING_REF_FLAG 0x80000000u
 
@@ -70,6 +71,13 @@ struct punch_stats
   uint64_t punched;
   uint64_t punch_failed;
   uint64_t mark_failed;
+};
+
+struct inode_blocks_stats
+{
+  uint64_t checked;
+  uint64_t mismatches;
+  uint64_t repaired;
 };
 
 typedef enum fsck_mode
@@ -681,6 +689,124 @@ static int trim_free_data_blocks(kafs_context_t *ctx, int fd, struct punch_stats
   return 0;
 }
 
+struct inode_blocks_scan_ctx
+{
+  kafs_context_t *ctx;
+  kafs_blkcnt_t r_blkcnt;
+  kafs_logblksize_t l2;
+  kafs_blksize_t blksize;
+  uint32_t refs_pb;
+  int saw_invalid_ref;
+};
+
+static void inode_blocks_count_data_ref(struct inode_blocks_scan_ctx *sctx, kafs_blkcnt_t raw,
+                                        uint64_t *expected)
+{
+  kafs_blkcnt_t blo = KAFS_BLO_NONE;
+  int is_pending = 0;
+  (void)fsck_decode_data_ref(raw, &blo, &is_pending);
+  if (is_pending || blo == KAFS_BLO_NONE)
+    return;
+  if (blo >= sctx->r_blkcnt)
+  {
+    sctx->saw_invalid_ref = 1;
+    return;
+  }
+  (*expected)++;
+}
+
+static int inode_blocks_count_tbl_refs(struct inode_blocks_scan_ctx *sctx, kafs_blkcnt_t tbl_blo,
+                                       int depth, uint64_t *expected)
+{
+  if (tbl_blo == KAFS_BLO_NONE)
+    return 0;
+  if (tbl_blo >= sctx->r_blkcnt)
+  {
+    sctx->saw_invalid_ref = 1;
+    return 0;
+  }
+
+  (*expected)++; // Count this indirect table block itself.
+
+  void *p = img_ptr(sctx->ctx->c_img_base, sctx->ctx->c_img_size, (off_t)tbl_blo << sctx->l2,
+                    sctx->blksize);
+  if (!p)
+    return -EIO;
+
+  const kafs_sblkcnt_t *tbl = (const kafs_sblkcnt_t *)p;
+  for (uint32_t i = 0; i < sctx->refs_pb; ++i)
+  {
+    kafs_blkcnt_t child = kafs_blkcnt_stoh(tbl[i]);
+    if (child == KAFS_BLO_NONE)
+      continue;
+    if (depth == 1)
+      inode_blocks_count_data_ref(sctx, child, expected);
+    else
+      (void)inode_blocks_count_tbl_refs(sctx, child, depth - 1, expected);
+  }
+
+  return 0;
+}
+
+static int check_or_repair_inode_block_counts(kafs_context_t *ctx, int do_fix,
+                                              struct inode_blocks_stats *stats)
+{
+  kafs_ssuperblock_t *sb = ctx->c_superblock;
+  kafs_blkcnt_t r_blkcnt = kafs_sb_blkcnt_get(sb);
+  kafs_inocnt_t inocnt = kafs_sb_inocnt_get(sb);
+  kafs_blksize_t blksize = kafs_sb_blksize_get(sb);
+  kafs_logblksize_t l2 = kafs_sb_log_blksize_get(sb);
+  uint32_t refs_pb = (uint32_t)(blksize / sizeof(kafs_sblkcnt_t));
+
+  for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
+  {
+    kafs_sinode_t *e = &ctx->c_inotbl[ino];
+    if (!kafs_ino_get_usage(e))
+      continue;
+
+    uint64_t expected = 0;
+    struct inode_blocks_scan_ctx sctx = {ctx, r_blkcnt, l2, blksize, refs_pb, 0};
+
+    if (kafs_ino_size_get(e) > (kafs_off_t)sizeof(e->i_blkreftbl))
+    {
+      for (uint32_t i = 0; i < 12; ++i)
+        inode_blocks_count_data_ref(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[i]), &expected);
+
+      int rc =
+          inode_blocks_count_tbl_refs(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[12]), 1, &expected);
+      if (rc != 0)
+        return rc;
+      rc = inode_blocks_count_tbl_refs(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[13]), 2, &expected);
+      if (rc != 0)
+        return rc;
+      rc = inode_blocks_count_tbl_refs(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[14]), 3, &expected);
+      if (rc != 0)
+        return rc;
+    }
+
+    stats->checked++;
+    kafs_blkcnt_t ondisk = kafs_ino_blocks_get(e);
+    kafs_blkcnt_t expected32 = (expected > UINT32_MAX) ? UINT32_MAX : (kafs_blkcnt_t)expected;
+    if (ondisk != expected32 || sctx.saw_invalid_ref)
+    {
+      stats->mismatches++;
+      fprintf(stderr,
+              "inode block-count mismatch: ino=%" PRIuFAST32 " i_blocks=%" PRIuFAST32
+              " expected=%" PRIuFAST64 " invalid_ref=%d\n",
+              ino, ondisk, expected, sctx.saw_invalid_ref);
+      if (do_fix)
+      {
+        kafs_ino_blocks_set(e, expected32);
+        stats->repaired++;
+      }
+    }
+  }
+
+  if (do_fix)
+    kafs_sb_wtime_set(sb, kafs_now());
+  return 0;
+}
+
 static void usage(const char *prog)
 {
   fprintf(stderr, "Usage:\n");
@@ -709,6 +835,8 @@ static void usage(const char *prog)
   fprintf(stderr, "    --check-hrl-blo-refcounts          Compare inode refs vs HRL refs\n");
   fprintf(stderr,
           "    --repair-hrl-blo-refcounts         Repair HRL refcounts to match inode refs\n");
+  fprintf(stderr, "    --check-inode-block-counts         Rebuild expected i_blocks and compare\n");
+  fprintf(stderr, "    --repair-inode-block-counts        Rebuild and rewrite i_blocks\n");
   fprintf(stderr, "    --replay-journal                   Replay in-image journal deltas\n");
   fprintf(stderr, "    --punch-hole-unreferenced-data-blocks\n");
   fprintf(stderr, "                                        Punch unreferenced allocated blocks\n");
@@ -739,6 +867,8 @@ int main(int argc, char **argv)
   int do_repair_dirent_ino_orphans = 0;
   int do_check_hrl_blo_refcounts = 0;
   int do_repair_hrl_blo_refcounts = 0;
+  int do_check_inode_block_counts = 0;
+  int do_repair_inode_block_counts = 0;
   int do_replay_journal = 0;
   int do_punch_hole_unreferenced_data_blocks = 0;
   int do_trim_free_data_blocks = 0;
@@ -820,6 +950,16 @@ int main(int argc, char **argv)
     else if (strcmp(argv[i], "--repair-hrl-blo-refcounts") == 0)
     {
       do_repair_hrl_blo_refcounts = 1;
+      has_low_level_mode = 1;
+    }
+    else if (strcmp(argv[i], "--check-inode-block-counts") == 0)
+    {
+      do_check_inode_block_counts = 1;
+      has_low_level_mode = 1;
+    }
+    else if (strcmp(argv[i], "--repair-inode-block-counts") == 0)
+    {
+      do_repair_inode_block_counts = 1;
       has_low_level_mode = 1;
     }
     else if (strcmp(argv[i], "--replay-journal") == 0)
@@ -905,7 +1045,8 @@ int main(int argc, char **argv)
     do_check_dirent_ino_orphans = 1;
   }
 
-  int want_write = do_journal_reset || do_repair_dirent_ino_orphans || do_repair_hrl_blo_refcounts;
+  int want_write = do_journal_reset || do_repair_dirent_ino_orphans ||
+                   do_repair_hrl_blo_refcounts || do_repair_inode_block_counts;
   if (do_replay_journal || do_punch_hole_unreferenced_data_blocks || do_trim_free_data_blocks)
     want_write = 1;
   int fd = open(img, want_write ? O_RDWR : O_RDONLY);
@@ -972,8 +1113,8 @@ int main(int argc, char **argv)
   }
 
   if (do_check_dirent_ino_orphans || do_repair_dirent_ino_orphans || do_check_hrl_blo_refcounts ||
-      do_repair_hrl_blo_refcounts || do_replay_journal || do_punch_hole_unreferenced_data_blocks ||
-      do_trim_free_data_blocks)
+      do_repair_hrl_blo_refcounts || do_check_inode_block_counts || do_repair_inode_block_counts ||
+      do_replay_journal || do_punch_hole_unreferenced_data_blocks || do_trim_free_data_blocks)
   {
     kafs_context_t ctx;
     memset(&ctx, 0, sizeof(ctx));
@@ -1137,6 +1278,29 @@ int main(int argc, char **argv)
         if (exit_code == 0)
           exit_code = FSCK_EXIT_HRL_BLO_INCONSISTENT;
       }
+    }
+
+    if (do_check_inode_block_counts || do_repair_inode_block_counts)
+    {
+      struct inode_blocks_stats ibs;
+      memset(&ibs, 0, sizeof(ibs));
+
+      int irc = check_or_repair_inode_block_counts(&ctx, do_repair_inode_block_counts, &ibs);
+      if (irc != 0)
+      {
+        munmap(ctx.c_img_base, ctx.c_img_size);
+        close(fd);
+        return 1;
+      }
+
+      fprintf(stderr,
+              "inode block-count %s summary: checked=%" PRIu64 " mismatches=%" PRIu64
+              " repaired=%" PRIu64 "\n",
+              do_repair_inode_block_counts ? "repair" : "check", ibs.checked, ibs.mismatches,
+              ibs.repaired);
+
+      if (!do_repair_inode_block_counts && ibs.mismatches > 0 && exit_code == 0)
+        exit_code = FSCK_EXIT_INODE_BLOCKS_INCONSISTENT;
     }
 
     if (do_punch_hole_unreferenced_data_blocks)
