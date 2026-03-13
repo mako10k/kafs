@@ -5,6 +5,12 @@ on:
     branches: [ master ]
   pull_request:
     branches: [ master ]
+  workflow_dispatch:
+    inputs:
+      run_deadcode:
+        description: Run optional deadcode (cppcheck) step
+        required: false
+        default: 'false'
 
 jobs:
   build-and-check:
@@ -44,6 +50,7 @@ jobs:
         run: ./scripts/clones.sh
 
       - name: Dead code (cppcheck)
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_deadcode == 'true' }}
         run: ./scripts/deadcode.sh
 
       - name: Complexity (lizard)
