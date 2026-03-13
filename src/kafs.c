@@ -129,6 +129,10 @@ static inline void kafs_stat_record_pwrite_iblk_write_latency(kafs_context_t *ct
 #define KAFS_BG_DEDUP_MONITOR_INTERVAL_MS 500u
 #define KAFS_BG_DEDUP_RESAMPLE_QUIET_CYCLES 12u
 #define KAFS_BG_DEDUP_COOLDOWN_MS 2000u
+#define KAFS_BG_DEDUP_BLOCK_BUDGET_DEFAULT 8u
+#define KAFS_BG_DEDUP_BLOCK_BUDGET_PRESSURE 32u
+#define KAFS_BG_DEDUP_SCAN_WINDOW_DEFAULT 64u
+#define KAFS_BG_DEDUP_SCAN_WINDOW_PRESSURE 256u
 
 #define KAFS_BG_DEDUP_MODE_COLD 1u
 #define KAFS_BG_DEDUP_MODE_ADAPTIVE 2u
@@ -1190,6 +1194,11 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
 
   kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
   char buf[bs];
+  uint32_t block_budget =
+      pressure_mode ? KAFS_BG_DEDUP_BLOCK_BUDGET_PRESSURE : KAFS_BG_DEDUP_BLOCK_BUDGET_DEFAULT;
+  uint32_t scan_window =
+      pressure_mode ? KAFS_BG_DEDUP_SCAN_WINDOW_PRESSURE : KAFS_BG_DEDUP_SCAN_WINDOW_DEFAULT;
+  uint32_t scanned_blocks_this_step = 0;
 
   for (kafs_inocnt_t scanned = 0; scanned < inocnt; ++scanned)
   {
@@ -1220,7 +1229,7 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
     }
 
     kafs_iblkcnt_t iblocnt = (kafs_iblkcnt_t)((size + bs - 1) / bs);
-    uint32_t direct_cnt = (iblocnt < 12) ? (uint32_t)iblocnt : 12u;
+    uint32_t direct_cnt = (iblocnt < scan_window) ? (uint32_t)iblocnt : scan_window;
     if (direct_cnt == 0)
     {
       kafs_inode_unlock(ctx, ino);
@@ -1252,6 +1261,7 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
         continue;
 
       __atomic_add_fetch(&ctx->c_stat_bg_dedup_scanned_blocks, 1u, __ATOMIC_RELAXED);
+      scanned_blocks_this_step++;
 
       if (kafs_bg_advance_cursor(ctx, inocnt, next_iblk))
         kafs_bg_enter_cooldown(ctx, pressure_mode);
@@ -1281,8 +1291,12 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
       kafs_bg_index_note(ctx, fast, old_blo);
       if (dup_direct == KAFS_BLO_NONE)
       {
-        kafs_inode_unlock(ctx, ino);
-        return;
+        if (scanned_blocks_this_step >= block_budget)
+        {
+          kafs_inode_unlock(ctx, ino);
+          return;
+        }
+        continue;
       }
 
       __atomic_add_fetch(&ctx->c_stat_bg_dedup_direct_hits, 1u, __ATOMIC_RELAXED);
@@ -1317,8 +1331,11 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
         (void)kafs_hrl_dec_ref_by_blo(ctx, final_blo);
       }
 
-      kafs_inode_unlock(ctx, ino);
-      return;
+      if (scanned_blocks_this_step >= block_budget)
+      {
+        kafs_inode_unlock(ctx, ino);
+        return;
+      }
     }
 
     kafs_inode_unlock(ctx, ino);
