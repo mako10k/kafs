@@ -48,6 +48,12 @@ design and policy notes.
 
 ## Documentation Files
 
+### Operations
+
+| File | Purpose |
+|------|---------|
+| [crash-diagnostics.md](crash-diagnostics.md) | Crash diagnostics output and core dump collection guide |
+
 ### Primary Documentation
 
 | File | Size | Purpose | Read Time |
