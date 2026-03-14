@@ -7,12 +7,12 @@
 #include "kafs_journal.h"
 #include "kafs_tool_util.h"
 
-#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
@@ -38,6 +38,7 @@ static void usage(const char *prog)
           "    -J, --journal-size-bytes <J>      Journal size (default: 1MiB, min: 4KiB)\n");
   fprintf(stderr, "    --hrl-entry-ratio <R>             HRL entries/data-block ratio (default: "
                   "0.75, range: (0,1])\n");
+  fprintf(stderr, "    --yes                             Skip overwrite confirmation prompt\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "  [Space Reclaim]\n");
   fprintf(stderr,
@@ -47,6 +48,28 @@ static void usage(const char *prog)
   fprintf(stderr, "    Size values accept K/M/G suffixes (binary units).\n");
   fprintf(stderr,
           "    If the image file already exists and has non-zero size, that size overrides -s.\n");
+}
+
+static int mkfs_confirm_overwrite_stdin(void)
+{
+  char buf[32];
+
+  for (;;)
+  {
+    fprintf(stderr, "Overwrite existing filesystem? [Y/n]: ");
+    fflush(stderr);
+
+    if (!fgets(buf, sizeof(buf), stdin))
+      return 0;
+
+    buf[strcspn(buf, "\r\n")] = '\0';
+    if (buf[0] == '\0' || strcasecmp(buf, "y") == 0 || strcasecmp(buf, "yes") == 0)
+      return 1;
+    if (strcasecmp(buf, "n") == 0 || strcasecmp(buf, "no") == 0)
+      return 0;
+
+    fprintf(stderr, "Please answer Y or n.\n");
+  }
 }
 
 static int mkfs_trim_range(int fd, off_t off, off_t len)
@@ -216,6 +239,7 @@ int main(int argc, char **argv)
   double hrl_entry_ratio = 0.75;
   int size_arg_provided = 0;
   int trim_data_area = 0;
+  int assume_yes = 0;
 
   for (int i = 1; i < argc; ++i)
   {
@@ -255,18 +279,19 @@ int main(int argc, char **argv)
     }
     else if (strcmp(argv[i], "--hrl-entry-ratio") == 0 && i + 1 < argc)
     {
-      char *endp = NULL;
-      double v = strtod(argv[++i], &endp);
-      if (!endp || *endp != '\0' || v <= 0.0 || v > 1.0)
+      if (kafs_parse_ratio_0_to_1(argv[++i], &hrl_entry_ratio) != 0)
       {
         fprintf(stderr, "invalid hrl-entry-ratio (expected 0<R<=1): %s\n", argv[i]);
         return 2;
       }
-      hrl_entry_ratio = v;
     }
     else if (strcmp(argv[i], "--trim-data-area") == 0)
     {
       trim_data_area = 1;
+    }
+    else if (strcmp(argv[i], "--yes") == 0)
+    {
+      assume_yes = 1;
     }
     else if (argv[i][0] != '-' && img == NULL)
     {
@@ -357,7 +382,15 @@ int main(int argc, char **argv)
     {
       if (kafs_sb_magic_get(&sbcheck) == KAFS_MAGIC &&
           kafs_sb_format_version_get(&sbcheck) == KAFS_FORMAT_VERSION)
-        fprintf(stderr, "warning: image appears formatted; overwriting\n");
+      {
+        fprintf(stderr, "warning: image appears formatted and will be overwritten: %s\n", img);
+        if (!assume_yes && !mkfs_confirm_overwrite_stdin())
+        {
+          fprintf(stderr, "mkfs.kafs: aborted\n");
+          close(ctx.c_fd);
+          return 1;
+        }
+      }
     }
   }
 
