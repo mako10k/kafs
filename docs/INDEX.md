@@ -32,6 +32,7 @@ design and policy notes.
 - [phase2-validation-20260228.md](phase2-validation-20260228.md)
 - [phase3-validation-20260228.md](phase3-validation-20260228.md)
 - [release-announcement-v0.2.1.md](release-announcement-v0.2.1.md)
+- [release-announcement-v0.3.0.md](release-announcement-v0.3.0.md)
 - [discussion-post-v0.2.1-final.md](discussion-post-v0.2.1-final.md)
 - [static-checks.md](static-checks.md)
 - [tools-suite.md](tools-suite.md)

@@ -1,10 +1,11 @@
 # Changelog
 
-## v0.2.3 - 2026-03-04
-- `fsck.kafs` に統合モード `full` / `balanced` / `fast` を追加。
-- 低レベル修復オプションとしてジャーナル再生と未参照データブロックの punch-hole を追加。
-- `fsck.kafs` の journal リンク不足を修正し、静的解析指摘（条件式/ポインタ演算/const など）へ対応。
-- RPC/CLI/block/back-end の重複コードを削減し、クローン抑止と静的チェックの運用ルールを強化。
+## v0.3.0 - 2026-03-14
+- `kafsdump`, `kafsimage`, `kafsresize`, 拡張 `fsck.kafs` を含むオフライン運用ツール群を強化。
+- `fsck.kafs` に統合モード `full` / `balanced` / `fast`、ジャーナル再生、inode block-count 修復、未参照/空きデータブロック punch-hole を追加。
+- idle background dedup のスキャン制御、テレメトリ、HRL rescue 指標、`fsstat`/`stats` 可視化を追加。
+- logical delete tombstone と background GC を導入し、`kafsctl stats` / `kafs-info` / `fsck.kafs` で tombstone を扱えるようにした。
+- `mkfs.kafs` の上書き確認、クラッシュ診断、bash completion、clone/static/lock policy の品質ゲートを強化。
 
 ## v0.2.2 - 2026-03-01
 - pending 非同期処理の競合対策を強化（inode epoch 楽観ガード導入、stale pending の適用抑止）。
