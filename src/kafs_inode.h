@@ -1,4 +1,5 @@
 #pragma once
+#include "kafs_config.h"
 #include "kafs.h"
 #include <errno.h>
 

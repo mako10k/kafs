@@ -1,5 +1,6 @@
 #pragma once
 
+#include "kafs_config.h"
 #include <string.h>
 
 typedef void (*kafs_usage_fn_t)(const char *prog);

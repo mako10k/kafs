@@ -3,10 +3,10 @@ AUTOMAKE_OPTIONS = serial-tests subdir-objects
 # Keep these tests self-contained and avoid polluting the repo tree: each test
 # enters a fresh workdir under ${TMPDIR:-/tmp} at startup.
 
-AM_CPPFLAGS = -I$(top_srcdir)/src -I$(srcdir)
+AM_CPPFLAGS = -include $(top_srcdir)/src/kafs_config.h -I$(top_srcdir)/src -I$(srcdir)
 
 # Match src/ build flags for consistent warnings/debug.
-CFLAGS = -Wall -Werror -g -O0 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 \
+CFLAGS = -Wall -Werror -g -O0 \
 	-Wno-unused-function -Wno-unused-parameter
 
 noinst_HEADERS = test_utils.h

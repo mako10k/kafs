@@ -6,6 +6,8 @@ AC_INIT([kafs],[0.2.3],[mako10k@mk10.org])
 AC_CONFIG_SRCDIR([src/kafs.c])
 AC_CONFIG_HEADERS([config.h])
 AM_INIT_AUTOMAKE([foreign])
+AC_USE_SYSTEM_EXTENSIONS
+AC_SYS_LARGEFILE
 PKG_CHECK_MODULES([KAFS], [fuse3])
 
 AC_ARG_ENABLE([lto],

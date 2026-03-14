@@ -1,8 +1,6 @@
 #pragma once
 #define FUSE_USE_VERSION 30
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
+#include "kafs_config.h"
 
 #include <inttypes.h>
 #include <time.h>

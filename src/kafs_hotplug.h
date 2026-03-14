@@ -1,4 +1,5 @@
 #pragma once
+#include "kafs_config.h"
 #include <stdint.h>
 
 #define KAFS_HOTPLUG_ENV_KEY_MAX 64
