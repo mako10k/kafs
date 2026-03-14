@@ -46,6 +46,21 @@ static inline int kafs_parse_size_bytes_u64(const char *arg, uint64_t *out)
   return 0;
 }
 
+static inline int kafs_parse_ratio_0_to_1(const char *arg, double *out)
+{
+  if (!arg || !out || *arg == '\0')
+    return -1;
+
+  char *endp = NULL;
+  errno = 0;
+  double v = strtod(arg, &endp);
+  if (errno != 0 || endp == arg || *endp != '\0' || v <= 0.0 || v > 1.0)
+    return -1;
+
+  *out = v;
+  return 0;
+}
+
 static inline int kafs_pread_all(int fd, void *buf, size_t sz, off_t off)
 {
   char *p = (char *)buf;

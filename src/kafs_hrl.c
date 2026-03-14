@@ -128,6 +128,60 @@ static int hrl_entry_cmp_content(kafs_context_t *ctx, kafs_hrl_entry_t *e, const
   return memcmp(tmp, buf, bs) == 0;
 }
 
+typedef int (*hrl_entry_match_fn)(const kafs_hrl_entry_t *e, void *opaque);
+
+static int hrl_match_live_blo(const kafs_hrl_entry_t *e, void *opaque)
+{
+  const kafs_blkcnt_t *blo = (const kafs_blkcnt_t *)opaque;
+  return e->refcnt != 0 && e->blo == *blo;
+}
+
+static int hrl_match_evictable_ref1(const kafs_hrl_entry_t *e, void *opaque)
+{
+  (void)opaque;
+  return e->refcnt == 1u && e->blo != KAFS_BLO_NONE;
+}
+
+// Returns with the matching bucket still locked; caller must unlock it.
+static int hrl_find_entry_locked(kafs_context_t *ctx, hrl_entry_match_fn match, void *opaque,
+                                 uint32_t *out_bucket, uint32_t *out_idx)
+{
+  uint32_t *index = hrl_index_tbl(ctx);
+  kafs_hrl_entry_t *ents = hrl_entries_tbl(ctx);
+  uint32_t cap = hrl_capacity(ctx);
+  uint32_t bcnt = hrl_bucket_count(ctx);
+
+  for (uint32_t b = 0; b < bcnt; ++b)
+  {
+    kafs_hrl_bucket_lock(ctx, b);
+    uint32_t head = index[b];
+    for (uint32_t steps = 0; head != 0 && steps < cap; ++steps)
+    {
+      uint32_t i = head - 1u;
+      if (i >= cap)
+      {
+        kafs_hrl_bucket_unlock(ctx, b);
+        return -EIO;
+      }
+      kafs_hrl_entry_t *e = &ents[i];
+      if (match(e, opaque))
+      {
+        if (out_bucket)
+          *out_bucket = b;
+        if (out_idx)
+          *out_idx = i;
+        return 0;
+      }
+      head = e->next_plus1;
+    }
+    kafs_hrl_bucket_unlock(ctx, b);
+    if (head != 0)
+      return -EIO;
+  }
+
+  return -ENOENT;
+}
+
 static int hrl_find_by_hash(kafs_context_t *ctx, uint64_t fast, const void *buf,
                             uint32_t *out_index)
 {
@@ -455,44 +509,21 @@ int kafs_hrl_inc_ref_by_blo(kafs_context_t *ctx, kafs_blkcnt_t blo)
   if (!ctx || ctx->c_hrl_bucket_cnt == 0 || hrl_capacity(ctx) == 0)
     return -ENOSYS;
 
-  uint32_t *index = hrl_index_tbl(ctx);
-  kafs_hrl_entry_t *ents = hrl_entries_tbl(ctx);
-  uint32_t cap = hrl_capacity(ctx);
-  uint32_t bcnt = hrl_bucket_count(ctx);
+  uint32_t bucket = 0;
+  uint32_t idx = 0;
+  int rc = hrl_find_entry_locked(ctx, hrl_match_live_blo, &blo, &bucket, &idx);
+  if (rc != 0)
+    return rc;
 
-  for (uint32_t b = 0; b < bcnt; ++b)
+  kafs_hrl_entry_t *e = &hrl_entries_tbl(ctx)[idx];
+  if (e->refcnt == 0xFFFFFFFFu)
   {
-    kafs_hrl_bucket_lock(ctx, b);
-    uint32_t head = index[b];
-    // Guard against corrupted/looping chains: cap iterations.
-    for (uint32_t steps = 0; head != 0 && steps < cap; ++steps)
-    {
-      uint32_t i = head - 1u;
-      if (i >= cap)
-      {
-        kafs_hrl_bucket_unlock(ctx, b);
-        return -EIO;
-      }
-      kafs_hrl_entry_t *e = &ents[i];
-      if (e->refcnt != 0 && e->blo == blo)
-      {
-        if (e->refcnt == 0xFFFFFFFFu)
-        {
-          kafs_hrl_bucket_unlock(ctx, b);
-          return -EOVERFLOW;
-        }
-        e->refcnt += 1u;
-        kafs_hrl_bucket_unlock(ctx, b);
-        return 0;
-      }
-      head = e->next_plus1;
-    }
-    kafs_hrl_bucket_unlock(ctx, b);
-    if (head != 0)
-      return -EIO;
+    kafs_hrl_bucket_unlock(ctx, bucket);
+    return -EOVERFLOW;
   }
-
-  return -ENOENT;
+  e->refcnt += 1u;
+  kafs_hrl_bucket_unlock(ctx, bucket);
+  return 0;
 }
 
 int kafs_hrl_dec_ref_by_blo(kafs_context_t *ctx, kafs_blkcnt_t blo)
@@ -601,40 +632,18 @@ int kafs_hrl_evict_ref1_to_direct(kafs_context_t *ctx, kafs_blkcnt_t *out_blo)
   if (ctx->c_hrl_bucket_cnt == 0 || hrl_capacity(ctx) == 0)
     return -ENOSYS;
 
-  uint32_t *index = hrl_index_tbl(ctx);
-  kafs_hrl_entry_t *ents = hrl_entries_tbl(ctx);
-  uint32_t cap = hrl_capacity(ctx);
-  uint32_t bcnt = hrl_bucket_count(ctx);
+  uint32_t bucket = 0;
+  uint32_t idx = 0;
+  int rc = hrl_find_entry_locked(ctx, hrl_match_evictable_ref1, NULL, &bucket, &idx);
+  if (rc != 0)
+    return rc;
 
-  for (uint32_t b = 0; b < bcnt; ++b)
-  {
-    kafs_hrl_bucket_lock(ctx, b);
-    uint32_t head = index[b];
-    for (uint32_t steps = 0; head != 0 && steps < cap; ++steps)
-    {
-      uint32_t i = head - 1u;
-      if (i >= cap)
-      {
-        kafs_hrl_bucket_unlock(ctx, b);
-        return -EIO;
-      }
-      kafs_hrl_entry_t *e = &ents[i];
-      if (e->refcnt == 1u && e->blo != KAFS_BLO_NONE)
-      {
-        kafs_blkcnt_t blo = e->blo;
-        (void)hrl_chain_remove(ctx, i, e->fast);
-        hrl_clear_slot(ctx, e);
-        kafs_hrl_bucket_unlock(ctx, b);
-        if (out_blo)
-          *out_blo = blo;
-        return 0;
-      }
-      head = e->next_plus1;
-    }
-    kafs_hrl_bucket_unlock(ctx, b);
-    if (head != 0)
-      return -EIO;
-  }
-
-  return -ENOENT;
+  kafs_hrl_entry_t *e = &hrl_entries_tbl(ctx)[idx];
+  kafs_blkcnt_t blo = e->blo;
+  (void)hrl_chain_remove(ctx, idx, e->fast);
+  hrl_clear_slot(ctx, e);
+  kafs_hrl_bucket_unlock(ctx, bucket);
+  if (out_blo)
+    *out_blo = blo;
+  return 0;
 }
