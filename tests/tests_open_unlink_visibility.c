@@ -97,6 +97,15 @@ static int run_cmd(char *const argv[])
     return -errno;
   return (WIFEXITED(st) && WEXITSTATUS(st) == 0) ? 0 : -1;
 }
+
+static const char *pick_fsck_bin(void)
+{
+  const char *p = getenv("KAFS_TEST_FSCK");
+  if (p && *p)
+    return p;
+  return "./fsck.kafs";
+}
+
 static int is_still_mounted(const char *mnt) { return is_mounted_fuse(mnt); }
 
 static void stop_kafs(const char *mnt, pid_t pid)
@@ -198,6 +207,58 @@ int main(void)
   }
 
   stop_kafs(mnt, srv);
+
+  const char *img2 = "dir-unlink-leak.img";
+  const char *mnt2 = "mnt-dir-unlink";
+  if (kafs_test_mkimg_with_hrl(img2, 128u * 1024u * 1024u, 12, 4096, &ctx, &mapsize) != 0)
+    return 77;
+  munmap(ctx.c_superblock, mapsize);
+  close(ctx.c_fd);
+
+  srv = spawn_kafs(img2, mnt2);
+  if (srv <= 0)
+    return 77;
+
+  for (int i = 1; i <= 8; ++i)
+  {
+    snprintf(p, sizeof(p), "%s/f%d", mnt2, i);
+    int fd = open(p, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    if (fd < 0)
+    {
+      tlogf("create tiny file failed: %s", strerror(errno));
+      stop_kafs(mnt2, srv);
+      return 1;
+    }
+    if (write(fd, "x", 1) != 1)
+    {
+      tlogf("write tiny file failed: %s", strerror(errno));
+      close(fd);
+      stop_kafs(mnt2, srv);
+      return 1;
+    }
+    close(fd);
+  }
+
+  for (int i = 1; i <= 8; ++i)
+  {
+    snprintf(p, sizeof(p), "%s/f%d", mnt2, i);
+    if (unlink(p) != 0)
+    {
+      tlogf("unlink tiny file failed: %s", strerror(errno));
+      stop_kafs(mnt2, srv);
+      return 1;
+    }
+  }
+
+  stop_kafs(mnt2, srv);
+
+  char *fsck_argv[] = {(char *)pick_fsck_bin(), "--check-hrl-blo-refcounts", (char *)img2, NULL};
+  if (run_cmd(fsck_argv) != 0)
+  {
+    tlogf("hrl refcount check failed after deleting 8 tiny files");
+    return 1;
+  }
+
   tlogf("open_unlink_visibility OK");
   return 0;
 }
