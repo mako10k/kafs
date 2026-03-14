@@ -82,7 +82,7 @@ CFG_CFLAGS=""
 CFG_LDFLAGS=""
 if [[ "$USE_ASAN" == "1" ]]; then
   echo "[cfg] enabling AddressSanitizer"
-  CFG_CFLAGS="-Wall -Werror -g -O0 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -fsanitize=address"
+  CFG_CFLAGS="-Wall -Werror -g -O0 -fsanitize=address"
   CFG_LDFLAGS="-fsanitize=address"
 fi
 

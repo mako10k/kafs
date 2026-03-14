@@ -1,4 +1,5 @@
 #pragma once
+#include "kafs_config.h"
 #include <stdint.h>
 #include <sys/ioctl.h>
 #include "kafs_hotplug.h"

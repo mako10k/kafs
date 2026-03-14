@@ -1,6 +1,7 @@
 #ifndef KAFS_CRASH_DIAG_H
 #define KAFS_CRASH_DIAG_H
 
+#include "kafs_config.h"
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>

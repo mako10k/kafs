@@ -1,5 +1,6 @@
 #pragma once
 
+#include "kafs_config.h"
 #include <ctype.h>
 #include <errno.h>
 #include <stdint.h>

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "kafs_config.h"
 #include "kafs_context.h"
 
 #include <sys/types.h>
