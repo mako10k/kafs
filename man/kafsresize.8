@@ -26,6 +26,15 @@ It also supports creating a migration target image with new geometry
 .B --migrate-create
 for cutover workflows.
 
+When
+.B --src-mount
+and
+.B --dst-mount
+are provided, the suggested cutover workflow prints an initial seed
+copy plus a final rsync command using
+.B --inplace --no-whole-file
+to reduce re-transfer and rewrite volume before the final switch.
+
 Current v0 implementation is conservative and supports growth only within
 preallocated headroom:
 
@@ -78,10 +87,11 @@ Optional HRL entry ratio forwarded to
 Valid range is greater than 0 and less than or equal to 1.0.
 .TP
 .B --src-mount PATH
-Optional source mount path; printed in suggested rsync command.
+Optional source mount path; printed in suggested rsync commands.
 .TP
 .B --dst-mount PATH
-Optional destination mount path; printed in suggested mount/rsync commands.
+Optional destination mount path; printed in suggested mount/rsync commands,
+including a final low-transfer rsync step.
 .TP
 .B --yes
 Skip confirmation prompt for

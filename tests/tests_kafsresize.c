@@ -80,6 +80,58 @@ static int run_cmd_status_with_stdin(char *const argv[], const char *stdin_data)
   return 255;
 }
 
+static int run_cmd_capture_stdout(char *const argv[], char *stdout_buf, size_t stdout_buf_sz)
+{
+  int pipefd[2];
+  if (pipe(pipefd) != 0)
+    return -errno;
+
+  pid_t pid = fork();
+  if (pid < 0)
+  {
+    int saved = errno;
+    close(pipefd[0]);
+    close(pipefd[1]);
+    return -saved;
+  }
+  if (pid == 0)
+  {
+    close(pipefd[0]);
+    if (dup2(pipefd[1], STDOUT_FILENO) < 0)
+      _exit(127);
+    close(pipefd[1]);
+    execvp(argv[0], argv);
+    _exit(127);
+  }
+
+  close(pipefd[1]);
+  size_t used = 0;
+  while (stdout_buf && used + 1 < stdout_buf_sz)
+  {
+    ssize_t n = read(pipefd[0], stdout_buf + used, stdout_buf_sz - used - 1);
+    if (n < 0)
+    {
+      int saved = errno;
+      close(pipefd[0]);
+      (void)waitpid(pid, NULL, 0);
+      return -saved;
+    }
+    if (n == 0)
+      break;
+    used += (size_t)n;
+  }
+  if (stdout_buf && stdout_buf_sz > 0)
+    stdout_buf[used] = '\0';
+  close(pipefd[0]);
+
+  int st = 0;
+  if (waitpid(pid, &st, 0) < 0)
+    return -errno;
+  if (WIFEXITED(st))
+    return WEXITSTATUS(st);
+  return 255;
+}
+
 static int to_abs_path(const char *in, char *out, size_t out_sz)
 {
   if (!in || !*in || !out || out_sz == 0)
@@ -326,6 +378,62 @@ int main(void)
   if (run_cmd_status(resize_over_argv) == 0)
   {
     fprintf(stderr, "resize unexpectedly succeeded over headroom limit\n");
+    return 1;
+  }
+
+  const char *dst_img = "migrate-dst.img";
+  int dst_fd = open(dst_img, O_RDWR | O_CREAT | O_TRUNC, 0600);
+  if (dst_fd < 0)
+  {
+    fprintf(stderr, "failed to create migrate dst image\n");
+    return 1;
+  }
+  if (ftruncate(dst_fd, 64 * 1024 * 1024) != 0)
+  {
+    fprintf(stderr, "failed to size migrate dst image\n");
+    close(dst_fd);
+    return 1;
+  }
+  close(dst_fd);
+
+  char migrate_stdout[4096];
+  char *migrate_create_argv[] = {(char *)resize_abs,
+                                 (char *)"--migrate-create",
+                                 (char *)"--dst-image",
+                                 (char *)dst_img,
+                                 (char *)"--force",
+                                 (char *)"--inodes",
+                                 (char *)"4096",
+                                 (char *)"--src-mount",
+                                 (char *)"/srcmnt",
+                                 (char *)"--dst-mount",
+                                 (char *)"/dstmnt",
+                                 (char *)"--yes",
+                                 NULL};
+  if (run_cmd_capture_stdout(migrate_create_argv, migrate_stdout, sizeof(migrate_stdout)) != 0)
+  {
+    fprintf(stderr, "migrate-create failed\n");
+    return 1;
+  }
+
+  kafs_ssuperblock_t migrate_sb = {0};
+  if (read_superblock(dst_img, &migrate_sb) != 0)
+  {
+    fprintf(stderr, "failed to read migrate-create superblock\n");
+    return 1;
+  }
+  if (kafs_sb_magic_get(&migrate_sb) != KAFS_MAGIC ||
+      kafs_sb_format_version_get(&migrate_sb) != KAFS_FORMAT_VERSION ||
+      kafs_sb_inocnt_get(&migrate_sb) != 4096)
+  {
+    fprintf(stderr, "unexpected migrate-create image format\n");
+    return 1;
+  }
+  if (!strstr(migrate_stdout, "initial seed copy:") ||
+      !strstr(migrate_stdout, "--inplace --no-whole-file") ||
+      !strstr(migrate_stdout, "sudo rsync -aHAX --numeric-ids --delete /srcmnt/ /dstmnt/"))
+  {
+    fprintf(stderr, "migrate-create output missing low-transfer rsync guidance\n");
     return 1;
   }
 

@@ -84,6 +84,38 @@ static int run_command(const char *prog, char *const argv[])
   return 1;
 }
 
+static void print_migrate_next_steps(const char *dst_image, const char *src_mount,
+                                     const char *dst_mount)
+{
+  printf("\nnext steps (manual cutover):\n");
+  if (dst_mount && *dst_mount)
+  {
+    printf("  1) sudo mkdir -p %s\n", dst_mount);
+    printf("  2) sudo kafs %s %s\n", dst_image, dst_mount);
+    if (src_mount && *src_mount)
+    {
+      printf("  3) initial seed copy:\n");
+      printf("     sudo rsync -aHAX --numeric-ids --delete %s/ %s/\n", src_mount, dst_mount);
+      printf("  4) final low-transfer sync before cutover:\n");
+      printf("     sudo rsync -aHAX --numeric-ids --delete --inplace --no-whole-file %s/ %s/\n",
+             src_mount, dst_mount);
+      printf("  5) verify then switch mountpoint\n");
+    }
+    else
+    {
+      printf("  3) copy data from source mount to %s\n", dst_mount);
+      printf("  4) re-run a low-transfer rsync before cutover if source changed\n");
+      printf("  5) verify then switch mountpoint\n");
+    }
+  }
+  else
+  {
+    printf("  - mount destination image and copy data from source filesystem\n");
+    printf(
+        "  - before cutover, re-run rsync with --inplace --no-whole-file to minimize transfer\n");
+  }
+}
+
 static void bitmap_clear_range(uint8_t *bm, uint32_t from_blo, uint32_t to_blo)
 {
   for (uint32_t b = from_blo; b < to_blo; ++b)
@@ -418,26 +450,7 @@ static int cmd_migrate_create(const char *dst_image, uint64_t size_bytes, uint32
   if (hrl_entry_ratio > 0.0)
     printf("  hrl_entry_ratio: %.6f\n", hrl_entry_ratio);
 
-  printf("\nnext steps (manual cutover):\n");
-  if (dst_mount && *dst_mount)
-  {
-    printf("  1) sudo mkdir -p %s\n", dst_mount);
-    printf("  2) sudo kafs %s %s\n", dst_image, dst_mount);
-    if (src_mount && *src_mount)
-    {
-      printf("  3) sudo rsync -aHAX --numeric-ids --delete %s/ %s/\n", src_mount, dst_mount);
-      printf("  4) verify then switch mountpoint\n");
-    }
-    else
-    {
-      printf("  3) copy data from source mount to %s\n", dst_mount);
-      printf("  4) verify then switch mountpoint\n");
-    }
-  }
-  else
-  {
-    printf("  - mount destination image and copy data from source filesystem\n");
-  }
+  print_migrate_next_steps(dst_image, src_mount, dst_mount);
 
   return 0;
 }
