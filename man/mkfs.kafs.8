@@ -15,12 +15,16 @@ mkfs.kafs \- create a KAFS filesystem image
 .IR journalsz ]
 .RB [ --hrl-entry-ratio
 .IR ratio ]
+.RB [ --yes ]
 .RB [ --trim-data-area ]
 .SH DESCRIPTION
 .B mkfs.kafs
 creates a new KAFS filesystem image file with the specified parameters.
 It initializes superblock, block bitmap, inode table, HRL structures, and an in-image journal region.
 The filesystem root directory is owned by the user running mkfs.kafs (UID/GID).
+When the target already contains a recognizable KAFS format,
+.B mkfs.kafs
+prints a warning and asks for confirmation before overwriting it.
 .SH OPTIONS
 .SS Layout Options
 .TP
@@ -41,6 +45,9 @@ Journal region size (default: 1MiB, minimum 4KiB). K/M/G suffixes are accepted.
 .BR --hrl-entry-ratio "=" ratio
 HRL entry count ratio against data block count.
 Default is 0.75. Valid range is greater than 0 and less than or equal to 1.0.
+.TP
+.B --yes
+Skip the overwrite confirmation prompt when an existing KAFS format is detected.
 .SS Space Reclaim Option
 .TP
 .B --trim-data-area

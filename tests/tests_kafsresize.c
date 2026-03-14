@@ -33,6 +33,53 @@ static int run_cmd_status(char *const argv[])
   return 255;
 }
 
+static int run_cmd_status_with_stdin(char *const argv[], const char *stdin_data)
+{
+  int pipefd[2];
+  if (pipe(pipefd) != 0)
+    return -errno;
+
+  pid_t pid = fork();
+  if (pid < 0)
+  {
+    int saved = errno;
+    close(pipefd[0]);
+    close(pipefd[1]);
+    return -saved;
+  }
+  if (pid == 0)
+  {
+    close(pipefd[1]);
+    if (dup2(pipefd[0], STDIN_FILENO) < 0)
+      _exit(127);
+    close(pipefd[0]);
+    execvp(argv[0], argv);
+    _exit(127);
+  }
+
+  close(pipefd[0]);
+  if (stdin_data && *stdin_data)
+  {
+    size_t len = strlen(stdin_data);
+    ssize_t wr = write(pipefd[1], stdin_data, len);
+    if (wr < 0 || (size_t)wr != len)
+    {
+      int saved = errno;
+      close(pipefd[1]);
+      (void)waitpid(pid, NULL, 0);
+      return -saved;
+    }
+  }
+  close(pipefd[1]);
+
+  int st = 0;
+  if (waitpid(pid, &st, 0) < 0)
+    return -errno;
+  if (WIFEXITED(st))
+    return WEXITSTATUS(st);
+  return 255;
+}
+
 static int to_abs_path(const char *in, char *out, size_t out_sz)
 {
   if (!in || !*in || !out || out_sz == 0)
@@ -153,6 +200,32 @@ int main(void)
   if (run_cmd_status(mkfs_argv) != 0)
   {
     fprintf(stderr, "mkfs failed\n");
+    return 1;
+  }
+
+  char *mkfs_prompt_argv[] = {(char *)mkfs_abs, (char *)img, NULL};
+  if (run_cmd_status_with_stdin(mkfs_prompt_argv, NULL) == 0)
+  {
+    fprintf(stderr, "mkfs unexpectedly reformatted without confirmation input\n");
+    return 1;
+  }
+
+  if (run_cmd_status_with_stdin(mkfs_prompt_argv, "n\n") == 0)
+  {
+    fprintf(stderr, "mkfs unexpectedly reformatted after negative confirmation\n");
+    return 1;
+  }
+
+  if (run_cmd_status_with_stdin(mkfs_prompt_argv, "\n") != 0)
+  {
+    fprintf(stderr, "mkfs failed to accept default yes confirmation\n");
+    return 1;
+  }
+
+  char *mkfs_yes_argv[] = {(char *)mkfs_abs, (char *)"--yes", (char *)img, NULL};
+  if (run_cmd_status_with_stdin(mkfs_yes_argv, NULL) != 0)
+  {
+    fprintf(stderr, "mkfs --yes failed to skip overwrite confirmation\n");
     return 1;
   }
 
