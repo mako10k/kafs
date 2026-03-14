@@ -2706,7 +2706,10 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
   assert(buf != NULL);
   assert(inoent != NULL);
   assert(kafs_ino_get_usage(inoent));
-  if (ctx->c_pendinglog_enabled && ctx->c_pending_worker_running)
+  // Directory metadata is frequently rewritten and can cross the inline/block-backed boundary.
+  // Keep that path synchronous so shrink-to-inline and unlink do not race with pendinglog writes.
+  if (ctx->c_pendinglog_enabled && ctx->c_pending_worker_running &&
+      !S_ISDIR(kafs_ino_mode_get(inoent)))
   {
     kafs_blkcnt_t temp_blo = KAFS_BLO_NONE;
     KAFS_CALL(kafs_blk_alloc, ctx, &temp_blo);
