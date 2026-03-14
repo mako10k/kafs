@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,6 +54,29 @@ static int confirm_yes_stdin(void)
 
 static const char *resolve_mkfs_prog(void)
 {
+  const char *envv = getenv("KAFS_MKFS");
+  if (envv && *envv)
+    return envv;
+
+#ifdef __linux__
+  char exe_path[PATH_MAX];
+  static char sibling[PATH_MAX];
+  ssize_t n = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1u);
+  if (n > 0)
+  {
+    exe_path[n] = '\0';
+    char *slash = strrchr(exe_path, '/');
+    if (slash)
+    {
+      size_t dir_len = (size_t)(slash - exe_path) + 1u;
+      if (snprintf(sibling, sizeof(sibling), "%.*smkfs.kafs", (int)dir_len, exe_path) <
+              (int)sizeof(sibling) &&
+          access(sibling, X_OK) == 0)
+        return sibling;
+    }
+  }
+#endif
+
   if (access("./src/mkfs.kafs", X_OK) == 0)
     return "./src/mkfs.kafs";
   return "mkfs.kafs";

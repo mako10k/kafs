@@ -1800,7 +1800,8 @@ static int kafs_tombstone_pressure(kafs_context_t *ctx)
     return 0;
 
   uint32_t used_pct = kafs_fs_used_pct(ctx);
-  if (used_pct >= KAFS_BG_DEDUP_PRESSURE_USED_PCT_DEFAULT)
+  uint32_t pressure_used_pct = ctx->c_bg_dedup_pressure_used_pct;
+  if (pressure_used_pct > 0 && used_pct >= pressure_used_pct)
     return 1;
 
   kafs_inocnt_t inode_total = kafs_sb_inocnt_get(ctx->c_superblock);

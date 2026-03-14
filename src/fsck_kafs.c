@@ -840,7 +840,8 @@ static void usage(const char *prog)
   fprintf(stderr, "    --repair-journal-reset             Reset journal ring when invalid\n");
   fprintf(stderr,
           "    --check-dirent-ino-orphans         Scan orphan inodes (linkcnt==0, dtime==0)\n");
-  fprintf(stderr, "    --repair-dirent-ino-orphans        Reclaim orphan inodes and refs\n");
+    fprintf(stderr,
+      "    --repair-dirent-ino-orphans        Reclaim orphan inodes and refs (linkcnt==0, dtime==0)\n");
   fprintf(stderr, "    --check-hrl-blo-refcounts          Compare inode refs vs HRL refs\n");
   fprintf(stderr,
           "    --repair-hrl-blo-refcounts         Repair HRL refcounts to match inode refs\n");
