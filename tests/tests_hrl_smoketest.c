@@ -45,9 +45,44 @@ int main(void)
   // Ensure freeing again fails
   assert(kafs_hrl_dec_ref(&ctx, h1) != 0);
 
-  // Clean up
+  // Reopen after free-list links have been persisted in free entries.
   munmap(ctx.c_superblock, mapsize);
   close(ctx.c_fd);
+
+  int fd = open(img, O_RDWR);
+  assert(fd >= 0);
+  void *map = mmap(NULL, (size_t)mapsize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  assert(map != MAP_FAILED);
+
+  kafs_context_t reopened = {0};
+  reopened.c_superblock = (kafs_ssuperblock_t *)map;
+  reopened.c_fd = fd;
+  {
+    off_t meta_off = (off_t)sizeof(kafs_ssuperblock_t);
+    off_t bmask = (off_t)bs - 1;
+    kafs_blkcnt_t blkcnt = kafs_sb_blkcnt_get(reopened.c_superblock);
+    kafs_inocnt_t inocnt = kafs_sb_inocnt_get(reopened.c_superblock);
+
+    meta_off = (meta_off + bmask) & ~bmask;
+    reopened.c_blkmasktbl = (kafs_blkmask_t *)((char *)map + meta_off);
+    meta_off += (off_t)((blkcnt + 7u) >> 3);
+    meta_off = (meta_off + 7) & ~7;
+    meta_off = (meta_off + bmask) & ~bmask;
+    reopened.c_inotbl = (kafs_sinode_t *)((char *)map + meta_off);
+    meta_off += (off_t)sizeof(kafs_sinode_t) * (off_t)inocnt;
+    reopened.c_blo_search = 0;
+    reopened.c_ino_search = 0;
+  }
+  assert(kafs_hrl_open(&reopened) == 0);
+
+  memset(buf, 'B', bs);
+  assert(kafs_hrl_put(&reopened, buf, &h1, &n1, &b1) == 0);
+  assert(n1 == 1);
+  assert(kafs_hrl_dec_ref(&reopened, h1) == 0);
+
+  // Clean up
+  munmap(reopened.c_superblock, mapsize);
+  close(reopened.c_fd);
   unlink(img);
   free(buf);
   return 0;
