@@ -172,6 +172,15 @@ struct kafs_context
   int32_t c_pending_worker_prio_apply_error;
   uint32_t c_pending_worker_prio_dirty;
 
+  // --- Logical delete / tombstone GC runtime state ---
+  pthread_t c_tombstone_gc_worker_tid;
+  pthread_mutex_t c_tombstone_gc_worker_lock;
+  pthread_cond_t c_tombstone_gc_worker_cond;
+  int c_tombstone_gc_worker_lock_init;
+  int c_tombstone_gc_worker_running;
+  int c_tombstone_gc_worker_stop;
+  uint32_t c_tombstone_gc_cursor;
+
   // --- Idle background dedup scan runtime config ---
   uint32_t c_bg_dedup_enabled;
   uint32_t c_bg_dedup_interval_ms;

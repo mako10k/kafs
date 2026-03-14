@@ -1,4 +1,5 @@
 #include "kafs_superblock.h"
+#include "kafs_inode.h"
 #include "test_utils.h"
 
 #include <errno.h>
@@ -218,24 +219,60 @@ static int write_superblock(const char *img, const kafs_ssuperblock_t *sb)
   return 0;
 }
 
+static int write_inode_at(const char *img, kafs_inocnt_t ino, const kafs_sinode_t *inode)
+{
+  kafs_ssuperblock_t sb = {0};
+  int rc = read_superblock(img, &sb);
+  if (rc != 0)
+    return rc;
+
+  uint64_t blksize = 1u << kafs_sb_log_blksize_get(&sb);
+  uint64_t blksizemask = blksize - 1u;
+  uint64_t r_blkcnt = kafs_sb_r_blkcnt_get(&sb);
+  uint64_t layout = sizeof(kafs_ssuperblock_t);
+  layout = (layout + blksizemask) & ~blksizemask;
+  layout += (r_blkcnt + 7u) >> 3;
+  layout = (layout + 7u) & ~7u;
+  layout = (layout + blksizemask) & ~blksizemask;
+  off_t inode_off = (off_t)layout + (off_t)ino * (off_t)sizeof(*inode);
+
+  int fd = open(img, O_RDWR);
+  if (fd < 0)
+    return -errno;
+  ssize_t n = pwrite(fd, inode, sizeof(*inode), inode_off);
+  int saved = errno;
+  close(fd);
+  if (n != (ssize_t)sizeof(*inode))
+    return (n < 0) ? -saved : -EIO;
+  return 0;
+}
+
 int main(void)
 {
   char mkfs_abs[PATH_MAX];
   char resize_abs[PATH_MAX];
-    const char *mkfs_cands[] = {
+  char info_abs[PATH_MAX];
+  const char *mkfs_cands[] = {
       "../src/mkfs.kafs",
       "./src/mkfs.kafs",
       "./mkfs.kafs",
       "mkfs.kafs",
       NULL};
-    const char *resize_cands[] = {
+  const char *resize_cands[] = {
       "../src/kafsresize",
       "./src/kafsresize",
       "./kafsresize",
       "kafsresize",
       NULL};
-    if (resolve_tool_path("KAFS_TEST_MKFS", mkfs_cands, mkfs_abs, sizeof(mkfs_abs)) != 0 ||
-      resolve_tool_path("KAFS_TEST_KAFSRESIZE", resize_cands, resize_abs, sizeof(resize_abs)) != 0)
+  const char *info_cands[] = {
+      "../src/kafs-info",
+      "./src/kafs-info",
+      "./kafs-info",
+      "kafs-info",
+      NULL};
+  if (resolve_tool_path("KAFS_TEST_MKFS", mkfs_cands, mkfs_abs, sizeof(mkfs_abs)) != 0 ||
+      resolve_tool_path("KAFS_TEST_KAFSRESIZE", resize_cands, resize_abs, sizeof(resize_abs)) != 0 ||
+      resolve_tool_path("KAFS_TEST_KAFSINFO", info_cands, info_abs, sizeof(info_abs)) != 0)
   {
     fprintf(stderr, "failed to resolve test tool paths\n");
     return 1;
@@ -434,6 +471,59 @@ int main(void)
       !strstr(migrate_stdout, "sudo rsync -aHAX --numeric-ids --delete /srcmnt/ /dstmnt/"))
   {
     fprintf(stderr, "migrate-create output missing low-transfer rsync guidance\n");
+    return 1;
+  }
+
+  const char *info_img = "info-tombstone.img";
+  char *info_mkfs_argv[] = {(char *)mkfs_abs, (char *)info_img, (char *)"-s", (char *)"32M", NULL};
+  if (run_cmd_status(info_mkfs_argv) != 0)
+  {
+    fprintf(stderr, "mkfs for kafs-info test failed\n");
+    return 1;
+  }
+
+  kafs_sinode_t tombstone_1;
+  memset(&tombstone_1, 0, sizeof(tombstone_1));
+  kafs_ino_mode_set(&tombstone_1, S_IFREG | 0644);
+  kafs_ino_linkcnt_set(&tombstone_1, 0);
+  kafs_ino_dtime_set(&tombstone_1, (kafs_time_t){.tv_sec = 111, .tv_nsec = 7});
+  if (write_inode_at(info_img, KAFS_INO_ROOTDIR + 1u, &tombstone_1) != 0)
+  {
+    fprintf(stderr, "failed to write first tombstone inode\n");
+    return 1;
+  }
+
+  kafs_sinode_t tombstone_2;
+  memset(&tombstone_2, 0, sizeof(tombstone_2));
+  kafs_ino_mode_set(&tombstone_2, S_IFREG | 0644);
+  kafs_ino_linkcnt_set(&tombstone_2, 0);
+  kafs_ino_dtime_set(&tombstone_2, (kafs_time_t){.tv_sec = 222, .tv_nsec = 9});
+  if (write_inode_at(info_img, KAFS_INO_ROOTDIR + 2u, &tombstone_2) != 0)
+  {
+    fprintf(stderr, "failed to write second tombstone inode\n");
+    return 1;
+  }
+
+  kafs_sinode_t not_tombstone;
+  memset(&not_tombstone, 0, sizeof(not_tombstone));
+  kafs_ino_mode_set(&not_tombstone, S_IFREG | 0644);
+  kafs_ino_linkcnt_set(&not_tombstone, 0);
+  if (write_inode_at(info_img, KAFS_INO_ROOTDIR + 3u, &not_tombstone) != 0)
+  {
+    fprintf(stderr, "failed to write non-tombstone inode\n");
+    return 1;
+  }
+
+  char info_stdout[4096];
+  char *info_argv[] = {(char *)info_abs, (char *)info_img, NULL};
+  if (run_cmd_capture_stdout(info_argv, info_stdout, sizeof(info_stdout)) != 0)
+  {
+    fprintf(stderr, "kafs-info failed on tombstone image\n");
+    return 1;
+  }
+  if (!strstr(info_stdout, "tombstones count=2") || !strstr(info_stdout, "(111.000000007)"))
+  {
+    fprintf(stderr, "kafs-info output missing tombstone summary: %s\n", info_stdout);
     return 1;
   }
 

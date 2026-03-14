@@ -22,6 +22,9 @@ struct kafs_stats
   uint64_t fs_blocks_free;
   uint64_t fs_inodes_total;
   uint64_t fs_inodes_free;
+  uint64_t tombstone_inodes;
+  uint64_t tombstone_oldest_dtime_sec;
+  uint64_t tombstone_oldest_dtime_nsec;
 
   // HRL snapshot (computed by scanning entries)
   uint64_t hrl_entries_total;

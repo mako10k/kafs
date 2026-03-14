@@ -119,6 +119,12 @@ static inline void kafs_stat_record_pwrite_iblk_write_latency(kafs_context_t *ct
 #define KAFS_PENDING_REF_FLAG 0x80000000u
 #define KAFS_PENDING_REF_MASK 0x7fffffffu
 #define KAFS_PENDINGLOG_CAPACITY_FLOOR 2u
+#define KAFS_TOMBSTONE_GC_INTERVAL_MS_DEFAULT 1000u
+#define KAFS_TOMBSTONE_GC_PRESSURE_INTERVAL_MS_DEFAULT 100u
+#define KAFS_TOMBSTONE_GC_SCAN_BUDGET_DEFAULT 64u
+#define KAFS_TOMBSTONE_GC_SCAN_BUDGET_PRESSURE 512u
+#define KAFS_TOMBSTONE_GC_PRESSURE_FREE_INODES_MIN 4u
+#define KAFS_TOMBSTONE_GC_PRESSURE_FREE_INODES_PCT 5u
 #define KAFS_BG_DEDUP_INTERVAL_MS_DEFAULT 2000u
 #define KAFS_BG_DEDUP_INTERVAL_MS_MIN 1u
 #define KAFS_BG_DEDUP_INTERVAL_MS_MAX 60000u
@@ -203,8 +209,13 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
 static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf);
 static int kafs_pending_worker_start(struct kafs_context *ctx);
 static void kafs_pending_worker_stop(struct kafs_context *ctx);
+static int kafs_tombstone_gc_worker_start(struct kafs_context *ctx);
+static void kafs_tombstone_gc_worker_stop(struct kafs_context *ctx);
 static int kafs_bg_dedup_worker_start(struct kafs_context *ctx);
 static void kafs_bg_dedup_worker_stop(struct kafs_context *ctx);
+static int kafs_inode_is_tombstone(const kafs_sinode_t *inoent);
+static int kafs_try_reclaim_unlinked_inode_locked(struct kafs_context *ctx, kafs_inocnt_t ino,
+                                                  int *reclaimed);
 
 static int kafs_pendinglog_region(struct kafs_context *ctx, uint64_t *off, uint64_t *size)
 {
@@ -1762,7 +1773,7 @@ static void kafs_pending_worker_stop(struct kafs_context *ctx)
   }
 }
 
-static uint32_t kafs_bg_dedup_used_pct(kafs_context_t *ctx)
+static uint32_t kafs_fs_used_pct(kafs_context_t *ctx)
 {
   if (!ctx || !ctx->c_superblock)
     return 0;
@@ -1781,6 +1792,173 @@ static uint32_t kafs_bg_dedup_used_pct(kafs_context_t *ctx)
   if (used >= total)
     return 100u;
   return (uint32_t)((used * 100u) / total);
+}
+
+static int kafs_tombstone_pressure(kafs_context_t *ctx)
+{
+  if (!ctx || !ctx->c_superblock)
+    return 0;
+
+  uint32_t used_pct = kafs_fs_used_pct(ctx);
+  uint32_t pressure_used_pct = ctx->c_bg_dedup_pressure_used_pct;
+  if (pressure_used_pct > 0 && used_pct >= pressure_used_pct)
+    return 1;
+
+  kafs_inocnt_t inode_total = kafs_sb_inocnt_get(ctx->c_superblock);
+  kafs_inocnt_t inode_free = 0;
+  kafs_inode_alloc_lock(ctx);
+  inode_free = kafs_sb_inocnt_free_get(ctx->c_superblock);
+  kafs_inode_alloc_unlock(ctx);
+
+  uint64_t free_floor = (uint64_t)inode_total * KAFS_TOMBSTONE_GC_PRESSURE_FREE_INODES_PCT / 100u;
+  if (free_floor < KAFS_TOMBSTONE_GC_PRESSURE_FREE_INODES_MIN)
+    free_floor = KAFS_TOMBSTONE_GC_PRESSURE_FREE_INODES_MIN;
+  if (free_floor > inode_total)
+    free_floor = inode_total;
+  return (uint64_t)inode_free <= free_floor;
+}
+
+static uint32_t kafs_bg_dedup_used_pct(kafs_context_t *ctx) { return kafs_fs_used_pct(ctx); }
+
+static uint32_t kafs_tombstone_gc_step(struct kafs_context *ctx, int pressure_mode)
+{
+  if (!ctx || !ctx->c_superblock)
+    return 0;
+
+  const kafs_inocnt_t first_ino = KAFS_INO_ROOTDIR + 1u;
+  kafs_inocnt_t inode_total = kafs_sb_inocnt_get(ctx->c_superblock);
+  if (inode_total <= first_ino)
+    return 0;
+
+  uint32_t budget = pressure_mode ? KAFS_TOMBSTONE_GC_SCAN_BUDGET_PRESSURE
+                                  : KAFS_TOMBSTONE_GC_SCAN_BUDGET_DEFAULT;
+  kafs_inocnt_t cursor = ctx->c_tombstone_gc_cursor;
+  if (cursor < first_ino || cursor >= inode_total)
+    cursor = first_ino;
+
+  uint32_t reclaimed = 0;
+  for (uint32_t scanned = 0; scanned < budget; ++scanned)
+  {
+    kafs_inocnt_t ino = cursor;
+    cursor++;
+    if (cursor >= inode_total)
+      cursor = first_ino;
+
+    int reclaimed_now = 0;
+    kafs_inode_lock(ctx, (uint32_t)ino);
+    if (kafs_inode_is_tombstone(&ctx->c_inotbl[ino]))
+      (void)kafs_try_reclaim_unlinked_inode_locked(ctx, ino, &reclaimed_now);
+    kafs_inode_unlock(ctx, (uint32_t)ino);
+
+    if (reclaimed_now)
+    {
+      kafs_inode_alloc_lock(ctx);
+      (void)kafs_sb_inocnt_free_incr(ctx->c_superblock);
+      kafs_sb_wtime_set(ctx->c_superblock, kafs_now());
+      kafs_inode_alloc_unlock(ctx);
+      reclaimed++;
+    }
+  }
+
+  ctx->c_tombstone_gc_cursor = cursor;
+  return reclaimed;
+}
+
+static void *kafs_tombstone_gc_worker_main(void *arg)
+{
+  kafs_context_t *ctx = (kafs_context_t *)arg;
+  if (!ctx)
+    return NULL;
+
+  for (;;)
+  {
+    pthread_mutex_lock(&ctx->c_tombstone_gc_worker_lock);
+    if (ctx->c_tombstone_gc_worker_stop)
+    {
+      pthread_mutex_unlock(&ctx->c_tombstone_gc_worker_lock);
+      return NULL;
+    }
+    pthread_mutex_unlock(&ctx->c_tombstone_gc_worker_lock);
+
+    int pressure_mode = kafs_tombstone_pressure(ctx);
+    uint32_t reclaimed = kafs_tombstone_gc_step(ctx, pressure_mode);
+    uint32_t wait_ms = pressure_mode ? KAFS_TOMBSTONE_GC_PRESSURE_INTERVAL_MS_DEFAULT
+                                     : KAFS_TOMBSTONE_GC_INTERVAL_MS_DEFAULT;
+    if (reclaimed > 0 && !pressure_mode)
+      wait_ms = 1u;
+
+    pthread_mutex_lock(&ctx->c_tombstone_gc_worker_lock);
+    if (ctx->c_tombstone_gc_worker_stop)
+    {
+      pthread_mutex_unlock(&ctx->c_tombstone_gc_worker_lock);
+      return NULL;
+    }
+
+    struct timespec wake;
+    clock_gettime(CLOCK_REALTIME, &wake);
+    wake.tv_nsec += (long)(wait_ms % 1000u) * 1000000l;
+    wake.tv_sec += (time_t)(wait_ms / 1000u);
+    if (wake.tv_nsec >= 1000000000l)
+    {
+      wake.tv_sec += 1;
+      wake.tv_nsec -= 1000000000l;
+    }
+    (void)pthread_cond_timedwait(&ctx->c_tombstone_gc_worker_cond, &ctx->c_tombstone_gc_worker_lock,
+                                 &wake);
+    pthread_mutex_unlock(&ctx->c_tombstone_gc_worker_lock);
+  }
+}
+
+static int kafs_tombstone_gc_worker_start(struct kafs_context *ctx)
+{
+  if (!ctx)
+    return -EINVAL;
+  if (ctx->c_tombstone_gc_worker_running)
+    return 0;
+
+  if (!ctx->c_tombstone_gc_worker_lock_init)
+  {
+    if (pthread_mutex_init(&ctx->c_tombstone_gc_worker_lock, NULL) != 0)
+      return -EIO;
+    if (pthread_cond_init(&ctx->c_tombstone_gc_worker_cond, NULL) != 0)
+    {
+      pthread_mutex_destroy(&ctx->c_tombstone_gc_worker_lock);
+      return -EIO;
+    }
+    ctx->c_tombstone_gc_worker_lock_init = 1;
+  }
+
+  ctx->c_tombstone_gc_worker_stop = 0;
+  int prc =
+      pthread_create(&ctx->c_tombstone_gc_worker_tid, NULL, kafs_tombstone_gc_worker_main, ctx);
+  if (prc != 0)
+    return -prc;
+
+  ctx->c_tombstone_gc_worker_running = 1;
+  return 0;
+}
+
+static void kafs_tombstone_gc_worker_stop(struct kafs_context *ctx)
+{
+  if (!ctx)
+    return;
+
+  if (ctx->c_tombstone_gc_worker_running)
+  {
+    pthread_mutex_lock(&ctx->c_tombstone_gc_worker_lock);
+    ctx->c_tombstone_gc_worker_stop = 1;
+    pthread_cond_broadcast(&ctx->c_tombstone_gc_worker_cond);
+    pthread_mutex_unlock(&ctx->c_tombstone_gc_worker_lock);
+    pthread_join(ctx->c_tombstone_gc_worker_tid, NULL);
+    ctx->c_tombstone_gc_worker_running = 0;
+  }
+
+  if (ctx->c_tombstone_gc_worker_lock_init)
+  {
+    pthread_cond_destroy(&ctx->c_tombstone_gc_worker_cond);
+    pthread_mutex_destroy(&ctx->c_tombstone_gc_worker_lock);
+    ctx->c_tombstone_gc_worker_lock_init = 0;
+  }
 }
 
 static inline uint32_t kafs_u32_min(uint32_t a, uint32_t b) { return (a < b) ? a : b; }
@@ -3352,6 +3530,17 @@ __attribute_maybe_unused__ static int kafs_release(struct kafs_context *ctx, kaf
     kafs_sb_wtime_set(ctx->c_superblock, kafs_now());
   }
   return KAFS_SUCCESS;
+}
+
+static int kafs_time_is_zero(kafs_time_t ts) { return ts.tv_sec == 0 && ts.tv_nsec == 0; }
+
+static int kafs_inode_is_tombstone(const kafs_sinode_t *inoent)
+{
+  if (!inoent || !kafs_ino_get_usage(inoent))
+    return 0;
+  if (kafs_ino_linkcnt_get(inoent) != 0)
+    return 0;
+  return !kafs_time_is_zero(kafs_ino_dtime_get(inoent));
 }
 
 // Requires: caller holds inode lock for ino.
@@ -4933,7 +5122,7 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
   return 0;
 }
 
-#define KAFS_STATS_VERSION 13u
+#define KAFS_STATS_VERSION 14u
 
 static int kafs_u64_cmp(const void *a, const void *b)
 {
@@ -4959,6 +5148,13 @@ static uint64_t kafs_percentile_u64(uint64_t *arr, size_t n, double q)
   if (idx >= n)
     idx = n - 1;
   return arr[idx];
+}
+
+static int kafs_time_before(kafs_time_t lhs, kafs_time_t rhs)
+{
+  if (lhs.tv_sec != rhs.tv_sec)
+    return lhs.tv_sec < rhs.tv_sec;
+  return lhs.tv_nsec < rhs.tv_nsec;
 }
 
 // Forward decl (used by ioctl implementation)
@@ -4987,6 +5183,38 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
   kafs_bitmap_unlock(ctx);
   out->fs_inodes_total = (uint64_t)kafs_sb_inocnt_get(ctx->c_superblock);
   out->fs_inodes_free = (uint64_t)(kafs_inocnt_t)kafs_sb_inocnt_free_get(ctx->c_superblock);
+
+  kafs_time_t oldest_tombstone = {0};
+  int have_oldest_tombstone = 0;
+  for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < (kafs_inocnt_t)out->fs_inodes_total; ++ino)
+  {
+    kafs_time_t dtime = {0};
+    int is_tombstone = 0;
+
+    kafs_inode_lock(ctx, ino);
+    const kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+    if (kafs_inode_is_tombstone(inoent))
+    {
+      dtime = kafs_ino_dtime_get(inoent);
+      is_tombstone = 1;
+    }
+    kafs_inode_unlock(ctx, ino);
+
+    if (!is_tombstone)
+      continue;
+
+    out->tombstone_inodes++;
+    if (!have_oldest_tombstone || kafs_time_before(dtime, oldest_tombstone))
+    {
+      oldest_tombstone = dtime;
+      have_oldest_tombstone = 1;
+    }
+  }
+  if (have_oldest_tombstone)
+  {
+    out->tombstone_oldest_dtime_sec = (uint64_t)oldest_tombstone.tv_sec;
+    out->tombstone_oldest_dtime_nsec = (uint64_t)oldest_tombstone.tv_nsec;
+  }
 
   uint32_t entry_cnt = kafs_sb_hrl_entry_cnt_get(ctx->c_superblock);
   out->hrl_entries_total = (uint64_t)entry_cnt;
@@ -6922,6 +7150,7 @@ static int kafs_op_unlink(const char *path)
     return -ESTALE;
 
   // Decrement link count under target inode lock (keep dir lock hold time short)
+  int reclaim_now = kafs_tombstone_pressure(ctx);
   kafs_inode_lock(ctx, (uint32_t)removed_ino);
   kafs_sinode_t *t = &ctx->c_inotbl[removed_ino];
   kafs_linkcnt_t nl = kafs_ino_linkcnt_decr(t);
@@ -6929,7 +7158,8 @@ static int kafs_op_unlink(const char *path)
   if (nl == 0)
   {
     kafs_ino_dtime_set(t, kafs_now());
-    (void)kafs_try_reclaim_unlinked_inode_locked(ctx, removed_ino, &reclaimed_now);
+    if (reclaim_now)
+      (void)kafs_try_reclaim_unlinked_inode_locked(ctx, removed_ino, &reclaimed_now);
   }
   kafs_inode_unlock(ctx, (uint32_t)removed_ino);
 
@@ -7211,6 +7441,7 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
   // If we replaced an existing dst, decrement its linkcount under inode lock.
   if (removed_dst_ino != KAFS_INO_NONE)
   {
+    int reclaim_dst_now = kafs_tombstone_pressure(ctx);
     kafs_inode_lock(ctx, (uint32_t)removed_dst_ino);
     kafs_sinode_t *dst = &ctx->c_inotbl[removed_dst_ino];
     kafs_linkcnt_t nl = kafs_ino_linkcnt_decr(dst);
@@ -7218,7 +7449,8 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
     if (nl == 0)
     {
       kafs_ino_dtime_set(dst, kafs_now());
-      (void)kafs_try_reclaim_unlinked_inode_locked(ctx, removed_dst_ino, &reclaimed_dst);
+      if (reclaim_dst_now)
+        (void)kafs_try_reclaim_unlinked_inode_locked(ctx, removed_dst_ino, &reclaimed_dst);
     }
     kafs_inode_unlock(ctx, (uint32_t)removed_dst_ino);
 
@@ -7426,6 +7658,12 @@ static void *kafs_op_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
       kafs_log(KAFS_LOG_WARNING, "kafs: pending worker start failed in init rc=%d\n", prc);
     }
   }
+  if (ctx)
+  {
+    int trc = kafs_tombstone_gc_worker_start(ctx);
+    if (trc < 0)
+      kafs_log(KAFS_LOG_WARNING, "kafs: tombstone GC worker start failed in init rc=%d\n", trc);
+  }
   if (ctx && ctx->c_bg_dedup_enabled)
   {
     int brc = kafs_bg_dedup_worker_start(ctx);
@@ -7441,6 +7679,7 @@ static void kafs_op_destroy(void *private_data)
   if (!ctx)
     return;
   kafs_bg_dedup_worker_stop(ctx);
+  kafs_tombstone_gc_worker_stop(ctx);
   kafs_pending_worker_stop(ctx);
 }
 
@@ -7467,8 +7706,10 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
               (uint32_t)ino, after);
     if (after == 0)
     {
+      int reclaim_now = kafs_tombstone_pressure(ctx);
       kafs_inode_lock(ctx, (uint32_t)ino);
-      (void)kafs_try_reclaim_unlinked_inode_locked(ctx, ino, &reclaimed);
+      if (reclaim_now && kafs_inode_is_tombstone(&ctx->c_inotbl[ino]))
+        (void)kafs_try_reclaim_unlinked_inode_locked(ctx, ino, &reclaimed);
       kafs_inode_unlock(ctx, (uint32_t)ino);
 
       if (reclaimed)
@@ -8700,6 +8941,7 @@ int main(int argc, char **argv)
   ctx.c_pendinglog_capacity = pending_cap_initial;
   ctx.c_pendinglog_capacity_min = pending_cap_min;
   ctx.c_pendinglog_capacity_max = pending_cap_max;
+  ctx.c_tombstone_gc_cursor = KAFS_INO_ROOTDIR + 1u;
   ctx.c_bg_dedup_enabled = bg_dedup_scan_enabled;
   ctx.c_bg_dedup_interval_ms = bg_dedup_interval_ms;
   ctx.c_bg_dedup_quiet_interval_ms = bg_dedup_quiet_interval_ms;
