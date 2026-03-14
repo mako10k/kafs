@@ -178,6 +178,16 @@ static void *img_ptr(void *base, size_t img_size, off_t off, size_t len)
   return (void *)((uint8_t *)base + off);
 }
 
+static int fsck_inode_is_tombstone(const kafs_sinode_t *inoent)
+{
+  if (!inoent || !kafs_ino_get_usage(inoent))
+    return 0;
+  if (kafs_ino_linkcnt_get(inoent) != 0)
+    return 0;
+  kafs_time_t dtime = kafs_ino_dtime_get(inoent);
+  return dtime.tv_sec != 0 || dtime.tv_nsec != 0;
+}
+
 struct rel_ctx
 {
   kafs_context_t *ctx;
@@ -242,6 +252,8 @@ static int orphan_reclaim(kafs_context_t *ctx, int do_fix, struct orphan_stats *
     if (!kafs_ino_get_usage(e))
       continue;
     if (kafs_ino_linkcnt_get(e) != 0)
+      continue;
+    if (fsck_inode_is_tombstone(e))
       continue;
 
     found++;
@@ -826,7 +838,8 @@ static void usage(const char *prog)
   fprintf(stderr, "  [Low-level Options]\n");
   fprintf(stderr, "    --check-journal                    Validate journal layer (default on)\n");
   fprintf(stderr, "    --repair-journal-reset             Reset journal ring when invalid\n");
-  fprintf(stderr, "    --check-dirent-ino-orphans         Scan orphan inodes (linkcnt==0)\n");
+  fprintf(stderr,
+          "    --check-dirent-ino-orphans         Scan orphan inodes (linkcnt==0, dtime==0)\n");
   fprintf(stderr, "    --repair-dirent-ino-orphans        Reclaim orphan inodes and refs\n");
   fprintf(stderr, "    --check-hrl-blo-refcounts          Compare inode refs vs HRL refs\n");
   fprintf(stderr,

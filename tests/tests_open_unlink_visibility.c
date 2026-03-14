@@ -106,6 +106,67 @@ static const char *pick_fsck_bin(void)
   return "./fsck.kafs";
 }
 
+static int count_tombstones(const char *img, uint32_t *out_count)
+{
+  if (!img || !out_count)
+    return -EINVAL;
+  *out_count = 0;
+
+  int fd = open(img, O_RDONLY);
+  if (fd < 0)
+    return -errno;
+
+  kafs_ssuperblock_t sb;
+  if (pread(fd, &sb, sizeof(sb), 0) != (ssize_t)sizeof(sb))
+  {
+    close(fd);
+    return -EIO;
+  }
+
+  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(&sb);
+  kafs_blksize_t blksize = 1u << log_blksize;
+  kafs_blksize_t blksizemask = blksize - 1u;
+  kafs_inocnt_t inocnt = kafs_sb_inocnt_get(&sb);
+  kafs_blkcnt_t r_blkcnt = kafs_sb_r_blkcnt_get(&sb);
+
+  off_t mapsize = 0;
+  mapsize += sizeof(kafs_ssuperblock_t);
+  mapsize = (mapsize + blksizemask) & ~blksizemask;
+  off_t blkmask_off = mapsize;
+  mapsize += (r_blkcnt + 7) >> 3;
+  mapsize = (mapsize + 7) & ~7;
+  mapsize = (mapsize + blksizemask) & ~blksizemask;
+  off_t inotbl_off = mapsize;
+  mapsize += (off_t)sizeof(kafs_sinode_t) * inocnt;
+  mapsize = (mapsize + blksizemask) & ~blksizemask;
+
+  void *base = mmap(NULL, (size_t)mapsize, PROT_READ, MAP_SHARED, fd, 0);
+  if (base == MAP_FAILED)
+  {
+    close(fd);
+    return -errno;
+  }
+
+  (void)blkmask_off;
+  kafs_sinode_t *inotbl = (kafs_sinode_t *)((char *)base + inotbl_off);
+  for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
+  {
+    kafs_sinode_t *e = &inotbl[ino];
+    if (!kafs_ino_get_usage(e))
+      continue;
+    if (kafs_ino_linkcnt_get(e) != 0)
+      continue;
+    kafs_time_t dtime = kafs_ino_dtime_get(e);
+    if (dtime.tv_sec == 0 && dtime.tv_nsec == 0)
+      continue;
+    (*out_count)++;
+  }
+
+  munmap(base, (size_t)mapsize);
+  close(fd);
+  return 0;
+}
+
 static int is_still_mounted(const char *mnt) { return is_mounted_fuse(mnt); }
 
 static void stop_kafs(const char *mnt, pid_t pid)
@@ -256,6 +317,117 @@ int main(void)
   if (run_cmd(fsck_argv) != 0)
   {
     tlogf("hrl refcount check failed after deleting 8 tiny files");
+    return 1;
+  }
+
+  uint32_t tombstones = 0;
+  if (count_tombstones(img2, &tombstones) != 0)
+  {
+    tlogf("failed to count tombstones after unlink");
+    return 1;
+  }
+  if (tombstones == 0)
+  {
+    tlogf("expected tombstones after immediate stop");
+    return 1;
+  }
+
+  char *fsck_orphan_argv[] = {(char *)pick_fsck_bin(), "--check-dirent-ino-orphans", (char *)img2,
+                              NULL};
+  if (run_cmd(fsck_orphan_argv) != 0)
+  {
+    tlogf("orphan check should ignore tombstones");
+    return 1;
+  }
+
+  srv = spawn_kafs(img2, mnt2);
+  if (srv <= 0)
+    return 77;
+  {
+    struct timespec ts = {2, 0};
+    nanosleep(&ts, NULL);
+  }
+  stop_kafs(mnt2, srv);
+
+  tombstones = 0;
+  if (count_tombstones(img2, &tombstones) != 0)
+  {
+    tlogf("failed to count tombstones after GC window");
+    return 1;
+  }
+  if (tombstones != 0)
+  {
+    tlogf("tombstone GC did not reclaim unlinked files: count=%u", tombstones);
+    return 1;
+  }
+
+  const char *img3 = "pressure-unlink.img";
+  const char *mnt3 = "mnt-pressure-unlink";
+  if (kafs_test_mkimg_with_hrl(img3, 32u * 1024u * 1024u, 12, 12, &ctx, &mapsize) != 0)
+    return 77;
+  munmap(ctx.c_superblock, mapsize);
+  close(ctx.c_fd);
+
+  srv = spawn_kafs(img3, mnt3);
+  if (srv <= 0)
+    return 77;
+
+  for (int i = 1; i <= 7; ++i)
+  {
+    snprintf(p, sizeof(p), "%s/fill%d", mnt3, i);
+    int fd = open(p, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    if (fd < 0)
+    {
+      tlogf("create pressure filler failed: %s", strerror(errno));
+      stop_kafs(mnt3, srv);
+      return 1;
+    }
+    if (write(fd, "z", 1) != 1)
+    {
+      tlogf("write pressure filler failed: %s", strerror(errno));
+      close(fd);
+      stop_kafs(mnt3, srv);
+      return 1;
+    }
+    close(fd);
+  }
+
+  snprintf(p, sizeof(p), "%s/victim", mnt3);
+  {
+    int fd = open(p, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    if (fd < 0)
+    {
+      tlogf("create pressure victim failed: %s", strerror(errno));
+      stop_kafs(mnt3, srv);
+      return 1;
+    }
+    if (write(fd, "q", 1) != 1)
+    {
+      tlogf("write pressure victim failed: %s", strerror(errno));
+      close(fd);
+      stop_kafs(mnt3, srv);
+      return 1;
+    }
+    close(fd);
+  }
+  if (unlink(p) != 0)
+  {
+    tlogf("unlink pressure victim failed: %s", strerror(errno));
+    stop_kafs(mnt3, srv);
+    return 1;
+  }
+
+  stop_kafs(mnt3, srv);
+
+  tombstones = 0;
+  if (count_tombstones(img3, &tombstones) != 0)
+  {
+    tlogf("failed to count tombstones after pressure unlink");
+    return 1;
+  }
+  if (tombstones != 0)
+  {
+    tlogf("pressure path should skip logical delete: count=%u", tombstones);
     return 1;
   }
 
