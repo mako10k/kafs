@@ -194,7 +194,7 @@ static int rel_tbl_impl(struct rel_ctx *rctx, kafs_blkcnt_t blo, int depth)
   if (blo == KAFS_BLO_NONE)
     return 0;
 
-  void *p = img_ptr(rctx->base, rctx->img_size, (off_t)blo << rctx->l2, rctx->blksize);
+  const void *p = img_ptr(rctx->base, rctx->img_size, (off_t)blo << rctx->l2, rctx->blksize);
   if (!p)
     return -EIO;
 
@@ -353,8 +353,8 @@ static int hrl_count_tbl_refs(struct hrl_scan_ctx *sctx, kafs_blkcnt_t tbl_blo, 
     return 0;
   }
 
-  void *p = img_ptr(sctx->ctx->c_img_base, sctx->ctx->c_img_size, (off_t)tbl_blo << sctx->l2,
-                    sctx->blksize);
+  const void *p = img_ptr(sctx->ctx->c_img_base, sctx->ctx->c_img_size, (off_t)tbl_blo << sctx->l2,
+                          sctx->blksize);
   if (!p)
     return -EIO;
 
@@ -646,11 +646,7 @@ static int punch_unreferenced_data_blocks(kafs_context_t *ctx, int fd, struct pu
       continue;
     }
 
-    if (kafs_blk_set_usage(ctx, blo, KAFS_FALSE) != 0)
-    {
-      stats->mark_failed++;
-      continue;
-    }
+    (void)kafs_blk_set_usage(ctx, blo, KAFS_FALSE);
     stats->punched++;
   }
 
@@ -665,7 +661,7 @@ static int trim_free_data_blocks(kafs_context_t *ctx, int fd, struct punch_stats
     return -EINVAL;
 
   memset(stats, 0, sizeof(*stats));
-  kafs_ssuperblock_t *sb = ctx->c_superblock;
+  const kafs_ssuperblock_t *sb = ctx->c_superblock;
   kafs_blkcnt_t blkcnt = kafs_sb_blkcnt_get(sb);
   kafs_blkcnt_t fdb = kafs_sb_first_data_block_get(sb);
   kafs_logblksize_t l2 = kafs_sb_log_blksize_get(sb);
@@ -728,8 +724,8 @@ static int inode_blocks_count_tbl_refs(struct inode_blocks_scan_ctx *sctx, kafs_
 
   (*expected)++; // Count this indirect table block itself.
 
-  void *p = img_ptr(sctx->ctx->c_img_base, sctx->ctx->c_img_size, (off_t)tbl_blo << sctx->l2,
-                    sctx->blksize);
+  const void *p = img_ptr(sctx->ctx->c_img_base, sctx->ctx->c_img_size, (off_t)tbl_blo << sctx->l2,
+                          sctx->blksize);
   if (!p)
     return -EIO;
 

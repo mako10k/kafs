@@ -41,7 +41,7 @@ static inline uint32_t kj_crc32_update(uint32_t crc, const uint8_t *buf, size_t 
   {
     crc ^= buf[i];
     for (int k = 0; k < 8; ++k)
-      crc = (crc >> 1) ^ (0xEDB88320u & (-(int)(crc & 1)));
+      crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)(0u - (crc & 1u)));
   }
   return ~crc;
 }
