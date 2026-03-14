@@ -41,6 +41,7 @@ Rules:
 - Any change that introduces a new lock path must document lock order in code comments near the path.
 - Cross-subsystem lock interactions (`inode` + `hrl_*` + `bitmap`) must be reviewed for order compliance.
 - Long operations and I/O while holding high-contention locks should be minimized or moved out of critical sections when safe.
+- Do not use `KAFS_CALL` after acquiring a lock; use `rc` capture plus a single unlock path instead.
 
 ## 7. Validation Checklist
 - Build succeeds.
