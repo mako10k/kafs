@@ -75,6 +75,8 @@ static double pct_u64(uint64_t used, uint64_t total)
   return ((double)used * 100.0) / (double)total;
 }
 
+static void fmt_time(char out[64], const struct timespec *ts);
+
 static void usage(const char *prog)
 {
   fprintf(stderr,
@@ -1105,6 +1107,14 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
   double hrl_rescue_hit_rate = (st.hrl_rescue_attempts > 0)
                                    ? (double)st.hrl_rescue_hits / (double)st.hrl_rescue_attempts
                                    : 0.0;
+  struct timespec tombstone_oldest = {
+      .tv_sec = (time_t)st.tombstone_oldest_dtime_sec,
+      .tv_nsec = (long)st.tombstone_oldest_dtime_nsec,
+  };
+  char tombstone_oldest_buf[64] = "none";
+  if (st.tombstone_inodes > 0 &&
+      (st.tombstone_oldest_dtime_sec != 0 || st.tombstone_oldest_dtime_nsec != 0))
+    fmt_time(tombstone_oldest_buf, &tombstone_oldest);
 
   if (json)
   {
@@ -1115,6 +1125,9 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
     printf("  \"fs_blocks_free\": %" PRIu64 ",\n", st.fs_blocks_free);
     printf("  \"fs_inodes_total\": %" PRIu64 ",\n", st.fs_inodes_total);
     printf("  \"fs_inodes_free\": %" PRIu64 ",\n", st.fs_inodes_free);
+    printf("  \"tombstone_inodes\": %" PRIu64 ",\n", st.tombstone_inodes);
+    printf("  \"tombstone_oldest_dtime_sec\": %" PRIu64 ",\n", st.tombstone_oldest_dtime_sec);
+    printf("  \"tombstone_oldest_dtime_nsec\": %" PRIu64 ",\n", st.tombstone_oldest_dtime_nsec);
     printf("  \"hrl_entries_total\": %" PRIu64 ",\n", st.hrl_entries_total);
     printf("  \"hrl_entries_used\": %" PRIu64 ",\n", st.hrl_entries_used);
     printf("  \"hrl_entries_duplicated\": %" PRIu64 ",\n", st.hrl_entries_duplicated);
@@ -1292,6 +1305,16 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
   printf(")\n");
   printf("      inodes total=%" PRIu64 " free=%" PRIu64 "\n", st.fs_inodes_total,
          st.fs_inodes_free);
+  if (st.tombstone_inodes > 0)
+  {
+    printf("      tombstones count=%" PRIu64 " oldest_dtime=%s (%" PRIu64 ".%09" PRIu64 ")\n",
+           st.tombstone_inodes, tombstone_oldest_buf, st.tombstone_oldest_dtime_sec,
+           st.tombstone_oldest_dtime_nsec);
+  }
+  else
+  {
+    printf("      tombstones count=0 oldest_dtime=none\n");
+  }
 
   printf("  hrl: entries used=%" PRIu64 "/%" PRIu64 " duplicated=%" PRIu64 " refsum=%" PRIu64 "\n",
          st.hrl_entries_used, st.hrl_entries_total, st.hrl_entries_duplicated, st.hrl_refcnt_sum);

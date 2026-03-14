@@ -5121,7 +5121,7 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
   return 0;
 }
 
-#define KAFS_STATS_VERSION 13u
+#define KAFS_STATS_VERSION 14u
 
 static int kafs_u64_cmp(const void *a, const void *b)
 {
@@ -5147,6 +5147,13 @@ static uint64_t kafs_percentile_u64(uint64_t *arr, size_t n, double q)
   if (idx >= n)
     idx = n - 1;
   return arr[idx];
+}
+
+static int kafs_time_before(kafs_time_t lhs, kafs_time_t rhs)
+{
+  if (lhs.tv_sec != rhs.tv_sec)
+    return lhs.tv_sec < rhs.tv_sec;
+  return lhs.tv_nsec < rhs.tv_nsec;
 }
 
 // Forward decl (used by ioctl implementation)
@@ -5175,6 +5182,38 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
   kafs_bitmap_unlock(ctx);
   out->fs_inodes_total = (uint64_t)kafs_sb_inocnt_get(ctx->c_superblock);
   out->fs_inodes_free = (uint64_t)(kafs_inocnt_t)kafs_sb_inocnt_free_get(ctx->c_superblock);
+
+  kafs_time_t oldest_tombstone = {0};
+  int have_oldest_tombstone = 0;
+  for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < (kafs_inocnt_t)out->fs_inodes_total; ++ino)
+  {
+    kafs_time_t dtime = {0};
+    int is_tombstone = 0;
+
+    kafs_inode_lock(ctx, ino);
+    const kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+    if (kafs_inode_is_tombstone(inoent))
+    {
+      dtime = kafs_ino_dtime_get(inoent);
+      is_tombstone = 1;
+    }
+    kafs_inode_unlock(ctx, ino);
+
+    if (!is_tombstone)
+      continue;
+
+    out->tombstone_inodes++;
+    if (!have_oldest_tombstone || kafs_time_before(dtime, oldest_tombstone))
+    {
+      oldest_tombstone = dtime;
+      have_oldest_tombstone = 1;
+    }
+  }
+  if (have_oldest_tombstone)
+  {
+    out->tombstone_oldest_dtime_sec = (uint64_t)oldest_tombstone.tv_sec;
+    out->tombstone_oldest_dtime_nsec = (uint64_t)oldest_tombstone.tv_nsec;
+  }
 
   uint32_t entry_cnt = kafs_sb_hrl_entry_cnt_get(ctx->c_superblock);
   out->hrl_entries_total = (uint64_t)entry_cnt;

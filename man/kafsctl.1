@@ -39,6 +39,8 @@ This operation is irreversible.
 .TP
 .B fsstat mountpoint [--json] [--bytes|--mib|--gib]
 Print filesystem and dedup/runtime statistics.
+The output also reports tombstone inode count and the oldest pending deletion
+timestamp when logical delete is active.
 .B stats
 is an alias of
 .BR fsstat .
