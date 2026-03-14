@@ -500,14 +500,11 @@ int main(int argc, char **argv)
     }
     if (strcmp(argv[i], "--hrl-entry-ratio") == 0 && i + 1 < argc)
     {
-      char *endp = NULL;
-      double v = strtod(argv[++i], &endp);
-      if (!endp || *endp != '\0' || v <= 0.0 || v > 1.0)
+      if (kafs_parse_ratio_0_to_1(argv[++i], &hrl_entry_ratio) != 0)
       {
         fprintf(stderr, "invalid hrl-entry-ratio (expected 0<R<=1): %s\n", argv[i]);
         return 2;
       }
-      hrl_entry_ratio = v;
       continue;
     }
     if (strcmp(argv[i], "--inodes") == 0 && i + 1 < argc)
