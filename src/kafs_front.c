@@ -196,6 +196,10 @@ int main(int argc, char **argv)
       usage(argv[0]);
       return 0;
     }
+
+    fprintf(stderr, "unknown option: %s\n", argv[i]);
+    usage(argv[0]);
+    return 2;
   }
 
   pid_t pgid = getpid();

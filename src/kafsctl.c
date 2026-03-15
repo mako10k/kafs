@@ -603,8 +603,9 @@ static void hotplug_print_exchange_error(const char *op, const char *mnt, int rc
   if (rc == -ENOSYS)
   {
     fprintf(stderr,
-            "hotplug %s failed: %s (hotplug control is disabled on this mount; remount KAFS with "
-            "hotplug enabled, then use restart-back for supervised back restarts)\n",
+            "hotplug %s failed: %s (hotplug control is disabled on this mount; remount KAFS "
+            "with --hotplug/--hotplug-uds, -o hotplug/hotplug_uds=..., or KAFS_HOTPLUG_UDS, "
+            "then use restart-back for supervised back restarts)\n",
             op, strerror(ENOSYS));
     return;
   }

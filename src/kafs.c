@@ -9085,6 +9085,8 @@ int main(int argc, char **argv)
     ctx.c_hotplug_state = KAFS_HOTPLUG_STATE_WAITING;
     snprintf(ctx.c_hotplug_uds_path, sizeof(ctx.c_hotplug_uds_path), "%s", hotplug_uds);
     (void)kafs_hotplug_env_set(&ctx, "KAFS_HOTPLUG_UDS", hotplug_uds);
+    if (image_path && *image_path)
+      (void)kafs_hotplug_env_set(&ctx, "KAFS_IMAGE", image_path);
     if (hotplug_back_bin && *hotplug_back_bin)
       (void)kafs_hotplug_env_set(&ctx, "KAFS_HOTPLUG_BACK_BIN", hotplug_back_bin);
     if (!ctx.c_hotplug_wait_lock_init)
