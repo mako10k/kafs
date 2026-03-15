@@ -4351,11 +4351,12 @@ static int kafs_hotplug_spawn_back_for_restart(kafs_context_t *ctx, int *out_fro
     (void)setenv("KAFS_HOTPLUG_BACK_FD", fd_buf, 1);
     for (uint32_t i = 0; i < env_count; ++i)
     {
-      if (strcmp(envs[i].key, "KAFS_HOTPLUG_UDS") == 0)
+      if (strcmp(envs[i].key, "KAFS_HOTPLUG_BACK_FD") == 0 ||
+          strcmp(envs[i].key, "KAFS_HOTPLUG_UDS") == 0)
         continue;
       (void)setenv(envs[i].key, envs[i].value, 1);
     }
-    // Explicit restart uses FD handoff; keep legacy UDS bootstrap out of this child path.
+    // Explicit restart uses front-managed transport variables only.
     (void)unsetenv("KAFS_HOTPLUG_UDS");
 
     char *args[] = {back_bin_buf, NULL};
