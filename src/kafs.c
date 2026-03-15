@@ -2906,8 +2906,7 @@ static int kafs_ino_iblk_read_or_zero(struct kafs_context *ctx, kafs_sinode_t *i
 }
 
 static int kafs_ino_iblk_write_legacy(struct kafs_context *ctx, kafs_sinode_t *inoent,
-                                      kafs_iblkcnt_t iblo, const void *buf,
-                                      int record_rescue_hint)
+                                      kafs_iblkcnt_t iblo, const void *buf, int record_rescue_hint)
 {
   kafs_blkcnt_t new_blo = KAFS_BLO_NONE;
   KAFS_CALL(kafs_blk_alloc, ctx, &new_blo);
@@ -2915,8 +2914,7 @@ static int kafs_ino_iblk_write_legacy(struct kafs_context *ctx, kafs_sinode_t *i
   uint64_t t_lw0 = kafs_now_ns();
   KAFS_CALL(kafs_blk_write, ctx, new_blo, buf);
   uint64_t t_lw1 = kafs_now_ns();
-  __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_legacy_blk_write, t_lw1 - t_lw0,
-                     __ATOMIC_RELAXED);
+  __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_legacy_blk_write, t_lw1 - t_lw0, __ATOMIC_RELAXED);
 
   kafs_blkcnt_t old_raw = KAFS_BLO_NONE;
   KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old_raw, KAFS_IBLKREF_FUNC_GET_RAW);
@@ -7157,8 +7155,8 @@ static kafs_linkcnt_t kafs_inode_drop_link_locked(struct kafs_context *ctx, kafs
   else
   {
     kafs_log(KAFS_LOG_WARNING,
-             "%s: ino=%" PRIuFAST32 " already has linkcnt=0; treating as tombstone\n",
-             __func__, (uint32_t)ino);
+             "%s: ino=%" PRIuFAST32 " already has linkcnt=0; treating as tombstone\n", __func__,
+             (uint32_t)ino);
   }
 
   if (nl == 0)
