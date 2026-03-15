@@ -9,6 +9,7 @@ This document describes how KAFS emits crash diagnostics and how to collect core
 The following binaries install crash diagnostics at startup:
 
 - `kafs`
+- `kafs-front`
 - `kafs-back`
 
 On fatal signals (`SIGSEGV`, `SIGABRT`, `SIGBUS`, `SIGILL`, `SIGFPE`), they do the following:

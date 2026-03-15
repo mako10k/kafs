@@ -1,5 +1,6 @@
 #include "kafs_rpc.h"
 #include "kafs_cli_opts.h"
+#include "kafs_crash_diag.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -193,6 +194,8 @@ static int kafs_front_restart_back(const char *uds_path, pid_t pgid, pid_t *pid,
 
 int main(int argc, char **argv)
 {
+  kafs_crash_diag_install("kafs-front");
+
   const char *uds_path = getenv("KAFS_HOTPLUG_UDS");
   if (!uds_path)
     uds_path = "/tmp/kafs-hotplug.sock";
