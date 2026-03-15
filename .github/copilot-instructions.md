@@ -11,6 +11,7 @@ Mandatory rules only.
 - For PR/update gates, run clone/static checks and report PASS/FAIL:
   - `./scripts/clones.sh`
   - `./scripts/static-checks.sh` (or equivalent component checks)
+- `./scripts/deadcode.sh` using cppcheck is optional for normal PR/update gates, but required for release gates.
 
 Project direction (mandatory):
 - Performance optimization baseline: prefer enabling LTO (`./configure --enable-lto`) over removing `static inline` hints wholesale.

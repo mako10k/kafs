@@ -39,7 +39,6 @@ run_step(){
 run_step format ./scripts/format.sh
 run_step lint ./scripts/lint.sh
 run_step clones ./scripts/clones.sh
-run_step deadcode ./scripts/deadcode.sh
 run_step complexity ./scripts/complexity.sh
 
 if [[ $FAILED_STEPS -gt 0 ]]; then
