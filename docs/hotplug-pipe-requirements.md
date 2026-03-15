@@ -1,7 +1,7 @@
 # Hotplug Pipe Requirements
 
 必須要件
-- IPC は socketpair を使用する。
+- supervised restart IPC は socketpair を使用する。
 - 後段の起動は前段が行う (fork/exec)。
 - 前段/後段は同一 ProcessGroup に所属する。
 - 親終了時は socketpair close 連鎖で子は終了する。
@@ -9,6 +9,9 @@
 - 子の意図的終了 (再起動) は前段が socketpair を再生成し、再起動する。
 - 既存の RPC 仕様は極力維持する。
 - kafs-back の単体起動は維持する。
+
+補足
+- 初回 bootstrap と relisten は、互換性のため UDS 経路を維持してよい。
 
 運用要件
 - ユーザは `kafs` 実行のみで利用できる。

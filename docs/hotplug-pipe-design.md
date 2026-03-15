@@ -1,8 +1,12 @@
 # Hotplug Pipe Design
 
 ## 1. 目的
-- socketpair で前後段を接続し、前段が後段の起動と再起動を管理する。
+- supervised restart では socketpair で前後段を接続し、前段が後段の起動と再起動を管理する。
 - ユーザは `kafs` のみを意識する。
+
+注記
+- 初回 bootstrap と relisten は、現行実装では UDS 経路が残る。
+- この文書は restart-back 後の supervised restart 経路を主対象とする。
 
 ## 2. IPC 構成
 - 前段が `socketpair(AF_UNIX, SOCK_STREAM, 0, fds)` を生成。
@@ -11,12 +15,12 @@
 - `KAFS_HOTPLUG_BACK_FD` のような環境変数で番号を通知するか、固定番号化する。
 
 ## 3. 起動フロー
-1. 前段起動。
+1. 前段が restart-back を受ける。
 2. socketpair 作成。
 3. fork。
 4. 子: `kafs-back` を exec。
 5. 親: RPC ハンドシェイク (HELLO -> SESSION_RESTORE -> READY)。
-6. 通常 I/O。
+6. 通常 I/O に復帰。
 
 ## 4. 再起動フロー (意図的)
 - 前段が再起動要求を起点に子を終了。
