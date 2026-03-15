@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.3.1 - 2026-03-15
+- hotplug の supervised restart 経路を整理し、`restart-back` 後の `socketpair`/FD handoff と session/epoch handshake を安定化。
+- 初回 bootstrap は UDS を維持しつつ、`kafsctl`、man page、設計 docs、e2e test を現行の hotplug モデルに同期。
+- `kafs-front` に crash diagnostics を導入し、`kafs-back` restart 時の予約 transport env 保護を追加。
+- `fsstat --verbose` の詳細統計を強化し、symlink lock-order abort 修正を `master` に取り込み。
+- 通常 PR/update gate では `deadcode` を任意化し、release gate では継続して実施。
+
 ## v0.3.0 - 2026-03-14
 - `kafsdump`, `kafsimage`, `kafsresize`, 拡張 `fsck.kafs` を含むオフライン運用ツール群を強化。
 - `fsck.kafs` に統合モード `full` / `balanced` / `fast`、ジャーナル再生、inode block-count 修復、未参照/空きデータブロック punch-hole を追加。

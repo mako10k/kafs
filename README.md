@@ -4,12 +4,12 @@ KAFS is a FUSE-based filesystem backed by a single image file with a journal and
 optional deduplication features. This repository contains the filesystem
 implementation, tools, and tests.
 
-## Release Highlights (v0.3.0)
+## Release Highlights (v0.3.1)
 
-- Expanded the offline tooling suite with `kafsdump`, `kafsimage`, `kafsresize`, and richer `fsck.kafs` repair flows
-- Added idle background dedup scanning, telemetry, and HRL rescue observability in runtime stats
-- Introduced logical-delete tombstones with background GC and tombstone visibility in `kafsctl stats` and `kafs-info`
-- Tightened operational safety with `mkfs.kafs` overwrite confirmation, crash diagnostics, and stronger clone/static/lock gates
+- Stabilized hotplug supervised restart around `restart-back`, `socketpair`/FD handoff, and session/epoch handshake while keeping UDS bootstrap compatibility
+- Added focused hotplug docs, manpage, and e2e coverage so the retained restart model matches the current implementation
+- Improved `fsstat --verbose` output and pulled in the symlink lock-order abort fix on `master`
+- Kept release quality gates strong, including clone/static checks and `deadcode` for release readiness
 
 ## Features
 
