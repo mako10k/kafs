@@ -1,5 +1,4 @@
 #include "kafs_rpc.h"
-#include "kafs_cli_opts.h"
 #include "kafs_crash_diag.h"
 
 #include <errno.h>
@@ -10,14 +9,13 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 static volatile sig_atomic_t g_restart_requested = 0;
 static volatile sig_atomic_t g_back_exited = 0;
 
-static void usage(const char *prog) { fprintf(stderr, "Usage: %s [--uds <path>]\n", prog); }
+static void usage(const char *prog) { fprintf(stderr, "Usage: %s\n", prog); }
 
 static void kafs_front_request_restart(int signo)
 {
@@ -31,7 +29,7 @@ static void kafs_front_child_exited(int signo)
   g_back_exited = 1;
 }
 
-static int kafs_front_spawn_back(const char *uds_path, pid_t pgid, pid_t *out_pid, int *out_fd)
+static int kafs_front_spawn_back(pid_t pgid, pid_t *out_pid, int *out_fd)
 {
   int fds[2];
   if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0)
@@ -59,11 +57,6 @@ static int kafs_front_spawn_back(const char *uds_path, pid_t pgid, pid_t *out_pi
     char fd_buf[32];
     snprintf(fd_buf, sizeof(fd_buf), "%d", fds[1]);
     if (setenv("KAFS_HOTPLUG_BACK_FD", fd_buf, 1) != 0)
-    {
-      perror("setenv");
-      _exit(127);
-    }
-    if (setenv("KAFS_HOTPLUG_UDS", uds_path, 1) != 0)
     {
       perror("setenv");
       _exit(127);
@@ -142,8 +135,8 @@ static int kafs_front_handshake(int cli, uint64_t session_id, uint32_t epoch)
   return 0;
 }
 
-static int kafs_front_restart_back(const char *uds_path, pid_t pgid, pid_t *pid, int *cli,
-                                   uint64_t session_id, uint32_t *epoch)
+static int kafs_front_restart_back(pid_t pgid, pid_t *pid, int *cli, uint64_t session_id,
+                                   uint32_t *epoch)
 {
   if (*cli >= 0)
   {
@@ -176,7 +169,7 @@ static int kafs_front_restart_back(const char *uds_path, pid_t pgid, pid_t *pid,
   (*epoch)++;
   fprintf(stderr, "kafs-front: restarting kafs-back (epoch=%u)\n", *epoch);
 
-  int rc = kafs_front_spawn_back(uds_path, pgid, pid, cli);
+  int rc = kafs_front_spawn_back(pgid, pid, cli);
   if (rc != 0)
     return rc;
 
@@ -196,14 +189,13 @@ int main(int argc, char **argv)
 {
   kafs_crash_diag_install("kafs-front");
 
-  const char *uds_path = getenv("KAFS_HOTPLUG_UDS");
-  if (!uds_path)
-    uds_path = "/tmp/kafs-hotplug.sock";
-
+  for (int i = 1; i < argc; ++i)
   {
-    int parse_rc = kafs_cli_parse_uds_help_loop(argc, argv, &uds_path, usage, argv[0]);
-    if (parse_rc >= 0)
-      return parse_rc;
+    if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
+    {
+      usage(argv[0]);
+      return 0;
+    }
   }
 
   pid_t pgid = getpid();
@@ -236,7 +228,7 @@ int main(int argc, char **argv)
 
   pid_t pid = -1;
   int cli = -1;
-  int rc = kafs_front_spawn_back(uds_path, pgid, &pid, &cli);
+  int rc = kafs_front_spawn_back(pgid, &pid, &cli);
   if (rc != 0)
     return 2;
 
@@ -282,7 +274,7 @@ int main(int argc, char **argv)
     {
       g_restart_requested = 0;
       fprintf(stderr, "kafs-front: restart requested\n");
-      rc = kafs_front_restart_back(uds_path, pgid, &pid, &cli, session_id, &epoch);
+      rc = kafs_front_restart_back(pgid, &pid, &cli, session_id, &epoch);
       if (rc != 0)
         fprintf(stderr, "kafs-front: restart failed rc=%d\n", rc);
       continue;
