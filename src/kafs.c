@@ -5122,7 +5122,7 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
   return 0;
 }
 
-#define KAFS_STATS_VERSION 14u
+#define KAFS_STATS_VERSION 15u
 
 static int kafs_u64_cmp(const void *a, const void *b)
 {
@@ -5170,11 +5170,12 @@ static inline kafs_hrl_entry_t *kafs_hrl_entries_tbl(kafs_context_t *ctx)
   return (kafs_hrl_entry_t *)(base + (uintptr_t)off);
 }
 
-static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
+static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out, uint32_t request_flags)
 {
   memset(out, 0, sizeof(*out));
   out->struct_size = (uint32_t)sizeof(*out);
   out->version = KAFS_STATS_VERSION;
+  out->request_flags = request_flags;
 
   out->blksize = (uint32_t)kafs_sb_blksize_get(ctx->c_superblock);
   out->fs_blocks_total = (uint64_t)kafs_sb_blkcnt_get(ctx->c_superblock);
@@ -5184,59 +5185,64 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
   out->fs_inodes_total = (uint64_t)kafs_sb_inocnt_get(ctx->c_superblock);
   out->fs_inodes_free = (uint64_t)(kafs_inocnt_t)kafs_sb_inocnt_free_get(ctx->c_superblock);
 
-  kafs_time_t oldest_tombstone = {0};
-  int have_oldest_tombstone = 0;
-  for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < (kafs_inocnt_t)out->fs_inodes_total; ++ino)
+  out->hrl_entries_total = (uint64_t)kafs_sb_hrl_entry_cnt_get(ctx->c_superblock);
+
+  if ((request_flags & KAFS_STATS_F_VERBOSE_SCAN) != 0)
   {
-    kafs_time_t dtime = {0};
-    int is_tombstone = 0;
+    out->result_flags |= KAFS_STATS_R_VERBOSE_SCAN;
 
-    kafs_inode_lock(ctx, ino);
-    const kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
-    if (kafs_inode_is_tombstone(inoent))
+    kafs_time_t oldest_tombstone = {0};
+    int have_oldest_tombstone = 0;
+    for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < (kafs_inocnt_t)out->fs_inodes_total; ++ino)
     {
-      dtime = kafs_ino_dtime_get(inoent);
-      is_tombstone = 1;
-    }
-    kafs_inode_unlock(ctx, ino);
+      kafs_time_t dtime = {0};
+      int is_tombstone = 0;
 
-    if (!is_tombstone)
-      continue;
-
-    out->tombstone_inodes++;
-    if (!have_oldest_tombstone || kafs_time_before(dtime, oldest_tombstone))
-    {
-      oldest_tombstone = dtime;
-      have_oldest_tombstone = 1;
-    }
-  }
-  if (have_oldest_tombstone)
-  {
-    out->tombstone_oldest_dtime_sec = (uint64_t)oldest_tombstone.tv_sec;
-    out->tombstone_oldest_dtime_nsec = (uint64_t)oldest_tombstone.tv_nsec;
-  }
-
-  uint32_t entry_cnt = kafs_sb_hrl_entry_cnt_get(ctx->c_superblock);
-  out->hrl_entries_total = (uint64_t)entry_cnt;
-
-  kafs_hrl_entry_t *ents = kafs_hrl_entries_tbl(ctx);
-  if (ents)
-  {
-    uint64_t used = 0, dup = 0, refsum = 0;
-    for (uint32_t i = 0; i < entry_cnt; ++i)
-    {
-      uint32_t r = ents[i].refcnt;
-      if (r)
+      kafs_inode_lock(ctx, ino);
+      const kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+      if (kafs_inode_is_tombstone(inoent))
       {
-        used++;
-        refsum += r;
-        if (r > 1)
-          dup++;
+        dtime = kafs_ino_dtime_get(inoent);
+        is_tombstone = 1;
+      }
+      kafs_inode_unlock(ctx, ino);
+
+      if (!is_tombstone)
+        continue;
+
+      out->tombstone_inodes++;
+      if (!have_oldest_tombstone || kafs_time_before(dtime, oldest_tombstone))
+      {
+        oldest_tombstone = dtime;
+        have_oldest_tombstone = 1;
       }
     }
-    out->hrl_entries_used = used;
-    out->hrl_entries_duplicated = dup;
-    out->hrl_refcnt_sum = refsum;
+    if (have_oldest_tombstone)
+    {
+      out->tombstone_oldest_dtime_sec = (uint64_t)oldest_tombstone.tv_sec;
+      out->tombstone_oldest_dtime_nsec = (uint64_t)oldest_tombstone.tv_nsec;
+    }
+
+    uint32_t entry_cnt = kafs_sb_hrl_entry_cnt_get(ctx->c_superblock);
+    kafs_hrl_entry_t *ents = kafs_hrl_entries_tbl(ctx);
+    if (ents)
+    {
+      uint64_t used = 0, dup = 0, refsum = 0;
+      for (uint32_t i = 0; i < entry_cnt; ++i)
+      {
+        uint32_t r = ents[i].refcnt;
+        if (r)
+        {
+          used++;
+          refsum += r;
+          if (r > 1)
+            dup++;
+        }
+      }
+      out->hrl_entries_used = used;
+      out->hrl_entries_duplicated = dup;
+      out->hrl_refcnt_sum = refsum;
+    }
   }
 
   out->hrl_put_calls = ctx->c_stat_hrl_put_calls;
@@ -6008,8 +6014,13 @@ static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_
       return -EINVAL;
     if (_IOC_SIZE((unsigned int)cmd) < sizeof(kafs_stats_t))
       return -EINVAL;
+    kafs_stats_t req;
+    memset(&req, 0, sizeof(req));
+    memcpy(&req, buf, sizeof(req));
+    uint32_t request_flags = req.request_flags;
+
     kafs_stats_t out;
-    kafs_stats_snapshot(ctx, &out);
+    kafs_stats_snapshot(ctx, &out, request_flags);
     memcpy(buf, &out, sizeof(out));
     return 0;
   }

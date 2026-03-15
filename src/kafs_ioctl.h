@@ -14,6 +14,9 @@ struct kafs_stats
   uint32_t struct_size;
   uint32_t version;
 
+  uint32_t request_flags;
+  uint32_t result_flags;
+
   uint32_t blksize;
   uint32_t reserved0;
 
@@ -133,7 +136,10 @@ struct kafs_stats
 
 typedef struct kafs_stats kafs_stats_t;
 
-#define KAFS_IOCTL_GET_STATS _IOR(KAFS_IOCTL_MAGIC, 1, struct kafs_stats)
+#define KAFS_STATS_F_VERBOSE_SCAN 0x00000001u
+#define KAFS_STATS_R_VERBOSE_SCAN 0x00000001u
+
+#define KAFS_IOCTL_GET_STATS _IOWR(KAFS_IOCTL_MAGIC, 1, struct kafs_stats)
 
 // Path-based copy/reflink via kafsctl ("正統派": no /proc fd resolution).
 // src/dst are KAFS-internal absolute paths (begin with '/').
