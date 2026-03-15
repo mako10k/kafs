@@ -82,7 +82,8 @@ static void usage(const char *prog)
   fprintf(stderr,
           "Usage:\n"
           "  %s migrate <image> [--yes]\n"
-          "  %s fsstat <mountpoint> [--json] [--bytes|--mib|--gib]   (alias: stats)\n"
+          "  %s fsstat <mountpoint> [-v|--verbose] [--json] [--bytes|--mib|--gib]"
+          "   (alias: stats)\n"
           "  %s hotplug status <mountpoint> [--json]\n"
           "  %s hotplug restart-back <mountpoint>\n"
           "  %s hotplug compat <mountpoint> [--json]\n"
@@ -988,7 +989,7 @@ static const char *to_mount_rel_path(const char *mnt_abs, const char *p,
   return out;
 }
 
-static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
+static int cmd_stats(const char *mnt, int json, int verbose, kafs_unit_t unit)
 {
   int fd = open(mnt, O_RDONLY | O_DIRECTORY);
   if (fd < 0)
@@ -999,6 +1000,9 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
 
   kafs_stats_t st;
   memset(&st, 0, sizeof(st));
+  st.struct_size = (uint32_t)sizeof(st);
+  if (verbose)
+    st.request_flags |= KAFS_STATS_F_VERBOSE_SCAN;
   if (ioctl(fd, KAFS_IOCTL_GET_STATS, &st) != 0)
   {
     perror("ioctl(KAFS_IOCTL_GET_STATS)");
@@ -1006,6 +1010,8 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
     return 1;
   }
   close(fd);
+
+  int have_verbose_scan = ((st.result_flags & KAFS_STATS_R_VERBOSE_SCAN) != 0);
 
   uint64_t logical_bytes = st.hrl_refcnt_sum * (uint64_t)st.blksize;
   uint64_t unique_bytes = st.hrl_entries_used * (uint64_t)st.blksize;
@@ -1120,6 +1126,9 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
   {
     printf("{\n");
     printf("  \"version\": %" PRIu32 ",\n", st.version);
+    printf("  \"request_flags\": %" PRIu32 ",\n", st.request_flags);
+    printf("  \"result_flags\": %" PRIu32 ",\n", st.result_flags);
+    printf("  \"verbose_scan\": %s,\n", have_verbose_scan ? "true" : "false");
     printf("  \"blksize\": %" PRIu32 ",\n", st.blksize);
     printf("  \"fs_blocks_total\": %" PRIu64 ",\n", st.fs_blocks_total);
     printf("  \"fs_blocks_free\": %" PRIu64 ",\n", st.fs_blocks_free);
@@ -1274,6 +1283,9 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
   }
 
   printf("kafs fsstat v%" PRIu32 "\n", st.version);
+  printf("  mode: %s\n", have_verbose_scan ? "verbose" : "lightweight");
+  if (!have_verbose_scan)
+    printf("  note: tombstone/HRL full scans are skipped by default; rerun with -v for them.\n");
   printf("  summary.capacity:\n");
   printf("    fs_blocks: used=");
   print_bytes(fs_blocks_used * (uint64_t)st.blksize, unit);
@@ -1282,11 +1294,21 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
   printf(" (%.2f%%)\n", fs_blocks_used_pct);
   printf("    fs_inodes: used=%" PRIu64 " / total=%" PRIu64 " (%.2f%%)\n", fs_inodes_used,
          st.fs_inodes_total, fs_inodes_used_pct);
-  printf("    hrl_entries: used=%" PRIu64 " / total=%" PRIu64 " (%.2f%%)\n", st.hrl_entries_used,
-         st.hrl_entries_total, hrl_entries_used_pct);
+  if (have_verbose_scan)
+  {
+    printf("    hrl_entries: used=%" PRIu64 " / total=%" PRIu64 " (%.2f%%)\n", st.hrl_entries_used,
+           st.hrl_entries_total, hrl_entries_used_pct);
+  }
+  else
+  {
+    printf("    hrl_entries: total=%" PRIu64 " (used count requires -v)\n", st.hrl_entries_total);
+  }
 
   printf("  summary.ratios:\n");
-  printf("    dedup_ratio: %.3f (logical/unique)\n", dedup_ratio);
+  if (have_verbose_scan)
+    printf("    dedup_ratio: %.3f (logical/unique)\n", dedup_ratio);
+  else
+    printf("    dedup_ratio: unavailable without -v\n");
   printf("    write_path: hrl=%.2f%% legacy_direct=%.2f%% (hrl_calls=%" PRIu64
          " fallback_legacy=%" PRIu64 ")\n",
          hrl_path_rate, legacy_path_rate, st.hrl_put_calls, st.hrl_put_fallback_legacy);
@@ -1305,7 +1327,11 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
   printf(")\n");
   printf("      inodes total=%" PRIu64 " free=%" PRIu64 "\n", st.fs_inodes_total,
          st.fs_inodes_free);
-  if (st.tombstone_inodes > 0)
+  if (!have_verbose_scan)
+  {
+    printf("      tombstones: omitted without -v\n");
+  }
+  else if (st.tombstone_inodes > 0)
   {
     printf("      tombstones count=%" PRIu64 " oldest_dtime=%s (%" PRIu64 ".%09" PRIu64 ")\n",
            st.tombstone_inodes, tombstone_oldest_buf, st.tombstone_oldest_dtime_sec,
@@ -1316,16 +1342,26 @@ static int cmd_stats(const char *mnt, int json, kafs_unit_t unit)
     printf("      tombstones count=0 oldest_dtime=none\n");
   }
 
-  printf("  hrl: entries used=%" PRIu64 "/%" PRIu64 " duplicated=%" PRIu64 " refsum=%" PRIu64 "\n",
-         st.hrl_entries_used, st.hrl_entries_total, st.hrl_entries_duplicated, st.hrl_refcnt_sum);
+  if (have_verbose_scan)
+  {
+    printf("  hrl: entries used=%" PRIu64 "/%" PRIu64 " duplicated=%" PRIu64 " refsum=%" PRIu64
+           "\n",
+           st.hrl_entries_used, st.hrl_entries_total, st.hrl_entries_duplicated, st.hrl_refcnt_sum);
 
-  printf("  dedup: logical=");
-  print_bytes(logical_bytes, unit);
-  printf(" unique=");
-  print_bytes(unique_bytes, unit);
-  printf(" saved=");
-  print_bytes(saved_bytes, unit);
-  printf(" ratio=%.3f\n", dedup_ratio);
+    printf("  dedup: logical=");
+    print_bytes(logical_bytes, unit);
+    printf(" unique=");
+    print_bytes(unique_bytes, unit);
+    printf(" saved=");
+    print_bytes(saved_bytes, unit);
+    printf(" ratio=%.3f\n", dedup_ratio);
+  }
+  else
+  {
+    printf("  hrl: total entries=%" PRIu64 " (used/dup/refsum require -v)\n", st.hrl_entries_total);
+    printf("  dedup: unavailable without -v\n");
+  }
+
   printf("  hrl_put: calls=%" PRIu64 " hits=%" PRIu64 " misses=%" PRIu64 " fallback_legacy=%" PRIu64
          " hit_rate=%.3f\n",
          st.hrl_put_calls, st.hrl_put_hits, st.hrl_put_misses, st.hrl_put_fallback_legacy,
@@ -2035,11 +2071,14 @@ int main(int argc, char **argv)
   if (strcmp(argv[1], "fsstat") == 0 || strcmp(argv[1], "stats") == 0)
   {
     int json = 0;
+    int verbose = 0;
     kafs_unit_t unit = KAFS_UNIT_KIB;
     for (int i = 3; i < argc; ++i)
     {
       if (strcmp(argv[i], "--json") == 0)
         json = 1;
+      else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0)
+        verbose = 1;
       else if (strcmp(argv[i], "--bytes") == 0)
         unit = KAFS_UNIT_BYTES;
       else if (strcmp(argv[i], "--mib") == 0)
@@ -2052,7 +2091,7 @@ int main(int argc, char **argv)
         return 2;
       }
     }
-    return cmd_stats(argv[2], json, unit);
+    return cmd_stats(argv[2], json, verbose, unit);
   }
 
   if (strcmp(argv[1], "hotplug") == 0)

@@ -15,6 +15,7 @@ kafsctl \- runtime control and maintenance utility for mounted KAFS
 .B kafsctl
 .RB { fsstat | stats }
 .I mountpoint
+.RB [ -v | --verbose ]
 .RB [ --json ]
 .RB [ --bytes | --mib | --gib ]
 .SH DESCRIPTION
@@ -37,10 +38,15 @@ basic file operations on a mounted KAFS tree.
 Offline v2\->v3 migration.
 This operation is irreversible.
 .TP
-.B fsstat mountpoint [--json] [--bytes|--mib|--gib]
-Print filesystem and dedup/runtime statistics.
-The output also reports tombstone inode count and the oldest pending deletion
-timestamp when logical delete is active.
+.B fsstat mountpoint [-v|--verbose] [--json] [--bytes|--mib|--gib]
+Print filesystem and runtime statistics.
+By default this uses a lightweight snapshot and skips full tombstone and HRL scans.
+Use
+.B -v
+or
+.B --verbose
+to enable the heavier scans, including tombstone inode count, oldest pending deletion
+timestamp, and HRL usage/refsum summaries.
 .B stats
 is an alias of
 .BR fsstat .

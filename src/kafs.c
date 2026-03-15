@@ -1307,6 +1307,39 @@ static void kafs_bg_enter_cooldown(struct kafs_context *ctx, int pressure_mode)
   __atomic_add_fetch(&ctx->c_stat_bg_dedup_cooldowns, 1u, __ATOMIC_RELAXED);
 }
 
+static int kafs_bg_dedup_try_install(struct kafs_context *ctx, uint32_t ino, kafs_iblkcnt_t iblk,
+                                     kafs_blkcnt_t expect_raw, kafs_blkcnt_t new_blo)
+{
+  if (!ctx || new_blo == KAFS_BLO_NONE)
+    return 0;
+
+  kafs_inode_lock(ctx, ino);
+  kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+  int installed = 0;
+  if (kafs_ino_get_usage(inoent))
+  {
+    kafs_off_t size = kafs_ino_size_get(inoent);
+    if (size > KAFS_DIRECT_SIZE)
+    {
+      kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
+      kafs_iblkcnt_t iblocnt = (kafs_iblkcnt_t)((size + bs - 1) / bs);
+      if (iblk < iblocnt)
+      {
+        kafs_blkcnt_t cur_raw = KAFS_BLO_NONE;
+        if (kafs_ino_ibrk_run(ctx, inoent, iblk, &cur_raw, KAFS_IBLKREF_FUNC_GET_RAW) == 0 &&
+            cur_raw == expect_raw)
+        {
+          kafs_blkcnt_t set_blo = new_blo;
+          if (kafs_ino_ibrk_run(ctx, inoent, iblk, &set_blo, KAFS_IBLKREF_FUNC_SET) == 0)
+            installed = 1;
+        }
+      }
+    }
+  }
+  kafs_inode_unlock(ctx, ino);
+  return installed;
+}
+
 static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
 {
   if (!ctx || !ctx->c_superblock)
@@ -1344,11 +1377,14 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
   for (kafs_inocnt_t scanned = 0; scanned < inocnt; ++scanned)
   {
     uint32_t ino = (ctx->c_bg_dedup_ino_cursor + scanned) % inocnt;
+    int inode_locked = 0;
     kafs_inode_lock(ctx, ino);
+    inode_locked = 1;
     kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
     if (!kafs_ino_get_usage(inoent))
     {
       kafs_inode_unlock(ctx, ino);
+      inode_locked = 0;
       if (scanned == 0)
       {
         if (kafs_bg_advance_cursor(ctx, inocnt, 0))
@@ -1361,6 +1397,7 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
     if (size <= KAFS_DIRECT_SIZE)
     {
       kafs_inode_unlock(ctx, ino);
+      inode_locked = 0;
       if (scanned == 0)
       {
         if (kafs_bg_advance_cursor(ctx, inocnt, 0))
@@ -1374,6 +1411,7 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
     if (direct_cnt == 0)
     {
       kafs_inode_unlock(ctx, ino);
+      inode_locked = 0;
       if (scanned == 0)
       {
         if (kafs_bg_advance_cursor(ctx, inocnt, 0))
@@ -1407,16 +1445,17 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
       if (kafs_bg_advance_cursor(ctx, inocnt, next_iblk))
         kafs_bg_enter_cooldown(ctx, pressure_mode);
 
+      kafs_blkcnt_t snapshot_raw = raw;
+      kafs_inode_unlock(ctx, ino);
+      inode_locked = 0;
+
       kafs_blkcnt_t match_blo = KAFS_BLO_NONE;
       int mrc = kafs_hrl_match_inc_by_block_excluding_blo(ctx, buf, old_blo, &match_blo);
       if (mrc == 0 && match_blo != KAFS_BLO_NONE)
       {
-        kafs_blkcnt_t set_blo = match_blo;
-        if (kafs_ino_ibrk_run(ctx, inoent, (kafs_iblkcnt_t)iblk, &set_blo, KAFS_IBLKREF_FUNC_SET) ==
-            0)
+        if (kafs_bg_dedup_try_install(ctx, ino, (kafs_iblkcnt_t)iblk, snapshot_raw, match_blo))
         {
           __atomic_add_fetch(&ctx->c_stat_bg_dedup_replacements, 1u, __ATOMIC_RELAXED);
-          kafs_inode_unlock(ctx, ino);
           (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
           __atomic_add_fetch(&ctx->c_stat_pending_old_block_freed, 1u, __ATOMIC_RELAXED);
           return;
@@ -1439,11 +1478,8 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
       if (dup_direct == KAFS_BLO_NONE)
       {
         if (scanned_blocks_this_step >= block_budget)
-        {
-          kafs_inode_unlock(ctx, ino);
           return;
-        }
-        continue;
+        break;
       }
 
       __atomic_add_fetch(&ctx->c_stat_bg_dedup_direct_hits, 1u, __ATOMIC_RELAXED);
@@ -1465,12 +1501,9 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
 
       if (prc == 0 && final_blo != KAFS_BLO_NONE && final_blo != old_blo)
       {
-        kafs_blkcnt_t set_blo = final_blo;
-        if (kafs_ino_ibrk_run(ctx, inoent, (kafs_iblkcnt_t)iblk, &set_blo, KAFS_IBLKREF_FUNC_SET) ==
-            0)
+        if (kafs_bg_dedup_try_install(ctx, ino, (kafs_iblkcnt_t)iblk, snapshot_raw, final_blo))
         {
           __atomic_add_fetch(&ctx->c_stat_bg_dedup_replacements, 1u, __ATOMIC_RELAXED);
-          kafs_inode_unlock(ctx, ino);
           (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
           __atomic_add_fetch(&ctx->c_stat_pending_old_block_freed, 1u, __ATOMIC_RELAXED);
           return;
@@ -1479,13 +1512,12 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
       }
 
       if (scanned_blocks_this_step >= block_budget)
-      {
-        kafs_inode_unlock(ctx, ino);
         return;
-      }
+      break;
     }
 
-    kafs_inode_unlock(ctx, ino);
+    if (inode_locked)
+      kafs_inode_unlock(ctx, ino);
     if (scanned == 0)
     {
       if (kafs_bg_advance_cursor(ctx, inocnt, 0))
@@ -2873,6 +2905,46 @@ static int kafs_ino_iblk_read_or_zero(struct kafs_context *ctx, kafs_sinode_t *i
   return rc;
 }
 
+static int kafs_ino_iblk_write_legacy(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                      kafs_iblkcnt_t iblo, const void *buf, int record_rescue_hint)
+{
+  kafs_blkcnt_t new_blo = KAFS_BLO_NONE;
+  KAFS_CALL(kafs_blk_alloc, ctx, &new_blo);
+
+  uint64_t t_lw0 = kafs_now_ns();
+  KAFS_CALL(kafs_blk_write, ctx, new_blo, buf);
+  uint64_t t_lw1 = kafs_now_ns();
+  __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_legacy_blk_write, t_lw1 - t_lw0, __ATOMIC_RELAXED);
+
+  kafs_blkcnt_t old_raw = KAFS_BLO_NONE;
+  KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old_raw, KAFS_IBLKREF_FUNC_GET_RAW);
+  KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &new_blo, KAFS_IBLKREF_FUNC_SET);
+
+  if (record_rescue_hint)
+  {
+    kafs_hrl_rescue_recent_note(ctx, kafs_bg_hash64(buf, kafs_sb_blksize_get(ctx->c_superblock)),
+                                new_blo);
+  }
+
+  if (old_raw != KAFS_BLO_NONE)
+  {
+    uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
+    kafs_inode_unlock(ctx, ino_idx);
+    kafs_blkcnt_t old_blo = KAFS_BLO_NONE;
+    if (kafs_ref_resolve_data_blo(ctx, old_raw, &old_blo) == 0 && old_blo != KAFS_BLO_NONE &&
+        old_blo != new_blo)
+    {
+      uint64_t t_dec0 = kafs_now_ns();
+      (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
+      uint64_t t_dec1 = kafs_now_ns();
+      __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
+    }
+    kafs_inode_lock(ctx, ino_idx);
+  }
+
+  return KAFS_SUCCESS;
+}
+
 /// @brief inode毎のデータを書き込む（ブロック単位）
 /// @param ctx コンテキスト
 /// @param inoent inode テーブルエントリ
@@ -2948,6 +3020,8 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
                  "), fallback to sync write\n",
                  __func__, ino_idx, (uint32_t)iblo);
       }
+
+      return kafs_ino_iblk_write_legacy(ctx, inoent, iblo, buf, 1);
     }
 
     if (qrc == 0)
@@ -2960,6 +3034,9 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
       return KAFS_SUCCESS;
     }
   }
+
+  if (S_ISDIR(kafs_ino_mode_get(inoent)))
+    return kafs_ino_iblk_write_legacy(ctx, inoent, iblo, buf, 0);
 
   // ゼロ/非ゼロを区別せず、常に通常のデータ書き込み経路を使う。
   kafs_hrid_t hrid;
@@ -3023,32 +3100,8 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
 
   // HRL 失敗時: レガシー経路
   ctx->c_stat_hrl_put_fallback_legacy++;
-  // 先に物理ブロックを割り当ててデータを書き込み、その後参照を更新する
-  kafs_blkcnt_t new_blo2 = KAFS_BLO_NONE;
-  KAFS_IBWRITE_TRY(kafs_blk_alloc(ctx, &new_blo2));
-  // 先にデータを書き込む（読取り側はまだ旧参照を見続ける）
-  uint64_t t_lw0 = kafs_now_ns();
-  KAFS_IBWRITE_TRY(kafs_blk_write(ctx, new_blo2, buf));
-  uint64_t t_lw1 = kafs_now_ns();
-  __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_legacy_blk_write, t_lw1 - t_lw0, __ATOMIC_RELAXED);
-  kafs_blkcnt_t old_blo2;
-  KAFS_IBWRITE_TRY(kafs_ino_ibrk_run(ctx, inoent, iblo, &old_blo2, KAFS_IBLKREF_FUNC_GET));
-  KAFS_IBWRITE_TRY(kafs_ino_ibrk_run(ctx, inoent, iblo, &new_blo2, KAFS_IBLKREF_FUNC_SET));
-  kafs_hrl_rescue_recent_note(ctx, kafs_bg_hash64(buf, kafs_sb_blksize_get(ctx->c_superblock)),
-                              new_blo2);
-  // 旧ブロックの参照を解放（inode ロック外）
-  if (old_blo2 != KAFS_BLO_NONE && old_blo2 != new_blo2)
-  {
-    uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
-    kafs_inode_unlock(ctx, ino_idx);
-    uint64_t t_dec0 = kafs_now_ns();
-    (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo2);
-    uint64_t t_dec1 = kafs_now_ns();
-    __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
-    kafs_inode_lock(ctx, ino_idx);
-  }
+  return kafs_ino_iblk_write_legacy(ctx, inoent, iblo, buf, 1);
 #undef KAFS_IBWRITE_TRY
-  return KAFS_SUCCESS;
 }
 
 __attribute_maybe_unused__ static int
@@ -5122,7 +5175,7 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
   return 0;
 }
 
-#define KAFS_STATS_VERSION 14u
+#define KAFS_STATS_VERSION 15u
 
 static int kafs_u64_cmp(const void *a, const void *b)
 {
@@ -5170,11 +5223,12 @@ static inline kafs_hrl_entry_t *kafs_hrl_entries_tbl(kafs_context_t *ctx)
   return (kafs_hrl_entry_t *)(base + (uintptr_t)off);
 }
 
-static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
+static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out, uint32_t request_flags)
 {
   memset(out, 0, sizeof(*out));
   out->struct_size = (uint32_t)sizeof(*out);
   out->version = KAFS_STATS_VERSION;
+  out->request_flags = request_flags;
 
   out->blksize = (uint32_t)kafs_sb_blksize_get(ctx->c_superblock);
   out->fs_blocks_total = (uint64_t)kafs_sb_blkcnt_get(ctx->c_superblock);
@@ -5184,59 +5238,64 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out)
   out->fs_inodes_total = (uint64_t)kafs_sb_inocnt_get(ctx->c_superblock);
   out->fs_inodes_free = (uint64_t)(kafs_inocnt_t)kafs_sb_inocnt_free_get(ctx->c_superblock);
 
-  kafs_time_t oldest_tombstone = {0};
-  int have_oldest_tombstone = 0;
-  for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < (kafs_inocnt_t)out->fs_inodes_total; ++ino)
+  out->hrl_entries_total = (uint64_t)kafs_sb_hrl_entry_cnt_get(ctx->c_superblock);
+
+  if ((request_flags & KAFS_STATS_F_VERBOSE_SCAN) != 0)
   {
-    kafs_time_t dtime = {0};
-    int is_tombstone = 0;
+    out->result_flags |= KAFS_STATS_R_VERBOSE_SCAN;
 
-    kafs_inode_lock(ctx, ino);
-    const kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
-    if (kafs_inode_is_tombstone(inoent))
+    kafs_time_t oldest_tombstone = {0};
+    int have_oldest_tombstone = 0;
+    for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < (kafs_inocnt_t)out->fs_inodes_total; ++ino)
     {
-      dtime = kafs_ino_dtime_get(inoent);
-      is_tombstone = 1;
-    }
-    kafs_inode_unlock(ctx, ino);
+      kafs_time_t dtime = {0};
+      int is_tombstone = 0;
 
-    if (!is_tombstone)
-      continue;
-
-    out->tombstone_inodes++;
-    if (!have_oldest_tombstone || kafs_time_before(dtime, oldest_tombstone))
-    {
-      oldest_tombstone = dtime;
-      have_oldest_tombstone = 1;
-    }
-  }
-  if (have_oldest_tombstone)
-  {
-    out->tombstone_oldest_dtime_sec = (uint64_t)oldest_tombstone.tv_sec;
-    out->tombstone_oldest_dtime_nsec = (uint64_t)oldest_tombstone.tv_nsec;
-  }
-
-  uint32_t entry_cnt = kafs_sb_hrl_entry_cnt_get(ctx->c_superblock);
-  out->hrl_entries_total = (uint64_t)entry_cnt;
-
-  kafs_hrl_entry_t *ents = kafs_hrl_entries_tbl(ctx);
-  if (ents)
-  {
-    uint64_t used = 0, dup = 0, refsum = 0;
-    for (uint32_t i = 0; i < entry_cnt; ++i)
-    {
-      uint32_t r = ents[i].refcnt;
-      if (r)
+      kafs_inode_lock(ctx, ino);
+      const kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+      if (kafs_inode_is_tombstone(inoent))
       {
-        used++;
-        refsum += r;
-        if (r > 1)
-          dup++;
+        dtime = kafs_ino_dtime_get(inoent);
+        is_tombstone = 1;
+      }
+      kafs_inode_unlock(ctx, ino);
+
+      if (!is_tombstone)
+        continue;
+
+      out->tombstone_inodes++;
+      if (!have_oldest_tombstone || kafs_time_before(dtime, oldest_tombstone))
+      {
+        oldest_tombstone = dtime;
+        have_oldest_tombstone = 1;
       }
     }
-    out->hrl_entries_used = used;
-    out->hrl_entries_duplicated = dup;
-    out->hrl_refcnt_sum = refsum;
+    if (have_oldest_tombstone)
+    {
+      out->tombstone_oldest_dtime_sec = (uint64_t)oldest_tombstone.tv_sec;
+      out->tombstone_oldest_dtime_nsec = (uint64_t)oldest_tombstone.tv_nsec;
+    }
+
+    uint32_t entry_cnt = kafs_sb_hrl_entry_cnt_get(ctx->c_superblock);
+    kafs_hrl_entry_t *ents = kafs_hrl_entries_tbl(ctx);
+    if (ents)
+    {
+      uint64_t used = 0, dup = 0, refsum = 0;
+      for (uint32_t i = 0; i < entry_cnt; ++i)
+      {
+        uint32_t r = ents[i].refcnt;
+        if (r)
+        {
+          used++;
+          refsum += r;
+          if (r > 1)
+            dup++;
+        }
+      }
+      out->hrl_entries_used = used;
+      out->hrl_entries_duplicated = dup;
+      out->hrl_refcnt_sum = refsum;
+    }
   }
 
   out->hrl_put_calls = ctx->c_stat_hrl_put_calls;
@@ -6008,8 +6067,13 @@ static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_
       return -EINVAL;
     if (_IOC_SIZE((unsigned int)cmd) < sizeof(kafs_stats_t))
       return -EINVAL;
+    kafs_stats_t req;
+    memset(&req, 0, sizeof(req));
+    memcpy(&req, buf, sizeof(req));
+    uint32_t request_flags = req.request_flags;
+
     kafs_stats_t out;
-    kafs_stats_snapshot(ctx, &out);
+    kafs_stats_snapshot(ctx, &out, request_flags);
     memcpy(buf, &out, sizeof(out));
     return 0;
   }
@@ -7078,6 +7142,34 @@ static int kafs_op_utimens(const char *path, const struct timespec tv[2], struct
   return 0;
 }
 
+static kafs_linkcnt_t kafs_inode_drop_link_locked(struct kafs_context *ctx, kafs_inocnt_t ino,
+                                                  int reclaim_now, int *reclaimed_now)
+{
+  kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+  kafs_linkcnt_t nl = kafs_ino_linkcnt_get(inoent);
+
+  if (nl > 0)
+  {
+    nl = kafs_ino_linkcnt_decr(inoent);
+  }
+  else
+  {
+    kafs_log(KAFS_LOG_WARNING,
+             "%s: ino=%" PRIuFAST32 " already has linkcnt=0; treating as tombstone\n", __func__,
+             (uint32_t)ino);
+  }
+
+  if (nl == 0)
+  {
+    if (!kafs_inode_is_tombstone(inoent))
+      kafs_ino_dtime_set(inoent, kafs_now());
+    if (reclaim_now)
+      (void)kafs_try_reclaim_unlinked_inode_locked(ctx, ino, reclaimed_now);
+  }
+
+  return nl;
+}
+
 static int kafs_op_unlink(const char *path)
 {
   assert(path != NULL);
@@ -7151,16 +7243,9 @@ static int kafs_op_unlink(const char *path)
 
   // Decrement link count under target inode lock (keep dir lock hold time short)
   int reclaim_now = kafs_tombstone_pressure(ctx);
-  kafs_inode_lock(ctx, (uint32_t)removed_ino);
-  kafs_sinode_t *t = &ctx->c_inotbl[removed_ino];
-  kafs_linkcnt_t nl = kafs_ino_linkcnt_decr(t);
   int reclaimed_now = 0;
-  if (nl == 0)
-  {
-    kafs_ino_dtime_set(t, kafs_now());
-    if (reclaim_now)
-      (void)kafs_try_reclaim_unlinked_inode_locked(ctx, removed_ino, &reclaimed_now);
-  }
+  kafs_inode_lock(ctx, (uint32_t)removed_ino);
+  (void)kafs_inode_drop_link_locked(ctx, removed_ino, reclaim_now, &reclaimed_now);
   kafs_inode_unlock(ctx, (uint32_t)removed_ino);
 
   if (reclaimed_now)
@@ -7443,15 +7528,8 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
   {
     int reclaim_dst_now = kafs_tombstone_pressure(ctx);
     kafs_inode_lock(ctx, (uint32_t)removed_dst_ino);
-    kafs_sinode_t *dst = &ctx->c_inotbl[removed_dst_ino];
-    kafs_linkcnt_t nl = kafs_ino_linkcnt_decr(dst);
     int reclaimed_dst = 0;
-    if (nl == 0)
-    {
-      kafs_ino_dtime_set(dst, kafs_now());
-      if (reclaim_dst_now)
-        (void)kafs_try_reclaim_unlinked_inode_locked(ctx, removed_dst_ino, &reclaimed_dst);
-    }
+    (void)kafs_inode_drop_link_locked(ctx, removed_dst_ino, reclaim_dst_now, &reclaimed_dst);
     kafs_inode_unlock(ctx, (uint32_t)removed_dst_ino);
 
     if (reclaimed_dst)
