@@ -128,14 +128,14 @@ Alias for
 .SS Hotplug
 .TP
 .B --hotplug
-Enable hotplug using the default UDS endpoint
+Enable hotplug bootstrap using the default UDS endpoint
 .IR /tmp/kafs-hotplug.sock .
 .TP
 .BR --hotplug= " <uds>"
-Enable hotplug and set the UDS endpoint path.
+Enable hotplug bootstrap and set the UDS endpoint path.
 .TP
 .BR --hotplug-uds " " <uds>
-Set the hotplug UDS endpoint path.
+Set the hotplug bootstrap UDS endpoint path.
 .TP
 .BR --hotplug-back-bin " " <path>
 Set backend binary path hint stored in hotplug env
@@ -148,6 +148,11 @@ When
 .I <uds>
 is specified, it is equivalent to
 .BR --hotplug= .
+.PP
+The current implementation retains UDS for initial bootstrap and relisten compatibility.
+Subsequent
+.B kafsctl hotplug restart-back
+operations use the supervised restart path managed by the mounted front process.
 .TP
 .BR -o " " hotplug_uds= "<uds>"
 Alias for
@@ -192,7 +197,7 @@ Default on/off switch for idle background dedup scan (default: on).
 Default scan interval in milliseconds for idle background dedup.
 .TP
 .B KAFS_HOTPLUG_UDS
-Hotplug UDS endpoint path used when explicit hotplug options are not provided.
+Hotplug bootstrap UDS endpoint path used when explicit hotplug options are not provided.
 .TP
 .B KAFS_HOTPLUG_BACK_BIN
 Backend binary path hint exposed via hotplug env list.

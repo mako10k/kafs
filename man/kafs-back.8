@@ -4,6 +4,8 @@
 kafs-back \- hotplug back process speaking KAFS RPC
 .SH SYNOPSIS
 .B kafs-back
+.RB [ --fd
+.IR num ]
 .RB [ --uds
 .IR path ]
 .RB [ --image
@@ -18,6 +20,10 @@ When built with image backend support, an image path is required either via
 or
 .BR KAFS_IMAGE .
 .SH OPTIONS
+.TP
+.BR --fd " " <num>
+Use an inherited connected fd explicitly.
+This is primarily intended for supervised restart and testing.
 .TP
 .BR --uds " " <path>
 Set UDS path when inherited back fd is not available.

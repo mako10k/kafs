@@ -4349,10 +4349,15 @@ static int kafs_hotplug_spawn_back_for_restart(kafs_context_t *ctx, int *out_fro
     char fd_buf[32];
     snprintf(fd_buf, sizeof(fd_buf), "%d", fds[1]);
     (void)setenv("KAFS_HOTPLUG_BACK_FD", fd_buf, 1);
-    if (ctx->c_hotplug_uds_path[0] != '\0')
-      (void)setenv("KAFS_HOTPLUG_UDS", ctx->c_hotplug_uds_path, 1);
     for (uint32_t i = 0; i < env_count; ++i)
+    {
+      if (strcmp(envs[i].key, "KAFS_HOTPLUG_BACK_FD") == 0 ||
+          strcmp(envs[i].key, "KAFS_HOTPLUG_UDS") == 0)
+        continue;
       (void)setenv(envs[i].key, envs[i].value, 1);
+    }
+    // Explicit restart uses front-managed transport variables only.
+    (void)unsetenv("KAFS_HOTPLUG_UDS");
 
     char *args[] = {back_bin_buf, NULL};
     if (strchr(back_bin_buf, '/') != NULL)
@@ -9080,6 +9085,8 @@ int main(int argc, char **argv)
     ctx.c_hotplug_state = KAFS_HOTPLUG_STATE_WAITING;
     snprintf(ctx.c_hotplug_uds_path, sizeof(ctx.c_hotplug_uds_path), "%s", hotplug_uds);
     (void)kafs_hotplug_env_set(&ctx, "KAFS_HOTPLUG_UDS", hotplug_uds);
+    if (image_path && *image_path)
+      (void)kafs_hotplug_env_set(&ctx, "KAFS_IMAGE", image_path);
     if (hotplug_back_bin && *hotplug_back_bin)
       (void)kafs_hotplug_env_set(&ctx, "KAFS_HOTPLUG_BACK_BIN", hotplug_back_bin);
     if (!ctx.c_hotplug_wait_lock_init)

@@ -9,8 +9,9 @@
 - hotplug-pipe-design.md
 
 注記
-- 現行実装は socketpair (AF_UNIX) で前後段を接続し、前段が後段を fork/exec する。
-- UDS 前提の記述は過去設計として残している。詳細は hotplug-pipe-*.md を参照。
+- 現行実装の supervised restart 経路は socketpair (AF_UNIX) で前後段を接続し、前段が後段を fork/exec する。
+- 初回 bootstrap、relisten、および単体起動互換のため UDS 経路が残っている。
+- UDS 前提の記述は過去設計だけではなく、現行 bootstrap 互換経路としても参照される。詳細は hotplug-pipe-*.md を参照。
 
 ## 1. 機能要件
 
@@ -54,8 +55,8 @@
 
 ## 5. RPC 要件
 
-- socketpair (AF_UNIX) を使用し、同一ホスト内通信とする。
-- kafs-back 単体起動時は UDS をフォールバックとして利用可能にする。
+- supervised restart/reconnect 経路では socketpair (AF_UNIX) を使用し、同一ホスト内通信とする。
+- 初回 bootstrap、relisten、および kafs-back 単体起動互換では UDS をフォールバックとして利用可能にする。
 - リクエスト/レスポンスは明示的なサイズと req_id を持つ。
 - エラーは -errno をそのまま返す。
 - read/write の payload は RPC に含めるか、共有メモリ方式を将来拡張できること。

@@ -1,7 +1,7 @@
 # Hotplug Pipe Plan
 
 目的
-- UDS ベースから socketpair ベースへ再設計する。
+- supervised restart を UDS ベースから socketpair ベースへ再設計する。
 - 後段のプロセス管理を前段で完結させる。
 - ユーザはアーキテクチャを意識せずに利用できるようにする。
 
@@ -12,10 +12,14 @@
 - hotplug-pipe-tickets.md
 
 スコープ
-- 前段が socketpair を生成し、後段を fork/exec で起動。
+- 前段が socketpair を生成し、restart 時の後段を fork/exec で起動。
 - 既存 RPC を socketpair 上で利用。
 - 再起動/異常終了の扱いを明確化。
 - kafs-back の単体起動は維持。
+
+注記
+- 初回 bootstrap と relisten は、現行実装では UDS 経路を維持する。
+- この文書は supervised restart 経路の socketpair 化を扱う。
 
 非スコープ
 - SHM 共有メモリデータ転送。

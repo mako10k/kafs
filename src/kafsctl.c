@@ -85,7 +85,7 @@ static void usage(const char *prog)
           "  %s fsstat <mountpoint> [-v|--verbose] [--json] [--bytes|--mib|--gib]"
           "   (alias: stats)\n"
           "  %s hotplug status <mountpoint> [--json]\n"
-          "  %s hotplug restart-back <mountpoint>\n"
+          "  %s hotplug restart-back <mountpoint>   (supervised back restart)\n"
           "  %s hotplug compat <mountpoint> [--json]\n"
           "  %s hotplug set-timeout <mountpoint> <ms>\n"
           "  %s hotplug set-dedup-priority <mountpoint> <normal|idle> [nice(0..19)]\n"
@@ -603,8 +603,9 @@ static void hotplug_print_exchange_error(const char *op, const char *mnt, int rc
   if (rc == -ENOSYS)
   {
     fprintf(stderr,
-            "hotplug %s failed: %s (hotplug control is disabled on this mount; restart KAFS with "
-            "KAFS_HOTPLUG_UDS set, then run kafs-back)\n",
+            "hotplug %s failed: %s (hotplug control is disabled on this mount; remount KAFS "
+            "with --hotplug/--hotplug-uds, -o hotplug/hotplug_uds=..., or KAFS_HOTPLUG_UDS, "
+            "then use restart-back for supervised back restarts)\n",
             op, strerror(ENOSYS));
     return;
   }

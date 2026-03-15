@@ -9,8 +9,8 @@
 - hotplug-pipe-design.md
 
 注記
-- 現行実装は socketpair (AF_UNIX) で前後段を接続し、前段が後段を fork/exec する。
-- UDS 前提の記述は過去設計として残している。詳細は hotplug-pipe-*.md を参照。
+- supervised restart 経路は socketpair (AF_UNIX) で前後段を接続し、前段が後段を fork/exec する。
+- 初回 bootstrap と relisten では UDS 経路が互換用に残っている。詳細は hotplug-pipe-*.md を参照。
 
 ## 目的
 
@@ -58,7 +58,7 @@ Phase 0: ドキュメント整備
 - 大方針、要件、設計の文書化。
 
 Phase 1: 骨格分離
-- 前段/後段のプロセス分割と UDS ルート確立。
+- 前段/後段のプロセス分割と UDS bootstrap ルート確立。
 - FUSE 前段が単独で起動できること。
 
 Phase 2: RPC 基本機能
