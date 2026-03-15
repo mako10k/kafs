@@ -494,87 +494,11 @@ int main(void)
     back_pid = -1;
   }
 
-  // Reconnect is established lazily on filesystem I/O (wait_ready path).
-  // Trigger I/O in a child while parent spawns kafs-back to avoid connect/listen race.
-  int reconnected = 0;
-  for (int attempt = 0; attempt < 5 && !reconnected; ++attempt)
-  {
-    pid_t io_pid = fork();
-    if (io_pid < 0)
-      break;
-    if (io_pid == 0)
-    {
-      int tfd = open(path, O_WRONLY | O_APPEND);
-      if (tfd >= 0)
-      {
-        const char c = '!';
-        (void)write(tfd, &c, 1);
-        close(tfd);
-        _exit(0);
-      }
-      _exit(1);
-    }
-
-    int st = 0;
-    int io_done = 0;
-    for (int step = 0; step < 30; ++step)
-    {
-      pid_t wio = waitpid(io_pid, &st, WNOHANG);
-      if (wio == io_pid)
-      {
-        io_done = 1;
-        break;
-      }
-
-      if (back_pid > 0)
-      {
-        int bst = 0;
-        pid_t wb = waitpid(back_pid, &bst, WNOHANG);
-        if (wb == back_pid)
-          back_pid = -1;
-      }
-      if (back_pid <= 0)
-        back_pid = spawn_kafs_back(img, uds);
-
-      usleep(100 * 1000);
-    }
-    if (!io_done)
-      (void)waitpid(io_pid, &st, 0);
-
-    if (back_pid > 0 && WIFEXITED(st) && WEXITSTATUS(st) == 0)
-    {
-      reconnected = 1;
-      break;
-    }
-    if (back_pid > 0)
-    {
-      kill(back_pid, SIGTERM);
-      waitpid(back_pid, NULL, 0);
-      back_pid = -1;
-    }
-  }
-  if (!reconnected)
-  {
-    tlogf("hotplug reconnect trigger failed");
-    kafs_test_stop_kafs(mnt, kafs_pid);
-    if (back_pid > 0)
-    {
-      kill(back_pid, SIGTERM);
-      waitpid(back_pid, NULL, 0);
-    }
-    return 1;
-  }
-
   uint64_t epoch_after = 0;
   if (wait_hotplug_state(mnt, 2u, &epoch_after, 5000) != 0)
   {
-    tlogf("hotplug reconnect timeout");
+    tlogf("hotplug reconnect timeout after restart-back");
     kafs_test_stop_kafs(mnt, kafs_pid);
-    if (back_pid > 0)
-    {
-      kill(back_pid, SIGTERM);
-      waitpid(back_pid, NULL, 0);
-    }
     return 1;
   }
   if (epoch_after <= epoch_before)
@@ -582,17 +506,46 @@ int main(void)
     tlogf("epoch did not advance: before=%llu after=%llu",
           (unsigned long long)epoch_before, (unsigned long long)epoch_after);
     kafs_test_stop_kafs(mnt, kafs_pid);
-    kill(back_pid, SIGTERM);
-    waitpid(back_pid, NULL, 0);
+    return 1;
+  }
+
+  fd = open(path, O_WRONLY | O_APPEND);
+  if (fd < 0)
+  {
+    tlogf("post-restart append open failed: %s", strerror(errno));
+    kafs_test_stop_kafs(mnt, kafs_pid);
+    return 1;
+  }
+  const char bang = '!';
+  if (write(fd, &bang, 1) != 1)
+  {
+    tlogf("post-restart append failed: %s", strerror(errno));
+    close(fd);
+    kafs_test_stop_kafs(mnt, kafs_pid);
+    return 1;
+  }
+  close(fd);
+
+  fd = open(path, O_RDONLY);
+  if (fd < 0)
+  {
+    tlogf("post-restart read open failed: %s", strerror(errno));
+    kafs_test_stop_kafs(mnt, kafs_pid);
+    return 1;
+  }
+  memset(buf, 0, sizeof(buf));
+  r = read(fd, buf, sizeof(buf));
+  close(fd);
+  static const char expected_after_restart[] = {'h', 'e', 'l', 'l', 'o', '\0', '!'};
+  if (r != (ssize_t)sizeof(expected_after_restart) ||
+      memcmp(buf, expected_after_restart, sizeof(expected_after_restart)) != 0)
+  {
+    tlogf("post-restart content mismatch");
+    kafs_test_stop_kafs(mnt, kafs_pid);
     return 1;
   }
 
   kafs_test_stop_kafs(mnt, kafs_pid);
-  if (back_pid > 0)
-  {
-    kill(back_pid, SIGTERM);
-    waitpid(back_pid, NULL, 0);
-  }
   unlink(uds);
   unlink(img);
   rmdir(mnt);
