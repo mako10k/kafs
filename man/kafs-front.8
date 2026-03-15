@@ -4,30 +4,17 @@
 kafs-front \- hotplug front supervisor for kafs-back process
 .SH SYNOPSIS
 .B kafs-front
-.RB [ --uds
-.IR path ]
+.RB [ -h | --help ]
 .SH DESCRIPTION
 .B kafs-front
 manages lifecycle of
 .BR kafs-back (8)
 for hotplug mode.
 It performs handshake/session restore and restarts back process when requested.
-.PP
-The default UDS path is
-.IR /tmp/kafs-hotplug.sock .
 .SH OPTIONS
-.TP
-.BR --uds " " <path>
-Set hotplug UDS endpoint path.
 .TP
 .BR -h ", " --help
 Show help and exit.
-.SH ENVIRONMENT
-.TP
-.B KAFS_HOTPLUG_UDS
-Default UDS path when
-.B --uds
-is not provided.
 .SH SEE ALSO
 .BR kafs (1),
 .BR kafsctl (1),
