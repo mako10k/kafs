@@ -9,8 +9,9 @@
 - hotplug-pipe-design.md
 
 注記
-- 現行実装は socketpair (AF_UNIX) で前後段を接続し、前段が後段を fork/exec する。
-- UDS 前提の記述は過去設計として残している。詳細は hotplug-pipe-*.md を参照。
+- 現行実装の supervised restart 経路は socketpair (AF_UNIX) で前後段を接続し、前段が後段を fork/exec する。
+- 初回 bootstrap と relisten では互換性のため UDS 経路が残っている。
+- UDS 前提の記述は過去設計だけではなく、現行 bootstrap 互換経路としても参照される。詳細は hotplug-pipe-*.md を参照。
 
 目次
 - 1. コンポーネント
