@@ -1,4 +1,5 @@
 #include "kafs_ioctl.h"
+#include "kafs_cli_opts.h"
 #include "kafs_rpc.h"
 #include "kafs_superblock.h"
 
@@ -109,6 +110,334 @@ static void usage(const char *prog)
           "  %s touch <mountpoint> <path>\n",
           prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog,
           prog, prog, prog, prog, prog, prog, prog, prog, prog);
+}
+
+static void usage_cmd(const char *prog, const char *suffix, const char *details)
+{
+  fprintf(stderr, "Usage: %s %s\n", prog, suffix);
+  if (details && *details)
+    fprintf(stderr, "%s", details);
+}
+
+static void usage_migrate_cmd(const char *prog)
+{
+  usage_cmd(prog, "migrate <image> [--yes]",
+            "\nOffline v2->v3 migration. This operation is irreversible.\n");
+}
+
+static void usage_fsstat_cmd(const char *prog)
+{
+  usage_cmd(prog, "fsstat <mountpoint> [-v|--verbose] [--json] [--bytes|--mib|--gib]",
+            "       stats <mountpoint> [-v|--verbose] [--json] [--bytes|--mib|--gib]\n");
+}
+
+static void usage_hotplug_cmd(const char *prog)
+{
+  usage_cmd(
+      prog,
+      "hotplug <status|restart-back|compat|set-timeout|set-dedup-priority|set-runtime|env> ...",
+      NULL);
+}
+
+static void usage_hotplug_status_cmd(const char *prog)
+{
+  usage_cmd(prog, "hotplug status <mountpoint> [--json]", NULL);
+}
+
+static void usage_hotplug_restart_cmd(const char *prog)
+{
+  usage_cmd(prog, "hotplug restart-back <mountpoint>", NULL);
+}
+
+static void usage_hotplug_compat_cmd(const char *prog)
+{
+  usage_cmd(prog, "hotplug compat <mountpoint> [--json]", NULL);
+}
+
+static void usage_hotplug_timeout_cmd(const char *prog)
+{
+  usage_cmd(prog, "hotplug set-timeout <mountpoint> <ms>", NULL);
+}
+
+static void usage_hotplug_dedup_priority_cmd(const char *prog)
+{
+  usage_cmd(prog, "hotplug set-dedup-priority <mountpoint> <normal|idle> [nice(0..19)]", NULL);
+}
+
+static void usage_hotplug_set_runtime_cmd(const char *prog)
+{
+  usage_cmd(prog,
+            "hotplug set-runtime <mountpoint> [--fsync-policy=<journal_only|full|adaptive>] "
+            "[--pending-ttl-soft-ms=<ms>] [--pending-ttl-hard-ms=<ms>]",
+            NULL);
+}
+
+static void usage_hotplug_env_cmd(const char *prog)
+{
+  usage_cmd(prog, "hotplug env <list|set|unset> ...", NULL);
+}
+
+static void usage_hotplug_env_list_cmd(const char *prog)
+{
+  usage_cmd(prog, "hotplug env list <mountpoint>", NULL);
+}
+
+static void usage_hotplug_env_set_cmd(const char *prog)
+{
+  usage_cmd(prog, "hotplug env set <mountpoint> <key>=<value>", NULL);
+}
+
+static void usage_hotplug_env_unset_cmd(const char *prog)
+{
+  usage_cmd(prog, "hotplug env unset <mountpoint> <key>", NULL);
+}
+
+static void usage_path_cmd(const char *prog, const char *cmd, const char *args)
+{
+  char suffix[256];
+  snprintf(suffix, sizeof(suffix), "%s %s", cmd, args);
+  usage_cmd(prog, suffix, NULL);
+}
+
+static int try_subcommand_help(int argc, char **argv)
+{
+  if (argc < 2)
+    return -1;
+
+  if (kafs_cli_is_help_arg(argv[1]))
+  {
+    usage(argv[0]);
+    return 0;
+  }
+
+  if (strcmp(argv[1], "help") == 0)
+  {
+    if (argc == 2)
+    {
+      usage(argv[0]);
+      return 0;
+    }
+    if (argc >= 3)
+    {
+      if (strcmp(argv[2], "migrate") == 0)
+      {
+        usage_migrate_cmd(argv[0]);
+        return 0;
+      }
+      if (strcmp(argv[2], "fsstat") == 0 || strcmp(argv[2], "stats") == 0)
+      {
+        usage_fsstat_cmd(argv[0]);
+        return 0;
+      }
+      if (strcmp(argv[2], "hotplug") == 0)
+      {
+        if (argc == 3)
+        {
+          usage_hotplug_cmd(argv[0]);
+          return 0;
+        }
+        if (strcmp(argv[3], "status") == 0)
+        {
+          usage_hotplug_status_cmd(argv[0]);
+          return 0;
+        }
+        if (strcmp(argv[3], "restart-back") == 0)
+        {
+          usage_hotplug_restart_cmd(argv[0]);
+          return 0;
+        }
+        if (strcmp(argv[3], "compat") == 0)
+        {
+          usage_hotplug_compat_cmd(argv[0]);
+          return 0;
+        }
+        if (strcmp(argv[3], "set-timeout") == 0)
+        {
+          usage_hotplug_timeout_cmd(argv[0]);
+          return 0;
+        }
+        if (strcmp(argv[3], "set-dedup-priority") == 0)
+        {
+          usage_hotplug_dedup_priority_cmd(argv[0]);
+          return 0;
+        }
+        if (strcmp(argv[3], "set-runtime") == 0)
+        {
+          usage_hotplug_set_runtime_cmd(argv[0]);
+          return 0;
+        }
+        if (strcmp(argv[3], "env") == 0)
+        {
+          if (argc == 4)
+          {
+            usage_hotplug_env_cmd(argv[0]);
+            return 0;
+          }
+          if (strcmp(argv[4], "list") == 0)
+          {
+            usage_hotplug_env_list_cmd(argv[0]);
+            return 0;
+          }
+          if (strcmp(argv[4], "set") == 0)
+          {
+            usage_hotplug_env_set_cmd(argv[0]);
+            return 0;
+          }
+          if (strcmp(argv[4], "unset") == 0)
+          {
+            usage_hotplug_env_unset_cmd(argv[0]);
+            return 0;
+          }
+        }
+        usage_hotplug_cmd(argv[0]);
+        return 0;
+      }
+      if (strcmp(argv[2], "stat") == 0)
+      {
+        usage_path_cmd(argv[0], "stat", "<mountpoint> <path>");
+        return 0;
+      }
+      if (strcmp(argv[2], "cat") == 0)
+      {
+        usage_path_cmd(argv[0], "cat", "<mountpoint> <path>");
+        return 0;
+      }
+      if (strcmp(argv[2], "write") == 0)
+      {
+        usage_path_cmd(argv[0], "write", "<mountpoint> <path>");
+        return 0;
+      }
+      if (strcmp(argv[2], "cp") == 0)
+      {
+        usage_path_cmd(argv[0], "cp", "<mountpoint> <src> <dst> [--reflink]");
+        return 0;
+      }
+      if (strcmp(argv[2], "mv") == 0)
+      {
+        usage_path_cmd(argv[0], "mv", "<mountpoint> <src> <dst>");
+        return 0;
+      }
+      if (strcmp(argv[2], "rm") == 0)
+      {
+        usage_path_cmd(argv[0], "rm", "<mountpoint> <path>");
+        return 0;
+      }
+      if (strcmp(argv[2], "mkdir") == 0)
+      {
+        usage_path_cmd(argv[0], "mkdir", "<mountpoint> <path>");
+        return 0;
+      }
+      if (strcmp(argv[2], "rmdir") == 0)
+      {
+        usage_path_cmd(argv[0], "rmdir", "<mountpoint> <path>");
+        return 0;
+      }
+      if (strcmp(argv[2], "ln") == 0)
+      {
+        usage_path_cmd(argv[0], "ln", "<mountpoint> <src> <dst>");
+        return 0;
+      }
+      if (strcmp(argv[2], "symlink") == 0)
+      {
+        usage_path_cmd(argv[0], "symlink", "<mountpoint> <target> <linkpath>");
+        return 0;
+      }
+      if (strcmp(argv[2], "readlink") == 0)
+      {
+        usage_path_cmd(argv[0], "readlink", "<mountpoint> <path>");
+        return 0;
+      }
+      if (strcmp(argv[2], "chmod") == 0)
+      {
+        usage_path_cmd(argv[0], "chmod", "<mountpoint> <octal_mode> <path>");
+        return 0;
+      }
+      if (strcmp(argv[2], "touch") == 0)
+      {
+        usage_path_cmd(argv[0], "touch", "<mountpoint> <path>");
+        return 0;
+      }
+    }
+
+    usage(argv[0]);
+    return 0;
+  }
+
+  if (argc >= 3 && kafs_cli_is_help_arg(argv[2]))
+  {
+    if (strcmp(argv[1], "migrate") == 0)
+      usage_migrate_cmd(argv[0]);
+    else if (strcmp(argv[1], "fsstat") == 0 || strcmp(argv[1], "stats") == 0)
+      usage_fsstat_cmd(argv[0]);
+    else if (strcmp(argv[1], "hotplug") == 0)
+      usage_hotplug_cmd(argv[0]);
+    else if (strcmp(argv[1], "stat") == 0)
+      usage_path_cmd(argv[0], "stat", "<mountpoint> <path>");
+    else if (strcmp(argv[1], "cat") == 0)
+      usage_path_cmd(argv[0], "cat", "<mountpoint> <path>");
+    else if (strcmp(argv[1], "write") == 0)
+      usage_path_cmd(argv[0], "write", "<mountpoint> <path>");
+    else if (strcmp(argv[1], "cp") == 0)
+      usage_path_cmd(argv[0], "cp", "<mountpoint> <src> <dst> [--reflink]");
+    else if (strcmp(argv[1], "mv") == 0)
+      usage_path_cmd(argv[0], "mv", "<mountpoint> <src> <dst>");
+    else if (strcmp(argv[1], "rm") == 0)
+      usage_path_cmd(argv[0], "rm", "<mountpoint> <path>");
+    else if (strcmp(argv[1], "mkdir") == 0)
+      usage_path_cmd(argv[0], "mkdir", "<mountpoint> <path>");
+    else if (strcmp(argv[1], "rmdir") == 0)
+      usage_path_cmd(argv[0], "rmdir", "<mountpoint> <path>");
+    else if (strcmp(argv[1], "ln") == 0)
+      usage_path_cmd(argv[0], "ln", "<mountpoint> <src> <dst>");
+    else if (strcmp(argv[1], "symlink") == 0)
+      usage_path_cmd(argv[0], "symlink", "<mountpoint> <target> <linkpath>");
+    else if (strcmp(argv[1], "readlink") == 0)
+      usage_path_cmd(argv[0], "readlink", "<mountpoint> <path>");
+    else if (strcmp(argv[1], "chmod") == 0)
+      usage_path_cmd(argv[0], "chmod", "<mountpoint> <octal_mode> <path>");
+    else if (strcmp(argv[1], "touch") == 0)
+      usage_path_cmd(argv[0], "touch", "<mountpoint> <path>");
+    else
+      usage(argv[0]);
+    return 0;
+  }
+
+  if (argc >= 4 && strcmp(argv[1], "hotplug") == 0 && kafs_cli_is_help_arg(argv[3]))
+  {
+    if (strcmp(argv[2], "status") == 0)
+      usage_hotplug_status_cmd(argv[0]);
+    else if (strcmp(argv[2], "restart-back") == 0)
+      usage_hotplug_restart_cmd(argv[0]);
+    else if (strcmp(argv[2], "compat") == 0)
+      usage_hotplug_compat_cmd(argv[0]);
+    else if (strcmp(argv[2], "set-timeout") == 0)
+      usage_hotplug_timeout_cmd(argv[0]);
+    else if (strcmp(argv[2], "set-dedup-priority") == 0)
+      usage_hotplug_dedup_priority_cmd(argv[0]);
+    else if (strcmp(argv[2], "set-runtime") == 0)
+      usage_hotplug_set_runtime_cmd(argv[0]);
+    else if (strcmp(argv[2], "env") == 0)
+      usage_hotplug_env_cmd(argv[0]);
+    else
+      usage_hotplug_cmd(argv[0]);
+    return 0;
+  }
+
+  if (argc >= 5 && strcmp(argv[1], "hotplug") == 0 && strcmp(argv[2], "env") == 0 &&
+      kafs_cli_is_help_arg(argv[4]))
+  {
+    if (strcmp(argv[3], "list") == 0)
+      usage_hotplug_env_list_cmd(argv[0]);
+    else if (strcmp(argv[3], "set") == 0)
+      usage_hotplug_env_set_cmd(argv[0]);
+    else if (strcmp(argv[3], "unset") == 0)
+      usage_hotplug_env_unset_cmd(argv[0]);
+    else
+      usage_hotplug_env_cmd(argv[0]);
+    return 0;
+  }
+
+  return -1;
 }
 
 static int confirm_yes_stdin(void)
@@ -2047,6 +2376,9 @@ static int cmd_touch(const char *mnt, const char *path)
 
 int main(int argc, char **argv)
 {
+  if (try_subcommand_help(argc, argv) == 0)
+    return 0;
+
   if (argc < 3)
   {
     usage(argv[0]);

@@ -3,6 +3,7 @@
 #include "kafs_hash.h"
 #include "kafs_locks.h"
 #include "kafs_block.h"
+#include "kafs_cli_opts.h"
 /* jscpd:ignore-start */
 #include <errno.h>
 #include <fcntl.h>
@@ -24,6 +25,7 @@
 /* jscpd:ignore-end */
 
 #include "kafs_journal.h"
+#include "kafs_cli_opts.h"
 
 // In-image journal format definitions come from kafs_journal.h
 
@@ -890,6 +892,9 @@ int main(int argc, char **argv)
 
   int exit_code = 0;
   const char *img = NULL;
+  if (kafs_cli_exit_if_help(argc, argv, usage, argv[0]) == 0)
+    return 0;
+
   for (int i = 1; i < argc; ++i)
   {
     if (strcmp(argv[i], "--full-check") == 0)

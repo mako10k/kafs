@@ -8,6 +8,10 @@ kafsctl \- runtime control and maintenance utility for mounted KAFS
 .RI [ arguments ... ]
 .PP
 .B kafsctl
+.B help
+.RI [ command ... ]
+.PP
+.B kafsctl
 .B migrate
 .I image
 .RB [ --yes ]
@@ -32,7 +36,16 @@ hotplug control via the hidden control endpoint
 .IR /.kafs.sock .
 .IP \[bu] 2
 basic file operations on a mounted KAFS tree.
+.PP
+Most subcommands also support
+.B --help
+for command-specific usage output.
+.B help
+can be used as an alias to print the same targeted usage.
 .SH COMMANDS
+.TP
+.B help [command ...]
+Print global or command-specific usage.
 .TP
 .B migrate image [--yes]
 Offline v2\->v3 migration.

@@ -1,4 +1,5 @@
 #include "kafs.h"
+#include "kafs_cli_opts.h"
 #include "kafs_superblock.h"
 #include "kafs_inode.h"
 #include "kafs_hash.h"
@@ -49,6 +50,9 @@ static void usage(const char *prog) { fprintf(stderr, "Usage: %s <image>\n", pro
 
 int main(int argc, char **argv)
 {
+  if (kafs_cli_exit_if_help(argc, argv, usage, argv[0]) == 0)
+    return 0;
+
   if (argc < 2)
   {
     usage(argv[0]);
