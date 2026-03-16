@@ -1456,11 +1456,11 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
         if (kafs_bg_dedup_try_install(ctx, ino, (kafs_iblkcnt_t)iblk, snapshot_raw, match_blo))
         {
           __atomic_add_fetch(&ctx->c_stat_bg_dedup_replacements, 1u, __ATOMIC_RELAXED);
-          (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
+          (void)kafs_inode_release_hrl_ref(ctx, old_blo);
           __atomic_add_fetch(&ctx->c_stat_pending_old_block_freed, 1u, __ATOMIC_RELAXED);
           return;
         }
-        (void)kafs_hrl_dec_ref_by_blo(ctx, match_blo);
+        (void)kafs_inode_release_hrl_ref(ctx, match_blo);
       }
 
       uint64_t fast = kafs_bg_hash64(buf, bs);
@@ -1504,11 +1504,11 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
         if (kafs_bg_dedup_try_install(ctx, ino, (kafs_iblkcnt_t)iblk, snapshot_raw, final_blo))
         {
           __atomic_add_fetch(&ctx->c_stat_bg_dedup_replacements, 1u, __ATOMIC_RELAXED);
-          (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
+          (void)kafs_inode_release_hrl_ref(ctx, old_blo);
           __atomic_add_fetch(&ctx->c_stat_pending_old_block_freed, 1u, __ATOMIC_RELAXED);
           return;
         }
-        (void)kafs_hrl_dec_ref_by_blo(ctx, final_blo);
+        (void)kafs_inode_release_hrl_ref(ctx, final_blo);
       }
 
       if (scanned_blocks_this_step >= block_budget)
@@ -1652,18 +1652,18 @@ static void *kafs_pending_worker_main(void *arg)
             old_blo != final_blo)
         {
           uint64_t t_dec0 = kafs_now_ns();
-          (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
+          (void)kafs_inode_release_hrl_ref(ctx, old_blo);
           __atomic_add_fetch(&ctx->c_stat_pending_old_block_freed, 1u, __ATOMIC_RELAXED);
           uint64_t t_dec1 = kafs_now_ns();
           __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
         }
 
         if (!installed && final_blo != KAFS_BLO_NONE && final_blo != (kafs_blkcnt_t)ent.temp_blo)
-          (void)kafs_hrl_dec_ref_by_blo(ctx, final_blo);
+          (void)kafs_inode_release_hrl_ref(ctx, final_blo);
 
         if ((kafs_blkcnt_t)ent.temp_blo != KAFS_BLO_NONE &&
             (kafs_blkcnt_t)ent.temp_blo != final_blo)
-          (void)kafs_hrl_dec_ref_by_blo(ctx, (kafs_blkcnt_t)ent.temp_blo);
+          (void)kafs_inode_release_hrl_ref(ctx, (kafs_blkcnt_t)ent.temp_blo);
 
         pthread_mutex_lock(&ctx->c_pending_worker_lock);
         kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
@@ -2935,7 +2935,7 @@ static int kafs_ino_iblk_write_legacy(struct kafs_context *ctx, kafs_sinode_t *i
         old_blo != new_blo)
     {
       uint64_t t_dec0 = kafs_now_ns();
-      (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
+      (void)kafs_inode_release_hrl_ref(ctx, old_blo);
       uint64_t t_dec1 = kafs_now_ns();
       __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
     }
@@ -3008,7 +3008,7 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
     }
     if (qrc < 0)
     {
-      (void)kafs_hrl_dec_ref_by_blo(ctx, temp_blo);
+      (void)kafs_inode_release_hrl_ref(ctx, temp_blo);
       if (qrc != -ENOSPC)
         return qrc;
 
@@ -3066,7 +3066,7 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
       {
         kafs_inode_unlock(ctx, ino_idx);
         uint64_t t_dec0 = kafs_now_ns();
-        (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
+        (void)kafs_inode_release_hrl_ref(ctx, old_blo);
         uint64_t t_dec1 = kafs_now_ns();
         __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
         kafs_inode_lock(ctx, ino_idx);
@@ -3090,7 +3090,7 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
     {
       kafs_inode_unlock(ctx, ino_idx);
       uint64_t t_dec0 = kafs_now_ns();
-      (void)kafs_hrl_dec_ref_by_blo(ctx, old_blo);
+      (void)kafs_inode_release_hrl_ref(ctx, old_blo);
       uint64_t t_dec1 = kafs_now_ns();
       __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
       kafs_inode_lock(ctx, ino_idx);
@@ -3130,13 +3130,13 @@ kafs_ino_iblk_release(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_iblk
     // dec_ref は inode ロック外で実施
     uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
     kafs_inode_unlock(ctx, ino_idx);
-    (void)kafs_hrl_dec_ref_by_blo(ctx, old);
+    (void)kafs_inode_release_hrl_ref(ctx, old);
     if (f1 != KAFS_BLO_NONE)
-      (void)kafs_hrl_dec_ref_by_blo(ctx, f1);
+      (void)kafs_inode_release_hrl_ref(ctx, f1);
     if (f2 != KAFS_BLO_NONE)
-      (void)kafs_hrl_dec_ref_by_blo(ctx, f2);
+      (void)kafs_inode_release_hrl_ref(ctx, f2);
     if (f3 != KAFS_BLO_NONE)
-      (void)kafs_hrl_dec_ref_by_blo(ctx, f3);
+      (void)kafs_inode_release_hrl_ref(ctx, f3);
     kafs_inode_lock(ctx, ino_idx);
   }
   return KAFS_SUCCESS;
@@ -3442,7 +3442,7 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
     {
       kafs_inode_unlock(ctx, ino_idx);
       for (size_t i = 0; i < deferred_free_cnt; ++i)
-        (void)kafs_hrl_dec_ref_by_blo(ctx, deferred_free[i]);
+        (void)kafs_inode_release_hrl_ref(ctx, deferred_free[i]);
       kafs_inode_lock(ctx, ino_idx);
     }
     free(deferred_free);
@@ -3510,7 +3510,7 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
   {
     kafs_inode_unlock(ctx, ino_idx);
     for (size_t i = 0; i < deferred_free_cnt; ++i)
-      (void)kafs_hrl_dec_ref_by_blo(ctx, deferred_free[i]);
+      (void)kafs_inode_release_hrl_ref(ctx, deferred_free[i]);
     kafs_inode_lock(ctx, ino_idx);
   }
   free(deferred_free);
@@ -5558,7 +5558,7 @@ static int kafs_reflink_clone(kafs_context_t *ctx, kafs_sinode_t *src, kafs_sino
       (void)kafs_truncate(ctx, dst, 0);
       kafs_inode_unlock(ctx, ino_dst);
       free(blos);
-      (void)kafs_hrl_dec_ref_by_blo(ctx, b);
+      (void)kafs_inode_release_hrl_ref(ctx, b);
       return s;
     }
   }
@@ -5612,7 +5612,7 @@ static int kafs_copy_share_one_iblk_locked(kafs_context_t *ctx, kafs_sinode_t *s
   if (rc < 0)
   {
     if (src_blo != KAFS_BLO_NONE)
-      (void)kafs_hrl_dec_ref_by_blo(ctx, src_blo);
+      (void)kafs_inode_release_hrl_ref(ctx, src_blo);
     return rc;
   }
 
@@ -5640,7 +5640,7 @@ static int kafs_copy_share_one_iblk_locked(kafs_context_t *ctx, kafs_sinode_t *s
     // Keep existing lock ordering: dec_ref runs outside inode lock.
     kafs_inode_unlock(ctx, ino_dst);
     for (size_t i = 0; i < release_cnt; ++i)
-      (void)kafs_hrl_dec_ref_by_blo(ctx, release_list[i]);
+      (void)kafs_inode_release_hrl_ref(ctx, release_list[i]);
     kafs_inode_lock(ctx, ino_dst);
   }
   __atomic_add_fetch(&ctx->c_stat_copy_share_done_blocks, 1u, __ATOMIC_RELAXED);

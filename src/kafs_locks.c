@@ -1,4 +1,6 @@
 #include "kafs_locks.h"
+#include "kafs_block.h"
+#include "kafs_hash.h"
 #include <errno.h>
 #include <inttypes.h>
 #include <stdlib.h>
@@ -50,10 +52,15 @@ static __thread int g_lock_rank_stack[64];
 // FUSE worker cancellation during a locked critical section can leave stale owners.
 static __thread int g_lock_cancel_depth = 0;
 static __thread int g_lock_cancel_oldstate = PTHREAD_CANCEL_ENABLE;
+static __thread uint32_t g_inode_lock_depth = 0;
+static __thread kafs_blkcnt_t *g_deferred_hrl_refs = NULL;
+static __thread size_t g_deferred_hrl_ref_count = 0;
+static __thread size_t g_deferred_hrl_ref_cap = 0;
 
 static long kafs_lock_tid(void);
 static void kafs_lock_dump_backtrace(void);
 static void kafs_lock_dump_rank_stack(void);
+static void kafs_inode_flush_deferred_hrl_refs(struct kafs_context *ctx);
 
 static KAFS_NOINLINE void kafs_lock_rank_enter(kafs_lock_rank_t rank, const char *name)
 {
@@ -188,6 +195,58 @@ static void kafs_lock_panic(const char *op, const char *name, int rc)
   kafs_lock_dump_rank_stack();
   kafs_lock_dump_backtrace();
   abort();
+}
+
+static int kafs_inode_queue_deferred_hrl_ref(struct kafs_context *ctx, kafs_blkcnt_t blo)
+{
+  if (blo == KAFS_BLO_NONE)
+    return 0;
+
+  if (g_deferred_hrl_ref_count == g_deferred_hrl_ref_cap)
+  {
+    size_t new_cap = g_deferred_hrl_ref_cap ? (g_deferred_hrl_ref_cap << 1) : 8u;
+    void *nw = realloc(g_deferred_hrl_refs, new_cap * sizeof(*g_deferred_hrl_refs));
+    if (!nw)
+    {
+      kafs_log(KAFS_LOG_ERR,
+               "deferred-hrl-release-alloc-failed: tid=%ld blo=%" PRIuFAST32 " queued=%zu\n",
+               kafs_lock_tid(), blo, g_deferred_hrl_ref_count);
+      return -ENOMEM;
+    }
+    g_deferred_hrl_refs = (kafs_blkcnt_t *)nw;
+    g_deferred_hrl_ref_cap = new_cap;
+  }
+
+  g_deferred_hrl_refs[g_deferred_hrl_ref_count++] = blo;
+  return 0;
+}
+
+static void kafs_inode_flush_deferred_hrl_refs(struct kafs_context *ctx)
+{
+  if (!ctx || g_deferred_hrl_ref_count == 0)
+    return;
+
+  for (size_t i = 0; i < g_deferred_hrl_ref_count; ++i)
+  {
+    int rc = kafs_hrl_dec_ref_by_blo(ctx, g_deferred_hrl_refs[i]);
+    if (rc < 0)
+    {
+      kafs_log(KAFS_LOG_WARNING, "deferred-hrl-release-failed: tid=%ld blo=%" PRIuFAST32 " rc=%d\n",
+               kafs_lock_tid(), g_deferred_hrl_refs[i], rc);
+    }
+  }
+  g_deferred_hrl_ref_count = 0;
+}
+
+int kafs_inode_release_hrl_ref(struct kafs_context *ctx, kafs_blkcnt_t blo)
+{
+  if (!ctx || blo == KAFS_BLO_NONE)
+    return 0;
+
+  if (g_inode_lock_depth == 0)
+    return kafs_hrl_dec_ref_by_blo(ctx, blo);
+
+  return kafs_inode_queue_deferred_hrl_ref(ctx, blo);
 }
 
 static void kafs_mutex_mark_consistent_or_panic(pthread_mutex_t *m, const char *name)
@@ -540,6 +599,7 @@ void kafs_inode_lock(struct kafs_context *ctx, uint32_t ino)
   kafs_mutex_lock_stat(&st->inode_mutexes[ino % st->inode_cnt], "inode", KAFS_LOCK_RANK_INODE,
                        &ctx->c_stat_lock_inode_acquire, &ctx->c_stat_lock_inode_contended,
                        &ctx->c_stat_lock_inode_wait_ns);
+  g_inode_lock_depth++;
 }
 
 void kafs_inode_unlock(struct kafs_context *ctx, uint32_t ino)
@@ -548,6 +608,14 @@ void kafs_inode_unlock(struct kafs_context *ctx, uint32_t ino)
     return;
   kafs_lock_state_t *st = (kafs_lock_state_t *)ctx->c_lock_inode;
   kafs_mutex_unlock_checked(&st->inode_mutexes[ino % st->inode_cnt], "inode", KAFS_LOCK_RANK_INODE);
+  if (g_inode_lock_depth == 0)
+  {
+    kafs_log(KAFS_LOG_ERR, "inode-lock-depth-underflow: tid=%ld ino=%u\n", kafs_lock_tid(), ino);
+    abort();
+  }
+  g_inode_lock_depth--;
+  if (g_inode_lock_depth == 0)
+    kafs_inode_flush_deferred_hrl_refs(ctx);
 }
 
 void kafs_inode_alloc_lock(struct kafs_context *ctx)
@@ -617,5 +685,12 @@ void kafs_inode_unlock(struct kafs_context *ctx, uint32_t ino)
 }
 void kafs_inode_alloc_lock(struct kafs_context *ctx) { (void)ctx; }
 void kafs_inode_alloc_unlock(struct kafs_context *ctx) { (void)ctx; }
+
+int kafs_inode_release_hrl_ref(struct kafs_context *ctx, kafs_blkcnt_t blo)
+{
+  if (!ctx || blo == KAFS_BLO_NONE)
+    return 0;
+  return kafs_hrl_dec_ref_by_blo(ctx, blo);
+}
 
 #endif

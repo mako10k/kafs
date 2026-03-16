@@ -27,3 +27,8 @@ void kafs_inode_lock(struct kafs_context *ctx, uint32_t ino);
 void kafs_inode_unlock(struct kafs_context *ctx, uint32_t ino);
 void kafs_inode_alloc_lock(struct kafs_context *ctx);
 void kafs_inode_alloc_unlock(struct kafs_context *ctx);
+
+// Release an HRL-backed block reference safely from inode paths.
+// If the current thread still holds any inode locks, the actual dec-ref is
+// deferred until the outermost inode unlock to preserve global lock order.
+int kafs_inode_release_hrl_ref(struct kafs_context *ctx, kafs_blkcnt_t blo);
