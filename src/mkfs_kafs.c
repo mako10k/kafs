@@ -5,6 +5,7 @@
 #include "kafs_inode.h"
 #include "kafs_hash.h"
 #include "kafs_journal.h"
+#include "kafs_cli_opts.h"
 #include "kafs_tool_util.h"
 
 #include <errno.h>
@@ -240,6 +241,9 @@ int main(int argc, char **argv)
   int size_arg_provided = 0;
   int trim_data_area = 0;
   int assume_yes = 0;
+
+  if (kafs_cli_exit_if_help(argc, argv, usage, argv[0]) == 0)
+    return 0;
 
   for (int i = 1; i < argc; ++i)
   {

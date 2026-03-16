@@ -131,9 +131,9 @@ _mkfs_kafs() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local opts="-s --size-bytes -b --blksize-log -i --inodes -J --journal-size-bytes --trim-data-area"
+  local opts="-h --help -s --size-bytes -b --blksize-log -i --inodes -J --journal-size-bytes --hrl-entry-ratio --yes --trim-data-area"
 
-  if [[ "${prev}" == "-s" || "${prev}" == "--size-bytes" || "${prev}" == "-b" || "${prev}" == "--blksize-log" || "${prev}" == "-i" || "${prev}" == "--inodes" || "${prev}" == "-J" || "${prev}" == "--journal-size-bytes" ]]; then
+  if [[ "${prev}" == "-s" || "${prev}" == "--size-bytes" || "${prev}" == "-b" || "${prev}" == "--blksize-log" || "${prev}" == "-i" || "${prev}" == "--inodes" || "${prev}" == "-J" || "${prev}" == "--journal-size-bytes" || "${prev}" == "--hrl-entry-ratio" ]]; then
     return
   fi
 
@@ -144,26 +144,37 @@ _fsck_kafs() {
   local cur
   cur="${COMP_WORDS[COMP_CWORD]}"
 
-  local opts="--full-check --full-repair --balanced-check --balanced-repair --check --repair --fast-check --fast-repair --check-journal --repair-journal-reset --check-dirent-ino-orphans --repair-dirent-ino-orphans --check-hrl-blo-refcounts --repair-hrl-blo-refcounts --replay-journal --punch-hole-unreferenced-data-blocks --trim-free-data-blocks"
+  local opts="-h --help --full-check --full-repair --balanced-check --balanced-repair --check --repair --fast-check --fast-repair --check-journal --repair-journal-reset --check-dirent-ino-orphans --repair-dirent-ino-orphans --check-hrl-blo-refcounts --repair-hrl-blo-refcounts --check-inode-block-counts --repair-inode-block-counts --replay-journal --punch-hole-unreferenced-data-blocks --trim-free-data-blocks"
   COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
 }
 
 _kafsdump() {
   local cur
   cur="${COMP_WORDS[COMP_CWORD]}"
-  COMPREPLY=( $(compgen -W "--json" -- "${cur}") )
+  COMPREPLY=( $(compgen -W "-h --help --json" -- "${cur}") )
 }
 
 _kafsimage() {
   local cur
   cur="${COMP_WORDS[COMP_CWORD]}"
-  COMPREPLY=( $(compgen -W "--metadata-only --raw --sparse --verify" -- "${cur}") )
+  COMPREPLY=( $(compgen -W "-h --help --metadata-only --raw --sparse --verify" -- "${cur}") )
 }
 
 _kafsresize() {
-  local cur
+  local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
-  COMPREPLY=( $(compgen -W "--grow --size-bytes" -- "${cur}") )
+  prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+  if [[ "${prev}" == "--dst-image" || "${prev}" == "--src-mount" || "${prev}" == "--dst-mount" ]]; then
+    _kafs__path_complete "$prev" "$cur"
+    return
+  fi
+
+  if [[ "${prev}" == "--size-bytes" || "${prev}" == "--journal-size-bytes" || "${prev}" == "--blksize-log" || "${prev}" == "--hrl-entry-ratio" || "${prev}" == "--inodes" ]]; then
+    return
+  fi
+
+  COMPREPLY=( $(compgen -W "-h --help --grow --migrate-create --size-bytes --dst-image --inodes --journal-size-bytes --blksize-log --hrl-entry-ratio --src-mount --dst-mount --yes --force" -- "${cur}") )
 }
 
 _kafsctl() {
@@ -175,43 +186,60 @@ _kafsctl() {
   envsub="${COMP_WORDS[3]}"
 
   if [[ ${COMP_CWORD} -eq 1 ]]; then
+    COMPREPLY=( $(compgen -W "-h --help help migrate fsstat stats hotplug stat cat write cp mv rm mkdir rmdir ln symlink readlink chmod touch" -- "${cur}") )
+    return
+  fi
+
+  if [[ "${cmd}" == "help" && ${COMP_CWORD} -eq 2 ]]; then
     COMPREPLY=( $(compgen -W "migrate fsstat stats hotplug stat cat write cp mv rm mkdir rmdir ln symlink readlink chmod touch" -- "${cur}") )
     return
   fi
 
   case "${cmd}" in
     migrate)
-      COMPREPLY=( $(compgen -W "--yes" -- "${cur}") )
+      COMPREPLY=( $(compgen -W "-h --help --yes" -- "${cur}") )
       return
       ;;
     fsstat|stats)
-      COMPREPLY=( $(compgen -W "--json --bytes --mib --gib" -- "${cur}") )
+      COMPREPLY=( $(compgen -W "-h --help -v --verbose --json --bytes --mib --gib" -- "${cur}") )
       return
       ;;
     hotplug)
       if [[ ${COMP_CWORD} -eq 2 ]]; then
-        COMPREPLY=( $(compgen -W "status restart-back compat set-timeout set-dedup-priority set-runtime env" -- "${cur}") )
+        COMPREPLY=( $(compgen -W "--help status restart-back compat set-timeout set-dedup-priority set-runtime env" -- "${cur}") )
         return
       fi
       case "${sub}" in
         status|compat)
-          COMPREPLY=( $(compgen -W "--json" -- "${cur}") )
+          COMPREPLY=( $(compgen -W "--help --json" -- "${cur}") )
+          return
+          ;;
+        restart-back)
+          COMPREPLY=( $(compgen -W "--help" -- "${cur}") )
+          return
+          ;;
+        set-timeout)
+          COMPREPLY=( $(compgen -W "--help" -- "${cur}") )
           return
           ;;
         set-runtime)
-          COMPREPLY=( $(compgen -W "--fsync-policy= --pending-ttl-soft-ms= --pending-ttl-hard-ms=" -- "${cur}") )
+          COMPREPLY=( $(compgen -W "--help --fsync-policy= --pending-ttl-soft-ms= --pending-ttl-hard-ms=" -- "${cur}") )
           return
           ;;
         set-dedup-priority)
           if [[ "${prev}" != "idle" && "${prev}" != "normal" ]]; then
-            COMPREPLY=( $(compgen -W "normal idle" -- "${cur}") )
+            COMPREPLY=( $(compgen -W "--help normal idle" -- "${cur}") )
             return
           fi
           return
           ;;
         env)
           if [[ ${COMP_CWORD} -eq 3 ]]; then
-            COMPREPLY=( $(compgen -W "list set unset" -- "${cur}") )
+            COMPREPLY=( $(compgen -W "--help list set unset" -- "${cur}") )
+            return
+          fi
+          if [[ ${COMP_CWORD} -eq 4 && ( "${envsub}" == "list" || "${envsub}" == "set" || "${envsub}" == "unset" ) ]]; then
+            COMPREPLY=( $(compgen -W "--help" -- "${cur}") )
             return
           fi
           if [[ ${COMP_CWORD} -eq 5 && "${envsub}" == "set" ]]; then
@@ -224,7 +252,7 @@ _kafsctl() {
       return
       ;;
     cp)
-      COMPREPLY=( $(compgen -W "--reflink" -- "${cur}") )
+      COMPREPLY=( $(compgen -W "--help --reflink" -- "${cur}") )
       return
       ;;
   esac
@@ -259,6 +287,10 @@ _kafs_back() {
 _kafs_info() {
   local cur
   cur="${COMP_WORDS[COMP_CWORD]}"
+  if [[ "${cur}" == -* ]]; then
+    COMPREPLY=( $(compgen -W "-h --help" -- "${cur}") )
+    return
+  fi
   _kafs__path_complete "" "$cur"
 }
 

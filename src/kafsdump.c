@@ -2,6 +2,7 @@
 #include "kafs_hash.h"
 #include "kafs_inode.h"
 #include "kafs_journal.h"
+#include "kafs_cli_opts.h"
 #include "kafs_superblock.h"
 #include "kafs_tool_util.h"
 
@@ -319,6 +320,9 @@ int main(int argc, char **argv)
 {
   int json = 0;
   const char *image = NULL;
+
+  if (kafs_cli_exit_if_help(argc, argv, usage, argv[0]) == 0)
+    return 0;
 
   for (int i = 1; i < argc; ++i)
   {

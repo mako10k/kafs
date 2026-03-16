@@ -6,6 +6,7 @@
 #include "kafs_dirent.h"
 #include "kafs_hash.h"
 #include "kafs_journal.h"
+#include "kafs_cli_opts.h"
 #include "kafs_ioctl.h"
 #include "kafs_mmap_io.h"
 #include "kafs_rpc.h"
@@ -8073,7 +8074,7 @@ int main(int argc, char **argv)
   for (int i = 0; i < argc; ++i)
   {
     const char *a = argv[i];
-    if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0)
+    if (kafs_cli_is_help_arg(a))
     {
       show_help = KAFS_TRUE;
       continue;
@@ -8233,7 +8234,12 @@ int main(int argc, char **argv)
       argv_clean[i] = argv_clean[i + 1];
     argc_clean--;
   }
-  if (show_help || image_path == NULL || argc_clean < 2)
+  if (show_help)
+  {
+    usage(argv[0]);
+    return 0;
+  }
+  if (image_path == NULL || argc_clean < 2)
   {
     usage(argv[0]);
     return 2;

@@ -1,4 +1,5 @@
 #include "kafs.h"
+#include "kafs_cli_opts.h"
 #include "kafs_superblock.h"
 #include "kafs_tool_util.h"
 
@@ -494,6 +495,9 @@ int main(int argc, char **argv)
   const char *dst_image = NULL;
   const char *src_mount = NULL;
   const char *dst_mount = NULL;
+
+  if (kafs_cli_exit_if_help(argc, argv, usage, argv[0]) == 0)
+    return 0;
 
   for (int i = 1; i < argc; ++i)
   {
