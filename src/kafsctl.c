@@ -2864,6 +2864,88 @@ static int remove_existing_link_destination(const char *mnt, const char *path)
   return 0;
 }
 
+static int check_same_link_file_on_mount(const char *mnt, const char *src, const char *dst)
+{
+  char mabs[KAFS_IOCTL_PATH_MAX];
+  const char *mnt_abs = mnt;
+  if (realpath(mnt, mabs) != NULL)
+    mnt_abs = mabs;
+
+  int dfd = open(mnt, O_RDONLY | O_DIRECTORY);
+  if (dfd < 0)
+  {
+    perror("open");
+    return -1;
+  }
+
+  char src_rel[KAFS_IOCTL_PATH_MAX];
+  char dst_rel[KAFS_IOCTL_PATH_MAX];
+  const char *s = to_mount_rel_path(mnt_abs, src, src_rel);
+  const char *d = to_mount_rel_path(mnt_abs, dst, dst_rel);
+  if (!s || !d)
+  {
+    fprintf(stderr, "invalid path\n");
+    close(dfd);
+    return -1;
+  }
+
+  struct stat st_src;
+  struct stat st_dst;
+  if (fstatat(dfd, s, &st_src, 0) != 0)
+  {
+    perror("fstatat(src)");
+    close(dfd);
+    return -1;
+  }
+  if (fstatat(dfd, d, &st_dst, 0) != 0)
+  {
+    int err = errno;
+    close(dfd);
+    if (err == ENOENT)
+      return 0;
+    errno = err;
+    perror("fstatat(dst)");
+    return -1;
+  }
+
+  close(dfd);
+  return st_src.st_ino == st_dst.st_ino;
+}
+
+static int reject_same_link_file_on_mount(const char *mnt, const char *src, const char *dst)
+{
+  int same_file = check_same_link_file_on_mount(mnt, src, dst);
+  if (same_file <= 0)
+    return same_file;
+
+  fprintf(stderr, "ln: '%s' and '%s' are the same file\n", src, dst);
+  return 1;
+}
+
+static int reject_same_link_file_auto(const char *src, const char *dst)
+{
+  kafs_path_ref_t src_ref;
+  kafs_path_ref_t dst_ref;
+  init_path_ref(&src_ref);
+  init_path_ref(&dst_ref);
+
+  int src_rc = try_resolve_auto_path_ref(src, &src_ref);
+  int dst_rc = try_resolve_auto_path_ref(dst, &dst_ref);
+  int same_mount =
+      (src_rc == 0 && dst_rc == 0 && strcmp(src_ref.mount, dst_ref.mount) == 0) ? 1 : 0;
+  if (!same_mount)
+  {
+    close_path_ref(&src_ref);
+    close_path_ref(&dst_ref);
+    return 0;
+  }
+
+  int rc = reject_same_link_file_on_mount(src_ref.mount, src_ref.abs_path, dst_ref.abs_path);
+  close_path_ref(&src_ref);
+  close_path_ref(&dst_ref);
+  return rc;
+}
+
 static int is_ln_symbolic_option(const char *arg)
 {
   return arg && (strcmp(arg, "-s") == 0 || strcmp(arg, "--symbolic") == 0);
@@ -2874,6 +2956,10 @@ static int cmd_ln_with_opts(const char *mnt, const char *src, const char *dst,
 {
   if (opts && opts->force)
   {
+    int same_file_rc = reject_same_link_file_on_mount(mnt, src, dst);
+    if (same_file_rc != 0)
+      return same_file_rc < 0 ? 1 : same_file_rc;
+
     int rc = remove_existing_link_destination(mnt, dst);
     if (rc != 0)
       return rc;
@@ -2889,6 +2975,10 @@ static int cmd_ln_auto_with_opts(const char *src, const char *dst, const kafs_ln
 {
   if (opts && opts->force)
   {
+    int same_file_rc = reject_same_link_file_auto(src, dst);
+    if (same_file_rc != 0)
+      return same_file_rc < 0 ? 1 : same_file_rc;
+
     int rc = remove_existing_link_destination(NULL, dst);
     if (rc != 0)
       return rc;

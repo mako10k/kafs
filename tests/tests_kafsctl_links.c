@@ -294,6 +294,30 @@ int main(void)
     return 1;
   }
 
+  char *ln_force_same_args[] = {(char *)kafsctl, "ln", "-f", src, src, NULL};
+  rc = run_kafsctl(ln_force_same_args);
+  if (rc == 0)
+  {
+    tlogf("same-file ln -f unexpectedly succeeded");
+    stop_kafs(mnt, srv);
+    return 1;
+  }
+
+  char same_link_buf[6] = {0};
+  int nread = read_whole_file(src, same_link_buf, 5);
+  if (nread != 5)
+  {
+    tlogf("read src after failed ln -f failed: %s", nread < 0 ? strerror(-nread) : "short read");
+    stop_kafs(mnt, srv);
+    return 1;
+  }
+  if (memcmp(same_link_buf, "hello", 5) != 0)
+  {
+    tlogf("same-file ln -f modified source unexpectedly");
+    stop_kafs(mnt, srv);
+    return 1;
+  }
+
   char cpdst[PATH_MAX];
   snprintf(cpdst, sizeof(cpdst), "%s/copy", mnt);
   char *cp_args[] = {(char *)kafsctl, "cp", src, cpdst, NULL};
@@ -320,7 +344,7 @@ int main(void)
   }
 
   char copybuf[6] = {0};
-  int nread = read_whole_file(cpdst, copybuf, 5);
+  nread = read_whole_file(cpdst, copybuf, 5);
   if (nread != 5)
   {
     tlogf("read copied file failed: %s", nread < 0 ? strerror(-nread) : "short read");

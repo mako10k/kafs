@@ -7811,39 +7811,26 @@ static int kafs_op_link(const char *from, const char *to)
 
   uint32_t ino_src = (uint32_t)(inoent_src - ctx->c_inotbl);
   uint32_t ino_dir = (uint32_t)(inoent_dir - ctx->c_inotbl);
-  if (ino_dir < ino_src)
-  {
-    kafs_inode_lock(ctx, ino_dir);
-    kafs_inode_lock(ctx, ino_src);
-  }
-  else
-  {
-    kafs_inode_lock(ctx, ino_src);
-    if (ino_dir != ino_src)
-      kafs_inode_lock(ctx, ino_dir);
-  }
+  kafs_inode_lock(ctx, ino_src);
+  kafs_ino_linkcnt_incr(inoent_src);
+  kafs_inode_unlock(ctx, ino_src);
 
-  int rc = kafs_dirent_add(ctx, inoent_dir, (kafs_inocnt_t)ino_src, to_base);
-  if (rc == 0)
-    kafs_ino_ctime_set(inoent_src, kafs_now());
-
-  if (ino_dir < ino_src)
-  {
-    kafs_inode_unlock(ctx, ino_src);
-    kafs_inode_unlock(ctx, ino_dir);
-  }
-  else
-  {
-    if (ino_dir != ino_src)
-      kafs_inode_unlock(ctx, ino_dir);
-    kafs_inode_unlock(ctx, ino_src);
-  }
+  kafs_inode_lock(ctx, ino_dir);
+  int rc = kafs_dirent_add_nolink(ctx, inoent_dir, (kafs_inocnt_t)ino_src, to_base);
+  kafs_inode_unlock(ctx, ino_dir);
 
   if (rc < 0)
   {
+    kafs_inode_lock(ctx, ino_src);
+    (void)kafs_ino_linkcnt_decr(inoent_src);
+    kafs_inode_unlock(ctx, ino_src);
     kafs_journal_abort(ctx, jseq, "dirent_add=%d", rc);
     return rc;
   }
+
+  kafs_inode_lock(ctx, ino_src);
+  kafs_ino_ctime_set(inoent_src, kafs_now());
+  kafs_inode_unlock(ctx, ino_src);
 
   kafs_journal_commit(ctx, jseq);
   kafs_invalidate_path_best_effort(fctx, from);
