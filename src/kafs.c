@@ -7753,6 +7753,93 @@ static int kafs_op_symlink(const char *target, const char *linkpath)
   return 0;
 }
 
+static int kafs_op_link(const char *from, const char *to)
+{
+  assert(from != NULL);
+  assert(to != NULL);
+  if (kafs_is_ctl_path(from) || kafs_is_ctl_path(to))
+    return -EACCES;
+  if (from[0] != '/' || to[0] != '/' || from[1] == '\0' || to[1] == '\0')
+    return -EINVAL;
+
+  struct fuse_context *fctx = fuse_get_context();
+  struct kafs_context *ctx = fctx->private_data;
+
+  kafs_sinode_t *inoent_src;
+  KAFS_CALL(kafs_access, fctx, ctx, from, NULL, F_OK, &inoent_src);
+  kafs_mode_t src_mode = kafs_ino_mode_get(inoent_src);
+  if (S_ISDIR(src_mode))
+    return -EPERM;
+  if (!S_ISREG(src_mode) && !S_ISLNK(src_mode))
+    return -EOPNOTSUPP;
+
+  int ex = kafs_access(fctx, ctx, to, NULL, F_OK, NULL);
+  if (ex == 0)
+    return -EEXIST;
+  if (ex != -ENOENT)
+    return ex;
+
+  char to_copy[strlen(to) + 1];
+  strcpy(to_copy, to);
+  const char *to_dir = to_copy;
+  char *to_base = strrchr(to_copy, '/');
+  if (to_dir == to_base)
+    to_dir = "/";
+  *to_base = '\0';
+  to_base++;
+  if (to_base[0] == '\0' || strcmp(to_base, ".") == 0 || strcmp(to_base, "..") == 0)
+    return -EINVAL;
+
+  uint64_t jseq = kafs_journal_begin(ctx, "LINK", "from=%s to=%s", from, to);
+
+  kafs_sinode_t *inoent_dir;
+  int arc = kafs_access(fctx, ctx, to_dir, NULL, W_OK, &inoent_dir);
+  if (arc < 0)
+  {
+    kafs_journal_abort(ctx, jseq, "parent access=%d", arc);
+    return arc;
+  }
+
+  uint32_t ino_src = (uint32_t)(inoent_src - ctx->c_inotbl);
+  uint32_t ino_dir = (uint32_t)(inoent_dir - ctx->c_inotbl);
+  if (ino_dir < ino_src)
+  {
+    kafs_inode_lock(ctx, ino_dir);
+    kafs_inode_lock(ctx, ino_src);
+  }
+  else
+  {
+    kafs_inode_lock(ctx, ino_src);
+    if (ino_dir != ino_src)
+      kafs_inode_lock(ctx, ino_dir);
+  }
+
+  int rc = kafs_dirent_add(ctx, inoent_dir, (kafs_inocnt_t)ino_src, to_base);
+  if (rc == 0)
+    kafs_ino_ctime_set(inoent_src, kafs_now());
+
+  if (ino_dir < ino_src)
+  {
+    kafs_inode_unlock(ctx, ino_src);
+    kafs_inode_unlock(ctx, ino_dir);
+  }
+  else
+  {
+    if (ino_dir != ino_src)
+      kafs_inode_unlock(ctx, ino_dir);
+    kafs_inode_unlock(ctx, ino_src);
+  }
+
+  if (rc < 0)
+  {
+    kafs_journal_abort(ctx, jseq, "dirent_add=%d", rc);
+    return rc;
+  }
+
+  kafs_journal_commit(ctx, jseq);
+  return 0;
+}
+
 static int kafs_op_flush(const char *path, struct fuse_file_info *fi)
 {
   struct fuse_context *fctx = fuse_get_context();
@@ -7988,6 +8075,7 @@ static struct fuse_operations kafs_operations = {
     .access = kafs_op_access,
     .chmod = kafs_op_chmod,
     .chown = kafs_op_chown,
+    .link = kafs_op_link,
     .symlink = kafs_op_symlink,
     .ioctl = kafs_op_ioctl,
     .copy_file_range = kafs_op_copy_file_range,

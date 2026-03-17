@@ -146,8 +146,10 @@ int main(void)
 
   const char *kafsctl = kafs_test_kafsctl_bin();
   char src[PATH_MAX];
+  char hdst[PATH_MAX];
   char sdst[PATH_MAX];
   snprintf(src, sizeof(src), "%s/src", mnt);
+  snprintf(hdst, sizeof(hdst), "%s/hard", mnt);
   snprintf(sdst, sizeof(sdst), "%s/sym", mnt);
 
   int fd = open(src, O_CREAT | O_TRUNC | O_WRONLY, 0644);
@@ -166,8 +168,32 @@ int main(void)
   }
   close(fd);
 
+  char *ln_args[] = {(char *)kafsctl, "ln", src, hdst, NULL};
+  int rc = run_kafsctl(ln_args);
+  if (rc != 0)
+  {
+    tlogf("kafsctl ln failed: rc=%d", rc);
+    stop_kafs(mnt, srv);
+    return 1;
+  }
+
+  struct stat st_src;
+  struct stat st_hdst;
+  if (stat(src, &st_src) != 0 || stat(hdst, &st_hdst) != 0)
+  {
+    tlogf("stat after ln failed: %s", strerror(errno));
+    stop_kafs(mnt, srv);
+    return 1;
+  }
+  if (st_src.st_ino != st_hdst.st_ino || st_src.st_nlink < 2)
+  {
+    tlogf("hardlink verification failed");
+    stop_kafs(mnt, srv);
+    return 1;
+  }
+
   char *symlink_args[] = {(char *)kafsctl, "symlink", "literal-target", sdst, NULL};
-  int rc = run_kafsctl(symlink_args);
+  rc = run_kafsctl(symlink_args);
   if (rc != 0)
   {
     tlogf("kafsctl symlink failed: rc=%d", rc);
