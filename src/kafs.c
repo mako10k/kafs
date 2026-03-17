@@ -7991,7 +7991,8 @@ static void usage(const char *prog)
           "    -h, --help                        Show this help and exit\n"
           "    --image <image>                   Image path\n"
           "    --image=<image>                   Image path (inline form)\n"
-          "    --migrate-v2                      One-shot v2->v3 migration, then exit\n"
+          "    --migrate-v2                      Legacy migration entrypoint (v4 in-place "
+          "migration is disabled)\n"
           "    --yes                             Skip migration confirmation prompt\n"
           "\n"
           "  [Cache/TRIM]\n"
@@ -8075,12 +8076,12 @@ static void usage(const char *prog)
           "    KAFS_HOTPLUG_BACK_BIN             Backend binary path hint\n"
           "\n"
           "Notes:\n"
-          "    v2 images are refused by default. Use `kafsctl migrate <image> [--yes]`\n"
-          "    or `--migrate-v2` for startup migration.\n"
+          "    v2/v3 images are refused by default for v4 mount.\n"
+          "    In-place migration to v4 is disabled; create a fresh image and copy data.\n"
           "\n"
           "Examples:\n"
           "  %s --image test.img mnt -f\n"
-          "  %s --image legacy.img --migrate-v2 --yes mnt -f\n"
+          "  %s --image legacy.img mnt -f\n"
           "  %s --image test.img mnt -f -o multi_thread=8\n",
           prog, prog, prog, prog, prog, prog);
 }
