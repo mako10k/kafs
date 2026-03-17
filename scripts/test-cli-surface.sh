@@ -28,6 +28,10 @@ declare -a subcommand_help_cmds=(
   "./src/kafsctl hotplug --help"
   "./src/kafsctl hotplug status --help"
   "./src/kafsctl hotplug env set --help"
+  "./src/kafsctl help stat"
+  "./src/kafsctl stat --help"
+  "./src/kafsctl help chmod"
+  "./src/kafsctl chmod --help"
   "./src/kafsctl cp --help"
 )
 

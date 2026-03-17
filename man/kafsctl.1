@@ -103,13 +103,13 @@ Set env variable passed to back process on restart.
 .B hotplug env unset mountpoint key
 Unset env variable passed to back process on restart.
 .TP
-.B stat mountpoint path
+.B stat path
 Print file metadata.
 .TP
-.B cat mountpoint path
+.B cat path
 Print file contents to stdout.
 .TP
-.B write mountpoint path
+.B write path
 Write stdin to file (truncate/replace).
 .TP
 .B cp mountpoint src dst [--reflink]
@@ -120,13 +120,13 @@ to request clone-like copy.
 .B mv mountpoint src dst
 Rename/move path inside mounted KAFS.
 .TP
-.B rm mountpoint path
+.B rm path
 Remove file.
 .TP
-.B mkdir mountpoint path
+.B mkdir path
 Create directory.
 .TP
-.B rmdir mountpoint path
+.B rmdir path
 Remove empty directory.
 .TP
 .B ln mountpoint src dst
@@ -135,14 +135,31 @@ Create hard link.
 .B symlink mountpoint target linkpath
 Create symbolic link.
 .TP
-.B readlink mountpoint path
+.B readlink path
 Read symlink target.
 .TP
-.B chmod mountpoint octal_mode path
+.B chmod octal_mode path
 Change mode bits.
 .TP
-.B touch mountpoint path
+.B touch path
 Update file timestamps or create empty file.
+.PP
+For
+.BR stat ,
+.BR cat ,
+.BR write ,
+.BR rm ,
+.BR mkdir ,
+.BR rmdir ,
+.BR readlink ,
+.BR chmod ,
+and
+.BR touch ,
+.B kafsctl
+now auto-detects the containing KAFS mount from the given path.
+The legacy forms that take an explicit
+.I mountpoint
+remain accepted for compatibility during the transition.
 .SH SEE ALSO
 .BR kafs (1),
 .BR mkfs.kafs (8),
