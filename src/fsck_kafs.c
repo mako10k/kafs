@@ -1,5 +1,6 @@
 #include "kafs_superblock.h"
 #include "kafs_inode.h"
+#include "kafs_dirent.h"
 #include "kafs_hash.h"
 #include "kafs_locks.h"
 #include "kafs_block.h"
@@ -38,6 +39,9 @@
 #define FSCK_EXIT_JOURNAL_REPLAY_FAILED 8
 #define FSCK_EXIT_PUNCH_HOLE_PARTIAL 9
 #define FSCK_EXIT_INODE_BLOCKS_INCONSISTENT 10
+#define FSCK_EXIT_DIRENT_FORMAT_INCONSISTENT 11
+
+#define FSCK_DIRECT_SIZE (sizeof(((struct kafs_sinode *)NULL)->i_blkreftbl))
 
 #define KAFS_PENDING_REF_FLAG 0x80000000u
 
@@ -80,6 +84,13 @@ struct inode_blocks_stats
   uint64_t checked;
   uint64_t mismatches;
   uint64_t repaired;
+};
+
+struct dir_v4_stats
+{
+  uint64_t dirs_checked;
+  uint64_t invalid_dirs;
+  uint64_t repaired_dirs;
 };
 
 typedef enum fsck_mode
@@ -178,6 +189,168 @@ static void *img_ptr(void *base, size_t img_size, off_t off, size_t len)
   if (off < 0 || (size_t)off + len > img_size)
     return NULL;
   return (void *)((uint8_t *)base + off);
+}
+
+static int fsck_inode_get_data_blo(kafs_context_t *ctx, const kafs_sinode_t *inoent,
+                                   kafs_iblkcnt_t iblo, kafs_blkcnt_t *out_blo)
+{
+  if (!ctx || !inoent || !out_blo)
+    return -EINVAL;
+
+  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+  uint32_t refs_pb = (uint32_t)(blksize / sizeof(kafs_sblkcnt_t));
+  kafs_blkcnt_t raw = KAFS_BLO_NONE;
+  int is_pending = 0;
+
+  if (iblo < 12)
+  {
+    raw = kafs_blkcnt_stoh(inoent->i_blkreftbl[iblo]);
+    (void)fsck_decode_data_ref(raw, out_blo, &is_pending);
+    return is_pending ? -EIO : 0;
+  }
+
+  iblo -= 12;
+  if (iblo < refs_pb)
+  {
+    kafs_blkcnt_t tbl_blo = kafs_blkcnt_stoh(inoent->i_blkreftbl[12]);
+    if (tbl_blo == KAFS_BLO_NONE)
+    {
+      *out_blo = KAFS_BLO_NONE;
+      return 0;
+    }
+    const kafs_sblkcnt_t *tbl =
+        img_ptr(ctx->c_img_base, ctx->c_img_size,
+                (off_t)tbl_blo << kafs_sb_log_blksize_get(ctx->c_superblock), blksize);
+    if (!tbl)
+      return -EIO;
+    raw = kafs_blkcnt_stoh(tbl[iblo]);
+    (void)fsck_decode_data_ref(raw, out_blo, &is_pending);
+    return is_pending ? -EIO : 0;
+  }
+
+  iblo -= refs_pb;
+  if (iblo < refs_pb * refs_pb)
+  {
+    kafs_blkcnt_t tbl1_blo = kafs_blkcnt_stoh(inoent->i_blkreftbl[13]);
+    if (tbl1_blo == KAFS_BLO_NONE)
+    {
+      *out_blo = KAFS_BLO_NONE;
+      return 0;
+    }
+    const kafs_sblkcnt_t *tbl1 =
+        img_ptr(ctx->c_img_base, ctx->c_img_size,
+                (off_t)tbl1_blo << kafs_sb_log_blksize_get(ctx->c_superblock), blksize);
+    if (!tbl1)
+      return -EIO;
+    uint32_t idx1 = iblo / refs_pb;
+    uint32_t idx2 = iblo % refs_pb;
+    kafs_blkcnt_t tbl2_blo = kafs_blkcnt_stoh(tbl1[idx1]);
+    if (tbl2_blo == KAFS_BLO_NONE)
+    {
+      *out_blo = KAFS_BLO_NONE;
+      return 0;
+    }
+    const kafs_sblkcnt_t *tbl2 =
+        img_ptr(ctx->c_img_base, ctx->c_img_size,
+                (off_t)tbl2_blo << kafs_sb_log_blksize_get(ctx->c_superblock), blksize);
+    if (!tbl2)
+      return -EIO;
+    raw = kafs_blkcnt_stoh(tbl2[idx2]);
+    (void)fsck_decode_data_ref(raw, out_blo, &is_pending);
+    return is_pending ? -EIO : 0;
+  }
+
+  iblo -= refs_pb * refs_pb;
+  kafs_blkcnt_t tbl1_blo = kafs_blkcnt_stoh(inoent->i_blkreftbl[14]);
+  if (tbl1_blo == KAFS_BLO_NONE)
+  {
+    *out_blo = KAFS_BLO_NONE;
+    return 0;
+  }
+  const kafs_sblkcnt_t *tbl1 =
+      img_ptr(ctx->c_img_base, ctx->c_img_size,
+              (off_t)tbl1_blo << kafs_sb_log_blksize_get(ctx->c_superblock), blksize);
+  if (!tbl1)
+    return -EIO;
+  uint32_t idx1 = iblo / (refs_pb * refs_pb);
+  uint32_t rem = iblo % (refs_pb * refs_pb);
+  uint32_t idx2 = rem / refs_pb;
+  uint32_t idx3 = rem % refs_pb;
+  kafs_blkcnt_t tbl2_blo = kafs_blkcnt_stoh(tbl1[idx1]);
+  if (tbl2_blo == KAFS_BLO_NONE)
+  {
+    *out_blo = KAFS_BLO_NONE;
+    return 0;
+  }
+  const kafs_sblkcnt_t *tbl2 =
+      img_ptr(ctx->c_img_base, ctx->c_img_size,
+              (off_t)tbl2_blo << kafs_sb_log_blksize_get(ctx->c_superblock), blksize);
+  if (!tbl2)
+    return -EIO;
+  kafs_blkcnt_t tbl3_blo = kafs_blkcnt_stoh(tbl2[idx2]);
+  if (tbl3_blo == KAFS_BLO_NONE)
+  {
+    *out_blo = KAFS_BLO_NONE;
+    return 0;
+  }
+  const kafs_sblkcnt_t *tbl3 =
+      img_ptr(ctx->c_img_base, ctx->c_img_size,
+              (off_t)tbl3_blo << kafs_sb_log_blksize_get(ctx->c_superblock), blksize);
+  if (!tbl3)
+    return -EIO;
+  raw = kafs_blkcnt_stoh(tbl3[idx3]);
+  (void)fsck_decode_data_ref(raw, out_blo, &is_pending);
+  return is_pending ? -EIO : 0;
+}
+
+static ssize_t fsck_inode_pread(kafs_context_t *ctx, const kafs_sinode_t *inoent, void *buf,
+                                kafs_off_t size, kafs_off_t offset)
+{
+  if (!ctx || !inoent || !buf)
+    return -EINVAL;
+  kafs_off_t filesize = kafs_ino_size_get(inoent);
+  if (offset >= filesize)
+    return 0;
+  if (offset + size > filesize)
+    size = filesize - offset;
+  if (size == 0)
+    return 0;
+  if (filesize <= FSCK_DIRECT_SIZE)
+  {
+    memcpy(buf, (const void *)inoent->i_blkreftbl + offset, (size_t)size);
+    return (ssize_t)size;
+  }
+
+  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
+  size_t done = 0;
+  while (done < (size_t)size)
+  {
+    kafs_off_t cur = offset + (kafs_off_t)done;
+    kafs_iblkcnt_t iblo = (kafs_iblkcnt_t)(cur >> log_blksize);
+    size_t inblk_off = (size_t)(cur & (blksize - 1u));
+    size_t chunk = (size_t)blksize - inblk_off;
+    if (chunk > (size_t)size - done)
+      chunk = (size_t)size - done;
+    kafs_blkcnt_t blo = KAFS_BLO_NONE;
+    int rc = fsck_inode_get_data_blo(ctx, inoent, iblo, &blo);
+    if (rc != 0)
+      return rc;
+    if (blo == KAFS_BLO_NONE)
+    {
+      memset((char *)buf + done, 0, chunk);
+    }
+    else
+    {
+      const void *blk =
+          img_ptr(ctx->c_img_base, ctx->c_img_size, (off_t)blo << log_blksize, blksize);
+      if (!blk)
+        return -EIO;
+      memcpy((char *)buf + done, (const char *)blk + inblk_off, chunk);
+    }
+    done += chunk;
+  }
+  return (ssize_t)size;
 }
 
 static int fsck_inode_is_tombstone(const kafs_sinode_t *inoent)
@@ -322,6 +495,152 @@ static int orphan_reclaim(kafs_context_t *ctx, int do_fix, struct orphan_stats *
     }
   }
   return found;
+}
+
+static int fsck_check_or_repair_dir_v4(kafs_context_t *ctx, int do_fix, struct dir_v4_stats *stats)
+{
+  if (!ctx || !ctx->c_superblock || !ctx->c_inotbl)
+    return -EINVAL;
+
+  kafs_inocnt_t inocnt = kafs_sb_inocnt_get(ctx->c_superblock);
+  for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
+  {
+    kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+    if (!kafs_ino_get_usage(inoent))
+      continue;
+    if (!S_ISDIR(kafs_ino_mode_get(inoent)))
+      continue;
+
+    stats->dirs_checked++;
+    kafs_off_t size = kafs_ino_size_get(inoent);
+    if (size < (kafs_off_t)sizeof(kafs_sdir_v4_hdr_t))
+    {
+      fprintf(stderr, "dir-v4 invalid: ino=%" PRIuFAST32 " size=%" PRIiFAST64 " too small\n", ino,
+              (int64_t)size);
+      stats->invalid_dirs++;
+      continue;
+    }
+
+    kafs_sdir_v4_hdr_t hdr;
+    ssize_t hdr_read = fsck_inode_pread(ctx, inoent, &hdr, (kafs_off_t)sizeof(hdr), 0);
+    if (hdr_read != (ssize_t)sizeof(hdr))
+      return -EIO;
+    if (kafs_u32_stoh(hdr.dh_magic) != KAFS_DIRENT_V4_MAGIC ||
+        kafs_dir_v4_hdr_format_get(&hdr) != KAFS_DIRENT_V4_FORMAT_VERSION ||
+        kafs_dir_v4_hdr_flags_get(&hdr) != 0u)
+    {
+      fprintf(stderr, "dir-v4 invalid: ino=%" PRIuFAST32 " bad header magic=%08x fmt=%u flags=%u\n",
+              ino, kafs_u32_stoh(hdr.dh_magic), (unsigned)kafs_dir_v4_hdr_format_get(&hdr),
+              (unsigned)kafs_dir_v4_hdr_flags_get(&hdr));
+      stats->invalid_dirs++;
+      continue;
+    }
+
+    uint32_t record_bytes = kafs_dir_v4_hdr_record_bytes_get(&hdr);
+    if ((kafs_off_t)sizeof(hdr) + (kafs_off_t)record_bytes != size)
+    {
+      fprintf(stderr,
+              "dir-v4 invalid: ino=%" PRIuFAST32 " size/header mismatch size=%" PRIiFAST64
+              " record_bytes=%u\n",
+              ino, (int64_t)size, (unsigned)record_bytes);
+      stats->invalid_dirs++;
+      continue;
+    }
+
+    char *buf = NULL;
+    if (size > 0)
+    {
+      buf = (char *)malloc((size_t)size);
+      if (!buf)
+        return -ENOMEM;
+      ssize_t dir_read = fsck_inode_pread(ctx, inoent, buf, size, 0);
+      if (dir_read != (ssize_t)size)
+      {
+        free(buf);
+        return -EIO;
+      }
+    }
+
+    uint32_t live_count = 0;
+    uint32_t tombstone_count = 0;
+    uint32_t dotdot_live = 0;
+    size_t off = sizeof(kafs_sdir_v4_hdr_t);
+    int malformed = 0;
+    while (off < (size_t)size)
+    {
+      if ((size_t)size - off < sizeof(kafs_sdirent_v4_t))
+      {
+        malformed = 1;
+        break;
+      }
+      kafs_sdirent_v4_t rec;
+      memcpy(&rec, buf + off, sizeof(rec));
+      uint16_t rec_len = kafs_dirent_v4_rec_len_get(&rec);
+      uint16_t flags = kafs_dirent_v4_flags_get(&rec);
+      kafs_inocnt_t dino = kafs_dirent_v4_ino_get(&rec);
+      kafs_filenamelen_t namelen = kafs_dirent_v4_filenamelen_get(&rec);
+      if (rec_len < sizeof(kafs_sdirent_v4_t) || off + rec_len > (size_t)size || namelen == 0 ||
+          namelen >= FILENAME_MAX || (size_t)namelen > rec_len - sizeof(kafs_sdirent_v4_t) ||
+          (flags & ~KAFS_DIRENT_FLAG_TOMBSTONE) != 0u)
+      {
+        malformed = 1;
+        break;
+      }
+      const char *name = buf + off + sizeof(kafs_sdirent_v4_t);
+      if ((flags & KAFS_DIRENT_FLAG_TOMBSTONE) != 0)
+      {
+        tombstone_count++;
+      }
+      else
+      {
+        if (dino == KAFS_INO_NONE || dino >= inocnt || !kafs_ino_get_usage(&ctx->c_inotbl[dino]))
+        {
+          malformed = 1;
+          break;
+        }
+        live_count++;
+        if (namelen == 2 && memcmp(name, "..", 2) == 0)
+          dotdot_live++;
+      }
+      off += rec_len;
+    }
+    free(buf);
+
+    if (malformed)
+    {
+      fprintf(stderr, "dir-v4 invalid: ino=%" PRIuFAST32 " malformed record stream\n", ino);
+      stats->invalid_dirs++;
+      continue;
+    }
+
+    int bad_counts = 0;
+    if (live_count != kafs_dir_v4_hdr_live_count_get(&hdr) ||
+        tombstone_count != kafs_dir_v4_hdr_tombstone_count_get(&hdr))
+      bad_counts = 1;
+    if (ino == KAFS_INO_ROOTDIR)
+    {
+      if (dotdot_live != 0)
+        bad_counts = 1;
+    }
+    else if (dotdot_live != 1)
+    {
+      bad_counts = 1;
+    }
+
+    if (!bad_counts)
+      continue;
+
+    fprintf(stderr,
+            "dir-v4 mismatch: ino=%" PRIuFAST32
+            " hdr_live=%u calc_live=%u hdr_tomb=%u calc_tomb=%u dotdot=%u\n",
+            ino, (unsigned)kafs_dir_v4_hdr_live_count_get(&hdr), (unsigned)live_count,
+            (unsigned)kafs_dir_v4_hdr_tombstone_count_get(&hdr), (unsigned)tombstone_count,
+            (unsigned)dotdot_live);
+    stats->invalid_dirs++;
+    (void)do_fix;
+  }
+
+  return 0;
 }
 
 struct hrl_scan_ctx
@@ -1207,6 +1526,33 @@ int main(int argc, char **argv)
     {
       struct orphan_stats ost;
       memset(&ost, 0, sizeof(ost));
+      struct dir_v4_stats dst;
+      memset(&dst, 0, sizeof(dst));
+
+      int drc = fsck_check_or_repair_dir_v4(&ctx, do_repair_dirent_ino_orphans, &dst);
+      if (drc != 0)
+      {
+        if (do_repair_dirent_ino_orphans)
+          (void)kafs_hrl_close(&ctx);
+        munmap(ctx.c_img_base, ctx.c_img_size);
+        close(fd);
+        return 1;
+      }
+      if (dst.invalid_dirs > 0)
+      {
+        fprintf(stderr,
+                "Dir-v4 summary: checked=%" PRIu64 " invalid=%" PRIu64 " repaired=%" PRIu64 "\n",
+                dst.dirs_checked, dst.invalid_dirs, dst.repaired_dirs);
+        if (do_repair_dirent_ino_orphans)
+        {
+          if (dst.invalid_dirs != dst.repaired_dirs)
+            exit_code = FSCK_EXIT_DIRENT_FORMAT_INCONSISTENT;
+        }
+        else
+        {
+          exit_code = FSCK_EXIT_DIRENT_FORMAT_INCONSISTENT;
+        }
+      }
 
       if (do_repair_dirent_ino_orphans)
         (void)kafs_hrl_open(&ctx);

@@ -487,45 +487,20 @@ static int cmd_migrate(const char *image, int assume_yes)
     close(fd);
     return 0;
   }
-  if (fmt != KAFS_FORMAT_VERSION_V2)
+  if (fmt != KAFS_FORMAT_VERSION_V2 && fmt != KAFS_FORMAT_VERSION_V3)
   {
     fprintf(stderr, "unsupported format version: %u\n", (unsigned)fmt);
     close(fd);
     return 2;
   }
 
-  if (!assume_yes && !confirm_yes_stdin())
-  {
-    fprintf(stderr, "migration canceled\n");
-    close(fd);
-    return 2;
-  }
-
-  kafs_sb_format_version_set(&sb, KAFS_FORMAT_VERSION);
-  if (kafs_sb_allocator_size_get(&sb) > 0)
-  {
-    if (kafs_sb_allocator_version_get(&sb) < 2u)
-      kafs_sb_allocator_version_set(&sb, 2u);
-    uint64_t ff = kafs_sb_feature_flags_get(&sb);
-    kafs_sb_feature_flags_set(&sb, ff | KAFS_FEATURE_ALLOC_V2);
-  }
-
-  if (pwrite(fd, &sb, sizeof(sb), 0) != (ssize_t)sizeof(sb))
-  {
-    perror("pwrite superblock");
-    close(fd);
-    return 1;
-  }
-  if (fsync(fd) != 0)
-  {
-    perror("fsync");
-    close(fd);
-    return 1;
-  }
-
   close(fd);
-  fprintf(stderr, "migration completed: v2 -> v%u (%s)\n", (unsigned)KAFS_FORMAT_VERSION, image);
-  return 0;
+  (void)assume_yes;
+  fprintf(stderr,
+          "in-place migration to v%u is not supported; create a fresh image and copy data instead "
+          "(%s)\n",
+          (unsigned)KAFS_FORMAT_VERSION, image);
+  return 2;
 }
 
 static const char *hotplug_state_str(uint32_t state)

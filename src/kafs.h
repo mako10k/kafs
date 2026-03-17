@@ -128,7 +128,8 @@ typedef uint_fast32_t kafs_hrid_t;
 
 // --- 定数（新フォーマット用） ---
 #define KAFS_MAGIC 0x4B414653u /* 'KAFS' */
-#define KAFS_FORMAT_VERSION 3u /* v3: allocator/pending log metadata */
+#define KAFS_FORMAT_VERSION 4u /* v4: versioned dirent header/records */
+#define KAFS_FORMAT_VERSION_V3 3u
 #define KAFS_FORMAT_VERSION_V2 2u
 #define KAFS_HASH_FAST_XXH64 1u
 #define KAFS_HASH_STRONG_BLAKE3_256 1u
