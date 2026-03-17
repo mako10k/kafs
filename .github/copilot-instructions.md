@@ -7,6 +7,7 @@ Mandatory rules only.
 - Follow repository rules in `.github/github-dev-rules.md`.
 - Respect repository scripts and Makefile targets.
 - Build and run tests after code edits; report PASS/FAIL with deltas.
+- For implementation work, start from a GitHub issue on a new branch + worktree, open a PR, and clean up the worktree after merge to support parallel development.
 - Avoid introducing code clones; prefer helper extraction/refactoring when logic repeats.
 - For PR/update gates, run clone/static checks and report PASS/FAIL:
   - `./scripts/clones.sh`
