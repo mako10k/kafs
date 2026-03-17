@@ -3760,6 +3760,46 @@ static int kafs_dir_v4_write_record_head(struct kafs_context *ctx, kafs_sinode_t
 /// @param ino 対象のディレクトリ
 /// @param pino_found 見つかったエントリ
 /// @return 0: 成功, < 0: 失敗 (-errno)
+static int kafs_dirent_search_snapshot(struct kafs_context *ctx, const char *snap, size_t snap_len,
+                                       const char *filename, kafs_filenamelen_t filenamelen,
+                                       uint32_t dir_ino, kafs_sinode_t **pinoent_found)
+{
+  assert(ctx != NULL);
+  assert(filename != NULL);
+  assert(filenamelen > 0);
+  assert(pinoent_found != NULL);
+
+  if (snap_len == 0)
+    return -ENOENT;
+
+  uint32_t target_hash = kafs_dirent_name_hash(filename, filenamelen);
+
+  size_t off = 0;
+  while (1)
+  {
+    kafs_dirent_view_t view;
+    int step = kafs_dirent_view_next(snap, snap_len, off, &view);
+    if (step == 0)
+      break;
+    if (step < 0)
+    {
+      kafs_dlog(1, "%s: parse failed dir_ino=%u off=%zu snap_len=%zu target=%.*s\n", __func__,
+                (unsigned)dir_ino, off, snap_len, (int)filenamelen, filename);
+      return -EIO;
+    }
+
+    if ((view.flags & KAFS_DIRENT_FLAG_TOMBSTONE) == 0 && view.name_hash == target_hash &&
+        view.name_len == filenamelen && memcmp(view.name, filename, filenamelen) == 0)
+    {
+      *pinoent_found = &ctx->c_inotbl[view.ino];
+      return KAFS_SUCCESS;
+    }
+    off = view.record_off + view.record_len;
+  }
+
+  return -ENOENT;
+}
+
 static int kafs_dirent_search(struct kafs_context *ctx, kafs_sinode_t *inoent, const char *filename,
                               kafs_filenamelen_t filenamelen, kafs_sinode_t **pinoent_found)
 {
@@ -3780,34 +3820,10 @@ static int kafs_dirent_search(struct kafs_context *ctx, kafs_sinode_t *inoent, c
   if (rc < 0)
     return rc;
 
-  uint32_t target_hash = kafs_dirent_name_hash(filename, filenamelen);
-
-  size_t off = 0;
-  while (1)
-  {
-    kafs_dirent_view_t view;
-    int step = kafs_dirent_view_next(snap, snap_len, off, &view);
-    if (step == 0)
-      break;
-    if (step < 0)
-    {
-      kafs_dlog(1, "%s: parse failed dir_ino=%d off=%zu snap_len=%zu target=%.*s\n", __func__,
-                (int)(inoent - ctx->c_inotbl), off, snap_len, (int)filenamelen, filename);
-      free(snap);
-      return -EIO;
-    }
-
-    if ((view.flags & KAFS_DIRENT_FLAG_TOMBSTONE) == 0 && view.name_hash == target_hash &&
-        view.name_len == filenamelen && memcmp(view.name, filename, filenamelen) == 0)
-    {
-      *pinoent_found = &ctx->c_inotbl[view.ino];
-      free(snap);
-      return KAFS_SUCCESS;
-    }
-    off = view.record_off + view.record_len;
-  }
+  rc = kafs_dirent_search_snapshot(ctx, snap, snap_len, filename, filenamelen,
+                                   (uint32_t)(inoent - ctx->c_inotbl), pinoent_found);
   free(snap);
-  return -ENOENT;
+  return rc;
 }
 
 static int kafs_dir_snapshot(struct kafs_context *ctx, kafs_sinode_t *inoent_dir, char **out,
@@ -4281,9 +4297,15 @@ static int kafs_access(struct fuse_context *fctx, kafs_context_t *ctx, const cha
     if (rc_ac < 0)
       return rc_ac;
     uint32_t ino_dir = (uint32_t)(inoent - ctx->c_inotbl);
+    char *snap = NULL;
+    size_t snap_len = 0;
     kafs_inode_lock(ctx, ino_dir);
-    int rc = kafs_dirent_search(ctx, inoent, p, n - p, &inoent);
+    int rc = kafs_dir_snapshot(ctx, inoent, &snap, &snap_len);
     kafs_inode_unlock(ctx, ino_dir);
+    if (rc < 0)
+      return rc;
+    rc = kafs_dirent_search_snapshot(ctx, snap, snap_len, p, n - p, ino_dir, &inoent);
+    free(snap);
     if (rc < 0)
     {
       kafs_dlog(2, "%s: dirent_search('%.*s') rc=%d\n", __func__, (int)(n - p), p, rc);
