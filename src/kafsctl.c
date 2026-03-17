@@ -109,13 +109,14 @@ static void usage(const char *prog)
           "  %s mkdir <path>\n"
           "  %s rmdir <path>\n"
           "  %s ln <src> <dst>\n"
+          "  %s ln -s <target> <linkpath>\n"
           "  %s symlink <target> <linkpath>\n"
           "  %s rsync [rsync options...] <src>... <dst>\n"
           "  %s readlink <path>\n"
           "  %s chmod <octal_mode> <path>\n"
           "  %s touch <path>\n",
           prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog,
-          prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
+          prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 static void usage_cmd(const char *prog, const char *suffix, const char *details)
@@ -218,7 +219,17 @@ static void usage_mv_cmd(const char *prog)
 
 static void usage_ln_cmd(const char *prog)
 {
-  usage_cmd(prog, "ln <src> <dst>\n       ln <mountpoint> <src> <dst>", NULL);
+  usage_cmd(prog,
+            "ln [-f] [-n] [-T] [-v] <src> <dst>\n"
+            "       ln [-f] [-n] [-T] [-v] <mountpoint> <src> <dst>\n"
+            "       ln [-f] [-n] [-v] -t <dir> <src>\n"
+            "       ln [-f] [-n] [-v] -t <dir> <mountpoint> <src>\n"
+            "       ln -s [-f] [-n] [-T] [-v] <target> <linkpath>\n"
+            "       ln -s [-f] [-n] [-T] [-v] <mountpoint> <target> <linkpath>\n"
+            "       ln -s [-f] [-n] [-v] -t <dir> <target>\n"
+            "       ln -s [-f] [-n] [-v] -t <dir> <mountpoint> <target>\n"
+            "       ln --symbolic ...  (alias of -s)",
+            NULL);
 }
 
 static void usage_symlink_cmd(const char *prog)
@@ -2508,14 +2519,34 @@ static int cmd_cp(const char *mnt, const char *src, const char *dst, int reflink
 
   char srcbuf[KAFS_IOCTL_PATH_MAX];
   char dstbuf[KAFS_IOCTL_PATH_MAX];
+  char src_rel[KAFS_IOCTL_PATH_MAX];
+  char dst_rel[KAFS_IOCTL_PATH_MAX];
   const char *s = to_kafs_path(mnt_abs, src, srcbuf);
   const char *d = to_kafs_path(mnt_abs, dst, dstbuf);
-  if (!s || !d)
+  const char *s_mount = to_mount_rel_path(mnt_abs, src, src_rel);
+  const char *d_mount = to_mount_rel_path(mnt_abs, dst, dst_rel);
+  if (!s || !d || !s_mount || !d_mount)
   {
     fprintf(stderr, "invalid path\n");
     close(fd);
     return 2;
   }
+
+  struct stat st_src;
+  struct stat st_dst;
+  if (fstatat(fd, s_mount, &st_src, 0) != 0)
+  {
+    perror("fstatat(src)");
+    close(fd);
+    return 1;
+  }
+  if (fstatat(fd, d_mount, &st_dst, 0) == 0 && st_src.st_ino == st_dst.st_ino)
+  {
+    fprintf(stderr, "cp: '%s' and '%s' are the same file\n", src, dst);
+    close(fd);
+    return 1;
+  }
+
   snprintf(req.src, sizeof(req.src), "%s", s);
   snprintf(req.dst, sizeof(req.dst), "%s", d);
 
@@ -2739,6 +2770,136 @@ static int cmd_ln_auto(const char *src, const char *dst)
   return rc;
 }
 
+typedef struct kafs_ln_opts
+{
+  int symbolic;
+  int force;
+  int no_deref;
+  int no_target_directory;
+  int verbose;
+  const char *target_dir;
+} kafs_ln_opts_t;
+
+static int copy_path_basename(char out[KAFS_IOCTL_PATH_MAX], const char *path)
+{
+  if (!path || !*path)
+    return -EINVAL;
+
+  const char *end = path + strlen(path);
+  while (end > path && end[-1] == '/')
+    --end;
+  if (end == path)
+  {
+    if (snprintf(out, KAFS_IOCTL_PATH_MAX, "/") >= KAFS_IOCTL_PATH_MAX)
+      return -ENAMETOOLONG;
+    return 0;
+  }
+
+  const char *start = end;
+  while (start > path && start[-1] != '/')
+    --start;
+  size_t len = (size_t)(end - start);
+  if (len + 1 > KAFS_IOCTL_PATH_MAX)
+    return -ENAMETOOLONG;
+  memcpy(out, start, len);
+  out[len] = '\0';
+  return 0;
+}
+
+static int build_link_path(char out[KAFS_IOCTL_PATH_MAX], const char *dir, const char *source_name)
+{
+  char base[KAFS_IOCTL_PATH_MAX];
+  int rc = copy_path_basename(base, source_name);
+  if (rc != 0)
+    return rc;
+  return path_join_components(out, dir, base);
+}
+
+static int path_ref_is_directory(const char *mnt, const char *path, int no_deref)
+{
+  kafs_path_ref_t ref;
+  int rc = resolve_path_ref(mnt, path, &ref);
+  if (rc != 0)
+    return -1;
+
+  struct stat st;
+  if (fstatat(ref.dfd, ref.rel, &st, no_deref ? AT_SYMLINK_NOFOLLOW : 0) != 0)
+  {
+    int err = errno;
+    close_path_ref(&ref);
+    if (err == ENOENT)
+      return 0;
+    perror("fstatat");
+    return -1;
+  }
+
+  close_path_ref(&ref);
+  return S_ISDIR(st.st_mode) ? 1 : 0;
+}
+
+static int remove_existing_link_destination(const char *mnt, const char *path)
+{
+  kafs_path_ref_t ref;
+  int rc = resolve_path_ref(mnt, path, &ref);
+  if (rc != 0)
+    return rc;
+
+  if (unlinkat(ref.dfd, ref.rel, 0) != 0)
+  {
+    int err = errno;
+    close_path_ref(&ref);
+    if (err == ENOENT)
+      return 0;
+    if (err == EISDIR || err == EPERM)
+    {
+      fprintf(stderr, "destination is a directory: %s\n", path);
+      return 1;
+    }
+    errno = err;
+    perror("unlinkat");
+    return 1;
+  }
+
+  close_path_ref(&ref);
+  return 0;
+}
+
+static int is_ln_symbolic_option(const char *arg)
+{
+  return arg && (strcmp(arg, "-s") == 0 || strcmp(arg, "--symbolic") == 0);
+}
+
+static int cmd_ln_with_opts(const char *mnt, const char *src, const char *dst,
+                            const kafs_ln_opts_t *opts)
+{
+  if (opts && opts->force)
+  {
+    int rc = remove_existing_link_destination(mnt, dst);
+    if (rc != 0)
+      return rc;
+  }
+
+  int rc = cmd_ln(mnt, src, dst);
+  if (rc == 0 && opts && opts->verbose)
+    printf("linked %s -> %s\n", dst, src);
+  return rc;
+}
+
+static int cmd_ln_auto_with_opts(const char *src, const char *dst, const kafs_ln_opts_t *opts)
+{
+  if (opts && opts->force)
+  {
+    int rc = remove_existing_link_destination(NULL, dst);
+    if (rc != 0)
+      return rc;
+  }
+
+  int rc = cmd_ln_auto(src, dst);
+  if (rc == 0 && opts && opts->verbose)
+    printf("linked %s -> %s\n", dst, src);
+  return rc;
+}
+
 static int cmd_symlink(const char *mnt, const char *target, const char *linkpath)
 {
   char mabs[KAFS_IOCTL_PATH_MAX];
@@ -2789,6 +2950,180 @@ static int cmd_symlink_auto(const char *target, const char *linkpath)
 
   close_path_ref(&ref);
   return 0;
+}
+
+static int cmd_symlink_with_opts(const char *mnt, const char *target, const char *linkpath,
+                                 const kafs_ln_opts_t *opts)
+{
+  if (opts && opts->force)
+  {
+    int rc = remove_existing_link_destination(mnt, linkpath);
+    if (rc != 0)
+      return rc;
+  }
+
+  int rc = cmd_symlink(mnt, target, linkpath);
+  if (rc == 0 && opts && opts->verbose)
+    printf("linked %s -> %s\n", linkpath, target);
+  return rc;
+}
+
+static int cmd_symlink_auto_with_opts(const char *target, const char *linkpath,
+                                      const kafs_ln_opts_t *opts)
+{
+  if (opts && opts->force)
+  {
+    int rc = remove_existing_link_destination(NULL, linkpath);
+    if (rc != 0)
+      return rc;
+  }
+
+  int rc = cmd_symlink_auto(target, linkpath);
+  if (rc == 0 && opts && opts->verbose)
+    printf("linked %s -> %s\n", linkpath, target);
+  return rc;
+}
+
+static int parse_ln_options(int argc, char **argv, kafs_ln_opts_t *opts, int *operand_index)
+{
+  if (!opts || !operand_index)
+    return 2;
+
+  memset(opts, 0, sizeof(*opts));
+  int i = 2;
+  while (i < argc)
+  {
+    const char *arg = argv[i];
+    if (strcmp(arg, "--") == 0)
+    {
+      ++i;
+      break;
+    }
+    if (kafs_cli_is_help_arg(arg))
+      return 1;
+    if (arg[0] != '-' || strcmp(arg, "-") == 0)
+      break;
+
+    if (is_ln_symbolic_option(arg))
+      opts->symbolic = 1;
+    else if (strcmp(arg, "-f") == 0 || strcmp(arg, "--force") == 0)
+      opts->force = 1;
+    else if (strcmp(arg, "-n") == 0 || strcmp(arg, "--no-dereference") == 0)
+      opts->no_deref = 1;
+    else if (strcmp(arg, "-T") == 0 || strcmp(arg, "--no-target-directory") == 0)
+      opts->no_target_directory = 1;
+    else if (strcmp(arg, "-v") == 0 || strcmp(arg, "--verbose") == 0)
+      opts->verbose = 1;
+    else if (strcmp(arg, "-t") == 0 || strcmp(arg, "--target-directory") == 0)
+    {
+      if (i + 1 >= argc)
+      {
+        fprintf(stderr, "missing argument for %s\n", arg);
+        return 2;
+      }
+      opts->target_dir = argv[++i];
+    }
+    else if (strncmp(arg, "--target-directory=", 19) == 0)
+      opts->target_dir = arg + 19;
+    else
+    {
+      fprintf(stderr, "unknown option: %s\n", arg);
+      return 2;
+    }
+    ++i;
+  }
+
+  *operand_index = i;
+  return 0;
+}
+
+static int cmd_ln_dispatch(int argc, char **argv)
+{
+  kafs_ln_opts_t opts;
+  int operand_index = 0;
+  int parse_rc = parse_ln_options(argc, argv, &opts, &operand_index);
+  if (parse_rc == 1)
+  {
+    usage_ln_cmd(argv[0]);
+    return 0;
+  }
+  if (parse_rc != 0)
+  {
+    usage_ln_cmd(argv[0]);
+    return parse_rc;
+  }
+
+  int remaining = argc - operand_index;
+  const char *mnt = NULL;
+  const char *src = NULL;
+  const char *dst = NULL;
+  char dst_buf[KAFS_IOCTL_PATH_MAX];
+
+  if (opts.target_dir)
+  {
+    if (remaining == 1)
+    {
+      src = argv[operand_index];
+    }
+    else if (remaining == 2)
+    {
+      mnt = argv[operand_index];
+      src = argv[operand_index + 1];
+    }
+    else
+    {
+      usage_ln_cmd(argv[0]);
+      return 2;
+    }
+
+    if (build_link_path(dst_buf, opts.target_dir, src) != 0)
+    {
+      fprintf(stderr, "invalid target directory or source name\n");
+      return 2;
+    }
+    dst = dst_buf;
+  }
+  else
+  {
+    if (remaining == 2)
+    {
+      src = argv[operand_index];
+      dst = argv[operand_index + 1];
+    }
+    else if (remaining == 3)
+    {
+      mnt = argv[operand_index];
+      src = argv[operand_index + 1];
+      dst = argv[operand_index + 2];
+    }
+    else
+    {
+      usage_ln_cmd(argv[0]);
+      return 2;
+    }
+
+    if (!opts.no_target_directory)
+    {
+      int is_dir = path_ref_is_directory(mnt, dst, opts.no_deref);
+      if (is_dir < 0)
+        return 1;
+      if (is_dir > 0)
+      {
+        if (build_link_path(dst_buf, dst, src) != 0)
+        {
+          fprintf(stderr, "invalid destination path\n");
+          return 2;
+        }
+        dst = dst_buf;
+      }
+    }
+  }
+
+  if (opts.symbolic)
+    return mnt ? cmd_symlink_with_opts(mnt, src, dst, &opts)
+               : cmd_symlink_auto_with_opts(src, dst, &opts);
+
+  return mnt ? cmd_ln_with_opts(mnt, src, dst, &opts) : cmd_ln_auto_with_opts(src, dst, &opts);
 }
 
 static int cmd_readlink(const char *mnt, const char *path)
@@ -3156,16 +3491,7 @@ int main(int argc, char **argv)
   }
 
   if (strcmp(argv[1], "ln") == 0)
-  {
-    if (argc == 4)
-      return cmd_ln_auto(argv[2], argv[3]);
-    if (argc != 5)
-    {
-      usage(argv[0]);
-      return 2;
-    }
-    return cmd_ln(argv[2], argv[3], argv[4]);
-  }
+    return cmd_ln_dispatch(argc, argv);
 
   if (strcmp(argv[1], "symlink") == 0)
   {
