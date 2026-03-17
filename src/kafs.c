@@ -3654,6 +3654,8 @@ typedef struct
 } kafs_dirent_view_t;
 
 static int kafs_dirent_view_next(const char *buf, size_t len, size_t off, kafs_dirent_view_t *out);
+static int kafs_dirent_view_next_meta(const char *buf, const kafs_dir_snapshot_meta_t *meta,
+                                      size_t off, kafs_dirent_view_t *out);
 
 static uint32_t kafs_dirent_name_hash(const char *name, kafs_filenamelen_t namelen)
 {
@@ -3772,13 +3774,20 @@ static int kafs_dirent_search_snapshot(struct kafs_context *ctx, const char *sna
   if (snap_len == 0)
     return -ENOENT;
 
+  kafs_dir_snapshot_meta_t meta;
+  __atomic_add_fetch(&ctx->c_stat_dir_snapshot_meta_load_calls, 1u, __ATOMIC_RELAXED);
+  int rc_meta = kafs_dir_snapshot_meta_load(snap, snap_len, &meta);
+  if (rc_meta < 0)
+    return rc_meta;
+
   uint32_t target_hash = kafs_dirent_name_hash(filename, filenamelen);
 
   size_t off = 0;
   while (1)
   {
     kafs_dirent_view_t view;
-    int step = kafs_dirent_view_next(snap, snap_len, off, &view);
+    __atomic_add_fetch(&ctx->c_stat_dirent_view_next_calls, 1u, __ATOMIC_RELAXED);
+    int step = kafs_dirent_view_next_meta(snap, &meta, off, &view);
     if (step == 0)
       break;
     if (step < 0)
@@ -3832,6 +3841,8 @@ static int kafs_dir_snapshot(struct kafs_context *ctx, kafs_sinode_t *inoent_dir
   *out = NULL;
   *out_len = 0;
   size_t len = (size_t)kafs_ino_size_get(inoent_dir);
+  __atomic_add_fetch(&ctx->c_stat_dir_snapshot_calls, 1u, __ATOMIC_RELAXED);
+  __atomic_add_fetch(&ctx->c_stat_dir_snapshot_bytes, (uint64_t)len, __ATOMIC_RELAXED);
   if (len == 0)
     return 0;
   char *buf = (char *)malloc(len);
@@ -3873,15 +3884,23 @@ static int kafs_dirent_view_next(const char *buf, size_t len, size_t off, kafs_d
   int rc = kafs_dir_snapshot_meta_load(buf, len, &meta);
   if (rc < 0)
     return rc;
-  if (meta.logical_len == 0)
+  return kafs_dirent_view_next_meta(buf, &meta, off, out);
+}
+
+static int kafs_dirent_view_next_meta(const char *buf, const kafs_dir_snapshot_meta_t *meta,
+                                      size_t off, kafs_dirent_view_t *out)
+{
+  if (meta == NULL)
+    return -EINVAL;
+  if (meta->logical_len == 0)
     return 0;
 
   size_t cur = off;
-  if (cur < meta.data_off)
-    cur = meta.data_off;
-  if (cur >= meta.logical_len)
+  if (cur < meta->data_off)
+    cur = meta->data_off;
+  if (cur >= meta->logical_len)
     return 0;
-  if (meta.logical_len - cur < sizeof(kafs_sdirent_v4_t))
+  if (meta->logical_len - cur < sizeof(kafs_sdirent_v4_t))
     return -EIO;
 
   kafs_sdirent_v4_t rec;
@@ -3891,7 +3910,7 @@ static int kafs_dirent_view_next(const char *buf, size_t len, size_t off, kafs_d
   kafs_inocnt_t ino = kafs_dirent_v4_ino_get(&rec);
   kafs_filenamelen_t namelen = kafs_dirent_v4_filenamelen_get(&rec);
   uint32_t name_hash = kafs_dirent_v4_name_hash_get(&rec);
-  if (rec_len < sizeof(kafs_sdirent_v4_t) || cur + rec_len > meta.logical_len)
+  if (rec_len < sizeof(kafs_sdirent_v4_t) || cur + rec_len > meta->logical_len)
     return -EIO;
   if ((flags & ~KAFS_DIRENT_FLAG_TOMBSTONE) != 0u)
     return -EIO;
@@ -3900,7 +3919,8 @@ static int kafs_dirent_view_next(const char *buf, size_t len, size_t off, kafs_d
     kafs_dlog(1,
               "%s: invalid dirent header off=%zu len=%zu ino=%" PRIuFAST16 " namelen=%" PRIuFAST16
               " flags=%u\n",
-              __func__, cur, len, (uint_fast16_t)ino, (uint_fast16_t)namelen, (unsigned)flags);
+              __func__, cur, meta->logical_len, (uint_fast16_t)ino, (uint_fast16_t)namelen,
+              (unsigned)flags);
     return -EIO;
   }
   if ((size_t)namelen > rec_len - sizeof(kafs_sdirent_v4_t))
@@ -3952,6 +3972,7 @@ static int kafs_dirent_add_nolink(struct kafs_context *ctx, kafs_sinode_t *inoen
     return rc;
 
   kafs_dir_snapshot_meta_t meta;
+  __atomic_add_fetch(&ctx->c_stat_dir_snapshot_meta_load_calls, 1u, __ATOMIC_RELAXED);
   rc = kafs_dir_snapshot_meta_load(old, old_len, &meta);
   if (rc < 0)
   {
@@ -3967,7 +3988,8 @@ static int kafs_dirent_add_nolink(struct kafs_context *ctx, kafs_sinode_t *inoen
   while (1)
   {
     kafs_dirent_view_t view;
-    int step = kafs_dirent_view_next(old, old_len, off, &view);
+    __atomic_add_fetch(&ctx->c_stat_dirent_view_next_calls, 1u, __ATOMIC_RELAXED);
+    int step = kafs_dirent_view_next_meta(old, &meta, off, &view);
     if (step == 0)
       break;
     if (step < 0)
@@ -4090,6 +4112,7 @@ static int kafs_dirent_remove_nolink(struct kafs_context *ctx, kafs_sinode_t *in
     return rc;
 
   kafs_dir_snapshot_meta_t meta;
+  __atomic_add_fetch(&ctx->c_stat_dir_snapshot_meta_load_calls, 1u, __ATOMIC_RELAXED);
   rc = kafs_dir_snapshot_meta_load(old, old_len, &meta);
   if (rc < 0)
   {
@@ -4103,7 +4126,8 @@ static int kafs_dirent_remove_nolink(struct kafs_context *ctx, kafs_sinode_t *in
   while (1)
   {
     kafs_dirent_view_t view;
-    int step = kafs_dirent_view_next(old, old_len, off, &view);
+    __atomic_add_fetch(&ctx->c_stat_dirent_view_next_calls, 1u, __ATOMIC_RELAXED);
+    int step = kafs_dirent_view_next_meta(old, &meta, off, &view);
     if (step == 0)
       break;
     if (step < 0)
@@ -4278,6 +4302,7 @@ static int kafs_access(struct fuse_context *fctx, kafs_context_t *ctx, const cha
   assert(path == NULL || *path == '/' || *path == '\0');
 
   kafs_dlog(2, "%s(path=%s, ok=%d, fi=%p)\n", __func__, path ? path : "(null)", ok, (void *)fi);
+  __atomic_add_fetch(&ctx->c_stat_access_calls, 1u, __ATOMIC_RELAXED);
 
   uid_t uid = fctx->uid;
   gid_t gid = fctx->gid;
@@ -4302,10 +4327,12 @@ static int kafs_access(struct fuse_context *fctx, kafs_context_t *ctx, const cha
   }
   else if (fh_rc == 0)
   {
+    __atomic_add_fetch(&ctx->c_stat_access_fh_fastpath_hits, 1u, __ATOMIC_RELAXED);
     p = "";
   }
   else
   {
+    __atomic_add_fetch(&ctx->c_stat_access_path_walk_calls, 1u, __ATOMIC_RELAXED);
     inoent = &ctx->c_inotbl[KAFS_INO_ROOTDIR];
     p = path + 1;
   }
@@ -4314,6 +4341,7 @@ static int kafs_access(struct fuse_context *fctx, kafs_context_t *ctx, const cha
   while (*p != '\0')
   {
     const char *n = strchrnul(p, '/');
+    __atomic_add_fetch(&ctx->c_stat_access_path_components, 1u, __ATOMIC_RELAXED);
     kafs_mode_t cur_mode = kafs_ino_mode_get(inoent);
     kafs_dlog(2, "%s: component='%.*s' checking dir ino=%u mode=%o\n", __func__, (int)(n - p), p,
               (unsigned)(inoent - ctx->c_inotbl), (unsigned)cur_mode);
@@ -5371,7 +5399,7 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
   return 0;
 }
 
-#define KAFS_STATS_VERSION 15u
+#define KAFS_STATS_VERSION 16u
 
 static int kafs_u64_cmp(const void *a, const void *b)
 {
@@ -5525,6 +5553,15 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out, uint32_t
   out->lock_inode_alloc_acquire = ctx->c_stat_lock_inode_alloc_acquire;
   out->lock_inode_alloc_contended = ctx->c_stat_lock_inode_alloc_contended;
   out->lock_inode_alloc_wait_ns = ctx->c_stat_lock_inode_alloc_wait_ns;
+
+  out->access_calls = ctx->c_stat_access_calls;
+  out->access_path_walk_calls = ctx->c_stat_access_path_walk_calls;
+  out->access_fh_fastpath_hits = ctx->c_stat_access_fh_fastpath_hits;
+  out->access_path_components = ctx->c_stat_access_path_components;
+  out->dir_snapshot_calls = ctx->c_stat_dir_snapshot_calls;
+  out->dir_snapshot_bytes = ctx->c_stat_dir_snapshot_bytes;
+  out->dir_snapshot_meta_load_calls = ctx->c_stat_dir_snapshot_meta_load_calls;
+  out->dirent_view_next_calls = ctx->c_stat_dirent_view_next_calls;
 
   out->pwrite_calls = ctx->c_stat_pwrite_calls;
   out->pwrite_bytes = ctx->c_stat_pwrite_bytes;
@@ -6539,11 +6576,20 @@ static int kafs_op_readdir(const char *path, void *buf, fuse_fill_dir_t filler, 
     free(snap);
     return -ENOENT;
   }
+  kafs_dir_snapshot_meta_t meta;
+  __atomic_add_fetch(&ctx->c_stat_dir_snapshot_meta_load_calls, 1u, __ATOMIC_RELAXED);
+  rc = kafs_dir_snapshot_meta_load(snap, snap_len, &meta);
+  if (rc < 0)
+  {
+    free(snap);
+    return rc;
+  }
   size_t o = 0;
   while (1)
   {
     kafs_dirent_view_t view;
-    int step = kafs_dirent_view_next(snap, snap_len, o, &view);
+    __atomic_add_fetch(&ctx->c_stat_dirent_view_next_calls, 1u, __ATOMIC_RELAXED);
+    int step = kafs_dirent_view_next_meta(snap, &meta, o, &view);
     if (step == 0)
       break;
     if (step < 0)

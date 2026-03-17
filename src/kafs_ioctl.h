@@ -69,6 +69,15 @@ struct kafs_stats
   uint64_t lock_inode_alloc_contended;
   uint64_t lock_inode_alloc_wait_ns;
 
+  uint64_t access_calls;
+  uint64_t access_path_walk_calls;
+  uint64_t access_fh_fastpath_hits;
+  uint64_t access_path_components;
+  uint64_t dir_snapshot_calls;
+  uint64_t dir_snapshot_bytes;
+  uint64_t dir_snapshot_meta_load_calls;
+  uint64_t dirent_view_next_calls;
+
   uint64_t pwrite_calls;
   uint64_t pwrite_bytes;
   uint64_t pwrite_ns_iblk_read;

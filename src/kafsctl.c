@@ -1918,6 +1918,15 @@ static int cmd_stats(const char *mnt, int json, int verbose, kafs_unit_t unit)
           ? (double)st.lock_hrl_global_contended / (double)st.lock_hrl_global_acquire
           : 0.0;
   double lock_hrl_global_wait_ms = (double)st.lock_hrl_global_wait_ns / 1000000.0;
+  double access_fh_fastpath_rate =
+      (st.access_calls > 0) ? (double)st.access_fh_fastpath_hits / (double)st.access_calls : 0.0;
+  double access_avg_components =
+      (st.access_path_walk_calls > 0)
+          ? (double)st.access_path_components / (double)st.access_path_walk_calls
+          : 0.0;
+  double dir_snapshot_avg_bytes =
+      (st.dir_snapshot_calls > 0) ? (double)st.dir_snapshot_bytes / (double)st.dir_snapshot_calls
+                                  : 0.0;
   double pwrite_iblk_read_ms = (double)st.pwrite_ns_iblk_read / 1000000.0;
   double pwrite_iblk_write_ms = (double)st.pwrite_ns_iblk_write / 1000000.0;
   double pwrite_iblk_write_p50_ms = (double)st.pwrite_iblk_write_p50_ns / 1000000.0;
@@ -2051,6 +2060,17 @@ static int cmd_stats(const char *mnt, int json, int verbose, kafs_unit_t unit)
     printf("  \"lock_hrl_global_wait_ns\": %" PRIu64 ",\n", st.lock_hrl_global_wait_ns);
     printf("  \"lock_hrl_global_contended_rate\": %.6f,\n", lock_hrl_global_cont_rate);
     printf("  \"lock_hrl_global_wait_ms\": %.3f,\n", lock_hrl_global_wait_ms);
+    printf("  \"access_calls\": %" PRIu64 ",\n", st.access_calls);
+    printf("  \"access_path_walk_calls\": %" PRIu64 ",\n", st.access_path_walk_calls);
+    printf("  \"access_fh_fastpath_hits\": %" PRIu64 ",\n", st.access_fh_fastpath_hits);
+    printf("  \"access_path_components\": %" PRIu64 ",\n", st.access_path_components);
+    printf("  \"access_fh_fastpath_rate\": %.6f,\n", access_fh_fastpath_rate);
+    printf("  \"access_avg_components\": %.6f,\n", access_avg_components);
+    printf("  \"dir_snapshot_calls\": %" PRIu64 ",\n", st.dir_snapshot_calls);
+    printf("  \"dir_snapshot_bytes\": %" PRIu64 ",\n", st.dir_snapshot_bytes);
+    printf("  \"dir_snapshot_avg_bytes\": %.3f,\n", dir_snapshot_avg_bytes);
+    printf("  \"dir_snapshot_meta_load_calls\": %" PRIu64 ",\n", st.dir_snapshot_meta_load_calls);
+    printf("  \"dirent_view_next_calls\": %" PRIu64 ",\n", st.dirent_view_next_calls);
     printf("  \"pwrite_calls\": %" PRIu64 ",\n", st.pwrite_calls);
     printf("  \"pwrite_bytes\": %" PRIu64 ",\n", st.pwrite_bytes);
     printf("  \"pwrite_ns_iblk_read\": %" PRIu64 ",\n", st.pwrite_ns_iblk_read);
@@ -2243,6 +2263,14 @@ static int cmd_stats(const char *mnt, int json, int verbose, kafs_unit_t unit)
   printf("  lock[hrl_global]: acquire=%" PRIu64 " contended=%" PRIu64 " rate=%.3f wait_ms=%.3f\n",
          st.lock_hrl_global_acquire, st.lock_hrl_global_contended, lock_hrl_global_cont_rate,
          lock_hrl_global_wait_ms);
+  printf("  metadata_lookup: access_calls=%" PRIu64 " path_walk_calls=%" PRIu64
+         " fh_fastpath_hits=%" PRIu64 " fh_fastpath_rate=%.3f avg_components=%.3f\n",
+         st.access_calls, st.access_path_walk_calls, st.access_fh_fastpath_hits,
+         access_fh_fastpath_rate, access_avg_components);
+  printf("                   dir_snapshot_calls=%" PRIu64 " snapshot_bytes=%" PRIu64
+         " avg_snapshot_bytes=%.3f meta_load_calls=%" PRIu64 " view_next_calls=%" PRIu64 "\n",
+         st.dir_snapshot_calls, st.dir_snapshot_bytes, dir_snapshot_avg_bytes,
+         st.dir_snapshot_meta_load_calls, st.dirent_view_next_calls);
   printf("  pwrite: calls=%" PRIu64 " bytes=%" PRIu64 " iblk_read_ms=%.3f iblk_write_ms=%.3f\n",
          st.pwrite_calls, st.pwrite_bytes, pwrite_iblk_read_ms, pwrite_iblk_write_ms);
   printf("          iblk_write_lat: samples=%" PRIu64 "/%" PRIu64

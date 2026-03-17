@@ -77,6 +77,15 @@ struct kafs_context
   uint64_t c_stat_lock_inode_alloc_contended;
   uint64_t c_stat_lock_inode_alloc_wait_ns;
 
+  uint64_t c_stat_access_calls;
+  uint64_t c_stat_access_path_walk_calls;
+  uint64_t c_stat_access_fh_fastpath_hits;
+  uint64_t c_stat_access_path_components;
+  uint64_t c_stat_dir_snapshot_calls;
+  uint64_t c_stat_dir_snapshot_bytes;
+  uint64_t c_stat_dir_snapshot_meta_load_calls;
+  uint64_t c_stat_dirent_view_next_calls;
+
   uint64_t c_stat_pwrite_calls;
   uint64_t c_stat_pwrite_bytes;
   uint64_t c_stat_pwrite_ns_iblk_read;
