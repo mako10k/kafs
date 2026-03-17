@@ -3629,79 +3629,129 @@ static int kafs_try_reclaim_unlinked_inode_locked(struct kafs_context *ctx, kafs
   return KAFS_SUCCESS;
 }
 
-/// @brief ディレクトリエントリを読み出す
-/// @param ctx コンテキスト
-/// @param inoent_dir ディレクトリの inodeテーブルのエントリ
-/// @param dirent 読み出すディレクトリエントリのバッファ（sizeof(struct kafs_dirent) 以上）
-/// @param offset オフセット
-/// @return > 0: サイズ, 0: EOF, < 0: 失敗 (-errno)
-static ssize_t kafs_dirent_read(struct kafs_context *ctx, kafs_sinode_t *inoent_dir,
-                                struct kafs_sdirent *dirent, kafs_off_t offset)
-{
-  kafs_dlog(3, "%s(ino_dir = %d, offset = %" PRIuFAST64 ")\n", __func__,
-            (inoent_dir - ctx->c_inotbl), offset);
-  assert(ctx != NULL);
-  assert(inoent_dir != NULL);
-  assert(dirent != NULL);
-  assert(kafs_ino_get_usage(inoent_dir));
-  kafs_off_t filesize = kafs_ino_size_get(inoent_dir);
-  ssize_t r1 =
-      KAFS_CALL(kafs_pread, ctx, inoent_dir, dirent, offsetof(kafs_sdirent_t, d_filename), offset);
-  if (r1 == 0)
-    return 0;
-  if (r1 < (ssize_t)offsetof(kafs_sdirent_t, d_filename))
-  {
-    kafs_log(KAFS_LOG_WARNING,
-             "%s: short read dirent header ino_dir=%d off=%" PRIuFAST64 " size=%" PRIuFAST64
-             " got=%zd\n",
-             __func__, (int)(inoent_dir - ctx->c_inotbl), offset, filesize, r1);
-    return 0;
-  }
-  kafs_inocnt_t d_ino = kafs_dirent_ino_get(dirent);
-  kafs_filenamelen_t filenamelen = kafs_dirent_filenamelen_get(dirent);
-  // Treat zeroed/uninitialized entries as EOF (allows sparse tail within directory inode size).
-  if (d_ino == 0 || filenamelen == 0)
-    return 0;
-  if (filenamelen >= FILENAME_MAX)
-  {
-    kafs_log(KAFS_LOG_ERR,
-             "%s: invalid filenamelen=%" PRIuFAST32 " ino_dir=%d off=%" PRIuFAST64 "\n", __func__,
-             (uint_fast32_t)filenamelen, (int)(inoent_dir - ctx->c_inotbl), offset);
-    return -EIO;
-  }
-  kafs_off_t want_end = offset + (kafs_off_t)r1 + (kafs_off_t)filenamelen;
-  if (want_end > filesize)
-  {
-    kafs_log(KAFS_LOG_WARNING,
-             "%s: dirent tail beyond size ino_dir=%d off=%" PRIuFAST64 " need_end=%" PRIuFAST64
-             " size=%" PRIuFAST64 "\n",
-             __func__, (int)(inoent_dir - ctx->c_inotbl), offset, want_end, filesize);
-    return 0;
-  }
-  ssize_t r2 = KAFS_CALL(kafs_pread, ctx, inoent_dir, dirent->d_filename, filenamelen, offset + r1);
-  if (r2 < (ssize_t)filenamelen)
-  {
-    kafs_log(KAFS_LOG_ERR,
-             "%s: short read dirent name ino_dir=%d off=%" PRIuFAST64 " need=%" PRIuFAST32
-             " got=%zd\n",
-             __func__, (int)(inoent_dir - ctx->c_inotbl), offset, (uint_fast32_t)filenamelen, r2);
-    return (offset + (kafs_off_t)r1 + (kafs_off_t)r2 >= filesize) ? 0 : -EIO;
-  }
-  dirent->d_filename[r2] = '\0';
-  kafs_dlog(3,
-            "%s(ino_dir = %d, offset = %" PRIuFAST64 ") return {.d_ino = %" PRIuFAST32
-            ", .d_filename = %s, .d_filenamelen = %" PRIuFAST32 "}\n",
-            __func__, (inoent_dir - ctx->c_inotbl), offset, kafs_dirent_ino_get(dirent),
-            dirent->d_filename, kafs_dirent_filenamelen_get(dirent));
-  return r1 + r2;
-}
-
 static int kafs_dir_snapshot(struct kafs_context *ctx, kafs_sinode_t *inoent_dir, char **out,
                              size_t *out_len);
 
-static int kafs_dirent_iter_next(const char *buf, size_t len, size_t off, kafs_inocnt_t *out_ino,
-                                 kafs_filenamelen_t *out_namelen, const char **out_name,
-                                 size_t *out_rec_len);
+static int kafs_dir_writeback(struct kafs_context *ctx, kafs_sinode_t *inoent_dir, const char *buf,
+                              size_t len);
+
+typedef struct
+{
+  kafs_sdir_v4_hdr_t hdr;
+  size_t data_off;
+  size_t logical_len;
+} kafs_dir_snapshot_meta_t;
+
+typedef struct
+{
+  size_t record_off;
+  size_t record_len;
+  kafs_inocnt_t ino;
+  kafs_filenamelen_t name_len;
+  const char *name;
+  uint16_t flags;
+  uint32_t name_hash;
+} kafs_dirent_view_t;
+
+static int kafs_dirent_view_next(const char *buf, size_t len, size_t off, kafs_dirent_view_t *out);
+
+static uint32_t kafs_dirent_name_hash(const char *name, kafs_filenamelen_t namelen)
+{
+  uint32_t hash = 2166136261u;
+  for (kafs_filenamelen_t i = 0; i < namelen; ++i)
+  {
+    hash ^= (uint8_t)name[i];
+    hash *= 16777619u;
+  }
+  return hash;
+}
+
+static int kafs_dir_snapshot_meta_load(const char *buf, size_t len, kafs_dir_snapshot_meta_t *out)
+{
+  assert(out != NULL);
+  memset(out, 0, sizeof(*out));
+  out->data_off = sizeof(kafs_sdir_v4_hdr_t);
+  if (len == 0)
+  {
+    kafs_dir_v4_hdr_init(&out->hdr);
+    out->logical_len = 0;
+    return 0;
+  }
+  if (len < sizeof(kafs_sdir_v4_hdr_t))
+    return -EIO;
+
+  memcpy(&out->hdr, buf, sizeof(out->hdr));
+  if (kafs_u32_stoh(out->hdr.dh_magic) != KAFS_DIRENT_V4_MAGIC)
+    return -EIO;
+  if (kafs_dir_v4_hdr_format_get(&out->hdr) != KAFS_DIRENT_V4_FORMAT_VERSION)
+    return -EPROTONOSUPPORT;
+  if (kafs_dir_v4_hdr_flags_get(&out->hdr) != 0u)
+    return -EIO;
+
+  size_t record_bytes = (size_t)kafs_dir_v4_hdr_record_bytes_get(&out->hdr);
+  if (record_bytes > len - sizeof(kafs_sdir_v4_hdr_t))
+    return -EIO;
+
+  out->logical_len = sizeof(kafs_sdir_v4_hdr_t) + record_bytes;
+  return 0;
+}
+
+static int kafs_dir_v4_read_header(struct kafs_context *ctx, kafs_sinode_t *inoent_dir,
+                                   kafs_sdir_v4_hdr_t *hdr)
+{
+  assert(ctx != NULL);
+  assert(inoent_dir != NULL);
+  assert(hdr != NULL);
+
+  kafs_off_t filesize = kafs_ino_size_get(inoent_dir);
+  kafs_dir_v4_hdr_init(hdr);
+  if (filesize == 0)
+    return 0;
+  if (filesize < (kafs_off_t)sizeof(*hdr))
+    return -EIO;
+
+  ssize_t r = kafs_pread(ctx, inoent_dir, hdr, (kafs_off_t)sizeof(*hdr), 0);
+  if (r < 0)
+    return (int)r;
+  if (r != (ssize_t)sizeof(*hdr))
+    return -EIO;
+  if (kafs_u32_stoh(hdr->dh_magic) != KAFS_DIRENT_V4_MAGIC)
+    return -EIO;
+  if (kafs_dir_v4_hdr_format_get(hdr) != KAFS_DIRENT_V4_FORMAT_VERSION)
+    return -EPROTONOSUPPORT;
+  if (kafs_dir_v4_hdr_flags_get(hdr) != 0u)
+    return -EIO;
+  if ((kafs_off_t)sizeof(*hdr) + (kafs_off_t)kafs_dir_v4_hdr_record_bytes_get(hdr) > filesize)
+    return -EIO;
+  return 0;
+}
+
+static int kafs_dir_v4_write_header(struct kafs_context *ctx, kafs_sinode_t *inoent_dir,
+                                    const kafs_sdir_v4_hdr_t *hdr)
+{
+  ssize_t w = kafs_pwrite(ctx, inoent_dir, hdr, (kafs_off_t)sizeof(*hdr), 0);
+  if (w < 0)
+    return (int)w;
+  return (w == (ssize_t)sizeof(*hdr)) ? 0 : -EIO;
+}
+
+static int kafs_dir_v4_write_record_head(struct kafs_context *ctx, kafs_sinode_t *inoent_dir,
+                                         size_t rec_off, uint16_t rec_len, uint16_t flags,
+                                         kafs_inocnt_t ino, kafs_filenamelen_t namelen,
+                                         uint32_t name_hash)
+{
+  kafs_sdirent_v4_t rec;
+  memset(&rec, 0, sizeof(rec));
+  kafs_dirent_v4_rec_len_set(&rec, rec_len);
+  kafs_dirent_v4_flags_set(&rec, flags);
+  kafs_dirent_v4_ino_set(&rec, ino);
+  kafs_dirent_v4_filenamelen_set(&rec, namelen);
+  kafs_dirent_v4_name_hash_set(&rec, name_hash);
+  ssize_t w = kafs_pwrite(ctx, inoent_dir, &rec, (kafs_off_t)sizeof(rec), (kafs_off_t)rec_off);
+  if (w < 0)
+    return (int)w;
+  return (w == (ssize_t)sizeof(rec)) ? 0 : -EIO;
+}
 
 /// @brief ディレクトリエントリから対象のファイル名を探す
 /// @param ctx コンテキスト
@@ -3730,15 +3780,13 @@ static int kafs_dirent_search(struct kafs_context *ctx, kafs_sinode_t *inoent, c
   if (rc < 0)
     return rc;
 
+  uint32_t target_hash = kafs_dirent_name_hash(filename, filenamelen);
+
   size_t off = 0;
   while (1)
   {
-    kafs_inocnt_t d_ino;
-    kafs_filenamelen_t d_filenamelen;
-    const char *d_filename;
-    size_t rec_len;
-    int step =
-        kafs_dirent_iter_next(snap, snap_len, off, &d_ino, &d_filenamelen, &d_filename, &rec_len);
+    kafs_dirent_view_t view;
+    int step = kafs_dirent_view_next(snap, snap_len, off, &view);
     if (step == 0)
       break;
     if (step < 0)
@@ -3749,24 +3797,18 @@ static int kafs_dirent_search(struct kafs_context *ctx, kafs_sinode_t *inoent, c
       return -EIO;
     }
 
-    if (d_filenamelen == filenamelen && memcmp(d_filename, filename, filenamelen) == 0)
+    if ((view.flags & KAFS_DIRENT_FLAG_TOMBSTONE) == 0 && view.name_hash == target_hash &&
+        view.name_len == filenamelen && memcmp(view.name, filename, filenamelen) == 0)
     {
-      *pinoent_found = &ctx->c_inotbl[d_ino];
+      *pinoent_found = &ctx->c_inotbl[view.ino];
       free(snap);
       return KAFS_SUCCESS;
     }
-    off += rec_len;
+    off = view.record_off + view.record_len;
   }
   free(snap);
   return -ENOENT;
 }
-
-// Directory entry format on disk: {ino,u16 namelen, name[namelen]} repeated.
-typedef struct __attribute__((packed))
-{
-  kafs_sinocnt_t d_ino;
-  kafs_sfilenamelen_t d_filenamelen;
-} kafs_dirent_hdr_t;
 
 static int kafs_dir_snapshot(struct kafs_context *ctx, kafs_sinode_t *inoent_dir, char **out,
                              size_t *out_len)
@@ -3809,53 +3851,67 @@ static int kafs_dir_writeback(struct kafs_context *ctx, kafs_sinode_t *inoent_di
   return 0;
 }
 
-static int kafs_dirent_iter_next(const char *buf, size_t len, size_t off, kafs_inocnt_t *out_ino,
-                                 kafs_filenamelen_t *out_namelen, const char **out_name,
-                                 size_t *out_rec_len)
+static int kafs_dirent_view_next(const char *buf, size_t len, size_t off, kafs_dirent_view_t *out)
 {
-  const size_t hdr_sz = sizeof(kafs_dirent_hdr_t);
-  if (off >= len)
+  kafs_dir_snapshot_meta_t meta;
+  int rc = kafs_dir_snapshot_meta_load(buf, len, &meta);
+  if (rc < 0)
+    return rc;
+  if (meta.logical_len == 0)
     return 0;
-  if (len - off < hdr_sz)
+
+  size_t cur = off;
+  if (cur < meta.data_off)
+    cur = meta.data_off;
+  if (cur >= meta.logical_len)
     return 0;
-  kafs_dirent_hdr_t hdr;
-  memcpy(&hdr, buf + off, hdr_sz);
-  kafs_inocnt_t ino = kafs_inocnt_stoh(hdr.d_ino);
-  kafs_filenamelen_t namelen = kafs_filenamelen_stoh(hdr.d_filenamelen);
-  if (ino == 0 || namelen == 0)
-    return 0;
-  if (namelen >= FILENAME_MAX)
+  if (meta.logical_len - cur < sizeof(kafs_sdirent_v4_t))
+    return -EIO;
+
+  kafs_sdirent_v4_t rec;
+  memcpy(&rec, buf + cur, sizeof(rec));
+  uint16_t rec_len = kafs_dirent_v4_rec_len_get(&rec);
+  uint16_t flags = kafs_dirent_v4_flags_get(&rec);
+  kafs_inocnt_t ino = kafs_dirent_v4_ino_get(&rec);
+  kafs_filenamelen_t namelen = kafs_dirent_v4_filenamelen_get(&rec);
+  uint32_t name_hash = kafs_dirent_v4_name_hash_get(&rec);
+  if (rec_len < sizeof(kafs_sdirent_v4_t) || cur + rec_len > meta.logical_len)
+    return -EIO;
+  if ((flags & ~KAFS_DIRENT_FLAG_TOMBSTONE) != 0u)
+    return -EIO;
+  if (namelen == 0 || namelen >= FILENAME_MAX)
   {
     kafs_dlog(1,
               "%s: invalid dirent header off=%zu len=%zu ino=%" PRIuFAST16 " namelen=%" PRIuFAST16
-              "\n",
-              __func__, off, len, (uint_fast16_t)ino, (uint_fast16_t)namelen);
+              " flags=%u\n",
+              __func__, cur, len, (uint_fast16_t)ino, (uint_fast16_t)namelen, (unsigned)flags);
     return -EIO;
   }
-  if (len - off < hdr_sz + (size_t)namelen)
-    return 0;
-  *out_ino = ino;
-  *out_namelen = namelen;
-  *out_name = buf + off + hdr_sz;
-  *out_rec_len = hdr_sz + (size_t)namelen;
+  if ((size_t)namelen > rec_len - sizeof(kafs_sdirent_v4_t))
+    return -EIO;
+  if ((flags & KAFS_DIRENT_FLAG_TOMBSTONE) == 0 && ino == KAFS_INO_NONE)
+    return -EIO;
+
+  out->record_off = cur;
+  out->record_len = rec_len;
+  out->ino = ino;
+  out->name_len = namelen;
+  out->name = buf + cur + sizeof(kafs_sdirent_v4_t);
+  out->flags = flags;
+  out->name_hash = name_hash;
   return 1;
 }
 
 static int kafs_dir_is_empty_locked(struct kafs_context *ctx, kafs_sinode_t *inoent_dir)
 {
-  struct kafs_sdirent dirent;
-  ssize_t r = kafs_dirent_read(ctx, inoent_dir, &dirent, 0);
-  if (r < 0)
-    return (int)r;
-  if (r == 0)
-    return 1;
-  if (strcmp(dirent.d_filename, "..") != 0)
-    return 0;
+  kafs_sdir_v4_hdr_t hdr;
+  int rc = kafs_dir_v4_read_header(ctx, inoent_dir, &hdr);
+  if (rc < 0)
+    return rc;
 
-  r = kafs_dirent_read(ctx, inoent_dir, &dirent, (kafs_off_t)r);
-  if (r < 0)
-    return (int)r;
-  return (r == 0) ? 1 : 0;
+  uint32_t live_count = kafs_dir_v4_hdr_live_count_get(&hdr);
+  uint32_t floor = ((inoent_dir - ctx->c_inotbl) == KAFS_INO_ROOTDIR) ? 0u : 1u;
+  return (live_count <= floor) ? 1 : 0;
 }
 
 // NOTE: caller holds dir inode lock. For rename(2) we must not change linkcount of the moved inode.
@@ -3879,15 +3935,23 @@ static int kafs_dirent_add_nolink(struct kafs_context *ctx, kafs_sinode_t *inoen
   if (rc < 0)
     return rc;
 
-  // scan for duplicates and compute append offset
+  kafs_dir_snapshot_meta_t meta;
+  rc = kafs_dir_snapshot_meta_load(old, old_len, &meta);
+  if (rc < 0)
+  {
+    free(old);
+    return rc;
+  }
+
+  uint32_t target_hash = kafs_dirent_name_hash(filename, filenamelen);
+  kafs_dirent_view_t tombstone = {0};
+  int have_tombstone = 0;
+
   size_t off = 0;
   while (1)
   {
-    kafs_inocnt_t dino;
-    kafs_filenamelen_t dlen;
-    const char *dname;
-    size_t rec_len;
-    int step = kafs_dirent_iter_next(old, old_len, off, &dino, &dlen, &dname, &rec_len);
+    kafs_dirent_view_t view;
+    int step = kafs_dirent_view_next(old, old_len, off, &view);
     if (step == 0)
       break;
     if (step < 0)
@@ -3895,32 +3959,85 @@ static int kafs_dirent_add_nolink(struct kafs_context *ctx, kafs_sinode_t *inoen
       free(old);
       return -EIO;
     }
-    if (dlen == filenamelen && memcmp(dname, filename, filenamelen) == 0)
+    if (view.name_hash == target_hash && view.name_len == filenamelen &&
+        memcmp(view.name, filename, filenamelen) == 0)
     {
-      free(old);
-      return -EEXIST;
+      if ((view.flags & KAFS_DIRENT_FLAG_TOMBSTONE) != 0)
+      {
+        tombstone = view;
+        have_tombstone = 1;
+      }
+      else
+      {
+        free(old);
+        return -EEXIST;
+      }
     }
-    off += rec_len;
+    off = view.record_off + view.record_len;
   }
 
-  const size_t hdr_sz = sizeof(kafs_dirent_hdr_t);
-  size_t new_len = off + hdr_sz + (size_t)filenamelen;
-  char *nw = (char *)malloc(new_len);
-  if (!nw)
+  kafs_sdir_v4_hdr_t hdr = meta.hdr;
+  if (old_len == 0)
+    kafs_dir_v4_hdr_init(&hdr);
+
+  uint32_t live_count = kafs_dir_v4_hdr_live_count_get(&hdr);
+  uint32_t tombstone_count = kafs_dir_v4_hdr_tombstone_count_get(&hdr);
+  uint32_t record_bytes = kafs_dir_v4_hdr_record_bytes_get(&hdr);
+
+  if (have_tombstone)
+  {
+    rc = kafs_dir_v4_write_record_head(ctx, inoent_dir, tombstone.record_off,
+                                       (uint16_t)tombstone.record_len, 0u, ino, filenamelen,
+                                       target_hash);
+    if (rc == 0)
+    {
+      kafs_dir_v4_hdr_live_count_set(&hdr, live_count + 1u);
+      kafs_dir_v4_hdr_tombstone_count_set(&hdr, tombstone_count - 1u);
+      rc = kafs_dir_v4_write_header(ctx, inoent_dir, &hdr);
+    }
+    free(old);
+    return rc;
+  }
+
+  size_t rec_len = sizeof(kafs_sdirent_v4_t) + (size_t)filenamelen;
+  size_t append_off = (old_len == 0) ? sizeof(kafs_sdir_v4_hdr_t) : meta.logical_len;
+  if (old_len != 0 && append_off != old_len)
   {
     free(old);
-    return -ENOMEM;
+    return -EIO;
   }
-  if (off)
-    memcpy(nw, old, off);
-  kafs_dirent_hdr_t hdr;
-  hdr.d_ino = kafs_inocnt_htos(ino);
-  hdr.d_filenamelen = kafs_filenamelen_htos(filenamelen);
-  memcpy(nw + off, &hdr, hdr_sz);
-  memcpy(nw + off + hdr_sz, filename, filenamelen);
 
-  rc = kafs_dir_writeback(ctx, inoent_dir, nw, new_len);
-  free(nw);
+  char recbuf[sizeof(kafs_sdirent_v4_t) + FILENAME_MAX];
+  kafs_sdirent_v4_t *rec = (kafs_sdirent_v4_t *)recbuf;
+  memset(recbuf, 0, rec_len);
+  kafs_dirent_v4_rec_len_set(rec, (uint16_t)rec_len);
+  kafs_dirent_v4_flags_set(rec, 0u);
+  kafs_dirent_v4_ino_set(rec, ino);
+  kafs_dirent_v4_filenamelen_set(rec, filenamelen);
+  kafs_dirent_v4_name_hash_set(rec, target_hash);
+  memcpy(recbuf + sizeof(kafs_sdirent_v4_t), filename, filenamelen);
+
+  if (old_len == 0)
+  {
+    rc = kafs_dir_v4_write_header(ctx, inoent_dir, &hdr);
+    if (rc < 0)
+    {
+      free(old);
+      return rc;
+    }
+  }
+
+  ssize_t w = kafs_pwrite(ctx, inoent_dir, recbuf, (kafs_off_t)rec_len, (kafs_off_t)append_off);
+  if (w < 0 || (size_t)w != rec_len)
+  {
+    free(old);
+    return (w < 0) ? (int)w : -EIO;
+  }
+
+  kafs_dir_v4_hdr_live_count_set(&hdr, live_count + 1u);
+  kafs_dir_v4_hdr_tombstone_count_set(&hdr, tombstone_count);
+  kafs_dir_v4_hdr_record_bytes_set(&hdr, record_bytes + (uint32_t)rec_len);
+  rc = kafs_dir_v4_write_header(ctx, inoent_dir, &hdr);
   free(old);
   return rc;
 }
@@ -3956,14 +4073,21 @@ static int kafs_dirent_remove_nolink(struct kafs_context *ctx, kafs_sinode_t *in
   if (rc < 0)
     return rc;
 
+  kafs_dir_snapshot_meta_t meta;
+  rc = kafs_dir_snapshot_meta_load(old, old_len, &meta);
+  if (rc < 0)
+  {
+    free(old);
+    return rc;
+  }
+
+  uint32_t target_hash = kafs_dirent_name_hash(filename, filenamelen);
+
   size_t off = 0;
   while (1)
   {
-    kafs_inocnt_t dino;
-    kafs_filenamelen_t dlen;
-    const char *dname;
-    size_t rec_len;
-    int step = kafs_dirent_iter_next(old, old_len, off, &dino, &dlen, &dname, &rec_len);
+    kafs_dirent_view_t view;
+    int step = kafs_dirent_view_next(old, old_len, off, &view);
     if (step == 0)
       break;
     if (step < 0)
@@ -3971,28 +4095,27 @@ static int kafs_dirent_remove_nolink(struct kafs_context *ctx, kafs_sinode_t *in
       free(old);
       return -EIO;
     }
-    if (dlen == filenamelen && memcmp(dname, filename, filenamelen) == 0)
+    if ((view.flags & KAFS_DIRENT_FLAG_TOMBSTONE) == 0 && view.name_hash == target_hash &&
+        view.name_len == filenamelen && memcmp(view.name, filename, filenamelen) == 0)
     {
-      size_t new_len = old_len - rec_len;
-      char *nw = (char *)malloc(new_len);
-      if (!nw)
+      kafs_sdir_v4_hdr_t hdr = meta.hdr;
+      uint32_t live_count = kafs_dir_v4_hdr_live_count_get(&hdr);
+      uint32_t tombstone_count = kafs_dir_v4_hdr_tombstone_count_get(&hdr);
+      rc = kafs_dir_v4_write_record_head(ctx, inoent_dir, view.record_off,
+                                         (uint16_t)view.record_len, KAFS_DIRENT_FLAG_TOMBSTONE,
+                                         view.ino, view.name_len, view.name_hash);
+      if (rc == 0)
       {
-        free(old);
-        return -ENOMEM;
+        kafs_dir_v4_hdr_live_count_set(&hdr, live_count - 1u);
+        kafs_dir_v4_hdr_tombstone_count_set(&hdr, tombstone_count + 1u);
+        rc = kafs_dir_v4_write_header(ctx, inoent_dir, &hdr);
       }
-      if (off)
-        memcpy(nw, old, off);
-      if (off + rec_len < old_len)
-        memcpy(nw + off, old + off + rec_len, old_len - (off + rec_len));
-
-      rc = kafs_dir_writeback(ctx, inoent_dir, nw, new_len);
       if (rc == 0 && out_ino)
-        *out_ino = dino;
-      free(nw);
+        *out_ino = view.ino;
       free(old);
       return rc;
     }
-    off += rec_len;
+    off = view.record_off + view.record_len;
   }
 
   free(old);
@@ -6357,12 +6480,8 @@ static int kafs_op_readdir(const char *path, void *buf, fuse_fill_dir_t filler, 
   size_t o = 0;
   while (1)
   {
-    kafs_inocnt_t d_ino;
-    kafs_filenamelen_t d_filenamelen;
-    const char *d_filename;
-    size_t rec_len;
-    int step =
-        kafs_dirent_iter_next(snap, snap_len, o, &d_ino, &d_filenamelen, &d_filename, &rec_len);
+    kafs_dirent_view_t view;
+    int step = kafs_dirent_view_next(snap, snap_len, o, &view);
     if (step == 0)
       break;
     if (step < 0)
@@ -6371,16 +6490,21 @@ static int kafs_op_readdir(const char *path, void *buf, fuse_fill_dir_t filler, 
       kafs_inode_unlock(ctx, ino_dir);
       return -EIO;
     }
+    if ((view.flags & KAFS_DIRENT_FLAG_TOMBSTONE) != 0)
+    {
+      o = view.record_off + view.record_len;
+      continue;
+    }
     char name[FILENAME_MAX];
-    memcpy(name, d_filename, d_filenamelen);
-    name[d_filenamelen] = '\0';
+    memcpy(name, view.name, view.name_len);
+    name[view.name_len] = '\0';
     if (filler(buf, name, NULL, 0, 0))
     {
       free(snap);
       kafs_inode_unlock(ctx, ino_dir);
       return -ENOENT;
     }
-    o += rec_len;
+    o = view.record_off + view.record_len;
   }
   free(snap);
   kafs_inode_unlock(ctx, ino_dir);
@@ -6463,6 +6587,13 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   kafs_ino_blocks_set(inoent_new, 0);
   kafs_ino_dev_set(inoent_new, dev);
   memset(inoent_new->i_blkreftbl, 0, sizeof(inoent_new->i_blkreftbl));
+  if (S_ISDIR(mode))
+  {
+    kafs_sdir_v4_hdr_t dir_hdr;
+    kafs_dir_v4_hdr_init(&dir_hdr);
+    memcpy(inoent_new->i_blkreftbl, &dir_hdr, sizeof(dir_hdr));
+    kafs_ino_size_set(inoent_new, (kafs_off_t)sizeof(dir_hdr));
+  }
 
   kafs_inode_alloc_unlock(ctx);
 
@@ -7994,42 +8125,15 @@ static int kafs_migrate_v2_image(const char *image_path, int assume_yes)
     close(fd);
     return 1;
   }
-  if (fmt != KAFS_FORMAT_VERSION_V2)
+  if (fmt != KAFS_FORMAT_VERSION_V2 && fmt != KAFS_FORMAT_VERSION_V3)
   {
     close(fd);
     return -EPROTONOSUPPORT;
   }
 
-  if (!assume_yes && !kafs_confirm_yes_stdin())
-  {
-    close(fd);
-    return -ECANCELED;
-  }
-
-  kafs_sb_format_version_set(&sb, KAFS_FORMAT_VERSION);
-  if (kafs_sb_allocator_size_get(&sb) > 0)
-  {
-    if (kafs_sb_allocator_version_get(&sb) < 2u)
-      kafs_sb_allocator_version_set(&sb, 2u);
-    uint64_t ff = kafs_sb_feature_flags_get(&sb);
-    kafs_sb_feature_flags_set(&sb, ff | KAFS_FEATURE_ALLOC_V2);
-  }
-
-  if (pwrite(fd, &sb, sizeof(sb), 0) != (ssize_t)sizeof(sb))
-  {
-    int err = -errno;
-    close(fd);
-    return err ? err : -EIO;
-  }
-  if (fsync(fd) != 0)
-  {
-    int err = -errno;
-    close(fd);
-    return err;
-  }
-
   close(fd);
-  return 0;
+  (void)assume_yes;
+  return -EPROTONOSUPPORT;
 }
 
 #ifndef KAFS_NO_MAIN
@@ -9149,35 +9253,36 @@ int main(int argc, char **argv)
   if (kafs_sb_format_version_get(&sbdisk) != KAFS_FORMAT_VERSION)
   {
     uint32_t fmt_ver = kafs_sb_format_version_get(&sbdisk);
-    if (fmt_ver == KAFS_FORMAT_VERSION_V2)
+    if (fmt_ver == KAFS_FORMAT_VERSION_V2 || fmt_ver == KAFS_FORMAT_VERSION_V3)
     {
       if (auto_migrate_v2)
       {
         int mrc = kafs_migrate_v2_image(image_path, migrate_yes ? 1 : 0);
         if (mrc == 0)
         {
-          fprintf(stderr, "migration completed: v2 -> v3. please restart mount.\n");
+          fprintf(stderr, "migration completed. please restart mount.\n");
           exit(0);
         }
         if (mrc == 1)
         {
-          fprintf(stderr, "image already v3; continue normal mount without --migrate-v2.\n");
+          fprintf(stderr, "image already v%u; continue normal mount without --migrate-v2.\n",
+                  (unsigned)KAFS_FORMAT_VERSION);
           exit(0);
         }
-        if (mrc == -ECANCELED)
+        if (mrc == -EPROTONOSUPPORT)
+          fprintf(stderr, "in-place migration to v%u is not supported for this image.\n",
+                  (unsigned)KAFS_FORMAT_VERSION);
+        else if (mrc == -ECANCELED)
           fprintf(stderr, "migration canceled by user.\n");
         else
           fprintf(stderr, "migration failed rc=%d.\n", mrc);
         exit(2);
       }
       fprintf(stderr,
-              "unsupported format version: v2.\n"
-              "migration guidance:\n"
-              "  1) offline migrate command (recommended):\n"
-              "     kafsctl migrate %s [--yes]\n"
-              "  2) one-shot startup migration:\n"
-              "     kafs --image %s --migrate-v2 [--yes] <mountpoint> [FUSE options]\n",
-              image_path, image_path);
+              "unsupported format version: v%u.\n"
+              "v4 uses a new directory-entry layout; in-place migration is disabled.\n"
+              "Create a fresh v4 image and copy data into it.\n",
+              (unsigned)fmt_ver);
     }
     else
       fprintf(stderr, "unsupported format version: %u (expected %u).\n", fmt_ver,

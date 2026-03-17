@@ -3,6 +3,7 @@
 #include "kafs_superblock.h"
 #include "kafs_block.h"
 #include "kafs_inode.h"
+#include "kafs_dirent.h"
 #include "kafs_hash.h"
 #include "kafs_journal.h"
 #include "kafs_cli_opts.h"
@@ -511,7 +512,11 @@ int main(int argc, char **argv)
   inoent_rootdir->i_linkcnt = kafs_linkcnt_htos(1);
   kafs_ino_blocks_set(inoent_rootdir, 0);
   kafs_ino_dev_set(inoent_rootdir, 0);
-  // ルートディレクトリのエントリは省略（"." は readdir で注入、".." は任意）
+  kafs_sdir_v4_hdr_t root_dir_hdr;
+  kafs_dir_v4_hdr_init(&root_dir_hdr);
+  memcpy(inoent_rootdir->i_blkreftbl, &root_dir_hdr, sizeof(root_dir_hdr));
+  kafs_ino_size_set(inoent_rootdir, (kafs_off_t)sizeof(root_dir_hdr));
+  // ルートディレクトリの実レコードは空開始（"." は readdir で注入、".." は保持しない）
 
   // HRL 初期化（ゼロクリア）
   ctx.c_hrl_index = (void *)((char *)ctx.c_superblock + layout.hrl_index_off);
