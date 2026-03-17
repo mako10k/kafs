@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.4.0 - 2026-03-17
+- v2/v3 イメージを v4 へ変換する offline pre-start migration を追加し、共有 migrator を `kafsctl migrate` と `kafs --migrate` から利用可能にした。
+- 起動前 migration の CLI 名を `--migrate` に整理し、`--migrate-v2` は後方互換の deprecated alias に変更した。
+- legacy dirent から v4 dirent への変換回帰テスト、CLI surface、README/man/migration guide を v4 前提に更新した。
+
 ## v0.3.1 - 2026-03-15
 - hotplug の supervised restart 経路を整理し、`restart-back` 後の `socketpair`/FD handoff と session/epoch handshake を安定化。
 - 初回 bootstrap は UDS を維持しつつ、`kafsctl`、man page、設計 docs、e2e test を現行の hotplug モデルに同期。
