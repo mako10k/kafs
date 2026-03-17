@@ -128,6 +128,8 @@ static int read_whole_file(const char *path, char *buf, size_t size)
     ssize_t n = read(fd, buf + off, size - off);
     if (n < 0)
     {
+      if (errno == EINTR)
+        continue;
       int rc = -errno;
       close(fd);
       return rc;

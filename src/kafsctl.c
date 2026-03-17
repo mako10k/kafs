@@ -2820,7 +2820,7 @@ static int path_ref_is_directory(const char *mnt, const char *path, int no_deref
   kafs_path_ref_t ref;
   int rc = resolve_path_ref(mnt, path, &ref);
   if (rc != 0)
-    return -1;
+    return rc;
 
   struct stat st;
   if (fstatat(ref.dfd, ref.rel, &st, no_deref ? AT_SYMLINK_NOFOLLOW : 0) != 0)
@@ -2830,7 +2830,7 @@ static int path_ref_is_directory(const char *mnt, const char *path, int no_deref
     if (err == ENOENT)
       return 0;
     perror("fstatat");
-    return -1;
+    return 1;
   }
 
   close_path_ref(&ref);
@@ -3105,8 +3105,8 @@ static int cmd_ln_dispatch(int argc, char **argv)
     if (!opts.no_target_directory)
     {
       int is_dir = path_ref_is_directory(mnt, dst, opts.no_deref);
-      if (is_dir < 0)
-        return 1;
+      if (is_dir != 0 && is_dir != 1)
+        return is_dir;
       if (is_dir > 0)
       {
         if (build_link_path(dst_buf, dst, src) != 0)
