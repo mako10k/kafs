@@ -82,7 +82,8 @@ Example:
 ```
 
 Migration options:
-- `--migrate-v2`: run offline pre-start migration for a v2/v3 image to v4, then exit
+- `--migrate`: run offline pre-start migration for a v2/v3 image to v4, then exit
+- `--migrate-v2`: deprecated alias of `--migrate`
 - `--yes`: skip migration confirmation
 
 ### fsck.kafs
@@ -216,8 +217,8 @@ Explicit offline execution is recommended.
 To run it as a startup one-shot:
 
 ```sh
-./kafs --image /path/to/image.kafs --migrate-v2 /mnt/kafs -f
-./kafs --image /path/to/image.kafs --migrate-v2 --yes /mnt/kafs -f
+./kafs --image /path/to/image.kafs --migrate /mnt/kafs -f
+./kafs --image /path/to/image.kafs --migrate --yes /mnt/kafs -f
 ```
 
 See `docs/migration-v2-to-v3.md` for details.

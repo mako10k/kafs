@@ -93,7 +93,7 @@ _kafs() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local opts="-h --help --image --image= --migrate-v2 --yes --writeback-cache --no-writeback-cache --trim-on-free --no-trim-on-free --hotplug --hotplug= --hotplug-uds --hotplug-uds= --hotplug-back-bin --hotplug-back-bin="
+  local opts="-h --help --image --image= --migrate --migrate-v2 --yes --writeback-cache --no-writeback-cache --trim-on-free --no-trim-on-free --hotplug --hotplug= --hotplug-uds --hotplug-uds= --hotplug-back-bin --hotplug-back-bin="
 
   if [[ "${prev}" == "--image" || "${prev}" == "--hotplug-uds" || "${prev}" == "--hotplug-back-bin" ]]; then
     _kafs__path_complete "$prev" "$cur"

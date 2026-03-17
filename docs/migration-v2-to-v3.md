@@ -27,9 +27,11 @@
 `kafs` 起動時に特殊オプションで pre-start migration を実行できます。
 
 - 対話確認あり:
-  - `kafs --image <image> --migrate-v2 <mountpoint> [FUSE options...]`
+  - `kafs --image <image> --migrate <mountpoint> [FUSE options...]`
 - 非対話:
-  - `kafs --image <image> --migrate-v2 --yes <mountpoint> [FUSE options...]`
+  - `kafs --image <image> --migrate --yes <mountpoint> [FUSE options...]`
+
+互換性のため `--migrate-v2` も当面は受け付けますが、今後は `--migrate` を使ってください。
 
 実行後は `migration completed. please restart mount.` を出して終了するため、再度通常マウントしてください。
 

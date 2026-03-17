@@ -821,13 +821,13 @@ int main(void)
   char *startup_migrate_argv[] = {(char *)kafs_abs,
                                   (char *)"--image",
                                   (char *)startup_img,
-                                  (char *)"--migrate-v2",
+                                  (char *)"--migrate",
                                   (char *)"--yes",
                                   (char *)"mnt",
                                   NULL};
   if (run_cmd_status(startup_migrate_argv) != 0)
   {
-    fprintf(stderr, "kafs --migrate-v2 --yes failed\n");
+    fprintf(stderr, "kafs --migrate --yes failed\n");
     return 1;
   }
   if (read_superblock(startup_img, &legacy_sb) != 0 ||

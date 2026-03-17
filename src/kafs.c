@@ -7984,15 +7984,15 @@ static void usage(const char *prog)
           "Usage:\n"
           "  %s [global-options] <mountpoint> [FUSE options...]\n"
           "  %s <image> <mountpoint> [FUSE options...]\n"
-          "  %s [--image <image>] --migrate-v2 [--yes] <mountpoint> [FUSE options...]\n"
+          "  %s [--image <image>] --migrate [--yes] <mountpoint> [FUSE options...]\n"
           "\n"
           "Options:\n"
           "  [Global]\n"
           "    -h, --help                        Show this help and exit\n"
           "    --image <image>                   Image path\n"
           "    --image=<image>                   Image path (inline form)\n"
-          "    --migrate-v2                      Legacy pre-start migration entrypoint for "
-          "v2/v3 -> v4\n"
+          "    --migrate                         Pre-start migration entrypoint for v2/v3 -> v4\n"
+          "    --migrate-v2                      Deprecated alias of --migrate\n"
           "    --yes                             Skip migration confirmation prompt\n"
           "\n"
           "  [Cache/TRIM]\n"
@@ -8077,7 +8077,7 @@ static void usage(const char *prog)
           "\n"
           "Notes:\n"
           "    v2/v3 images are refused by default for v4 mount.\n"
-          "    Use kafsctl migrate or --migrate-v2 to run offline pre-start migration.\n"
+          "    Use kafsctl migrate or --migrate to run offline pre-start migration.\n"
           "\n"
           "Examples:\n"
           "  %s --image test.img mnt -f\n"
@@ -8425,7 +8425,7 @@ int main(int argc, char **argv)
   kafs_crash_diag_install("kafs");
   // 画像ファイル指定を受け取る: --image <path> または --image=<path>、環境変数 KAFS_IMAGE
   const char *image_path = getenv("KAFS_IMAGE");
-  kafs_bool_t auto_migrate_v2 = KAFS_FALSE;
+  kafs_bool_t auto_migrate = KAFS_FALSE;
   kafs_bool_t migrate_yes = KAFS_FALSE;
   kafs_bool_t writeback_cache_enabled = KAFS_TRUE;
   kafs_bool_t writeback_cache_explicit = KAFS_FALSE;
@@ -8467,9 +8467,9 @@ int main(int argc, char **argv)
       show_help = KAFS_TRUE;
       continue;
     }
-    if (strcmp(a, "--migrate-v2") == 0)
+    if (strcmp(a, "--migrate") == 0 || strcmp(a, "--migrate-v2") == 0)
     {
-      auto_migrate_v2 = KAFS_TRUE;
+      auto_migrate = KAFS_TRUE;
       continue;
     }
     if (strcmp(a, "--yes") == 0)
@@ -9538,7 +9538,7 @@ int main(int argc, char **argv)
     uint32_t fmt_ver = kafs_sb_format_version_get(&sbdisk);
     if (fmt_ver == KAFS_FORMAT_VERSION_V2 || fmt_ver == KAFS_FORMAT_VERSION_V3)
     {
-      if (auto_migrate_v2)
+      if (auto_migrate)
       {
         int mrc = kafs_core_migrate_image(image_path, migrate_yes ? 1 : 0);
         if (mrc == 0)
@@ -9548,7 +9548,7 @@ int main(int argc, char **argv)
         }
         if (mrc == 1)
         {
-          fprintf(stderr, "image already v%u; continue normal mount without --migrate-v2.\n",
+            fprintf(stderr, "image already v%u; continue normal mount without --migrate.\n",
                   (unsigned)KAFS_FORMAT_VERSION);
           exit(0);
         }
@@ -9562,7 +9562,7 @@ int main(int argc, char **argv)
       }
       fprintf(stderr,
               "unsupported format version: v%u.\n"
-              "Run kafsctl migrate <image> or kafs --migrate-v2 before mounting.\n",
+              "Run kafsctl migrate <image> or kafs --migrate before mounting.\n",
               (unsigned)fmt_ver);
     }
     else
