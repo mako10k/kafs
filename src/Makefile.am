@@ -38,8 +38,8 @@ kafsresize_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 kafsresize_LDADD = $(KAFS_LIBS)
 
 # runtime control/stats tool
-kafsctl_SOURCES = kafsctl.c
-kafsctl_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+kafsctl_SOURCES = kafsctl.c kafs.c kafs_hrl.c kafs_locks.c kafs_journal.c kafs_rpc.c
+kafsctl_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -DKAFS_NO_MAIN
 kafsctl_LDADD = $(KAFS_LIBS)
 
 kafs_front_SOURCES = kafs_front.c kafs_rpc.c

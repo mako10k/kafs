@@ -82,7 +82,7 @@ Example:
 ```
 
 Migration options:
-- `--migrate-v2`: migrate a v2 image to v3 in one-shot mode at startup, then exit
+- `--migrate-v2`: run offline pre-start migration for a v2/v3 image to v4, then exit
 - `--yes`: skip migration confirmation
 
 ### fsck.kafs
@@ -184,8 +184,8 @@ Inspect stats, migration, and hotplug controls:
 ./kafsctl migrate /tmp/kafs.img
 ```
 
-`migrate` is an irreversible operation that updates a v2 image to v3.
-When `--yes` is not specified, it requires confirmation by entering `YES`.
+`migrate` is an irreversible offline pre-start operation that updates a v2/v3 image to v4.
+When `--yes` is not specified, it requires a Yes/No confirmation prompt.
 
 `fsstat` supports output units via `--bytes`, `--mib`, and `--gib`.
 
@@ -204,7 +204,7 @@ This monitor prints cumulative and delta values for:
 - `bg_dedup_index_evicts`
 - `bg_dedup_cooldowns`
 
-## Migration (v2 -> v3)
+## Migration (v2/v3 -> v4)
 
 Explicit offline execution is recommended.
 
