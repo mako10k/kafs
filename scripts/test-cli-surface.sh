@@ -33,6 +33,10 @@ declare -a subcommand_help_cmds=(
   "./src/kafsctl help chmod"
   "./src/kafsctl chmod --help"
   "./src/kafsctl cp --help"
+  "./src/kafsctl mv --help"
+  "./src/kafsctl ln --help"
+  "./src/kafsctl symlink --help"
+  "./src/kafsctl rsync --help"
 )
 
 for cmd in "${subcommand_help_cmds[@]}"; do

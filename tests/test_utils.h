@@ -24,6 +24,9 @@ int kafs_test_enter_tmpdir(const char *tag);
 // If KAFS_TEST_KAFS is set, it is used; otherwise falls back to "./kafs".
 const char *kafs_test_kafs_bin(void);
 
+// If KAFS_TEST_KAFSCTL is set, it is used; otherwise falls back to "./kafsctl".
+const char *kafs_test_kafsctl_bin(void);
+
 static inline int kafs_test_mkimg_with_hrl(const char *path, size_t bytes, unsigned log_bs,
                                            unsigned inodes, kafs_context_t *out_ctx,
                                            off_t *out_mapsize)

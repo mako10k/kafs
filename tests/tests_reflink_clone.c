@@ -54,6 +54,27 @@ static int is_mounted_fuse(const char *mnt)
   return mounted;
 }
 
+static int run_kafsctl_cp_reflink(const char *src, const char *dst)
+{
+  const char *kafsctl = kafs_test_kafsctl_bin();
+  pid_t pid = fork();
+  if (pid < 0)
+    return -errno;
+  if (pid == 0)
+  {
+    char *args[] = {(char *)kafsctl, "cp", (char *)src, (char *)dst, "--reflink", NULL};
+    execvp(args[0], args);
+    _exit(127);
+  }
+
+  int st = 0;
+  if (waitpid(pid, &st, 0) < 0)
+    return -errno;
+  if (!WIFEXITED(st))
+    return -1;
+  return WEXITSTATUS(st);
+}
+
 static pid_t spawn_kafs(const char *img, const char *mnt)
 {
   mkdir(mnt, 0700);
@@ -192,9 +213,7 @@ int main(void)
     close(d);
     close(s);
 
-    char cmd[PATH_MAX * 3];
-    snprintf(cmd, sizeof(cmd), "./kafsctl cp %s /src /dst --reflink", mnt);
-    int rc = system(cmd);
+    int rc = run_kafsctl_cp_reflink(psrc, pdst);
     if (rc != 0)
     {
       tlogf("kafsctl reflink copy failed: rc=%d", rc);

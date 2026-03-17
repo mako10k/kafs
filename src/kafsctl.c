@@ -13,6 +13,7 @@
 #include <limits.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 
 typedef enum
@@ -107,13 +108,14 @@ static void usage(const char *prog)
           "  %s rm <path>\n"
           "  %s mkdir <path>\n"
           "  %s rmdir <path>\n"
-          "  %s ln <mountpoint> <src> <dst>\n"
-          "  %s symlink <mountpoint> <target> <linkpath>\n"
+          "  %s ln <src> <dst>\n"
+          "  %s symlink <target> <linkpath>\n"
+          "  %s rsync [rsync options...] <src>... <dst>\n"
           "  %s readlink <path>\n"
           "  %s chmod <octal_mode> <path>\n"
           "  %s touch <path>\n",
           prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog,
-          prog, prog, prog, prog, prog, prog, prog, prog, prog);
+          prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 static void usage_cmd(const char *prog, const char *suffix, const char *details)
@@ -201,6 +203,33 @@ static void usage_path_cmd(const char *prog, const char *cmd, const char *args)
   char suffix[256];
   snprintf(suffix, sizeof(suffix), "%s %s", cmd, args);
   usage_cmd(prog, suffix, NULL);
+}
+
+static void usage_cp_cmd(const char *prog)
+{
+  usage_cmd(prog, "cp <src> <dst> [--reflink]\n       cp <mountpoint> <src> <dst> [--reflink]",
+            NULL);
+}
+
+static void usage_mv_cmd(const char *prog)
+{
+  usage_cmd(prog, "mv <src> <dst>\n       mv <mountpoint> <src> <dst>", NULL);
+}
+
+static void usage_ln_cmd(const char *prog)
+{
+  usage_cmd(prog, "ln <src> <dst>\n       ln <mountpoint> <src> <dst>", NULL);
+}
+
+static void usage_symlink_cmd(const char *prog)
+{
+  usage_cmd(prog, "symlink <target> <linkpath>\n       symlink <mountpoint> <target> <linkpath>",
+            NULL);
+}
+
+static void usage_rsync_cmd(const char *prog)
+{
+  usage_cmd(prog, "rsync [rsync options...] <src>... <dst>", NULL);
 }
 
 static void usage_single_path_cmd(const char *prog, const char *cmd)
@@ -325,12 +354,12 @@ static int try_subcommand_help(int argc, char **argv)
       }
       if (strcmp(argv[2], "cp") == 0)
       {
-        usage_path_cmd(argv[0], "cp", "<mountpoint> <src> <dst> [--reflink]");
+        usage_cp_cmd(argv[0]);
         return 0;
       }
       if (strcmp(argv[2], "mv") == 0)
       {
-        usage_path_cmd(argv[0], "mv", "<mountpoint> <src> <dst>");
+        usage_mv_cmd(argv[0]);
         return 0;
       }
       if (strcmp(argv[2], "rm") == 0)
@@ -350,12 +379,17 @@ static int try_subcommand_help(int argc, char **argv)
       }
       if (strcmp(argv[2], "ln") == 0)
       {
-        usage_path_cmd(argv[0], "ln", "<mountpoint> <src> <dst>");
+        usage_ln_cmd(argv[0]);
         return 0;
       }
       if (strcmp(argv[2], "symlink") == 0)
       {
-        usage_path_cmd(argv[0], "symlink", "<mountpoint> <target> <linkpath>");
+        usage_symlink_cmd(argv[0]);
+        return 0;
+      }
+      if (strcmp(argv[2], "rsync") == 0)
+      {
+        usage_rsync_cmd(argv[0]);
         return 0;
       }
       if (strcmp(argv[2], "readlink") == 0)
@@ -394,9 +428,9 @@ static int try_subcommand_help(int argc, char **argv)
     else if (strcmp(argv[1], "write") == 0)
       usage_single_path_cmd(argv[0], "write");
     else if (strcmp(argv[1], "cp") == 0)
-      usage_path_cmd(argv[0], "cp", "<mountpoint> <src> <dst> [--reflink]");
+      usage_cp_cmd(argv[0]);
     else if (strcmp(argv[1], "mv") == 0)
-      usage_path_cmd(argv[0], "mv", "<mountpoint> <src> <dst>");
+      usage_mv_cmd(argv[0]);
     else if (strcmp(argv[1], "rm") == 0)
       usage_single_path_cmd(argv[0], "rm");
     else if (strcmp(argv[1], "mkdir") == 0)
@@ -404,9 +438,11 @@ static int try_subcommand_help(int argc, char **argv)
     else if (strcmp(argv[1], "rmdir") == 0)
       usage_single_path_cmd(argv[0], "rmdir");
     else if (strcmp(argv[1], "ln") == 0)
-      usage_path_cmd(argv[0], "ln", "<mountpoint> <src> <dst>");
+      usage_ln_cmd(argv[0]);
     else if (strcmp(argv[1], "symlink") == 0)
-      usage_path_cmd(argv[0], "symlink", "<mountpoint> <target> <linkpath>");
+      usage_symlink_cmd(argv[0]);
+    else if (strcmp(argv[1], "rsync") == 0)
+      usage_rsync_cmd(argv[0]);
     else if (strcmp(argv[1], "readlink") == 0)
       usage_single_path_cmd(argv[0], "readlink");
     else if (strcmp(argv[1], "chmod") == 0)
@@ -1282,6 +1318,14 @@ static void close_path_ref(kafs_path_ref_t *ref)
   }
 }
 
+static void init_path_ref(kafs_path_ref_t *ref)
+{
+  if (!ref)
+    return;
+  memset(ref, 0, sizeof(*ref));
+  ref->dfd = -1;
+}
+
 static int path_join_components(char out[KAFS_IOCTL_PATH_MAX], const char *base, const char *suffix)
 {
   if (!out || !base || !suffix)
@@ -1594,8 +1638,7 @@ static int resolve_path_ref(const char *mnt, const char *path, kafs_path_ref_t *
 {
   if (!out)
     return 2;
-  memset(out, 0, sizeof(*out));
-  out->dfd = -1;
+  init_path_ref(out);
 
   int rc = (mnt && *mnt) ? resolve_mount_path(mnt, path, out) : resolve_auto_path(path, out);
   if (rc == -ENOTTY)
@@ -1615,6 +1658,162 @@ static int resolve_path_ref(const char *mnt, const char *path, kafs_path_ref_t *
     return 2;
   }
   return 0;
+}
+
+static int try_resolve_auto_path_ref(const char *path, kafs_path_ref_t *out)
+{
+  if (!out)
+    return -EINVAL;
+  init_path_ref(out);
+  return resolve_auto_path(path, out);
+}
+
+static int run_external_command(char *const argv[])
+{
+  pid_t pid = fork();
+  if (pid < 0)
+  {
+    perror("fork");
+    return 1;
+  }
+  if (pid == 0)
+  {
+    execvp(argv[0], argv);
+    perror(argv[0]);
+    _exit(127);
+  }
+
+  int status = 0;
+  while (waitpid(pid, &status, 0) < 0)
+  {
+    if (errno == EINTR)
+      continue;
+    perror("waitpid");
+    return 1;
+  }
+
+  if (WIFEXITED(status))
+    return WEXITSTATUS(status);
+  if (WIFSIGNALED(status))
+    return 128 + WTERMSIG(status);
+  return 1;
+}
+
+static int find_path_executable(const char *prog, char out[PATH_MAX])
+{
+  if (!prog || !*prog || !out)
+    return -EINVAL;
+  if (strchr(prog, '/') != NULL)
+  {
+    if (access(prog, X_OK) != 0)
+      return -errno;
+    if (snprintf(out, PATH_MAX, "%s", prog) >= PATH_MAX)
+      return -ENAMETOOLONG;
+    return 0;
+  }
+
+  const char *path_env = getenv("PATH");
+  if (!path_env || !*path_env)
+    return -ENOENT;
+
+  const char *cursor = path_env;
+  while (*cursor)
+  {
+    const char *sep = strchr(cursor, ':');
+    size_t len = sep ? (size_t)(sep - cursor) : strlen(cursor);
+    char dir[PATH_MAX];
+    if (len == 0)
+    {
+      if (snprintf(dir, sizeof(dir), ".") >= (int)sizeof(dir))
+        return -ENAMETOOLONG;
+    }
+    else
+    {
+      if (len >= sizeof(dir))
+        return -ENAMETOOLONG;
+      memcpy(dir, cursor, len);
+      dir[len] = '\0';
+    }
+
+    if (snprintf(out, PATH_MAX, "%s/%s", dir, prog) >= PATH_MAX)
+      return -ENAMETOOLONG;
+    if (access(out, X_OK) == 0)
+      return 0;
+
+    if (!sep)
+      break;
+    cursor = sep + 1;
+  }
+
+  return -ENOENT;
+}
+
+static int path_is_kafs_candidate(const char *path)
+{
+  kafs_path_ref_t ref;
+  int rc = try_resolve_auto_path_ref(path, &ref);
+  if (rc == 0)
+  {
+    close_path_ref(&ref);
+    return 1;
+  }
+  return 0;
+}
+
+static void print_rsync_operand_summary(int argc, char **argv)
+{
+  int first_operand = -1;
+  for (int i = 2; i < argc; ++i)
+  {
+    if (strcmp(argv[i], "--") == 0)
+    {
+      first_operand = i + 1;
+      break;
+    }
+    if (argv[i][0] != '-' || strcmp(argv[i], "-") == 0)
+    {
+      first_operand = i;
+      break;
+    }
+  }
+  if (first_operand < 0 || first_operand >= argc)
+    return;
+
+  int operand_count = argc - first_operand;
+  int kafs_operands = 0;
+  for (int i = first_operand; i < argc; ++i)
+    kafs_operands += path_is_kafs_candidate(argv[i]) ? 1 : 0;
+
+  fprintf(stderr, "rsync operand summary: operands=%d kafs_candidates=%d\n", operand_count,
+          kafs_operands);
+}
+
+static int cmd_rsync(int argc, char **argv)
+{
+  char rsync_path[PATH_MAX];
+  int frc = find_path_executable("rsync", rsync_path);
+  if (frc != 0)
+  {
+    print_rsync_operand_summary(argc, argv);
+    fprintf(stderr, "rsync binary not found in PATH\n");
+    return 2;
+  }
+
+  char **child_argv = (char **)calloc((size_t)argc, sizeof(char *));
+  if (!child_argv)
+  {
+    perror("calloc");
+    return 1;
+  }
+
+  child_argv[0] = rsync_path;
+  for (int i = 2; i < argc; ++i)
+    child_argv[i - 1] = argv[i];
+  child_argv[argc - 1] = NULL;
+
+  int rc = run_external_command(child_argv);
+  free(child_argv);
+  return rc;
 }
 
 static const char *to_kafs_path(const char *mnt_abs, const char *p, char out[KAFS_IOCTL_PATH_MAX])
@@ -2330,6 +2529,39 @@ static int cmd_cp(const char *mnt, const char *src, const char *dst, int reflink
   return 0;
 }
 
+static int cmd_cp_auto(const char *src, const char *dst, int reflink)
+{
+  kafs_path_ref_t src_ref;
+  kafs_path_ref_t dst_ref;
+  init_path_ref(&src_ref);
+  init_path_ref(&dst_ref);
+
+  int src_rc = try_resolve_auto_path_ref(src, &src_ref);
+  int dst_rc = try_resolve_auto_path_ref(dst, &dst_ref);
+  int same_mount =
+      (src_rc == 0 && dst_rc == 0 && strcmp(src_ref.mount, dst_ref.mount) == 0) ? 1 : 0;
+
+  if (same_mount)
+  {
+    int rc = cmd_cp(src_ref.mount, src_ref.abs_path, dst_ref.abs_path, reflink);
+    close_path_ref(&src_ref);
+    close_path_ref(&dst_ref);
+    return rc;
+  }
+
+  close_path_ref(&src_ref);
+  close_path_ref(&dst_ref);
+
+  if (reflink)
+  {
+    char *const argv[] = {"cp", "--reflink=always", (char *)src, (char *)dst, NULL};
+    return run_external_command(argv);
+  }
+
+  char *const argv[] = {"cp", (char *)src, (char *)dst, NULL};
+  return run_external_command(argv);
+}
+
 static int cmd_rm(const char *mnt, const char *path)
 {
   kafs_path_ref_t ref;
@@ -2417,6 +2649,33 @@ static int cmd_mv(const char *mnt, const char *src, const char *dst)
   return 0;
 }
 
+static int cmd_mv_auto(const char *src, const char *dst)
+{
+  kafs_path_ref_t src_ref;
+  kafs_path_ref_t dst_ref;
+  init_path_ref(&src_ref);
+  init_path_ref(&dst_ref);
+
+  int src_rc = try_resolve_auto_path_ref(src, &src_ref);
+  int dst_rc = try_resolve_auto_path_ref(dst, &dst_ref);
+  int same_mount =
+      (src_rc == 0 && dst_rc == 0 && strcmp(src_ref.mount, dst_ref.mount) == 0) ? 1 : 0;
+
+  if (same_mount)
+  {
+    int rc = cmd_mv(src_ref.mount, src_ref.abs_path, dst_ref.abs_path);
+    close_path_ref(&src_ref);
+    close_path_ref(&dst_ref);
+    return rc;
+  }
+
+  close_path_ref(&src_ref);
+  close_path_ref(&dst_ref);
+
+  char *const argv[] = {"mv", (char *)src, (char *)dst, NULL};
+  return run_external_command(argv);
+}
+
 static int cmd_ln(const char *mnt, const char *src, const char *dst)
 {
   char mabs[KAFS_IOCTL_PATH_MAX];
@@ -2453,6 +2712,33 @@ static int cmd_ln(const char *mnt, const char *src, const char *dst)
   return 0;
 }
 
+static int cmd_ln_auto(const char *src, const char *dst)
+{
+  kafs_path_ref_t src_ref;
+  kafs_path_ref_t dst_ref;
+  init_path_ref(&src_ref);
+  init_path_ref(&dst_ref);
+
+  int src_rc = try_resolve_auto_path_ref(src, &src_ref);
+  int dst_rc = try_resolve_auto_path_ref(dst, &dst_ref);
+  int same_mount =
+      (src_rc == 0 && dst_rc == 0 && strcmp(src_ref.mount, dst_ref.mount) == 0) ? 1 : 0;
+
+  if (!same_mount)
+  {
+    close_path_ref(&src_ref);
+    close_path_ref(&dst_ref);
+    errno = EXDEV;
+    perror("linkat");
+    return 1;
+  }
+
+  int rc = cmd_ln(src_ref.mount, src_ref.abs_path, dst_ref.abs_path);
+  close_path_ref(&src_ref);
+  close_path_ref(&dst_ref);
+  return rc;
+}
+
 static int cmd_symlink(const char *mnt, const char *target, const char *linkpath)
 {
   char mabs[KAFS_IOCTL_PATH_MAX];
@@ -2484,6 +2770,24 @@ static int cmd_symlink(const char *mnt, const char *target, const char *linkpath
   }
 
   close(dfd);
+  return 0;
+}
+
+static int cmd_symlink_auto(const char *target, const char *linkpath)
+{
+  kafs_path_ref_t ref;
+  int rc = resolve_path_ref(NULL, linkpath, &ref);
+  if (rc != 0)
+    return rc;
+
+  if (symlinkat(target, ref.dfd, ref.rel) != 0)
+  {
+    perror("symlinkat");
+    close_path_ref(&ref);
+    return 1;
+  }
+
+  close_path_ref(&ref);
   return 0;
 }
 
@@ -2780,6 +3084,10 @@ int main(int argc, char **argv)
 
   if (strcmp(argv[1], "cp") == 0)
   {
+    if (argc == 4)
+      return cmd_cp_auto(argv[2], argv[3], 0);
+    if (argc == 5 && strcmp(argv[4], "--reflink") == 0)
+      return cmd_cp_auto(argv[2], argv[3], 1);
     if (argc < 5)
     {
       usage(argv[0]);
@@ -2801,6 +3109,8 @@ int main(int argc, char **argv)
 
   if (strcmp(argv[1], "mv") == 0)
   {
+    if (argc == 4)
+      return cmd_mv_auto(argv[2], argv[3]);
     if (argc != 5)
     {
       usage(argv[0]);
@@ -2847,6 +3157,8 @@ int main(int argc, char **argv)
 
   if (strcmp(argv[1], "ln") == 0)
   {
+    if (argc == 4)
+      return cmd_ln_auto(argv[2], argv[3]);
     if (argc != 5)
     {
       usage(argv[0]);
@@ -2857,12 +3169,24 @@ int main(int argc, char **argv)
 
   if (strcmp(argv[1], "symlink") == 0)
   {
+    if (argc == 4)
+      return cmd_symlink_auto(argv[2], argv[3]);
     if (argc != 5)
     {
       usage(argv[0]);
       return 2;
     }
     return cmd_symlink(argv[2], argv[3], argv[4]);
+  }
+
+  if (strcmp(argv[1], "rsync") == 0)
+  {
+    if (argc < 3)
+    {
+      usage(argv[0]);
+      return 2;
+    }
+    return cmd_rsync(argc, argv);
   }
 
   if (strcmp(argv[1], "readlink") == 0)

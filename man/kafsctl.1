@@ -112,13 +112,19 @@ Print file contents to stdout.
 .B write path
 Write stdin to file (truncate/replace).
 .TP
-.B cp mountpoint src dst [--reflink]
-Copy file inside mounted KAFS. Use
+.B cp src dst [--reflink]
+Copy a file. When both paths resolve to the same KAFS mount,
+.B kafsctl
+uses the native copy path; with
 .B --reflink
-to request clone-like copy.
+it requests clone-like copy. Otherwise it falls back to the system
+.BR cp (1) .
 .TP
-.B mv mountpoint src dst
-Rename/move path inside mounted KAFS.
+.B mv src dst
+Rename or move a path. When both paths resolve to the same KAFS mount,
+.B kafsctl
+uses the native rename path; otherwise it falls back to the system
+.BR mv (1) .
 .TP
 .B rm path
 Remove file.
@@ -129,11 +135,24 @@ Create directory.
 .B rmdir path
 Remove empty directory.
 .TP
-.B ln mountpoint src dst
-Create hard link.
+.B ln src dst
+Create a hard link when both paths resolve to the same KAFS mount.
+Cross-filesystem hard links are rejected.
 .TP
-.B symlink mountpoint target linkpath
-Create symbolic link.
+.B symlink target linkpath
+Create a symbolic link. Only
+.I linkpath
+is resolved as a KAFS path; the
+.I target
+string is stored as given.
+.TP
+.B rsync [rsync options...] src... dst
+Run the system
+.BR rsync (1)
+with path-first arguments. This is a thin wrapper that preserves rsync options,
+emits clearer diagnostics when
+.B rsync
+is unavailable, and leaves path handling to rsync itself.
 .TP
 .B readlink path
 Read symlink target.
@@ -151,12 +170,16 @@ For
 .BR rm ,
 .BR mkdir ,
 .BR rmdir ,
+.BR cp ,
+.BR mv ,
+.BR ln ,
+.BR symlink ,
 .BR readlink ,
 .BR chmod ,
 and
 .BR touch ,
 .B kafsctl
-now auto-detects the containing KAFS mount from the given path.
+now accepts path-first forms and auto-detects the containing KAFS mount when needed.
 The legacy forms that take an explicit
 .I mountpoint
 remain accepted for compatibility during the transition.

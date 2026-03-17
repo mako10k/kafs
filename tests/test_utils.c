@@ -83,6 +83,14 @@ const char *kafs_test_kafs_bin(void)
   return "./kafs";
 }
 
+const char *kafs_test_kafsctl_bin(void)
+{
+  const char *p = getenv("KAFS_TEST_KAFSCTL");
+  if (p && *p)
+    return p;
+  return "./kafsctl";
+}
+
 static const char *abspath_no_fs(const char *path, char out[PATH_MAX])
 {
   if (!path || !*path)
