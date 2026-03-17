@@ -130,4 +130,6 @@
 
 ### Local staging (DESTDIR installs)
 /_staging/
+/.worktree/*
+!/.worktree/.gitkeep
 minisrv.log
