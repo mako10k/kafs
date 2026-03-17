@@ -3841,6 +3841,23 @@ static int kafs_dirent_iter_next(const char *buf, size_t len, size_t off, kafs_i
   return 1;
 }
 
+static int kafs_dir_is_empty_locked(struct kafs_context *ctx, kafs_sinode_t *inoent_dir)
+{
+  struct kafs_sdirent dirent;
+  ssize_t r = kafs_dirent_read(ctx, inoent_dir, &dirent, 0);
+  if (r < 0)
+    return (int)r;
+  if (r == 0)
+    return 1;
+  if (strcmp(dirent.d_filename, "..") != 0)
+    return 0;
+
+  r = kafs_dirent_read(ctx, inoent_dir, &dirent, (kafs_off_t)r);
+  if (r < 0)
+    return (int)r;
+  return (r == 0) ? 1 : 0;
+}
+
 // NOTE: caller holds dir inode lock. For rename(2) we must not change linkcount of the moved inode.
 static int kafs_dirent_add_nolink(struct kafs_context *ctx, kafs_sinode_t *inoent_dir,
                                   kafs_inocnt_t ino, const char *filename)
@@ -6912,29 +6929,21 @@ static int kafs_op_rmdir(const char *path)
     kafs_inode_lock(ctx, ino_parent);
   }
 
-  // Verify directory emptiness under lock (TOCTOU-safe)
-  struct kafs_sdirent dirent;
-  off_t offset = 0;
-  while (1)
+  // Verify directory emptiness under lock (TOCTOU-safe).
+  int empty_rc = kafs_dir_is_empty_locked(ctx, inoent);
+  if (empty_rc < 0)
   {
-    ssize_t r = kafs_dirent_read(ctx, inoent, &dirent, offset);
-    if (r < 0)
-    {
-      kafs_inode_unlock(ctx, ino_target);
-      kafs_inode_unlock(ctx, ino_parent);
-      kafs_journal_abort(ctx, jseq, "dirent_read=%zd", r);
-      return (int)r;
-    }
-    if (r == 0)
-      break;
-    if (strcmp(dirent.d_filename, "..") != 0)
-    {
-      kafs_inode_unlock(ctx, ino_target);
-      kafs_inode_unlock(ctx, ino_parent);
-      kafs_journal_abort(ctx, jseq, "ENOTEMPTY");
-      return -ENOTEMPTY;
-    }
-    offset += r;
+    kafs_inode_unlock(ctx, ino_target);
+    kafs_inode_unlock(ctx, ino_parent);
+    kafs_journal_abort(ctx, jseq, "dir_empty=%d", empty_rc);
+    return empty_rc;
+  }
+  if (empty_rc == 0)
+  {
+    kafs_inode_unlock(ctx, ino_target);
+    kafs_inode_unlock(ctx, ino_parent);
+    kafs_journal_abort(ctx, jseq, "ENOTEMPTY");
+    return -ENOTEMPTY;
   }
 
   int rc = kafs_dirent_remove(ctx, inoent_dir, basepath);
@@ -7428,28 +7437,20 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
   // ディレクトリ置換の場合は、空 (".." のみ) を確認して ".." を除去する（親リンク数整合）。
   if (src_is_dir && exists_to == 0 && inoent_to_exist)
   {
-    struct kafs_sdirent dirent;
-    off_t off = 0;
-    while (1)
+    int empty_rc = kafs_dir_is_empty_locked(ctx, inoent_to_exist);
+    if (empty_rc < 0)
     {
-      ssize_t r = kafs_dirent_read(ctx, inoent_to_exist, &dirent, off);
-      if (r < 0)
-      {
-        kafs_journal_abort(ctx, jseq, "dst_dirent_read=%zd", r);
-        for (size_t i = lock_n; i > 0; --i)
-          kafs_inode_unlock(ctx, lock_list[i - 1]);
-        return (int)r;
-      }
-      if (r == 0)
-        break;
-      if (strcmp(dirent.d_filename, "..") != 0)
-      {
-        kafs_journal_abort(ctx, jseq, "DST_DIR_NOT_EMPTY");
-        for (size_t i = lock_n; i > 0; --i)
-          kafs_inode_unlock(ctx, lock_list[i - 1]);
-        return -ENOTEMPTY;
-      }
-      off += r;
+      kafs_journal_abort(ctx, jseq, "dst_dir_empty=%d", empty_rc);
+      for (size_t i = lock_n; i > 0; --i)
+        kafs_inode_unlock(ctx, lock_list[i - 1]);
+      return empty_rc;
+    }
+    if (empty_rc == 0)
+    {
+      kafs_journal_abort(ctx, jseq, "DST_DIR_NOT_EMPTY");
+      for (size_t i = lock_n; i > 0; --i)
+        kafs_inode_unlock(ctx, lock_list[i - 1]);
+      return -ENOTEMPTY;
     }
 
     int rr = kafs_dirent_remove(ctx, inoent_to_exist, "..");
