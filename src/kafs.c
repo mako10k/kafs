@@ -4250,6 +4250,25 @@ static int kafs_access_check(int ok, kafs_sinode_t *inoent, kafs_bool_t is_dir, 
   return KAFS_SUCCESS;
 }
 
+static int kafs_resolve_fh_inode(struct kafs_context *ctx, const struct fuse_file_info *fi,
+                                 kafs_sinode_t **pinoent)
+{
+  assert(ctx != NULL);
+  assert(fi != NULL);
+  assert(pinoent != NULL);
+
+  kafs_inocnt_t ino = (kafs_inocnt_t)fi->fh;
+  if (ino >= kafs_sb_inocnt_get(ctx->c_superblock))
+    return -EBADF;
+
+  kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+  if (!kafs_ino_get_usage(inoent))
+    return -EBADF;
+
+  *pinoent = inoent;
+  return KAFS_SUCCESS;
+}
+
 // cppcheck-suppress constParameterCallback
 static int kafs_access(struct fuse_context *fctx, kafs_context_t *ctx, const char *path,
                        struct fuse_file_info *fi, int ok, kafs_sinode_t **pinoent)
@@ -4262,40 +4281,47 @@ static int kafs_access(struct fuse_context *fctx, kafs_context_t *ctx, const cha
 
   uid_t uid = fctx->uid;
   gid_t gid = fctx->gid;
-  // fuse_getgroups(0,NULL) may return 0 or -1; don't use KAFS_IOCALL here and avoid zero-length VLA
   ssize_t ng0 = fuse_getgroups(0, NULL);
   size_t ngroups = (ng0 > 0) ? (size_t)ng0 : 0;
   gid_t groups[(ngroups > 0) ? ngroups : 1];
   if (ngroups > 0)
     (void)fuse_getgroups(ngroups, groups);
 
-  kafs_sinode_t *inoent;
-  const char *p;
+  kafs_sinode_t *inoent = NULL;
+  const char *p = NULL;
+  int fh_rc = -EBADF;
+  if (fi != NULL)
+    fh_rc = kafs_resolve_fh_inode(ctx, fi, &inoent);
+
   if (path == NULL || path[0] == '\0')
   {
-    // Path-less operation (read/write etc.): start from file handle
     assert(fi != NULL);
-    inoent = &ctx->c_inotbl[(kafs_inocnt_t)fi->fh];
+    if (fh_rc < 0)
+      return fh_rc;
+    p = "";
+  }
+  else if (fh_rc == 0)
+  {
     p = "";
   }
   else
   {
-    // Path-based operation: always resolve from root regardless of fi
     inoent = &ctx->c_inotbl[KAFS_INO_ROOTDIR];
-    p = path + 1; // skip leading '/'
+    p = path + 1;
   }
-  int ok_final = ok; // keep original request for the final node
+
+  int ok_final = ok;
   while (*p != '\0')
   {
     const char *n = strchrnul(p, '/');
     kafs_mode_t cur_mode = kafs_ino_mode_get(inoent);
     kafs_dlog(2, "%s: component='%.*s' checking dir ino=%u mode=%o\n", __func__, (int)(n - p), p,
               (unsigned)(inoent - ctx->c_inotbl), (unsigned)cur_mode);
-    // For intermediate directories, require execute (search) permission only
     int ok_dirs = X_OK;
     int rc_ac = kafs_access_check(ok_dirs, inoent, KAFS_TRUE, uid, gid, ngroups, groups);
     if (rc_ac < 0)
       return rc_ac;
+
     uint32_t ino_dir = (uint32_t)(inoent - ctx->c_inotbl);
     char *snap = NULL;
     size_t snap_len = 0;
@@ -4304,6 +4330,7 @@ static int kafs_access(struct fuse_context *fctx, kafs_context_t *ctx, const cha
     kafs_inode_unlock(ctx, ino_dir);
     if (rc < 0)
       return rc;
+
     rc = kafs_dirent_search_snapshot(ctx, snap, snap_len, p, n - p, ino_dir, &inoent);
     free(snap);
     if (rc < 0)
@@ -4315,6 +4342,7 @@ static int kafs_access(struct fuse_context *fctx, kafs_context_t *ctx, const cha
       break;
     p = n + 1;
   }
+
   kafs_mode_t final_mode = kafs_ino_mode_get(inoent);
   kafs_dlog(2, "%s: final node ino=%u mode=%o ok=%d\n", __func__,
             (unsigned)(inoent - ctx->c_inotbl), (unsigned)final_mode, ok_final);
@@ -6492,12 +6520,11 @@ static int kafs_op_readdir(const char *path, void *buf, fuse_fill_dir_t filler, 
                            struct fuse_file_info *fi, enum fuse_readdir_flags flags)
 {
   (void)offset;
-  (void)fi;
   (void)flags;
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
   kafs_sinode_t *inoent_dir;
-  KAFS_CALL(kafs_access, fctx, ctx, path, NULL, R_OK, &inoent_dir);
+  KAFS_CALL(kafs_access, fctx, ctx, path, fi, R_OK, &inoent_dir);
   uint32_t ino_dir = (uint32_t)(inoent_dir - ctx->c_inotbl);
 
   kafs_inode_lock(ctx, ino_dir);
