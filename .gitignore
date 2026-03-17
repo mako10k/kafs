@@ -103,6 +103,7 @@
 /tests/kafsresize
 /tests/journal_boundary
 /tests/fallocate_lseek_block
+/tests/kafsctl_links
 
 ### Local mount/test workdirs (repo root)
 /mnt-*/
