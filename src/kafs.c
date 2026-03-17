@@ -7753,6 +7753,15 @@ static int kafs_op_symlink(const char *target, const char *linkpath)
   return 0;
 }
 
+static void kafs_invalidate_path_best_effort(struct fuse_context *fctx, const char *path)
+{
+  if (!fctx || !fctx->fuse || !path || path[0] == '\0')
+    return;
+  int rc = fuse_invalidate_path(fctx->fuse, path);
+  if (rc != 0 && rc != -ENOENT)
+    kafs_dlog(1, "%s: fuse_invalidate_path(%s) rc=%d\n", __func__, path, rc);
+}
+
 static int kafs_op_link(const char *from, const char *to)
 {
   assert(from != NULL);
@@ -7837,6 +7846,8 @@ static int kafs_op_link(const char *from, const char *to)
   }
 
   kafs_journal_commit(ctx, jseq);
+  kafs_invalidate_path_best_effort(fctx, from);
+  kafs_invalidate_path_best_effort(fctx, to);
   return 0;
 }
 
@@ -7957,7 +7968,11 @@ static int g_kafs_writeback_cache_enabled = 1;
 static void *kafs_op_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 {
   if (cfg)
+  {
+    // Expose stable inode numbers so hardlinks share inode identity and link count.
+    cfg->use_ino = 1;
     cfg->hard_remove = 1;
+  }
 #ifdef FUSE_CAP_WRITEBACK_CACHE
   if (conn)
   {

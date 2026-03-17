@@ -138,9 +138,36 @@ Remove empty directory.
 .B ln src dst
 Create a hard link when both paths resolve to the same KAFS mount.
 Cross-filesystem hard links are rejected.
+.B ln
+also accepts
+.BR -f ,
+.BR -n ,
+.BR -T ,
+.BR -t " dir"
+and
+.BR -v
+for minimal GNU-style compatibility. When the destination names a directory and
+.B -T
+is not given,
+.B kafsctl
+creates the link inside that directory using the source basename.
+.TP
+.B ln -s target linkpath
+Create a symbolic link. Only
+.I linkpath
+is resolved as a KAFS path; the
+.I target
+string is stored as given.
+.B ln --symbolic
+is accepted as an alias for
+.BR "ln -s" .
+.B -f
+replaces an existing non-directory destination before creating either kind of link.
 .TP
 .B symlink target linkpath
-Create a symbolic link. Only
+Compatibility alias for
+.BR "ln -s" .
+Only
 .I linkpath
 is resolved as a KAFS path; the
 .I target
