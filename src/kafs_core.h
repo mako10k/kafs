@@ -14,3 +14,4 @@ ssize_t kafs_core_read(kafs_context_t *ctx, kafs_inocnt_t ino, void *buf, size_t
 ssize_t kafs_core_write(kafs_context_t *ctx, kafs_inocnt_t ino, const void *buf, size_t size,
                         off_t offset);
 int kafs_core_truncate(kafs_context_t *ctx, kafs_inocnt_t ino, off_t size);
+int kafs_core_migrate_image(const char *image_path, int assume_yes);

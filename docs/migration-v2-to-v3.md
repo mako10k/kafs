@@ -1,8 +1,8 @@
-# Migration Guide: KAFS format v2 -> v3
+# Migration Guide: KAFS format v2/v3 -> v4
 
 ## Summary
 
-- v2 イメージは通常起動時にマウントせず、ガイダンスを表示して終了します。
+- v2/v3 イメージは通常起動時にマウントせず、ガイダンスを表示して終了します。
 - マイグレーションは**不可逆**です。
 - 推奨はオフライン実行: `kafsctl migrate <image> [--yes]`
 
@@ -24,16 +24,18 @@
 
 ## One-shot startup migration
 
-`kafs` 起動時に特殊オプションで自動移行できます。
+`kafs` 起動時に特殊オプションで pre-start migration を実行できます。
 
 - 対話確認あり:
-  - `kafs --image <image> --migrate-v2 <mountpoint> [FUSE options...]`
+  - `kafs --image <image> --migrate <mountpoint> [FUSE options...]`
 - 非対話:
-  - `kafs --image <image> --migrate-v2 --yes <mountpoint> [FUSE options...]`
+  - `kafs --image <image> --migrate --yes <mountpoint> [FUSE options...]`
 
-実行後は `migration completed: v2 -> v3. please restart mount.` を出して終了するため、再度通常マウントしてください。
+互換性のため `--migrate-v2` も当面は受け付けますが、今後は `--migrate` を使ってください。
+
+実行後は `migration completed. please restart mount.` を出して終了するため、再度通常マウントしてください。
 
 ## Notes
 
-- すでに v3 の場合はマイグレーションは不要です。
+- すでに v4 の場合はマイグレーションは不要です。
 - 非対応バージョンはエラー終了します。

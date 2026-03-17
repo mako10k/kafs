@@ -1,4 +1,6 @@
 #include "kafs_superblock.h"
+#include "kafs_block.h"
+#include "kafs_dirent.h"
 #include "kafs_inode.h"
 #include "test_utils.h"
 
@@ -247,11 +249,180 @@ static int write_inode_at(const char *img, kafs_inocnt_t ino, const kafs_sinode_
   return 0;
 }
 
+static int read_inode_at(const char *img, kafs_inocnt_t ino, kafs_sinode_t *inode)
+{
+  kafs_ssuperblock_t sb = {0};
+  int rc = read_superblock(img, &sb);
+  if (rc != 0)
+    return rc;
+
+  uint64_t blksize = 1u << kafs_sb_log_blksize_get(&sb);
+  uint64_t blksizemask = blksize - 1u;
+  uint64_t r_blkcnt = kafs_sb_r_blkcnt_get(&sb);
+  uint64_t layout = sizeof(kafs_ssuperblock_t);
+  layout = (layout + blksizemask) & ~blksizemask;
+  layout += (r_blkcnt + 7u) >> 3;
+  layout = (layout + 7u) & ~7u;
+  layout = (layout + blksizemask) & ~blksizemask;
+  off_t inode_off = (off_t)layout + (off_t)ino * (off_t)sizeof(*inode);
+
+  int fd = open(img, O_RDONLY);
+  if (fd < 0)
+    return -errno;
+  ssize_t n = pread(fd, inode, sizeof(*inode), inode_off);
+  int saved = errno;
+  close(fd);
+  if (n != (ssize_t)sizeof(*inode))
+    return (n < 0) ? -saved : -EIO;
+  return 0;
+}
+
+struct legacy_dir_entry_spec
+{
+  kafs_inocnt_t ino;
+  const char *name;
+};
+
+static uint32_t test_dirent_name_hash(const char *name, kafs_filenamelen_t namelen)
+{
+  uint32_t hash = 2166136261u;
+  for (kafs_filenamelen_t i = 0; i < namelen; ++i)
+  {
+    hash ^= (uint8_t)name[i];
+    hash *= 16777619u;
+  }
+  return hash;
+}
+
+static int write_legacy_dir_inline(const char *img, kafs_inocnt_t ino, kafs_mode_t mode,
+                                   const struct legacy_dir_entry_spec *entries, size_t entry_count)
+{
+  kafs_sinode_t inode = {0};
+  int rc = read_inode_at(img, ino, &inode);
+  if (rc != 0 && ino == KAFS_INO_ROOTDIR)
+    return rc;
+  if (rc != 0)
+    memset(&inode, 0, sizeof(inode));
+
+  memset(inode.i_blkreftbl, 0, sizeof(inode.i_blkreftbl));
+  kafs_ino_mode_set(&inode, mode);
+  kafs_ino_linkcnt_set(&inode, 1);
+  kafs_ino_blocks_set(&inode, 0);
+  kafs_ino_dtime_set(&inode, (kafs_time_t){0});
+
+  size_t off = 0;
+  for (size_t i = 0; i < entry_count; ++i)
+  {
+    size_t name_len = strlen(entries[i].name);
+    size_t rec_len = sizeof(kafs_sinocnt_t) + sizeof(kafs_sfilenamelen_t) + name_len;
+    if (off + rec_len > sizeof(inode.i_blkreftbl))
+      return -ENOSPC;
+    kafs_sinocnt_t d_ino = kafs_inocnt_htos(entries[i].ino);
+    kafs_sfilenamelen_t d_namelen = kafs_filenamelen_htos((kafs_filenamelen_t)name_len);
+    memcpy((char *)inode.i_blkreftbl + off, &d_ino, sizeof(d_ino));
+    off += sizeof(d_ino);
+    memcpy((char *)inode.i_blkreftbl + off, &d_namelen, sizeof(d_namelen));
+    off += sizeof(d_namelen);
+    memcpy((char *)inode.i_blkreftbl + off, entries[i].name, name_len);
+    off += name_len;
+  }
+
+  kafs_ino_size_set(&inode, (kafs_off_t)off);
+  return write_inode_at(img, ino, &inode);
+}
+
+static int write_regular_inode(const char *img, kafs_inocnt_t ino)
+{
+  kafs_sinode_t inode;
+  memset(&inode, 0, sizeof(inode));
+  kafs_ino_mode_set(&inode, S_IFREG | 0644);
+  kafs_ino_linkcnt_set(&inode, 1);
+  kafs_ino_size_set(&inode, 0);
+  return write_inode_at(img, ino, &inode);
+}
+
+static int read_inode_data(const char *img, kafs_inocnt_t ino, void *buf, size_t cap, size_t *out_sz)
+{
+  kafs_ssuperblock_t sb = {0};
+  kafs_sinode_t inode = {0};
+  if (read_superblock(img, &sb) != 0 || read_inode_at(img, ino, &inode) != 0)
+    return -EIO;
+
+  size_t size = (size_t)kafs_ino_size_get(&inode);
+  if (size > cap)
+    return -ENOSPC;
+  if (size <= sizeof(inode.i_blkreftbl))
+  {
+    memcpy(buf, inode.i_blkreftbl, size);
+    *out_sz = size;
+    return 0;
+  }
+
+  kafs_blkcnt_t blo = kafs_blkcnt_stoh(inode.i_blkreftbl[0]);
+  if (blo == KAFS_BLO_NONE)
+    return -EIO;
+
+  int fd = open(img, O_RDONLY);
+  if (fd < 0)
+    return -errno;
+  ssize_t n = pread(fd, buf, size, (off_t)blo << kafs_sb_log_blksize_get(&sb));
+  int saved = errno;
+  close(fd);
+  if (n != (ssize_t)size)
+    return (n < 0) ? -saved : -EIO;
+  *out_sz = size;
+  return 0;
+}
+
+static int verify_v4_dir(const char *img, kafs_inocnt_t ino,
+                         const struct legacy_dir_entry_spec *entries, size_t entry_count)
+{
+  char buf[512];
+  size_t len = 0;
+  if (read_inode_data(img, ino, buf, sizeof(buf), &len) != 0)
+    return -1;
+  if (len < sizeof(kafs_sdir_v4_hdr_t))
+    return -1;
+
+  const kafs_sdir_v4_hdr_t *hdr = (const kafs_sdir_v4_hdr_t *)buf;
+  if (kafs_u32_stoh(hdr->dh_magic) != KAFS_DIRENT_V4_MAGIC)
+    return -1;
+  if (kafs_dir_v4_hdr_live_count_get(hdr) != (uint32_t)entry_count)
+    return -1;
+  if (kafs_dir_v4_hdr_tombstone_count_get(hdr) != 0)
+    return -1;
+
+  size_t off = sizeof(*hdr);
+  for (size_t i = 0; i < entry_count; ++i)
+  {
+    if (off + offsetof(kafs_sdirent_v4_t, de_filename) > len)
+      return -1;
+    const kafs_sdirent_v4_t *rec = (const kafs_sdirent_v4_t *)(buf + off);
+    size_t rec_len = (size_t)kafs_dirent_v4_rec_len_get(rec);
+    size_t name_len = strlen(entries[i].name);
+    if (rec_len != offsetof(kafs_sdirent_v4_t, de_filename) + name_len)
+      return -1;
+    if (kafs_dirent_v4_ino_get(rec) != entries[i].ino)
+      return -1;
+    if (kafs_dirent_v4_filenamelen_get(rec) != (kafs_filenamelen_t)name_len)
+      return -1;
+    if (kafs_dirent_v4_name_hash_get(rec) !=
+        test_dirent_name_hash(entries[i].name, (kafs_filenamelen_t)name_len))
+      return -1;
+    if (memcmp(rec->de_filename, entries[i].name, name_len) != 0)
+      return -1;
+    off += rec_len;
+  }
+  return 0;
+}
+
 int main(void)
 {
   char mkfs_abs[PATH_MAX];
   char resize_abs[PATH_MAX];
   char info_abs[PATH_MAX];
+  char kafsctl_abs[PATH_MAX];
+  char kafs_abs[PATH_MAX];
   const char *mkfs_cands[] = {
       "../src/mkfs.kafs",
       "./src/mkfs.kafs",
@@ -270,9 +441,23 @@ int main(void)
       "./kafs-info",
       "kafs-info",
       NULL};
+    const char *kafsctl_cands[] = {
+      "../src/kafsctl",
+      "./src/kafsctl",
+      "./kafsctl",
+      "kafsctl",
+      NULL};
+    const char *kafs_cands[] = {
+      "../src/kafs",
+      "./src/kafs",
+      "./kafs",
+      "kafs",
+      NULL};
   if (resolve_tool_path("KAFS_TEST_MKFS", mkfs_cands, mkfs_abs, sizeof(mkfs_abs)) != 0 ||
       resolve_tool_path("KAFS_TEST_KAFSRESIZE", resize_cands, resize_abs, sizeof(resize_abs)) != 0 ||
-      resolve_tool_path("KAFS_TEST_KAFSINFO", info_cands, info_abs, sizeof(info_abs)) != 0)
+      resolve_tool_path("KAFS_TEST_KAFSINFO", info_cands, info_abs, sizeof(info_abs)) != 0 ||
+      resolve_tool_path("KAFS_TEST_KAFSCTL", kafsctl_cands, kafsctl_abs, sizeof(kafsctl_abs)) != 0 ||
+      resolve_tool_path("KAFS_TEST_KAFS", kafs_cands, kafs_abs, sizeof(kafs_abs)) != 0)
   {
     fprintf(stderr, "failed to resolve test tool paths\n");
     return 1;
@@ -524,6 +709,133 @@ int main(void)
   if (!strstr(info_stdout, "tombstones count=2") || !strstr(info_stdout, "(111.000000007)"))
   {
     fprintf(stderr, "kafs-info output missing tombstone summary: %s\n", info_stdout);
+    return 1;
+  }
+
+  const char *legacy_img = "legacy-v3.img";
+  char *legacy_mkfs_argv[] = {(char *)mkfs_abs, (char *)legacy_img, (char *)"-s", (char *)"32M",
+                              NULL};
+  if (run_cmd_status(legacy_mkfs_argv) != 0)
+  {
+    fprintf(stderr, "mkfs for legacy migration test failed\n");
+    return 1;
+  }
+
+  struct legacy_dir_entry_spec root_entries[] = {{2u, "a"}, {3u, "b"}, {4u, "c"}};
+  struct legacy_dir_entry_spec child_entries[] = {{1u, ".."}};
+  if (write_legacy_dir_inline(legacy_img, KAFS_INO_ROOTDIR, S_IFDIR | 0755, root_entries,
+                              sizeof(root_entries) / sizeof(root_entries[0])) != 0 ||
+      write_legacy_dir_inline(legacy_img, 2u, S_IFDIR | 0755, child_entries,
+                              sizeof(child_entries) / sizeof(child_entries[0])) != 0 ||
+      write_regular_inode(legacy_img, 3u) != 0 || write_regular_inode(legacy_img, 4u) != 0)
+  {
+    fprintf(stderr, "failed to synthesize legacy v3 image\n");
+    return 1;
+  }
+
+  kafs_ssuperblock_t legacy_sb = {0};
+  if (read_superblock(legacy_img, &legacy_sb) != 0)
+  {
+    fprintf(stderr, "failed to read legacy image superblock\n");
+    return 1;
+  }
+  kafs_sb_format_version_set(&legacy_sb, KAFS_FORMAT_VERSION_V3);
+  if (write_superblock(legacy_img, &legacy_sb) != 0)
+  {
+    fprintf(stderr, "failed to downgrade superblock to v3\n");
+    return 1;
+  }
+
+  char *migrate_cancel_argv[] = {(char *)kafsctl_abs, (char *)"migrate", (char *)legacy_img, NULL};
+  if (run_cmd_status_with_stdin(migrate_cancel_argv, "n\n") == 0)
+  {
+    fprintf(stderr, "kafsctl migrate unexpectedly succeeded after negative confirmation\n");
+    return 1;
+  }
+  if (read_superblock(legacy_img, &legacy_sb) != 0 ||
+      kafs_sb_format_version_get(&legacy_sb) != KAFS_FORMAT_VERSION_V3)
+  {
+    fprintf(stderr, "legacy image changed after canceled migration\n");
+    return 1;
+  }
+
+  char *migrate_yes_argv[] = {(char *)kafsctl_abs, (char *)"migrate", (char *)legacy_img,
+                              (char *)"--yes", NULL};
+  if (run_cmd_status(migrate_yes_argv) != 0)
+  {
+    fprintf(stderr, "kafsctl migrate --yes failed\n");
+    return 1;
+  }
+  if (read_superblock(legacy_img, &legacy_sb) != 0 ||
+      kafs_sb_format_version_get(&legacy_sb) != KAFS_FORMAT_VERSION)
+  {
+    fprintf(stderr, "legacy image was not migrated to v4\n");
+    return 1;
+  }
+  if (verify_v4_dir(legacy_img, KAFS_INO_ROOTDIR, root_entries,
+                    sizeof(root_entries) / sizeof(root_entries[0])) != 0 ||
+      verify_v4_dir(legacy_img, 2u, child_entries, sizeof(child_entries) / sizeof(child_entries[0])) !=
+          0)
+  {
+    fprintf(stderr, "migrated directory image does not match v4 layout\n");
+    return 1;
+  }
+  kafs_sinode_t migrated_root = {0};
+  if (read_inode_at(legacy_img, KAFS_INO_ROOTDIR, &migrated_root) != 0 ||
+      kafs_ino_size_get(&migrated_root) <= sizeof(migrated_root.i_blkreftbl) ||
+      kafs_blkcnt_stoh(migrated_root.i_blkreftbl[0]) == KAFS_BLO_NONE)
+  {
+    fprintf(stderr, "migrated root directory did not grow into block-backed v4 storage\n");
+    return 1;
+  }
+
+  const char *startup_img = "legacy-startup.img";
+  char *startup_mkfs_argv[] = {(char *)mkfs_abs, (char *)startup_img, (char *)"-s", (char *)"32M",
+                               NULL};
+  if (run_cmd_status(startup_mkfs_argv) != 0 ||
+      write_legacy_dir_inline(startup_img, KAFS_INO_ROOTDIR, S_IFDIR | 0755, root_entries,
+                              sizeof(root_entries) / sizeof(root_entries[0])) != 0 ||
+      write_legacy_dir_inline(startup_img, 2u, S_IFDIR | 0755, child_entries,
+                              sizeof(child_entries) / sizeof(child_entries[0])) != 0 ||
+      write_regular_inode(startup_img, 3u) != 0 || write_regular_inode(startup_img, 4u) != 0)
+  {
+    fprintf(stderr, "failed to synthesize startup migration image\n");
+    return 1;
+  }
+  if (read_superblock(startup_img, &legacy_sb) != 0)
+  {
+    fprintf(stderr, "failed to read startup image superblock\n");
+    return 1;
+  }
+  kafs_sb_format_version_set(&legacy_sb, KAFS_FORMAT_VERSION_V3);
+  if (write_superblock(startup_img, &legacy_sb) != 0)
+  {
+    fprintf(stderr, "failed to downgrade startup image to v3\n");
+    return 1;
+  }
+  if (mkdir("mnt", 0700) != 0)
+  {
+    fprintf(stderr, "failed to create temporary mountpoint\n");
+    return 1;
+  }
+  char *startup_migrate_argv[] = {(char *)kafs_abs,
+                                  (char *)"--image",
+                                  (char *)startup_img,
+                                  (char *)"--migrate",
+                                  (char *)"--yes",
+                                  (char *)"mnt",
+                                  NULL};
+  if (run_cmd_status(startup_migrate_argv) != 0)
+  {
+    fprintf(stderr, "kafs --migrate --yes failed\n");
+    return 1;
+  }
+  if (read_superblock(startup_img, &legacy_sb) != 0 ||
+      kafs_sb_format_version_get(&legacy_sb) != KAFS_FORMAT_VERSION ||
+      verify_v4_dir(startup_img, KAFS_INO_ROOTDIR, root_entries,
+                    sizeof(root_entries) / sizeof(root_entries[0])) != 0)
+  {
+    fprintf(stderr, "startup migration did not produce a valid v4 image\n");
     return 1;
   }
 

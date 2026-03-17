@@ -4,12 +4,12 @@ KAFS is a FUSE-based filesystem backed by a single image file with a journal and
 optional deduplication features. This repository contains the filesystem
 implementation, tools, and tests.
 
-## Release Highlights (v0.3.1)
+## Release Highlights (v0.4.0)
 
-- Stabilized hotplug supervised restart around `restart-back`, `socketpair`/FD handoff, and session/epoch handshake while keeping UDS bootstrap compatibility
-- Added focused hotplug docs, manpage, and e2e coverage so the retained restart model matches the current implementation
-- Improved `fsstat --verbose` output and pulled in the symlink lock-order abort fix on `master`
-- Kept release quality gates strong, including clone/static checks and `deadcode` for release readiness
+- Added offline pre-start migration from legacy v2/v3 images to the current v4 format
+- Unified the migration path so `kafsctl migrate` and `kafs --migrate` use the same shared converter
+- Renamed the startup migration flag to `--migrate` and kept `--migrate-v2` only as a deprecated compatibility alias
+- Expanded regression coverage and updated README/man/migration guidance for the v4 migration workflow
 
 ## Features
 
@@ -82,7 +82,8 @@ Example:
 ```
 
 Migration options:
-- `--migrate-v2`: migrate a v2 image to v3 in one-shot mode at startup, then exit
+- `--migrate`: run offline pre-start migration for a v2/v3 image to v4, then exit
+- `--migrate-v2`: deprecated alias of `--migrate`
 - `--yes`: skip migration confirmation
 
 ### fsck.kafs
@@ -184,8 +185,8 @@ Inspect stats, migration, and hotplug controls:
 ./kafsctl migrate /tmp/kafs.img
 ```
 
-`migrate` is an irreversible operation that updates a v2 image to v3.
-When `--yes` is not specified, it requires confirmation by entering `YES`.
+`migrate` is an irreversible offline pre-start operation that updates a v2/v3 image to v4.
+When `--yes` is not specified, it requires a Yes/No confirmation prompt.
 
 `fsstat` supports output units via `--bytes`, `--mib`, and `--gib`.
 
@@ -204,7 +205,7 @@ This monitor prints cumulative and delta values for:
 - `bg_dedup_index_evicts`
 - `bg_dedup_cooldowns`
 
-## Migration (v2 -> v3)
+## Migration (v2/v3 -> v4)
 
 Explicit offline execution is recommended.
 
@@ -216,8 +217,8 @@ Explicit offline execution is recommended.
 To run it as a startup one-shot:
 
 ```sh
-./kafs --image /path/to/image.kafs --migrate-v2 /mnt/kafs -f
-./kafs --image /path/to/image.kafs --migrate-v2 --yes /mnt/kafs -f
+./kafs --image /path/to/image.kafs --migrate /mnt/kafs -f
+./kafs --image /path/to/image.kafs --migrate --yes /mnt/kafs -f
 ```
 
 See `docs/migration-v2-to-v3.md` for details.

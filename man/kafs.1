@@ -1,5 +1,5 @@
 '.\" -*- nroff -*-
-.TH KAFS 1 "2026-03-15" "kafs 0.3.1" "User Commands"
+.TH KAFS 1 "2026-03-17" "kafs 0.4.0" "User Commands"
 .SH NAME
 kafs \- FUSE-based KAFS filesystem
 .SH SYNOPSIS
@@ -12,7 +12,7 @@ kafs \- FUSE-based KAFS filesystem
 .B kafs
 .RB [ --image
 .IR image ]
-.B --migrate-v2
+.B --migrate
 .RB [ --yes ]
 .I mountpoint
 .RI [ FUSE\ options ]
@@ -46,9 +46,13 @@ Can be specified multiple times.
 Inline form of
 .BR --option .
 .TP
-.B --migrate-v2
-If the image format is v2, perform one-shot migration to v3 and exit.
+.B --migrate
+If the image format is v2 or v3, perform offline pre-start migration to v4 and exit.
 This operation is irreversible.
+.TP
+.B --migrate-v2
+Deprecated alias of
+.BR --migrate .
 .TP
 .B --yes
 Skip interactive confirmation for migration.

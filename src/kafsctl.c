@@ -1,5 +1,6 @@
 #include "kafs_ioctl.h"
 #include "kafs_cli_opts.h"
+#include "kafs_core.h"
 #include "kafs_rpc.h"
 #include "kafs_superblock.h"
 
@@ -122,7 +123,7 @@ static void usage_cmd(const char *prog, const char *suffix, const char *details)
 static void usage_migrate_cmd(const char *prog)
 {
   usage_cmd(prog, "migrate <image> [--yes]",
-            "\nOffline v2->v3 migration. This operation is irreversible.\n");
+            "\nOffline pre-start migration from v2/v3 to v4. This operation is irreversible.\n");
 }
 
 static void usage_fsstat_cmd(const char *prog)
@@ -440,67 +441,37 @@ static int try_subcommand_help(int argc, char **argv)
   return -1;
 }
 
-static int confirm_yes_stdin(void)
-{
-  fprintf(stderr, "WARNING: migration is irreversible. type 'YES' to continue: ");
-  fflush(stderr);
-  char buf[32];
-  if (!fgets(buf, sizeof(buf), stdin))
-    return 0;
-  buf[strcspn(buf, "\r\n")] = '\0';
-  return strcmp(buf, "YES") == 0;
-}
-
 static int cmd_migrate(const char *image, int assume_yes)
 {
-  if (!image || !*image)
+  int rc = kafs_core_migrate_image(image, assume_yes);
+  if (rc == 0)
   {
-    fprintf(stderr, "invalid image path\n");
-    return 2;
-  }
-
-  int fd = open(image, O_RDWR, 0);
-  if (fd < 0)
-  {
-    perror("open");
-    return 1;
-  }
-
-  kafs_ssuperblock_t sb;
-  if (pread(fd, &sb, sizeof(sb), 0) != (ssize_t)sizeof(sb))
-  {
-    perror("pread superblock");
-    close(fd);
-    return 1;
-  }
-  if (kafs_sb_magic_get(&sb) != KAFS_MAGIC)
-  {
-    fprintf(stderr, "invalid magic: not a KAFS image\n");
-    close(fd);
-    return 2;
-  }
-
-  uint32_t fmt = kafs_sb_format_version_get(&sb);
-  if (fmt == KAFS_FORMAT_VERSION)
-  {
-    fprintf(stderr, "already v%u: no migration needed\n", (unsigned)KAFS_FORMAT_VERSION);
-    close(fd);
+    fprintf(stderr, "migration completed: v2/v3 -> v%u (%s)\n", (unsigned)KAFS_FORMAT_VERSION,
+            image);
     return 0;
   }
-  if (fmt != KAFS_FORMAT_VERSION_V2 && fmt != KAFS_FORMAT_VERSION_V3)
+  if (rc == 1)
   {
-    fprintf(stderr, "unsupported format version: %u\n", (unsigned)fmt);
-    close(fd);
+    fprintf(stderr, "already v%u: no migration needed\n", (unsigned)KAFS_FORMAT_VERSION);
+    return 0;
+  }
+  if (rc == -ECANCELED)
+  {
+    fprintf(stderr, "migration canceled by user\n");
     return 2;
   }
-
-  close(fd);
-  (void)assume_yes;
-  fprintf(stderr,
-          "in-place migration to v%u is not supported; create a fresh image and copy data instead "
-          "(%s)\n",
-          (unsigned)KAFS_FORMAT_VERSION, image);
-  return 2;
+  if (rc == -EINVAL)
+  {
+    fprintf(stderr, "invalid magic: not a KAFS image\n");
+    return 2;
+  }
+  if (rc == -EPROTONOSUPPORT)
+  {
+    fprintf(stderr, "unsupported format version for migration\n");
+    return 2;
+  }
+  fprintf(stderr, "migration failed: %s\n", strerror(-rc));
+  return 1;
 }
 
 static const char *hotplug_state_str(uint32_t state)
