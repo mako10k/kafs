@@ -6466,15 +6466,12 @@ static int kafs_op_readdir(const char *path, void *buf, fuse_fill_dir_t filler, 
   char *snap = NULL;
   size_t snap_len = 0;
   int rc = kafs_dir_snapshot(ctx, inoent_dir, &snap, &snap_len);
+  kafs_inode_unlock(ctx, ino_dir);
   if (rc < 0)
-  {
-    kafs_inode_unlock(ctx, ino_dir);
     return rc;
-  }
   if (filler(buf, ".", NULL, 0, 0))
   {
     free(snap);
-    kafs_inode_unlock(ctx, ino_dir);
     return -ENOENT;
   }
   size_t o = 0;
@@ -6487,7 +6484,6 @@ static int kafs_op_readdir(const char *path, void *buf, fuse_fill_dir_t filler, 
     if (step < 0)
     {
       free(snap);
-      kafs_inode_unlock(ctx, ino_dir);
       return -EIO;
     }
     if ((view.flags & KAFS_DIRENT_FLAG_TOMBSTONE) != 0)
@@ -6501,13 +6497,11 @@ static int kafs_op_readdir(const char *path, void *buf, fuse_fill_dir_t filler, 
     if (filler(buf, name, NULL, 0, 0))
     {
       free(snap);
-      kafs_inode_unlock(ctx, ino_dir);
       return -ENOENT;
     }
     o = view.record_off + view.record_len;
   }
   free(snap);
-  kafs_inode_unlock(ctx, ino_dir);
   return 0;
 }
 
@@ -9548,7 +9542,7 @@ int main(int argc, char **argv)
         }
         if (mrc == 1)
         {
-            fprintf(stderr, "image already v%u; continue normal mount without --migrate.\n",
+          fprintf(stderr, "image already v%u; continue normal mount without --migrate.\n",
                   (unsigned)KAFS_FORMAT_VERSION);
           exit(0);
         }
