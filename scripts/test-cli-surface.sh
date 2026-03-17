@@ -28,7 +28,15 @@ declare -a subcommand_help_cmds=(
   "./src/kafsctl hotplug --help"
   "./src/kafsctl hotplug status --help"
   "./src/kafsctl hotplug env set --help"
+  "./src/kafsctl help stat"
+  "./src/kafsctl stat --help"
+  "./src/kafsctl help chmod"
+  "./src/kafsctl chmod --help"
   "./src/kafsctl cp --help"
+  "./src/kafsctl mv --help"
+  "./src/kafsctl ln --help"
+  "./src/kafsctl symlink --help"
+  "./src/kafsctl rsync --help"
 )
 
 for cmd in "${subcommand_help_cmds[@]}"; do

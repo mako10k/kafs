@@ -2,6 +2,8 @@
 
 この文書は、KAFS を「ファイルシステムとして使える一式ツール」に整えるために、現状を整理し、理想的な構成と段階的な整備計画を示します。
 
+`kafsctl` の path-based file-op 再整理要件は、別紙 [kafsctl-path-ops-requirements.md](kafsctl-path-ops-requirements.md) を参照。
+
 ## 現状（2025-08-28 時点）
 
 - 実行バイナリ

@@ -5734,6 +5734,152 @@ static int kafs_reflink_clone(kafs_context_t *ctx, kafs_sinode_t *src, kafs_sino
   return 0;
 }
 
+static int kafs_copy_share_one_iblk_locked(kafs_context_t *ctx, kafs_sinode_t *src,
+                                           kafs_sinode_t *dst, kafs_iblkcnt_t src_iblo,
+                                           kafs_iblkcnt_t dst_iblo, uint32_t ino_dst);
+
+static ssize_t kafs_copy_regular_range(kafs_context_t *ctx, kafs_sinode_t *ino_in,
+                                       kafs_sinode_t *ino_out, off_t offset_in, off_t offset_out,
+                                       size_t size)
+{
+  uint32_t ino_src = (uint32_t)(ino_in - ctx->c_inotbl);
+  uint32_t ino_dst = (uint32_t)(ino_out - ctx->c_inotbl);
+  if (ino_src == ino_dst)
+    return 0;
+
+  if (ino_src < ino_dst)
+  {
+    kafs_inode_lock(ctx, ino_src);
+    kafs_inode_lock(ctx, ino_dst);
+  }
+  else
+  {
+    kafs_inode_lock(ctx, ino_dst);
+    kafs_inode_lock(ctx, ino_src);
+  }
+
+  kafs_off_t src_size = kafs_ino_size_get(ino_in);
+  if ((kafs_off_t)offset_in >= src_size)
+  {
+    kafs_inode_unlock(ctx, ino_src);
+    kafs_inode_unlock(ctx, ino_dst);
+    return 0;
+  }
+
+  kafs_off_t max = src_size - (kafs_off_t)offset_in;
+  if ((kafs_off_t)size < max)
+    max = (kafs_off_t)size;
+
+  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
+  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+  kafs_off_t dst_size = kafs_ino_size_get(ino_out);
+  int dst_is_block_backed = (dst_size > (kafs_off_t)KAFS_DIRECT_SIZE);
+  int dst_empty_converted = 0;
+
+  const size_t bufsz = 128u * 1024u;
+  char *buf = (char *)malloc(bufsz);
+  if (!buf)
+  {
+    kafs_inode_unlock(ctx, ino_src);
+    kafs_inode_unlock(ctx, ino_dst);
+    return -ENOMEM;
+  }
+
+  kafs_off_t done = 0;
+  while (done < max)
+  {
+    kafs_off_t src_off = (kafs_off_t)offset_in + done;
+    kafs_off_t dst_off = (kafs_off_t)offset_out + done;
+    kafs_off_t remain = max - done;
+
+    if (ctx->c_hrl_bucket_cnt != 0 && remain >= (kafs_off_t)blksize &&
+        ((src_off & ((kafs_off_t)blksize - 1)) == 0) &&
+        ((dst_off & ((kafs_off_t)blksize - 1)) == 0))
+    {
+      if (!dst_is_block_backed)
+      {
+        if (dst_size == 0 && (kafs_off_t)offset_out == 0)
+        {
+          memset(ino_out->i_blkreftbl, 0, sizeof(ino_out->i_blkreftbl));
+          dst_is_block_backed = 1;
+          dst_empty_converted = 1;
+        }
+        else
+        {
+          __atomic_add_fetch(&ctx->c_stat_copy_share_skip_dst_inline, 1u, __ATOMIC_RELAXED);
+        }
+      }
+
+      if (dst_is_block_backed)
+      {
+        size_t blocks = (size_t)(remain >> log_blksize);
+        __atomic_add_fetch(&ctx->c_stat_copy_share_attempt_blocks, (uint64_t)blocks,
+                           __ATOMIC_RELAXED);
+        size_t copied_blocks = 0;
+        for (size_t i = 0; i < blocks; ++i)
+        {
+          kafs_iblkcnt_t src_iblo = (kafs_iblkcnt_t)(src_off >> log_blksize) + (kafs_iblkcnt_t)i;
+          kafs_iblkcnt_t dst_iblo = (kafs_iblkcnt_t)(dst_off >> log_blksize) + (kafs_iblkcnt_t)i;
+          int frc =
+              kafs_copy_share_one_iblk_locked(ctx, ino_in, ino_out, src_iblo, dst_iblo, ino_dst);
+          if (frc == -EAGAIN)
+            break;
+          if (frc < 0)
+          {
+            free(buf);
+            kafs_inode_unlock(ctx, ino_src);
+            kafs_inode_unlock(ctx, ino_dst);
+            return frc;
+          }
+          copied_blocks++;
+          done += (kafs_off_t)blksize;
+        }
+
+        if (copied_blocks > 0)
+        {
+          kafs_off_t end = (kafs_off_t)offset_out + done;
+          if (kafs_ino_size_get(ino_out) < end)
+            kafs_ino_size_set(ino_out, end);
+          continue;
+        }
+
+        if (dst_empty_converted)
+          memset(ino_out->i_blkreftbl, 0, sizeof(ino_out->i_blkreftbl));
+      }
+    }
+    else
+    {
+      __atomic_add_fetch(&ctx->c_stat_copy_share_skip_unaligned, 1u, __ATOMIC_RELAXED);
+    }
+
+    size_t want = (size_t)((max - done) < (kafs_off_t)bufsz ? (max - done) : (kafs_off_t)bufsz);
+    ssize_t r = kafs_pread(ctx, ino_in, buf, (kafs_off_t)want, (kafs_off_t)offset_in + done);
+    if (r < 0)
+    {
+      free(buf);
+      kafs_inode_unlock(ctx, ino_src);
+      kafs_inode_unlock(ctx, ino_dst);
+      return r;
+    }
+    if (r == 0)
+      break;
+    ssize_t w = kafs_pwrite(ctx, ino_out, buf, (kafs_off_t)r, (kafs_off_t)offset_out + done);
+    if (w < 0)
+    {
+      free(buf);
+      kafs_inode_unlock(ctx, ino_src);
+      kafs_inode_unlock(ctx, ino_dst);
+      return w;
+    }
+    done += w;
+  }
+
+  free(buf);
+  kafs_inode_unlock(ctx, ino_src);
+  kafs_inode_unlock(ctx, ino_dst);
+  return (ssize_t)done;
+}
+
 // Copy one full block by sharing HRL reference instead of read+hash+write.
 // Caller must hold src/dst inode locks.
 static int kafs_copy_share_one_iblk_locked(kafs_context_t *ctx, kafs_sinode_t *src,
@@ -6202,8 +6348,6 @@ static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_
     memcpy(&req, buf, sizeof(req));
     if (req.struct_size < sizeof(req))
       return -EINVAL;
-    if ((req.flags & KAFS_IOCTL_COPY_F_REFLINK) == 0)
-      return -EOPNOTSUPP;
     if (req.src[0] != '/' || req.dst[0] != '/' || req.src[1] == '\0' || req.dst[1] == '\0')
       return -EINVAL;
 
@@ -6225,7 +6369,19 @@ static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_
       KAFS_CALL(kafs_access, fctx, ctx, req.dst, NULL, W_OK, &ino_dst);
     }
 
-    return kafs_reflink_clone(ctx, ino_src, ino_dst);
+    if ((req.flags & KAFS_IOCTL_COPY_F_REFLINK) != 0)
+      return kafs_reflink_clone(ctx, ino_src, ino_dst);
+
+    uint32_t ino_dst_no = (uint32_t)(ino_dst - ctx->c_inotbl);
+    kafs_inode_lock(ctx, ino_dst_no);
+    int trc = kafs_truncate(ctx, ino_dst, 0);
+    kafs_inode_unlock(ctx, ino_dst_no);
+    if (trc < 0)
+      return trc;
+
+    kafs_off_t src_size = kafs_ino_size_get(ino_src);
+    ssize_t copied = kafs_copy_regular_range(ctx, ino_src, ino_dst, 0, 0, (size_t)src_size);
+    return copied < 0 ? (int)copied : 0;
   }
 
   if ((unsigned int)cmd == (unsigned int)KAFS_IOCTL_GET_STATS)
@@ -6280,147 +6436,7 @@ static ssize_t kafs_op_copy_file_range(const char *path_in, struct fuse_file_inf
   // Regular copy_file_range(2)
   if (size == 0)
     return 0;
-
-  uint32_t ino_src = (uint32_t)(ino_in - ctx->c_inotbl);
-  uint32_t ino_dst = (uint32_t)(ino_out - ctx->c_inotbl);
-  if (ino_src == ino_dst)
-    return 0;
-
-  if (ino_src < ino_dst)
-  {
-    kafs_inode_lock(ctx, ino_src);
-    kafs_inode_lock(ctx, ino_dst);
-  }
-  else
-  {
-    kafs_inode_lock(ctx, ino_dst);
-    kafs_inode_lock(ctx, ino_src);
-  }
-
-  kafs_off_t src_size = kafs_ino_size_get(ino_in);
-  if ((kafs_off_t)offset_in >= src_size)
-  {
-    kafs_inode_unlock(ctx, ino_src);
-    kafs_inode_unlock(ctx, ino_dst);
-    return 0;
-  }
-
-  kafs_off_t max = src_size - (kafs_off_t)offset_in;
-  if ((kafs_off_t)size < max)
-    max = (kafs_off_t)size;
-
-  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
-  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
-  kafs_off_t dst_size = kafs_ino_size_get(ino_out);
-  int dst_is_block_backed = (dst_size > (kafs_off_t)KAFS_DIRECT_SIZE);
-  int dst_empty_converted = 0;
-
-  const size_t bufsz = 128u * 1024u;
-  char *buf = (char *)malloc(bufsz);
-  if (!buf)
-  {
-    kafs_inode_unlock(ctx, ino_src);
-    kafs_inode_unlock(ctx, ino_dst);
-    return -ENOMEM;
-  }
-
-  kafs_off_t done = 0;
-  while (done < max)
-  {
-    kafs_off_t src_off = (kafs_off_t)offset_in + done;
-    kafs_off_t dst_off = (kafs_off_t)offset_out + done;
-    kafs_off_t remain = max - done;
-
-    if (ctx->c_hrl_bucket_cnt != 0 && remain >= (kafs_off_t)blksize &&
-        ((src_off & ((kafs_off_t)blksize - 1)) == 0) &&
-        ((dst_off & ((kafs_off_t)blksize - 1)) == 0))
-    {
-      // Avoid interpreting inline payload as block references.
-      if (!dst_is_block_backed)
-      {
-        if (dst_size == 0 && (kafs_off_t)offset_out == 0)
-        {
-          memset(ino_out->i_blkreftbl, 0, sizeof(ino_out->i_blkreftbl));
-          dst_is_block_backed = 1;
-          dst_empty_converted = 1;
-        }
-        else
-        {
-          __atomic_add_fetch(&ctx->c_stat_copy_share_skip_dst_inline, 1u, __ATOMIC_RELAXED);
-        }
-      }
-
-      if (dst_is_block_backed)
-      {
-        size_t blocks = (size_t)(remain >> log_blksize);
-        __atomic_add_fetch(&ctx->c_stat_copy_share_attempt_blocks, (uint64_t)blocks,
-                           __ATOMIC_RELAXED);
-        size_t copied_blocks = 0;
-        for (size_t i = 0; i < blocks; ++i)
-        {
-          kafs_iblkcnt_t src_iblo = (kafs_iblkcnt_t)(src_off >> log_blksize) + (kafs_iblkcnt_t)i;
-          kafs_iblkcnt_t dst_iblo = (kafs_iblkcnt_t)(dst_off >> log_blksize) + (kafs_iblkcnt_t)i;
-          int frc =
-              kafs_copy_share_one_iblk_locked(ctx, ino_in, ino_out, src_iblo, dst_iblo, ino_dst);
-          if (frc == -EAGAIN)
-            break;
-          if (frc < 0)
-          {
-            free(buf);
-            kafs_inode_unlock(ctx, ino_src);
-            kafs_inode_unlock(ctx, ino_dst);
-            return frc;
-          }
-          copied_blocks++;
-          done += (kafs_off_t)blksize;
-        }
-
-        if (copied_blocks > 0)
-        {
-          kafs_off_t end = (kafs_off_t)offset_out + done;
-          if (kafs_ino_size_get(ino_out) < end)
-            kafs_ino_size_set(ino_out, end);
-          continue;
-        }
-
-        if (dst_empty_converted)
-        {
-          // Keep inode shape consistent if we converted an empty inline inode but couldn't share.
-          memset(ino_out->i_blkreftbl, 0, sizeof(ino_out->i_blkreftbl));
-        }
-      }
-    }
-    else
-    {
-      __atomic_add_fetch(&ctx->c_stat_copy_share_skip_unaligned, 1u, __ATOMIC_RELAXED);
-    }
-
-    size_t want = (size_t)((max - done) < (kafs_off_t)bufsz ? (max - done) : (kafs_off_t)bufsz);
-    ssize_t r = kafs_pread(ctx, ino_in, buf, (kafs_off_t)want, (kafs_off_t)offset_in + done);
-    if (r < 0)
-    {
-      free(buf);
-      kafs_inode_unlock(ctx, ino_src);
-      kafs_inode_unlock(ctx, ino_dst);
-      return r;
-    }
-    if (r == 0)
-      break;
-    ssize_t w = kafs_pwrite(ctx, ino_out, buf, (kafs_off_t)r, (kafs_off_t)offset_out + done);
-    if (w < 0)
-    {
-      free(buf);
-      kafs_inode_unlock(ctx, ino_src);
-      kafs_inode_unlock(ctx, ino_dst);
-      return w;
-    }
-    done += w;
-  }
-
-  free(buf);
-  kafs_inode_unlock(ctx, ino_src);
-  kafs_inode_unlock(ctx, ino_dst);
-  return (ssize_t)done;
+  return kafs_copy_regular_range(ctx, ino_in, ino_out, offset_in, offset_out, size);
 }
 
 #undef KAFS_STATS_VERSION
@@ -7753,6 +7769,91 @@ static int kafs_op_symlink(const char *target, const char *linkpath)
   return 0;
 }
 
+static void kafs_invalidate_path_best_effort(struct fuse_context *fctx, const char *path)
+{
+  if (!fctx || !fctx->fuse || !path || path[0] == '\0')
+    return;
+  int rc = fuse_invalidate_path(fctx->fuse, path);
+  if (rc != 0 && rc != -ENOENT)
+    kafs_dlog(1, "%s: fuse_invalidate_path(%s) rc=%d\n", __func__, path, rc);
+}
+
+static int kafs_op_link(const char *from, const char *to)
+{
+  assert(from != NULL);
+  assert(to != NULL);
+  if (kafs_is_ctl_path(from) || kafs_is_ctl_path(to))
+    return -EACCES;
+  if (from[0] != '/' || to[0] != '/' || from[1] == '\0' || to[1] == '\0')
+    return -EINVAL;
+
+  struct fuse_context *fctx = fuse_get_context();
+  struct kafs_context *ctx = fctx->private_data;
+
+  kafs_sinode_t *inoent_src;
+  KAFS_CALL(kafs_access, fctx, ctx, from, NULL, F_OK, &inoent_src);
+  kafs_mode_t src_mode = kafs_ino_mode_get(inoent_src);
+  if (S_ISDIR(src_mode))
+    return -EPERM;
+  if (!S_ISREG(src_mode) && !S_ISLNK(src_mode))
+    return -EOPNOTSUPP;
+
+  int ex = kafs_access(fctx, ctx, to, NULL, F_OK, NULL);
+  if (ex == 0)
+    return -EEXIST;
+  if (ex != -ENOENT)
+    return ex;
+
+  char to_copy[strlen(to) + 1];
+  strcpy(to_copy, to);
+  const char *to_dir = to_copy;
+  char *to_base = strrchr(to_copy, '/');
+  if (to_dir == to_base)
+    to_dir = "/";
+  *to_base = '\0';
+  to_base++;
+  if (to_base[0] == '\0' || strcmp(to_base, ".") == 0 || strcmp(to_base, "..") == 0)
+    return -EINVAL;
+
+  uint64_t jseq = kafs_journal_begin(ctx, "LINK", "from=%s to=%s", from, to);
+
+  kafs_sinode_t *inoent_dir;
+  int arc = kafs_access(fctx, ctx, to_dir, NULL, W_OK, &inoent_dir);
+  if (arc < 0)
+  {
+    kafs_journal_abort(ctx, jseq, "parent access=%d", arc);
+    return arc;
+  }
+
+  uint32_t ino_src = (uint32_t)(inoent_src - ctx->c_inotbl);
+  uint32_t ino_dir = (uint32_t)(inoent_dir - ctx->c_inotbl);
+  kafs_inode_lock(ctx, ino_src);
+  kafs_ino_linkcnt_incr(inoent_src);
+  kafs_inode_unlock(ctx, ino_src);
+
+  kafs_inode_lock(ctx, ino_dir);
+  int rc = kafs_dirent_add_nolink(ctx, inoent_dir, (kafs_inocnt_t)ino_src, to_base);
+  kafs_inode_unlock(ctx, ino_dir);
+
+  if (rc < 0)
+  {
+    kafs_inode_lock(ctx, ino_src);
+    (void)kafs_ino_linkcnt_decr(inoent_src);
+    kafs_inode_unlock(ctx, ino_src);
+    kafs_journal_abort(ctx, jseq, "dirent_add=%d", rc);
+    return rc;
+  }
+
+  kafs_inode_lock(ctx, ino_src);
+  kafs_ino_ctime_set(inoent_src, kafs_now());
+  kafs_inode_unlock(ctx, ino_src);
+
+  kafs_journal_commit(ctx, jseq);
+  kafs_invalidate_path_best_effort(fctx, from);
+  kafs_invalidate_path_best_effort(fctx, to);
+  return 0;
+}
+
 static int kafs_op_flush(const char *path, struct fuse_file_info *fi)
 {
   struct fuse_context *fctx = fuse_get_context();
@@ -7870,7 +7971,11 @@ static int g_kafs_writeback_cache_enabled = 1;
 static void *kafs_op_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 {
   if (cfg)
+  {
+    // Expose stable inode numbers so hardlinks share inode identity and link count.
+    cfg->use_ino = 1;
     cfg->hard_remove = 1;
+  }
 #ifdef FUSE_CAP_WRITEBACK_CACHE
   if (conn)
   {
@@ -7988,6 +8093,7 @@ static struct fuse_operations kafs_operations = {
     .access = kafs_op_access,
     .chmod = kafs_op_chmod,
     .chown = kafs_op_chown,
+    .link = kafs_op_link,
     .symlink = kafs_op_symlink,
     .ioctl = kafs_op_ioctl,
     .copy_file_range = kafs_op_copy_file_range,
