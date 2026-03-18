@@ -16,7 +16,8 @@ LOG="$WORKDIR/kafs-npm-offline.log"
 PKG_SRC="$WORKDIR/pkg-src"
 PKG_TGZ="$WORKDIR/pkg-tgz"
 APP_DIR="$MNT/app"
-KAFS="$ROOT_DIR/src/kafs"
+KAFS="${KAFS_BIN:-$ROOT_DIR/src/kafs}"
+KAFSCTL="${KAFSCTL_BIN:-$ROOT_DIR/src/kafsctl}"
 KAFS_PID=""
 
 cleanup() {
@@ -37,7 +38,7 @@ mkdir -p "$MNT" "$PKG_SRC" "$PKG_TGZ"
 
 echo "1. Create fresh image"
 truncate -s $((256 * 1024 * 1024)) "$IMG"
-"$ROOT_DIR/src/mkfs.kafs" "$IMG" >/dev/null 2>&1
+${MKFS_BIN:-$ROOT_DIR/src/mkfs.kafs} "$IMG" >/dev/null 2>&1
 
 echo "2. Build local package tarballs (network-free)"
 PKG_COUNT=18
@@ -144,7 +145,7 @@ cd "$ROOT_DIR"
 
 echo "5.5. Capturing fsstat (lock counters)"
 echo "=== FSSTAT_JSON_BEGIN ==="
-"$ROOT_DIR/src/kafsctl" fsstat "$MNT" --json 2>/dev/null || true
+"$KAFSCTL" fsstat "$MNT" --json 2>/dev/null || true
 echo "=== FSSTAT_JSON_END ==="
 
 echo "6. Unmount and fsck"
@@ -154,7 +155,7 @@ kill "$KAFS_PID" 2>/dev/null || true
 wait "$KAFS_PID" 2>/dev/null || true
 KAFS_PID=""
 
-"$ROOT_DIR/src/fsck.kafs" "$IMG" >/dev/null
+${FSCK_BIN:-$ROOT_DIR/src/fsck.kafs} "$IMG" >/dev/null
 
 echo "7. Log check"
 if [[ ! -f "$LOG" ]]; then
