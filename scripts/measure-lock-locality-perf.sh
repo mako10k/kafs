@@ -11,7 +11,7 @@ REPO_ROOT=$(dirname "$GIT_COMMON_DIR")
 
 BASELINE_DIR="${1:-$REPO_ROOT/.worktree/issue-59-baseline}"
 OPTIMIZED_DIR="$ROOT_DIR"
-BASELINE_REV="${BASELINE_REV:-f9a6247}"
+BASELINE_REV="${BASELINE_REV:-2b4fb30}"
 STAMP=$(date +%Y%m%d-%H%M%S)
 OUT_DIR="$ROOT_DIR/report/perf/lock-locality-$STAMP"
 mkdir -p "$OUT_DIR"
@@ -93,7 +93,7 @@ run_workload() {
   echo "--- [$label] starting workload ---"
 
   KAFS_BIN="$bin_dir/src/kafs" \
-  KAFSCTL_BIN="$OPTIMIZED_DIR/src/kafsctl" \
+  KAFSCTL_BIN="$bin_dir/src/kafsctl" \
   MKFS_BIN="$bin_dir/src/mkfs.kafs" \
   FSCK_BIN="$bin_dir/src/fsck.kafs" \
     LC_ALL=C /usr/bin/time -f "%e" -o "$out_prefix.elapsed" \
