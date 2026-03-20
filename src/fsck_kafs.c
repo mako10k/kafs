@@ -353,6 +353,57 @@ static ssize_t fsck_inode_pread(kafs_context_t *ctx, const kafs_sinode_t *inoent
   return (ssize_t)size;
 }
 
+static void fsck_dump_bytes_hex(FILE *out, const void *buf, size_t len)
+{
+  const unsigned char *p = (const unsigned char *)buf;
+  for (size_t i = 0; i < len; ++i)
+    fprintf(out, "%s%02x", (i == 0) ? "" : " ", (unsigned)p[i]);
+}
+
+static void fsck_dump_bytes_ascii(FILE *out, const void *buf, size_t len)
+{
+  const unsigned char *p = (const unsigned char *)buf;
+  for (size_t i = 0; i < len; ++i)
+  {
+    unsigned char ch = p[i];
+    fputc((ch >= 32 && ch <= 126) ? (int)ch : '.', out);
+  }
+}
+
+static void fsck_log_inode_brief(kafs_inocnt_t ino, const kafs_sinode_t *inoent)
+{
+  if (!inoent)
+    return;
+
+  fprintf(stderr,
+          "  inode-meta: ino=%" PRIuFAST32 " mode=%06o uid=%u gid=%u size=%" PRIiFAST64
+          " linkcnt=%" PRIuFAST16 " blocks=%" PRIuFAST32 "\n",
+          ino, (unsigned)kafs_ino_mode_get(inoent), (unsigned)kafs_ino_uid_get(inoent),
+          (unsigned)kafs_ino_gid_get(inoent), (int64_t)kafs_ino_size_get(inoent),
+          (uint_fast16_t)kafs_ino_linkcnt_get(inoent), (uint_fast32_t)kafs_ino_blocks_get(inoent));
+}
+
+static void fsck_log_dir_head_sample(kafs_context_t *ctx, const kafs_sinode_t *inoent,
+                                     kafs_inocnt_t ino)
+{
+  unsigned char sample[32];
+  memset(sample, 0, sizeof(sample));
+
+  ssize_t got = fsck_inode_pread(ctx, inoent, sample, (kafs_off_t)sizeof(sample), 0);
+  if (got < 0)
+  {
+    fprintf(stderr, "  dir-head: ino=%" PRIuFAST32 " pread_rc=%zd\n", ino, got);
+    return;
+  }
+
+  size_t n = (size_t)got;
+  fprintf(stderr, "  dir-head: ino=%" PRIuFAST32 " bytes[%zu]=", ino, n);
+  fsck_dump_bytes_hex(stderr, sample, n);
+  fprintf(stderr, " ascii='");
+  fsck_dump_bytes_ascii(stderr, sample, n);
+  fprintf(stderr, "'\n");
+}
+
 static int fsck_inode_is_tombstone(const kafs_sinode_t *inoent)
 {
   if (!inoent || !kafs_ino_get_usage(inoent))
@@ -517,6 +568,8 @@ static int fsck_check_or_repair_dir_v4(kafs_context_t *ctx, int do_fix, struct d
     {
       fprintf(stderr, "dir-v4 invalid: ino=%" PRIuFAST32 " size=%" PRIiFAST64 " too small\n", ino,
               (int64_t)size);
+      fsck_log_inode_brief(ino, inoent);
+      fsck_log_dir_head_sample(ctx, inoent, ino);
       stats->invalid_dirs++;
       continue;
     }
@@ -532,6 +585,8 @@ static int fsck_check_or_repair_dir_v4(kafs_context_t *ctx, int do_fix, struct d
       fprintf(stderr, "dir-v4 invalid: ino=%" PRIuFAST32 " bad header magic=%08x fmt=%u flags=%u\n",
               ino, kafs_u32_stoh(hdr.dh_magic), (unsigned)kafs_dir_v4_hdr_format_get(&hdr),
               (unsigned)kafs_dir_v4_hdr_flags_get(&hdr));
+      fsck_log_inode_brief(ino, inoent);
+      fsck_log_dir_head_sample(ctx, inoent, ino);
       stats->invalid_dirs++;
       continue;
     }
@@ -543,6 +598,8 @@ static int fsck_check_or_repair_dir_v4(kafs_context_t *ctx, int do_fix, struct d
               "dir-v4 invalid: ino=%" PRIuFAST32 " size/header mismatch size=%" PRIiFAST64
               " record_bytes=%u\n",
               ino, (int64_t)size, (unsigned)record_bytes);
+      fsck_log_inode_brief(ino, inoent);
+      fsck_log_dir_head_sample(ctx, inoent, ino);
       stats->invalid_dirs++;
       continue;
     }
@@ -566,11 +623,17 @@ static int fsck_check_or_repair_dir_v4(kafs_context_t *ctx, int do_fix, struct d
     uint32_t dotdot_live = 0;
     size_t off = sizeof(kafs_sdir_v4_hdr_t);
     int malformed = 0;
+    size_t bad_off = 0;
+    uint16_t bad_rec_len = 0;
+    uint16_t bad_flags = 0;
+    kafs_inocnt_t bad_dino = KAFS_INO_NONE;
+    kafs_filenamelen_t bad_namelen = 0;
     while (off < (size_t)size)
     {
       if ((size_t)size - off < sizeof(kafs_sdirent_v4_t))
       {
         malformed = 1;
+        bad_off = off;
         break;
       }
       kafs_sdirent_v4_t rec;
@@ -579,6 +642,11 @@ static int fsck_check_or_repair_dir_v4(kafs_context_t *ctx, int do_fix, struct d
       uint16_t flags = kafs_dirent_v4_flags_get(&rec);
       kafs_inocnt_t dino = kafs_dirent_v4_ino_get(&rec);
       kafs_filenamelen_t namelen = kafs_dirent_v4_filenamelen_get(&rec);
+      bad_off = off;
+      bad_rec_len = rec_len;
+      bad_flags = flags;
+      bad_dino = dino;
+      bad_namelen = namelen;
       if (rec_len < sizeof(kafs_sdirent_v4_t) || off + rec_len > (size_t)size || namelen == 0 ||
           namelen >= FILENAME_MAX || (size_t)namelen > rec_len - sizeof(kafs_sdirent_v4_t) ||
           (flags & ~KAFS_DIRENT_FLAG_TOMBSTONE) != 0u)
@@ -604,14 +672,32 @@ static int fsck_check_or_repair_dir_v4(kafs_context_t *ctx, int do_fix, struct d
       }
       off += rec_len;
     }
-    free(buf);
-
     if (malformed)
     {
-      fprintf(stderr, "dir-v4 invalid: ino=%" PRIuFAST32 " malformed record stream\n", ino);
+      fprintf(stderr,
+              "dir-v4 invalid: ino=%" PRIuFAST32
+              " malformed record stream off=%zu rec_len=%u flags=%u dino=%" PRIuFAST32
+              " namelen=%" PRIuFAST16 "\n",
+              ino, bad_off, (unsigned)bad_rec_len, (unsigned)bad_flags, bad_dino,
+              (uint_fast16_t)bad_namelen);
+      fsck_log_inode_brief(ino, inoent);
+      fsck_log_dir_head_sample(ctx, inoent, ino);
+      if (buf && bad_off < (size_t)size)
+      {
+        size_t remain = (size_t)size - bad_off;
+        size_t sample_len = remain < 32u ? remain : 32u;
+        fprintf(stderr, "  bad-record-head: off=%zu bytes[%zu]=", bad_off, sample_len);
+        fsck_dump_bytes_hex(stderr, buf + bad_off, sample_len);
+        fprintf(stderr, " ascii='");
+        fsck_dump_bytes_ascii(stderr, buf + bad_off, sample_len);
+        fprintf(stderr, "'\n");
+      }
+      free(buf);
       stats->invalid_dirs++;
       continue;
     }
+
+    free(buf);
 
     int bad_counts = 0;
     if (live_count != kafs_dir_v4_hdr_live_count_get(&hdr) ||
@@ -636,6 +722,8 @@ static int fsck_check_or_repair_dir_v4(kafs_context_t *ctx, int do_fix, struct d
             ino, (unsigned)kafs_dir_v4_hdr_live_count_get(&hdr), (unsigned)live_count,
             (unsigned)kafs_dir_v4_hdr_tombstone_count_get(&hdr), (unsigned)tombstone_count,
             (unsigned)dotdot_live);
+    fsck_log_inode_brief(ino, inoent);
+    fsck_log_dir_head_sample(ctx, inoent, ino);
     stats->invalid_dirs++;
     (void)do_fix;
   }

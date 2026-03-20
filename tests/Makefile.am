@@ -28,7 +28,7 @@ AM_TESTS_ENVIRONMENT = \
 check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured min_git_hooks fs_semantics \
 	clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility \
 	prune_indirect_single prune_indirect_double prune_indirect_triple truncate_prune reflink_clone \
-	kafsctl_links \
+	kafsctl_links bg_dedup_skip_dirs \
 	stress_fs hotplug_rpc e2e_hotplug kafsresize journal_boundary fallocate_lseek_block
 
 TESTS = $(check_PROGRAMS)
@@ -108,6 +108,12 @@ kafsctl_links_SOURCES = tests_kafsctl_links.c test_utils.c \
 	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
 kafsctl_links_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 kafsctl_links_LDADD = $(KAFS_LIBS)
+
+bg_dedup_skip_dirs_SOURCES = tests_bg_dedup_skip_dirs.c test_utils.c \
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c \
+	$(top_srcdir)/src/kafs_journal.c $(top_srcdir)/src/kafs_rpc.c
+bg_dedup_skip_dirs_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+bg_dedup_skip_dirs_LDADD = $(KAFS_LIBS)
 
 stress_fs_SOURCES = tests_stress_fs.c test_utils.c \
 	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c

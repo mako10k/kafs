@@ -249,6 +249,14 @@ struct kafs_context
   uint32_t *c_open_cnt;  // sized to superblock inocnt (allocated at mount)
   uint32_t *c_ino_epoch; // sized to superblock inocnt (optimistic guard for pending worker)
 
+  // --- Debug create->first-pwrite correlation (allocated only when debug enabled) ---
+  uint64_t c_diag_create_seq_next;
+  uint64_t *c_diag_create_seq;
+  uint16_t *c_diag_create_mode;
+  uint8_t *c_diag_create_first_write_seen;
+  char *c_diag_create_paths;
+  int c_diag_log_fd;
+
   // --- Mount context ---
   const char *c_mountpoint; // mountpoint path (from argv)
 

@@ -115,6 +115,340 @@ static inline void kafs_stat_record_pwrite_iblk_write_latency(kafs_context_t *ct
   ctx->c_stat_pwrite_iblk_write_sample_cap = cap;
 }
 
+#define KAFS_DIAG_CREATE_PATH_MAX 160u
+
+#if KAFS_ENABLE_EXTRA_DIAG
+static void kafs_diag_appendf(struct kafs_context *ctx, const char *fmt, ...)
+{
+  if (!ctx || ctx->c_diag_log_fd < 0 || !fmt)
+    return;
+
+  char buf[1024];
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  if (n <= 0)
+    return;
+
+  size_t len = (size_t)n;
+  if (len >= sizeof(buf))
+    len = sizeof(buf) - 1u;
+  size_t off = 0;
+  while (off < len)
+  {
+    ssize_t w = write(ctx->c_diag_log_fd, buf + off, len - off);
+    if (w <= 0)
+      break;
+    off += (size_t)w;
+  }
+}
+
+static void kafs_diag_log_open(struct kafs_context *ctx, const char *image_path)
+{
+  if (!ctx || ctx->c_diag_log_fd >= 0 || !kafs_extra_diag_enabled())
+    return;
+
+  const char *log_path = getenv("KAFS_DIAG_LOG");
+  char auto_path[PATH_MAX];
+  if (!log_path || log_path[0] == '\0')
+  {
+    snprintf(auto_path, sizeof(auto_path), "/tmp/kafs-diag-%ld.log", (long)getpid());
+    log_path = auto_path;
+  }
+
+  int fd = open(log_path, O_CREAT | O_WRONLY | O_APPEND | O_CLOEXEC, 0644);
+  if (fd < 0)
+  {
+    kafs_log(KAFS_LOG_WARNING, "%s: open failed path=%s errno=%d\n", __func__, log_path, errno);
+    return;
+  }
+
+  ctx->c_diag_log_fd = fd;
+  kafs_diag_appendf(ctx, "diag-log-open pid=%ld image=%s\n", (long)getpid(),
+                    image_path ? image_path : "(null)");
+  kafs_log(KAFS_LOG_WARNING, "%s: path=%s\n", __func__, log_path);
+}
+
+static void kafs_diag_log_close(struct kafs_context *ctx)
+{
+  if (!ctx || ctx->c_diag_log_fd < 0)
+    return;
+  close(ctx->c_diag_log_fd);
+  ctx->c_diag_log_fd = -1;
+}
+
+static __thread const char *g_diag_write_path = NULL;
+static __thread uint32_t g_diag_write_ino = KAFS_INO_NONE;
+
+typedef struct kafs_diag_write_scope
+{
+  const char *prev_path;
+  uint32_t prev_ino;
+} kafs_diag_write_scope_t;
+
+static kafs_diag_write_scope_t kafs_diag_write_scope_enter(const char *path, uint32_t ino)
+{
+  kafs_diag_write_scope_t scope = {g_diag_write_path, g_diag_write_ino};
+  g_diag_write_path = path;
+  g_diag_write_ino = ino;
+  return scope;
+}
+
+static void kafs_diag_write_scope_leave(kafs_diag_write_scope_t scope)
+{
+  g_diag_write_path = scope.prev_path;
+  g_diag_write_ino = scope.prev_ino;
+}
+
+const char *kafs_diag_current_write_path(void) { return g_diag_write_path; }
+
+uint32_t kafs_diag_current_write_ino(void) { return g_diag_write_ino; }
+
+static void kafs_diag_format_sample(const void *buf, size_t len, char *hex_out, size_t hex_cap,
+                                    char *ascii_out, size_t ascii_cap)
+{
+  if (!hex_out || hex_cap == 0 || !ascii_out || ascii_cap == 0)
+    return;
+
+  hex_out[0] = '\0';
+  ascii_out[0] = '\0';
+  if (!buf || len == 0)
+    return;
+
+  const unsigned char *bytes = (const unsigned char *)buf;
+  size_t sample_len = len;
+  if (sample_len > 16u)
+    sample_len = 16u;
+
+  size_t hex_off = 0;
+  size_t ascii_off = 0;
+  for (size_t i = 0; i < sample_len; ++i)
+  {
+    if (hex_off + 4 >= hex_cap || ascii_off + 2 >= ascii_cap)
+      break;
+    int hex_written = snprintf(hex_out + hex_off, hex_cap - hex_off, "%s%02x", (i == 0) ? "" : " ",
+                               (unsigned)bytes[i]);
+    if (hex_written < 0)
+      break;
+    hex_off += (size_t)hex_written;
+    ascii_out[ascii_off++] = (bytes[i] >= 32 && bytes[i] <= 126) ? (char)bytes[i] : '.';
+  }
+  ascii_out[ascii_off] = '\0';
+}
+
+static void kafs_diag_log_dir_iblk_write(const char *phase, struct kafs_context *ctx,
+                                         kafs_sinode_t *inoent, kafs_iblkcnt_t iblo,
+                                         kafs_blkcnt_t old_ref, kafs_blkcnt_t new_ref,
+                                         const void *buf, size_t len)
+{
+  if (!phase || !ctx || !inoent || iblo != 0 || !kafs_extra_diag_enabled())
+    return;
+
+  kafs_mode_t mode = kafs_ino_mode_get(inoent);
+  if (!S_ISDIR(mode))
+    return;
+
+  char hex_sample[3 * 16 + 1];
+  char ascii_sample[16 + 1];
+  kafs_diag_format_sample(buf, len, hex_sample, sizeof(hex_sample), ascii_sample,
+                          sizeof(ascii_sample));
+
+  kafs_log(KAFS_LOG_WARNING,
+           "%s: dir-iblk-write ino=%" PRIuFAST32 " mode=%o size=%" PRIuFAST64 " iblo=%" PRIuFAST32
+           " old_ref=%" PRIuFAST32 " new_ref=%" PRIuFAST32 " sample_hex=%s sample_ascii='%s'\n",
+           phase, (uint_fast32_t)(inoent - ctx->c_inotbl), (unsigned)mode,
+           (uint_fast64_t)kafs_ino_size_get(inoent), (uint_fast32_t)iblo, (uint_fast32_t)old_ref,
+           (uint_fast32_t)new_ref, hex_sample[0] ? hex_sample : "-",
+           ascii_sample[0] ? ascii_sample : "-");
+  kafs_diag_appendf(ctx,
+                    "%s: dir-iblk-write ino=%" PRIuFAST32 " mode=%o size=%" PRIuFAST64
+                    " iblo=%" PRIuFAST32 " old_ref=%" PRIuFAST32 " new_ref=%" PRIuFAST32
+                    " src_ino=%" PRIuFAST32 " src_path=%s sample_hex=%s sample_ascii='%s'\n",
+                    phase, (uint_fast32_t)(inoent - ctx->c_inotbl), (unsigned)mode,
+                    (uint_fast64_t)kafs_ino_size_get(inoent), (uint_fast32_t)iblo,
+                    (uint_fast32_t)old_ref, (uint_fast32_t)new_ref, (uint_fast32_t)g_diag_write_ino,
+                    g_diag_write_path ? g_diag_write_path : "(null)",
+                    hex_sample[0] ? hex_sample : "-", ascii_sample[0] ? ascii_sample : "-");
+}
+
+static void kafs_diag_log_dir_ref_set(const char *phase, struct kafs_context *ctx,
+                                      kafs_sinode_t *inoent, kafs_iblkcnt_t iblo,
+                                      kafs_blkcnt_t old_ref, kafs_blkcnt_t new_ref)
+{
+  kafs_diag_log_dir_iblk_write(phase, ctx, inoent, iblo, old_ref, new_ref, NULL, 0);
+}
+
+static void kafs_diag_clear_create_event(struct kafs_context *ctx, kafs_inocnt_t ino)
+{
+  if (!ctx || !ctx->c_superblock || !ctx->c_diag_create_seq || !ctx->c_diag_create_mode ||
+      !ctx->c_diag_create_first_write_seen || !ctx->c_diag_create_paths)
+    return;
+  if (ino >= kafs_sb_inocnt_get(ctx->c_superblock))
+    return;
+
+  ctx->c_diag_create_seq[ino] = 0;
+  ctx->c_diag_create_mode[ino] = 0;
+  ctx->c_diag_create_first_write_seen[ino] = 0;
+  char *slot = ctx->c_diag_create_paths + ((size_t)ino * KAFS_DIAG_CREATE_PATH_MAX);
+  slot[0] = '\0';
+}
+
+static void kafs_diag_note_create_event(struct kafs_context *ctx, kafs_inocnt_t ino,
+                                        const char *path, kafs_mode_t mode)
+{
+  if (!ctx || !ctx->c_superblock || !ctx->c_diag_create_seq || !ctx->c_diag_create_mode ||
+      !ctx->c_diag_create_first_write_seen || !ctx->c_diag_create_paths)
+    return;
+  if (ino >= kafs_sb_inocnt_get(ctx->c_superblock))
+    return;
+
+  uint64_t seq = __atomic_add_fetch(&ctx->c_diag_create_seq_next, 1u, __ATOMIC_RELAXED);
+  if (seq == 0)
+    seq = __atomic_add_fetch(&ctx->c_diag_create_seq_next, 1u, __ATOMIC_RELAXED);
+
+  ctx->c_diag_create_seq[ino] = seq;
+  ctx->c_diag_create_mode[ino] = (uint16_t)mode;
+  ctx->c_diag_create_first_write_seen[ino] = 0;
+
+  char *slot = ctx->c_diag_create_paths + ((size_t)ino * KAFS_DIAG_CREATE_PATH_MAX);
+  if (path && path[0] != '\0')
+    snprintf(slot, KAFS_DIAG_CREATE_PATH_MAX, "%s", path);
+  else
+    slot[0] = '\0';
+
+  kafs_log(KAFS_LOG_WARNING, "%s: seq=%" PRIuFAST64 " ino=%" PRIuFAST32 " mode=%o path=%s\n",
+           __func__, (uint_fast64_t)seq, (uint_fast32_t)ino, (unsigned)mode,
+           slot[0] ? slot : "(null)");
+  kafs_diag_appendf(ctx, "%s: seq=%" PRIuFAST64 " ino=%" PRIuFAST32 " mode=%o path=%s\n", __func__,
+                    (uint_fast64_t)seq, (uint_fast32_t)ino, (unsigned)mode,
+                    slot[0] ? slot : "(null)");
+}
+
+static void kafs_diag_log_first_pwrite_after_create(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                                    const void *buf, kafs_off_t size,
+                                                    kafs_off_t offset)
+{
+  if (!ctx || !inoent || !buf || size <= 0 || !ctx->c_superblock || !ctx->c_diag_create_seq ||
+      !ctx->c_diag_create_mode || !ctx->c_diag_create_first_write_seen ||
+      !ctx->c_diag_create_paths || !kafs_extra_diag_enabled())
+    return;
+
+  kafs_inocnt_t ino = (kafs_inocnt_t)(inoent - ctx->c_inotbl);
+  if (ino >= kafs_sb_inocnt_get(ctx->c_superblock))
+    return;
+  if (ctx->c_diag_create_first_write_seen[ino])
+    return;
+
+  uint64_t seq = ctx->c_diag_create_seq[ino];
+  if (seq == 0)
+    return;
+  ctx->c_diag_create_first_write_seen[ino] = 1u;
+
+  char hex_sample[3 * 16 + 1];
+  char ascii_sample[16 + 1];
+  kafs_diag_format_sample(buf, (size_t)size, hex_sample, sizeof(hex_sample), ascii_sample,
+                          sizeof(ascii_sample));
+
+  char *slot = ctx->c_diag_create_paths + ((size_t)ino * KAFS_DIAG_CREATE_PATH_MAX);
+  kafs_log(KAFS_LOG_WARNING,
+           "%s: seq=%" PRIuFAST64 " ino=%" PRIuFAST32 " expected_mode=%o current_mode=%o "
+           "size=%" PRIuFAST64 " off=%" PRIuFAST64 " path=%s sample_hex=%s sample_ascii='%s'\n",
+           __func__, (uint_fast64_t)seq, (uint_fast32_t)ino, (unsigned)ctx->c_diag_create_mode[ino],
+           (unsigned)kafs_ino_mode_get(inoent), (uint_fast64_t)size, (uint_fast64_t)offset,
+           slot[0] ? slot : "(null)", hex_sample[0] ? hex_sample : "-",
+           ascii_sample[0] ? ascii_sample : "-");
+  kafs_diag_appendf(ctx,
+                    "%s: seq=%" PRIuFAST64 " ino=%" PRIuFAST32
+                    " expected_mode=%o current_mode=%o size=%" PRIuFAST64 " off=%" PRIuFAST64
+                    " path=%s sample_hex=%s sample_ascii='%s'\n",
+                    __func__, (uint_fast64_t)seq, (uint_fast32_t)ino,
+                    (unsigned)ctx->c_diag_create_mode[ino], (unsigned)kafs_ino_mode_get(inoent),
+                    (uint_fast64_t)size, (uint_fast64_t)offset, slot[0] ? slot : "(null)",
+                    hex_sample[0] ? hex_sample : "-", ascii_sample[0] ? ascii_sample : "-");
+}
+
+#else
+typedef struct kafs_diag_write_scope
+{
+  int unused;
+} kafs_diag_write_scope_t;
+
+static void kafs_diag_log_open(struct kafs_context *ctx, const char *image_path)
+{
+  (void)ctx;
+  (void)image_path;
+}
+
+static void kafs_diag_log_close(struct kafs_context *ctx) { (void)ctx; }
+
+static kafs_diag_write_scope_t kafs_diag_write_scope_enter(const char *path, uint32_t ino)
+{
+  (void)path;
+  (void)ino;
+  return (kafs_diag_write_scope_t){0};
+}
+
+static void kafs_diag_write_scope_leave(kafs_diag_write_scope_t scope) { (void)scope; }
+
+const char *kafs_diag_current_write_path(void) { return NULL; }
+
+uint32_t kafs_diag_current_write_ino(void) { return KAFS_INO_NONE; }
+
+static void kafs_diag_log_dir_ref_set(const char *phase, struct kafs_context *ctx,
+                                      kafs_sinode_t *inoent, kafs_iblkcnt_t iblo,
+                                      kafs_blkcnt_t old_ref, kafs_blkcnt_t new_ref)
+{
+  (void)phase;
+  (void)ctx;
+  (void)inoent;
+  (void)iblo;
+  (void)old_ref;
+  (void)new_ref;
+}
+
+static void kafs_diag_log_dir_iblk_write(const char *phase, struct kafs_context *ctx,
+                                         kafs_sinode_t *inoent, kafs_iblkcnt_t iblo,
+                                         kafs_blkcnt_t old_ref, kafs_blkcnt_t new_ref,
+                                         const void *buf, size_t len)
+{
+  (void)phase;
+  (void)ctx;
+  (void)inoent;
+  (void)iblo;
+  (void)old_ref;
+  (void)new_ref;
+  (void)buf;
+  (void)len;
+}
+
+static void kafs_diag_log_first_pwrite_after_create(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                                    const void *buf, kafs_off_t size,
+                                                    kafs_off_t offset)
+{
+  (void)ctx;
+  (void)inoent;
+  (void)buf;
+  (void)size;
+  (void)offset;
+}
+
+static void kafs_diag_clear_create_event(struct kafs_context *ctx, kafs_inocnt_t ino)
+{
+  (void)ctx;
+  (void)ino;
+}
+
+static void kafs_diag_note_create_event(struct kafs_context *ctx, kafs_inocnt_t ino,
+                                        const char *path, kafs_mode_t mode)
+{
+  (void)ctx;
+  (void)ino;
+  (void)path;
+  (void)mode;
+}
+#endif
+
 #define KAFS_PENDINGLOG_MAGIC 0x4b504c47u /* 'KPLG' */
 #define KAFS_PENDINGLOG_VERSION 1u
 #define KAFS_PENDING_REF_FLAG 0x80000000u
@@ -1394,6 +1728,18 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
       continue;
     }
 
+    if (S_ISDIR(kafs_ino_mode_get(inoent)))
+    {
+      kafs_inode_unlock(ctx, ino);
+      inode_locked = 0;
+      if (scanned == 0)
+      {
+        if (kafs_bg_advance_cursor(ctx, inocnt, 0))
+          kafs_bg_enter_cooldown(ctx, pressure_mode);
+      }
+      continue;
+    }
+
     kafs_off_t size = kafs_ino_size_get(inoent);
     if (size <= KAFS_DIRECT_SIZE)
     {
@@ -2278,6 +2624,55 @@ static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
   return KAFS_SUCCESS;
 }
 
+static void kafs_diag_log_live_dir_block0_write(struct kafs_context *ctx, kafs_blkcnt_t blo,
+                                                const void *buf, size_t len)
+{
+#if KAFS_ENABLE_EXTRA_DIAG
+  if (!ctx || !buf || blo == KAFS_BLO_NONE || !kafs_extra_diag_enabled())
+    return;
+
+  kafs_inocnt_t inocnt = kafs_sb_inocnt_get(ctx->c_superblock);
+  for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
+  {
+    kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+    if (!kafs_ino_get_usage(inoent))
+      continue;
+    kafs_mode_t mode = kafs_ino_mode_get(inoent);
+    if (!S_ISDIR(mode))
+      continue;
+    if (kafs_ino_size_get(inoent) <= KAFS_DIRECT_SIZE)
+      continue;
+    kafs_blkcnt_t cur_ref = kafs_blkcnt_stoh(inoent->i_blkreftbl[0]);
+    if (cur_ref != blo)
+      continue;
+
+    char hex_sample[3 * 16 + 1];
+    char ascii_sample[16 + 1];
+    kafs_diag_format_sample(buf, len, hex_sample, sizeof(hex_sample), ascii_sample,
+                            sizeof(ascii_sample));
+    kafs_log(KAFS_LOG_WARNING,
+             "%s: blk=%" PRIuFAST32 " matches live dir block0 ino=%" PRIuFAST32
+             " mode=%o size=%" PRIuFAST64 " sample_hex=%s sample_ascii='%s'\n",
+             __func__, (uint_fast32_t)blo, (uint_fast32_t)ino, (unsigned)mode,
+             (uint_fast64_t)kafs_ino_size_get(inoent), hex_sample[0] ? hex_sample : "-",
+             ascii_sample[0] ? ascii_sample : "-");
+    kafs_diag_appendf(ctx,
+                      "%s: blk=%" PRIuFAST32 " matches live dir block0 ino=%" PRIuFAST32
+                      " mode=%o size=%" PRIuFAST64 " src_ino=%" PRIuFAST32
+                      " src_path=%s sample_hex=%s sample_ascii='%s'\n",
+                      __func__, (uint_fast32_t)blo, (uint_fast32_t)ino, (unsigned)mode,
+                      (uint_fast64_t)kafs_ino_size_get(inoent), (uint_fast32_t)g_diag_write_ino,
+                      g_diag_write_path ? g_diag_write_path : "(null)",
+                      hex_sample[0] ? hex_sample : "-", ascii_sample[0] ? ascii_sample : "-");
+  }
+#else
+  (void)ctx;
+  (void)blo;
+  (void)buf;
+  (void)len;
+#endif
+}
+
 /// @brief ブロック単位でデータを書き込む
 /// @param ctx コンテキスト
 /// @param blo ブロック番号へのポインタ
@@ -2304,6 +2699,7 @@ static int kafs_blk_write(struct kafs_context *ctx, kafs_blkcnt_t blo, const voi
   off_t off = (off_t)blo << log_blksize;
   if ((size_t)off + (size_t)blksize > ctx->c_img_size)
     return -EIO;
+  kafs_diag_log_live_dir_block0_write(ctx, blo, buf, (size_t)blksize);
   memcpy(kafs_img_ptr(ctx, off, (size_t)blksize), buf, (size_t)blksize);
   return KAFS_SUCCESS;
 }
@@ -2346,6 +2742,7 @@ static void kafs_ino_blocks_adjust(kafs_sinode_t *inoent, int delta)
 static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_iblkcnt_t iblo,
                              kafs_blkcnt_t *pblo, kafs_iblkref_func_t ifunc)
 {
+  kafs_iblkcnt_t iblo_orig = iblo;
   assert(ctx != NULL);
   assert(pblo != NULL);
   assert(inoent != NULL);
@@ -2379,6 +2776,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
 
     case KAFS_IBLKREF_FUNC_SET:
       // 直接参照に new blo を設定（中間テーブル不要）
+      kafs_diag_log_dir_ref_set("ibrk_set_direct", ctx, inoent, iblo_orig, blo_data_raw, *pblo);
       if (blo_data_raw == KAFS_BLO_NONE && *pblo != KAFS_BLO_NONE)
         kafs_ino_blocks_adjust(inoent, +1);
       else if (blo_data_raw != KAFS_BLO_NONE && *pblo == KAFS_BLO_NONE)
@@ -2461,6 +2859,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
         KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl, blkreftbl);
       }
       blo_data = kafs_blkcnt_stoh(blkreftbl[iblo]);
+      kafs_diag_log_dir_ref_set("ibrk_set_single", ctx, inoent, iblo_orig, blo_data, *pblo);
       if (blo_data == KAFS_BLO_NONE && *pblo != KAFS_BLO_NONE)
         kafs_ino_blocks_adjust(inoent, +1);
       else if (blo_data != KAFS_BLO_NONE && *pblo == KAFS_BLO_NONE)
@@ -2581,6 +2980,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
         KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl2, blkreftbl2);
       }
       blo_data = kafs_blkcnt_stoh(blkreftbl2[iblo2]);
+      kafs_diag_log_dir_ref_set("ibrk_set_double", ctx, inoent, iblo_orig, blo_data, *pblo);
       if (blo_data == KAFS_BLO_NONE && *pblo != KAFS_BLO_NONE)
         kafs_ino_blocks_adjust(inoent, +1);
       else if (blo_data != KAFS_BLO_NONE && *pblo == KAFS_BLO_NONE)
@@ -2744,6 +3144,7 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
       KAFS_CALL(kafs_blk_read, ctx, blo_blkreftbl3, blkreftbl3);
     }
     blo_data = kafs_blkcnt_stoh(blkreftbl3[iblo3]);
+    kafs_diag_log_dir_ref_set("ibrk_set_triple", ctx, inoent, iblo_orig, blo_data, *pblo);
     if (blo_data == KAFS_BLO_NONE && *pblo != KAFS_BLO_NONE)
       kafs_ino_blocks_adjust(inoent, +1);
     else if (blo_data != KAFS_BLO_NONE && *pblo == KAFS_BLO_NONE)
@@ -2919,6 +3320,8 @@ static int kafs_ino_iblk_write_legacy(struct kafs_context *ctx, kafs_sinode_t *i
 
   kafs_blkcnt_t old_raw = KAFS_BLO_NONE;
   KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old_raw, KAFS_IBLKREF_FUNC_GET_RAW);
+  kafs_diag_log_dir_iblk_write("iblk_write_legacy", ctx, inoent, iblo, old_raw, new_blo, buf,
+                               kafs_sb_blksize_get(ctx->c_superblock));
   KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &new_blo, KAFS_IBLKREF_FUNC_SET);
 
   if (record_rescue_hint)
@@ -3029,6 +3432,8 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
     {
       kafs_blkcnt_t pref = KAFS_BLO_NONE;
       KAFS_IBWRITE_TRY(kafs_ref_pending_encode(pending_id, &pref));
+      kafs_diag_log_dir_iblk_write("iblk_write_pending", ctx, inoent, iblo, old_raw, pref, buf,
+                                   kafs_sb_blksize_get(ctx->c_superblock));
       KAFS_IBWRITE_TRY(kafs_ino_ibrk_run(ctx, inoent, iblo, &pref, KAFS_IBLKREF_FUNC_SET));
 
       kafs_pending_worker_notify(ctx);
@@ -3061,6 +3466,8 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
         ctx->c_stat_hrl_put_hits++;
       kafs_blkcnt_t old_blo;
       KAFS_IBWRITE_TRY(kafs_ino_ibrk_run(ctx, inoent, iblo, &old_blo, KAFS_IBLKREF_FUNC_GET));
+      kafs_diag_log_dir_iblk_write("iblk_write_rescue", ctx, inoent, iblo, old_blo, rescue_blo, buf,
+                                   kafs_sb_blksize_get(ctx->c_superblock));
       KAFS_IBWRITE_TRY(kafs_ino_ibrk_run(ctx, inoent, iblo, &rescue_blo, KAFS_IBLKREF_FUNC_SET));
       uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
       if (old_blo != KAFS_BLO_NONE && old_blo != rescue_blo)
@@ -3084,6 +3491,8 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
     // kafs_hrl_put() already takes one reference for the returned hrid.
     kafs_blkcnt_t old_blo;
     KAFS_IBWRITE_TRY(kafs_ino_ibrk_run(ctx, inoent, iblo, &old_blo, KAFS_IBLKREF_FUNC_GET));
+    kafs_diag_log_dir_iblk_write("iblk_write_hrl", ctx, inoent, iblo, old_blo, new_blo, buf,
+                                 kafs_sb_blksize_get(ctx->c_superblock));
     KAFS_IBWRITE_TRY(kafs_ino_ibrk_run(ctx, inoent, iblo, &new_blo, KAFS_IBLKREF_FUNC_SET));
     // HRLバケットロック順序のため、参照減算は inode ロック外で行う
     uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
@@ -3236,6 +3645,7 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
 
   __atomic_add_fetch(&ctx->c_stat_pwrite_calls, 1u, __ATOMIC_RELAXED);
   __atomic_add_fetch(&ctx->c_stat_pwrite_bytes, (uint64_t)size, __ATOMIC_RELAXED);
+  kafs_diag_log_first_pwrite_after_create(ctx, inoent, buf, size, offset);
 
   if (filesize < filesize_new)
   {
@@ -3578,6 +3988,7 @@ __attribute_maybe_unused__ static int kafs_release(struct kafs_context *ctx, kaf
   if (kafs_ino_linkcnt_decr(inoent) == 0)
   {
     KAFS_CALL(kafs_truncate, ctx, inoent, 0);
+    kafs_diag_clear_create_event(ctx, (kafs_inocnt_t)(inoent - ctx->c_inotbl));
     memset(inoent, 0, sizeof(struct kafs_sinode));
     // Best-effort accounting (avoid taking inode_alloc_lock here to prevent lock inversion).
     kafs_sb_inocnt_free_incr(ctx->c_superblock);
@@ -3624,6 +4035,7 @@ static int kafs_try_reclaim_unlinked_inode_locked(struct kafs_context *ctx, kafs
     kafs_log(KAFS_LOG_WARNING, "%s: truncate failed ino=%" PRIuFAST32 " rc=%d\n", __func__,
              (uint32_t)ino, trc);
   }
+  kafs_diag_clear_create_event(ctx, ino);
   memset(inoent, 0, sizeof(*inoent));
   *reclaimed = 1;
   return KAFS_SUCCESS;
@@ -6765,6 +7177,7 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
 
   kafs_dlog(2, "%s: success ino=%u added to dir ino=%u\n", __func__, (unsigned)ino_new,
             (unsigned)(pino_dir ? *pino_dir : 0));
+  kafs_diag_note_create_event(ctx, ino_new, path, mode);
   kafs_journal_commit(ctx, jseq);
   return KAFS_SUCCESS;
 }
@@ -6777,6 +7190,17 @@ static int kafs_op_create(const char *path, mode_t mode, struct fuse_file_info *
     return -EACCES;
   kafs_inocnt_t ino_new;
   KAFS_CALL(kafs_create, path, mode | S_IFREG, 0, NULL, &ino_new);
+  if (ctx)
+  {
+    kafs_mode_t created_mode = kafs_ino_mode_get(&ctx->c_inotbl[ino_new]);
+    if (!S_ISREG(created_mode))
+    {
+      kafs_log(KAFS_LOG_ERR,
+               "%s: create type mismatch path=%s ino=%" PRIuFAST32 " mode=%o expected=regular\n",
+               __func__, path ? path : "(null)", (uint_fast32_t)ino_new, (unsigned)created_mode);
+      return -EIO;
+    }
+  }
   fi->fh = ino_new;
   if (ctx && ctx->c_open_cnt)
     __atomic_add_fetch(&ctx->c_open_cnt[ino_new], 1u, __ATOMIC_RELAXED);
@@ -7077,6 +7501,16 @@ static int kafs_op_mkdir(const char *path, mode_t mode)
   kafs_inocnt_t ino_new;
   KAFS_CALL(kafs_create, path, mode | S_IFDIR, 0, &ino_dir, &ino_new);
   kafs_sinode_t *inoent_new = &ctx->c_inotbl[ino_new];
+  if (!S_ISDIR(kafs_ino_mode_get(inoent_new)))
+  {
+    kafs_log(KAFS_LOG_ERR,
+             "%s: create type mismatch path=%s ino=%" PRIuFAST32 " mode=%o expected=dir\n",
+             __func__, path ? path : "(null)", (uint_fast32_t)ino_new,
+             (unsigned)kafs_ino_mode_get(inoent_new));
+    kafs_journal_abort(ctx, jseq, "mkdir type mismatch ino=%u mode=%o", (unsigned)ino_new,
+                       (unsigned)kafs_ino_mode_get(inoent_new));
+    return -EIO;
+  }
   kafs_dlog(2, "%s: created ino=%u mode=%o\n", __func__, (unsigned)ino_new,
             (unsigned)kafs_ino_mode_get(inoent_new));
   // Lock parent + new dir in stable order (dirent_add("..") increments parent linkcnt)
@@ -7309,7 +7743,22 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
     return (int)rc_hp;
   }
   kafs_inode_lock(ctx, (uint32_t)ino);
-  int rc_write = kafs_pwrite(ctx, &ctx->c_inotbl[ino], buf, size, offset);
+  kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+  kafs_mode_t mode = kafs_ino_mode_get(inoent);
+  if (S_ISDIR(mode))
+  {
+    kafs_inode_unlock(ctx, (uint32_t)ino);
+    kafs_log(KAFS_LOG_ERR,
+             "%s: rejecting write to directory path=%s ino=%" PRIuFAST32
+             " size=%zu off=%" PRIuFAST64 " mode=%o\n",
+             __func__, path ? path : "(null)", (uint32_t)ino, size, (uint64_t)offset,
+             (unsigned)mode);
+    return -EISDIR;
+  }
+  kafs_diag_write_scope_t write_scope =
+      kafs_diag_write_scope_enter(path ? path : "(null)", (uint32_t)ino);
+  int rc_write = kafs_pwrite(ctx, inoent, buf, size, offset);
+  kafs_diag_write_scope_leave(write_scope);
   kafs_inode_unlock(ctx, (uint32_t)ino);
   if (rc_write < 0)
   {
@@ -7836,7 +8285,24 @@ static int kafs_op_symlink(const char *target, const char *linkpath)
   kafs_inocnt_t ino;
   KAFS_CALL(kafs_create, linkpath, 0777 | S_IFLNK, 0, NULL, &ino);
   kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+  kafs_mode_t created_mode = kafs_ino_mode_get(inoent);
+  if (!S_ISLNK(created_mode))
+  {
+    kafs_log(KAFS_LOG_ERR,
+             "%s: create type mismatch linkpath=%s ino=%" PRIuFAST32
+             " mode=%o expected=symlink target=%s\n",
+             __func__, linkpath ? linkpath : "(null)", (uint_fast32_t)ino, (unsigned)created_mode,
+             target ? target : "(null)");
+    kafs_journal_abort(ctx, jseq, "symlink type mismatch ino=%u mode=%o", (unsigned)ino,
+                       (unsigned)created_mode);
+    return -EIO;
+  }
+  kafs_inode_lock(ctx, (uint32_t)ino);
+  kafs_diag_write_scope_t write_scope =
+      kafs_diag_write_scope_enter(linkpath ? linkpath : "(null)", (uint32_t)ino);
   ssize_t w = KAFS_CALL(kafs_pwrite, ctx, inoent, target, strlen(target), 0);
+  kafs_diag_write_scope_leave(write_scope);
+  kafs_inode_unlock(ctx, (uint32_t)ino);
   assert(w == (ssize_t)strlen(target));
   kafs_journal_commit(ctx, jseq);
   return 0;
@@ -8520,12 +8986,34 @@ static int kafs_migrate_ctx_open(const char *image_path, kafs_context_t *ctx,
   ctx->c_blkmasktbl = (void *)ctx->c_superblock + (intptr_t)blkmask_off;
   ctx->c_inotbl = (void *)ctx->c_superblock + (intptr_t)inotbl_off;
   ctx->c_alloc_v3_summary_dirty = 1;
+  ctx->c_diag_log_fd = -1;
   ctx->c_ino_epoch = calloc((size_t)inocnt, sizeof(uint32_t));
   if (ctx->c_ino_epoch)
   {
     for (kafs_inocnt_t i = 0; i < inocnt; ++i)
       ctx->c_ino_epoch[i] = 1u;
   }
+  if (kafs_extra_diag_enabled())
+  {
+    ctx->c_diag_create_seq = calloc((size_t)inocnt, sizeof(uint64_t));
+    ctx->c_diag_create_mode = calloc((size_t)inocnt, sizeof(uint16_t));
+    ctx->c_diag_create_first_write_seen = calloc((size_t)inocnt, sizeof(uint8_t));
+    ctx->c_diag_create_paths = calloc((size_t)inocnt, KAFS_DIAG_CREATE_PATH_MAX);
+    if (!ctx->c_diag_create_seq || !ctx->c_diag_create_mode ||
+        !ctx->c_diag_create_first_write_seen || !ctx->c_diag_create_paths)
+    {
+      free(ctx->c_diag_create_seq);
+      free(ctx->c_diag_create_mode);
+      free(ctx->c_diag_create_first_write_seen);
+      free(ctx->c_diag_create_paths);
+      ctx->c_diag_create_seq = NULL;
+      ctx->c_diag_create_mode = NULL;
+      ctx->c_diag_create_first_write_seen = NULL;
+      ctx->c_diag_create_paths = NULL;
+    }
+    ctx->c_diag_create_seq_next = 0;
+  }
+  kafs_diag_log_open(ctx, image_path);
 
   return kafs_hrl_open(ctx);
 }
@@ -8537,6 +9025,15 @@ static void kafs_migrate_ctx_close(kafs_context_t *ctx)
   (void)kafs_hrl_close(ctx);
   free(ctx->c_ino_epoch);
   ctx->c_ino_epoch = NULL;
+  free(ctx->c_diag_create_seq);
+  free(ctx->c_diag_create_mode);
+  free(ctx->c_diag_create_first_write_seen);
+  free(ctx->c_diag_create_paths);
+  ctx->c_diag_create_seq = NULL;
+  ctx->c_diag_create_mode = NULL;
+  ctx->c_diag_create_first_write_seen = NULL;
+  ctx->c_diag_create_paths = NULL;
+  kafs_diag_log_close(ctx);
   if (ctx->c_img_base && ctx->c_img_base != MAP_FAILED)
     munmap(ctx->c_img_base, ctx->c_img_size);
   if (ctx->c_fd >= 0)
@@ -9824,12 +10321,34 @@ int main(int argc, char **argv)
   ctx.c_mapsize = (size_t)mapsize; // metadata region length (subset of img)
   ctx.c_blkmasktbl = (void *)ctx.c_superblock + (intptr_t)blkmask_off;
   ctx.c_inotbl = (void *)ctx.c_superblock + (intptr_t)inotbl_off;
+  ctx.c_diag_log_fd = -1;
   ctx.c_ino_epoch = calloc((size_t)inocnt, sizeof(uint32_t));
   if (ctx.c_ino_epoch)
   {
     for (kafs_inocnt_t i = 0; i < inocnt; ++i)
       ctx.c_ino_epoch[i] = 1u;
   }
+  if (kafs_extra_diag_enabled())
+  {
+    ctx.c_diag_create_seq = calloc((size_t)inocnt, sizeof(uint64_t));
+    ctx.c_diag_create_mode = calloc((size_t)inocnt, sizeof(uint16_t));
+    ctx.c_diag_create_first_write_seen = calloc((size_t)inocnt, sizeof(uint8_t));
+    ctx.c_diag_create_paths = calloc((size_t)inocnt, KAFS_DIAG_CREATE_PATH_MAX);
+    if (!ctx.c_diag_create_seq || !ctx.c_diag_create_mode || !ctx.c_diag_create_first_write_seen ||
+        !ctx.c_diag_create_paths)
+    {
+      free(ctx.c_diag_create_seq);
+      free(ctx.c_diag_create_mode);
+      free(ctx.c_diag_create_first_write_seen);
+      free(ctx.c_diag_create_paths);
+      ctx.c_diag_create_seq = NULL;
+      ctx.c_diag_create_mode = NULL;
+      ctx.c_diag_create_first_write_seen = NULL;
+      ctx.c_diag_create_paths = NULL;
+    }
+    ctx.c_diag_create_seq_next = 0;
+  }
+  kafs_diag_log_open(&ctx, image_path);
   ctx.c_alloc_v3_summary_dirty = 1;
 
   // HRL オープン
@@ -9998,6 +10517,11 @@ int main(int argc, char **argv)
   free(ctx.c_meta_bitmap_words);
   free(ctx.c_meta_bitmap_dirty);
   free(ctx.c_ino_epoch);
+  free(ctx.c_diag_create_seq);
+  free(ctx.c_diag_create_mode);
+  free(ctx.c_diag_create_first_write_seen);
+  free(ctx.c_diag_create_paths);
+  kafs_diag_log_close(&ctx);
   if (ctx.c_img_base && ctx.c_img_base != MAP_FAILED)
     munmap(ctx.c_img_base, ctx.c_img_size);
   return rc;

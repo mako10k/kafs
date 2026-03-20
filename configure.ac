@@ -15,12 +15,27 @@ AC_ARG_ENABLE([lto],
     [enable_lto="$enableval"],
     [enable_lto="no"])
 
+AC_ARG_ENABLE([extra-diag],
+    [AS_HELP_STRING([--enable-extra-diag], [compile extra diagnostic logging helpers])],
+    [enable_extra_diag="$enableval"],
+    [enable_extra_diag="no"])
+
 AS_IF([test "x$enable_lto" = "xyes"], [
     CFLAGS="$CFLAGS -flto"
     LDFLAGS="$LDFLAGS -flto"
     AC_MSG_NOTICE([LTO enabled: appending -flto to CFLAGS/LDFLAGS])
 ], [
     AC_MSG_NOTICE([LTO disabled])
+])
+
+AS_IF([test "x$enable_extra_diag" = "xyes"], [
+    AC_DEFINE([KAFS_ENABLE_EXTRA_DIAG], [1],
+              [Define to 1 to compile extra diagnostic logging helpers])
+    AC_MSG_NOTICE([extra diagnostic logging compiled in])
+], [
+    AC_DEFINE([KAFS_ENABLE_EXTRA_DIAG], [0],
+              [Define to 1 to compile extra diagnostic logging helpers])
+    AC_MSG_NOTICE([extra diagnostic logging compiled out])
 ])
 
 # Checks for programs.

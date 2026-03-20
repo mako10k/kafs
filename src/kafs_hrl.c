@@ -1,10 +1,16 @@
 #include "kafs_hash.h"
 #include "kafs_locks.h"
 #include "kafs_block.h"
+#include <inttypes.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
 #include <time.h>
+
+#if KAFS_ENABLE_EXTRA_DIAG
+extern const char *kafs_diag_current_write_path(void) __attribute__((weak));
+extern uint32_t kafs_diag_current_write_ino(void) __attribute__((weak));
+#endif
 
 // In-memory helpers derived from superblock HRL fields (entry type is declared in kafs_hash.h)
 
@@ -123,6 +129,70 @@ static int hrl_write_blo(kafs_context_t *ctx, kafs_blkcnt_t blo, const void *buf
 {
   kafs_blksize_t bs = hrl_blksize(ctx);
   kafs_logblksize_t l2 = hrl_log_blksize(ctx);
+#if KAFS_ENABLE_EXTRA_DIAG
+  if (ctx && buf && blo != KAFS_BLO_NONE && ctx->c_diag_log_fd >= 0)
+  {
+    kafs_inocnt_t inocnt = kafs_sb_inocnt_get(ctx->c_superblock);
+    for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
+    {
+      kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+      if (!kafs_ino_get_usage(inoent))
+        continue;
+      kafs_mode_t mode = kafs_ino_mode_get(inoent);
+      if (!S_ISDIR(mode))
+        continue;
+      if (kafs_ino_size_get(inoent) <= sizeof(inoent->i_blkreftbl))
+        continue;
+      kafs_blkcnt_t cur_ref = kafs_blkcnt_stoh(inoent->i_blkreftbl[0]);
+      if (cur_ref != blo)
+        continue;
+
+      const unsigned char *p = (const unsigned char *)buf;
+      char hex[3 * 16 + 1];
+      char ascii[16 + 1];
+      size_t hex_off = 0;
+      size_t ascii_off = 0;
+      hex[0] = '\0';
+      ascii[0] = '\0';
+      for (size_t i = 0; i < 16u && i < (size_t)bs; ++i)
+      {
+        int whex = snprintf(hex + hex_off, sizeof(hex) - hex_off, "%s%02x", (i == 0) ? "" : " ",
+                            (unsigned)p[i]);
+        if (whex < 0 || (size_t)whex >= sizeof(hex) - hex_off)
+          break;
+        hex_off += (size_t)whex;
+        ascii[ascii_off++] = (p[i] >= 32 && p[i] <= 126) ? (char)p[i] : '.';
+      }
+      ascii[ascii_off] = '\0';
+
+      char line[1024];
+      int n = snprintf(line, sizeof(line),
+                       "hrl_write_blo: blk=%" PRIuFAST32 " matches live dir block0 ino=%" PRIuFAST32
+                       " mode=%o size=%" PRIuFAST64 " src_ino=%" PRIuFAST32
+                       " src_path=%s sample_hex=%s sample_ascii='%s'\n",
+                       (uint_fast32_t)blo, (uint_fast32_t)ino, (unsigned)mode,
+                       (uint_fast64_t)kafs_ino_size_get(inoent),
+                       (uint_fast32_t)(kafs_diag_current_write_ino ? kafs_diag_current_write_ino()
+                                                                   : KAFS_INO_NONE),
+                       (kafs_diag_current_write_path && kafs_diag_current_write_path())
+                           ? kafs_diag_current_write_path()
+                           : "(null)",
+                       hex[0] ? hex : "-", ascii[0] ? ascii : "-");
+      if (n > 0)
+      {
+        size_t len = (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1u;
+        size_t off = 0;
+        while (off < len)
+        {
+          ssize_t wr = write(ctx->c_diag_log_fd, line + off, len - off);
+          if (wr <= 0)
+            break;
+          off += (size_t)wr;
+        }
+      }
+    }
+  }
+#endif
   ssize_t w = pwrite(ctx->c_fd, buf, bs, (off_t)blo << l2);
   return (w == (ssize_t)bs) ? 0 : -EIO;
 }

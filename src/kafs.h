@@ -8,6 +8,10 @@
 #include <fuse.h>
 #include <stdlib.h>
 
+#ifndef KAFS_ENABLE_EXTRA_DIAG
+#define KAFS_ENABLE_EXTRA_DIAG 0
+#endif
+
 /// 標準関数の正常戻り値
 #define KAFS_SUCCESS 0
 
@@ -55,6 +59,26 @@ static inline int kafs_debug_level(void)
 }
 
 static inline int kafs_debug_enabled(void) { return kafs_debug_level() > 0; }
+
+#if KAFS_ENABLE_EXTRA_DIAG
+static inline int kafs_extra_diag_enabled(void)
+{
+  static int inited = 0;
+  static int enabled = 0;
+  if (!inited)
+  {
+    const char *flag = getenv("KAFS_EXTRA_DIAG");
+    const char *log_path = getenv("KAFS_DIAG_LOG");
+    if ((flag && flag[0] != '\0' && !(flag[0] == '0' && flag[1] == '\0')) ||
+        (log_path && log_path[0] != '\0'))
+      enabled = 1;
+    inited = 1;
+  }
+  return enabled;
+}
+#else
+static inline int kafs_extra_diag_enabled(void) { return 0; }
+#endif
 
 #define kafs_log(level, fmt, ...)                                                                  \
   do                                                                                               \
