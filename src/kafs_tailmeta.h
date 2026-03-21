@@ -24,6 +24,13 @@
   (KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE | KAFS_TAILDESC_FLAG_FINAL_TAIL |                          \
    KAFS_TAILDESC_FLAG_NEEDS_FSCK_REVIEW)
 
+#define KAFS_TAILCHECK_INVALID_DESC (1u << 0)
+#define KAFS_TAILCHECK_INVALID_SLOT (1u << 1)
+#define KAFS_TAILCHECK_INVALID_INODE_SIZE (1u << 2)
+#define KAFS_TAILCHECK_OWNER_MISMATCH (1u << 3)
+#define KAFS_TAILCHECK_LENGTH_MISMATCH (1u << 4)
+#define KAFS_TAILCHECK_GENERATION_MISMATCH (1u << 5)
+
 struct kafs_stailmeta_region_hdr
 {
   kafs_su32_t tr_magic;
@@ -676,4 +683,35 @@ static inline int kafs_tailmeta_inode_desc_matches_slot_for_inode(
   if (rc != 0)
     return rc;
   return kafs_tailmeta_inode_desc_matches_slot(desc, slot, class_bytes, ino);
+}
+
+static inline uint32_t kafs_tailmeta_inode_desc_report_flags(
+    const kafs_tailmeta_inode_desc_t *desc, const kafs_tailmeta_slot_desc_t *slot,
+    uint16_t class_bytes, kafs_inocnt_t ino, kafs_off_t inode_size, kafs_blksize_t blksize)
+{
+  uint32_t flags = 0;
+  int rc = kafs_tailmeta_inode_desc_validate(desc, class_bytes);
+  if (rc != 0)
+    flags |= KAFS_TAILCHECK_INVALID_DESC;
+
+  rc = kafs_tailmeta_slot_validate(slot, class_bytes);
+  if (rc != 0)
+    flags |= KAFS_TAILCHECK_INVALID_SLOT;
+
+  rc = kafs_tailmeta_inode_desc_validate_for_inode(desc, inode_size, class_bytes, blksize);
+  if (rc != 0)
+    flags |= KAFS_TAILCHECK_INVALID_INODE_SIZE;
+
+  if ((flags & (KAFS_TAILCHECK_INVALID_DESC | KAFS_TAILCHECK_INVALID_SLOT)) != 0)
+    return flags;
+  if (!kafs_tailmeta_inode_desc_uses_tail_storage(desc))
+    return flags | KAFS_TAILCHECK_INVALID_DESC;
+
+  if (kafs_tailmeta_slot_owner_ino_get(slot) != ino)
+    flags |= KAFS_TAILCHECK_OWNER_MISMATCH;
+  if (kafs_tailmeta_slot_len_get(slot) != kafs_tailmeta_inode_desc_fragment_len_get(desc))
+    flags |= KAFS_TAILCHECK_LENGTH_MISMATCH;
+  if (kafs_u32_stoh(slot->ts_generation) != kafs_tailmeta_inode_desc_generation_get(desc))
+    flags |= KAFS_TAILCHECK_GENERATION_MISMATCH;
+  return flags;
 }
