@@ -141,7 +141,7 @@ static int hrl_write_blo(kafs_context_t *ctx, kafs_blkcnt_t blo, const void *buf
       kafs_mode_t mode = kafs_ino_mode_get(inoent);
       if (!S_ISDIR(mode))
         continue;
-      if (kafs_ino_size_get(inoent) <= (kafs_off_t)kafs_inode_inline_bytes())
+      if (kafs_inode_size_is_inline(kafs_ino_size_get(inoent)))
         continue;
       kafs_blkcnt_t cur_ref = kafs_blkcnt_stoh(inoent->i_blkreftbl[0]);
       if (cur_ref != blo)

@@ -103,6 +103,16 @@ _Static_assert(sizeof(kafs_sinode_v5_t) == KAFS_INODE_V5_BYTES, "kafs_sinode_v5 
 
 static inline size_t kafs_inode_inline_bytes(void) { return KAFS_INODE_DIRECT_BYTES; }
 
+static inline int kafs_inode_size_is_inline(kafs_off_t inode_size)
+{
+  return inode_size <= (kafs_off_t)kafs_inode_inline_bytes();
+}
+
+static inline int kafs_inode_size_uses_blocks(kafs_off_t inode_size)
+{
+  return inode_size > (kafs_off_t)kafs_inode_inline_bytes();
+}
+
 static inline size_t kafs_inode_bytes_for_format(uint32_t format_version)
 {
   switch (format_version)

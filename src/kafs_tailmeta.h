@@ -630,7 +630,6 @@ kafs_tailmeta_inode_desc_validate_for_inode(const kafs_tailmeta_inode_desc_t *de
 {
   uint8_t kind = 0;
   uint16_t len = 0;
-  const kafs_off_t inline_limit = (kafs_off_t)kafs_inode_inline_bytes();
 
   if (blksize == 0)
     return -EINVAL;
@@ -644,15 +643,15 @@ kafs_tailmeta_inode_desc_validate_for_inode(const kafs_tailmeta_inode_desc_t *de
   switch (kind)
   {
   case KAFS_TAIL_LAYOUT_INLINE:
-    return (inode_size <= inline_limit) ? 0 : -EPROTO;
+    return kafs_inode_size_is_inline(inode_size) ? 0 : -EPROTO;
 
   case KAFS_TAIL_LAYOUT_FULL_BLOCK:
-    return (inode_size == 0 || inode_size > inline_limit) ? 0 : -EPROTO;
+    return (inode_size == 0 || kafs_inode_size_uses_blocks(inode_size)) ? 0 : -EPROTO;
 
   case KAFS_TAIL_LAYOUT_TAIL_ONLY:
     if ((kafs_off_t)len != inode_size)
       return -EPROTO;
-    if (inode_size <= inline_limit)
+    if (kafs_inode_size_is_inline(inode_size))
       return -EPROTO;
     return ((kafs_blksize_t)len < blksize) ? 0 : -EPROTO;
 
