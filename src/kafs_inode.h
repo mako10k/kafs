@@ -3,6 +3,7 @@
 #include "kafs.h"
 #include <assert.h>
 #include <errno.h>
+#include <string.h>
 
 /// 存在しないことを表す inode 番号
 #define KAFS_INO_NONE 0
@@ -100,6 +101,88 @@ _Static_assert(sizeof(kafs_sinode_t) == KAFS_INODE_V4_BYTES,
 _Static_assert(sizeof(((struct kafs_sinode_v5 *)NULL)->i_blkreftbl) == KAFS_INODE_DIRECT_BYTES,
                "kafs_sinode_v5 direct payload must preserve 60 bytes");
 _Static_assert(sizeof(kafs_sinode_v5_t) == KAFS_INODE_V5_BYTES, "kafs_sinode_v5 must be 128 bytes");
+
+static inline uint8_t
+kafs_ino_taildesc_v5_layout_kind_get(const kafs_sinode_taildesc_v5_t *taildesc)
+{
+  return taildesc->it_layout_kind;
+}
+
+static inline void kafs_ino_taildesc_v5_layout_kind_set(kafs_sinode_taildesc_v5_t *taildesc,
+                                                        uint8_t v)
+{
+  taildesc->it_layout_kind = v;
+}
+
+static inline uint8_t kafs_ino_taildesc_v5_flags_get(const kafs_sinode_taildesc_v5_t *taildesc)
+{
+  return taildesc->it_flags;
+}
+
+static inline void kafs_ino_taildesc_v5_flags_set(kafs_sinode_taildesc_v5_t *taildesc, uint8_t v)
+{
+  taildesc->it_flags = v;
+}
+
+static inline uint16_t
+kafs_ino_taildesc_v5_fragment_len_get(const kafs_sinode_taildesc_v5_t *taildesc)
+{
+  return le16toh(taildesc->it_fragment_len);
+}
+
+static inline void kafs_ino_taildesc_v5_fragment_len_set(kafs_sinode_taildesc_v5_t *taildesc,
+                                                         uint16_t v)
+{
+  taildesc->it_fragment_len = htole16(v);
+}
+
+static inline kafs_blkcnt_t
+kafs_ino_taildesc_v5_container_blo_get(const kafs_sinode_taildesc_v5_t *taildesc)
+{
+  return kafs_blkcnt_stoh(taildesc->it_container_blo);
+}
+
+static inline void kafs_ino_taildesc_v5_container_blo_set(kafs_sinode_taildesc_v5_t *taildesc,
+                                                          kafs_blkcnt_t v)
+{
+  taildesc->it_container_blo = kafs_blkcnt_htos(v);
+}
+
+static inline uint16_t
+kafs_ino_taildesc_v5_fragment_off_get(const kafs_sinode_taildesc_v5_t *taildesc)
+{
+  return le16toh(taildesc->it_fragment_off);
+}
+
+static inline void kafs_ino_taildesc_v5_fragment_off_set(kafs_sinode_taildesc_v5_t *taildesc,
+                                                         uint16_t v)
+{
+  taildesc->it_fragment_off = htole16(v);
+}
+
+static inline uint32_t
+kafs_ino_taildesc_v5_generation_get(const kafs_sinode_taildesc_v5_t *taildesc)
+{
+  return kafs_u32_stoh(taildesc->it_generation);
+}
+
+static inline void kafs_ino_taildesc_v5_generation_set(kafs_sinode_taildesc_v5_t *taildesc,
+                                                       uint32_t v)
+{
+  taildesc->it_generation = kafs_u32_htos(v);
+}
+
+static inline void kafs_ino_taildesc_v5_init(kafs_sinode_taildesc_v5_t *taildesc)
+{
+  memset(taildesc, 0, sizeof(*taildesc));
+  kafs_ino_taildesc_v5_layout_kind_set(taildesc, KAFS_TAIL_LAYOUT_INLINE);
+}
+
+static inline int kafs_ino_taildesc_v5_uses_tail_storage(const kafs_sinode_taildesc_v5_t *taildesc)
+{
+  uint8_t kind = kafs_ino_taildesc_v5_layout_kind_get(taildesc);
+  return kind == KAFS_TAIL_LAYOUT_TAIL_ONLY || kind == KAFS_TAIL_LAYOUT_MIXED_FULL_TAIL;
+}
 
 static inline size_t kafs_inode_inline_bytes(void) { return KAFS_INODE_DIRECT_BYTES; }
 
