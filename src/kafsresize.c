@@ -157,7 +157,10 @@ static int load_superblock_checked(int fd, kafs_ssuperblock_t *sb)
   int rc = kafs_pread_all(fd, sb, sizeof(*sb), 0);
   if (rc != 0)
     return rc;
-  if (kafs_sb_magic_get(sb) != KAFS_MAGIC || kafs_sb_format_version_get(sb) != KAFS_FORMAT_VERSION)
+  if (kafs_sb_magic_get(sb) != KAFS_MAGIC)
+    return -EINVAL;
+  uint32_t format_version = kafs_sb_format_version_get(sb);
+  if (format_version != KAFS_FORMAT_VERSION && format_version != KAFS_FORMAT_VERSION_V5)
     return -EINVAL;
   return 0;
 }
