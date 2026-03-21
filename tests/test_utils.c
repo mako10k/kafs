@@ -48,7 +48,8 @@ static void kafs_test_cleanup_workdir(void)
     return;
 
   // Ensure we're not sitting inside the directory we want to delete.
-  (void)chdir("/");
+  if (chdir("/") != 0)
+    return;
 
   // Depth-first walk so we remove children before parents.
   (void)nftw(g_test_workdir, rm_rf_cb, 64, FTW_DEPTH | FTW_PHYS);
