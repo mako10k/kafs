@@ -630,7 +630,7 @@ kafs_tailmeta_inode_desc_validate_for_inode(const kafs_tailmeta_inode_desc_t *de
 {
   uint8_t kind = 0;
   uint16_t len = 0;
-  const kafs_off_t inline_limit = (kafs_off_t)sizeof(((struct kafs_sinode *)NULL)->i_blkreftbl);
+  const kafs_off_t inline_limit = (kafs_off_t)kafs_inode_inline_bytes();
 
   if (blksize == 0)
     return -EINVAL;
