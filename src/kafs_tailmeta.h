@@ -685,6 +685,45 @@ static inline int kafs_tailmeta_inode_desc_matches_slot_for_inode(
   return kafs_tailmeta_inode_desc_matches_slot(desc, slot, class_bytes, ino);
 }
 
+static inline int kafs_tailmeta_slot_expected_len_for_inode(kafs_off_t inode_size,
+                                                            kafs_blksize_t blksize,
+                                                            uint16_t *out_len)
+{
+  kafs_off_t rem;
+
+  if (!out_len || blksize == 0)
+    return -EINVAL;
+  if (inode_size <= 0)
+    return -ERANGE;
+
+  if (inode_size < (kafs_off_t)blksize)
+  {
+    if (inode_size > UINT16_MAX)
+      return -ERANGE;
+    *out_len = (uint16_t)inode_size;
+    return 0;
+  }
+
+  rem = inode_size % (kafs_off_t)blksize;
+  if (rem <= 0 || rem > UINT16_MAX)
+    return -ERANGE;
+  *out_len = (uint16_t)rem;
+  return 0;
+}
+
+static inline int kafs_tailmeta_slot_matches_inode_size(const kafs_tailmeta_slot_desc_t *slot,
+                                                        kafs_off_t inode_size,
+                                                        kafs_blksize_t blksize)
+{
+  uint16_t expected_len = 0;
+  int rc = kafs_tailmeta_slot_expected_len_for_inode(inode_size, blksize, &expected_len);
+  if (rc != 0)
+    return rc;
+  if (kafs_tailmeta_slot_len_get(slot) != expected_len)
+    return -ERANGE;
+  return 0;
+}
+
 static inline uint32_t kafs_tailmeta_inode_desc_report_flags(
     const kafs_tailmeta_inode_desc_t *desc, const kafs_tailmeta_slot_desc_t *slot,
     uint16_t class_bytes, kafs_inocnt_t ino, kafs_off_t inode_size, kafs_blksize_t blksize)

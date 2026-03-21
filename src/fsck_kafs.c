@@ -1255,6 +1255,106 @@ static int check_region_bounds(const char *name, uint64_t off, uint64_t size, ui
   return 0;
 }
 
+static uint64_t fsck_inode_table_offset(const kafs_ssuperblock_t *sb)
+{
+  uint64_t off = sizeof(kafs_ssuperblock_t);
+  uint64_t blksize = 1ull << kafs_sb_log_blksize_get(sb);
+  uint64_t blksizemask = blksize - 1u;
+  uint64_t r_blkcnt = kafs_blkcnt_stoh(sb->s_r_blkcnt);
+
+  off = (off + blksizemask) & ~blksizemask;
+  off += (r_blkcnt + 7u) >> 3;
+  off = (off + 7u) & ~7u;
+  off = (off + blksizemask) & ~blksizemask;
+  return off;
+}
+
+static int check_tailmeta_live_slot_owner(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
+                                          uint64_t inode_table_off, uint32_t container_index,
+                                          uint16_t slot_index,
+                                          const kafs_tailmeta_slot_desc_t *slot)
+{
+  kafs_sinode_t inoent;
+  kafs_inocnt_t owner = kafs_tailmeta_slot_owner_ino_get(slot);
+  kafs_inocnt_t inocnt = kafs_sb_inocnt_get(sb);
+  uint64_t inode_off;
+  kafs_off_t inode_size;
+  uint16_t expected_len = 0;
+  int rc;
+
+  if (owner == KAFS_INO_NONE)
+    return 0;
+  if (owner >= inocnt)
+  {
+    fprintf(stderr,
+            "tailmeta container[%u] slot[%u] owner out of range: owner=%" PRIuFAST32
+            " inocnt=%" PRIuFAST32 "\n",
+            container_index, slot_index, owner, inocnt);
+    return -1;
+  }
+
+  inode_off = inode_table_off + (uint64_t)owner * sizeof(inoent);
+  if (inode_off >= file_size || sizeof(inoent) > file_size - inode_off)
+  {
+    fprintf(stderr,
+            "tailmeta container[%u] slot[%u] owner inode out of image bounds: owner=%" PRIuFAST32
+            " inode_off=%" PRIu64 " file=%" PRIu64 "\n",
+            container_index, slot_index, owner, inode_off, file_size);
+    return -1;
+  }
+  if (pread_all(fd, &inoent, sizeof(inoent), (off_t)inode_off) != 0)
+  {
+    fprintf(stderr, "failed to read tailmeta owner inode=%" PRIuFAST32 "\n", owner);
+    return -1;
+  }
+
+  if (!kafs_ino_get_usage(&inoent))
+  {
+    fprintf(stderr,
+            "tailmeta container[%u] slot[%u] orphan owner inode: owner=%" PRIuFAST32 " unused\n",
+            container_index, slot_index, owner);
+    return -1;
+  }
+  if (fsck_inode_is_tombstone(&inoent))
+  {
+    fprintf(stderr,
+            "tailmeta container[%u] slot[%u] stale owner inode: owner=%" PRIuFAST32 " tombstone\n",
+            container_index, slot_index, owner);
+    return -1;
+  }
+  if (!S_ISREG(kafs_ino_mode_get(&inoent)))
+  {
+    fprintf(stderr,
+            "tailmeta container[%u] slot[%u] non-regular owner inode: owner=%" PRIuFAST32
+            " mode=%06o\n",
+            container_index, slot_index, owner, (unsigned)kafs_ino_mode_get(&inoent));
+    return -1;
+  }
+
+  inode_size = kafs_ino_size_get(&inoent);
+  rc = kafs_tailmeta_slot_expected_len_for_inode(inode_size, 1u << kafs_sb_log_blksize_get(sb),
+                                                 &expected_len);
+  if (rc != 0)
+  {
+    fprintf(stderr,
+            "tailmeta container[%u] slot[%u] owner inode cannot require tail payload: "
+            "owner=%" PRIuFAST32 " size=%" PRIiFAST64 "\n",
+            container_index, slot_index, owner, (int64_t)inode_size);
+    return -1;
+  }
+  rc = kafs_tailmeta_slot_matches_inode_size(slot, inode_size, 1u << kafs_sb_log_blksize_get(sb));
+  if (rc != 0)
+  {
+    fprintf(stderr,
+            "tailmeta container[%u] slot[%u] owner size mismatch: owner=%" PRIuFAST32
+            " size=%" PRIiFAST64 " slot_len=%u expected_len=%u\n",
+            container_index, slot_index, owner, (int64_t)inode_size,
+            (unsigned)kafs_tailmeta_slot_len_get(slot), (unsigned)expected_len);
+    return -1;
+  }
+  return 0;
+}
+
 static int check_tailmeta_region(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size)
 {
   if (!kafs_tailmeta_region_present(sb))
@@ -1262,6 +1362,7 @@ static int check_tailmeta_region(int fd, const kafs_ssuperblock_t *sb, uint64_t 
 
   uint64_t region_off = kafs_sb_tailmeta_offset_get(sb);
   uint64_t region_size = kafs_sb_tailmeta_size_get(sb);
+  uint64_t inode_table_off = fsck_inode_table_offset(sb);
   if (region_size < sizeof(kafs_tailmeta_region_hdr_t))
   {
     fprintf(stderr, "tailmeta header too small: size=%" PRIu64 "\n", region_size);
@@ -1363,7 +1464,12 @@ static int check_tailmeta_region(int fd, const kafs_ssuperblock_t *sb, uint64_t 
         continue;
       }
       if (kafs_tailmeta_slot_owner_ino_get(&slots[slot_index]) != KAFS_INO_NONE)
+      {
+        if (check_tailmeta_live_slot_owner(fd, sb, file_size, inode_table_off, index, slot_index,
+                                           &slots[slot_index]) != 0)
+          failed = 1;
         live_slots++;
+      }
     }
 
     if (live_slots != kafs_tailmeta_container_hdr_live_count_get(container))

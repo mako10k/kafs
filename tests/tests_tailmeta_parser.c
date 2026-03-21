@@ -67,26 +67,38 @@ int main(void)
   slot.ts_generation = kafs_u32_htos(11);
   kafs_tailmeta_slot_len_set(&slot, 64);
   assert(kafs_tailmeta_inode_desc_matches_slot(&desc, &slot, 128, 7) == 0);
-    assert(kafs_tailmeta_inode_desc_report_flags(&desc, &slot, 128, 7, 64, 4096) == 0);
+  assert(kafs_tailmeta_inode_desc_report_flags(&desc, &slot, 128, 7, 64, 4096) == 0);
+  {
+    uint16_t expected_len = 0;
+    assert(kafs_tailmeta_slot_expected_len_for_inode(64, 4096, &expected_len) == 0);
+    assert(expected_len == 64);
+    assert(kafs_tailmeta_slot_matches_inode_size(&slot, 64, 4096) == 0);
+    assert(kafs_tailmeta_slot_expected_len_for_inode(4096 + 64, 4096, &expected_len) == 0);
+    assert(expected_len == 64);
+    assert(kafs_tailmeta_slot_matches_inode_size(&slot, 4096 + 64, 4096) == 0);
+    assert(kafs_tailmeta_slot_expected_len_for_inode(8192, 4096, &expected_len) != 0);
+    assert(kafs_tailmeta_slot_matches_inode_size(&slot, 8192, 4096) != 0);
+  }
   assert(kafs_tailmeta_inode_desc_validate_for_inode(&desc, 64, 128, 4096) == 0);
   assert(kafs_tailmeta_inode_desc_validate_for_inode(&desc, 60, 128, 4096) != 0);
   assert(kafs_tailmeta_inode_desc_matches_slot_for_inode(&desc, &slot, 128, 7, 64, 4096) == 0);
   kafs_tailmeta_slot_len_set(&slot, 63);
   assert(kafs_tailmeta_inode_desc_matches_slot(&desc, &slot, 128, 7) != 0);
-    assert((kafs_tailmeta_inode_desc_report_flags(&desc, &slot, 128, 7, 64, 4096) &
-      KAFS_TAILCHECK_LENGTH_MISMATCH) != 0);
+  assert(kafs_tailmeta_slot_matches_inode_size(&slot, 64, 4096) != 0);
+  assert((kafs_tailmeta_inode_desc_report_flags(&desc, &slot, 128, 7, 64, 4096) &
+          KAFS_TAILCHECK_LENGTH_MISMATCH) != 0);
 
   kafs_tailmeta_slot_len_set(&slot, 64);
   slot.ts_generation = kafs_u32_htos(12);
   assert(kafs_tailmeta_inode_desc_matches_slot(&desc, &slot, 128, 7) != 0);
-    assert((kafs_tailmeta_inode_desc_report_flags(&desc, &slot, 128, 7, 64, 4096) &
-      KAFS_TAILCHECK_GENERATION_MISMATCH) != 0);
+  assert((kafs_tailmeta_inode_desc_report_flags(&desc, &slot, 128, 7, 64, 4096) &
+          KAFS_TAILCHECK_GENERATION_MISMATCH) != 0);
 
-    slot.ts_generation = kafs_u32_htos(11);
-    kafs_tailmeta_slot_owner_ino_set(&slot, 8);
-    assert((kafs_tailmeta_inode_desc_report_flags(&desc, &slot, 128, 7, 64, 4096) &
-      KAFS_TAILCHECK_OWNER_MISMATCH) != 0);
-    kafs_tailmeta_slot_owner_ino_set(&slot, 7);
+  slot.ts_generation = kafs_u32_htos(11);
+  kafs_tailmeta_slot_owner_ino_set(&slot, 8);
+  assert((kafs_tailmeta_inode_desc_report_flags(&desc, &slot, 128, 7, 64, 4096) &
+          KAFS_TAILCHECK_OWNER_MISMATCH) != 0);
+  kafs_tailmeta_slot_owner_ino_set(&slot, 7);
 
   kafs_tailmeta_inode_desc_fragment_off_set(&desc, 96);
   assert(kafs_tailmeta_inode_desc_validate(&desc, 128) != 0);
@@ -96,8 +108,8 @@ int main(void)
   kafs_tailmeta_inode_desc_flags_set(&desc, KAFS_TAILDESC_FLAG_FINAL_TAIL);
   assert(kafs_tailmeta_inode_desc_validate_for_inode(&desc, 4096 + 64, 128, 4096) == 0);
   assert(kafs_tailmeta_inode_desc_validate_for_inode(&desc, 4000, 128, 4096) != 0);
-    assert((kafs_tailmeta_inode_desc_report_flags(&desc, &slot, 128, 7, 4000, 4096) &
-      KAFS_TAILCHECK_INVALID_INODE_SIZE) != 0);
+  assert((kafs_tailmeta_inode_desc_report_flags(&desc, &slot, 128, 7, 4000, 4096) &
+          KAFS_TAILCHECK_INVALID_INODE_SIZE) != 0);
 
   kafs_tailmeta_inode_desc_init(&desc);
   assert(kafs_tailmeta_inode_desc_validate_for_inode(&desc, 32, 128, 4096) == 0);
