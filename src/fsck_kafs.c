@@ -26,9 +26,6 @@
 /* jscpd:ignore-end */
 
 #include "kafs_journal.h"
-#include "kafs_cli_opts.h"
-
-// In-image journal format definitions come from kafs_journal.h
 
 #define FSCK_EXIT_USAGE 2
 #define FSCK_EXIT_JOURNAL_CHECK_FAILED 3
@@ -793,6 +790,28 @@ static int hrl_count_tbl_refs(struct hrl_scan_ctx *sctx, kafs_blkcnt_t tbl_blo, 
   return 0;
 }
 
+static void hrl_scan_expected_inode_refs(struct hrl_scan_ctx *sctx, kafs_inocnt_t inocnt)
+{
+  kafs_context_t *ctx = sctx->ctx;
+  for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
+  {
+    const kafs_sinode_t *e = &ctx->c_inotbl[ino];
+    if (!kafs_ino_get_usage(e))
+      continue;
+    if (S_ISDIR(kafs_ino_mode_get(e)))
+      continue;
+    if (kafs_ino_size_get(e) <= (kafs_off_t)sizeof(e->i_blkreftbl))
+      continue;
+
+    for (uint32_t i = 0; i < 12; ++i)
+      (void)hrl_count_raw_ref(sctx, kafs_blkcnt_stoh(e->i_blkreftbl[i]));
+
+    (void)hrl_count_tbl_refs(sctx, kafs_blkcnt_stoh(e->i_blkreftbl[12]), 1);
+    (void)hrl_count_tbl_refs(sctx, kafs_blkcnt_stoh(e->i_blkreftbl[13]), 2);
+    (void)hrl_count_tbl_refs(sctx, kafs_blkcnt_stoh(e->i_blkreftbl[14]), 3);
+  }
+}
+
 static int check_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_refcheck_stats *stats)
 {
   const kafs_ssuperblock_t *sb = ctx->c_superblock;
@@ -814,22 +833,7 @@ static int check_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_refcheck_stat
   }
 
   struct hrl_scan_ctx sctx = {ctx, r_blkcnt, l2, blksize, refs_pb, expected, stats};
-
-  for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
-  {
-    const kafs_sinode_t *e = &ctx->c_inotbl[ino];
-    if (!kafs_ino_get_usage(e))
-      continue;
-    if (kafs_ino_size_get(e) <= (kafs_off_t)sizeof(e->i_blkreftbl))
-      continue; // inline data only
-
-    for (uint32_t i = 0; i < 12; ++i)
-      (void)hrl_count_raw_ref(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[i]));
-
-    (void)hrl_count_tbl_refs(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[12]), 1);
-    (void)hrl_count_tbl_refs(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[13]), 2);
-    (void)hrl_count_tbl_refs(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[14]), 3);
-  }
+  hrl_scan_expected_inode_refs(&sctx, inocnt);
 
   uint64_t ent_off = kafs_sb_hrl_entry_offset_get(sb);
   uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sb);
@@ -911,22 +915,7 @@ static int repair_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_repair_stats
   struct hrl_refcheck_stats hst;
   memset(&hst, 0, sizeof(hst));
   struct hrl_scan_ctx sctx = {ctx, r_blkcnt, l2, blksize, refs_pb, expected, &hst};
-
-  for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
-  {
-    const kafs_sinode_t *e = &ctx->c_inotbl[ino];
-    if (!kafs_ino_get_usage(e))
-      continue;
-    if (kafs_ino_size_get(e) <= (kafs_off_t)sizeof(e->i_blkreftbl))
-      continue;
-
-    for (uint32_t i = 0; i < 12; ++i)
-      (void)hrl_count_raw_ref(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[i]));
-
-    (void)hrl_count_tbl_refs(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[12]), 1);
-    (void)hrl_count_tbl_refs(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[13]), 2);
-    (void)hrl_count_tbl_refs(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[14]), 3);
-  }
+  hrl_scan_expected_inode_refs(&sctx, inocnt);
 
   uint64_t ent_off = kafs_sb_hrl_entry_offset_get(sb);
   uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sb);
@@ -1009,22 +998,7 @@ static int punch_unreferenced_data_blocks(kafs_context_t *ctx, int fd, struct pu
   struct hrl_refcheck_stats hst;
   memset(&hst, 0, sizeof(hst));
   struct hrl_scan_ctx sctx = {ctx, r_blkcnt, l2, blksize, refs_pb, expected, &hst};
-
-  for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
-  {
-    const kafs_sinode_t *e = &ctx->c_inotbl[ino];
-    if (!kafs_ino_get_usage(e))
-      continue;
-    if (kafs_ino_size_get(e) <= (kafs_off_t)sizeof(e->i_blkreftbl))
-      continue;
-
-    for (uint32_t i = 0; i < 12; ++i)
-      (void)hrl_count_raw_ref(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[i]));
-
-    (void)hrl_count_tbl_refs(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[12]), 1);
-    (void)hrl_count_tbl_refs(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[13]), 2);
-    (void)hrl_count_tbl_refs(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[14]), 3);
-  }
+  hrl_scan_expected_inode_refs(&sctx, inocnt);
 
   uint64_t ent_off = kafs_sb_hrl_entry_offset_get(sb);
   uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sb);

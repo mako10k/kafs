@@ -129,6 +129,12 @@ const char *kafs_test_kafsctl_bin(void)
   return kafs_test_resolve_tool("KAFS_TEST_KAFSCTL", "kafsctl", path);
 }
 
+const char *kafs_test_fsck_bin(void)
+{
+  static char path[PATH_MAX];
+  return kafs_test_resolve_tool("KAFS_TEST_FSCK", "fsck.kafs", path);
+}
+
 void kafs_test_dump_log(const char *log_path, const char *reason)
 {
   const char *path = (log_path && *log_path) ? log_path : "minisrv.log";

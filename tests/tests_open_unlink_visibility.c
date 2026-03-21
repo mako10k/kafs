@@ -42,14 +42,6 @@ static int run_cmd(char *const argv[])
   return (WIFEXITED(st) && WEXITSTATUS(st) == 0) ? 0 : -1;
 }
 
-static const char *pick_fsck_bin(void)
-{
-  const char *p = getenv("KAFS_TEST_FSCK");
-  if (p && *p)
-    return p;
-  return "./fsck.kafs";
-}
-
 static int count_tombstones(const char *img, uint32_t *out_count)
 {
   if (!img || !out_count)
@@ -236,7 +228,8 @@ int main(void)
 
   kafs_test_stop_kafs(mnt2, srv);
 
-  char *fsck_argv[] = {(char *)pick_fsck_bin(), "--check-hrl-blo-refcounts", (char *)img2, NULL};
+  char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), "--check-hrl-blo-refcounts", (char *)img2,
+                       NULL};
   if (run_cmd(fsck_argv) != 0)
   {
     tlogf("hrl refcount check failed after deleting 8 tiny files");
@@ -254,8 +247,8 @@ int main(void)
     tlogf("tombstone GC reclaimed entries before inspection; continuing");
   }
 
-  char *fsck_orphan_argv[] = {(char *)pick_fsck_bin(), "--check-dirent-ino-orphans", (char *)img2,
-                              NULL};
+  char *fsck_orphan_argv[] = {(char *)kafs_test_fsck_bin(), "--check-dirent-ino-orphans",
+                              (char *)img2, NULL};
   if (tombstones > 0 && run_cmd(fsck_orphan_argv) != 0)
   {
     tlogf("orphan check should ignore tombstones");
