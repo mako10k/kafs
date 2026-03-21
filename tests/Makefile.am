@@ -6,7 +6,7 @@ AUTOMAKE_OPTIONS = serial-tests subdir-objects
 AM_CPPFLAGS = -include $(top_srcdir)/src/kafs_config.h -I$(top_srcdir)/src -I$(srcdir)
 
 # Match src/ build flags for consistent warnings/debug.
-CFLAGS = -Wall -Werror -g -O0 \
+CFLAGS = @CFLAGS@ -Wall -Werror \
 	-Wno-unused-function -Wno-unused-parameter
 
 noinst_HEADERS = test_utils.h

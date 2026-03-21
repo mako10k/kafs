@@ -1,0 +1,69 @@
+'.\" -*- nroff -*-
+.TH MOUNT.KAFS 8 "2026-03-21" "kafs 0.4.0" "System Administration"
+.SH NAME
+mount.kafs \- mount helper for KAFS FUSE images
+.SH SYNOPSIS
+.B mount.kafs
+.I image
+.I mountpoint
+.RI [ FUSE\ options ]
+.PP
+.B mount
+.B -t
+.B fuse.kafs
+.I image
+.I mountpoint
+.RI [ -o\ opt[,opt...] ]
+.SH DESCRIPTION
+.B mount.kafs
+is a thin compatibility wrapper around
+.BR kafs (1).
+It exists so that KAFS can be mounted through the conventional
+.BR mount (8)
+helper path while the filesystem implementation remains in userspace via FUSE.
+.PP
+The helper forwards all arguments to
+.BR kafs .
+When invoked from
+.BR mount " -t " fuse.kafs ,
+the image path is passed as the first non-option argument and is accepted by the existing
+.B kafs
+mount helper compatibility parser.
+.SH EXAMPLES
+.SS Direct helper invocation
+.nf
+mount.kafs /var/lib/kafs/data.img /mnt/kafs -o allow_other,multi_thread=8
+.fi
+.SS Via mount(8)
+.nf
+mount -t fuse.kafs /var/lib/kafs/data.img /mnt/kafs -o allow_other,multi_thread=8
+.fi
+.SS /etc/fstab
+.nf
+/var/lib/kafs/data.img  /mnt/kafs  fuse.kafs  rw,nofail,allow_other,multi_thread=8  0  0
+.fi
+.PP
+The first field is the KAFS image file and the third field remains
+.B fuse.kafs
+because the kernel-visible filesystem type is FUSE, not a native in-kernel KAFS registration.
+.SH NOTES
+.TP
+.B /proc/filesystems
+will not list
+.B kafs
+as a standalone native filesystem type while KAFS is implemented via FUSE.
+.TP
+.B mount options
+accepted here are the same options documented for
+.BR kafs (1),
+including KAFS-specific
+.BR -o " " multi_thread= ,
+.BR hotplug ,
+and related tuning knobs.
+.SH SEE ALSO
+.BR kafs (1),
+.BR mount (8),
+.BR fstab (5),
+.BR fusermount3 (1)
+.SH AUTHOR
+kafs project.

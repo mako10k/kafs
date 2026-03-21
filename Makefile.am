@@ -2,6 +2,7 @@ SUBDIRS = src tests
 
 man_MANS = \
 	man/kafs.1 \
+	man/mount.kafs.8 \
 	man/kafsctl.1 \
 	man/mkfs.kafs.8 \
 	man/fsck.kafs.8 \
@@ -13,7 +14,7 @@ man_MANS = \
 	man/kafs-back.8
 
 bashcompletiondir = $(datadir)/bash-completion/completions
-bashcompletion_DATA = completions/kafs
+bashcompletion_DATA = completions/kafs completions/mount.kafs
 
 EXTRA_DIST = $(man_MANS) $(bashcompletion_DATA)
 
