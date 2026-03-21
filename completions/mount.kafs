@@ -1,0 +1,6 @@
+if ! declare -F _kafs >/dev/null 2>&1; then
+  # Reuse the main completion definitions installed next to this file.
+  . "${BASH_SOURCE[0]%/*}/kafs"
+fi
+
+complete -F _kafs mount.kafs

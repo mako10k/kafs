@@ -75,54 +75,10 @@ static int run_kafsctl_cp_reflink(const char *src, const char *dst)
   return WEXITSTATUS(st);
 }
 
-static pid_t spawn_kafs(const char *img, const char *mnt)
-{
-  mkdir(mnt, 0700);
-  pid_t pid = fork();
-  if (pid < 0)
-    return -errno;
-  if (pid == 0)
-  {
-    setenv("KAFS_IMAGE", img, 1);
-    int lfd = open("minisrv.log", O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    if (lfd >= 0)
-    {
-      dup2(lfd, STDERR_FILENO);
-      dup2(lfd, STDOUT_FILENO);
-      close(lfd);
-    }
-    const char *kafs = kafs_test_kafs_bin();
-    char *args[] = {(char *)kafs, (char *)mnt, "-f", NULL};
-    execvp(args[0], args);
-    _exit(127);
-  }
-  for (int i = 0; i < 50; ++i)
-  {
-    if (is_mounted_fuse(mnt))
-      return pid;
-    struct timespec ts = {0, 100 * 1000 * 1000};
-    nanosleep(&ts, NULL);
-  }
-  kill(pid, SIGTERM);
-  waitpid(pid, NULL, 0);
-  return -1;
-}
-
-static void stop_kafs(const char *mnt, pid_t pid)
-{
-  char *um1[] = {"fusermount3", "-u", (char *)mnt, NULL};
-  if (fork() == 0)
-  {
-    execvp(um1[0], um1);
-    _exit(127);
-  }
-  else
-  {
-    wait(NULL);
-  }
-  kill(pid, SIGTERM);
-  waitpid(pid, NULL, 0);
-}
+static const kafs_test_mount_options_t k_mount_options = {
+    .log_path = "minisrv.log",
+    .timeout_ms = 5000,
+};
 
 int main(void)
 {
@@ -145,7 +101,7 @@ int main(void)
   munmap(ctx.c_superblock, mapsize);
   close(ctx.c_fd);
 
-  pid_t srv = spawn_kafs(img, mnt);
+  pid_t srv = kafs_test_start_kafs(img, mnt, &k_mount_options);
   if (srv <= 0)
   {
     tlogf("mount failed");
@@ -161,7 +117,7 @@ int main(void)
   if (s < 0)
   {
     tlogf("open(src) failed: %s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -176,7 +132,7 @@ int main(void)
     {
       tlogf("write(src) failed: %s", strerror(errno));
       close(s);
-      stop_kafs(mnt, srv);
+      kafs_test_stop_kafs(mnt, srv);
       return 1;
     }
   }
@@ -186,7 +142,7 @@ int main(void)
   if (s < 0)
   {
     tlogf("open(src-ro) failed: %s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   int d = open(pdst, O_CREAT | O_TRUNC | O_RDWR, 0644);
@@ -194,7 +150,7 @@ int main(void)
   {
     tlogf("open(dst) failed: %s", strerror(errno));
     close(s);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -205,7 +161,7 @@ int main(void)
       tlogf("ioctl(FICLONE) failed: %s", strerror(errno));
       close(d);
       close(s);
-      stop_kafs(mnt, srv);
+      kafs_test_stop_kafs(mnt, srv);
       return 1;
     }
 
@@ -217,7 +173,7 @@ int main(void)
     if (rc != 0)
     {
       tlogf("kafsctl reflink copy failed: rc=%d", rc);
-      stop_kafs(mnt, srv);
+      kafs_test_stop_kafs(mnt, srv);
       return 1;
     }
 
@@ -225,7 +181,7 @@ int main(void)
     if (s < 0)
     {
       tlogf("open(src-ro) after kafsctl failed: %s", strerror(errno));
-      stop_kafs(mnt, srv);
+      kafs_test_stop_kafs(mnt, srv);
       return 1;
     }
     d = open(pdst, O_RDWR);
@@ -233,7 +189,7 @@ int main(void)
     {
       tlogf("open(dst) after kafsctl failed: %s", strerror(errno));
       close(s);
-      stop_kafs(mnt, srv);
+      kafs_test_stop_kafs(mnt, srv);
       return 1;
     }
   }
@@ -245,7 +201,7 @@ int main(void)
     tlogf("pwrite(dst) failed: %s", strerror(errno));
     close(d);
     close(s);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -255,7 +211,7 @@ int main(void)
     tlogf("pread(dst) failed: %s", strerror(errno));
     close(d);
     close(s);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   if (pread(s, r2, 3, 100) != 3)
@@ -263,7 +219,7 @@ int main(void)
     tlogf("pread(src) failed: %s", strerror(errno));
     close(d);
     close(s);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   if (memcmp(r1, "ZZZ", 3) != 0)
@@ -271,7 +227,7 @@ int main(void)
     tlogf("dst patch verify failed");
     close(d);
     close(s);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   if (memcmp(r2, "ZZZ", 3) == 0)
@@ -279,13 +235,13 @@ int main(void)
     tlogf("src unexpectedly modified (CoW broken)");
     close(d);
     close(s);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
   close(d);
   close(s);
-  stop_kafs(mnt, srv);
+  kafs_test_stop_kafs(mnt, srv);
   return 0;
 #endif
 }

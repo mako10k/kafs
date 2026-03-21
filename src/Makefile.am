@@ -55,4 +55,4 @@ kafs_back_LDADD = $(KAFS_LIBS)
 
 noinst_HEADERS = kafs_block.h kafs_config.h kafs_context.h kafs_dirent.h kafs_inode.h kafs_superblock.h kafs.h kafs_ioctl.h kafs_journal.h kafs_rpc.h kafs_core.h
 
-CFLAGS = -Wall -Werror -g -O2 -Wno-unused-function -Wno-unused-parameter
+CFLAGS = @CFLAGS@ -Wall -Werror -Wno-unused-function -Wno-unused-parameter

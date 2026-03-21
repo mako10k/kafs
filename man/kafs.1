@@ -25,6 +25,17 @@ kafs \- FUSE-based KAFS filesystem
 .B kafs
 mounts a KAFS filesystem image via FUSE.
 An embedded journal region is used when present. Sidecar journals are not supported.
+.PP
+For compatibility with the traditional
+.BR mount (8)
+helper flow,
+.B kafs
+also accepts
+.BR "kafs <image> <mountpoint> [FUSE options...]" .
+This is the calling convention used by
+.BR mount.kafs (8)
+and by
+.BR mount " -t " fuse.kafs .
 .SH OPTIONS
 .SS Global Options
 .TP
@@ -76,7 +87,32 @@ Enable writeback cache via FUSE
 .
 .TP
 .BR -o " " no_writeback_cache
+.SH MOUNT HELPER USAGE
+.TP
+.B Direct helper
+.nf
+mount.kafs /var/lib/kafs/data.img /mnt/kafs -o allow_other,multi_thread=8
+.fi
+.TP
+.B Via mount(8)
+.nf
+mount -t fuse.kafs /var/lib/kafs/data.img /mnt/kafs -o allow_other,multi_thread=8
+.fi
+.SH FSTAB
+Example
+.I /etc/fstab
+entry:
+.nf
+/var/lib/kafs/data.img  /mnt/kafs  fuse.kafs  rw,nofail,allow_other,multi_thread=8  0  0
+.fi
+.PP
+The third field is
+.B fuse.kafs
+because the filesystem is implemented via FUSE and is not registered in-kernel as a native
+.B kafs
+filesystem type.
 Disable writeback cache via FUSE 
+.BR mount.kafs (8),
 .B -o
 .
 .TP
@@ -217,6 +253,8 @@ Group commit window in nanoseconds (default 10000000ns).
 .BR kafsresize (8),
 .BR kafs-info (8),
 .BR kafs-front (8),
-.BR kafs-back (8)
+.BR kafs-back (8),
+.BR mount (8),
+.BR fstab (5)
 .SH AUTHOR
 kafs project.

@@ -15,10 +15,22 @@ AC_ARG_ENABLE([lto],
     [enable_lto="$enableval"],
     [enable_lto="no"])
 
+AC_ARG_ENABLE([debug-build],
+    [AS_HELP_STRING([--enable-debug-build], [build with -O0 -g3 -fno-omit-frame-pointer, disable LTO, and compile extra diagnostics])],
+    [enable_debug_build="$enableval"],
+    [enable_debug_build="no"])
+
 AC_ARG_ENABLE([extra-diag],
     [AS_HELP_STRING([--enable-extra-diag], [compile extra diagnostic logging helpers])],
     [enable_extra_diag="$enableval"],
     [enable_extra_diag="no"])
+
+AS_IF([test "x$enable_debug_build" = "xyes"], [
+    enable_lto="no"
+    enable_extra_diag="yes"
+    CFLAGS="$CFLAGS -O0 -g3 -fno-omit-frame-pointer"
+    AC_MSG_NOTICE([debug build enabled: appending -O0 -g3 -fno-omit-frame-pointer, forcing --disable-lto, and compiling extra diagnostics])
+])
 
 AS_IF([test "x$enable_lto" = "xyes"], [
     CFLAGS="$CFLAGS -flto"

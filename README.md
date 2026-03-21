@@ -27,6 +27,22 @@ autoreconf -fi
 make
 ```
 
+Release-oriented build:
+
+```sh
+./configure --enable-lto
+make -j"$(nproc)"
+```
+
+Debug-oriented build:
+
+```sh
+./configure --enable-debug-build
+make -j"$(nproc)"
+```
+
+`--enable-debug-build` appends `-O0 -g3 -fno-omit-frame-pointer`, forces LTO off, and enables the extra diagnostic logging code paths. For runtime logs, set `KAFS_DEBUG=1..3` when running `kafs` or the mount-based tests. For slow FUSE startup while debugging, `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check` extends the shared mount wait window used by the regression tests.
+
 ## Quick Start
 
 Create an image, mount it, and inspect stats:
@@ -68,6 +84,13 @@ Mount a filesystem image:
 ./kafs --image /tmp/kafs.img /tmp/kafs-mnt -f
 ```
 
+Mount helper compatible forms:
+
+```sh
+mount.kafs /tmp/kafs.img /tmp/kafs-mnt -o allow_other,multi_thread=8
+mount -t fuse.kafs /tmp/kafs.img /tmp/kafs-mnt -o allow_other,multi_thread=8
+```
+
 FUSE options:
 - `-o multi_thread[=N]`: enable multi-thread mode with optional thread count
 - `-o bg_dedup_scan=on|off` (alias: `-o dedup_scan=on|off`): idle background dedup scan switch (default: `on`)
@@ -80,6 +103,14 @@ Example:
 ./kafs --image /tmp/kafs.img /tmp/kafs-mnt -f --option dedup_scan=off
 ./kafs --image /tmp/kafs.img /tmp/kafs-mnt -f -o dedup_scan=on,dedup_interval_ms=20
 ```
+
+fstab example:
+
+```fstab
+/var/lib/kafs/data.img  /mnt/kafs  fuse.kafs  rw,nofail,allow_other,multi_thread=8  0  0
+```
+
+The filesystem type stays `fuse.kafs` because KAFS is a FUSE userspace filesystem, not a native kernel-registered filesystem.
 
 Migration options:
 - `--migrate`: run offline pre-start migration for a v2/v3 image to v4, then exit

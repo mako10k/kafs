@@ -3445,67 +3445,83 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
     return kafs_ino_iblk_write_legacy(ctx, inoent, iblo, buf, 0);
 
   // ゼロ/非ゼロを区別せず、常に通常のデータ書き込み経路を使う。
-  kafs_hrid_t hrid;
-  int is_new = 0;
-  kafs_blkcnt_t new_blo = KAFS_BLO_NONE;
-  ctx->c_stat_hrl_put_calls++;
-  uint64_t t_hrl0 = kafs_now_ns();
-  int rc = kafs_hrl_put(ctx, buf, &hrid, &is_new, &new_blo);
-  uint64_t t_hrl1 = kafs_now_ns();
-  __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_hrl_put, t_hrl1 - t_hrl0, __ATOMIC_RELAXED);
-  if (rc == -ENOSPC)
+  // Lock order policy requires hrl_global before inode. To avoid taking a lower-rank
+  // HRL lock while holding the inode lock, acquire the HRL ref outside the inode lock,
+  // then revalidate the target block mapping before committing the new reference.
+  uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
+  for (unsigned retry = 0; retry < 8; ++retry)
   {
-    kafs_blkcnt_t rescue_blo = KAFS_BLO_NONE;
-    int rescue_is_new = 0;
-    int rrc = kafs_hrl_try_enospc_rescue(ctx, buf, &rescue_blo, &rescue_is_new);
-    if (rrc == 0)
+    kafs_blkcnt_t expected_old_blo = KAFS_BLO_NONE;
+    KAFS_IBWRITE_TRY(kafs_ino_ibrk_run(ctx, inoent, iblo, &expected_old_blo, KAFS_IBLKREF_FUNC_GET));
+
+    kafs_inode_unlock(ctx, ino_idx);
+
+    kafs_hrid_t hrid = 0;
+    int is_new = 0;
+    kafs_blkcnt_t candidate_blo = KAFS_BLO_NONE;
+    int candidate_kind = 0;
+
+    ctx->c_stat_hrl_put_calls++;
+    uint64_t t_hrl0 = kafs_now_ns();
+    int rc = kafs_hrl_put(ctx, buf, &hrid, &is_new, &candidate_blo);
+    uint64_t t_hrl1 = kafs_now_ns();
+    __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_hrl_put, t_hrl1 - t_hrl0, __ATOMIC_RELAXED);
+    if (rc == 0)
+      candidate_kind = 1;
+    else if (rc == -ENOSPC)
     {
-      if (rescue_is_new)
+      int rescue_is_new = 0;
+      kafs_blkcnt_t rescue_blo = KAFS_BLO_NONE;
+      int rrc = kafs_hrl_try_enospc_rescue(ctx, buf, &rescue_blo, &rescue_is_new);
+      if (rrc == 0)
+      {
+        rc = 0;
+        is_new = rescue_is_new;
+        candidate_blo = rescue_blo;
+        candidate_kind = 2;
+      }
+    }
+
+    kafs_inode_lock(ctx, ino_idx);
+
+    kafs_blkcnt_t current_old_blo = KAFS_BLO_NONE;
+    KAFS_IBWRITE_TRY(kafs_ino_ibrk_run(ctx, inoent, iblo, &current_old_blo, KAFS_IBLKREF_FUNC_GET));
+    if (current_old_blo != expected_old_blo)
+    {
+      if (rc == 0 && candidate_blo != KAFS_BLO_NONE)
+      {
+        kafs_inode_unlock(ctx, ino_idx);
+        (void)kafs_inode_release_hrl_ref(ctx, candidate_blo);
+        kafs_inode_lock(ctx, ino_idx);
+      }
+      continue;
+    }
+
+    if (rc == 0)
+    {
+      if (is_new)
         ctx->c_stat_hrl_put_misses++;
       else
         ctx->c_stat_hrl_put_hits++;
-      kafs_blkcnt_t old_blo;
-      KAFS_IBWRITE_TRY(kafs_ino_ibrk_run(ctx, inoent, iblo, &old_blo, KAFS_IBLKREF_FUNC_GET));
-      kafs_diag_log_dir_iblk_write("iblk_write_rescue", ctx, inoent, iblo, old_blo, rescue_blo, buf,
+      kafs_diag_log_dir_iblk_write(candidate_kind == 2 ? "iblk_write_rescue" : "iblk_write_hrl",
+                                   ctx, inoent, iblo, current_old_blo, candidate_blo, buf,
                                    kafs_sb_blksize_get(ctx->c_superblock));
-      KAFS_IBWRITE_TRY(kafs_ino_ibrk_run(ctx, inoent, iblo, &rescue_blo, KAFS_IBLKREF_FUNC_SET));
-      uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
-      if (old_blo != KAFS_BLO_NONE && old_blo != rescue_blo)
+      KAFS_IBWRITE_TRY(
+          kafs_ino_ibrk_run(ctx, inoent, iblo, &candidate_blo, KAFS_IBLKREF_FUNC_SET));
+      if (current_old_blo != KAFS_BLO_NONE && current_old_blo != candidate_blo)
       {
         kafs_inode_unlock(ctx, ino_idx);
         uint64_t t_dec0 = kafs_now_ns();
-        (void)kafs_inode_release_hrl_ref(ctx, old_blo);
+        (void)kafs_inode_release_hrl_ref(ctx, current_old_blo);
         uint64_t t_dec1 = kafs_now_ns();
-        __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0,
+                           __ATOMIC_RELAXED);
         kafs_inode_lock(ctx, ino_idx);
       }
       return KAFS_SUCCESS;
     }
-  }
-  if (rc == 0)
-  {
-    if (is_new)
-      ctx->c_stat_hrl_put_misses++;
-    else
-      ctx->c_stat_hrl_put_hits++;
-    // kafs_hrl_put() already takes one reference for the returned hrid.
-    kafs_blkcnt_t old_blo;
-    KAFS_IBWRITE_TRY(kafs_ino_ibrk_run(ctx, inoent, iblo, &old_blo, KAFS_IBLKREF_FUNC_GET));
-    kafs_diag_log_dir_iblk_write("iblk_write_hrl", ctx, inoent, iblo, old_blo, new_blo, buf,
-                                 kafs_sb_blksize_get(ctx->c_superblock));
-    KAFS_IBWRITE_TRY(kafs_ino_ibrk_run(ctx, inoent, iblo, &new_blo, KAFS_IBLKREF_FUNC_SET));
-    // HRLバケットロック順序のため、参照減算は inode ロック外で行う
-    uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
-    if (old_blo != KAFS_BLO_NONE && old_blo != new_blo)
-    {
-      kafs_inode_unlock(ctx, ino_idx);
-      uint64_t t_dec0 = kafs_now_ns();
-      (void)kafs_inode_release_hrl_ref(ctx, old_blo);
-      uint64_t t_dec1 = kafs_now_ns();
-      __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
-      kafs_inode_lock(ctx, ino_idx);
-    }
-    return KAFS_SUCCESS;
+
+    break;
   }
 
   // HRL 失敗時: レガシー経路

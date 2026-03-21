@@ -1,3 +1,5 @@
+#include "test_utils.h"
+
 #include "kafs.h"
 #include "kafs_context.h"
 #include "kafs_superblock.h"
@@ -16,10 +18,15 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+#ifndef FUSE_SUPER_MAGIC
+#define FUSE_SUPER_MAGIC 0x65735546
+#endif
 
 static char g_test_workdir[PATH_MAX];
 static int g_test_workdir_set = 0;
@@ -41,7 +48,8 @@ static void kafs_test_cleanup_workdir(void)
     return;
 
   // Ensure we're not sitting inside the directory we want to delete.
-  (void)chdir("/");
+  if (chdir("/") != 0)
+    return;
 
   // Depth-first walk so we remove children before parents.
   (void)nftw(g_test_workdir, rm_rf_cb, 64, FTW_DEPTH | FTW_PHYS);
@@ -75,20 +83,68 @@ int kafs_test_enter_tmpdir(const char *tag)
   return 0;
 }
 
+static const char *kafs_test_resolve_tool(const char *env_name, const char *tool_name,
+                                          char out[PATH_MAX])
+{
+  const char *env = getenv(env_name);
+  if (env && *env)
+  {
+    if (strlen(env) < PATH_MAX)
+    {
+      strcpy(out, env);
+      return out;
+    }
+    return env;
+  }
+
+  char exe_path[PATH_MAX];
+  ssize_t exe_len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+  if (exe_len > 0)
+  {
+    exe_path[exe_len] = '\0';
+    char *slash = strrchr(exe_path, '/');
+    if (slash)
+    {
+      *slash = '\0';
+      if ((size_t)snprintf(out, PATH_MAX, "%s/../src/%s", exe_path, tool_name) < PATH_MAX &&
+          access(out, X_OK) == 0)
+        return out;
+    }
+  }
+
+  if ((size_t)snprintf(out, PATH_MAX, "./%s", tool_name) < PATH_MAX)
+    return out;
+  return tool_name;
+}
+
 const char *kafs_test_kafs_bin(void)
 {
-  const char *p = getenv("KAFS_TEST_KAFS");
-  if (p && *p)
-    return p;
-  return "./kafs";
+  static char path[PATH_MAX];
+  return kafs_test_resolve_tool("KAFS_TEST_KAFS", "kafs", path);
 }
 
 const char *kafs_test_kafsctl_bin(void)
 {
-  const char *p = getenv("KAFS_TEST_KAFSCTL");
-  if (p && *p)
-    return p;
-  return "./kafsctl";
+  static char path[PATH_MAX];
+  return kafs_test_resolve_tool("KAFS_TEST_KAFSCTL", "kafsctl", path);
+}
+
+void kafs_test_dump_log(const char *log_path, const char *reason)
+{
+  const char *path = (log_path && *log_path) ? log_path : "minisrv.log";
+  FILE *fp = fopen(path, "r");
+  if (!fp)
+    return;
+
+  if (reason && *reason)
+    fprintf(stderr, "--- %s: %s ---\n", path, reason);
+  else
+    fprintf(stderr, "--- %s ---\n", path);
+
+  char line[512];
+  while (fgets(line, sizeof(line), fp))
+    fputs(line, stderr);
+  fclose(fp);
 }
 
 static const char *abspath_no_fs(const char *path, char out[PATH_MAX])
@@ -111,6 +167,10 @@ static const char *abspath_no_fs(const char *path, char out[PATH_MAX])
 
 static int is_mounted_fuse(const char *mnt)
 {
+  struct statfs stfs;
+  if (statfs(mnt, &stfs) == 0 && (unsigned long)stfs.f_type == (unsigned long)FUSE_SUPER_MAGIC)
+    return 1;
+
   FILE *fp = fopen("/proc/mounts", "r");
   if (!fp)
     return 0;
@@ -221,6 +281,106 @@ static void kill_wait_timeout(pid_t pid, int timeout_ms)
     nanosleep(&ts2, NULL);
   }
   (void)waitpid(pid, NULL, WNOHANG);
+}
+
+static int kafs_test_mount_timeout_ms(const kafs_test_mount_options_t *options)
+{
+  const char *env = getenv("KAFS_TEST_MOUNT_TIMEOUT_MS");
+  if (env && *env)
+  {
+    char *end = NULL;
+    long parsed = strtol(env, &end, 10);
+    if (end && *end == '\0' && parsed > 0 && parsed <= INT_MAX)
+      return (int)parsed;
+  }
+  if (options && options->timeout_ms > 0)
+    return options->timeout_ms;
+  return 5000;
+}
+
+pid_t kafs_test_start_kafs(const char *img, const char *mnt,
+                           const kafs_test_mount_options_t *options)
+{
+  if (mkdir(mnt, 0700) != 0 && errno != EEXIST)
+    return -errno;
+
+  const char *log_path = (options && options->log_path && *options->log_path) ? options->log_path
+                                                                               : "minisrv.log";
+  const int timeout_ms = kafs_test_mount_timeout_ms(options);
+  char absmnt[PATH_MAX];
+  const char *mp = abspath_no_fs(mnt, absmnt);
+
+  pid_t pid = fork();
+  if (pid < 0)
+    return -errno;
+  if (pid == 0)
+  {
+    setenv("KAFS_IMAGE", img, 1);
+    char kafs_back_path[PATH_MAX];
+    const char *kafs_back = kafs_test_resolve_tool("KAFS_TEST_KAFS_BACK", "kafs-back",
+                                                   kafs_back_path);
+    if (kafs_back && *kafs_back)
+      setenv("KAFS_HOTPLUG_BACK_BIN", kafs_back, 1);
+    else
+      unsetenv("KAFS_HOTPLUG_BACK_BIN");
+    if (options && options->debug && *options->debug)
+      setenv("KAFS_DEBUG", options->debug, 1);
+    else
+      unsetenv("KAFS_DEBUG");
+    if (options && options->multithread)
+      setenv("KAFS_MT", "1", 1);
+    else
+      unsetenv("KAFS_MT");
+
+    int lfd = open(log_path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    if (lfd >= 0)
+    {
+      dup2(lfd, STDERR_FILENO);
+      dup2(lfd, STDOUT_FILENO);
+      close(lfd);
+    }
+
+    const char *kafs = kafs_test_kafs_bin();
+    char *args[] = {(char *)kafs, (char *)mp, "-f", NULL};
+    execvp(args[0], args);
+    perror("execvp kafs");
+    _exit(127);
+  }
+
+  const int step_ms = 100;
+  int waited = 0;
+  while (waited < timeout_ms)
+  {
+    if (is_mounted_fuse(mnt))
+      return pid;
+
+    int st = 0;
+    pid_t w = waitpid(pid, &st, WNOHANG);
+    if (w == pid)
+    {
+      if (WIFEXITED(st))
+        fprintf(stderr, "kafs test server exited early with status=%d\n", WEXITSTATUS(st));
+      else if (WIFSIGNALED(st))
+        fprintf(stderr, "kafs test server exited early with signal=%d\n", WTERMSIG(st));
+      kafs_test_dump_log(log_path, "mount start failed");
+      return -1;
+    }
+    if (w < 0)
+    {
+      int err = errno;
+      kill_wait_timeout(pid, 2000);
+      return -err;
+    }
+
+    struct timespec ts = {0, step_ms * 1000 * 1000};
+    nanosleep(&ts, NULL);
+    waited += step_ms;
+  }
+
+  fprintf(stderr, "kafs test mount timed out after %d ms\n", timeout_ms);
+  kill_wait_timeout(pid, 2000);
+  kafs_test_dump_log(log_path, "mount timed out");
+  return -1;
 }
 
 void kafs_test_stop_kafs(const char *mnt, pid_t kafs_pid)

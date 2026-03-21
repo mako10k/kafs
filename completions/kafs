@@ -295,6 +295,7 @@ _kafs_info() {
 }
 
 complete -F _kafs kafs
+complete -F _kafs mount.kafs
 complete -F _kafsctl kafsctl
 complete -F _mkfs_kafs mkfs.kafs
 complete -F _fsck_kafs fsck.kafs

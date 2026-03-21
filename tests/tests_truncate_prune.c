@@ -29,6 +29,12 @@ static void tlogf(const char *fmt, ...)
   va_end(ap);
 }
 
+static const kafs_test_mount_options_t k_mount_options = {
+    .debug = "3",
+    .log_path = "minisrv.log",
+    .timeout_ms = 10000,
+};
+
 static int is_mounted_fuse(const char *mnt)
 {
   char absmnt[PATH_MAX];
@@ -219,7 +225,7 @@ int main(void)
   close(ctx.c_fd);
 
   // 1) 準備: 単/二/三の各範囲に1ブロックずつ配置
-  pid_t srv = spawn_kafs(img, mnt, "3");
+  pid_t srv = kafs_test_start_kafs(img, mnt, &k_mount_options);
   if (srv <= 0)
   {
     tlogf("mount failed");
@@ -231,7 +237,7 @@ int main(void)
   if (fd < 0)
   {
     tlogf("create failed:%s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   off_t offS = (off_t)12 * bs;
@@ -244,7 +250,7 @@ int main(void)
     tlogf("write S failed:%s", strerror(errno));
     free(b);
     close(fd);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   memset(b, 0x22, bs);
@@ -253,7 +259,7 @@ int main(void)
     tlogf("write D failed:%s", strerror(errno));
     free(b);
     close(fd);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   memset(b, 0x33, bs);
@@ -262,7 +268,7 @@ int main(void)
     tlogf("write T failed:%s", strerror(errno));
     free(b);
     close(fd);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   free(b);
@@ -278,12 +284,12 @@ int main(void)
   }
   fsync(fd);
   close(fd);
-  stop_kafs(mnt, srv);
+  kafs_test_stop_kafs(mnt, srv);
   if (inspect_pointers(img, mapsize, /*12*/ 1, /*13*/ 1, /*14*/ 0) != 0)
     return 1;
 
   // 3) Dの直前へ truncate → DIも掃除され、SIは残る
-  srv = spawn_kafs(img, mnt, "3");
+  srv = kafs_test_start_kafs(img, mnt, &k_mount_options);
   if (srv <= 0)
   {
     tlogf("remount failed");
@@ -293,24 +299,24 @@ int main(void)
   if (fd < 0)
   {
     tlogf("open failed:%s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   if (ftruncate(fd, offD) != 0)
   {
     tlogf("ftruncate to offD failed:%s", strerror(errno));
     close(fd);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   fsync(fd);
   close(fd);
-  stop_kafs(mnt, srv);
+  kafs_test_stop_kafs(mnt, srv);
   if (inspect_pointers(img, mapsize, /*12*/ 1, /*13*/ 0, /*14*/ 0) != 0)
     return 1;
 
   // 4) Sの直前へ truncate → SIも掃除
-  srv = spawn_kafs(img, mnt, "3");
+  srv = kafs_test_start_kafs(img, mnt, &k_mount_options);
   if (srv <= 0)
   {
     tlogf("remount2 failed");
@@ -320,19 +326,19 @@ int main(void)
   if (fd < 0)
   {
     tlogf("open2 failed:%s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   if (ftruncate(fd, offS) != 0)
   {
     tlogf("ftruncate to offS failed:%s", strerror(errno));
     close(fd);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   fsync(fd);
   close(fd);
-  stop_kafs(mnt, srv);
+  kafs_test_stop_kafs(mnt, srv);
   if (inspect_pointers(img, mapsize, /*12*/ 0, /*13*/ 0, /*14*/ 0) != 0)
     return 1;
 

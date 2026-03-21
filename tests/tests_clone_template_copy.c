@@ -26,77 +26,10 @@ static void tlogf(const char *fmt, ...)
   va_end(ap);
 }
 
-static int is_mounted_fuse(const char *mnt)
-{
-  char absmnt[PATH_MAX];
-  const char *want = mnt;
-  if (realpath(mnt, absmnt) != NULL)
-    want = absmnt;
-  FILE *fp = fopen("/proc/mounts", "r");
-  if (!fp)
-    return 0;
-  char dev[256], dir[256], type[64];
-  int mounted = 0;
-  while (fscanf(fp, "%255s %255s %63s %*[^\n]\n", dev, dir, type) == 3)
-  {
-    if (strcmp(dir, want) == 0 && strncmp(type, "fuse", 4) == 0)
-    {
-      mounted = 1;
-      break;
-    }
-  }
-  fclose(fp);
-  return mounted;
-}
-
-static pid_t spawn_kafs(const char *img, const char *mnt)
-{
-  mkdir(mnt, 0700);
-  pid_t pid = fork();
-  if (pid < 0)
-    return -errno;
-  if (pid == 0)
-  {
-    setenv("KAFS_IMAGE", img, 1);
-    int lfd = open("minisrv.log", O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    if (lfd >= 0)
-    {
-      dup2(lfd, STDERR_FILENO);
-      dup2(lfd, STDOUT_FILENO);
-      close(lfd);
-    }
-    const char *kafs = kafs_test_kafs_bin();
-    char *args[] = {(char *)kafs, (char *)mnt, "-f", NULL};
-    execvp(args[0], args);
-    _exit(127);
-  }
-  for (int i = 0; i < 50; ++i)
-  {
-    if (is_mounted_fuse(mnt))
-      return pid;
-    struct timespec ts = {0, 100 * 1000 * 1000};
-    nanosleep(&ts, NULL);
-  }
-  kill(pid, SIGTERM);
-  waitpid(pid, NULL, 0);
-  return -1;
-}
-
-static void stop_kafs(const char *mnt, pid_t pid)
-{
-  char *um1[] = {"fusermount3", "-u", (char *)mnt, NULL};
-  if (fork() == 0)
-  {
-    execvp(um1[0], um1);
-    _exit(127);
-  }
-  else
-  {
-    wait(NULL);
-  }
-  kill(pid, SIGTERM);
-  waitpid(pid, NULL, 0);
-}
+static const kafs_test_mount_options_t k_mount_options = {
+    .log_path = "minisrv.log",
+    .timeout_ms = 5000,
+};
 
 static int copy_file(const char *src, const char *dst)
 {
@@ -146,7 +79,7 @@ int main(void)
   munmap(ctx.c_superblock, mapsize);
   close(ctx.c_fd);
 
-  pid_t srv = spawn_kafs(img, mnt);
+  pid_t srv = kafs_test_start_kafs(img, mnt, &k_mount_options);
   if (srv <= 0)
   {
     tlogf("mount failed");
@@ -159,7 +92,7 @@ int main(void)
   if (mkdir(tdir, 0777) != 0)
   {
     tlogf("mkdir tmpl failed:%s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   char sfile[PATH_MAX];
@@ -168,10 +101,16 @@ int main(void)
   if (fd < 0)
   {
     tlogf("create a.txt failed:%s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
-  write(fd, "hello", 5);
+  if (write(fd, "hello", 5) != 5)
+  {
+    tlogf("write a.txt failed:%s", strerror(errno));
+    close(fd);
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
   close(fd);
 
   // create target dir and copy
@@ -181,7 +120,7 @@ int main(void)
   if (mkdir(target, 0777) != 0 && errno != EEXIST)
   {
     tlogf("mkdir target failed:%s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   char cmd[PATH_MAX];
@@ -189,7 +128,7 @@ int main(void)
   if (mkdir(cmd, 0777) != 0 && errno != EEXIST)
   {
     tlogf("mkdir .git failed:%s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   char ddir[PATH_MAX];
@@ -197,7 +136,7 @@ int main(void)
   if (mkdir(ddir, 0777) != 0 && errno != EEXIST)
   {
     tlogf("mkdir hooks failed:%s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -207,7 +146,7 @@ int main(void)
   if (rc != 0)
   {
     tlogf("copy failed:%s", strerror(-rc));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -217,19 +156,25 @@ int main(void)
   if (fd < 0)
   {
     tlogf("open dst failed:%s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
-  read(fd, buf, sizeof(buf));
+  ssize_t nread = read(fd, buf, sizeof(buf));
   close(fd);
+  if (nread < 0)
+  {
+    tlogf("read dst failed:%s", strerror(errno));
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
   if (strncmp(buf, "hello", 5) != 0)
   {
     tlogf("content mismatch: %s", buf);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
-  stop_kafs(mnt, srv);
+  kafs_test_stop_kafs(mnt, srv);
   tlogf("clone_template_copy OK");
   return 0;
 }

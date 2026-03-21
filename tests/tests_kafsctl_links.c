@@ -25,77 +25,10 @@ static void tlogf(const char *fmt, ...)
   va_end(ap);
 }
 
-static int is_mounted_fuse(const char *mnt)
-{
-  char absmnt[PATH_MAX];
-  const char *want = mnt;
-  if (realpath(mnt, absmnt) != NULL)
-    want = absmnt;
-  FILE *fp = fopen("/proc/mounts", "r");
-  if (!fp)
-    return 0;
-  char dev[256], dir[256], type[64];
-  int mounted = 0;
-  while (fscanf(fp, "%255s %255s %63s %*[^\n]\n", dev, dir, type) == 3)
-  {
-    if (strcmp(dir, want) == 0 && strncmp(type, "fuse", 4) == 0)
-    {
-      mounted = 1;
-      break;
-    }
-  }
-  fclose(fp);
-  return mounted;
-}
-
-static pid_t spawn_kafs(const char *img, const char *mnt)
-{
-  mkdir(mnt, 0700);
-  pid_t pid = fork();
-  if (pid < 0)
-    return -errno;
-  if (pid == 0)
-  {
-    setenv("KAFS_IMAGE", img, 1);
-    int lfd = open("links.log", O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    if (lfd >= 0)
-    {
-      dup2(lfd, STDERR_FILENO);
-      dup2(lfd, STDOUT_FILENO);
-      close(lfd);
-    }
-    const char *kafs = kafs_test_kafs_bin();
-    char *args[] = {(char *)kafs, (char *)mnt, "-f", NULL};
-    execvp(args[0], args);
-    _exit(127);
-  }
-  for (int i = 0; i < 50; ++i)
-  {
-    if (is_mounted_fuse(mnt))
-      return pid;
-    struct timespec ts = {0, 100 * 1000 * 1000};
-    nanosleep(&ts, NULL);
-  }
-  kill(pid, SIGTERM);
-  waitpid(pid, NULL, 0);
-  return -1;
-}
-
-static void stop_kafs(const char *mnt, pid_t pid)
-{
-  char *um1[] = {"fusermount3", "-u", (char *)mnt, NULL};
-  if (fork() == 0)
-  {
-    execvp(um1[0], um1);
-    _exit(127);
-  }
-  else
-  {
-    wait(NULL);
-  }
-  kill(pid, SIGTERM);
-  waitpid(pid, NULL, 0);
-}
+static const kafs_test_mount_options_t k_mount_options = {
+    .log_path = "links.log",
+    .timeout_ms = 5000,
+};
 
 static int run_kafsctl(char *const args[])
 {
@@ -164,7 +97,7 @@ int main(void)
   munmap(ctx.c_superblock, mapsize);
   close(ctx.c_fd);
 
-  pid_t srv = spawn_kafs(img, mnt);
+  pid_t srv = kafs_test_start_kafs(img, mnt, &k_mount_options);
   if (srv <= 0)
   {
     tlogf("mount failed");
@@ -183,14 +116,14 @@ int main(void)
   if (fd < 0)
   {
     tlogf("open(src) failed: %s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   if (write(fd, "hello", 5) != 5)
   {
     tlogf("write(src) failed: %s", strerror(errno));
     close(fd);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   close(fd);
@@ -200,7 +133,7 @@ int main(void)
   if (rc != 0)
   {
     tlogf("kafsctl ln failed: rc=%d", rc);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -209,7 +142,7 @@ int main(void)
   if (stat(src, &st_src) != 0 || stat(hdst, &st_hdst) != 0)
   {
     tlogf("stat after ln failed: %s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   if (st_src.st_ino != st_hdst.st_ino || st_src.st_nlink < 2)
@@ -217,7 +150,7 @@ int main(void)
     tlogf("hardlink verification failed: src ino=%lu nlink=%lu dst ino=%lu nlink=%lu",
           (unsigned long)st_src.st_ino, (unsigned long)st_src.st_nlink,
           (unsigned long)st_hdst.st_ino, (unsigned long)st_hdst.st_nlink);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -226,7 +159,7 @@ int main(void)
   if (mkdir(dir_dst, 0755) != 0)
   {
     tlogf("mkdir(dirdst) failed: %s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -235,7 +168,7 @@ int main(void)
   if (rc != 0)
   {
     tlogf("kafsctl ln into dir failed: rc=%d", rc);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -243,20 +176,20 @@ int main(void)
   if (snprintf(dir_link, sizeof(dir_link), "%s/src", dir_dst) >= (int)sizeof(dir_link))
   {
     tlogf("dir link path too long");
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   struct stat st_dir_link;
   if (stat(dir_link, &st_dir_link) != 0)
   {
     tlogf("stat dir link failed: %s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   if (st_dir_link.st_ino != st_src.st_ino)
   {
     tlogf("dir hardlink verification failed");
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -266,7 +199,7 @@ int main(void)
   if (fd < 0)
   {
     tlogf("open(forced_dst) failed: %s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   close(fd);
@@ -276,7 +209,7 @@ int main(void)
   if (rc != 0)
   {
     tlogf("kafsctl ln -f failed: rc=%d", rc);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -284,13 +217,13 @@ int main(void)
   if (stat(forced_dst, &st_forced) != 0)
   {
     tlogf("stat forced link failed: %s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   if (st_forced.st_ino != st_src.st_ino)
   {
     tlogf("forced hardlink verification failed");
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -299,7 +232,7 @@ int main(void)
   if (rc == 0)
   {
     tlogf("same-file ln -f unexpectedly succeeded");
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -308,13 +241,13 @@ int main(void)
   if (nread != 5)
   {
     tlogf("read src after failed ln -f failed: %s", nread < 0 ? strerror(-nread) : "short read");
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   if (memcmp(same_link_buf, "hello", 5) != 0)
   {
     tlogf("same-file ln -f modified source unexpectedly");
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -325,7 +258,7 @@ int main(void)
   if (rc != 0)
   {
     tlogf("kafsctl cp failed: rc=%d", rc);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -333,13 +266,13 @@ int main(void)
   if (stat(cpdst, &st_cpdst) != 0)
   {
     tlogf("stat after cp failed: %s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   if (st_cpdst.st_ino == st_src.st_ino || st_cpdst.st_size != 5)
   {
     tlogf("copy destination verification failed");
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -348,13 +281,13 @@ int main(void)
   if (nread != 5)
   {
     tlogf("read copied file failed: %s", nread < 0 ? strerror(-nread) : "short read");
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   if (memcmp(copybuf, "hello", 5) != 0)
   {
     tlogf("copied file content verification failed");
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -363,7 +296,7 @@ int main(void)
   if (rc == 0)
   {
     tlogf("same-inode cp unexpectedly succeeded");
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -372,26 +305,26 @@ int main(void)
   if (nread != 5)
   {
     tlogf("read src after failed cp failed: %s", nread < 0 ? strerror(-nread) : "short read");
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   if (memcmp(linkbuf_verify, "hello", 5) != 0)
   {
     tlogf("same-inode cp modified source unexpectedly");
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
   if (stat(src, &st_src) != 0 || stat(hdst, &st_hdst) != 0)
   {
     tlogf("stat after failed same-inode cp failed: %s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   if (st_src.st_ino != st_hdst.st_ino || st_src.st_size != 5 || st_hdst.st_size != 5)
   {
     tlogf("same-inode cp changed hardlink metadata unexpectedly");
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -400,7 +333,7 @@ int main(void)
   if (rc != 0)
   {
     tlogf("kafsctl ln -s failed: rc=%d", rc);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -409,14 +342,14 @@ int main(void)
   if (n < 0)
   {
     tlogf("readlink failed: %s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   linkbuf[n] = '\0';
   if (strcmp(linkbuf, "literal-target") != 0)
   {
     tlogf("symlink target verification failed: %s", linkbuf);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -425,7 +358,7 @@ int main(void)
   if (mkdir(sym_dir, 0755) != 0)
   {
     tlogf("mkdir(symdir) failed: %s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -434,7 +367,7 @@ int main(void)
   if (rc != 0)
   {
     tlogf("kafsctl ln -s into dir failed: rc=%d", rc);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -443,21 +376,21 @@ int main(void)
       (int)sizeof(sym_dir_link))
   {
     tlogf("sym dir link path too long");
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   n = readlink(sym_dir_link, linkbuf, sizeof(linkbuf) - 1);
   if (n < 0)
   {
     tlogf("readlink dir symlink failed: %s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   linkbuf[n] = '\0';
   if (strcmp(linkbuf, "leaf-target") != 0)
   {
     tlogf("dir symlink target verification failed: %s", linkbuf);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -467,7 +400,7 @@ int main(void)
   if (fd < 0)
   {
     tlogf("open(sym_forced) failed: %s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   close(fd);
@@ -478,7 +411,7 @@ int main(void)
   if (rc != 0)
   {
     tlogf("kafsctl ln -s -f failed: rc=%d", rc);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -486,14 +419,14 @@ int main(void)
   if (n < 0)
   {
     tlogf("readlink forced symlink failed: %s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   linkbuf[n] = '\0';
   if (strcmp(linkbuf, "forced-target") != 0)
   {
     tlogf("forced symlink target verification failed: %s", linkbuf);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -504,7 +437,7 @@ int main(void)
   if (rc != 0)
   {
     tlogf("kafsctl symlink alias failed: rc=%d", rc);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -512,14 +445,14 @@ int main(void)
   if (n < 0)
   {
     tlogf("readlink alias failed: %s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   linkbuf[n] = '\0';
   if (strcmp(linkbuf, "alias-target") != 0)
   {
     tlogf("symlink alias target verification failed: %s", linkbuf);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -528,7 +461,7 @@ int main(void)
   if (host_fd < 0)
   {
     tlogf("mkstemp failed: %s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   close(host_fd);
@@ -541,17 +474,17 @@ int main(void)
   if (rc == 0)
   {
     tlogf("cross-fs hardlink unexpectedly succeeded");
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   if (access(bad_dst, F_OK) == 0)
   {
     tlogf("cross-fs hardlink created destination unexpectedly");
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
-  stop_kafs(mnt, srv);
+  kafs_test_stop_kafs(mnt, srv);
   return 0;
 #endif
 }

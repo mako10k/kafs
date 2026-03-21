@@ -26,62 +26,6 @@ static void tlogf(const char *fmt, ...)
   va_end(ap);
 }
 
-static int is_mounted_fuse(const char *mnt)
-{
-  char absmnt[PATH_MAX];
-  const char *want = mnt;
-  if (realpath(mnt, absmnt) != NULL)
-    want = absmnt;
-  FILE *fp = fopen("/proc/mounts", "r");
-  if (!fp)
-    return 0;
-  char dev[256], dir[256], type[64];
-  int mounted = 0;
-  while (fscanf(fp, "%255s %255s %63s %*[^\n]\n", dev, dir, type) == 3)
-  {
-    if (strcmp(dir, want) == 0 && strncmp(type, "fuse", 4) == 0)
-    {
-      mounted = 1;
-      break;
-    }
-  }
-  fclose(fp);
-  return mounted;
-}
-
-static pid_t spawn_kafs(const char *img, const char *mnt)
-{
-  mkdir(mnt, 0700);
-  pid_t pid = fork();
-  if (pid < 0)
-    return -errno;
-  if (pid == 0)
-  {
-    setenv("KAFS_IMAGE", img, 1);
-    int lfd = open("minisrv.log", O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    if (lfd >= 0)
-    {
-      dup2(lfd, STDERR_FILENO);
-      dup2(lfd, STDOUT_FILENO);
-      close(lfd);
-    }
-    const char *kafs = kafs_test_kafs_bin();
-    char *args[] = {(char *)kafs, (char *)mnt, "-f", NULL};
-    execvp(args[0], args);
-    _exit(127);
-  }
-  for (int i = 0; i < 50; ++i)
-  {
-    if (is_mounted_fuse(mnt))
-      return pid;
-    struct timespec ts = {0, 100 * 1000 * 1000};
-    nanosleep(&ts, NULL);
-  }
-  kill(pid, SIGTERM);
-  waitpid(pid, NULL, 0);
-  return -1;
-}
-
 static int run_cmd(char *const argv[])
 {
   pid_t p = fork();
@@ -97,19 +41,11 @@ static int run_cmd(char *const argv[])
     return -errno;
   return (WIFEXITED(st) && WEXITSTATUS(st) == 0) ? 0 : -1;
 }
-static void stop_kafs(const char *mnt, pid_t pid)
-{
-  struct timespec ts = {0, 50 * 1000 * 1000};
-  nanosleep(&ts, NULL);
-  char *um1[] = {"fusermount3", "-u", (char *)mnt, NULL};
-  if (run_cmd(um1) != 0)
-  {
-    char *um2[] = {"fusermount", "-u", (char *)mnt, NULL};
-    (void)run_cmd(um2);
-  }
-  kill(pid, SIGTERM);
-  waitpid(pid, NULL, 0);
-}
+
+static const kafs_test_mount_options_t k_mount_options = {
+    .log_path = "minisrv.log",
+    .timeout_ms = 5000,
+};
 
 static int write_file(const char *path, const char *data, size_t len)
 {
@@ -150,7 +86,7 @@ int main(void)
   munmap(ctx.c_superblock, mapsize);
   close(ctx.c_fd);
 
-  pid_t srv = spawn_kafs(img, mnt);
+  pid_t srv = kafs_test_start_kafs(img, mnt, &k_mount_options);
   if (srv <= 0)
   {
     tlogf("mount failed");
@@ -162,13 +98,13 @@ int main(void)
   int n = snprintf(d, sizeof(d), "%s/dir", mnt);
   if (n < 0 || n >= (int)sizeof(d))
   {
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 77;
   }
   if (mkdir(d, 0777) != 0 && errno != EEXIST)
   {
     tlogf("mkdir dir failed:%s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -178,13 +114,13 @@ int main(void)
   if (write_file(a, "AAAA", 4) != 0)
   {
     tlogf("write a failed");
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   if (write_file(b, "BBBB", 4) != 0)
   {
     tlogf("write b failed");
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -192,7 +128,7 @@ int main(void)
   if (rename(a, b) != 0)
   {
     tlogf("rename failed:%s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -202,7 +138,7 @@ int main(void)
   if (r < 4 || strncmp(buf, "AAAA", 4) != 0)
   {
     tlogf("post-rename content:%.*s", r > 0 ? r : 0, buf);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -215,8 +151,8 @@ int main(void)
   }
 
   // 再マウントしてもAAAAであること
-  stop_kafs(mnt, srv);
-  srv = spawn_kafs(img, mnt);
+  kafs_test_stop_kafs(mnt, srv);
+  srv = kafs_test_start_kafs(img, mnt, &k_mount_options);
   if (srv <= 0)
   {
     tlogf("remount failed");
@@ -227,11 +163,11 @@ int main(void)
   if (r < 4 || strncmp(buf, "AAAA", 4) != 0)
   {
     tlogf("after remount content:%.*s", r > 0 ? r : 0, buf);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
-  stop_kafs(mnt, srv);
+  kafs_test_stop_kafs(mnt, srv);
   tlogf("rename_overwrite_dirfsync OK");
   return 0;
 }
