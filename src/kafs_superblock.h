@@ -85,7 +85,7 @@ struct kafs_ssuperblock
   /// @brief tail metadata region の先頭オフセット（バイト）
   kafs_su64_t s_tailmeta_offset; // +192 (8)
   /// @brief tail metadata region のサイズ（バイト）
-  kafs_su64_t s_tailmeta_size; // +200 (8)
+  kafs_su64_t s_tailmeta_size;   // +200 (8)
   uint8_t s_reserved[256 - 208]; // +208 .. +255
 } __attribute__((packed));
 
