@@ -21,6 +21,7 @@ design and policy notes.
 - [concurrency-plan.md](concurrency-plan.md)
 - [journal-plan.md](journal-plan.md)
 - [write-performance-ideas.md](write-performance-ideas.md)
+- [tail-packing-format-sketch.md](tail-packing-format-sketch.md)
 - [bottleneck-measurement-plan.md](bottleneck-measurement-plan.md)
 - [perf-evaluation-20260228.md](perf-evaluation-20260228.md)
 - [perf-discrepancy-analysis-20260228.md](perf-discrepancy-analysis-20260228.md)
