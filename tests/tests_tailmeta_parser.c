@@ -67,20 +67,28 @@ int main(void)
                 kafs_sinode_taildesc_v5_t inode_taildesc_roundtrip;
                 kafs_tailmeta_inode_desc_t desc_from_inode;
 
-                memset(&inode_taildesc, 0, sizeof(inode_taildesc));
-                inode_taildesc.it_layout_kind = KAFS_TAIL_LAYOUT_TAIL_ONLY;
-                inode_taildesc.it_flags = KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE;
-                inode_taildesc.it_fragment_len = htole16(64);
-                inode_taildesc.it_container_blo = kafs_blkcnt_htos(9);
-                inode_taildesc.it_fragment_off = htole16(32);
-                inode_taildesc.it_generation = kafs_u32_htos(11);
+                kafs_ino_taildesc_v5_init(&inode_taildesc);
+                kafs_ino_taildesc_v5_layout_kind_set(&inode_taildesc, KAFS_TAIL_LAYOUT_TAIL_ONLY);
+                kafs_ino_taildesc_v5_flags_set(&inode_taildesc, KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE);
+                kafs_ino_taildesc_v5_fragment_len_set(&inode_taildesc, 64);
+                kafs_ino_taildesc_v5_container_blo_set(&inode_taildesc, 9);
+                kafs_ino_taildesc_v5_fragment_off_set(&inode_taildesc, 32);
+                kafs_ino_taildesc_v5_generation_set(&inode_taildesc, 11);
+                assert(kafs_ino_taildesc_v5_uses_tail_storage(&inode_taildesc));
 
                 kafs_tailmeta_inode_desc_from_inode_taildesc(&desc_from_inode, &inode_taildesc);
                 assert(memcmp(&desc_from_inode, &desc, sizeof(desc)) == 0);
 
-                memset(&inode_taildesc_roundtrip, 0, sizeof(inode_taildesc_roundtrip));
+                kafs_ino_taildesc_v5_init(&inode_taildesc_roundtrip);
                 kafs_tailmeta_inode_desc_to_inode_taildesc(&inode_taildesc_roundtrip, &desc_from_inode);
                 assert(memcmp(&inode_taildesc_roundtrip, &inode_taildesc, sizeof(inode_taildesc)) == 0);
+                assert(kafs_ino_taildesc_v5_layout_kind_get(&inode_taildesc_roundtrip) == KAFS_TAIL_LAYOUT_TAIL_ONLY);
+                assert(kafs_ino_taildesc_v5_flags_get(&inode_taildesc_roundtrip) ==
+                                         KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE);
+                assert(kafs_ino_taildesc_v5_fragment_len_get(&inode_taildesc_roundtrip) == 64);
+                assert(kafs_ino_taildesc_v5_container_blo_get(&inode_taildesc_roundtrip) == 9);
+                assert(kafs_ino_taildesc_v5_fragment_off_get(&inode_taildesc_roundtrip) == 32);
+                assert(kafs_ino_taildesc_v5_generation_get(&inode_taildesc_roundtrip) == 11);
         }
 
   memset(&slot, 0, sizeof(slot));
