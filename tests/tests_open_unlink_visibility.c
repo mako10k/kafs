@@ -148,7 +148,12 @@ int main(void)
     kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
-  write(fdw, "abcdef", 6);
+  if (write(fdw, "abcdef", 6) != 6)
+  {
+    close(fdw);
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
   close(fdw);
 
   int fdr = open(p, O_RDONLY);

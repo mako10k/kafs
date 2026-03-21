@@ -104,7 +104,13 @@ int main(void)
     kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
-  write(fd, "hello", 5);
+  if (write(fd, "hello", 5) != 5)
+  {
+    tlogf("write a.txt failed:%s", strerror(errno));
+    close(fd);
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
   close(fd);
 
   // create target dir and copy
@@ -153,8 +159,14 @@ int main(void)
     kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
-  read(fd, buf, sizeof(buf));
+  ssize_t nread = read(fd, buf, sizeof(buf));
   close(fd);
+  if (nread < 0)
+  {
+    tlogf("read dst failed:%s", strerror(errno));
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
   if (strncmp(buf, "hello", 5) != 0)
   {
     tlogf("content mismatch: %s", buf);

@@ -85,7 +85,13 @@ int main(void)
     return 1;
   }
   const char *data = "abc";
-  write(fd, data, 3);
+  if (write(fd, data, 3) != 3)
+  {
+    tlogf("write trunc failed:%s", strerror(errno));
+    close(fd);
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
   close(fd);
   fd = open(p, O_WRONLY | O_TRUNC, 0644);
   if (fd < 0)
