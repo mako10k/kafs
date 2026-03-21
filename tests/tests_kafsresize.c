@@ -620,6 +620,95 @@ int main(void)
     return 1;
   }
 
+  const char *img_v5 = "resize-grow-v5.img";
+  char *mkfs_v5_argv[] = {(char *)mkfs_abs, (char *)img_v5, (char *)"-s", (char *)"32M",
+                          (char *)"--format-version", (char *)"5", NULL};
+  if (run_cmd_status(mkfs_v5_argv) != 0)
+  {
+    fprintf(stderr, "mkfs for v5 grow test failed\n");
+    return 1;
+  }
+
+  kafs_ssuperblock_t sb_v5 = {0};
+  if (read_superblock(img_v5, &sb_v5) != 0)
+  {
+    fprintf(stderr, "failed to read v5 grow test superblock\n");
+    return 1;
+  }
+  if (kafs_sb_format_version_get(&sb_v5) != KAFS_FORMAT_VERSION_V5)
+  {
+    fprintf(stderr, "unexpected v5 grow test image format\n");
+    return 1;
+  }
+
+  uint32_t v5_blksize = (uint32_t)(1u << kafs_sb_log_blksize_get(&sb_v5));
+  uint32_t v5_root_blkcnt = (uint32_t)kafs_sb_r_blkcnt_get(&sb_v5);
+  uint32_t v5_old_blkcnt = (uint32_t)kafs_sb_blkcnt_get(&sb_v5);
+  uint32_t v5_old_free = (uint32_t)kafs_sb_blkcnt_free_get(&sb_v5);
+  uint64_t v5_tailmeta_off = kafs_sb_tailmeta_offset_get(&sb_v5);
+  uint64_t v5_tailmeta_size = kafs_sb_tailmeta_size_get(&sb_v5);
+  uint64_t v5_feature_flags = kafs_sb_feature_flags_get(&sb_v5);
+
+  if (v5_old_blkcnt != v5_root_blkcnt)
+  {
+    fprintf(stderr,
+            "expected no-headroom v5 mkfs image (blkcnt=%" PRIu32 ", r_blkcnt=%" PRIu32 ")\n",
+            v5_old_blkcnt, v5_root_blkcnt);
+    return 1;
+  }
+  if ((v5_feature_flags & KAFS_FEATURE_TAIL_META_REGION) == 0 || v5_tailmeta_size == 0)
+  {
+    fprintf(stderr, "v5 grow test image missing tailmeta scaffold\n");
+    return 1;
+  }
+  if (v5_old_blkcnt < 200u)
+  {
+    fprintf(stderr, "v5 image too small for headroom patch\n");
+    return 1;
+  }
+
+  uint32_t v5_patched_blkcnt = v5_old_blkcnt - 100u;
+  sb_v5.s_blkcnt = kafs_blkcnt_htos((kafs_blkcnt_t)v5_patched_blkcnt);
+  sb_v5.s_blkcnt_free = kafs_blkcnt_htos((kafs_blkcnt_t)(v5_old_free + 100u));
+  if (write_superblock(img_v5, &sb_v5) != 0)
+  {
+    fprintf(stderr, "failed to patch v5 grow superblock\n");
+    return 1;
+  }
+
+  uint32_t v5_grow_to = v5_patched_blkcnt + 80u;
+  char target_v5_buf[32];
+  snprintf(target_v5_buf, sizeof(target_v5_buf), "%" PRIu64,
+           (uint64_t)v5_grow_to * (uint64_t)v5_blksize);
+  char *resize_v5_argv[] = {(char *)resize_abs, (char *)"--grow", (char *)"--size-bytes",
+                            target_v5_buf, (char *)img_v5, NULL};
+  if (run_cmd_status(resize_v5_argv) != 0)
+  {
+    fprintf(stderr, "resize failed on v5 headroom path\n");
+    return 1;
+  }
+
+  kafs_ssuperblock_t sb_v5_after = {0};
+  if (read_superblock(img_v5, &sb_v5_after) != 0)
+  {
+    fprintf(stderr, "failed to read updated v5 superblock\n");
+    return 1;
+  }
+  if (kafs_sb_blkcnt_get(&sb_v5_after) != v5_grow_to ||
+      kafs_sb_blkcnt_free_get(&sb_v5_after) != (v5_old_free + 180u))
+  {
+    fprintf(stderr, "unexpected v5 grow result\n");
+    return 1;
+  }
+  if (kafs_sb_format_version_get(&sb_v5_after) != KAFS_FORMAT_VERSION_V5 ||
+      kafs_sb_tailmeta_offset_get(&sb_v5_after) != v5_tailmeta_off ||
+      kafs_sb_tailmeta_size_get(&sb_v5_after) != v5_tailmeta_size ||
+      kafs_sb_feature_flags_get(&sb_v5_after) != v5_feature_flags)
+  {
+    fprintf(stderr, "v5 grow unexpectedly changed tailmeta metadata\n");
+    return 1;
+  }
+
   // target beyond root bitmap capacity must fail
   char target_over_buf[32];
   snprintf(target_over_buf, sizeof(target_over_buf), "%" PRIu64,
