@@ -425,7 +425,8 @@ kafs_tailmeta_inode_desc_from_inode_taildesc(kafs_tailmeta_inode_desc_t *desc,
   kafs_tailmeta_inode_desc_layout_kind_set(desc, kafs_ino_taildesc_v5_layout_kind_get(taildesc));
   kafs_tailmeta_inode_desc_flags_set(desc, kafs_ino_taildesc_v5_flags_get(taildesc));
   kafs_tailmeta_inode_desc_fragment_len_set(desc, kafs_ino_taildesc_v5_fragment_len_get(taildesc));
-  kafs_tailmeta_inode_desc_container_blo_set(desc, kafs_ino_taildesc_v5_container_blo_get(taildesc));
+  kafs_tailmeta_inode_desc_container_blo_set(desc,
+                                             kafs_ino_taildesc_v5_container_blo_get(taildesc));
   kafs_tailmeta_inode_desc_fragment_off_set(desc, kafs_ino_taildesc_v5_fragment_off_get(taildesc));
   kafs_tailmeta_inode_desc_generation_set(desc, kafs_ino_taildesc_v5_generation_get(taildesc));
 }
@@ -439,7 +440,8 @@ kafs_tailmeta_inode_desc_to_inode_taildesc(kafs_sinode_taildesc_v5_t *taildesc,
   kafs_ino_taildesc_v5_layout_kind_set(taildesc, kafs_tailmeta_inode_desc_layout_kind_get(desc));
   kafs_ino_taildesc_v5_flags_set(taildesc, kafs_tailmeta_inode_desc_flags_get(desc));
   kafs_ino_taildesc_v5_fragment_len_set(taildesc, kafs_tailmeta_inode_desc_fragment_len_get(desc));
-  kafs_ino_taildesc_v5_container_blo_set(taildesc, kafs_tailmeta_inode_desc_container_blo_get(desc));
+  kafs_ino_taildesc_v5_container_blo_set(taildesc,
+                                         kafs_tailmeta_inode_desc_container_blo_get(desc));
   kafs_ino_taildesc_v5_fragment_off_set(taildesc, kafs_tailmeta_inode_desc_fragment_off_get(desc));
   kafs_ino_taildesc_v5_generation_set(taildesc, kafs_tailmeta_inode_desc_generation_get(desc));
 }
