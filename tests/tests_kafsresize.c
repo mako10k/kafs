@@ -688,6 +688,60 @@ int main(void)
     return 1;
   }
 
+  const char *dst_v5_img = "migrate-dst-v5.img";
+  int dst_v5_fd = open(dst_v5_img, O_RDWR | O_CREAT | O_TRUNC, 0600);
+  if (dst_v5_fd < 0)
+  {
+    fprintf(stderr, "failed to create v5 migrate dst image\n");
+    return 1;
+  }
+  if (ftruncate(dst_v5_fd, 64 * 1024 * 1024) != 0)
+  {
+    fprintf(stderr, "failed to size v5 migrate dst image\n");
+    close(dst_v5_fd);
+    return 1;
+  }
+  close(dst_v5_fd);
+
+  char migrate_v5_stdout[4096];
+  char *migrate_create_v5_argv[] = {(char *)resize_abs,
+                                    (char *)"--migrate-create",
+                                    (char *)"--dst-image",
+                                    (char *)dst_v5_img,
+                                    (char *)"--force",
+                                    (char *)"--inodes",
+                                    (char *)"4096",
+                                    (char *)"--format-version",
+                                    (char *)"5",
+                                    (char *)"--yes",
+                                    NULL};
+  if (run_cmd_capture_stdout(migrate_create_v5_argv, migrate_v5_stdout,
+                             sizeof(migrate_v5_stdout)) != 0)
+  {
+    fprintf(stderr, "migrate-create v5 failed\n");
+    return 1;
+  }
+
+  kafs_ssuperblock_t migrate_v5_sb = {0};
+  if (read_superblock(dst_v5_img, &migrate_v5_sb) != 0)
+  {
+    fprintf(stderr, "failed to read migrate-create v5 superblock\n");
+    return 1;
+  }
+  if (kafs_sb_magic_get(&migrate_v5_sb) != KAFS_MAGIC ||
+      kafs_sb_format_version_get(&migrate_v5_sb) != KAFS_FORMAT_VERSION_V5 ||
+      (kafs_sb_feature_flags_get(&migrate_v5_sb) & KAFS_FEATURE_TAIL_META_REGION) == 0 ||
+      kafs_sb_tailmeta_size_get(&migrate_v5_sb) == 0)
+  {
+    fprintf(stderr, "unexpected migrate-create v5 image format\n");
+    return 1;
+  }
+  if (!strstr(migrate_v5_stdout, "format_version: 5"))
+  {
+    fprintf(stderr, "migrate-create v5 output missing format version summary\n");
+    return 1;
+  }
+
   const char *info_img = "info-tombstone.img";
   char *info_mkfs_argv[] = {(char *)mkfs_abs, (char *)info_img, (char *)"-s", (char *)"32M", NULL};
   if (run_cmd_status(info_mkfs_argv) != 0)
