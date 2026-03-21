@@ -282,6 +282,55 @@ Cons:
 
 初回導入では inode 内に固定長 descriptor を置く方が単純である。
 
+### Descriptor Placement Comparison
+
+inode 内固定長 descriptor 案と外部 table 案の比較を以下にまとめる。
+
+| 観点 | inode 内固定長 descriptor | 外部 tail descriptor table |
+|------|---------------------------|-----------------------------|
+| read path | inode から 1 hop で解決できる | inode -> table -> container の 2 hop になる |
+| write path | inode 更新だけで descriptor を切替しやすい | table slot 管理が追加で必要 |
+| inode size pressure | inode layout を拡張する必要がある | inode layout 追加は最小化できる |
+| migration cost | inode 変換が必要 | inode + table 新設の両方が必要 |
+| fsck complexity | inode <-> container の 2 点整合 | inode <-> table <-> container の 3 点整合 |
+| cache locality | metadata locality が良い | descriptor table 読みが別 I/O になりやすい |
+| future extensibility | field 追加余地が小さい | table schema 拡張で吸収しやすい |
+| small-file fast path | 有利 | 不利 |
+| large-scale feature growth | 不利 | 有利 |
+| 初回導入難度 | 低い | 高い |
+
+### Recommended Choice For First Implementation
+
+初回導入では inode 内固定長 descriptor を優先する。
+
+理由:
+
+- read path が最短で済む
+- small-file 最適化の狙いと整合する
+- fsck の整合点を 2 系統に抑えられる
+- migration / journal の変更面積が比較的小さい
+
+### Conditions That Would Force Externalization
+
+次のどれかが成立するなら、外部 table 案を再検討する価値がある。
+
+- inode 拡張で既存 on-disk alignment を大きく壊す
+- tail descriptor に可変長 metadata が必要になる
+- multiple tail fragments per inode を扱いたくなる
+- tiered packing policy を 1 inode あたり複数保持したくなる
+- future compaction / online repack で descriptor 更新回数が急増する
+
+### Selection Criteria
+
+実装前に最終決定する基準を明示する。
+
+1. small-file read latency を最優先するなら inode 内固定長
+2. 将来の fragment policy 拡張を最優先するなら外部 table
+3. fsck / migration / journal の初期実装量を抑えたいなら inode 内固定長
+4. 同時に複数 fragment を持つ inode まで視野に入れるなら外部 table
+
+現時点の Issue #51 では 1 と 3 が優先なので、第一候補は inode 内固定長 descriptor でよい。
+
 ### Tail Container Header Candidate Fields
 
 container block 先頭 header の候補:
