@@ -2,6 +2,7 @@
 #include "kafs_block.h"
 #include "kafs_dirent.h"
 #include "kafs_inode.h"
+#include "kafs_tailmeta.h"
 #include "test_utils.h"
 
 #include <errno.h>
@@ -221,6 +222,20 @@ static int write_superblock(const char *img, const kafs_ssuperblock_t *sb)
   return 0;
 }
 
+static int read_tailmeta_region_header(const char *img, uint64_t off,
+                                       kafs_tailmeta_region_hdr_t *hdr)
+{
+  int fd = open(img, O_RDONLY);
+  if (fd < 0)
+    return -errno;
+  ssize_t n = pread(fd, hdr, sizeof(*hdr), (off_t)off);
+  int saved = errno;
+  close(fd);
+  if (n != (ssize_t)sizeof(*hdr))
+    return (n < 0) ? -saved : -EIO;
+  return 0;
+}
+
 static int write_inode_at(const char *img, kafs_inocnt_t ino, const kafs_sinode_t *inode)
 {
   kafs_ssuperblock_t sb = {0};
@@ -431,6 +446,7 @@ int main(void)
   char info_abs[PATH_MAX];
   char kafsctl_abs[PATH_MAX];
   char kafs_abs[PATH_MAX];
+  const char *fsck_abs = kafs_test_fsck_bin();
   const char *mkfs_cands[] = {
       "../src/mkfs.kafs",
       "./src/mkfs.kafs",
@@ -468,6 +484,11 @@ int main(void)
       resolve_tool_path("KAFS_TEST_KAFS", kafs_cands, kafs_abs, sizeof(kafs_abs)) != 0)
   {
     fprintf(stderr, "failed to resolve test tool paths\n");
+    return 1;
+  }
+  if (access(fsck_abs, X_OK) != 0)
+  {
+    fprintf(stderr, "failed to resolve fsck.kafs path\n");
     return 1;
   }
 
@@ -706,6 +727,80 @@ int main(void)
   {
     fprintf(stderr, "unexpected default inode count for 5M image: got=%lu want=320\n",
             (unsigned long)kafs_sb_inocnt_get(&small_sb));
+    return 1;
+  }
+
+  const char *tailmeta_img = "tailmeta-v5.img";
+  char *tailmeta_mkfs_argv[] = {(char *)mkfs_abs, (char *)tailmeta_img, (char *)"-s",
+                                (char *)"32M",    (char *)"--format-version",
+                                (char *)"5",      NULL};
+  if (run_cmd_status(tailmeta_mkfs_argv) != 0)
+  {
+    fprintf(stderr, "mkfs for v5 tailmeta scaffold test failed\n");
+    return 1;
+  }
+
+  kafs_ssuperblock_t tailmeta_sb = {0};
+  if (read_superblock(tailmeta_img, &tailmeta_sb) != 0)
+  {
+    fprintf(stderr, "failed to read v5 tailmeta superblock\n");
+    return 1;
+  }
+  if (kafs_sb_format_version_get(&tailmeta_sb) != KAFS_FORMAT_VERSION_V5)
+  {
+    fprintf(stderr, "unexpected tailmeta image format version\n");
+    return 1;
+  }
+  if ((kafs_sb_feature_flags_get(&tailmeta_sb) & KAFS_FEATURE_TAIL_META_REGION) == 0)
+  {
+    fprintf(stderr, "tailmeta feature flag not set on v5 image\n");
+    return 1;
+  }
+  if (kafs_sb_tailmeta_offset_get(&tailmeta_sb) == 0 || kafs_sb_tailmeta_size_get(&tailmeta_sb) == 0)
+  {
+    fprintf(stderr, "tailmeta region not initialized on v5 image\n");
+    return 1;
+  }
+  {
+    uint64_t blksize_v5 = 1u << kafs_sb_log_blksize_get(&tailmeta_sb);
+    uint64_t data_off = (uint64_t)kafs_sb_first_data_block_get(&tailmeta_sb)
+                        << kafs_sb_log_blksize_get(&tailmeta_sb);
+    uint64_t region_off = kafs_sb_tailmeta_offset_get(&tailmeta_sb);
+    uint64_t region_size = kafs_sb_tailmeta_size_get(&tailmeta_sb);
+    kafs_tailmeta_region_hdr_t region_hdr;
+
+    if ((region_off & (blksize_v5 - 1u)) != 0 || (region_size & (blksize_v5 - 1u)) != 0)
+    {
+      fprintf(stderr, "tailmeta region not block-aligned\n");
+      return 1;
+    }
+    if (region_off + region_size > data_off)
+    {
+      fprintf(stderr, "tailmeta region overlaps data area\n");
+      return 1;
+    }
+    if (read_tailmeta_region_header(tailmeta_img, region_off, &region_hdr) != 0)
+    {
+      fprintf(stderr, "failed to read tailmeta region header\n");
+      return 1;
+    }
+    if (kafs_tailmeta_region_hdr_validate(&region_hdr, region_size) != 0)
+    {
+      fprintf(stderr, "tailmeta region header is invalid\n");
+      return 1;
+    }
+    if (kafs_tailmeta_region_hdr_container_count_get(&region_hdr) != 0 ||
+        kafs_tailmeta_region_hdr_container_table_bytes_get(&region_hdr) != 0)
+    {
+      fprintf(stderr, "tailmeta region should be initialized empty\n");
+      return 1;
+    }
+  }
+
+  char *tailmeta_fsck_argv[] = {(char *)fsck_abs, (char *)tailmeta_img, NULL};
+  if (run_cmd_status(tailmeta_fsck_argv) != 0)
+  {
+    fprintf(stderr, "fsck failed on empty v5 tailmeta image\n");
     return 1;
   }
 
