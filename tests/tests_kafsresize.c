@@ -667,6 +667,40 @@ int main(void)
     return 1;
   }
 
+  kafs_ssuperblock_t info_sb = {0};
+  if (read_superblock(info_img, &info_sb) != 0)
+  {
+    fprintf(stderr, "failed to read default-inode superblock\n");
+    return 1;
+  }
+  if (kafs_sb_inocnt_get(&info_sb) != 2048)
+  {
+      fprintf(stderr, "unexpected default inode count for 32M image: got=%lu want=2048\n",
+        (unsigned long)kafs_sb_inocnt_get(&info_sb));
+    return 1;
+  }
+
+  const char *small_img = "default-inodes-small.img";
+  char *small_mkfs_argv[] = {(char *)mkfs_abs, (char *)small_img, (char *)"-s", (char *)"5M", NULL};
+  if (run_cmd_status(small_mkfs_argv) != 0)
+  {
+    fprintf(stderr, "mkfs for small-image default inode count test failed\n");
+    return 1;
+  }
+
+  kafs_ssuperblock_t small_sb = {0};
+  if (read_superblock(small_img, &small_sb) != 0)
+  {
+    fprintf(stderr, "failed to read small-image default inode superblock\n");
+    return 1;
+  }
+  if (kafs_sb_inocnt_get(&small_sb) != 320)
+  {
+    fprintf(stderr, "unexpected default inode count for 5M image: got=%lu want=320\n",
+            (unsigned long)kafs_sb_inocnt_get(&small_sb));
+    return 1;
+  }
+
   kafs_sinode_t tombstone_1;
   memset(&tombstone_1, 0, sizeof(tombstone_1));
   kafs_ino_mode_set(&tombstone_1, S_IFREG | 0644);
