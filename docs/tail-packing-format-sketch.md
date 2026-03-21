@@ -543,6 +543,8 @@ first-cut recommendation としては、A を採るなら 130 bytes より 128 b
 
 実装 scaffold でも、この 14-byte 形は inode 内 tail descriptor と tailmeta parser/fsck 用 inode descriptor で同じ field 配置を共有する前提にしておくのがよい。
 
+ここで依存させたいのは raw bytes の完全一致そのものではなく、各 field を helper 経由で読み書きし、相互変換後も同じ descriptor semantics を保てることである。
+
 少なくとも first-cut では、両者を別 meaning に分岐させず、helper 経由で相互変換できる同形 descriptor として扱う方が drift を防ぎやすい。
 
 この方針では、初回導入では予約領域を無理に inode 内へ残さず、将来拡張が必要になった時点で外部 descriptor table 案を再検討する方が筋がよい。
