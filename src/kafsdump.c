@@ -2,6 +2,7 @@
 #include "kafs_hash.h"
 #include "kafs_inode.h"
 #include "kafs_journal.h"
+#include "kafs_tailmeta.h"
 #include "kafs_cli_opts.h"
 #include "kafs_superblock.h"
 #include "kafs_tool_util.h"
@@ -42,6 +43,16 @@ struct journal_summary
   int available;
   int crc_ok;
   kj_header_t header;
+};
+
+struct tailmeta_summary
+{
+  int available;
+  uint64_t valid_containers;
+  uint64_t invalid_containers;
+  uint64_t live_slots;
+  uint64_t invalid_slots;
+  kafs_tailmeta_region_hdr_t header;
 };
 
 struct sb_geometry
@@ -216,9 +227,110 @@ static int collect_journal_summary(int fd, const kafs_ssuperblock_t *sb, uint64_
   return 0;
 }
 
+static int collect_tailmeta_summary(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
+                                    struct tailmeta_summary *out)
+{
+  memset(out, 0, sizeof(*out));
+
+  if (!kafs_tailmeta_region_present(sb))
+    return 0;
+
+  uint64_t region_off = kafs_sb_tailmeta_offset_get(sb);
+  uint64_t region_size = kafs_sb_tailmeta_size_get(sb);
+  if (region_size < sizeof(out->header))
+    return -ERANGE;
+  if (check_bounds(region_off, sizeof(out->header), file_size) != 0)
+    return -ERANGE;
+
+  int rc = kafs_pread_all(fd, &out->header, sizeof(out->header), (off_t)region_off);
+  if (rc != 0)
+    return rc;
+
+  out->available = 1;
+  rc = kafs_tailmeta_region_hdr_validate(&out->header, region_size);
+  if (rc != 0)
+    return rc;
+
+  uint32_t container_count = kafs_tailmeta_region_hdr_container_count_get(&out->header);
+  if (container_count == 0)
+    return 0;
+
+  uint32_t table_off = kafs_tailmeta_region_hdr_container_table_off_get(&out->header);
+  uint32_t table_bytes = kafs_tailmeta_region_hdr_container_table_bytes_get(&out->header);
+  kafs_tailmeta_container_hdr_t *containers =
+      (kafs_tailmeta_container_hdr_t *)malloc((size_t)table_bytes);
+  if (!containers)
+    return -ENOMEM;
+
+  rc = kafs_pread_all(fd, containers, (size_t)table_bytes, (off_t)(region_off + table_off));
+  if (rc != 0)
+  {
+    free(containers);
+    return rc;
+  }
+
+  for (uint32_t index = 0; index < container_count; ++index)
+  {
+    const kafs_tailmeta_container_hdr_t *container = &containers[index];
+    rc = kafs_tailmeta_container_hdr_validate(
+        container, region_size, kafs_tailmeta_region_hdr_slot_desc_bytes_get(&out->header));
+    if (rc != 0)
+    {
+      out->invalid_containers++;
+      continue;
+    }
+
+    out->valid_containers++;
+    uint16_t slot_count = kafs_tailmeta_container_hdr_slot_count_get(container);
+    uint32_t slot_table_bytes = kafs_tailmeta_container_hdr_slot_table_bytes_get(container);
+    uint32_t slot_table_off = kafs_tailmeta_container_hdr_slot_table_off_get(container);
+    if (slot_count == 0)
+      continue;
+
+    kafs_tailmeta_slot_desc_t *slots =
+        (kafs_tailmeta_slot_desc_t *)malloc((size_t)slot_table_bytes);
+    if (!slots)
+    {
+      free(containers);
+      return -ENOMEM;
+    }
+
+    rc = kafs_pread_all(fd, slots, (size_t)slot_table_bytes, (off_t)(region_off + slot_table_off));
+    if (rc != 0)
+    {
+      free(slots);
+      free(containers);
+      return rc;
+    }
+
+    uint64_t live_slots = 0;
+    for (uint16_t slot_index = 0; slot_index < slot_count; ++slot_index)
+    {
+      rc = kafs_tailmeta_slot_validate(&slots[slot_index],
+                                       kafs_tailmeta_container_hdr_class_bytes_get(container));
+      if (rc != 0)
+      {
+        out->invalid_slots++;
+        continue;
+      }
+      if (kafs_tailmeta_slot_owner_ino_get(&slots[slot_index]) != KAFS_INO_NONE)
+        live_slots++;
+    }
+
+    out->live_slots += live_slots;
+    if (live_slots != kafs_tailmeta_container_hdr_live_count_get(container))
+      out->invalid_containers++;
+    free(slots);
+  }
+
+  free(containers);
+  return (out->invalid_containers == 0 && out->invalid_slots == 0) ? 0 : -EPROTO;
+}
+
 static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary *ino,
                        const struct hrl_summary *hrl, const struct journal_summary *jr,
-                       int rc_inode, int rc_hrl, int rc_journal)
+                       const struct tailmeta_summary *tm, int rc_inode, int rc_hrl, int rc_journal,
+                       int rc_tailmeta)
 {
   struct sb_geometry g = superblock_geometry(sb);
 
@@ -233,10 +345,26 @@ static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary 
   printf("  blkcnt_free: %" PRIu64 "\n", (uint64_t)kafs_sb_blkcnt_free_get(sb));
   printf("  first_data_block: %" PRIu64 "\n", g.first_data);
   printf("  data_block_count: %" PRIu64 "\n", g.data_blocks);
-    printf("  tailmeta_enabled: %s\n",
-      (kafs_sb_feature_flags_get(sb) & KAFS_FEATURE_TAIL_META_REGION) ? "true" : "false");
-    printf("  tailmeta_offset: %" PRIu64 "\n", kafs_sb_tailmeta_offset_get(sb));
-    printf("  tailmeta_size: %" PRIu64 "\n", kafs_sb_tailmeta_size_get(sb));
+  printf("  tailmeta_enabled: %s\n",
+         (kafs_sb_feature_flags_get(sb) & KAFS_FEATURE_TAIL_META_REGION) ? "true" : "false");
+  printf("  tailmeta_offset: %" PRIu64 "\n", kafs_sb_tailmeta_offset_get(sb));
+  printf("  tailmeta_size: %" PRIu64 "\n", kafs_sb_tailmeta_size_get(sb));
+
+  printf("tail_metadata:\n");
+  printf("  status: %s\n", rc_to_text(rc_tailmeta));
+  printf("  available: %s\n", tm->available ? "true" : "false");
+  if (tm->available)
+  {
+    printf("  magic: 0x%08" PRIx32 "\n", kafs_u32_stoh(tm->header.tr_magic));
+    printf("  version: %" PRIu16 "\n", kafs_tailmeta_region_hdr_version_get(&tm->header));
+    printf("  container_count: %" PRIu32 "\n",
+           kafs_tailmeta_region_hdr_container_count_get(&tm->header));
+    printf("  class_count: %" PRIu16 "\n", kafs_tailmeta_region_hdr_class_count_get(&tm->header));
+    printf("  valid_containers: %" PRIu64 "\n", tm->valid_containers);
+    printf("  invalid_containers: %" PRIu64 "\n", tm->invalid_containers);
+    printf("  live_slots: %" PRIu64 "\n", tm->live_slots);
+    printf("  invalid_slots: %" PRIu64 "\n", tm->invalid_slots);
+  }
 
   printf("inode_summary:\n");
   printf("  status: %s\n", rc_to_text(rc_inode));
@@ -269,7 +397,8 @@ static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary 
 
 static void print_json(const kafs_ssuperblock_t *sb, const struct inode_summary *ino,
                        const struct hrl_summary *hrl, const struct journal_summary *jr,
-                       int rc_inode, int rc_hrl, int rc_journal)
+                       const struct tailmeta_summary *tm, int rc_inode, int rc_hrl, int rc_journal,
+                       int rc_tailmeta)
 {
   const struct sb_geometry g = superblock_geometry(sb);
 
@@ -284,12 +413,30 @@ static void print_json(const kafs_ssuperblock_t *sb, const struct inode_summary 
   printf("    \"blkcnt_root\": %" PRIu64 ",\n", g.r_blkcnt);
   printf("    \"blkcnt_free\": %" PRIu64 ",\n", (uint64_t)kafs_sb_blkcnt_free_get(sb));
   printf("    \"first_data_block\": %" PRIu64 ",\n", g.first_data);
-    printf("    \"data_block_count\": %" PRIu64 ",\n", g.data_blocks);
-    printf("    \"tailmeta_enabled\": %s,\n",
-      (kafs_sb_feature_flags_get(sb) & KAFS_FEATURE_TAIL_META_REGION) ? "true" : "false");
-    printf("    \"tailmeta_offset\": %" PRIu64 ",\n", kafs_sb_tailmeta_offset_get(sb));
-    printf("    \"tailmeta_size\": %" PRIu64 "\n", kafs_sb_tailmeta_size_get(sb));
+  printf("    \"data_block_count\": %" PRIu64 ",\n", g.data_blocks);
+  printf("    \"tailmeta_enabled\": %s,\n",
+         (kafs_sb_feature_flags_get(sb) & KAFS_FEATURE_TAIL_META_REGION) ? "true" : "false");
+  printf("    \"tailmeta_offset\": %" PRIu64 ",\n", kafs_sb_tailmeta_offset_get(sb));
+  printf("    \"tailmeta_size\": %" PRIu64 "\n", kafs_sb_tailmeta_size_get(sb));
   printf("  },\n");
+
+  printf("  \"tail_metadata\": {\n");
+  printf("    \"status\": \"%s\",\n", rc_to_text(rc_tailmeta));
+  printf("    \"available\": %s", tm->available ? "true" : "false");
+  if (tm->available)
+  {
+    printf(",\n    \"magic\": %" PRIu32, kafs_u32_stoh(tm->header.tr_magic));
+    printf(",\n    \"version\": %" PRIu16, kafs_tailmeta_region_hdr_version_get(&tm->header));
+    printf(",\n    \"container_count\": %" PRIu32,
+           kafs_tailmeta_region_hdr_container_count_get(&tm->header));
+    printf(",\n    \"class_count\": %" PRIu16,
+           kafs_tailmeta_region_hdr_class_count_get(&tm->header));
+    printf(",\n    \"valid_containers\": %" PRIu64, tm->valid_containers);
+    printf(",\n    \"invalid_containers\": %" PRIu64, tm->invalid_containers);
+    printf(",\n    \"live_slots\": %" PRIu64, tm->live_slots);
+    printf(",\n    \"invalid_slots\": %" PRIu64, tm->invalid_slots);
+  }
+  printf("\n  },\n");
 
   printf("  \"inode_summary\": {\n");
   printf("    \"status\": \"%s\",\n", rc_to_text(rc_inode));
@@ -408,9 +555,11 @@ int main(int argc, char **argv)
   struct inode_summary ino;
   struct hrl_summary hrl;
   struct journal_summary jr;
+  struct tailmeta_summary tm;
   int rc_inode = collect_inode_summary(fd, &sb, file_size, &ino);
   int rc_hrl = collect_hrl_summary(fd, &sb, file_size, &hrl);
   int rc_journal = collect_journal_summary(fd, &sb, file_size, &jr);
+  int rc_tailmeta = collect_tailmeta_summary(fd, &sb, file_size, &tm);
 
   if (rc_inode != 0)
     fprintf(stderr, "warning: inode summary unavailable: %s\n", rc_to_text(rc_inode));
@@ -418,12 +567,14 @@ int main(int argc, char **argv)
     fprintf(stderr, "warning: hrl summary unavailable: %s\n", rc_to_text(rc_hrl));
   if (rc_journal != 0)
     fprintf(stderr, "warning: journal header unavailable: %s\n", rc_to_text(rc_journal));
+  if (rc_tailmeta != 0)
+    fprintf(stderr, "warning: tail metadata unavailable: %s\n", rc_to_text(rc_tailmeta));
 
   if (json)
-    print_json(&sb, &ino, &hrl, &jr, rc_inode, rc_hrl, rc_journal);
+    print_json(&sb, &ino, &hrl, &jr, &tm, rc_inode, rc_hrl, rc_journal, rc_tailmeta);
   else
-    print_text(&sb, &ino, &hrl, &jr, rc_inode, rc_hrl, rc_journal);
+    print_text(&sb, &ino, &hrl, &jr, &tm, rc_inode, rc_hrl, rc_journal, rc_tailmeta);
 
   close(fd);
-  return (rc_inode == 0 && rc_hrl == 0 && rc_journal == 0) ? 0 : 1;
+  return (rc_inode == 0 && rc_hrl == 0 && rc_journal == 0 && rc_tailmeta == 0) ? 0 : 1;
 }

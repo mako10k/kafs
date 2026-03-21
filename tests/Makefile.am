@@ -25,13 +25,17 @@ AM_TESTS_ENVIRONMENT = \
 # --- Tests ---
 # NOTE: stress_fs mounts in multithread mode and exercises heavier workloads.
 # To minimize any residual side effects on subsequent tests, run it last.
-check_PROGRAMS = hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured min_git_hooks fs_semantics \
+check_PROGRAMS = tailmeta_parser hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured min_git_hooks fs_semantics \
 	clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility \
 	prune_indirect_single prune_indirect_double prune_indirect_triple truncate_prune reflink_clone \
 	kafsctl_links bg_dedup_skip_dirs \
 	stress_fs hotplug_rpc e2e_hotplug kafsresize journal_boundary fallocate_lseek_block
 
 TESTS = $(check_PROGRAMS)
+
+tailmeta_parser_SOURCES = tests_tailmeta_parser.c
+tailmeta_parser_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+tailmeta_parser_LDADD = $(KAFS_LIBS)
 
 hrl_smoketest_SOURCES = tests_hrl_smoketest.c test_utils.c \
 	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
