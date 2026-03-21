@@ -62,6 +62,27 @@ int main(void)
   assert(kafs_tailmeta_inode_desc_validate(&desc, 128) == 0);
   assert(kafs_tailmeta_inode_desc_uses_tail_storage(&desc));
 
+        {
+                kafs_sinode_taildesc_v5_t inode_taildesc;
+                kafs_sinode_taildesc_v5_t inode_taildesc_roundtrip;
+                kafs_tailmeta_inode_desc_t desc_from_inode;
+
+                memset(&inode_taildesc, 0, sizeof(inode_taildesc));
+                inode_taildesc.it_layout_kind = KAFS_TAIL_LAYOUT_TAIL_ONLY;
+                inode_taildesc.it_flags = KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE;
+                inode_taildesc.it_fragment_len = htole16(64);
+                inode_taildesc.it_container_blo = kafs_blkcnt_htos(9);
+                inode_taildesc.it_fragment_off = htole16(32);
+                inode_taildesc.it_generation = kafs_u32_htos(11);
+
+                kafs_tailmeta_inode_desc_from_inode_taildesc(&desc_from_inode, &inode_taildesc);
+                assert(memcmp(&desc_from_inode, &desc, sizeof(desc)) == 0);
+
+                memset(&inode_taildesc_roundtrip, 0, sizeof(inode_taildesc_roundtrip));
+                kafs_tailmeta_inode_desc_to_inode_taildesc(&inode_taildesc_roundtrip, &desc_from_inode);
+                assert(memcmp(&inode_taildesc_roundtrip, &inode_taildesc, sizeof(inode_taildesc)) == 0);
+        }
+
   memset(&slot, 0, sizeof(slot));
   kafs_tailmeta_slot_owner_ino_set(&slot, 7);
   slot.ts_generation = kafs_u32_htos(11);
