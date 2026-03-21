@@ -15,6 +15,18 @@
 #define KAFS_INODE_V4_BYTES 114u
 #define KAFS_INODE_V5_BYTES (KAFS_INODE_V4_BYTES + KAFS_INODE_TAILDESC_V5_BYTES)
 
+#define KAFS_TAIL_LAYOUT_INLINE 0u
+#define KAFS_TAIL_LAYOUT_FULL_BLOCK 1u
+#define KAFS_TAIL_LAYOUT_TAIL_ONLY 2u
+#define KAFS_TAIL_LAYOUT_MIXED_FULL_TAIL 3u
+
+#define KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE (1u << 0)
+#define KAFS_TAILDESC_FLAG_FINAL_TAIL (1u << 1)
+#define KAFS_TAILDESC_FLAG_NEEDS_FSCK_REVIEW (1u << 2)
+#define KAFS_TAILDESC_KNOWN_FLAGS                                                                  \
+  (KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE | KAFS_TAILDESC_FLAG_FINAL_TAIL |                          \
+   KAFS_TAILDESC_FLAG_NEEDS_FSCK_REVIEW)
+
 /// @brief 将来の v5 inode 内 tail descriptor
 struct kafs_sinode_taildesc_v5
 {

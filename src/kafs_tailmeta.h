@@ -12,18 +12,6 @@
 #define KAFS_TAILMETA_CONTAINER_MAGIC 0x4B544D43u /* 'KTMC' */
 #define KAFS_TAILMETA_CONTAINER_VERSION 1u
 
-#define KAFS_TAIL_LAYOUT_INLINE 0u
-#define KAFS_TAIL_LAYOUT_FULL_BLOCK 1u
-#define KAFS_TAIL_LAYOUT_TAIL_ONLY 2u
-#define KAFS_TAIL_LAYOUT_MIXED_FULL_TAIL 3u
-
-#define KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE (1u << 0)
-#define KAFS_TAILDESC_FLAG_FINAL_TAIL (1u << 1)
-#define KAFS_TAILDESC_FLAG_NEEDS_FSCK_REVIEW (1u << 2)
-#define KAFS_TAILDESC_KNOWN_FLAGS                                                                  \
-  (KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE | KAFS_TAILDESC_FLAG_FINAL_TAIL |                          \
-   KAFS_TAILDESC_FLAG_NEEDS_FSCK_REVIEW)
-
 #define KAFS_TAILCHECK_INVALID_DESC (1u << 0)
 #define KAFS_TAILCHECK_INVALID_SLOT (1u << 1)
 #define KAFS_TAILCHECK_INVALID_INODE_SIZE (1u << 2)
@@ -94,8 +82,28 @@ _Static_assert(sizeof(kafs_tailmeta_container_hdr_t) == 36,
                "kafs_tailmeta_container_hdr_t must be 36 bytes");
 _Static_assert(sizeof(kafs_tailmeta_slot_desc_t) == 12,
                "kafs_tailmeta_slot_desc_t must be 12 bytes");
-_Static_assert(sizeof(kafs_tailmeta_inode_desc_t) == 14,
-               "kafs_tailmeta_inode_desc_t must be 14 bytes");
+_Static_assert(sizeof(kafs_tailmeta_inode_desc_t) == KAFS_INODE_TAILDESC_V5_BYTES,
+               "kafs_tailmeta_inode_desc_t must match inode tail descriptor bytes");
+_Static_assert(sizeof(kafs_tailmeta_inode_desc_t) == sizeof(kafs_sinode_taildesc_v5_t),
+               "kafs_tailmeta_inode_desc_t must match kafs_sinode_taildesc_v5_t size");
+_Static_assert(__builtin_offsetof(kafs_tailmeta_inode_desc_t, ti_layout_kind) ==
+                   __builtin_offsetof(kafs_sinode_taildesc_v5_t, it_layout_kind),
+               "tail descriptor layout_kind offset must match inode tail descriptor");
+_Static_assert(__builtin_offsetof(kafs_tailmeta_inode_desc_t, ti_flags) ==
+                   __builtin_offsetof(kafs_sinode_taildesc_v5_t, it_flags),
+               "tail descriptor flags offset must match inode tail descriptor");
+_Static_assert(__builtin_offsetof(kafs_tailmeta_inode_desc_t, ti_fragment_len) ==
+                   __builtin_offsetof(kafs_sinode_taildesc_v5_t, it_fragment_len),
+               "tail descriptor fragment_len offset must match inode tail descriptor");
+_Static_assert(__builtin_offsetof(kafs_tailmeta_inode_desc_t, ti_container_blo) ==
+                   __builtin_offsetof(kafs_sinode_taildesc_v5_t, it_container_blo),
+               "tail descriptor container_blo offset must match inode tail descriptor");
+_Static_assert(__builtin_offsetof(kafs_tailmeta_inode_desc_t, ti_fragment_off) ==
+                   __builtin_offsetof(kafs_sinode_taildesc_v5_t, it_fragment_off),
+               "tail descriptor fragment_off offset must match inode tail descriptor");
+_Static_assert(__builtin_offsetof(kafs_tailmeta_inode_desc_t, ti_generation) ==
+                   __builtin_offsetof(kafs_sinode_taildesc_v5_t, it_generation),
+               "tail descriptor generation offset must match inode tail descriptor");
 
 static inline uint16_t kafs_tailmeta_region_hdr_version_get(const kafs_tailmeta_region_hdr_t *hdr)
 {
