@@ -125,7 +125,7 @@ static void compute_layout(kafs_blkcnt_t blkcnt, kafs_blksize_t blksizemask, kaf
   mapsize = (mapsize + 7) & ~7;                     // 64-bit align
   mapsize = (mapsize + blksizemask) & ~blksizemask; // block align
   off_t inotbl_off = mapsize;
-  mapsize += (off_t)sizeof(kafs_sinode_t) * inocnt;
+  mapsize += (off_t)kafs_inode_table_bytes_for_format(KAFS_FORMAT_VERSION, inocnt);
   mapsize = (mapsize + blksizemask) & ~blksizemask;
 
   // allocator v2 reserved metadata area (L1/L2 summaries, future use)
@@ -426,7 +426,7 @@ int main(int argc, char **argv)
 
   // 境界チェックとゼロ初期化
   size_t blkmask_bytes = ((size_t)blkcnt + 7) >> 3; // ビットマップの総バイト数
-  size_t inotbl_bytes = (size_t)sizeof(kafs_sinode_t) * (size_t)inocnt;
+  size_t inotbl_bytes = (size_t)kafs_inode_table_bytes_for_format(KAFS_FORMAT_VERSION, inocnt);
   char *base = (char *)ctx.c_superblock;
   char *end = base + mapsize;
   char *bm_ptr = (char *)ctx.c_blkmasktbl;

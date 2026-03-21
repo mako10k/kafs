@@ -124,7 +124,8 @@ static int collect_inode_summary(int fd, const kafs_ssuperblock_t *sb, uint64_t 
   mapsize = align_up_u64(mapsize, blksize);
 
   const uint64_t inotbl_off = mapsize;
-  const uint64_t inotbl_bytes = (uint64_t)sizeof(kafs_sinode_t) * inocnt;
+  const uint64_t inotbl_bytes =
+      kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(sb), inocnt);
 
   if (check_bounds(inotbl_off, inotbl_bytes, file_size) != 0)
     return -ERANGE;

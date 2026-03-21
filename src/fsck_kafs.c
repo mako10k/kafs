@@ -40,8 +40,6 @@
 #define FSCK_EXIT_DIRENT_FORMAT_INCONSISTENT 11
 #define FSCK_EXIT_TAILMETA_INCONSISTENT 12
 
-#define FSCK_DIRECT_SIZE (sizeof(((struct kafs_sinode *)NULL)->i_blkreftbl))
-
 #define KAFS_PENDING_REF_FLAG 0x80000000u
 
 struct orphan_stats
@@ -314,7 +312,7 @@ static ssize_t fsck_inode_pread(kafs_context_t *ctx, const kafs_sinode_t *inoent
     size = filesize - offset;
   if (size == 0)
     return 0;
-  if (filesize <= FSCK_DIRECT_SIZE)
+  if (filesize <= KAFS_INODE_DIRECT_BYTES)
   {
     memcpy(buf, (const void *)inoent->i_blkreftbl + offset, (size_t)size);
     return (ssize_t)size;
@@ -1782,7 +1780,7 @@ int main(int argc, char **argv)
     mapsize = (mapsize + 7) & ~7;
     mapsize = (mapsize + blksizemask) & ~blksizemask;
     void *inotbl_off = (void *)mapsize;
-    mapsize += (off_t)sizeof(kafs_sinode_t) * inocnt;
+    mapsize += (off_t)kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(&sb), inocnt);
     mapsize = (mapsize + blksizemask) & ~blksizemask;
 
     off_t imgsize = (off_t)r_blkcnt << log_blksize;
