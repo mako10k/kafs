@@ -1,12 +1,33 @@
 #pragma once
 #include "kafs_config.h"
 #include "kafs.h"
+#include <assert.h>
 #include <errno.h>
 
 /// 存在しないことを表す inode 番号
 #define KAFS_INO_NONE 0
 /// ルートディレクトリの inode 番号
 #define KAFS_INO_ROOTDIR 1
+
+#define KAFS_INODE_BLOCKREF_SLOTS 15u
+#define KAFS_INODE_DIRECT_BYTES 60u
+#define KAFS_INODE_TAILDESC_V5_BYTES 16u
+#define KAFS_INODE_V4_BYTES 114u
+#define KAFS_INODE_V5_BYTES (KAFS_INODE_V4_BYTES + KAFS_INODE_TAILDESC_V5_BYTES)
+
+/// @brief 将来の v5 inode 内 tail descriptor 予約領域
+struct kafs_sinode_taildesc_v5
+{
+  uint8_t it_layout_kind;
+  uint8_t it_flags;
+  uint16_t it_fragment_len;
+  kafs_sblkcnt_t it_container_blo;
+  uint16_t it_fragment_off;
+  kafs_su32_t it_generation;
+  uint16_t it_reserved0;
+} __attribute__((packed));
+
+typedef struct kafs_sinode_taildesc_v5 kafs_sinode_taildesc_v5_t;
 
 /// @brief inode 情報
 struct kafs_sinode
@@ -34,10 +55,40 @@ struct kafs_sinode
   /// @brief デバイス番号
   kafs_sdev_t i_rdev;
   /// @brief ブロックデータ
-  kafs_sblkcnt_t i_blkreftbl[15];
+  kafs_sblkcnt_t i_blkreftbl[KAFS_INODE_BLOCKREF_SLOTS];
 } __attribute__((packed));
 
 typedef struct kafs_sinode kafs_sinode_t;
+
+/// @brief 将来の v5 inode 情報
+struct kafs_sinode_v5
+{
+  kafs_smode_t i_mode;
+  kafs_suid_t i_uid;
+  kafs_soff_t i_size;
+  kafs_stime_t i_atime;
+  kafs_stime_t i_ctime;
+  kafs_stime_t i_mtime;
+  kafs_stime_t i_dtime;
+  kafs_sgid_t i_gid;
+  kafs_slinkcnt_t i_linkcnt;
+  kafs_sblkcnt_t i_blocks;
+  kafs_sdev_t i_rdev;
+  kafs_sblkcnt_t i_blkreftbl[KAFS_INODE_BLOCKREF_SLOTS];
+  kafs_sinode_taildesc_v5_t i_taildesc;
+} __attribute__((packed));
+
+typedef struct kafs_sinode_v5 kafs_sinode_v5_t;
+
+_Static_assert(sizeof(kafs_sinode_taildesc_v5_t) == KAFS_INODE_TAILDESC_V5_BYTES,
+               "kafs_sinode_taildesc_v5_t must be 16 bytes");
+_Static_assert(sizeof(((struct kafs_sinode *)NULL)->i_blkreftbl) == KAFS_INODE_DIRECT_BYTES,
+               "kafs_sinode direct payload must remain 60 bytes");
+_Static_assert(sizeof(kafs_sinode_t) == KAFS_INODE_V4_BYTES,
+               "kafs_sinode must remain 114 bytes in v4");
+_Static_assert(sizeof(((struct kafs_sinode_v5 *)NULL)->i_blkreftbl) == KAFS_INODE_DIRECT_BYTES,
+               "kafs_sinode_v5 direct payload must preserve 60 bytes");
+_Static_assert(sizeof(kafs_sinode_v5_t) == KAFS_INODE_V5_BYTES, "kafs_sinode_v5 must be 130 bytes");
 
 static kafs_mode_t kafs_ino_mode_get(const kafs_sinode_t *inoent)
 {
