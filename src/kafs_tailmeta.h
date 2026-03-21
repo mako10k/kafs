@@ -607,29 +607,25 @@ static inline int kafs_tailmeta_inode_desc_validate(const kafs_tailmeta_inode_de
   generation = kafs_tailmeta_inode_desc_generation_get(desc);
   container_blo = kafs_tailmeta_inode_desc_container_blo_get(desc);
 
-  switch (kind)
+  if (!kafs_tail_layout_is_known(kind))
+    return -EPROTO;
+
+  if (!kafs_tail_layout_uses_tail_storage(kind))
   {
-  case KAFS_TAIL_LAYOUT_INLINE:
-  case KAFS_TAIL_LAYOUT_FULL_BLOCK:
     if (flags != 0u || len != 0u || off != 0u || generation != 0u)
       return -EPROTO;
     return (container_blo == (kafs_blkcnt_t)0) ? 0 : -EPROTO;
-
-  case KAFS_TAIL_LAYOUT_TAIL_ONLY:
-  case KAFS_TAIL_LAYOUT_MIXED_FULL_TAIL:
-    if ((flags & ~KAFS_TAILDESC_KNOWN_FLAGS) != 0u)
-      return -EPROTO;
-    if (class_bytes == 0u || len == 0u || len > class_bytes)
-      return -EPROTO;
-    if (container_blo == (kafs_blkcnt_t)0)
-      return -EPROTO;
-    if ((uint32_t)off + (uint32_t)len > (uint32_t)class_bytes)
-      return -EPROTO;
-    return 0;
-
-  default:
-    return -EPROTO;
   }
+
+  if ((flags & ~KAFS_TAILDESC_KNOWN_FLAGS) != 0u)
+    return -EPROTO;
+  if (class_bytes == 0u || len == 0u || len > class_bytes)
+    return -EPROTO;
+  if (container_blo == (kafs_blkcnt_t)0)
+    return -EPROTO;
+  if ((uint32_t)off + (uint32_t)len > (uint32_t)class_bytes)
+    return -EPROTO;
+  return 0;
 }
 
 static inline int kafs_tailmeta_inode_desc_matches_slot(const kafs_tailmeta_inode_desc_t *desc,

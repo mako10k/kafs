@@ -178,6 +178,11 @@ static inline void kafs_ino_taildesc_v5_init(kafs_sinode_taildesc_v5_t *taildesc
   kafs_ino_taildesc_v5_layout_kind_set(taildesc, KAFS_TAIL_LAYOUT_INLINE);
 }
 
+static inline int kafs_tail_layout_is_known(uint8_t kind)
+{
+  return kind <= KAFS_TAIL_LAYOUT_MIXED_FULL_TAIL;
+}
+
 static inline int kafs_tail_layout_uses_tail_storage(uint8_t kind)
 {
   return kind == KAFS_TAIL_LAYOUT_TAIL_ONLY || kind == KAFS_TAIL_LAYOUT_MIXED_FULL_TAIL;

@@ -50,8 +50,19 @@ static void assert_tail_layout_storage_matrix(uint8_t layout_kind, int uses_tail
         assert(kafs_tailmeta_inode_desc_uses_tail_storage(&desc) == uses_tail_storage);
 }
 
+static void assert_tail_layout_known_matrix(uint8_t layout_kind, int is_known)
+{
+        assert(kafs_tail_layout_is_known(layout_kind) == is_known);
+}
+
 int main(void)
 {
+        assert_tail_layout_known_matrix(KAFS_TAIL_LAYOUT_INLINE, 1);
+        assert_tail_layout_known_matrix(KAFS_TAIL_LAYOUT_FULL_BLOCK, 1);
+        assert_tail_layout_known_matrix(KAFS_TAIL_LAYOUT_TAIL_ONLY, 1);
+        assert_tail_layout_known_matrix(KAFS_TAIL_LAYOUT_MIXED_FULL_TAIL, 1);
+        assert_tail_layout_known_matrix(UINT8_MAX, 0);
+
         assert_tail_layout_storage_matrix(KAFS_TAIL_LAYOUT_INLINE, 0);
         assert_tail_layout_storage_matrix(KAFS_TAIL_LAYOUT_FULL_BLOCK, 0);
         assert_tail_layout_storage_matrix(KAFS_TAIL_LAYOUT_TAIL_ONLY, 1);
@@ -105,6 +116,9 @@ int main(void)
   kafs_tailmeta_inode_desc_init(&desc);
   assert(kafs_tailmeta_inode_desc_validate(&desc, 128) == 0);
   assert(!kafs_tailmeta_inode_desc_uses_tail_storage(&desc));
+        kafs_tailmeta_inode_desc_layout_kind_set(&desc, UINT8_MAX);
+        assert(kafs_tailmeta_inode_desc_validate(&desc, 128) != 0);
+        kafs_tailmeta_inode_desc_init(&desc);
 
   kafs_tailmeta_inode_desc_layout_kind_set(&desc, KAFS_TAIL_LAYOUT_TAIL_ONLY);
   kafs_tailmeta_inode_desc_flags_set(&desc, KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE);
