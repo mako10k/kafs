@@ -246,6 +246,59 @@ tail path:
 - stale owner detection は silent wait にしない
 - fragment repack を初回導入で避け、複数 inode 間移動を減らす
 
+### Candidate Lock Rank Placement
+
+現行 policy は次の rank 順である。
+
+1. `hrl_global` (10)
+2. `inode_alloc` (20)
+3. `inode` (30)
+4. `hrl_bucket` (40)
+5. `bitmap` (50)
+
+tail allocator lock を追加するなら、first-cut の候補は `45` とする。
+
+理由:
+
+- tail allocator は inode descriptor 決定後に取る想定なので `inode` より後段が自然
+- tail container slot 更新は最終的に bitmap と相互作用しうるため `bitmap` より先に置く方が安全
+- `hrl_bucket` と同列にしないことで、HRL path と tail path の混線時に order を明示しやすい
+
+したがって初回導入の推奨順序は次の通り。
+
+1. `hrl_global` (10)
+2. `inode_alloc` (20)
+3. `inode` (30)
+4. `hrl_bucket` (40)
+5. `tail_allocator` (45)
+6. `bitmap` (50)
+
+### Lock Acquisition Guidance For Tail Paths
+
+tail path では次を守る。
+
+- inode 状態の判定は `inode` lock 下で行う
+- tail slot の reserve / release / reverse-map 更新は `tail_allocator` 下で行う
+- block allocator へ降りる必要があるなら `bitmap` は最後にだけ取得する
+- `bitmap` 保持中に `inode` や `tail_allocator` を再取得しない
+
+### Paths To Explicitly Avoid
+
+次の経路は inversion 予備軍なので first-cut では禁止扱いにする。
+
+- `bitmap -> tail_allocator`
+- `bitmap -> inode`
+- `tail_allocator -> inode`
+- `tail_allocator -> hrl_global`
+
+### Validation Expectation
+
+tail packing を code 化する段階では、少なくとも次の確認が必要である。
+
+- lock wrapper に `tail_allocator` rank を追加する
+- contention path で rank violation が出ないことを確認する
+- mixed-full-plus-tail update path を並列実行して stale owner 検出が壊れないことを確認する
+
 ## Suggested On-Disk Sketch
 
 これは概念スケッチであり、field 確定案ではない。
