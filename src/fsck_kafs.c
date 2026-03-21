@@ -3,6 +3,7 @@
 #include "kafs_dirent.h"
 #include "kafs_hash.h"
 #include "kafs_locks.h"
+#include "kafs_tailmeta.h"
 #include "kafs_block.h"
 #include "kafs_cli_opts.h"
 /* jscpd:ignore-start */
@@ -37,6 +38,7 @@
 #define FSCK_EXIT_PUNCH_HOLE_PARTIAL 9
 #define FSCK_EXIT_INODE_BLOCKS_INCONSISTENT 10
 #define FSCK_EXIT_DIRENT_FORMAT_INCONSISTENT 11
+#define FSCK_EXIT_TAILMETA_INCONSISTENT 12
 
 #define FSCK_DIRECT_SIZE (sizeof(((struct kafs_sinode *)NULL)->i_blkreftbl))
 
@@ -1253,6 +1255,131 @@ static int check_region_bounds(const char *name, uint64_t off, uint64_t size, ui
   return 0;
 }
 
+static int check_tailmeta_region(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size)
+{
+  if (!kafs_tailmeta_region_present(sb))
+    return 0;
+
+  uint64_t region_off = kafs_sb_tailmeta_offset_get(sb);
+  uint64_t region_size = kafs_sb_tailmeta_size_get(sb);
+  if (region_size < sizeof(kafs_tailmeta_region_hdr_t))
+  {
+    fprintf(stderr, "tailmeta header too small: size=%" PRIu64 "\n", region_size);
+    return -1;
+  }
+  if (check_region_bounds("tailmeta", region_off, sizeof(kafs_tailmeta_region_hdr_t), file_size) !=
+      0)
+    return -1;
+
+  kafs_tailmeta_region_hdr_t region_hdr;
+  if (pread_all(fd, &region_hdr, sizeof(region_hdr), (off_t)region_off) != 0)
+  {
+    fprintf(stderr, "failed to read tailmeta header\n");
+    return -1;
+  }
+  int rc = kafs_tailmeta_region_hdr_validate(&region_hdr, region_size);
+  if (rc != 0)
+  {
+    fprintf(stderr, "tailmeta header invalid: magic=0x%08" PRIx32 " version=%u flags=%u rc=%d\n",
+            kafs_u32_stoh(region_hdr.tr_magic),
+            (unsigned)kafs_tailmeta_region_hdr_version_get(&region_hdr),
+            (unsigned)kafs_tailmeta_region_hdr_flags_get(&region_hdr), rc);
+    return -1;
+  }
+
+  uint32_t container_count = kafs_tailmeta_region_hdr_container_count_get(&region_hdr);
+  if (container_count == 0)
+    return 0;
+
+  uint32_t table_off = kafs_tailmeta_region_hdr_container_table_off_get(&region_hdr);
+  uint32_t table_bytes = kafs_tailmeta_region_hdr_container_table_bytes_get(&region_hdr);
+  kafs_tailmeta_container_hdr_t *containers =
+      (kafs_tailmeta_container_hdr_t *)malloc((size_t)table_bytes);
+  if (!containers)
+  {
+    fprintf(stderr, "tailmeta container table alloc failed\n");
+    return -1;
+  }
+  if (pread_all(fd, containers, (size_t)table_bytes, (off_t)(region_off + table_off)) != 0)
+  {
+    fprintf(stderr, "failed to read tailmeta container table\n");
+    free(containers);
+    return -1;
+  }
+
+  int failed = 0;
+  uint16_t slot_desc_bytes = kafs_tailmeta_region_hdr_slot_desc_bytes_get(&region_hdr);
+  for (uint32_t index = 0; index < container_count; ++index)
+  {
+    const kafs_tailmeta_container_hdr_t *container = &containers[index];
+    rc = kafs_tailmeta_container_hdr_validate(container, region_size, slot_desc_bytes);
+    if (rc != 0)
+    {
+      fprintf(stderr, "tailmeta container[%u] invalid: class=%u slots=%u live=%u free=%u rc=%d\n",
+              index, (unsigned)kafs_tailmeta_container_hdr_class_bytes_get(container),
+              (unsigned)kafs_tailmeta_container_hdr_slot_count_get(container),
+              (unsigned)kafs_tailmeta_container_hdr_live_count_get(container),
+              (unsigned)kafs_tailmeta_container_hdr_free_bytes_get(container), rc);
+      failed = 1;
+      continue;
+    }
+
+    uint16_t slot_count = kafs_tailmeta_container_hdr_slot_count_get(container);
+    if (slot_count == 0)
+      continue;
+
+    uint16_t class_bytes = kafs_tailmeta_container_hdr_class_bytes_get(container);
+    uint32_t slot_table_off = kafs_tailmeta_container_hdr_slot_table_off_get(container);
+    uint32_t slot_table_bytes = kafs_tailmeta_container_hdr_slot_table_bytes_get(container);
+    kafs_tailmeta_slot_desc_t *slots =
+        (kafs_tailmeta_slot_desc_t *)malloc((size_t)slot_table_bytes);
+    if (!slots)
+    {
+      fprintf(stderr, "tailmeta slot table alloc failed for container[%u]\n", index);
+      failed = 1;
+      continue;
+    }
+    if (pread_all(fd, slots, (size_t)slot_table_bytes, (off_t)(region_off + slot_table_off)) != 0)
+    {
+      fprintf(stderr, "failed to read tailmeta slot table for container[%u]\n", index);
+      free(slots);
+      failed = 1;
+      continue;
+    }
+
+    uint16_t live_slots = 0;
+    for (uint16_t slot_index = 0; slot_index < slot_count; ++slot_index)
+    {
+      rc = kafs_tailmeta_slot_validate(&slots[slot_index], class_bytes);
+      if (rc != 0)
+      {
+        fprintf(stderr,
+                "tailmeta container[%u] slot[%u] invalid: owner=%" PRIuFAST32
+                " len=%u flags=%u rc=%d\n",
+                index, slot_index, kafs_tailmeta_slot_owner_ino_get(&slots[slot_index]),
+                (unsigned)kafs_tailmeta_slot_len_get(&slots[slot_index]),
+                (unsigned)kafs_tailmeta_slot_flags_get(&slots[slot_index]), rc);
+        failed = 1;
+        continue;
+      }
+      if (kafs_tailmeta_slot_owner_ino_get(&slots[slot_index]) != KAFS_INO_NONE)
+        live_slots++;
+    }
+
+    if (live_slots != kafs_tailmeta_container_hdr_live_count_get(container))
+    {
+      fprintf(stderr, "tailmeta container[%u] live slot mismatch: header=%u actual=%u\n", index,
+              (unsigned)kafs_tailmeta_container_hdr_live_count_get(container),
+              (unsigned)live_slots);
+      failed = 1;
+    }
+    free(slots);
+  }
+
+  free(containers);
+  return failed ? -1 : 0;
+}
+
 int main(int argc, char **argv)
 {
   int do_journal_reset = 0; // repair: journal layer
@@ -1506,6 +1633,24 @@ int main(int argc, char **argv)
   {
     close(fd);
     return FSCK_EXIT_JOURNAL_CHECK_FAILED;
+  }
+  {
+    uint64_t tail_off = kafs_sb_tailmeta_offset_get(&sb);
+    uint64_t tail_size = kafs_sb_tailmeta_size_get(&sb);
+    uint64_t feature_flags = kafs_sb_feature_flags_get(&sb);
+    if ((feature_flags & KAFS_FEATURE_TAIL_META_REGION) != 0 || tail_off != 0 || tail_size != 0)
+    {
+      if (check_region_bounds("tailmeta", tail_off, tail_size, file_size) != 0)
+      {
+        close(fd);
+        return 3;
+      }
+    }
+  }
+  if (check_tailmeta_region(fd, &sb, file_size) != 0)
+  {
+    close(fd);
+    return FSCK_EXIT_TAILMETA_INCONSISTENT;
   }
 
   if (do_check_dirent_ino_orphans || do_repair_dirent_ino_orphans || do_check_hrl_blo_refcounts ||

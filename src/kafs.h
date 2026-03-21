@@ -168,6 +168,7 @@ typedef uint_fast32_t kafs_hrid_t;
 #define KAFS_FEATURE_ALLOC_V2 (1ull << 0)
 #define KAFS_FEATURE_META_BATCH (1ull << 1)
 #define KAFS_FEATURE_ASYNC_DEDUP (1ull << 2)
+#define KAFS_FEATURE_TAIL_META_REGION (1ull << 3)
 
 // ------------------------------------
 // 記録表現で使う型
