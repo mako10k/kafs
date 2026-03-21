@@ -55,6 +55,15 @@ static void assert_tail_layout_known_matrix(uint8_t layout_kind, int is_known)
         assert(kafs_tail_layout_is_known(layout_kind) == is_known);
 }
 
+static void assert_validate_for_inode_result(const kafs_tailmeta_inode_desc_t *desc,
+                                                                                                                                                         kafs_off_t inode_size,
+                                                                                                                                                         uint16_t class_bytes,
+                                                                                                                                                         kafs_blksize_t blksize,
+                                                                                                                                                         int is_valid)
+{
+        assert((kafs_tailmeta_inode_desc_validate_for_inode(desc, inode_size, class_bytes, blksize) == 0) == is_valid);
+}
+
 int main(void)
 {
         assert_tail_layout_known_matrix(KAFS_TAIL_LAYOUT_INLINE, 1);
@@ -119,6 +128,13 @@ int main(void)
         kafs_tailmeta_inode_desc_layout_kind_set(&desc, UINT8_MAX);
         assert(kafs_tailmeta_inode_desc_validate(&desc, 128) != 0);
         kafs_tailmeta_inode_desc_init(&desc);
+
+  kafs_tailmeta_inode_desc_layout_kind_set(&desc, KAFS_TAIL_LAYOUT_FULL_BLOCK);
+  assert(kafs_tailmeta_inode_desc_validate(&desc, 128) == 0);
+  assert_validate_for_inode_result(&desc, 0, 128, 4096, 1);
+  assert_validate_for_inode_result(&desc, (kafs_off_t)kafs_inode_inline_bytes() + 1, 128, 4096, 1);
+  assert_validate_for_inode_result(&desc, 1, 128, 4096, 0);
+  assert_validate_for_inode_result(&desc, (kafs_off_t)kafs_inode_inline_bytes(), 128, 4096, 0);
 
   kafs_tailmeta_inode_desc_layout_kind_set(&desc, KAFS_TAIL_LAYOUT_TAIL_ONLY);
   kafs_tailmeta_inode_desc_flags_set(&desc, KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE);
