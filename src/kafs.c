@@ -3452,7 +3452,8 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
   for (unsigned retry = 0; retry < 8; ++retry)
   {
     kafs_blkcnt_t expected_old_blo = KAFS_BLO_NONE;
-    KAFS_IBWRITE_TRY(kafs_ino_ibrk_run(ctx, inoent, iblo, &expected_old_blo, KAFS_IBLKREF_FUNC_GET));
+    KAFS_IBWRITE_TRY(
+        kafs_ino_ibrk_run(ctx, inoent, iblo, &expected_old_blo, KAFS_IBLKREF_FUNC_GET));
 
     kafs_inode_unlock(ctx, ino_idx);
 
@@ -3506,16 +3507,14 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
       kafs_diag_log_dir_iblk_write(candidate_kind == 2 ? "iblk_write_rescue" : "iblk_write_hrl",
                                    ctx, inoent, iblo, current_old_blo, candidate_blo, buf,
                                    kafs_sb_blksize_get(ctx->c_superblock));
-      KAFS_IBWRITE_TRY(
-          kafs_ino_ibrk_run(ctx, inoent, iblo, &candidate_blo, KAFS_IBLKREF_FUNC_SET));
+      KAFS_IBWRITE_TRY(kafs_ino_ibrk_run(ctx, inoent, iblo, &candidate_blo, KAFS_IBLKREF_FUNC_SET));
       if (current_old_blo != KAFS_BLO_NONE && current_old_blo != candidate_blo)
       {
         kafs_inode_unlock(ctx, ino_idx);
         uint64_t t_dec0 = kafs_now_ns();
         (void)kafs_inode_release_hrl_ref(ctx, current_old_blo);
         uint64_t t_dec1 = kafs_now_ns();
-        __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0,
-                           __ATOMIC_RELAXED);
+        __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
         kafs_inode_lock(ctx, ino_idx);
       }
       return KAFS_SUCCESS;
