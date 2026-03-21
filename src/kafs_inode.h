@@ -90,6 +90,31 @@ _Static_assert(sizeof(((struct kafs_sinode_v5 *)NULL)->i_blkreftbl) == KAFS_INOD
                "kafs_sinode_v5 direct payload must preserve 60 bytes");
 _Static_assert(sizeof(kafs_sinode_v5_t) == KAFS_INODE_V5_BYTES, "kafs_sinode_v5 must be 130 bytes");
 
+static inline size_t kafs_inode_inline_bytes(void) { return KAFS_INODE_DIRECT_BYTES; }
+
+static inline size_t kafs_inode_bytes_for_format(uint32_t format_version)
+{
+  switch (format_version)
+  {
+  case KAFS_FORMAT_VERSION:
+    return sizeof(kafs_sinode_t);
+  case KAFS_FORMAT_VERSION_V5:
+    return sizeof(kafs_sinode_v5_t);
+  default:
+    return 0;
+  }
+}
+
+static inline uint64_t kafs_inode_table_bytes_for_format(uint32_t format_version, uint64_t inocnt)
+{
+  size_t inode_bytes = kafs_inode_bytes_for_format(format_version);
+
+  if (inode_bytes == 0)
+    return 0;
+
+  return (uint64_t)inode_bytes * inocnt;
+}
+
 static kafs_mode_t kafs_ino_mode_get(const kafs_sinode_t *inoent)
 {
   return kafs_mode_stoh(inoent->i_mode);

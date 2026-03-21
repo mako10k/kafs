@@ -13,8 +13,6 @@
 #include "kafs_core.h"
 #include "kafs_crash_diag.h"
 
-#define KAFS_DIRECT_SIZE (sizeof(((struct kafs_sinode *)NULL)->i_blkreftbl))
-
 #include <fuse.h>
 #include <fuse_log.h>
 #include <errno.h>
@@ -1114,7 +1112,7 @@ static int kafs_pendinglog_inode_has_pending_id(struct kafs_context *ctx, uint32
   if (kafs_ino_get_usage(inoent))
   {
     kafs_off_t cur_size = kafs_ino_size_get(inoent);
-    if (cur_size > KAFS_DIRECT_SIZE)
+    if (cur_size > KAFS_INODE_DIRECT_BYTES)
     {
       kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
       kafs_iblkcnt_t iblocnt = (kafs_iblkcnt_t)((cur_size + bs - 1) / bs);
@@ -1654,7 +1652,7 @@ static int kafs_bg_dedup_try_install(struct kafs_context *ctx, uint32_t ino, kaf
   if (kafs_ino_get_usage(inoent))
   {
     kafs_off_t size = kafs_ino_size_get(inoent);
-    if (size > KAFS_DIRECT_SIZE)
+    if (size > KAFS_INODE_DIRECT_BYTES)
     {
       kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
       kafs_iblkcnt_t iblocnt = (kafs_iblkcnt_t)((size + bs - 1) / bs);
@@ -1741,7 +1739,7 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
     }
 
     kafs_off_t size = kafs_ino_size_get(inoent);
-    if (size <= KAFS_DIRECT_SIZE)
+    if (size <= KAFS_INODE_DIRECT_BYTES)
     {
       kafs_inode_unlock(ctx, ino);
       inode_locked = 0;
@@ -1968,7 +1966,7 @@ static void *kafs_pending_worker_main(void *arg)
               goto pending_finalize;
             }
             kafs_off_t cur_size = kafs_ino_size_get(inoent);
-            if (cur_size > KAFS_DIRECT_SIZE)
+            if (cur_size > KAFS_INODE_DIRECT_BYTES)
             {
               kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
               kafs_iblkcnt_t iblocnt = (kafs_iblkcnt_t)((cur_size + bs - 1) / bs);
@@ -2640,7 +2638,7 @@ static void kafs_diag_log_live_dir_block0_write(struct kafs_context *ctx, kafs_b
     kafs_mode_t mode = kafs_ino_mode_get(inoent);
     if (!S_ISDIR(mode))
       continue;
-    if (kafs_ino_size_get(inoent) <= KAFS_DIRECT_SIZE)
+    if (kafs_ino_size_get(inoent) <= KAFS_INODE_DIRECT_BYTES)
       continue;
     kafs_blkcnt_t cur_ref = kafs_blkcnt_stoh(inoent->i_blkreftbl[0]);
     if (cur_ref != blo)
@@ -3536,7 +3534,7 @@ kafs_ino_iblk_release(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_iblk
   assert(ctx != NULL);
   assert(inoent != NULL);
   assert(kafs_ino_get_usage(inoent));
-  assert(kafs_ino_size_get(inoent) > KAFS_DIRECT_SIZE);
+  assert(kafs_ino_size_get(inoent) > KAFS_INODE_DIRECT_BYTES);
   kafs_blkcnt_t old;
   int rc = kafs_ino_ibrk_run(ctx, inoent, iblo, &old, KAFS_IBLKREF_FUNC_GET);
   if (rc < 0)
@@ -3587,7 +3585,7 @@ static ssize_t kafs_pread(struct kafs_context *ctx, kafs_sinode_t *inoent, void 
   if (size == 0)
     return 0;
   // 60バイト以下は直接
-  if (filesize <= KAFS_DIRECT_SIZE)
+  if (filesize <= KAFS_INODE_DIRECT_BYTES)
   {
     memcpy(buf, (void *)inoent->i_blkreftbl + offset, size);
     return size;
@@ -3631,7 +3629,7 @@ static int kafs_pwrite_commit_block(struct kafs_context *ctx, kafs_sinode_t *ino
 {
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
 
-  if (kafs_ino_size_get(inoent) > KAFS_DIRECT_SIZE && kafs_blk_is_zero(buf, blksize))
+  if (kafs_ino_size_get(inoent) > KAFS_INODE_DIRECT_BYTES && kafs_blk_is_zero(buf, blksize))
     return kafs_ino_iblk_release(ctx, inoent, iblo);
 
   return kafs_ino_iblk_write(ctx, inoent, iblo, buf);
@@ -3677,7 +3675,8 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
   {
     // サイズ拡大時
     kafs_ino_size_set(inoent, filesize_new);
-    if (filesize != 0 && filesize <= KAFS_DIRECT_SIZE && filesize_new > KAFS_DIRECT_SIZE)
+    if (filesize != 0 && filesize <= KAFS_INODE_DIRECT_BYTES &&
+        filesize_new > KAFS_INODE_DIRECT_BYTES)
     {
       char wbuf[blksize];
       memset(wbuf, 0, blksize);
@@ -3802,7 +3801,7 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
   (void)kafs_inode_epoch_bump(ctx, (uint32_t)(inoent - ctx->c_inotbl));
   if (filesize_new > filesize_orig)
   {
-    if (filesize_orig <= KAFS_DIRECT_SIZE && filesize_new > KAFS_DIRECT_SIZE)
+    if (filesize_orig <= KAFS_INODE_DIRECT_BYTES && filesize_new > KAFS_INODE_DIRECT_BYTES)
     {
       char buf[blksize];
       memcpy(buf, inoent->i_blkreftbl, filesize_orig);
@@ -3818,7 +3817,7 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
   kafs_iblkcnt_t iblocnt = (filesize_orig + blksize - 1) >> log_blksize;
   kafs_blksize_t off = (kafs_blksize_t)(filesize_new & (blksize - 1));
 
-  if (filesize_orig <= KAFS_DIRECT_SIZE)
+  if (filesize_orig <= KAFS_INODE_DIRECT_BYTES)
   {
     memset((void *)inoent->i_blkreftbl + filesize_new, 0, filesize_orig - filesize_new);
     kafs_ino_size_set(inoent, filesize_new);
@@ -3826,7 +3825,7 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
   }
 
   // Indirect -> direct: copy first block data to inode, then release all blocks.
-  if (filesize_new <= KAFS_DIRECT_SIZE)
+  if (filesize_new <= KAFS_INODE_DIRECT_BYTES)
   {
     char buf[blksize];
     KAFS_CALL(kafs_ino_iblk_read, ctx, inoent, 0, buf);
@@ -3873,8 +3872,8 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
     }
 
     memcpy(inoent->i_blkreftbl, buf, (size_t)filesize_new);
-    if (filesize_new < KAFS_DIRECT_SIZE)
-      memset((void *)inoent->i_blkreftbl + filesize_new, 0, KAFS_DIRECT_SIZE - filesize_new);
+    if (filesize_new < KAFS_INODE_DIRECT_BYTES)
+      memset((void *)inoent->i_blkreftbl + filesize_new, 0, KAFS_INODE_DIRECT_BYTES - filesize_new);
     if (deferred_free_cnt)
     {
       kafs_inode_unlock(ctx, ino_idx);
@@ -5399,7 +5398,7 @@ int kafs_core_open_image(const char *image_path, kafs_context_t *ctx)
   mapsize = (mapsize + 7) & ~7;
   mapsize = (mapsize + blksizemask) & ~blksizemask;
   void *inotbl_off = (void *)mapsize;
-  mapsize += sizeof(kafs_sinode_t) * inocnt;
+  mapsize += (off_t)kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(&sbdisk), inocnt);
   mapsize = (mapsize + blksizemask) & ~blksizemask;
 
   off_t imgsize = (off_t)r_blkcnt << log_blksize;
@@ -6141,13 +6140,13 @@ static int kafs_reflink_clone(kafs_context_t *ctx, kafs_sinode_t *src, kafs_sino
     return -EINVAL;
 
   kafs_off_t size;
-  char inline_buf[KAFS_DIRECT_SIZE];
+  char inline_buf[KAFS_INODE_DIRECT_BYTES];
   int is_inline = 0;
 
   uint32_t ino_src = (uint32_t)(src - ctx->c_inotbl);
   kafs_inode_lock(ctx, ino_src);
   size = kafs_ino_size_get(src);
-  if (size <= (kafs_off_t)KAFS_DIRECT_SIZE)
+  if (size <= (kafs_off_t)KAFS_INODE_DIRECT_BYTES)
   {
     memcpy(inline_buf, (void *)src->i_blkreftbl, (size_t)size);
     is_inline = 1;
@@ -6276,7 +6275,7 @@ static ssize_t kafs_copy_regular_range(kafs_context_t *ctx, kafs_sinode_t *ino_i
   kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
   kafs_off_t dst_size = kafs_ino_size_get(ino_out);
-  int dst_is_block_backed = (dst_size > (kafs_off_t)KAFS_DIRECT_SIZE);
+  int dst_is_block_backed = (dst_size > (kafs_off_t)KAFS_INODE_DIRECT_BYTES);
   int dst_empty_converted = 0;
 
   const size_t bufsz = 128u * 1024u;
@@ -7366,7 +7365,7 @@ static int kafs_op_fallocate(const char *path, int mode, off_t offset, off_t len
   kafs_iblkcnt_t last_full_excl = (kafs_iblkcnt_t)(end >> log_blksize);
   for (kafs_iblkcnt_t iblo = first_full; iblo < last_full_excl; ++iblo)
   {
-    if (filesize > KAFS_DIRECT_SIZE)
+    if (filesize > KAFS_INODE_DIRECT_BYTES)
     {
       rc = kafs_ino_iblk_release(ctx, inoent, iblo);
       if (rc < 0)
@@ -7388,7 +7387,7 @@ static int kafs_op_fallocate(const char *path, int mode, off_t offset, off_t len
         kafs_blksize_t valid = (kafs_blksize_t)(filesize & ((kafs_off_t)blksize - 1));
         if (valid == 0)
           valid = blksize;
-        if (e == valid && filesize > KAFS_DIRECT_SIZE)
+        if (e == valid && filesize > KAFS_INODE_DIRECT_BYTES)
         {
           rc = kafs_ino_iblk_release(ctx, inoent, iblo);
           if (rc < 0)
@@ -7453,7 +7452,7 @@ static off_t kafs_op_lseek(const char *path, off_t off, int whence, struct fuse_
     return (whence == SEEK_HOLE) ? off : -ENXIO;
   }
 
-  if (size <= KAFS_DIRECT_SIZE)
+  if (size <= KAFS_INODE_DIRECT_BYTES)
   {
     kafs_inode_unlock(ctx, ino);
     if (whence == SEEK_DATA)
@@ -8967,7 +8966,7 @@ static int kafs_migrate_ctx_open(const char *image_path, kafs_context_t *ctx,
   mapsize = (mapsize + 7) & ~7;
   mapsize = (mapsize + blksizemask) & ~blksizemask;
   void *inotbl_off = (void *)mapsize;
-  mapsize += sizeof(kafs_sinode_t) * inocnt;
+  mapsize += (off_t)kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(sbdisk), inocnt);
   mapsize = (mapsize + blksizemask) & ~blksizemask;
 
   off_t imgsize = (off_t)r_blkcnt << log_blksize;
@@ -10304,7 +10303,7 @@ int main(int argc, char **argv)
   mapsize = (mapsize + 7) & ~7;
   mapsize = (mapsize + blksizemask) & ~blksizemask;
   void *inotbl_off = (void *)mapsize;
-  mapsize += sizeof(kafs_sinode_t) * inocnt;
+  mapsize += (off_t)kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(&sbdisk), inocnt);
   mapsize = (mapsize + blksizemask) & ~blksizemask;
   // Full-image mapping size: use r_blkcnt * blksize (and ensure it also covers HRL/journal)
   off_t imgsize = (off_t)r_blkcnt << log_blksize;

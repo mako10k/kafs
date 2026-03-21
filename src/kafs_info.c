@@ -102,7 +102,8 @@ int main(int argc, char **argv)
   layout = align_up_u64(layout, 8u);
   layout = align_up_u64(layout, blksize);
   uint64_t inotbl_off = layout;
-  uint64_t inotbl_bytes = (uint64_t)sizeof(kafs_sinode_t) * inocnt;
+  uint64_t inotbl_bytes =
+      kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(&sb), inocnt);
 
   uint64_t tombstone_count = 0;
   kafs_time_t oldest_tombstone = {0};
