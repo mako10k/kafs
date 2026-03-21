@@ -6,6 +6,7 @@
 #include "kafs_dirent.h"
 #include "kafs_hash.h"
 #include "kafs_journal.h"
+#include "kafs_tailmeta.h"
 #include "kafs_cli_opts.h"
 #include "kafs_tool_util.h"
 
@@ -35,6 +36,7 @@ static void usage(const char *prog)
   fprintf(stderr, "  [Layout]\n");
   fprintf(stderr, "    -s, --size-bytes <N>              Total image size (default: 1GiB)\n");
   fprintf(stderr, "    -b, --blksize-log <L>             Block size log2 (default: 12 => 4096B)\n");
+  fprintf(stderr, "    --format-version <V>              On-disk format version (default: 4)\n");
   fprintf(
       stderr,
       "    -i, --inodes <I>                  Inode count (default: 1 inode per 16KiB, min: 256)\n");
@@ -114,6 +116,8 @@ struct mkfs_layout
   off_t journal_off;
   size_t pendinglog_size;
   off_t pendinglog_off;
+  size_t tailmeta_size;
+  off_t tailmeta_off;
 };
 
 #define KAFS_MKFS_DEFAULT_BYTES_PER_INODE (16u * 1024u)
@@ -135,7 +139,27 @@ static kafs_inocnt_t mkfs_default_inocnt_for_size(off_t total_bytes)
   return (kafs_inocnt_t)inode_count;
 }
 
-static void compute_layout(kafs_blkcnt_t blkcnt, kafs_blksize_t blksizemask, kafs_inocnt_t inocnt,
+static int mkfs_format_version_is_supported(uint32_t format_version)
+{
+  return format_version == KAFS_FORMAT_VERSION || format_version == KAFS_FORMAT_VERSION_V5;
+}
+
+static size_t mkfs_tailmeta_region_size(uint32_t format_version, kafs_blksize_t blksize)
+{
+  return (format_version == KAFS_FORMAT_VERSION_V5) ? (size_t)blksize : 0u;
+}
+
+static uint64_t mkfs_feature_flags_for_format(uint32_t format_version)
+{
+  uint64_t flags = KAFS_FEATURE_ALLOC_V2;
+
+  if (format_version == KAFS_FORMAT_VERSION_V5)
+    flags |= KAFS_FEATURE_TAIL_META_REGION;
+  return flags;
+}
+
+static void compute_layout(uint32_t format_version, kafs_blkcnt_t blkcnt,
+                           kafs_blksize_t blksizemask, kafs_blksize_t blksize, kafs_inocnt_t inocnt,
                            size_t journal_bytes, double hrl_entry_ratio, struct mkfs_layout *out)
 {
   off_t mapsize = 0;
@@ -146,7 +170,7 @@ static void compute_layout(kafs_blkcnt_t blkcnt, kafs_blksize_t blksizemask, kaf
   mapsize = (mapsize + 7) & ~7;                     // 64-bit align
   mapsize = (mapsize + blksizemask) & ~blksizemask; // block align
   off_t inotbl_off = mapsize;
-  mapsize += (off_t)kafs_inode_table_bytes_for_format(KAFS_FORMAT_VERSION, inocnt);
+  mapsize += (off_t)kafs_inode_table_bytes_for_format(format_version, inocnt);
   mapsize = (mapsize + blksizemask) & ~blksizemask;
 
   // allocator v2 reserved metadata area (L1/L2 summaries, future use)
@@ -189,6 +213,11 @@ static void compute_layout(kafs_blkcnt_t blkcnt, kafs_blksize_t blksizemask, kaf
   mapsize += (off_t)pendinglog_size;
   mapsize = (mapsize + blksizemask) & ~blksizemask;
 
+  size_t tailmeta_size = mkfs_tailmeta_region_size(format_version, blksize);
+  off_t tailmeta_off = (tailmeta_size > 0u) ? mapsize : 0;
+  mapsize += (off_t)tailmeta_size;
+  mapsize = (mapsize + blksizemask) & ~blksizemask;
+
   if (out)
   {
     out->mapsize = mapsize;
@@ -204,11 +233,14 @@ static void compute_layout(kafs_blkcnt_t blkcnt, kafs_blksize_t blksizemask, kaf
     out->journal_off = journal_off;
     out->pendinglog_size = pendinglog_size;
     out->pendinglog_off = pendinglog_off;
+    out->tailmeta_size = tailmeta_size;
+    out->tailmeta_off = tailmeta_off;
   }
 }
 
-static int compute_blkcnt_for_total(off_t total_bytes, kafs_logblksize_t log_blksize,
-                                    kafs_blksize_t blksizemask, kafs_inocnt_t inocnt,
+static int compute_blkcnt_for_total(uint32_t format_version, off_t total_bytes,
+                                    kafs_logblksize_t log_blksize, kafs_blksize_t blksizemask,
+                                    kafs_blksize_t blksize, kafs_inocnt_t inocnt,
                                     size_t journal_bytes, double hrl_entry_ratio,
                                     kafs_blkcnt_t *out_blkcnt, struct mkfs_layout *out_layout)
 {
@@ -222,7 +254,8 @@ static int compute_blkcnt_for_total(off_t total_bytes, kafs_logblksize_t log_blk
   struct mkfs_layout layout = {0};
   for (int i = 0; i < 16; ++i)
   {
-    compute_layout(blkcnt, blksizemask, inocnt, journal_bytes, hrl_entry_ratio, &layout);
+    compute_layout(format_version, blkcnt, blksizemask, blksize, inocnt, journal_bytes,
+                   hrl_entry_ratio, &layout);
     if (total_bytes <= layout.mapsize)
       return -1;
     kafs_blkcnt_t next = (kafs_blkcnt_t)((total_bytes - layout.mapsize) >> log_blksize);
@@ -235,7 +268,8 @@ static int compute_blkcnt_for_total(off_t total_bytes, kafs_logblksize_t log_blk
 
   for (;;)
   {
-    compute_layout(blkcnt, blksizemask, inocnt, journal_bytes, hrl_entry_ratio, &layout);
+    compute_layout(format_version, blkcnt, blksizemask, blksize, inocnt, journal_bytes,
+                   hrl_entry_ratio, &layout);
     off_t imgsize = layout.mapsize + ((off_t)blkcnt << log_blksize);
     if (imgsize <= total_bytes)
       break;
@@ -253,6 +287,7 @@ static int compute_blkcnt_for_total(off_t total_bytes, kafs_logblksize_t log_blk
 int main(int argc, char **argv)
 {
   const char *img = NULL;
+  uint32_t format_version = KAFS_FORMAT_VERSION;
   kafs_logblksize_t log_blksize = 12; // 4096B
   kafs_blksize_t blksize = 1u << log_blksize;
   kafs_blksize_t blksizemask = blksize - 1u;
@@ -286,6 +321,15 @@ int main(int argc, char **argv)
       log_blksize = (kafs_logblksize_t)strtoul(argv[++i], NULL, 0);
       blksize = 1u << log_blksize;
       blksizemask = blksize - 1u;
+    }
+    else if (strcmp(argv[i], "--format-version") == 0 && i + 1 < argc)
+    {
+      format_version = (uint32_t)strtoul(argv[++i], NULL, 0);
+      if (!mkfs_format_version_is_supported(format_version))
+      {
+        fprintf(stderr, "unsupported format version: %u\n", format_version);
+        return 2;
+      }
     }
     else if ((strcmp(argv[i], "--inodes") == 0 || strcmp(argv[i], "-i") == 0) && i + 1 < argc)
     {
@@ -398,8 +442,8 @@ int main(int argc, char **argv)
 
   struct mkfs_layout layout = {0};
   kafs_blkcnt_t blkcnt = 0;
-  if (compute_blkcnt_for_total(total_bytes, log_blksize, blksizemask, inocnt, journal_bytes,
-                               hrl_entry_ratio, &blkcnt, &layout) != 0)
+  if (compute_blkcnt_for_total(format_version, total_bytes, log_blksize, blksizemask, blksize,
+                               inocnt, journal_bytes, hrl_entry_ratio, &blkcnt, &layout) != 0)
   {
     fprintf(stderr, "invalid total size: %lld\n", (long long)total_bytes);
     close(ctx.c_fd);
@@ -412,7 +456,7 @@ int main(int argc, char **argv)
     if (pread(ctx.c_fd, &sbcheck, sizeof(sbcheck), 0) == (ssize_t)sizeof(sbcheck))
     {
       if (kafs_sb_magic_get(&sbcheck) == KAFS_MAGIC &&
-          kafs_sb_format_version_get(&sbcheck) == KAFS_FORMAT_VERSION)
+          mkfs_format_version_is_supported(kafs_sb_format_version_get(&sbcheck)))
       {
         fprintf(stderr, "warning: image appears formatted and will be overwritten: %s\n", img);
         if (!assume_yes && !mkfs_confirm_overwrite_stdin())
@@ -452,7 +496,7 @@ int main(int argc, char **argv)
 
   // 境界チェックとゼロ初期化
   size_t blkmask_bytes = ((size_t)blkcnt + 7) >> 3; // ビットマップの総バイト数
-  size_t inotbl_bytes = (size_t)kafs_inode_table_bytes_for_format(KAFS_FORMAT_VERSION, inocnt);
+  size_t inotbl_bytes = (size_t)kafs_inode_table_bytes_for_format(format_version, inocnt);
   char *base = (char *)ctx.c_superblock;
   char *end = base + mapsize;
   char *bm_ptr = (char *)ctx.c_blkmasktbl;
@@ -471,7 +515,7 @@ int main(int argc, char **argv)
   // スーパーブロック基本
   kafs_sb_log_blksize_set(ctx.c_superblock, log_blksize);
   kafs_sb_magic_set(ctx.c_superblock, KAFS_MAGIC);
-  kafs_sb_format_version_set(ctx.c_superblock, KAFS_FORMAT_VERSION);
+  kafs_sb_format_version_set(ctx.c_superblock, format_version);
   kafs_sb_hash_fast_set(ctx.c_superblock, KAFS_HASH_FAST_XXH64);
   kafs_sb_hash_strong_set(ctx.c_superblock, KAFS_HASH_STRONG_BLAKE3_256);
   // HRL領域の割当
@@ -490,9 +534,9 @@ int main(int argc, char **argv)
   kafs_sb_pendinglog_size_set(ctx.c_superblock, (uint64_t)layout.pendinglog_size);
   kafs_sb_checkpoint_seq_set(ctx.c_superblock, 0);
   kafs_sb_commit_seq_set(ctx.c_superblock, 0);
-  kafs_sb_tailmeta_offset_set(ctx.c_superblock, 0);
-  kafs_sb_tailmeta_size_set(ctx.c_superblock, 0);
-  kafs_sb_feature_flags_set(ctx.c_superblock, KAFS_FEATURE_ALLOC_V2);
+  kafs_sb_tailmeta_offset_set(ctx.c_superblock, (uint64_t)layout.tailmeta_off);
+  kafs_sb_tailmeta_size_set(ctx.c_superblock, (uint64_t)layout.tailmeta_size);
+  kafs_sb_feature_flags_set(ctx.c_superblock, mkfs_feature_flags_for_format(format_version));
   kafs_sb_compat_flags_set(ctx.c_superblock, 0);
 
   // R/O items
@@ -577,6 +621,18 @@ int main(int argc, char **argv)
     }
   }
 
+  if (layout.tailmeta_size >= sizeof(kafs_tailmeta_region_hdr_t))
+  {
+    kafs_tailmeta_region_hdr_t region_hdr;
+    char *tailmeta_ptr = (char *)ctx.c_superblock + layout.tailmeta_off;
+    char *base4 = (char *)ctx.c_superblock;
+    char *end4 = base4 + mapsize;
+
+    assert(tailmeta_ptr >= base4 && tailmeta_ptr + layout.tailmeta_size <= end4);
+    kafs_tailmeta_region_hdr_init(&region_hdr);
+    memcpy(tailmeta_ptr, &region_hdr, sizeof(region_hdr));
+  }
+
   if (trim_data_area)
   {
     off_t data_off = (off_t)fdb << log_blksize;
@@ -591,7 +647,8 @@ int main(int argc, char **argv)
   munmap(ctx.c_superblock, mapsize);
   close(ctx.c_fd);
 
-  fprintf(stderr, "Formatted %s: size=%lld bytes, blksize=%u, blocks=%u, inodes=%u\n", img,
-          (long long)total_bytes, (unsigned)blksize, (unsigned)blkcnt, (unsigned)inocnt);
+  fprintf(stderr, "Formatted %s: format=v%u size=%lld bytes, blksize=%u, blocks=%u, inodes=%u\n",
+          img, (unsigned)format_version, (long long)total_bytes, (unsigned)blksize,
+          (unsigned)blkcnt, (unsigned)inocnt);
   return 0;
 }

@@ -9,6 +9,8 @@ mkfs.kafs \- create a KAFS filesystem image
 .IR size ]
 .RB [ -b
 .IR log2blksz ]
+.RB [ --format-version
+.IR version ]
 .RB [ -i
 .IR inodes ]
 .RB [ -J
@@ -35,6 +37,10 @@ is used and overrides this option.
 .TP
 .BR -b ", " --blksize-log "=" log2
 Block size as log2 value (default: 12 => 4096 bytes).
+.TP
+.BR --format-version "=" version
+On-disk format version to emit (default: 4).
+Version 5 enables an empty dedicated tail metadata region scaffold during mkfs.
 .TP
 .BR -i ", " --inodes "=" count
 Number of inodes.
