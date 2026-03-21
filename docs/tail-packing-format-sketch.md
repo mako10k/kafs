@@ -254,6 +254,64 @@ inode 拡張 field の候補:
 - `i_tail_generation`
    - stale owner / stale reverse map 検出用
 
+### First-Cut Fixed Descriptor Draft
+
+初回導入で inode 内固定長 descriptor を採るなら、descriptor 自体は 16 bytes から始めるのが妥当である。
+
+| field | size | note |
+|-------|------|------|
+| `i_data_layout_kind` | 1 byte | inline / full-block / tail-only / mixed |
+| `i_tail_flags` | 1 byte | final-tail / packed-small-file など |
+| `i_tail_fragment_len` | 2 bytes | payload bytes |
+| `i_tail_container_blo` | 4 bytes | tail container block |
+| `i_tail_fragment_off` | 2 bytes | container 内 offset |
+| `i_tail_generation` | 4 bytes | stale owner 検出 |
+| `i_tail_reserved` | 2 bytes | checksum / class id / future bits 用 |
+
+この 16 bytes は次の理由で初回導入に向く。
+
+- 4KiB block 前提では `fragment_off` が `u16` で足りる
+- `fragment_len` も初回 size class を十分表現できる
+- `container_blo` と `generation` が fsck / crash recovery に必要な最小限になる
+- reserved 2 bytes を残すことで minor format tweak を吸収しやすい
+
+### Inode Layout Recommendation
+
+初回実装の推奨は「inode struct を format bump で明示拡張する」である。
+
+避けたい案:
+
+- 既存 `i_blkreftbl` の末尾 bytes を descriptor 用に流用する
+- layout kind に応じて `i_blkreftbl` の意味を暗黙に reinterpret する
+
+避ける理由:
+
+- 現行では `KAFS_DIRECT_SIZE` が `i_blkreftbl` サイズに直接依存している
+- inline payload と descriptor を同じ領域で多義的に扱うと fsck / migration が複雑化する
+- mixed layout で final tail の有無を読むたびに条件分岐が増える
+
+従って first-cut の docs 方針としては次を置く。
+
+1. tail packing 対応は format bump 前提
+2. inode に固定長 descriptor 領域を明示追加する
+3. `KAFS_DIRECT_SIZE` は新 inode layout に合わせて再定義する
+4. 既存 image からの migration では old inode -> new inode を一意に変換する
+
+### Byte-Budget Tradeoff
+
+inode に 16 bytes を追加すると、設計上は次のどちらかになる。
+
+- inode サイズを増やして inline payload を維持する
+- inode 総サイズを固定し、inline payload を 16 bytes 減らす
+
+初回導入では前者を第一候補とする。
+
+理由:
+
+- tail packing の主眼は 61B..4KiB の space efficiency 改善であり、inline 上限を削る利得は小さい
+- inline 上限を下げると既存 small-file fast path に副作用が出る
+- migration 時に「old inline fits / new inline no longer fits」の境界ケースを増やしたくない
+
 ### Why This Shape
 
 この構成だと次が成立する。
