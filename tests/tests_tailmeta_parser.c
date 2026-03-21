@@ -35,8 +35,29 @@ static void assert_inode_taildesc_fields(const kafs_sinode_taildesc_v5_t *tailde
         assert(kafs_ino_taildesc_v5_generation_get(taildesc) == generation);
 }
 
+static void assert_tail_layout_storage_matrix(uint8_t layout_kind, int uses_tail_storage)
+{
+        kafs_sinode_taildesc_v5_t inode_taildesc;
+        kafs_tailmeta_inode_desc_t desc;
+
+        kafs_ino_taildesc_v5_init(&inode_taildesc);
+        kafs_ino_taildesc_v5_layout_kind_set(&inode_taildesc, layout_kind);
+        kafs_tailmeta_inode_desc_init(&desc);
+        kafs_tailmeta_inode_desc_layout_kind_set(&desc, layout_kind);
+
+        assert(kafs_tail_layout_uses_tail_storage(layout_kind) == uses_tail_storage);
+        assert(kafs_ino_taildesc_v5_uses_tail_storage(&inode_taildesc) == uses_tail_storage);
+        assert(kafs_tailmeta_inode_desc_uses_tail_storage(&desc) == uses_tail_storage);
+}
+
 int main(void)
 {
+        assert_tail_layout_storage_matrix(KAFS_TAIL_LAYOUT_INLINE, 0);
+        assert_tail_layout_storage_matrix(KAFS_TAIL_LAYOUT_FULL_BLOCK, 0);
+        assert_tail_layout_storage_matrix(KAFS_TAIL_LAYOUT_TAIL_ONLY, 1);
+        assert_tail_layout_storage_matrix(KAFS_TAIL_LAYOUT_MIXED_FULL_TAIL, 1);
+        assert_tail_layout_storage_matrix(UINT8_MAX, 0);
+
   kafs_ssuperblock_t sb;
   memset(&sb, 0, sizeof(sb));
   assert(!kafs_tailmeta_region_present(&sb));
