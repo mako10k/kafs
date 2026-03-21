@@ -3688,10 +3688,8 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
   }
 
   size_t size_written = 0;
-  const size_t inline_limit = kafs_inode_inline_bytes();
-
   // 60バイト以下は直接
-  if (filesize <= inline_limit)
+  if (kafs_inode_size_is_inline((kafs_off_t)filesize))
   {
     memcpy((void *)inoent->i_blkreftbl + offset, buf, size);
     return size;
