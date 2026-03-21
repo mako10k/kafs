@@ -1,6 +1,7 @@
 #pragma once
 
 #include "kafs_superblock.h"
+#include "kafs_inode.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -10,6 +11,18 @@
 #define KAFS_TAILMETA_REGION_VERSION 1u
 #define KAFS_TAILMETA_CONTAINER_MAGIC 0x4B544D43u /* 'KTMC' */
 #define KAFS_TAILMETA_CONTAINER_VERSION 1u
+
+#define KAFS_TAIL_LAYOUT_INLINE 0u
+#define KAFS_TAIL_LAYOUT_FULL_BLOCK 1u
+#define KAFS_TAIL_LAYOUT_TAIL_ONLY 2u
+#define KAFS_TAIL_LAYOUT_MIXED_FULL_TAIL 3u
+
+#define KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE (1u << 0)
+#define KAFS_TAILDESC_FLAG_FINAL_TAIL (1u << 1)
+#define KAFS_TAILDESC_FLAG_NEEDS_FSCK_REVIEW (1u << 2)
+#define KAFS_TAILDESC_KNOWN_FLAGS                                                                  \
+  (KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE | KAFS_TAILDESC_FLAG_FINAL_TAIL |                          \
+   KAFS_TAILDESC_FLAG_NEEDS_FSCK_REVIEW)
 
 struct kafs_stailmeta_region_hdr
 {
@@ -56,12 +69,27 @@ struct kafs_stailmeta_slot_desc
 
 typedef struct kafs_stailmeta_slot_desc kafs_tailmeta_slot_desc_t;
 
+struct kafs_stailmeta_inode_desc
+{
+  uint8_t ti_layout_kind;
+  uint8_t ti_flags;
+  uint16_t ti_fragment_len;
+  kafs_sblkcnt_t ti_container_blo;
+  uint16_t ti_fragment_off;
+  kafs_su32_t ti_generation;
+  uint16_t ti_reserved0;
+} __attribute__((packed));
+
+typedef struct kafs_stailmeta_inode_desc kafs_tailmeta_inode_desc_t;
+
 _Static_assert(sizeof(kafs_tailmeta_region_hdr_t) == 36,
                "kafs_tailmeta_region_hdr_t must be 36 bytes");
 _Static_assert(sizeof(kafs_tailmeta_container_hdr_t) == 36,
                "kafs_tailmeta_container_hdr_t must be 36 bytes");
 _Static_assert(sizeof(kafs_tailmeta_slot_desc_t) == 12,
                "kafs_tailmeta_slot_desc_t must be 12 bytes");
+_Static_assert(sizeof(kafs_tailmeta_inode_desc_t) == 16,
+               "kafs_tailmeta_inode_desc_t must be 16 bytes");
 
 static inline uint16_t kafs_tailmeta_region_hdr_version_get(const kafs_tailmeta_region_hdr_t *hdr)
 {
@@ -298,6 +326,100 @@ static inline void kafs_tailmeta_slot_flags_set(kafs_tailmeta_slot_desc_t *slot,
   slot->ts_flags = htole16(v);
 }
 
+static inline uint8_t
+kafs_tailmeta_inode_desc_layout_kind_get(const kafs_tailmeta_inode_desc_t *desc)
+{
+  return desc->ti_layout_kind;
+}
+
+static inline void kafs_tailmeta_inode_desc_layout_kind_set(kafs_tailmeta_inode_desc_t *desc,
+                                                            uint8_t v)
+{
+  desc->ti_layout_kind = v;
+}
+
+static inline uint8_t kafs_tailmeta_inode_desc_flags_get(const kafs_tailmeta_inode_desc_t *desc)
+{
+  return desc->ti_flags;
+}
+
+static inline void kafs_tailmeta_inode_desc_flags_set(kafs_tailmeta_inode_desc_t *desc, uint8_t v)
+{
+  desc->ti_flags = v;
+}
+
+static inline uint16_t
+kafs_tailmeta_inode_desc_fragment_len_get(const kafs_tailmeta_inode_desc_t *desc)
+{
+  return le16toh(desc->ti_fragment_len);
+}
+
+static inline void kafs_tailmeta_inode_desc_fragment_len_set(kafs_tailmeta_inode_desc_t *desc,
+                                                             uint16_t v)
+{
+  desc->ti_fragment_len = htole16(v);
+}
+
+static inline kafs_blkcnt_t
+kafs_tailmeta_inode_desc_container_blo_get(const kafs_tailmeta_inode_desc_t *desc)
+{
+  return kafs_blkcnt_stoh(desc->ti_container_blo);
+}
+
+static inline void kafs_tailmeta_inode_desc_container_blo_set(kafs_tailmeta_inode_desc_t *desc,
+                                                              kafs_blkcnt_t v)
+{
+  desc->ti_container_blo = kafs_blkcnt_htos(v);
+}
+
+static inline uint16_t
+kafs_tailmeta_inode_desc_fragment_off_get(const kafs_tailmeta_inode_desc_t *desc)
+{
+  return le16toh(desc->ti_fragment_off);
+}
+
+static inline void kafs_tailmeta_inode_desc_fragment_off_set(kafs_tailmeta_inode_desc_t *desc,
+                                                             uint16_t v)
+{
+  desc->ti_fragment_off = htole16(v);
+}
+
+static inline uint32_t
+kafs_tailmeta_inode_desc_generation_get(const kafs_tailmeta_inode_desc_t *desc)
+{
+  return kafs_u32_stoh(desc->ti_generation);
+}
+
+static inline void kafs_tailmeta_inode_desc_generation_set(kafs_tailmeta_inode_desc_t *desc,
+                                                           uint32_t v)
+{
+  desc->ti_generation = kafs_u32_htos(v);
+}
+
+static inline uint16_t
+kafs_tailmeta_inode_desc_reserved0_get(const kafs_tailmeta_inode_desc_t *desc)
+{
+  return le16toh(desc->ti_reserved0);
+}
+
+static inline void kafs_tailmeta_inode_desc_reserved0_set(kafs_tailmeta_inode_desc_t *desc,
+                                                          uint16_t v)
+{
+  desc->ti_reserved0 = htole16(v);
+}
+
+static inline void kafs_tailmeta_inode_desc_init(kafs_tailmeta_inode_desc_t *desc)
+{
+  memset(desc, 0, sizeof(*desc));
+  kafs_tailmeta_inode_desc_layout_kind_set(desc, KAFS_TAIL_LAYOUT_INLINE);
+}
+
+static inline int kafs_tailmeta_inode_desc_uses_tail_storage(const kafs_tailmeta_inode_desc_t *desc)
+{
+  uint8_t kind = kafs_tailmeta_inode_desc_layout_kind_get(desc);
+  return kind == KAFS_TAIL_LAYOUT_TAIL_ONLY || kind == KAFS_TAIL_LAYOUT_MIXED_FULL_TAIL;
+}
+
 static inline int kafs_tailmeta_region_present(const kafs_ssuperblock_t *sb)
 {
   if (!sb)
@@ -431,4 +553,74 @@ static inline int kafs_tailmeta_slot_validate(const kafs_tailmeta_slot_desc_t *s
   }
 
   return (len == 0u) ? -EPROTO : 0;
+}
+
+static inline int kafs_tailmeta_inode_desc_validate(const kafs_tailmeta_inode_desc_t *desc,
+                                                    uint16_t class_bytes)
+{
+  uint8_t kind = 0;
+  uint8_t flags = 0;
+  uint16_t len = 0;
+  uint16_t off = 0;
+  uint16_t reserved0 = 0;
+  uint32_t generation = 0;
+  kafs_blkcnt_t container_blo = (kafs_blkcnt_t)0;
+
+  if (!desc)
+    return -EINVAL;
+
+  kind = kafs_tailmeta_inode_desc_layout_kind_get(desc);
+  flags = kafs_tailmeta_inode_desc_flags_get(desc);
+  len = kafs_tailmeta_inode_desc_fragment_len_get(desc);
+  off = kafs_tailmeta_inode_desc_fragment_off_get(desc);
+  reserved0 = kafs_tailmeta_inode_desc_reserved0_get(desc);
+  generation = kafs_tailmeta_inode_desc_generation_get(desc);
+  container_blo = kafs_tailmeta_inode_desc_container_blo_get(desc);
+
+  switch (kind)
+  {
+  case KAFS_TAIL_LAYOUT_INLINE:
+  case KAFS_TAIL_LAYOUT_FULL_BLOCK:
+    if (flags != 0u || len != 0u || off != 0u || generation != 0u || reserved0 != 0u)
+      return -EPROTO;
+    return (container_blo == (kafs_blkcnt_t)0) ? 0 : -EPROTO;
+
+  case KAFS_TAIL_LAYOUT_TAIL_ONLY:
+  case KAFS_TAIL_LAYOUT_MIXED_FULL_TAIL:
+    if ((flags & ~KAFS_TAILDESC_KNOWN_FLAGS) != 0u)
+      return -EPROTO;
+    if (reserved0 != 0u)
+      return -EPROTO;
+    if (class_bytes == 0u || len == 0u || len > class_bytes)
+      return -EPROTO;
+    if (container_blo == (kafs_blkcnt_t)0)
+      return -EPROTO;
+    if ((uint32_t)off + (uint32_t)len > (uint32_t)class_bytes)
+      return -EPROTO;
+    return 0;
+
+  default:
+    return -EPROTO;
+  }
+}
+
+static inline int kafs_tailmeta_inode_desc_matches_slot(const kafs_tailmeta_inode_desc_t *desc,
+                                                        const kafs_tailmeta_slot_desc_t *slot,
+                                                        uint16_t class_bytes, kafs_inocnt_t ino)
+{
+  int rc = kafs_tailmeta_inode_desc_validate(desc, class_bytes);
+  if (rc != 0)
+    return rc;
+  rc = kafs_tailmeta_slot_validate(slot, class_bytes);
+  if (rc != 0)
+    return rc;
+  if (!kafs_tailmeta_inode_desc_uses_tail_storage(desc))
+    return -EINVAL;
+  if (kafs_tailmeta_slot_owner_ino_get(slot) != ino)
+    return -EPROTO;
+  if (kafs_tailmeta_slot_len_get(slot) != kafs_tailmeta_inode_desc_fragment_len_get(desc))
+    return -EPROTO;
+  if (kafs_u32_stoh(slot->ts_generation) != kafs_tailmeta_inode_desc_generation_get(desc))
+    return -EPROTO;
+  return 0;
 }
