@@ -5,6 +5,7 @@
 #include "kafs_superblock.h"
 #include "kafs_block.h"
 #include "kafs_inode.h"
+#include "kafs_dirent.h"
 #include "kafs_hash.h"
 
 #include <errno.h>
@@ -81,6 +82,95 @@ int kafs_test_enter_tmpdir(const char *tag)
   g_test_workdir_set = 1;
   (void)atexit(kafs_test_cleanup_workdir);
   return 0;
+}
+
+int kafs_test_lookup_root_dirent_ino(void *base, off_t mapsize, const char *name,
+                                     kafs_inocnt_t *out_ino, kafs_sinode_t **out_inotbl,
+                                     kafs_sinode_t **out_root)
+{
+  (void)mapsize;
+  if (!base || !name || !out_ino)
+    return -EINVAL;
+
+  kafs_ssuperblock_t *sb = (kafs_ssuperblock_t *)base;
+  kafs_blkcnt_t blkcnt = kafs_sb_blkcnt_get(sb);
+  kafs_blksize_t bs = kafs_sb_blksize_get(sb);
+  kafs_blksize_t bmask = bs - 1u;
+  off_t off = 0;
+  off = (off + sizeof(kafs_ssuperblock_t) + bmask) & ~bmask;
+  off += ((blkcnt + 7) >> 3);
+  off = (off + 7) & ~7;
+  off = (off + bmask) & ~bmask;
+
+  kafs_sinode_t *inotbl = (kafs_sinode_t *)((char *)base + off);
+  kafs_sinode_t *root = &inotbl[KAFS_INO_ROOTDIR];
+  const size_t name_len = strlen(name);
+  const size_t root_size = (size_t)kafs_ino_size_get(root);
+  const char *root_bytes = (const char *)root->i_blkreftbl;
+
+  if (root_size > sizeof(root->i_blkreftbl))
+    return -ENOTSUP;
+
+  if (root_size >= sizeof(kafs_sdir_v4_hdr_t))
+  {
+    const kafs_sdir_v4_hdr_t *hdr = (const kafs_sdir_v4_hdr_t *)root_bytes;
+    if (kafs_u32_stoh(hdr->dh_magic) == KAFS_DIRENT_V4_MAGIC)
+    {
+      size_t record_bytes = kafs_dir_v4_hdr_record_bytes_get(hdr);
+      size_t pos = sizeof(*hdr);
+      size_t limit = sizeof(*hdr) + record_bytes;
+      if (limit > root_size)
+        limit = root_size;
+
+      while (pos + sizeof(kafs_sdirent_v4_t) <= limit)
+      {
+        const kafs_sdirent_v4_t *dirent = (const kafs_sdirent_v4_t *)(root_bytes + pos);
+        uint16_t rec_len = kafs_dirent_v4_rec_len_get(dirent);
+        uint16_t flags = kafs_dirent_v4_flags_get(dirent);
+        kafs_filenamelen_t dir_len = kafs_dirent_v4_filenamelen_get(dirent);
+        if (rec_len == 0 || pos + rec_len > limit)
+          break;
+        if ((flags & KAFS_DIRENT_FLAG_TOMBSTONE) == 0 && dir_len == name_len &&
+            pos + sizeof(*dirent) + dir_len <= limit &&
+            memcmp(dirent->de_filename, name, name_len) == 0)
+        {
+          *out_ino = kafs_dirent_v4_ino_get(dirent);
+          if (out_inotbl)
+            *out_inotbl = inotbl;
+          if (out_root)
+            *out_root = root;
+          return 0;
+        }
+        pos += rec_len;
+      }
+      return -ENOENT;
+    }
+  }
+
+  off_t dir_off = 0;
+  while ((size_t)dir_off < root_size)
+  {
+    kafs_sdirent_t dirent;
+    size_t hdr = offsetof(kafs_sdirent_t, d_filename);
+    if ((size_t)dir_off + hdr > root_size)
+      break;
+    memcpy(&dirent, root_bytes + dir_off, hdr);
+    kafs_filenamelen_t dir_len = kafs_dirent_filenamelen_get(&dirent);
+    if ((size_t)dir_off + hdr + dir_len > root_size)
+      break;
+    if (dir_len == name_len && memcmp(root_bytes + dir_off + hdr, name, name_len) == 0)
+    {
+      *out_ino = kafs_dirent_ino_get(&dirent);
+      if (out_inotbl)
+        *out_inotbl = inotbl;
+      if (out_root)
+        *out_root = root;
+      return 0;
+    }
+    dir_off += hdr + dir_len;
+  }
+
+  return -ENOENT;
 }
 
 static const char *kafs_test_resolve_tool(const char *env_name, const char *tool_name,

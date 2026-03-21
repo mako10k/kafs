@@ -114,36 +114,9 @@ int main(void)
     return 1;
   }
 
-  kafs_ssuperblock_t *sb = (kafs_ssuperblock_t *)base;
-  kafs_blkcnt_t blkcnt = kafs_sb_blkcnt_get(sb);
-  kafs_blksize_t bs_ro = kafs_sb_blksize_get(sb);
-  kafs_blksize_t bmask = bs_ro - 1u;
-  off_t offset = 0;
-  offset = (offset + sizeof(kafs_ssuperblock_t) + bmask) & ~bmask;
-  offset += ((blkcnt + 7) >> 3);
-  offset = (offset + 7) & ~7;
-  offset = (offset + bmask) & ~bmask;
-  kafs_sinode_t *inotbl = (kafs_sinode_t *)((char *)base + offset);
-  kafs_sinode_t *root = &inotbl[KAFS_INO_ROOTDIR];
-
-  const char *name = "file";
-  size_t name_len = strlen(name);
-  off_t dir_off = 0;
-  kafs_sdirent_t dirent;
   kafs_inocnt_t ino = KAFS_INO_NONE;
-  while (dir_off < (off_t)kafs_ino_size_get(root))
-  {
-    size_t hdr = offsetof(kafs_sdirent_t, d_filename);
-    memcpy(&dirent, (char *)root->i_blkreftbl + dir_off, hdr);
-    kafs_filenamelen_t dir_len = kafs_dirent_filenamelen_get(&dirent);
-    if (dir_len == name_len && memcmp((char *)root->i_blkreftbl + dir_off + hdr, name, name_len) == 0)
-    {
-      ino = kafs_dirent_ino_get(&dirent);
-      break;
-    }
-    dir_off += hdr + dir_len;
-  }
-  if (ino == KAFS_INO_NONE)
+  kafs_sinode_t *inotbl = NULL;
+  if (kafs_test_lookup_root_dirent_ino(base, mapsize, "file", &ino, &inotbl, NULL) != 0)
   {
     tlogf("dir lookup failed");
     munmap(base, mapsize);

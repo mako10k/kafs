@@ -2,6 +2,7 @@
 
 #include "kafs.h"
 #include "kafs_context.h"
+#include "kafs_inode.h"
 
 #include <sys/types.h>
 
@@ -35,6 +36,12 @@ void kafs_test_dump_log(const char *log_path, const char *reason);
 // This keeps tests from polluting the repository tree.
 // Returns 0 on success, negative errno on failure.
 int kafs_test_enter_tmpdir(const char *tag);
+
+// Look up a root-directory entry in a mapped image and return its inode number.
+// Supports both legacy dirent layout and v4 directory records when the root dir fits inline.
+int kafs_test_lookup_root_dirent_ino(void *base, off_t mapsize, const char *name,
+                                     kafs_inocnt_t *out_ino, kafs_sinode_t **out_inotbl,
+                                     kafs_sinode_t **out_root);
 
 // Returns the path to the kafs binary used by tests.
 // If KAFS_TEST_KAFS is set, it is used; otherwise falls back to "./kafs".
