@@ -512,7 +512,8 @@ int main(int argc, char **argv)
 
   // root inode
   // inotbl はゼロ初期化済み
-  kafs_sinode_t *inoent_rootdir = &ctx.c_inotbl[KAFS_INO_ROOTDIR];
+  kafs_sinode_t *inoent_rootdir = (kafs_sinode_t *)kafs_inode_ptr_in_table(
+      ctx.c_inotbl, kafs_sb_format_version_get(ctx.c_superblock), KAFS_INO_ROOTDIR);
   // 安全性チェック
   {
     char *p = (char *)inoent_rootdir;

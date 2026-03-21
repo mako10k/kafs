@@ -236,12 +236,16 @@ static int write_inode_at(const char *img, kafs_inocnt_t ino, const kafs_sinode_
   layout += (r_blkcnt + 7u) >> 3;
   layout = (layout + 7u) & ~7u;
   layout = (layout + blksizemask) & ~blksizemask;
-  off_t inode_off = (off_t)layout + (off_t)ino * (off_t)sizeof(*inode);
+  uint64_t inode_off = 0;
+
+  rc = kafs_inode_offset_for_format(kafs_sb_format_version_get(&sb), layout, ino, &inode_off);
+  if (rc != 0)
+    return rc;
 
   int fd = open(img, O_RDWR);
   if (fd < 0)
     return -errno;
-  ssize_t n = pwrite(fd, inode, sizeof(*inode), inode_off);
+  ssize_t n = pwrite(fd, inode, sizeof(*inode), (off_t)inode_off);
   int saved = errno;
   close(fd);
   if (n != (ssize_t)sizeof(*inode))
@@ -264,12 +268,16 @@ static int read_inode_at(const char *img, kafs_inocnt_t ino, kafs_sinode_t *inod
   layout += (r_blkcnt + 7u) >> 3;
   layout = (layout + 7u) & ~7u;
   layout = (layout + blksizemask) & ~blksizemask;
-  off_t inode_off = (off_t)layout + (off_t)ino * (off_t)sizeof(*inode);
+  uint64_t inode_off = 0;
+
+  rc = kafs_inode_offset_for_format(kafs_sb_format_version_get(&sb), layout, ino, &inode_off);
+  if (rc != 0)
+    return rc;
 
   int fd = open(img, O_RDONLY);
   if (fd < 0)
     return -errno;
-  ssize_t n = pread(fd, inode, sizeof(*inode), inode_off);
+  ssize_t n = pread(fd, inode, sizeof(*inode), (off_t)inode_off);
   int saved = errno;
   close(fd);
   if (n != (ssize_t)sizeof(*inode))

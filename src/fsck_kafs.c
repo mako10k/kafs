@@ -1275,7 +1275,7 @@ static int check_tailmeta_live_slot_owner(int fd, const kafs_ssuperblock_t *sb, 
   kafs_sinode_t inoent;
   kafs_inocnt_t owner = kafs_tailmeta_slot_owner_ino_get(slot);
   kafs_inocnt_t inocnt = kafs_sb_inocnt_get(sb);
-  uint64_t inode_off;
+  uint64_t inode_off = 0;
   kafs_off_t inode_size;
   uint16_t expected_len = 0;
   int rc;
@@ -1291,7 +1291,16 @@ static int check_tailmeta_live_slot_owner(int fd, const kafs_ssuperblock_t *sb, 
     return -1;
   }
 
-  inode_off = inode_table_off + (uint64_t)owner * sizeof(inoent);
+  rc = kafs_inode_offset_for_format(kafs_sb_format_version_get(sb), inode_table_off, owner,
+                                    &inode_off);
+  if (rc != 0)
+  {
+    fprintf(stderr,
+            "tailmeta container[%u] slot[%u] owner inode offset overflow: owner=%" PRIuFAST32
+            " rc=%d\n",
+            container_index, slot_index, owner, rc);
+    return -1;
+  }
   if (inode_off >= file_size || sizeof(inoent) > file_size - inode_off)
   {
     fprintf(stderr,
