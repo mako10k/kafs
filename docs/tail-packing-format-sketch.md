@@ -132,6 +132,44 @@ tail arena 側で最低限必要な情報:
    - final partial block only may reside in tail arena
    - middle blocks remain full-block / HRL managed
 
+### Mixed Full-Block Plus Tail Update Sequence
+
+`mixed-full-plus-tail` の更新は、初回導入では次の直列手順に制限するのが安全である。
+
+1. inode の現レイアウトを読む
+2. full-block 部分の更新があるなら既存 block path を先に処理する
+3. final partial block 用の新 fragment を reserve する
+4. new fragment へ final tail payload を書く
+5. slot table / reverse map を更新する
+6. inode の tail descriptor を新 fragment へ切り替える
+7. 旧 fragment を release する
+8. container header 集計値を再計算する
+
+この順序なら、途中 crash が起きても fsck は「新 descriptor が未反映」か「旧 fragment がまだ残っている」のどちらかとして扱いやすい。
+
+### Mixed Update Failure Boundaries
+
+各段階で fsck がどう見るかも先に決めておく。
+
+| crash point | expected surviving state | fsck handling |
+|-------------|--------------------------|---------------|
+| reserve 前 | old descriptor only | 何もしない |
+| reserve 後 / payload 前 | unowned reserved slot | orphan / quarantine 候補 |
+| payload 後 / descriptor switch 前 | old descriptor + prepared new slot | 新 slot を orphan 候補として detach |
+| descriptor switch 後 / old release 前 | old slot と new slot が両方 live | generation を見て old slot を stale 扱い |
+| old release 後 / header recount 前 | new descriptor は正しいが header 集計が古い | header を再計算 |
+
+### Why Not In-Place Tail Mutation
+
+初回導入で同一 slot 上書きを避ける理由:
+
+- partial overwrite と append の境界が複雑になる
+- crash 時に old payload を保全できない
+- generation による stale owner 判定が弱くなる
+- header/live-count/free-bytes の更新順序が読みづらくなる
+
+したがって first-cut は copy-on-write 的に tail fragment を差し替える前提に寄せるのがよい。
+
 ## Journaling Expectations
 
 tail path を入れるなら、少なくとも次の原子性を保つ必要がある。
