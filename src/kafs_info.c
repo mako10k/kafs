@@ -88,6 +88,9 @@ int main(int argc, char **argv)
   printf("hrl index: off=%" PRIu64 " size=%" PRIu64 "; entries: off=%" PRIu64 " cnt=%" PRIu32 "\n",
          (uint64_t)kafs_sb_hrl_index_offset_get(&sb), (uint64_t)kafs_sb_hrl_index_size_get(&sb),
          (uint64_t)kafs_sb_hrl_entry_offset_get(&sb), (uint32_t)kafs_sb_hrl_entry_cnt_get(&sb));
+    printf("tail metadata: enabled=%s off=%" PRIu64 " size=%" PRIu64 "\n",
+      (kafs_sb_feature_flags_get(&sb) & KAFS_FEATURE_TAIL_META_REGION) ? "true" : "false",
+      (uint64_t)kafs_sb_tailmeta_offset_get(&sb), (uint64_t)kafs_sb_tailmeta_size_get(&sb));
 
   kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(&sb);
   uint64_t blksize = 1u << log_blksize;

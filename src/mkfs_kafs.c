@@ -464,6 +464,8 @@ int main(int argc, char **argv)
   kafs_sb_pendinglog_size_set(ctx.c_superblock, (uint64_t)layout.pendinglog_size);
   kafs_sb_checkpoint_seq_set(ctx.c_superblock, 0);
   kafs_sb_commit_seq_set(ctx.c_superblock, 0);
+  kafs_sb_tailmeta_offset_set(ctx.c_superblock, 0);
+  kafs_sb_tailmeta_size_set(ctx.c_superblock, 0);
   kafs_sb_feature_flags_set(ctx.c_superblock, KAFS_FEATURE_ALLOC_V2);
   kafs_sb_compat_flags_set(ctx.c_superblock, 0);
 

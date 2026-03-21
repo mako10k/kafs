@@ -1507,6 +1507,19 @@ int main(int argc, char **argv)
     close(fd);
     return FSCK_EXIT_JOURNAL_CHECK_FAILED;
   }
+  {
+    uint64_t tail_off = kafs_sb_tailmeta_offset_get(&sb);
+    uint64_t tail_size = kafs_sb_tailmeta_size_get(&sb);
+    uint64_t feature_flags = kafs_sb_feature_flags_get(&sb);
+    if ((feature_flags & KAFS_FEATURE_TAIL_META_REGION) != 0 || tail_off != 0 || tail_size != 0)
+    {
+      if (check_region_bounds("tailmeta", tail_off, tail_size, file_size) != 0)
+      {
+        close(fd);
+        return 3;
+      }
+    }
+  }
 
   if (do_check_dirent_ino_orphans || do_repair_dirent_ino_orphans || do_check_hrl_blo_refcounts ||
       do_repair_hrl_blo_refcounts || do_check_inode_block_counts || do_repair_inode_block_counts ||

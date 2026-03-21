@@ -81,8 +81,12 @@ struct kafs_ssuperblock
   /// @brief 機能フラグ
   kafs_su64_t s_feature_flags; // +176 (8)
   /// @brief 互換フラグ（将来拡張）
-  kafs_su64_t s_compat_flags;    // +184 (8)
-  uint8_t s_reserved[256 - 192]; // +192 .. +255
+  kafs_su64_t s_compat_flags; // +184 (8)
+  /// @brief tail metadata region の先頭オフセット（バイト）
+  kafs_su64_t s_tailmeta_offset; // +192 (8)
+  /// @brief tail metadata region のサイズ（バイト）
+  kafs_su64_t s_tailmeta_size; // +200 (8)
+  uint8_t s_reserved[256 - 208]; // +208 .. +255
 } __attribute__((packed));
 
 typedef struct kafs_ssuperblock kafs_ssuperblock_t;
@@ -359,6 +363,22 @@ static inline uint64_t kafs_sb_compat_flags_get(const struct kafs_ssuperblock *s
 static inline void kafs_sb_compat_flags_set(struct kafs_ssuperblock *sb, uint64_t v)
 {
   sb->s_compat_flags = kafs_u64_htos(v);
+}
+static inline uint64_t kafs_sb_tailmeta_offset_get(const struct kafs_ssuperblock *sb)
+{
+  return kafs_u64_stoh(sb->s_tailmeta_offset);
+}
+static inline void kafs_sb_tailmeta_offset_set(struct kafs_ssuperblock *sb, uint64_t v)
+{
+  sb->s_tailmeta_offset = kafs_u64_htos(v);
+}
+static inline uint64_t kafs_sb_tailmeta_size_get(const struct kafs_ssuperblock *sb)
+{
+  return kafs_u64_stoh(sb->s_tailmeta_size);
+}
+static inline void kafs_sb_tailmeta_size_set(struct kafs_ssuperblock *sb, uint64_t v)
+{
+  sb->s_tailmeta_size = kafs_u64_htos(v);
 }
 
 static kafs_blksize_t kafs_sb_blksize_get(const struct kafs_ssuperblock *sb)

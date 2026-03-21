@@ -233,6 +233,10 @@ static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary 
   printf("  blkcnt_free: %" PRIu64 "\n", (uint64_t)kafs_sb_blkcnt_free_get(sb));
   printf("  first_data_block: %" PRIu64 "\n", g.first_data);
   printf("  data_block_count: %" PRIu64 "\n", g.data_blocks);
+    printf("  tailmeta_enabled: %s\n",
+      (kafs_sb_feature_flags_get(sb) & KAFS_FEATURE_TAIL_META_REGION) ? "true" : "false");
+    printf("  tailmeta_offset: %" PRIu64 "\n", kafs_sb_tailmeta_offset_get(sb));
+    printf("  tailmeta_size: %" PRIu64 "\n", kafs_sb_tailmeta_size_get(sb));
 
   printf("inode_summary:\n");
   printf("  status: %s\n", rc_to_text(rc_inode));
@@ -280,7 +284,11 @@ static void print_json(const kafs_ssuperblock_t *sb, const struct inode_summary 
   printf("    \"blkcnt_root\": %" PRIu64 ",\n", g.r_blkcnt);
   printf("    \"blkcnt_free\": %" PRIu64 ",\n", (uint64_t)kafs_sb_blkcnt_free_get(sb));
   printf("    \"first_data_block\": %" PRIu64 ",\n", g.first_data);
-  printf("    \"data_block_count\": %" PRIu64 "\n", g.data_blocks);
+    printf("    \"data_block_count\": %" PRIu64 ",\n", g.data_blocks);
+    printf("    \"tailmeta_enabled\": %s,\n",
+      (kafs_sb_feature_flags_get(sb) & KAFS_FEATURE_TAIL_META_REGION) ? "true" : "false");
+    printf("    \"tailmeta_offset\": %" PRIu64 ",\n", kafs_sb_tailmeta_offset_get(sb));
+    printf("    \"tailmeta_size\": %" PRIu64 "\n", kafs_sb_tailmeta_size_get(sb));
   printf("  },\n");
 
   printf("  \"inode_summary\": {\n");
