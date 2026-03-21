@@ -229,6 +229,38 @@ static inline uint64_t kafs_inode_table_bytes_for_format(uint32_t format_version
   return (uint64_t)inode_bytes * inocnt;
 }
 
+static inline int kafs_inode_offset_for_format(uint32_t format_version, uint64_t inode_table_off,
+                                               uint64_t ino, uint64_t *out_off)
+{
+  size_t inode_bytes = kafs_inode_bytes_for_format(format_version);
+  uint64_t inode_off = 0;
+
+  if (!out_off)
+    return -EINVAL;
+  if (inode_bytes == 0)
+    return -EINVAL;
+  if (ino > (UINT64_MAX / (uint64_t)inode_bytes))
+    return -ERANGE;
+
+  inode_off = inode_table_off + ino * (uint64_t)inode_bytes;
+  if (inode_off < inode_table_off)
+    return -ERANGE;
+
+  *out_off = inode_off;
+  return 0;
+}
+
+static inline void *kafs_inode_ptr_in_table(void *inode_table_base, uint32_t format_version,
+                                            uint64_t ino)
+{
+  size_t inode_bytes = kafs_inode_bytes_for_format(format_version);
+
+  if (!inode_table_base || inode_bytes == 0)
+    return NULL;
+
+  return (void *)((char *)inode_table_base + ino * inode_bytes);
+}
+
 static kafs_mode_t kafs_ino_mode_get(const kafs_sinode_t *inoent)
 {
   return kafs_mode_stoh(inoent->i_mode);
