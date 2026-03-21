@@ -790,9 +790,9 @@ static int hrl_count_tbl_refs(struct hrl_scan_ctx *sctx, kafs_blkcnt_t tbl_blo, 
   return 0;
 }
 
-static void hrl_scan_expected_inode_refs(struct hrl_scan_ctx *sctx, kafs_context_t *ctx,
-                                         kafs_inocnt_t inocnt)
+static void hrl_scan_expected_inode_refs(struct hrl_scan_ctx *sctx, kafs_inocnt_t inocnt)
 {
+  kafs_context_t *ctx = sctx->ctx;
   for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
   {
     const kafs_sinode_t *e = &ctx->c_inotbl[ino];
@@ -833,7 +833,7 @@ static int check_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_refcheck_stat
   }
 
   struct hrl_scan_ctx sctx = {ctx, r_blkcnt, l2, blksize, refs_pb, expected, stats};
-  hrl_scan_expected_inode_refs(&sctx, ctx, inocnt);
+  hrl_scan_expected_inode_refs(&sctx, inocnt);
 
   uint64_t ent_off = kafs_sb_hrl_entry_offset_get(sb);
   uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sb);
@@ -915,7 +915,7 @@ static int repair_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_repair_stats
   struct hrl_refcheck_stats hst;
   memset(&hst, 0, sizeof(hst));
   struct hrl_scan_ctx sctx = {ctx, r_blkcnt, l2, blksize, refs_pb, expected, &hst};
-  hrl_scan_expected_inode_refs(&sctx, ctx, inocnt);
+  hrl_scan_expected_inode_refs(&sctx, inocnt);
 
   uint64_t ent_off = kafs_sb_hrl_entry_offset_get(sb);
   uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sb);
@@ -998,7 +998,7 @@ static int punch_unreferenced_data_blocks(kafs_context_t *ctx, int fd, struct pu
   struct hrl_refcheck_stats hst;
   memset(&hst, 0, sizeof(hst));
   struct hrl_scan_ctx sctx = {ctx, r_blkcnt, l2, blksize, refs_pb, expected, &hst};
-  hrl_scan_expected_inode_refs(&sctx, ctx, inocnt);
+  hrl_scan_expected_inode_refs(&sctx, inocnt);
 
   uint64_t ent_off = kafs_sb_hrl_entry_offset_get(sb);
   uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sb);
