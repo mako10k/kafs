@@ -26,62 +26,6 @@ static void tlogf(const char *fmt, ...)
   va_end(ap);
 }
 
-static int is_mounted_fuse(const char *mnt)
-{
-  char absmnt[PATH_MAX];
-  const char *want = mnt;
-  if (realpath(mnt, absmnt) != NULL)
-    want = absmnt;
-  FILE *fp = fopen("/proc/mounts", "r");
-  if (!fp)
-    return 0;
-  char dev[256], dir[256], type[64];
-  int mounted = 0;
-  while (fscanf(fp, "%255s %255s %63s %*[^\n]\n", dev, dir, type) == 3)
-  {
-    if (strcmp(dir, want) == 0 && strncmp(type, "fuse", 4) == 0)
-    {
-      mounted = 1;
-      break;
-    }
-  }
-  fclose(fp);
-  return mounted;
-}
-
-static pid_t spawn_kafs(const char *img, const char *mnt)
-{
-  mkdir(mnt, 0700);
-  pid_t pid = fork();
-  if (pid < 0)
-    return -errno;
-  if (pid == 0)
-  {
-    setenv("KAFS_IMAGE", img, 1);
-    int lfd = open("minisrv.log", O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    if (lfd >= 0)
-    {
-      dup2(lfd, STDERR_FILENO);
-      dup2(lfd, STDOUT_FILENO);
-      close(lfd);
-    }
-    const char *kafs = kafs_test_kafs_bin();
-    char *args[] = {(char *)kafs, (char *)mnt, "-f", NULL};
-    execvp(args[0], args);
-    _exit(127);
-  }
-  for (int i = 0; i < 50; ++i)
-  {
-    if (is_mounted_fuse(mnt))
-      return pid;
-    struct timespec ts = {0, 100 * 1000 * 1000};
-    nanosleep(&ts, NULL);
-  }
-  kill(pid, SIGTERM);
-  waitpid(pid, NULL, 0);
-  return -1;
-}
-
 static int run_cmd(char *const argv[])
 {
   pid_t p = fork();
@@ -167,41 +111,11 @@ static int count_tombstones(const char *img, uint32_t *out_count)
   return 0;
 }
 
-static int is_still_mounted(const char *mnt) { return is_mounted_fuse(mnt); }
 
-static void stop_kafs(const char *mnt, pid_t pid)
-{
-  // 1) 先にサーバプロセスを止める（FUSEの応答待ちを避ける）
-  kill(pid, SIGTERM);
-  (void)waitpid(pid, NULL, 0);
-
-  // 2) 通常のアンマウントを数回試行
-  for (int i = 0; i < 5; ++i)
-  {
-    if (!is_still_mounted(mnt))
-      break;
-    char *um1[] = {"fusermount3", "-u", (char *)mnt, NULL};
-    if (run_cmd(um1) == 0 && !is_still_mounted(mnt))
-      break;
-    // 少し待つ
-    struct timespec ts = {0, 100 * 1000 * 1000};
-    nanosleep(&ts, NULL);
-  }
-
-  // 3) まだ残っていたら lazy unmount でフォールバック
-  if (is_still_mounted(mnt))
-  {
-    char *um3[] = {"fusermount3", "-u", "-z", (char *)mnt, NULL};
-    (void)run_cmd(um3);
-  }
-
-  // 4) 念のため旧fusermountにもフォールバック
-  if (is_still_mounted(mnt))
-  {
-    char *um2[] = {"fusermount", "-u", (char *)mnt, NULL};
-    (void)run_cmd(um2);
-  }
-}
+static const kafs_test_mount_options_t k_mount_options = {
+    .log_path = "minisrv.log",
+    .timeout_ms = 5000,
+};
 
 int main(void)
 {
@@ -219,9 +133,10 @@ int main(void)
   munmap(ctx.c_superblock, mapsize);
   close(ctx.c_fd);
 
-  pid_t srv = spawn_kafs(img, mnt);
+  pid_t srv = kafs_test_start_kafs(img, mnt, &k_mount_options);
   if (srv <= 0)
   {
+    tlogf("mount failed");
     return 77;
   }
 
@@ -230,7 +145,7 @@ int main(void)
   int fdw = open(p, O_CREAT | O_TRUNC | O_WRONLY, 0644);
   if (fdw < 0)
   {
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   write(fdw, "abcdef", 6);
@@ -239,13 +154,13 @@ int main(void)
   int fdr = open(p, O_RDONLY);
   if (fdr < 0)
   {
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   // path unlink
   if (unlink(p) != 0)
   {
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   // 読めること
@@ -255,7 +170,7 @@ int main(void)
   {
     tlogf("read after unlink failed");
     close(fdr);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   close(fdr);
@@ -263,11 +178,11 @@ int main(void)
   if (access(p, F_OK) == 0)
   {
     tlogf("path still exists");
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
-  stop_kafs(mnt, srv);
+  kafs_test_stop_kafs(mnt, srv);
 
   const char *img2 = "dir-unlink-leak.img";
   const char *mnt2 = "mnt-dir-unlink";
@@ -276,9 +191,12 @@ int main(void)
   munmap(ctx.c_superblock, mapsize);
   close(ctx.c_fd);
 
-  srv = spawn_kafs(img2, mnt2);
+  srv = kafs_test_start_kafs(img2, mnt2, &k_mount_options);
   if (srv <= 0)
+  {
+    tlogf("mount failed");
     return 77;
+  }
 
   for (int i = 1; i <= 8; ++i)
   {
@@ -287,14 +205,14 @@ int main(void)
     if (fd < 0)
     {
       tlogf("create tiny file failed: %s", strerror(errno));
-      stop_kafs(mnt2, srv);
+      kafs_test_stop_kafs(mnt2, srv);
       return 1;
     }
     if (write(fd, "x", 1) != 1)
     {
       tlogf("write tiny file failed: %s", strerror(errno));
       close(fd);
-      stop_kafs(mnt2, srv);
+      kafs_test_stop_kafs(mnt2, srv);
       return 1;
     }
     close(fd);
@@ -306,12 +224,12 @@ int main(void)
     if (unlink(p) != 0)
     {
       tlogf("unlink tiny file failed: %s", strerror(errno));
-      stop_kafs(mnt2, srv);
+      kafs_test_stop_kafs(mnt2, srv);
       return 1;
     }
   }
 
-  stop_kafs(mnt2, srv);
+  kafs_test_stop_kafs(mnt2, srv);
 
   char *fsck_argv[] = {(char *)pick_fsck_bin(), "--check-hrl-blo-refcounts", (char *)img2, NULL};
   if (run_cmd(fsck_argv) != 0)
@@ -339,14 +257,17 @@ int main(void)
     return 1;
   }
 
-  srv = spawn_kafs(img2, mnt2);
+  srv = kafs_test_start_kafs(img2, mnt2, &k_mount_options);
   if (srv <= 0)
+  {
+    tlogf("remount failed");
     return 77;
+  }
   {
     struct timespec ts = {2, 0};
     nanosleep(&ts, NULL);
   }
-  stop_kafs(mnt2, srv);
+  kafs_test_stop_kafs(mnt2, srv);
 
   tombstones = 0;
   if (count_tombstones(img2, &tombstones) != 0)
@@ -367,9 +288,12 @@ int main(void)
   munmap(ctx.c_superblock, mapsize);
   close(ctx.c_fd);
 
-  srv = spawn_kafs(img3, mnt3);
+  srv = kafs_test_start_kafs(img3, mnt3, &k_mount_options);
   if (srv <= 0)
+  {
+    tlogf("mount failed");
     return 77;
+  }
 
   for (int i = 1; i <= 7; ++i)
   {
@@ -378,14 +302,14 @@ int main(void)
     if (fd < 0)
     {
       tlogf("create pressure filler failed: %s", strerror(errno));
-      stop_kafs(mnt3, srv);
+      kafs_test_stop_kafs(mnt3, srv);
       return 1;
     }
     if (write(fd, "z", 1) != 1)
     {
       tlogf("write pressure filler failed: %s", strerror(errno));
       close(fd);
-      stop_kafs(mnt3, srv);
+      kafs_test_stop_kafs(mnt3, srv);
       return 1;
     }
     close(fd);
@@ -397,14 +321,14 @@ int main(void)
     if (fd < 0)
     {
       tlogf("create pressure victim failed: %s", strerror(errno));
-      stop_kafs(mnt3, srv);
+      kafs_test_stop_kafs(mnt3, srv);
       return 1;
     }
     if (write(fd, "q", 1) != 1)
     {
       tlogf("write pressure victim failed: %s", strerror(errno));
       close(fd);
-      stop_kafs(mnt3, srv);
+      kafs_test_stop_kafs(mnt3, srv);
       return 1;
     }
     close(fd);
@@ -412,11 +336,11 @@ int main(void)
   if (unlink(p) != 0)
   {
     tlogf("unlink pressure victim failed: %s", strerror(errno));
-    stop_kafs(mnt3, srv);
+    kafs_test_stop_kafs(mnt3, srv);
     return 1;
   }
 
-  stop_kafs(mnt3, srv);
+  kafs_test_stop_kafs(mnt3, srv);
 
   tombstones = 0;
   if (count_tombstones(img3, &tombstones) != 0)

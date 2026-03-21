@@ -15,59 +15,10 @@
 #include <time.h>
 #include <unistd.h>
 
-static int is_mounted_fuse(const char *mnt)
-{
-  FILE *fp = fopen("/proc/mounts", "r");
-  if (!fp)
-    return 0;
-  char dev[256], dir[256], type[64];
-  int mounted = 0;
-  while (fscanf(fp, "%255s %255s %63s %*[^\n]\n", dev, dir, type) == 3)
-  {
-    if (strcmp(dir, mnt) == 0 && strncmp(type, "fuse", 4) == 0)
-    {
-      mounted = 1;
-      break;
-    }
-  }
-  fclose(fp);
-  return mounted;
-}
-
-static pid_t spawn_kafs(const char *img, const char *mnt)
-{
-  mkdir(mnt, 0700);
-  pid_t pid = fork();
-  if (pid < 0)
-    return -1;
-  if (pid == 0)
-  {
-    setenv("KAFS_IMAGE", img, 1);
-    int lfd = open("minisrv.log", O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    if (lfd >= 0)
-    {
-      dup2(lfd, STDERR_FILENO);
-      dup2(lfd, STDOUT_FILENO);
-      close(lfd);
-    }
-    const char *kafs = kafs_test_kafs_bin();
-    char *args[] = {(char *)kafs, (char *)mnt, "-f", NULL};
-    execvp(args[0], args);
-    _exit(127);
-  }
-
-  for (int i = 0; i < 100; ++i)
-  {
-    if (is_mounted_fuse(mnt))
-      return pid;
-    struct timespec ts = {0, 100 * 1000 * 1000};
-    nanosleep(&ts, NULL);
-  }
-
-  kill(pid, SIGTERM);
-  waitpid(pid, NULL, 0);
-  return -1;
-}
+static const kafs_test_mount_options_t k_mount_options = {
+    .log_path = "minisrv.log",
+    .timeout_ms = 10000,
+};
 
 static int verify_region(const uint8_t *buf, size_t start, size_t end, uint8_t v)
 {
@@ -93,10 +44,12 @@ int main(void)
     return 77;
   munmap(ctx.c_superblock, mapsize);
   close(ctx.c_fd);
-
-  pid_t srv = spawn_kafs(img, mnt);
+  pid_t srv = kafs_test_start_kafs(img, mnt, &k_mount_options);
   if (srv <= 0)
+  {
+    fprintf(stderr, "mount failed\n");
     return 77;
+  }
 
   int rc = 0;
   int fd = open(file, O_CREAT | O_RDWR, 0644);

@@ -15,6 +15,22 @@ int kafs_test_mkimg(const char *path, size_t bytes, unsigned log_bs, unsigned in
 // Stop a running kafs instance and unmount (best-effort).
 void kafs_test_stop_kafs(const char *mnt, pid_t kafs_pid);
 
+typedef struct kafs_test_mount_options
+{
+  const char *debug;
+  const char *log_path;
+  int multithread;
+  int timeout_ms;
+} kafs_test_mount_options_t;
+
+// Start kafs in the foreground for mount-based tests.
+// Returns the child pid on success, negative/zero on failure.
+pid_t kafs_test_start_kafs(const char *img, const char *mnt,
+                           const kafs_test_mount_options_t *options);
+
+// Dump a previously captured kafs log file to stderr if it exists.
+void kafs_test_dump_log(const char *log_path, const char *reason);
+
 // Create a unique workdir under ${TMPDIR:-/tmp} and chdir into it.
 // This keeps tests from polluting the repository tree.
 // Returns 0 on success, negative errno on failure.

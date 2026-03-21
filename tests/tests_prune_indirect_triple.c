@@ -29,6 +29,12 @@ static void tlogf(const char *fmt, ...)
   va_end(ap);
 }
 
+static const kafs_test_mount_options_t k_mount_options = {
+    .debug = "3",
+    .log_path = "minisrv.log",
+    .timeout_ms = 10000,
+};
+
 static int is_mounted_fuse(const char *mnt)
 {
   char absmnt[PATH_MAX];
@@ -131,7 +137,7 @@ int main(void)
   munmap(ctx.c_superblock, mapsize);
   close(ctx.c_fd);
 
-  pid_t srv = spawn_kafs(img, mnt, "3");
+  pid_t srv = kafs_test_start_kafs(img, mnt, &k_mount_options);
   if (srv <= 0)
   {
     tlogf("mount failed");
@@ -144,7 +150,7 @@ int main(void)
   if (fd < 0)
   {
     tlogf("create failed:%s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -159,7 +165,7 @@ int main(void)
   {
     tlogf("pwrite TI data failed: %s", strerror(errno));
     close(fd);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -170,13 +176,13 @@ int main(void)
   {
     tlogf("pwrite TI zero failed: %s", strerror(errno));
     close(fd);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   fsync(fd);
   close(fd);
 
-  stop_kafs(mnt, srv);
+  kafs_test_stop_kafs(mnt, srv);
 
   int ifd = open(img, O_RDONLY);
   if (ifd < 0)

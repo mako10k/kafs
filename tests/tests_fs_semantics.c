@@ -26,79 +26,11 @@ static void tlogf(const char *fmt, ...)
   va_end(ap);
 }
 
-static int is_mounted_fuse(const char *mnt)
-{
-  char absmnt[PATH_MAX];
-  const char *want = mnt;
-  if (realpath(mnt, absmnt) != NULL)
-    want = absmnt;
-  FILE *fp = fopen("/proc/mounts", "r");
-  if (!fp)
-    return 0;
-  char dev[256], dir[256], type[64];
-  int mounted = 0;
-  while (fscanf(fp, "%255s %255s %63s %*[^\n]\n", dev, dir, type) == 3)
-  {
-    if (strcmp(dir, want) == 0 && strncmp(type, "fuse", 4) == 0)
-    {
-      mounted = 1;
-      break;
-    }
-  }
-  fclose(fp);
-  return mounted;
-}
-
-static pid_t spawn_kafs(const char *img, const char *mnt, const char *debug)
-{
-  mkdir(mnt, 0700);
-  pid_t pid = fork();
-  if (pid < 0)
-    return -errno;
-  if (pid == 0)
-  {
-    setenv("KAFS_IMAGE", img, 1);
-    if (debug)
-      setenv("KAFS_DEBUG", debug, 1);
-    int lfd = open("minisrv.log", O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    if (lfd >= 0)
-    {
-      dup2(lfd, STDERR_FILENO);
-      dup2(lfd, STDOUT_FILENO);
-      close(lfd);
-    }
-    const char *kafs = kafs_test_kafs_bin();
-    char *args[] = {(char *)kafs, (char *)mnt, "-f", NULL};
-    execvp(args[0], args);
-    _exit(127);
-  }
-  for (int i = 0; i < 50; ++i)
-  {
-    if (is_mounted_fuse(mnt))
-      return pid;
-    struct timespec ts = {0, 100 * 1000 * 1000};
-    nanosleep(&ts, NULL);
-  }
-  kill(pid, SIGTERM);
-  waitpid(pid, NULL, 0);
-  return -1;
-}
-
-static void stop_kafs(const char *mnt, pid_t pid)
-{
-  char *um1[] = {"fusermount3", "-u", (char *)mnt, NULL};
-  if (fork() == 0)
-  {
-    execvp(um1[0], um1);
-    _exit(127);
-  }
-  else
-  {
-    wait(NULL);
-  }
-  kill(pid, SIGTERM);
-  waitpid(pid, NULL, 0);
-}
+static const kafs_test_mount_options_t k_mount_options = {
+    .debug = "1",
+    .log_path = "minisrv.log",
+    .timeout_ms = 5000,
+};
 
 int main(void)
 {
@@ -117,7 +49,7 @@ int main(void)
   munmap(ctx.c_superblock, mapsize);
   close(ctx.c_fd);
 
-  pid_t srv = spawn_kafs(img, mnt, "1");
+  pid_t srv = kafs_test_start_kafs(img, mnt, &k_mount_options);
   if (srv <= 0)
   {
     tlogf("mount failed");
@@ -131,7 +63,7 @@ int main(void)
   if (fd < 0)
   {
     tlogf("create file failed:%s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   close(fd);
@@ -139,7 +71,7 @@ int main(void)
   if (mkdir(p, 0700) == 0 || errno != ENOTDIR)
   {
     tlogf("expected ENOTDIR, got %d", errno);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -149,7 +81,7 @@ int main(void)
   if (fd < 0)
   {
     tlogf("create trunc failed:%s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   const char *data = "abc";
@@ -159,7 +91,7 @@ int main(void)
   if (fd < 0)
   {
     tlogf("open O_TRUNC failed:%s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   close(fd);
@@ -167,7 +99,7 @@ int main(void)
   if (stat(p, &st) != 0 || st.st_size != 0)
   {
     tlogf("truncate not applied size=%ld", (long)st.st_size);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
@@ -176,13 +108,13 @@ int main(void)
   if (mkdir(p, 0755) != 0)
   {
     tlogf("mkdir dir failed:%s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   if (chmod(p, 0555) != 0)
   {
     tlogf("chmod failed:%s", strerror(errno));
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   char p2[PATH_MAX];
@@ -193,17 +125,17 @@ int main(void)
   {
     close(rc);
     tlogf("create should have failed in ro dir");
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
   if (errno != EACCES && errno != EPERM)
   {
     tlogf("expected EACCES/EPERM, got %d", errno);
-    stop_kafs(mnt, srv);
+    kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
 
-  stop_kafs(mnt, srv);
+  kafs_test_stop_kafs(mnt, srv);
   tlogf("fs_semantics OK");
   return 0;
 }
