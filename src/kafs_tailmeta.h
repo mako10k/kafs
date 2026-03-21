@@ -449,7 +449,7 @@ kafs_tailmeta_inode_desc_to_inode_taildesc(kafs_sinode_taildesc_v5_t *taildesc,
 static inline int kafs_tailmeta_inode_desc_uses_tail_storage(const kafs_tailmeta_inode_desc_t *desc)
 {
   uint8_t kind = kafs_tailmeta_inode_desc_layout_kind_get(desc);
-  return kind == KAFS_TAIL_LAYOUT_TAIL_ONLY || kind == KAFS_TAIL_LAYOUT_MIXED_FULL_TAIL;
+  return kafs_tail_layout_uses_tail_storage(kind);
 }
 
 static inline int kafs_tailmeta_region_present(const kafs_ssuperblock_t *sb)
