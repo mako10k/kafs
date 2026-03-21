@@ -1,6 +1,9 @@
 AM_CPPFLAGS = -include $(srcdir)/kafs_config.h
 
 bin_PROGRAMS = kafs mkfs.kafs fsck.kafs kafs-info kafsdump kafsimage kafsresize kafsctl kafs-front kafs-back
+sbin_SCRIPTS = mount.kafs
+EXTRA_DIST = mount.kafs.in
+CLEANFILES = $(sbin_SCRIPTS)
 
 # add per-target flags; silence unused-function as headers provide many static helpers
 kafs_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter

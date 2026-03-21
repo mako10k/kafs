@@ -61,5 +61,6 @@ AC_CHECK_FUNCS([memset])
 
 AC_CONFIG_FILES([Makefile
                  src/Makefile
+                 src/mount.kafs
                  tests/Makefile])
 AC_OUTPUT

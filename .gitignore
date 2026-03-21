@@ -54,6 +54,7 @@
 /src/kafsresize
 /src/kafs-front
 /src/kafs-back
+/src/mount.kafs
 /src/hrl_smoketest
 /src/hrl_dec_ref_by_blo
 /src/hrl_unconfigured
@@ -100,6 +101,7 @@
 /tests/prune_indirect_triple
 /tests/truncate_prune
 /tests/reflink_clone
+/tests/bg_dedup_skip_dirs
 /tests/kafsresize
 /tests/journal_boundary
 /tests/fallocate_lseek_block

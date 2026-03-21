@@ -1,0 +1,25 @@
+#! /bin/sh
+
+script_name=${0##*/}
+prefix='@prefix@'
+exec_prefix='@exec_prefix@'
+kafs_bin='@bindir@/kafs'
+
+if [ "$prefix" = NONE ]; then
+  prefix=/usr/local
+fi
+
+if [ "$exec_prefix" = NONE ]; then
+  exec_prefix=$prefix
+fi
+
+eval "prefix=\"$prefix\""
+eval "exec_prefix=\"$exec_prefix\""
+eval "kafs_bin=\"$kafs_bin\""
+
+if [ ! -x "$kafs_bin" ]; then
+  echo "$script_name: kafs binary not found at $kafs_bin" >&2
+  exit 127
+fi
+
+exec "$kafs_bin" "$@"
