@@ -663,6 +663,57 @@ destination image に対して最低限必要な確認:
 - fsck が orphan fragment / descriptor mismatch を 0 件で通過する
 - mount 後の read-only smoke test が通る
 
+## Observability And Counters
+
+tail packing は format 追加だけでなく、効果と失敗面を見える化する必要がある。
+
+first-cut で欲しい観測点:
+
+- tail-only inode 数
+- mixed-full-plus-tail inode 数
+- tail arena 使用 bytes
+- tail arena free bytes
+- class ごとの slot 使用率
+- tail -> full-block promotion 回数
+- orphan fragment 検出件数
+- fsck repair で detach / quarantine した fragment 件数
+
+### Recommended Stats Surface
+
+初回導入で露出したい面:
+
+- `kafsctl stats`
+   - tail arena bytes used/free
+   - fragment class occupancy
+   - promotion counter
+- `kafs-info`
+   - filesystem 全体で tail packing が有効か
+   - format version
+   - tail metadata region の概要
+- `fsck.kafs`
+   - orphan / stale / mismatch の件数
+   - repair 内訳
+
+### Diagnostic Logging Expectations
+
+常時 verbose にする必要はないが、少なくとも異常系では次を出せるべきである。
+
+- descriptor mismatch を起こした inode 番号
+- container block 番号と slot 情報
+- stale generation の old/new 値
+- promotion 発生前後の layout kind
+- quarantine に送った fragment 数
+
+### Success Criteria For Early Rollout
+
+observability 上の初期成功条件は次のように置ける。
+
+- small-file workload で tail-only inode 数が増える
+- full-block path の既存エラー率が増えない
+- orphan / mismatch counter が steady-state で 0 近傍に張り付く
+- promotion counter が想定外に暴れない
+- fsck repair が日常運用で常態化しない
+
 ## Phased Implementation Plan
 
 1. format sketch を固定
