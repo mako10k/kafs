@@ -35,7 +35,9 @@ static void usage(const char *prog)
   fprintf(stderr, "  [Layout]\n");
   fprintf(stderr, "    -s, --size-bytes <N>              Total image size (default: 1GiB)\n");
   fprintf(stderr, "    -b, --blksize-log <L>             Block size log2 (default: 12 => 4096B)\n");
-  fprintf(stderr, "    -i, --inodes <I>                  Inode count (default: 65536)\n");
+  fprintf(
+      stderr,
+      "    -i, --inodes <I>                  Inode count (default: 1 inode per 16KiB, min: 256)\n");
   fprintf(stderr,
           "    -J, --journal-size-bytes <J>      Journal size (default: 1MiB, min: 4KiB)\n");
   fprintf(stderr, "    --hrl-entry-ratio <R>             HRL entries/data-block ratio (default: "
@@ -113,6 +115,25 @@ struct mkfs_layout
   size_t pendinglog_size;
   off_t pendinglog_off;
 };
+
+#define KAFS_MKFS_DEFAULT_BYTES_PER_INODE (16u * 1024u)
+#define KAFS_MKFS_MIN_INODES 256u
+
+static kafs_inocnt_t mkfs_default_inocnt_for_size(off_t total_bytes)
+{
+  uint64_t inode_count = 0;
+
+  if (total_bytes <= 0)
+    return KAFS_MKFS_MIN_INODES;
+
+  inode_count = (uint64_t)total_bytes / (uint64_t)KAFS_MKFS_DEFAULT_BYTES_PER_INODE;
+  if (inode_count < (uint64_t)KAFS_MKFS_MIN_INODES)
+    inode_count = (uint64_t)KAFS_MKFS_MIN_INODES;
+  if (inode_count > (uint64_t)UINT32_MAX)
+    inode_count = (uint64_t)UINT32_MAX;
+
+  return (kafs_inocnt_t)inode_count;
+}
 
 static void compute_layout(kafs_blkcnt_t blkcnt, kafs_blksize_t blksizemask, kafs_inocnt_t inocnt,
                            size_t journal_bytes, double hrl_entry_ratio, struct mkfs_layout *out)
@@ -236,10 +257,11 @@ int main(int argc, char **argv)
   kafs_blksize_t blksize = 1u << log_blksize;
   kafs_blksize_t blksizemask = blksize - 1u;
   off_t total_bytes = 1024ll * 1024ll * 1024ll; // 1GiB
-  kafs_inocnt_t inocnt = 65536;                 // number of inodes
+  kafs_inocnt_t inocnt = 0;                     // number of inodes
   size_t journal_bytes = 1u << 20;              // 1MiB default journal region
   double hrl_entry_ratio = 0.75;
   int size_arg_provided = 0;
+  int inocnt_arg_provided = 0;
   int trim_data_area = 0;
   int assume_yes = 0;
 
@@ -268,6 +290,7 @@ int main(int argc, char **argv)
     else if ((strcmp(argv[i], "--inodes") == 0 || strcmp(argv[i], "-i") == 0) && i + 1 < argc)
     {
       inocnt = (kafs_inocnt_t)strtoul(argv[++i], NULL, 0);
+      inocnt_arg_provided = 1;
     }
     else if ((strcmp(argv[i], "--journal-size-bytes") == 0 || strcmp(argv[i], "-J") == 0) &&
              i + 1 < argc)
@@ -369,6 +392,9 @@ int main(int argc, char **argv)
     return 1;
 #endif
   }
+
+  if (!inocnt_arg_provided)
+    inocnt = mkfs_default_inocnt_for_size(total_bytes);
 
   struct mkfs_layout layout = {0};
   kafs_blkcnt_t blkcnt = 0;

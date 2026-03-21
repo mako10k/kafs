@@ -37,7 +37,11 @@ is used and overrides this option.
 Block size as log2 value (default: 12 => 4096 bytes).
 .TP
 .BR -i ", " --inodes "=" count
-Number of inodes (default: 65536).
+Number of inodes.
+By default,
+.B mkfs.kafs
+uses roughly 1 inode per 16KiB of image size, with a minimum of 256 inodes.
+For the default 1GiB image size this yields 65536 inodes.
 .TP
 .BR -J ", " --journal-size-bytes "=" bytes
 Journal region size (default: 1MiB, minimum 4KiB). K/M/G suffixes are accepted.
