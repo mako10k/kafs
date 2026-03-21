@@ -84,7 +84,6 @@ struct kafs_stailmeta_inode_desc
   kafs_sblkcnt_t ti_container_blo;
   uint16_t ti_fragment_off;
   kafs_su32_t ti_generation;
-  uint16_t ti_reserved0;
 } __attribute__((packed));
 
 typedef struct kafs_stailmeta_inode_desc kafs_tailmeta_inode_desc_t;
@@ -95,8 +94,8 @@ _Static_assert(sizeof(kafs_tailmeta_container_hdr_t) == 36,
                "kafs_tailmeta_container_hdr_t must be 36 bytes");
 _Static_assert(sizeof(kafs_tailmeta_slot_desc_t) == 12,
                "kafs_tailmeta_slot_desc_t must be 12 bytes");
-_Static_assert(sizeof(kafs_tailmeta_inode_desc_t) == 16,
-               "kafs_tailmeta_inode_desc_t must be 16 bytes");
+_Static_assert(sizeof(kafs_tailmeta_inode_desc_t) == 14,
+               "kafs_tailmeta_inode_desc_t must be 14 bytes");
 
 static inline uint16_t kafs_tailmeta_region_hdr_version_get(const kafs_tailmeta_region_hdr_t *hdr)
 {
@@ -403,18 +402,6 @@ static inline void kafs_tailmeta_inode_desc_generation_set(kafs_tailmeta_inode_d
   desc->ti_generation = kafs_u32_htos(v);
 }
 
-static inline uint16_t
-kafs_tailmeta_inode_desc_reserved0_get(const kafs_tailmeta_inode_desc_t *desc)
-{
-  return le16toh(desc->ti_reserved0);
-}
-
-static inline void kafs_tailmeta_inode_desc_reserved0_set(kafs_tailmeta_inode_desc_t *desc,
-                                                          uint16_t v)
-{
-  desc->ti_reserved0 = htole16(v);
-}
-
 static inline void kafs_tailmeta_inode_desc_init(kafs_tailmeta_inode_desc_t *desc)
 {
   memset(desc, 0, sizeof(*desc));
@@ -569,7 +556,6 @@ static inline int kafs_tailmeta_inode_desc_validate(const kafs_tailmeta_inode_de
   uint8_t flags = 0;
   uint16_t len = 0;
   uint16_t off = 0;
-  uint16_t reserved0 = 0;
   uint32_t generation = 0;
   kafs_blkcnt_t container_blo = (kafs_blkcnt_t)0;
 
@@ -580,7 +566,6 @@ static inline int kafs_tailmeta_inode_desc_validate(const kafs_tailmeta_inode_de
   flags = kafs_tailmeta_inode_desc_flags_get(desc);
   len = kafs_tailmeta_inode_desc_fragment_len_get(desc);
   off = kafs_tailmeta_inode_desc_fragment_off_get(desc);
-  reserved0 = kafs_tailmeta_inode_desc_reserved0_get(desc);
   generation = kafs_tailmeta_inode_desc_generation_get(desc);
   container_blo = kafs_tailmeta_inode_desc_container_blo_get(desc);
 
@@ -588,15 +573,13 @@ static inline int kafs_tailmeta_inode_desc_validate(const kafs_tailmeta_inode_de
   {
   case KAFS_TAIL_LAYOUT_INLINE:
   case KAFS_TAIL_LAYOUT_FULL_BLOCK:
-    if (flags != 0u || len != 0u || off != 0u || generation != 0u || reserved0 != 0u)
+    if (flags != 0u || len != 0u || off != 0u || generation != 0u)
       return -EPROTO;
     return (container_blo == (kafs_blkcnt_t)0) ? 0 : -EPROTO;
 
   case KAFS_TAIL_LAYOUT_TAIL_ONLY:
   case KAFS_TAIL_LAYOUT_MIXED_FULL_TAIL:
     if ((flags & ~KAFS_TAILDESC_KNOWN_FLAGS) != 0u)
-      return -EPROTO;
-    if (reserved0 != 0u)
       return -EPROTO;
     if (class_bytes == 0u || len == 0u || len > class_bytes)
       return -EPROTO;
