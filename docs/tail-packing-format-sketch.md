@@ -483,7 +483,66 @@ MiB 換算ではそれぞれおよそ次になる。
 
 このコストは `sizeof(kafs_sinode_t) * inocnt` を丸ごと積む既存 geometry 算定にそのまま乗るため、意味づけが曖昧にならない。
 
-初回導入の判断としては、`KAFS_DIRECT_SIZE` を削って small-file fast path を弱めるコストより、inode table が線形に 16 bytes/inode 増えるコストの方が扱いやすい。
+初回導入の判断としては、`KAFS_DIRECT_SIZE` を削って small-file fast path を弱めるコストより、inode table が線形に増えるコストの方が扱いやすい。
+
+### 128-Byte Inode Target
+
+inode growth を採る前提でも、first-cut の目標サイズは 130 bytes より 128 bytes の方が望ましい。
+
+理由:
+
+- 128 bytes は 2 の冪であり、inode table を配列として走査したときの stride がきれいである
+- 4 KiB page あたり `128` bytes なら 32 inode ちょうど収まる
+- `130` bytes だと 31 inode しか入らず、1 page あたり 66 bytes の端数が残る
+- inode table 全体でも 128 bytes の方が密度が高く、format geometry の説明が単純になる
+
+典型 inode count で 128 bytes target を採った場合の inode table は次のとおりである。
+
+| inode count | current table bytes | 128-byte table bytes | delta |
+|-------------|---------------------|----------------------|-------|
+| 65,536 | 7,471,104 | 8,388,608 | 917,504 |
+| 262,144 | 29,884,416 | 33,554,432 | 3,670,016 |
+| 1,048,576 | 119,537,664 | 134,217,728 | 14,680,064 |
+
+MiB 換算ではおよそ次になる。
+
+- 65,536 inode: 7.125 MiB -> 8.0 MiB
+- 262,144 inode: 28.5 MiB -> 32.0 MiB
+- 1,048,576 inode: 114.0 MiB -> 128.0 MiB
+
+130 bytes 案との比較では、128 bytes 案は inode あたり 2 bytes 小さいだけではなく、page packing の単位でもきれいに割り切れる。
+
+### 128 vs 130 Within Inode Growth
+
+Issue #84 の選択肢 A を採る場合でも、inode growth の具体形はさらに 2 通りある。
+
+| 観点 | 128-byte inode | 130-byte inode |
+|------|----------------|----------------|
+| per-inode delta vs v4 | +14 bytes | +16 bytes |
+| 4 KiB page packing | 32 inode / page | 31 inode / page + 66 bytes slack |
+| array stride | 2 の冪で扱いやすい | 半端でずれが累積する |
+| cache / locality | 有利 | やや不利 |
+| descriptor field budget | 少ない | やや余裕がある |
+| format aesthetics | 良い | 中途半端 |
+
+first-cut recommendation としては、A を採るなら 130 bytes より 128 bytes を優先する。
+
+### Preferred 14-Byte Descriptor Shape
+
+128 bytes target に収める最小案としては、tail descriptor を 16 bytes ではなく 14 bytes にするのが自然である。
+
+候補:
+
+- `layout_kind` : `u8`
+- `flags` : `u8`
+- `fragment_len` : `u16`
+- `container_blo` : `u32`
+- `fragment_off` : `u16`
+- `generation` : `u32`
+
+この形なら descriptor 合計は 14 bytes であり、114-byte v4 inode に追加しても 128 bytes に収まる。
+
+この方針では、初回導入では予約領域を無理に inode 内へ残さず、将来拡張が必要になった時点で外部 descriptor table 案を再検討する方が筋がよい。
 
 ### Why This Shape
 
@@ -492,6 +551,7 @@ MiB 換算ではそれぞれおよそ次になる。
 - tail-only small file は inode から 1 hop で fragment を引ける
 - mixed layout は「通常 block refs + final tail descriptor」で表現できる
 - fragment-aware HRL を導入せずに owner を inode 側で確定できる
+- inode growth を採る場合でも 128 bytes target なら配列密度をきれいに保ちやすい
 
 ### Tail Descriptor Externalization Alternative
 
