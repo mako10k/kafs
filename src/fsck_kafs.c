@@ -494,7 +494,7 @@ static int orphan_reclaim(kafs_context_t *ctx, int do_fix, struct orphan_stats *
 
     // Free all referenced blocks (direct + indirect tables) best-effort.
     // NOTE: For "direct" small files, data is in inode and there are no blocks to free.
-    if (kafs_ino_size_get(e) > (kafs_off_t)sizeof(e->i_blkreftbl))
+    if (kafs_ino_size_get(e) > (kafs_off_t)kafs_inode_inline_bytes())
     {
       // Direct data blocks
       for (uint32_t i = 0; i < 12; ++i)
@@ -800,7 +800,7 @@ static void hrl_scan_expected_inode_refs(struct hrl_scan_ctx *sctx, kafs_inocnt_
       continue;
     if (S_ISDIR(kafs_ino_mode_get(e)))
       continue;
-    if (kafs_ino_size_get(e) <= (kafs_off_t)sizeof(e->i_blkreftbl))
+    if (kafs_ino_size_get(e) <= (kafs_off_t)kafs_inode_inline_bytes())
       continue;
 
     for (uint32_t i = 0; i < 12; ++i)
@@ -1158,7 +1158,7 @@ static int check_or_repair_inode_block_counts(kafs_context_t *ctx, int do_fix,
     uint64_t expected = 0;
     struct inode_blocks_scan_ctx sctx = {ctx, r_blkcnt, l2, blksize, refs_pb, 0};
 
-    if (kafs_ino_size_get(e) > (kafs_off_t)sizeof(e->i_blkreftbl))
+    if (kafs_ino_size_get(e) > (kafs_off_t)kafs_inode_inline_bytes())
     {
       for (uint32_t i = 0; i < 12; ++i)
         inode_blocks_count_data_ref(&sctx, kafs_blkcnt_stoh(e->i_blkreftbl[i]), &expected);
