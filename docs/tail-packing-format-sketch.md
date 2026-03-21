@@ -169,6 +169,34 @@ tail path:
 - inode size と fragment length の整合性
 - mixed layout の final tail consistency
 
+### Fsck Validation Matrix
+
+初回導入で fsck が最低限見るべき項目を表にする。
+
+| check | source of truth | detect | first-cut repair |
+|-------|-----------------|--------|------------------|
+| `i_data_layout_kind` が定義済み値か | inode | unknown layout kind | inode を invalid 扱いにして quarantine 候補化 |
+| `tail-only` で `i_tail_fragment_len > 0` か | inode | zero-length tail descriptor | inode を full-block に戻さず orphan 扱いで保全 |
+| `i_tail_container_blo` が有効範囲内か | inode + superblock geometry | out-of-range container ref | descriptor を無効化して orphan fragment scan へ回す |
+| `i_tail_fragment_off + i_tail_fragment_len` が class 上限以下か | inode + container header | fragment overflow | descriptor を破損扱いにし slot ownership を切る |
+| slot owner と inode 番号が一致するか | inode + slot table | owner mismatch | generation が新しい側を残し、古い側を detach |
+| slot generation と inode generation が一致するか | inode + slot table | stale reverse map | stale 側を解放候補にする |
+| container `tc_live_count` が slot 実数と一致するか | container header + slot table | live count mismatch | slot table 再走査で header を再計算 |
+| container `tc_free_bytes` が class/slot 状態と一致するか | container header + slot table | free space mismatch | header 値を再計算 |
+| `mixed-full-plus-tail` の file size が full blocks + tail len と一致するか | inode size + block refs + tail descriptor | mixed final length mismatch | tail descriptor を切る前に file size を conservative に維持 |
+| unowned occupied slot が残っていないか | slot table + inode scan | orphan fragment | orphan を quarantine か free 候補に送る |
+
+### Fsck Repair Posture
+
+初回導入では aggressive repair より conservative repair を優先する。
+
+- inode data loss が見込まれる場合は即 free せず quarantine 寄りに扱う
+- container header の集計値不一致は再計算で直す
+- owner mismatch は generation で勝者を決め、それでも不明なら detach のみ行う
+- orphan fragment の即時再利用は避け、1 回の fsck 実行中は再割当てしない
+
+これにより first-cut では「壊れた metadata を再利用して二次破壊する」リスクを抑えられる。
+
 ## Locking Constraints
 
 新しい tail allocator lock を導入する場合も、既存の lock rank policy を壊してはいけない。
