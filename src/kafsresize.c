@@ -31,6 +31,7 @@ static void usage(const char *prog)
           "    - migrate-create builds a new image with target size/inodes via mkfs.kafs\n"
           "    - migrate-create without --size-bytes auto-detects size from --dst-image\n"
           "  options for --migrate-create:\n"
+          "    --format-version V      on-disk format version passed to mkfs.kafs\n"
           "    --journal-size-bytes N   journal size passed to mkfs.kafs\n"
           "    --blksize-log L          block-size log2 passed to mkfs.kafs\n"
           "    --hrl-entry-ratio R      HRL entries/data-block ratio passed to mkfs.kafs\n"
@@ -360,9 +361,9 @@ static int cmd_grow(const char *image, uint64_t target_bytes)
 }
 
 static int cmd_migrate_create(const char *dst_image, uint64_t size_bytes, uint32_t inodes,
-                              uint64_t journal_bytes, int blksize_log, double hrl_entry_ratio,
-                              const char *src_mount, const char *dst_mount, int assume_yes,
-                              int force)
+                              uint32_t format_version, uint64_t journal_bytes, int blksize_log,
+                              double hrl_entry_ratio, const char *src_mount, const char *dst_mount,
+                              int assume_yes, int force)
 {
   if (!dst_image || !*dst_image)
   {
@@ -422,17 +423,19 @@ static int cmd_migrate_create(const char *dst_image, uint64_t size_bytes, uint32
 
   char size_buf[32];
   char inode_buf[32];
+  char format_buf[32];
   char jbuf[32];
   char lbuf[32];
   char rbuf[32];
   snprintf(size_buf, sizeof(size_buf), "%" PRIu64, size_bytes);
   snprintf(inode_buf, sizeof(inode_buf), "%" PRIu32, inodes);
+  snprintf(format_buf, sizeof(format_buf), "%" PRIu32, format_version);
   snprintf(jbuf, sizeof(jbuf), "%" PRIu64, journal_bytes);
   snprintf(lbuf, sizeof(lbuf), "%d", blksize_log);
   snprintf(rbuf, sizeof(rbuf), "%.6f", hrl_entry_ratio);
 
   const char *mkfs = resolve_mkfs_prog();
-  char *argv[20];
+  char *argv[24];
   int ai = 0;
   argv[ai++] = (char *)mkfs;
   argv[ai++] = (char *)dst_image;
@@ -440,6 +443,11 @@ static int cmd_migrate_create(const char *dst_image, uint64_t size_bytes, uint32
   argv[ai++] = size_buf;
   argv[ai++] = "--inodes";
   argv[ai++] = inode_buf;
+  if (format_version > 0)
+  {
+    argv[ai++] = "--format-version";
+    argv[ai++] = format_buf;
+  }
   if (journal_bytes > 0)
   {
     argv[ai++] = "--journal-size-bytes";
@@ -468,6 +476,8 @@ static int cmd_migrate_create(const char *dst_image, uint64_t size_bytes, uint32
   printf("  dst_image: %s\n", dst_image);
   printf("  size_bytes: %" PRIu64 "\n", size_bytes);
   printf("  inodes: %" PRIu32 "\n", inodes);
+  if (format_version > 0)
+    printf("  format_version: %" PRIu32 "\n", format_version);
   if (journal_bytes > 0)
     printf("  journal_bytes: %" PRIu64 "\n", journal_bytes);
   if (blksize_log > 0)
@@ -487,6 +497,7 @@ int main(int argc, char **argv)
   int assume_yes = 0;
   int force = 0;
   uint64_t target_bytes = 0;
+  uint32_t format_version = 0;
   uint64_t journal_bytes = 0;
   int blksize_log = 0;
   double hrl_entry_ratio = 0.0;
@@ -527,6 +538,17 @@ int main(int argc, char **argv)
         fprintf(stderr, "invalid journal-size-bytes: %s\n", argv[i]);
         return 2;
       }
+      continue;
+    }
+    if (strcmp(argv[i], "--format-version") == 0 && i + 1 < argc)
+    {
+      unsigned long long v = strtoull(argv[++i], NULL, 0);
+      if (v == 0 || v > UINT32_MAX)
+      {
+        fprintf(stderr, "invalid format-version: %s\n", argv[i]);
+        return 2;
+      }
+      format_version = (uint32_t)v;
       continue;
     }
     if (strcmp(argv[i], "--blksize-log") == 0 && i + 1 < argc)
@@ -615,8 +637,9 @@ int main(int argc, char **argv)
       usage(argv[0]);
       return 2;
     }
-    return cmd_migrate_create(dst_image, target_bytes, inodes, journal_bytes, blksize_log,
-                              hrl_entry_ratio, src_mount, dst_mount, assume_yes, force);
+    return cmd_migrate_create(dst_image, target_bytes, inodes, format_version, journal_bytes,
+                              blksize_log, hrl_entry_ratio, src_mount, dst_mount, assume_yes,
+                              force);
   }
 
   usage(argv[0]);

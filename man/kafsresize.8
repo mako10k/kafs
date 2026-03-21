@@ -73,6 +73,13 @@ Destination image path used by
 Destination inode count for
 .BR --migrate-create .
 .TP
+.B --format-version V
+Optional on-disk format version forwarded to
+.BR mkfs.kafs .
+This allows
+.B --migrate-create
+to create future-format destination images such as v5 scaffold images.
+.TP
 .B --journal-size-bytes N
 Optional journal size forwarded to
 .BR mkfs.kafs .
