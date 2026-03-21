@@ -624,3 +624,56 @@ static inline int kafs_tailmeta_inode_desc_matches_slot(const kafs_tailmeta_inod
     return -EPROTO;
   return 0;
 }
+
+static inline int
+kafs_tailmeta_inode_desc_validate_for_inode(const kafs_tailmeta_inode_desc_t *desc,
+                                            kafs_off_t inode_size, uint16_t class_bytes,
+                                            kafs_blksize_t blksize)
+{
+  uint8_t kind = 0;
+  uint16_t len = 0;
+  const kafs_off_t inline_limit = (kafs_off_t)sizeof(((struct kafs_sinode *)NULL)->i_blkreftbl);
+
+  if (blksize == 0)
+    return -EINVAL;
+
+  int rc = kafs_tailmeta_inode_desc_validate(desc, class_bytes);
+  if (rc != 0)
+    return rc;
+
+  kind = kafs_tailmeta_inode_desc_layout_kind_get(desc);
+  len = kafs_tailmeta_inode_desc_fragment_len_get(desc);
+  switch (kind)
+  {
+  case KAFS_TAIL_LAYOUT_INLINE:
+    return (inode_size <= inline_limit) ? 0 : -EPROTO;
+
+  case KAFS_TAIL_LAYOUT_FULL_BLOCK:
+    return (inode_size == 0 || inode_size > inline_limit) ? 0 : -EPROTO;
+
+  case KAFS_TAIL_LAYOUT_TAIL_ONLY:
+    if ((kafs_off_t)len != inode_size)
+      return -EPROTO;
+    if (inode_size <= inline_limit)
+      return -EPROTO;
+    return ((kafs_blksize_t)len < blksize) ? 0 : -EPROTO;
+
+  case KAFS_TAIL_LAYOUT_MIXED_FULL_TAIL:
+    if ((kafs_off_t)len >= inode_size || (kafs_blksize_t)len >= blksize)
+      return -EPROTO;
+    return (((uint64_t)inode_size - (uint64_t)len) % (uint64_t)blksize) == 0u ? 0 : -EPROTO;
+
+  default:
+    return -EPROTO;
+  }
+}
+
+static inline int kafs_tailmeta_inode_desc_matches_slot_for_inode(
+    const kafs_tailmeta_inode_desc_t *desc, const kafs_tailmeta_slot_desc_t *slot,
+    uint16_t class_bytes, kafs_inocnt_t ino, kafs_off_t inode_size, kafs_blksize_t blksize)
+{
+  int rc = kafs_tailmeta_inode_desc_validate_for_inode(desc, inode_size, class_bytes, blksize);
+  if (rc != 0)
+    return rc;
+  return kafs_tailmeta_inode_desc_matches_slot(desc, slot, class_bytes, ino);
+}
