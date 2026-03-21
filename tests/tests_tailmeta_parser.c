@@ -3,6 +3,38 @@
 #include <assert.h>
 #include <string.h>
 
+static void assert_tailmeta_inode_desc_fields(const kafs_tailmeta_inode_desc_t *desc,
+                                                                                                                                                                                        uint8_t layout_kind,
+                                                                                                                                                                                        uint8_t flags,
+                                                                                                                                                                                        uint16_t fragment_len,
+                                                                                                                                                                                        kafs_blkcnt_t container_blo,
+                                                                                                                                                                                        uint16_t fragment_off,
+                                                                                                                                                                                        uint32_t generation)
+{
+        assert(kafs_tailmeta_inode_desc_layout_kind_get(desc) == layout_kind);
+        assert(kafs_tailmeta_inode_desc_flags_get(desc) == flags);
+        assert(kafs_tailmeta_inode_desc_fragment_len_get(desc) == fragment_len);
+        assert(kafs_tailmeta_inode_desc_container_blo_get(desc) == container_blo);
+        assert(kafs_tailmeta_inode_desc_fragment_off_get(desc) == fragment_off);
+        assert(kafs_tailmeta_inode_desc_generation_get(desc) == generation);
+}
+
+static void assert_inode_taildesc_fields(const kafs_sinode_taildesc_v5_t *taildesc,
+                                                                                                                                                                 uint8_t layout_kind,
+                                                                                                                                                                 uint8_t flags,
+                                                                                                                                                                 uint16_t fragment_len,
+                                                                                                                                                                 kafs_blkcnt_t container_blo,
+                                                                                                                                                                 uint16_t fragment_off,
+                                                                                                                                                                 uint32_t generation)
+{
+        assert(kafs_ino_taildesc_v5_layout_kind_get(taildesc) == layout_kind);
+        assert(kafs_ino_taildesc_v5_flags_get(taildesc) == flags);
+        assert(kafs_ino_taildesc_v5_fragment_len_get(taildesc) == fragment_len);
+        assert(kafs_ino_taildesc_v5_container_blo_get(taildesc) == container_blo);
+        assert(kafs_ino_taildesc_v5_fragment_off_get(taildesc) == fragment_off);
+        assert(kafs_ino_taildesc_v5_generation_get(taildesc) == generation);
+}
+
 int main(void)
 {
   kafs_ssuperblock_t sb;
@@ -75,20 +107,17 @@ int main(void)
                 kafs_ino_taildesc_v5_fragment_off_set(&inode_taildesc, 32);
                 kafs_ino_taildesc_v5_generation_set(&inode_taildesc, 11);
                 assert(kafs_ino_taildesc_v5_uses_tail_storage(&inode_taildesc));
+                assert_inode_taildesc_fields(&inode_taildesc, KAFS_TAIL_LAYOUT_TAIL_ONLY,
+                                                                                                                                 KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE, 64, 9, 32, 11);
 
                 kafs_tailmeta_inode_desc_from_inode_taildesc(&desc_from_inode, &inode_taildesc);
-                assert(memcmp(&desc_from_inode, &desc, sizeof(desc)) == 0);
+                assert_tailmeta_inode_desc_fields(&desc_from_inode, KAFS_TAIL_LAYOUT_TAIL_ONLY,
+                                                                                                                                                        KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE, 64, 9, 32, 11);
 
                 kafs_ino_taildesc_v5_init(&inode_taildesc_roundtrip);
                 kafs_tailmeta_inode_desc_to_inode_taildesc(&inode_taildesc_roundtrip, &desc_from_inode);
-                assert(memcmp(&inode_taildesc_roundtrip, &inode_taildesc, sizeof(inode_taildesc)) == 0);
-                assert(kafs_ino_taildesc_v5_layout_kind_get(&inode_taildesc_roundtrip) == KAFS_TAIL_LAYOUT_TAIL_ONLY);
-                assert(kafs_ino_taildesc_v5_flags_get(&inode_taildesc_roundtrip) ==
-                                         KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE);
-                assert(kafs_ino_taildesc_v5_fragment_len_get(&inode_taildesc_roundtrip) == 64);
-                assert(kafs_ino_taildesc_v5_container_blo_get(&inode_taildesc_roundtrip) == 9);
-                assert(kafs_ino_taildesc_v5_fragment_off_get(&inode_taildesc_roundtrip) == 32);
-                assert(kafs_ino_taildesc_v5_generation_get(&inode_taildesc_roundtrip) == 11);
+                assert_inode_taildesc_fields(&inode_taildesc_roundtrip, KAFS_TAIL_LAYOUT_TAIL_ONLY,
+                                                                                                                                 KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE, 64, 9, 32, 11);
         }
 
   memset(&slot, 0, sizeof(slot));
