@@ -444,6 +444,7 @@ int main(void)
   char mkfs_abs[PATH_MAX];
   char resize_abs[PATH_MAX];
   char info_abs[PATH_MAX];
+  char dump_abs[PATH_MAX];
   char kafsctl_abs[PATH_MAX];
   char kafs_abs[PATH_MAX];
   const char *fsck_abs = kafs_test_fsck_bin();
@@ -465,13 +466,19 @@ int main(void)
       "./kafs-info",
       "kafs-info",
       NULL};
-    const char *kafsctl_cands[] = {
+  const char *dump_cands[] = {
+      "../src/kafsdump",
+      "./src/kafsdump",
+      "./kafsdump",
+      "kafsdump",
+      NULL};
+  const char *kafsctl_cands[] = {
       "../src/kafsctl",
       "./src/kafsctl",
       "./kafsctl",
       "kafsctl",
       NULL};
-    const char *kafs_cands[] = {
+  const char *kafs_cands[] = {
       "../src/kafs",
       "./src/kafs",
       "./kafs",
@@ -480,6 +487,7 @@ int main(void)
   if (resolve_tool_path("KAFS_TEST_MKFS", mkfs_cands, mkfs_abs, sizeof(mkfs_abs)) != 0 ||
       resolve_tool_path("KAFS_TEST_KAFSRESIZE", resize_cands, resize_abs, sizeof(resize_abs)) != 0 ||
       resolve_tool_path("KAFS_TEST_KAFSINFO", info_cands, info_abs, sizeof(info_abs)) != 0 ||
+      resolve_tool_path("KAFS_TEST_KAFSDUMP", dump_cands, dump_abs, sizeof(dump_abs)) != 0 ||
       resolve_tool_path("KAFS_TEST_KAFSCTL", kafsctl_cands, kafsctl_abs, sizeof(kafsctl_abs)) != 0 ||
       resolve_tool_path("KAFS_TEST_KAFS", kafs_cands, kafs_abs, sizeof(kafs_abs)) != 0)
   {
@@ -944,6 +952,21 @@ int main(void)
   if (run_cmd_status(tailmeta_fsck_argv) != 0)
   {
     fprintf(stderr, "fsck failed on empty v5 tailmeta image\n");
+    return 1;
+  }
+
+  char dump_stdout[4096];
+  char *tailmeta_dump_argv[] = {(char *)dump_abs, (char *)tailmeta_img, NULL};
+  if (run_cmd_capture_stdout(tailmeta_dump_argv, dump_stdout, sizeof(dump_stdout)) != 0)
+  {
+    fprintf(stderr, "kafsdump failed on empty v5 tailmeta image\n");
+    return 1;
+  }
+  if (!strstr(dump_stdout, "format_version: 5") || !strstr(dump_stdout, "tailmeta_enabled: true") ||
+      !strstr(dump_stdout, "tail_metadata:") || !strstr(dump_stdout, "  available: true") ||
+      !strstr(dump_stdout, "  container_count: 0") || !strstr(dump_stdout, "  invalid_slots: 0"))
+  {
+    fprintf(stderr, "kafsdump output missing empty v5 tailmeta summary: %s\n", dump_stdout);
     return 1;
   }
 
