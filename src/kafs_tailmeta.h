@@ -416,6 +416,24 @@ static inline void kafs_tailmeta_inode_desc_init(kafs_tailmeta_inode_desc_t *des
   kafs_tailmeta_inode_desc_layout_kind_set(desc, KAFS_TAIL_LAYOUT_INLINE);
 }
 
+static inline void
+kafs_tailmeta_inode_desc_from_inode_taildesc(kafs_tailmeta_inode_desc_t *desc,
+                                             const kafs_sinode_taildesc_v5_t *taildesc)
+{
+  assert(desc != NULL);
+  assert(taildesc != NULL);
+  memcpy(desc, taildesc, sizeof(*desc));
+}
+
+static inline void
+kafs_tailmeta_inode_desc_to_inode_taildesc(kafs_sinode_taildesc_v5_t *taildesc,
+                                           const kafs_tailmeta_inode_desc_t *desc)
+{
+  assert(taildesc != NULL);
+  assert(desc != NULL);
+  memcpy(taildesc, desc, sizeof(*taildesc));
+}
+
 static inline int kafs_tailmeta_inode_desc_uses_tail_storage(const kafs_tailmeta_inode_desc_t *desc)
 {
   uint8_t kind = kafs_tailmeta_inode_desc_layout_kind_get(desc);
