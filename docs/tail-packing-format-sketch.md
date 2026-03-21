@@ -208,6 +208,175 @@ tail path:
 - fragment bitmap or slot table
 - optional owner count
 
+## Candidate Field Sketch
+
+ここでは implementation discussion に必要な粒度まで field 候補を下げる。
+まだ確定仕様ではないが、少なくとも fsck と migration を考えられる程度には具体化する。
+
+### Storage Kind Encoding
+
+regular inode の data layout kind は次のような固定値を想定する。
+
+- `0`: inline
+- `1`: full-block
+- `2`: tail-only
+- `3`: mixed-full-plus-tail
+
+初回導入では regular file のみを対象にし、directory / symlink / special inode では常に既存 path を維持する。
+
+### Regular Inode Candidate Fields
+
+inode 拡張 field の候補:
+
+- `i_data_layout_kind` : `u8`
+- `i_tail_flags` : `u8`
+- `i_tail_inline_len` : `u16`
+- `i_tail_container_blo` : `u32`
+- `i_tail_fragment_off` : `u16`
+- `i_tail_fragment_len` : `u16`
+- `i_tail_generation` : `u32`
+
+意味:
+
+- `i_data_layout_kind`
+   - inode の primary data layout
+- `i_tail_flags`
+   - readonly future bits
+   - 例: packed-small-file / final-tail / needs-fsck-review
+- `i_tail_inline_len`
+   - tail descriptor 自体を inode 内に持つ場合の補助長さか、将来予約
+- `i_tail_container_blo`
+   - tail container の block 番号
+- `i_tail_fragment_off`
+   - container block 内 offset
+- `i_tail_fragment_len`
+   - fragment payload 長
+- `i_tail_generation`
+   - stale owner / stale reverse map 検出用
+
+### Why This Shape
+
+この構成だと次が成立する。
+
+- tail-only small file は inode から 1 hop で fragment を引ける
+- mixed layout は「通常 block refs + final tail descriptor」で表現できる
+- fragment-aware HRL を導入せずに owner を inode 側で確定できる
+
+### Tail Descriptor Externalization Alternative
+
+inode field を増やしたくない場合の代替:
+
+- inode には `tail_desc_slot` だけを置く
+- 実 descriptor は専用 tail-desc table に格納する
+
+Pros:
+
+- inode サイズ増加を抑えられる
+- future expansion がしやすい
+
+Cons:
+
+- read path が 1 hop 増える
+- fsck で inode <-> descriptor table <-> container の 3 点整合が必要
+- migration の実装量が増える
+
+初回導入では inode 内に固定長 descriptor を置く方が単純である。
+
+### Tail Container Header Candidate Fields
+
+container block 先頭 header の候補:
+
+- `tc_magic` : `u32`
+- `tc_version` : `u16`
+- `tc_flags` : `u16`
+- `tc_class_bytes` : `u16`
+- `tc_slot_count` : `u16`
+- `tc_live_count` : `u16`
+- `tc_free_bytes` : `u16`
+- `tc_generation` : `u32`
+- `tc_owner_checksum` : `u32`
+
+意味:
+
+- `tc_class_bytes`
+   - この container が管理する fragment class
+   - 例: 128 / 256 / 512 / 1024 / 2048 / 3072
+- `tc_slot_count`
+   - 固定サイズ slot の総数
+- `tc_live_count`
+   - live fragment 数
+- `tc_free_bytes`
+   - 空き容量の概算
+- `tc_generation`
+   - container 全体の更新世代
+- `tc_owner_checksum`
+   - reverse map の簡易破損検出用
+
+### Tail Slot Table Candidate Fields
+
+fixed-size slot table 方式の候補:
+
+- `ts_owner_ino` : `u32`
+- `ts_generation` : `u32`
+- `ts_len` : `u16`
+- `ts_flags` : `u16`
+
+slot payload は header/slot table の後ろに class-size 単位で並べる。
+
+初回導入で variable-length packing を避ける理由:
+
+- append/overwrite 時の再配置ロジックが単純
+- fsck の occupancy 判定が簡単
+- reverse map を 1 slot = 1 owner で扱える
+
+### Initial Size Classes
+
+small-file 主戦場に合わせ、初回候補は次の class を想定する。
+
+- `128`
+- `256`
+- `512`
+- `1024`
+- `2048`
+- `3072`
+
+`4096` は既存 full-block path と衝突するため class には含めない。
+
+### Read/Write Rules Bound To Fields
+
+read path:
+
+- `inline`: inode payload を読む
+- `full-block`: 現行 path
+- `tail-only`: descriptor から container slot を引く
+- `mixed-full-plus-tail`: full blocks + final fragment を連結する
+
+write path first-cut:
+
+- `inline` からの成長で `size < blksize` なら `tail-only` を優先
+- `tail-only` で class 超過なら `full-block` に昇格
+- `full-block` で final partial block を持つ場合のみ `mixed-full-plus-tail` を許可
+
+### Fsck Checks Implied By These Fields
+
+最低限必要な検査:
+
+- inode が `tail-only` なのに `i_tail_fragment_len == 0` でないか
+- `i_tail_container_blo` が有効 block 範囲内か
+- `i_tail_fragment_off + i_tail_fragment_len` が class 範囲内か
+- slot table の `ts_owner_ino` と inode descriptor が相互一致するか
+- `mixed-full-plus-tail` の final tail length が inode size と矛盾しないか
+
+### Migration Preference
+
+初回 migration では、既存 inode を積極的に tail 化しない方が安全である。
+
+推奨:
+
+- migrate 時は全 inode を従来 layout のまま移す
+- format bump 後の新規作成/更新 inode から tail arena を使う
+- optional な offline repack は後段 task として分離する
+
 ## Migration Strategy
 
 tail packing 導入時は新しい filesystem format version が必要である。
