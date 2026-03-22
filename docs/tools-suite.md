@@ -23,7 +23,7 @@
   - `kafsimage`（オフライン image のエクスポート）
     - `--metadata-only` / `--raw` / `--sparse` と `--verify` を提供。
     - metadata-only ではメタデータ先頭領域 `[0, first_data_block * block_size)` を書き出す。
-  - `kafsresize`（オフライン image の grow-only リサイズ）
+  - `kafsresize`（オフライン image の resize / migration-image 作成）
     - `--grow --size-bytes` と `--migrate-create` を提供。
     - 事前確保ヘッドルーム（`s_blkcnt < s_r_blkcnt`）内の増設のみ対応。
     - format version 5 scaffold image の grow と offline migrate-create を受け付ける。
