@@ -349,6 +349,26 @@ static inline kafs_inocnt_t kafs_ctx_ino_no(const kafs_context_t *ctx, const kaf
   return (kafs_inocnt_t)(diff / inode_bytes);
 }
 
+static inline kafs_sinode_taildesc_v5_t *kafs_ctx_inode_taildesc_v5(kafs_context_t *ctx,
+                                                                    kafs_sinode_t *inoent)
+{
+  assert(ctx != NULL);
+  assert(inoent != NULL);
+  if (kafs_ctx_inode_format(ctx) != KAFS_FORMAT_VERSION_V5)
+    return NULL;
+  return &((kafs_sinode_v5_t *)inoent)->i_taildesc;
+}
+
+static inline const kafs_sinode_taildesc_v5_t *
+kafs_ctx_inode_taildesc_v5_const(const kafs_context_t *ctx, const kafs_sinode_t *inoent)
+{
+  assert(ctx != NULL);
+  assert(inoent != NULL);
+  if (kafs_ctx_inode_format(ctx) != KAFS_FORMAT_VERSION_V5)
+    return NULL;
+  return &((const kafs_sinode_v5_t *)inoent)->i_taildesc;
+}
+
 static inline void kafs_ctx_inode_zero(kafs_context_t *ctx, kafs_sinode_t *inoent)
 {
   assert(ctx != NULL);
