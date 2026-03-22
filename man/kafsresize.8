@@ -1,7 +1,7 @@
 '.\" -*- nroff -*-
 .TH KAFSRESIZE 8 "2026-03-17" "kafs 0.4.0" "System Administration"
 .SH NAME
-kafsresize \- grow offline KAFS image logical block range (grow-only)
+kafsresize \- grow offline KAFS images and create migration target images
 .SH SYNOPSIS
 .B kafsresize
 .B --grow
@@ -19,7 +19,8 @@ kafsresize \- grow offline KAFS image logical block range (grow-only)
 .RI [ options ]
 .SH DESCRIPTION
 .B kafsresize
-performs grow-only resize for an offline image.
+performs offline image growth within preallocated headroom and can also create
+a migration target image with new geometry for cutover workflows.
 
 It also supports creating a migration target image with new geometry
 (size/inode count) via
