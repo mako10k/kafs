@@ -8608,9 +8608,8 @@ static kafs_linkcnt_t kafs_inode_drop_link_locked(struct kafs_context *ctx, kafs
       int trc = kafs_tailmeta_try_reclaim_tombstone_payload_locked(ctx, ino);
       if (trc < 0)
       {
-        kafs_log(KAFS_LOG_WARNING,
-                 "%s: early tail reclaim failed ino=%" PRIuFAST32 " rc=%d\n", __func__,
-                 (uint32_t)ino, trc);
+        kafs_log(KAFS_LOG_WARNING, "%s: early tail reclaim failed ino=%" PRIuFAST32 " rc=%d\n",
+                 __func__, (uint32_t)ino, trc);
       }
     }
     if (reclaim_now)
@@ -9341,9 +9340,8 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
           int trc = kafs_tailmeta_try_reclaim_tombstone_payload_locked(ctx, ino);
           if (trc < 0)
           {
-            kafs_log(KAFS_LOG_WARNING,
-                     "%s: early tail reclaim failed ino=%" PRIuFAST32 " rc=%d\n", __func__,
-                     (uint32_t)ino, trc);
+            kafs_log(KAFS_LOG_WARNING, "%s: early tail reclaim failed ino=%" PRIuFAST32 " rc=%d\n",
+                     __func__, (uint32_t)ino, trc);
           }
         }
         if (reclaim_now)
