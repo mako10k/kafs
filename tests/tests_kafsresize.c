@@ -445,6 +445,7 @@ int main(void)
   char resize_abs[PATH_MAX];
   char info_abs[PATH_MAX];
   char dump_abs[PATH_MAX];
+  char image_abs[PATH_MAX];
   char kafsctl_abs[PATH_MAX];
   char kafs_abs[PATH_MAX];
   const char *fsck_abs = kafs_test_fsck_bin();
@@ -472,6 +473,12 @@ int main(void)
       "./kafsdump",
       "kafsdump",
       NULL};
+    const char *image_cands[] = {
+      "../src/kafsimage",
+      "./src/kafsimage",
+      "./kafsimage",
+      "kafsimage",
+      NULL};
   const char *kafsctl_cands[] = {
       "../src/kafsctl",
       "./src/kafsctl",
@@ -488,6 +495,7 @@ int main(void)
       resolve_tool_path("KAFS_TEST_KAFSRESIZE", resize_cands, resize_abs, sizeof(resize_abs)) != 0 ||
       resolve_tool_path("KAFS_TEST_KAFSINFO", info_cands, info_abs, sizeof(info_abs)) != 0 ||
       resolve_tool_path("KAFS_TEST_KAFSDUMP", dump_cands, dump_abs, sizeof(dump_abs)) != 0 ||
+      resolve_tool_path("KAFS_TEST_KAFSIMAGE", image_cands, image_abs, sizeof(image_abs)) != 0 ||
       resolve_tool_path("KAFS_TEST_KAFSCTL", kafsctl_cands, kafsctl_abs, sizeof(kafsctl_abs)) != 0 ||
       resolve_tool_path("KAFS_TEST_KAFS", kafs_cands, kafs_abs, sizeof(kafs_abs)) != 0)
   {
@@ -968,6 +976,36 @@ int main(void)
   {
     fprintf(stderr, "kafsdump output missing empty v5 tailmeta summary: %s\n", dump_stdout);
     return 1;
+  }
+
+  const char *tailmeta_meta_img = "tailmeta-v5-meta.img";
+  char *tailmeta_image_argv[] = {(char *)image_abs,
+                                 (char *)"--metadata-only",
+                                 (char *)"--verify",
+                                 (char *)tailmeta_img,
+                                 (char *)tailmeta_meta_img,
+                                 NULL};
+  if (run_cmd_status(tailmeta_image_argv) != 0)
+  {
+    fprintf(stderr, "kafsimage metadata-only export failed on empty v5 tailmeta image\n");
+    return 1;
+  }
+  {
+    struct stat st_meta;
+    uint64_t expected_meta_bytes = (uint64_t)kafs_sb_first_data_block_get(&tailmeta_sb)
+                                   << kafs_sb_log_blksize_get(&tailmeta_sb);
+    if (stat(tailmeta_meta_img, &st_meta) != 0)
+    {
+      fprintf(stderr, "failed to stat metadata-only export\n");
+      return 1;
+    }
+    if ((uint64_t)st_meta.st_size != expected_meta_bytes)
+    {
+      fprintf(stderr, "unexpected metadata-only export size: got=%" PRIu64 " want=%" PRIu64
+                      "\n",
+              (uint64_t)st_meta.st_size, expected_meta_bytes);
+      return 1;
+    }
   }
 
   kafs_sinode_t tombstone_1;
