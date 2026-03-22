@@ -283,7 +283,12 @@ static inline void kafs_inode_zero_for_format(void *inoent, uint32_t format_vers
 
   memset(inoent, 0, inode_bytes);
   if (format_version == KAFS_FORMAT_VERSION_V5)
-    kafs_ino_taildesc_v5_init(&((kafs_sinode_v5_t *)inoent)->i_taildesc);
+  {
+    kafs_sinode_taildesc_v5_t taildesc;
+
+    kafs_ino_taildesc_v5_init(&taildesc);
+    memcpy((char *)inoent + KAFS_INODE_V4_BYTES, &taildesc, sizeof(taildesc));
+  }
 }
 
 static kafs_mode_t kafs_ino_mode_get(const kafs_sinode_t *inoent)

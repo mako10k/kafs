@@ -5,6 +5,7 @@
 #include "kafs_inode.h"
 #include "kafs_hotplug.h"
 #include <pthread.h>
+#include <stdlib.h>
 #include <sys/un.h>
 
 /// @brief コンテキスト
@@ -326,11 +327,25 @@ static inline kafs_inocnt_t kafs_ctx_ino_no(const kafs_context_t *ctx, const kaf
 {
   assert(ctx != NULL);
   assert(inoent != NULL);
+  assert(ctx->c_superblock != NULL);
+  assert(ctx->c_inotbl != NULL);
   size_t inode_bytes = kafs_ctx_inode_bytes(ctx);
+  uint64_t table_bytes = kafs_inode_table_bytes_for_format(
+      kafs_ctx_inode_format(ctx), kafs_inocnt_stoh(ctx->c_superblock->s_inocnt));
+  uintptr_t base = (uintptr_t)ctx->c_inotbl;
+  uintptr_t addr = (uintptr_t)inoent;
+  uintptr_t end = base + (uintptr_t)table_bytes;
+
   if (inode_bytes == 0)
-    inode_bytes = sizeof(kafs_sinode_t);
-  size_t diff = (size_t)((const char *)inoent - (const char *)ctx->c_inotbl);
-  assert((diff % inode_bytes) == 0);
+    abort();
+  if (table_bytes == 0 || end < base)
+    abort();
+  if (addr < base || addr >= end)
+    abort();
+
+  uintptr_t diff = addr - base;
+  if ((diff % inode_bytes) != 0)
+    abort();
   return (kafs_inocnt_t)(diff / inode_bytes);
 }
 

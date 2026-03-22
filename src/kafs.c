@@ -12,6 +12,7 @@
 #include "kafs_rpc.h"
 #include "kafs_core.h"
 #include "kafs_crash_diag.h"
+#include "kafs_tailmeta.h"
 
 #include <fuse.h>
 #include <fuse_log.h>
@@ -5356,31 +5357,10 @@ static int kafs_hotplug_call_getattr(struct fuse_context *fctx, kafs_context_t *
 
 static int kafs_ctx_is_empty_v5_scaffold(const kafs_context_t *ctx)
 {
-  struct kafs_runtime_tailmeta_region_hdr
-  {
-    kafs_su32_t tr_magic;
-    uint16_t tr_version;
-    uint16_t tr_flags;
-    kafs_su32_t tr_header_bytes;
-    kafs_su32_t tr_container_table_off;
-    kafs_su32_t tr_container_table_bytes;
-    kafs_su32_t tr_container_count;
-    uint16_t tr_class_count;
-    uint16_t tr_slot_desc_bytes;
-    kafs_su32_t tr_generation;
-    kafs_su32_t tr_reserved0;
-  } __attribute__((packed));
-  typedef struct kafs_runtime_tailmeta_region_hdr kafs_runtime_tailmeta_region_hdr_t;
-  enum
-  {
-    KAFS_RUNTIME_TAILMETA_REGION_MAGIC = 0x4B544D52u,
-    KAFS_RUNTIME_TAILMETA_REGION_VERSION = 1u,
-    KAFS_RUNTIME_TAILMETA_SLOT_DESC_BYTES = 12u,
-  };
   const kafs_ssuperblock_t *sb;
   const kafs_sinode_t *root;
   const kafs_sdir_v4_hdr_t *dir_hdr;
-  const kafs_runtime_tailmeta_region_hdr_t *region_hdr;
+  const kafs_tailmeta_region_hdr_t *region_hdr;
   kafs_inocnt_t inocnt;
   uint64_t tail_off;
   uint64_t tail_size;
@@ -5440,22 +5420,12 @@ static int kafs_ctx_is_empty_v5_scaffold(const kafs_context_t *ctx)
   if (tail_off > (uint64_t)ctx->c_img_size || tail_size > (uint64_t)ctx->c_img_size - tail_off)
     return 0;
 
-  region_hdr =
-      (const kafs_runtime_tailmeta_region_hdr_t *)((const char *)ctx->c_img_base + tail_off);
-  if (kafs_u32_stoh(region_hdr->tr_magic) != KAFS_RUNTIME_TAILMETA_REGION_MAGIC)
+  region_hdr = (const kafs_tailmeta_region_hdr_t *)((const char *)ctx->c_img_base + tail_off);
+  if (kafs_tailmeta_region_hdr_validate(region_hdr, tail_size) != 0)
     return 0;
-  if (le16toh(region_hdr->tr_version) != KAFS_RUNTIME_TAILMETA_REGION_VERSION)
+  if (kafs_tailmeta_region_hdr_container_count_get(region_hdr) != 0u)
     return 0;
-  if (le16toh(region_hdr->tr_flags) != 0u)
-    return 0;
-  if (kafs_u32_stoh(region_hdr->tr_header_bytes) < (uint32_t)sizeof(*region_hdr) ||
-      (uint64_t)kafs_u32_stoh(region_hdr->tr_header_bytes) > tail_size)
-    return 0;
-  if (le16toh(region_hdr->tr_slot_desc_bytes) != KAFS_RUNTIME_TAILMETA_SLOT_DESC_BYTES)
-    return 0;
-  if (kafs_u32_stoh(region_hdr->tr_container_count) != 0u)
-    return 0;
-  if (kafs_u32_stoh(region_hdr->tr_container_table_bytes) != 0u)
+  if (kafs_tailmeta_region_hdr_container_table_bytes_get(region_hdr) != 0u)
     return 0;
 
   return 1;
@@ -5571,6 +5541,10 @@ int kafs_core_open_image(const char *image_path, kafs_context_t *ctx)
     munmap(ctx->c_img_base, ctx->c_img_size);
     ctx->c_img_base = NULL;
     ctx->c_img_size = 0;
+    ctx->c_superblock = NULL;
+    ctx->c_inotbl = NULL;
+    ctx->c_blkmasktbl = NULL;
+    ctx->c_mapsize = 0;
     close(ctx->c_fd);
     ctx->c_fd = -1;
     return -EPROTONOSUPPORT;

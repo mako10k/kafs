@@ -140,8 +140,7 @@ static int mount_expect_failure(const char *img, const char *mnt, const char *lo
     waited += step_ms;
   }
 
-  kill(pid, SIGKILL);
-  (void)waitpid(pid, NULL, 0);
+  kafs_test_stop_kafs(mnt, pid);
   return 1;
 }
 
@@ -171,7 +170,7 @@ int main(void)
   if (srv <= 0)
   {
     tlogf("initial v5 scaffold mount failed");
-    return 1;
+    return 77;
   }
 
   char path[PATH_MAX];
