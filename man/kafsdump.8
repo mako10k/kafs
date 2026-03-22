@@ -14,7 +14,13 @@ The tool never writes image contents.
 The dump contains the following sections:
 .TP
 .B superblock
-Magic/version, block geometry, and free counters.
+Magic/version, block geometry, free counters, and tail metadata region flags,
+offset, and size.
+.TP
+.B tail_metadata
+Tail metadata probe status and, when available, the region header summary
+including container and slot counters. Empty format version 5 scaffold images
+report this section as available with zero containers and zero live slots.
 .TP
 .B inode_summary
 Inode totals, used/free counts, and number of in-use inodes with link count 0.
