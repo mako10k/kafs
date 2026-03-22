@@ -4,7 +4,7 @@
 
 `kafsctl` の path-based file-op 再整理要件は、別紙 [kafsctl-path-ops-requirements.md](kafsctl-path-ops-requirements.md) を参照。
 
-## 現状（2025-08-28 時点）
+## 現状（2026-03-22 時点）
 
 - 実行バイナリ
   - `kafs`（FUSE3 ベースのファイルシステム本体）
@@ -14,24 +14,31 @@
     - サイドカー（外部ファイル）廃止。画像内ジャーナルが無い場合は無効化。
     - リプレイ: マウント時にスキャン・クリーン。既定では「再適用」は実施せず（コールバックIFあり）。
 - ツール/テスト
+  - `kafs-info`（オフライン image の基本サマリ表示）
+    - superblock version / block geometry / inode-block counters / hash 設定を出力。
+    - tombstone 概要、HRL 領域、v5 tail metadata region の enabled/off/size を表示。
   - `kafsdump`（オフライン image の read-only 可視化）
     - `--json` 対応。
-    - superblock / inode 集計 / HRL 集計 / journal header(CRC) を出力。
+    - superblock / tail metadata / inode 集計 / HRL 集計 / journal header(CRC) を出力。
   - `kafsimage`（オフライン image のエクスポート）
-    - v0: `--metadata-only` と `--verify` を提供。
-    - メタデータ先頭領域 `[0, first_data_block * block_size)` を書き出し。
+    - `--metadata-only` / `--raw` / `--sparse` と `--verify` を提供。
+    - metadata-only ではメタデータ先頭領域 `[0, first_data_block * block_size)` を書き出す。
   - `kafsresize`（オフライン image の grow-only リサイズ）
-    - v0: `--grow --size-bytes` を提供。
+    - `--grow --size-bytes` と `--migrate-create` を提供。
     - 事前確保ヘッドルーム（`s_blkcnt < s_r_blkcnt`）内の増設のみ対応。
+    - format version 5 scaffold image の grow と offline migrate-create を受け付ける。
+  - `mkfs.kafs` / `fsck.kafs`
+    - `mkfs.kafs` は `--format-version` に対応し、v5 では empty tail metadata region scaffold を作成する。
+    - `fsck.kafs` は統合モードに加えて tail metadata region の境界と owner 整合も検査する。
   - `stress_fs` テスト（Automake tests）。マウント/並行操作のストレス検証で PASS。
-  - `mkfs.kafs` / `fsck.kafs` は `src/Makefile.am` の `bin_PROGRAMS` に登録済みで、既定ビルド/インストール対象。
-  - 実装はそれぞれ `mkfs_kafs.c` / `fsck_kafs.c`。
+  - offline tool 回帰は `tests/tests_kafsresize.c` に集約され、empty v5 tailmeta scaffold に対する mkfs/fsck/kafsresize/kafsdump/kafsimage/kafs-info の read-only coverage を持つ。
 - ドキュメント
+  - man page は `kafs-info(8)` / `kafsdump(8)` / `kafsimage(8)` / `kafsresize(8)` / `mkfs.kafs(8)` / `fsck.kafs(8)` を提供。
   - `docs/journal-plan.md`（M1〜M4 の計画）。
 
 課題（ギャップ）
-- mkfs/検査・修復ツール/ジャーナル閲覧ツールなど「ユーティリティ」が未整備。
-- インストールターゲット（bin_PROGRAMS）や man ページが未設定。
+- `kafs-journalctl` / `kafs-journal-clear` / `mount.kafs` など、理想像にある補助ユーティリティはまだ未実装。
+- offline v5 scaffold は可視化・検査・export まで揃ったが、tail packing 実データを扱う runtime/control-plane は未着手。
 - デフォルト・リプレイ方針（再適用の有無・条件）が保守的（スキャン/クリーンのみ）。
 
 ## 理想像（ユーティリティ群と役割）
