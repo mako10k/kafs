@@ -135,7 +135,7 @@ static int hrl_write_blo(kafs_context_t *ctx, kafs_blkcnt_t blo, const void *buf
     kafs_inocnt_t inocnt = kafs_sb_inocnt_get(ctx->c_superblock);
     for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
     {
-      kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+      kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
       if (!kafs_ino_get_usage(inoent))
         continue;
       kafs_mode_t mode = kafs_ino_mode_get(inoent);

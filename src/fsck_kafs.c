@@ -471,7 +471,7 @@ static int orphan_reclaim(kafs_context_t *ctx, int do_fix, struct orphan_stats *
   int found = 0;
   for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
   {
-    kafs_sinode_t *e = &ctx->c_inotbl[ino];
+    kafs_sinode_t *e = kafs_ctx_inode(ctx, ino);
     if (!kafs_ino_get_usage(e))
       continue;
     if (kafs_ino_linkcnt_get(e) != 0)
@@ -553,7 +553,7 @@ static int fsck_check_or_repair_dir_v4(kafs_context_t *ctx, int do_fix, struct d
   kafs_inocnt_t inocnt = kafs_sb_inocnt_get(ctx->c_superblock);
   for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
   {
-    kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+    kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
     if (!kafs_ino_get_usage(inoent))
       continue;
     if (!S_ISDIR(kafs_ino_mode_get(inoent)))
@@ -658,7 +658,8 @@ static int fsck_check_or_repair_dir_v4(kafs_context_t *ctx, int do_fix, struct d
       }
       else
       {
-        if (dino == KAFS_INO_NONE || dino >= inocnt || !kafs_ino_get_usage(&ctx->c_inotbl[dino]))
+        if (dino == KAFS_INO_NONE || dino >= inocnt ||
+            !kafs_ino_get_usage(kafs_ctx_inode(ctx, dino)))
         {
           malformed = 1;
           break;
@@ -795,7 +796,7 @@ static void hrl_scan_expected_inode_refs(struct hrl_scan_ctx *sctx, kafs_inocnt_
   kafs_context_t *ctx = sctx->ctx;
   for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
   {
-    const kafs_sinode_t *e = &ctx->c_inotbl[ino];
+    const kafs_sinode_t *e = kafs_ctx_inode_const(ctx, ino);
     if (!kafs_ino_get_usage(e))
       continue;
     if (S_ISDIR(kafs_ino_mode_get(e)))
@@ -1151,7 +1152,7 @@ static int check_or_repair_inode_block_counts(kafs_context_t *ctx, int do_fix,
 
   for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
   {
-    kafs_sinode_t *e = &ctx->c_inotbl[ino];
+    kafs_sinode_t *e = kafs_ctx_inode(ctx, ino);
     if (!kafs_ino_get_usage(e))
       continue;
 

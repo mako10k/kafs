@@ -5,6 +5,7 @@
 #include "kafs_inode.h"
 #include "kafs_hotplug.h"
 #include <pthread.h>
+#include <stdlib.h>
 #include <sys/un.h>
 
 /// @brief コンテキスト
@@ -295,3 +296,61 @@ int kafs_ctx_locks_init(struct kafs_context *ctx);
 void kafs_ctx_locks_destroy(struct kafs_context *ctx);
 
 typedef struct kafs_context kafs_context_t;
+
+static inline uint32_t kafs_ctx_inode_format(const kafs_context_t *ctx)
+{
+  assert(ctx != NULL);
+  assert(ctx->c_superblock != NULL);
+  return kafs_u32_stoh(ctx->c_superblock->s_format_version);
+}
+
+static inline size_t kafs_ctx_inode_bytes(const kafs_context_t *ctx)
+{
+  return kafs_inode_bytes_for_format(kafs_ctx_inode_format(ctx));
+}
+
+static inline kafs_sinode_t *kafs_ctx_inode(kafs_context_t *ctx, kafs_inocnt_t ino)
+{
+  assert(ctx != NULL);
+  return (kafs_sinode_t *)kafs_inode_ptr_in_table(ctx->c_inotbl, kafs_ctx_inode_format(ctx), ino);
+}
+
+static inline const kafs_sinode_t *kafs_ctx_inode_const(const kafs_context_t *ctx,
+                                                        kafs_inocnt_t ino)
+{
+  assert(ctx != NULL);
+  return (const kafs_sinode_t *)kafs_inode_ptr_const_in_table(ctx->c_inotbl,
+                                                              kafs_ctx_inode_format(ctx), ino);
+}
+
+static inline kafs_inocnt_t kafs_ctx_ino_no(const kafs_context_t *ctx, const kafs_sinode_t *inoent)
+{
+  assert(ctx != NULL);
+  assert(inoent != NULL);
+  assert(ctx->c_superblock != NULL);
+  assert(ctx->c_inotbl != NULL);
+  size_t inode_bytes = kafs_ctx_inode_bytes(ctx);
+  uint64_t table_bytes = kafs_inode_table_bytes_for_format(
+      kafs_ctx_inode_format(ctx), kafs_inocnt_stoh(ctx->c_superblock->s_inocnt));
+  uintptr_t base = (uintptr_t)ctx->c_inotbl;
+  uintptr_t addr = (uintptr_t)inoent;
+  uintptr_t end = base + (uintptr_t)table_bytes;
+
+  if (inode_bytes == 0)
+    abort();
+  if (table_bytes == 0 || end < base)
+    abort();
+  if (addr < base || addr >= end)
+    abort();
+
+  uintptr_t diff = addr - base;
+  if ((diff % inode_bytes) != 0)
+    abort();
+  return (kafs_inocnt_t)(diff / inode_bytes);
+}
+
+static inline void kafs_ctx_inode_zero(kafs_context_t *ctx, kafs_sinode_t *inoent)
+{
+  assert(ctx != NULL);
+  kafs_inode_zero_for_format(inoent, kafs_ctx_inode_format(ctx));
+}

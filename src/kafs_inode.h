@@ -210,6 +210,8 @@ static inline size_t kafs_inode_bytes_for_format(uint32_t format_version)
 {
   switch (format_version)
   {
+  case KAFS_FORMAT_VERSION_V2:
+  case KAFS_FORMAT_VERSION_V3:
   case KAFS_FORMAT_VERSION:
     return sizeof(kafs_sinode_t);
   case KAFS_FORMAT_VERSION_V5:
@@ -259,6 +261,34 @@ static inline void *kafs_inode_ptr_in_table(void *inode_table_base, uint32_t for
     return NULL;
 
   return (void *)((char *)inode_table_base + ino * inode_bytes);
+}
+
+static inline const void *kafs_inode_ptr_const_in_table(const void *inode_table_base,
+                                                        uint32_t format_version, uint64_t ino)
+{
+  size_t inode_bytes = kafs_inode_bytes_for_format(format_version);
+
+  if (!inode_table_base || inode_bytes == 0)
+    return NULL;
+
+  return (const void *)((const char *)inode_table_base + ino * inode_bytes);
+}
+
+static inline void kafs_inode_zero_for_format(void *inoent, uint32_t format_version)
+{
+  size_t inode_bytes = kafs_inode_bytes_for_format(format_version);
+
+  if (!inoent || inode_bytes == 0)
+    return;
+
+  memset(inoent, 0, inode_bytes);
+  if (format_version == KAFS_FORMAT_VERSION_V5)
+  {
+    kafs_sinode_taildesc_v5_t taildesc;
+
+    kafs_ino_taildesc_v5_init(&taildesc);
+    memcpy((char *)inoent + KAFS_INODE_V4_BYTES, &taildesc, sizeof(taildesc));
+  }
 }
 
 static kafs_mode_t kafs_ino_mode_get(const kafs_sinode_t *inoent)
@@ -421,10 +451,10 @@ static kafs_linkcnt_t kafs_ino_linkcnt_decr(kafs_sinode_t *inoent)
 /// @param pino_search 前回見つかった inode 番号の格納領域
 /// @param inocnt inode 番号の最大数
 /// @return 0: 成功、 < 0: 失敗 (-errno)
-static int kafs_ino_find_free(const kafs_sinode_t *inotbl, kafs_inocnt_t *pino,
-                              kafs_inocnt_t *pino_search, kafs_inocnt_t inocnt)
+static int kafs_ino_find_free(const void *inode_table_base, uint32_t format_version,
+                              kafs_inocnt_t *pino, kafs_inocnt_t *pino_search, kafs_inocnt_t inocnt)
 {
-  assert(inotbl != NULL);
+  assert(inode_table_base != NULL);
   assert(pino != NULL);
   kafs_inocnt_t ino_search = *pino_search;
   kafs_inocnt_t ino = ino_search + 1;
@@ -432,7 +462,11 @@ static int kafs_ino_find_free(const kafs_sinode_t *inotbl, kafs_inocnt_t *pino,
   {
     if (ino >= inocnt)
       ino = KAFS_INO_ROOTDIR;
-    if (!kafs_ino_get_usage(&inotbl[ino]))
+    const kafs_sinode_t *inoent =
+        (const kafs_sinode_t *)kafs_inode_ptr_const_in_table(inode_table_base, format_version, ino);
+    if (inoent == NULL)
+      return -EINVAL;
+    if (!kafs_ino_get_usage(inoent))
     {
       *pino_search = ino;
       *pino = ino;
