@@ -1008,6 +1008,23 @@ int main(void)
     }
   }
 
+  char tailmeta_info_stdout[4096];
+  char *tailmeta_info_argv[] = {(char *)info_abs, (char *)tailmeta_img, NULL};
+  if (run_cmd_capture_stdout(tailmeta_info_argv, tailmeta_info_stdout,
+                             sizeof(tailmeta_info_stdout)) != 0)
+  {
+    fprintf(stderr, "kafs-info failed on empty v5 tailmeta image\n");
+    return 1;
+  }
+  if (!strstr(tailmeta_info_stdout, "version=5") ||
+      !strstr(tailmeta_info_stdout, "tail metadata: enabled=true") ||
+      !strstr(tailmeta_info_stdout, " off=") || !strstr(tailmeta_info_stdout, " size="))
+  {
+    fprintf(stderr, "kafs-info output missing v5 tailmeta summary: %s\n",
+            tailmeta_info_stdout);
+    return 1;
+  }
+
   kafs_sinode_t tombstone_1;
   memset(&tombstone_1, 0, sizeof(tombstone_1));
   kafs_ino_mode_set(&tombstone_1, S_IFREG | 0644);
