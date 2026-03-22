@@ -3980,6 +3980,34 @@ static int kafs_tailmeta_load_small_file_bytes(struct kafs_context *ctx, kafs_si
   return rc;
 }
 
+static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_off_t filesize_new);
+
+static int kafs_tailmeta_try_reclaim_tombstone_payload_locked(struct kafs_context *ctx,
+                                                              kafs_inocnt_t ino)
+{
+  kafs_sinode_t *inoent;
+  const kafs_sinode_taildesc_v5_t *taildesc;
+
+  if (!ctx)
+    return -EINVAL;
+  if (!ctx->c_open_cnt)
+    return 0;
+
+  inoent = kafs_ctx_inode(ctx, ino);
+  if (!inoent || !kafs_ino_get_usage(inoent) || kafs_ino_linkcnt_get(inoent) != 0)
+    return 0;
+  if (__atomic_load_n(&ctx->c_open_cnt[ino], __ATOMIC_RELAXED) != 0)
+    return 0;
+  if (!kafs_tailmeta_inode_is_regular_v5(ctx, inoent))
+    return 0;
+
+  taildesc = kafs_ctx_inode_taildesc_v5_const(ctx, inoent);
+  if (!taildesc || kafs_ino_taildesc_v5_layout_kind_get(taildesc) != KAFS_TAIL_LAYOUT_TAIL_ONLY)
+    return 0;
+
+  return kafs_truncate(ctx, inoent, 0);
+}
+
 static ssize_t kafs_pread(struct kafs_context *ctx, kafs_sinode_t *inoent, void *buf,
                           kafs_off_t size, kafs_off_t offset)
 {
@@ -8575,6 +8603,15 @@ static kafs_linkcnt_t kafs_inode_drop_link_locked(struct kafs_context *ctx, kafs
   {
     if (!kafs_inode_is_tombstone(inoent))
       kafs_ino_dtime_set(inoent, kafs_now());
+    if (!reclaim_now)
+    {
+      int trc = kafs_tailmeta_try_reclaim_tombstone_payload_locked(ctx, ino);
+      if (trc < 0)
+      {
+        kafs_log(KAFS_LOG_WARNING, "%s: early tail reclaim failed ino=%" PRIuFAST32 " rc=%d\n",
+                 __func__, (uint32_t)ino, trc);
+      }
+    }
     if (reclaim_now)
       (void)kafs_try_reclaim_unlinked_inode_locked(ctx, ino, reclaimed_now);
   }
@@ -9296,8 +9333,20 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
     {
       int reclaim_now = kafs_tombstone_pressure(ctx);
       kafs_inode_lock(ctx, (uint32_t)ino);
-      if (reclaim_now && kafs_inode_is_tombstone(kafs_ctx_inode(ctx, ino)))
-        (void)kafs_try_reclaim_unlinked_inode_locked(ctx, ino, &reclaimed);
+      if (kafs_inode_is_tombstone(kafs_ctx_inode(ctx, ino)))
+      {
+        if (!reclaim_now)
+        {
+          int trc = kafs_tailmeta_try_reclaim_tombstone_payload_locked(ctx, ino);
+          if (trc < 0)
+          {
+            kafs_log(KAFS_LOG_WARNING, "%s: early tail reclaim failed ino=%" PRIuFAST32 " rc=%d\n",
+                     __func__, (uint32_t)ino, trc);
+          }
+        }
+        if (reclaim_now)
+          (void)kafs_try_reclaim_unlinked_inode_locked(ctx, ino, &reclaimed);
+      }
       kafs_inode_unlock(ctx, (uint32_t)ino);
 
       if (reclaimed)

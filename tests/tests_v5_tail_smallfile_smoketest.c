@@ -129,6 +129,109 @@ static int mkfs_v5_image(const char *img)
   return run_cmd(argv);
 }
 
+static int inspect_tailmeta_live_slots(const char *img, uint64_t *out_live_slots)
+{
+  int fd = open(img, O_RDONLY);
+  if (fd < 0)
+    return -errno;
+
+  struct stat st;
+  if (fstat(fd, &st) != 0)
+  {
+    close(fd);
+    return -errno;
+  }
+
+  void *base = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd, 0);
+  if (base == MAP_FAILED)
+  {
+    close(fd);
+    return -errno;
+  }
+
+  int rc = 0;
+  uint64_t live_slots = 0;
+  const kafs_ssuperblock_t *sb = (const kafs_ssuperblock_t *)base;
+  const kafs_tailmeta_region_hdr_t *region_hdr = NULL;
+
+  if (kafs_sb_format_version_get(sb) != KAFS_FORMAT_VERSION_V5)
+    rc = -EPROTO;
+
+  if (rc == 0)
+  {
+    uint64_t tail_off = kafs_sb_tailmeta_offset_get(sb);
+    uint64_t tail_size = kafs_sb_tailmeta_size_get(sb);
+    if (tail_off == 0u || tail_size < sizeof(*region_hdr))
+      rc = -EPROTO;
+    else
+      region_hdr = (const kafs_tailmeta_region_hdr_t *)((const char *)base + tail_off);
+    if (rc == 0 && kafs_tailmeta_region_hdr_validate(region_hdr, tail_size) != 0)
+      rc = -EPROTO;
+  }
+
+  if (rc == 0)
+  {
+    uint32_t table_off = kafs_tailmeta_region_hdr_container_table_off_get(region_hdr);
+    uint32_t container_count = kafs_tailmeta_region_hdr_container_count_get(region_hdr);
+    const kafs_tailmeta_container_hdr_t *containers =
+        (const kafs_tailmeta_container_hdr_t *)((const char *)region_hdr + table_off);
+
+    for (uint32_t container_index = 0; container_index < container_count; ++container_index)
+    {
+      const kafs_tailmeta_container_hdr_t *container = &containers[container_index];
+      uint16_t class_bytes = kafs_tailmeta_container_hdr_class_bytes_get(container);
+      uint16_t slot_count = kafs_tailmeta_container_hdr_slot_count_get(container);
+      uint32_t slot_table_off = kafs_tailmeta_container_hdr_slot_table_off_get(container);
+      const kafs_tailmeta_slot_desc_t *slots =
+          (const kafs_tailmeta_slot_desc_t *)((const char *)region_hdr + slot_table_off);
+
+      for (uint16_t slot_index = 0; slot_index < slot_count; ++slot_index)
+      {
+        if (kafs_tailmeta_slot_validate(&slots[slot_index], class_bytes) != 0)
+        {
+          rc = -EPROTO;
+          break;
+        }
+        if (kafs_tailmeta_slot_owner_ino_get(&slots[slot_index]) != KAFS_INO_NONE)
+          live_slots++;
+      }
+      if (rc != 0)
+        break;
+      if (live_slots < kafs_tailmeta_container_hdr_live_count_get(container))
+      {
+        rc = -EPROTO;
+        break;
+      }
+    }
+  }
+
+  munmap(base, (size_t)st.st_size);
+  close(fd);
+  if (rc == 0 && out_live_slots)
+    *out_live_slots = live_slots;
+  return rc;
+}
+
+static int inspect_tail_packed_file(const char *img, const char *name, const char *expected,
+                                    size_t expected_len);
+
+static int inspect_tailmeta_live_slots_for_file(const char *img, const char *name,
+                                                const char *expected, size_t expected_len,
+                                                uint64_t expected_live_slots)
+{
+  int rc = inspect_tail_packed_file(img, name, expected, expected_len);
+  if (rc != 0)
+    return rc;
+
+  uint64_t live_slots = 0;
+  rc = inspect_tailmeta_live_slots(img, &live_slots);
+  if (rc != 0)
+    return rc;
+  if (live_slots != expected_live_slots)
+    return -ERANGE;
+  return 0;
+}
+
 static int inspect_tail_packed_file(const char *img, const char *name, const char *expected,
                                     size_t expected_len)
 {
@@ -283,8 +386,50 @@ int main(void)
     payload[i] = (char)('a' + (i % 26));
 
   char path[PATH_MAX];
-  snprintf(path, sizeof(path), "%s/t", mnt);
+  snprintf(path, sizeof(path), "%s/keep", mnt);
   int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+  if (fd < 0)
+  {
+    tlogf("create keep failed: %s", strerror(errno));
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  if (write(fd, payload, sizeof(payload)) != (ssize_t)sizeof(payload))
+  {
+    tlogf("write keep failed: %s", strerror(errno));
+    close(fd);
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  close(fd);
+
+  char verify[sizeof(payload)];
+  fd = open(path, O_RDONLY);
+  if (fd < 0)
+  {
+    tlogf("open keep for read failed: %s", strerror(errno));
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  if (read(fd, verify, sizeof(verify)) != (ssize_t)sizeof(verify) ||
+      memcmp(verify, payload, sizeof(payload)) != 0)
+  {
+    tlogf("readback mismatch on mounted keep");
+    close(fd);
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  close(fd);
+
+  if (unlink(path) != 0)
+  {
+    tlogf("unlink keep failed: %s", strerror(errno));
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+
+  snprintf(path, sizeof(path), "%s/t", mnt);
+  fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
   if (fd < 0)
   {
     tlogf("create t failed: %s", strerror(errno));
@@ -299,19 +444,57 @@ int main(void)
     return 1;
   }
   close(fd);
-
-  char verify[sizeof(payload)];
-  fd = open(path, O_RDONLY);
-  if (fd < 0)
+  if (unlink(path) != 0)
   {
-    tlogf("open t for read failed: %s", strerror(errno));
+    tlogf("unlink t failed: %s", strerror(errno));
     kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
-  if (read(fd, verify, sizeof(verify)) != (ssize_t)sizeof(verify) ||
+
+  snprintf(path, sizeof(path), "%s/keep", mnt);
+  fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+  if (fd < 0)
+  {
+    tlogf("recreate keep failed: %s", strerror(errno));
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  if (write(fd, payload, sizeof(payload)) != (ssize_t)sizeof(payload))
+  {
+    tlogf("rewrite keep failed: %s", strerror(errno));
+    close(fd);
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  close(fd);
+
+  snprintf(path, sizeof(path), "%s/u", mnt);
+  fd = open(path, O_CREAT | O_RDWR | O_TRUNC, 0644);
+  if (fd < 0)
+  {
+    tlogf("create u failed: %s", strerror(errno));
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  if (write(fd, payload, sizeof(payload)) != (ssize_t)sizeof(payload))
+  {
+    tlogf("write u failed: %s", strerror(errno));
+    close(fd);
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  if (unlink(path) != 0)
+  {
+    tlogf("unlink u failed: %s", strerror(errno));
+    close(fd);
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  memset(verify, 0, sizeof(verify));
+  if (lseek(fd, 0, SEEK_SET) != 0 || read(fd, verify, sizeof(verify)) != (ssize_t)sizeof(verify) ||
       memcmp(verify, payload, sizeof(payload)) != 0)
   {
-    tlogf("readback mismatch on mounted t");
+    tlogf("readback mismatch on open-unlinked u");
     close(fd);
     kafs_test_stop_kafs(mnt, srv);
     return 1;
@@ -320,10 +503,18 @@ int main(void)
 
   kafs_test_stop_kafs(mnt, srv);
 
-  int rc = inspect_tail_packed_file(img, "t", payload, sizeof(payload));
+  char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)img, NULL};
+  int rc = run_cmd(fsck_argv);
   if (rc != 0)
   {
-    tlogf("offline tailmeta inspection failed rc=%d", rc);
+    tlogf("fsck failed after tail reclaim");
+    return 1;
+  }
+
+  rc = inspect_tailmeta_live_slots_for_file(img, "keep", payload, sizeof(payload), 1u);
+  if (rc != 0)
+  {
+    tlogf("offline tailmeta reclaim check failed rc=%d", rc);
     return 1;
   }
 
