@@ -2,6 +2,7 @@
 #include "kafs_hash.h"
 #include "kafs_inode.h"
 #include "kafs_journal.h"
+#include "kafs_offline_summary.h"
 #include "kafs_tailmeta.h"
 #include "kafs_cli_opts.h"
 #include "kafs_superblock.h"
@@ -23,14 +24,6 @@
 #include <linux/fs.h>
 #endif
 
-struct inode_summary
-{
-  uint64_t total;
-  uint64_t used;
-  uint64_t free;
-  uint64_t linkcnt_zero_used;
-};
-
 struct hrl_summary
 {
   uint64_t entry_count;
@@ -45,41 +38,7 @@ struct journal_summary
   kj_header_t header;
 };
 
-struct tailmeta_summary
-{
-  int available;
-  uint64_t valid_containers;
-  uint64_t invalid_containers;
-  uint64_t live_slots;
-  uint64_t invalid_slots;
-  kafs_tailmeta_region_hdr_t header;
-};
-
-struct sb_geometry
-{
-  uint64_t blksize;
-  uint64_t r_blkcnt;
-  uint64_t first_data;
-  uint64_t data_blocks;
-};
-
 static void usage(const char *prog) { fprintf(stderr, "Usage: %s [--json] <image>\n", prog); }
-
-static uint64_t align_up_u64(uint64_t v, uint64_t align)
-{
-  if (align == 0)
-    return v;
-  return (v + align - 1u) & ~(align - 1u);
-}
-
-static int check_bounds(uint64_t off, uint64_t len, uint64_t file_size)
-{
-  if (off > file_size)
-    return -ERANGE;
-  if (len > file_size - off)
-    return -ERANGE;
-  return 0;
-}
 
 static const char *rc_to_text(int rc)
 {
@@ -90,72 +49,11 @@ static const char *rc_to_text(int rc)
   return "error";
 }
 
-static struct sb_geometry superblock_geometry(const kafs_ssuperblock_t *sb)
-{
-  struct sb_geometry g;
-  g.blksize = kafs_sb_blksize_get(sb);
-  g.r_blkcnt = kafs_sb_r_blkcnt_get(sb);
-  g.first_data = kafs_sb_first_data_block_get(sb);
-  g.data_blocks = (g.r_blkcnt > g.first_data) ? (g.r_blkcnt - g.first_data) : 0;
-  return g;
-}
-
 static int load_superblock(int fd, kafs_ssuperblock_t *sb)
 {
   int rc = kafs_pread_all(fd, sb, sizeof(*sb), 0);
   if (rc != 0)
     return rc;
-  return 0;
-}
-
-static int collect_inode_summary(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
-                                 struct inode_summary *out)
-{
-  memset(out, 0, sizeof(*out));
-
-  const uint64_t inocnt = (uint64_t)kafs_sb_inocnt_get(sb);
-  const uint64_t r_blkcnt = (uint64_t)kafs_sb_r_blkcnt_get(sb);
-  const uint64_t blksize = (uint64_t)kafs_sb_blksize_get(sb);
-
-  uint64_t mapsize = sizeof(kafs_ssuperblock_t);
-  mapsize = align_up_u64(mapsize, blksize);
-  mapsize += (r_blkcnt + 7u) >> 3;
-  mapsize = align_up_u64(mapsize, 8);
-  mapsize = align_up_u64(mapsize, blksize);
-
-  const uint64_t inotbl_off = mapsize;
-  const uint64_t inotbl_bytes =
-      kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(sb), inocnt);
-
-  if (check_bounds(inotbl_off, inotbl_bytes, file_size) != 0)
-    return -ERANGE;
-
-  kafs_sinode_t *inotbl = (kafs_sinode_t *)malloc((size_t)inotbl_bytes);
-  if (!inotbl)
-    return -ENOMEM;
-
-  int rc = kafs_pread_all(fd, inotbl, (size_t)inotbl_bytes, (off_t)inotbl_off);
-  if (rc != 0)
-  {
-    free(inotbl);
-    return rc;
-  }
-
-  out->total = (inocnt > KAFS_INO_ROOTDIR) ? (inocnt - KAFS_INO_ROOTDIR) : 0;
-  for (uint64_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
-  {
-    const kafs_sinode_t *e = &inotbl[ino];
-    if (!kafs_ino_get_usage(e))
-      continue;
-
-    out->used++;
-    if (kafs_ino_linkcnt_get(e) == 0)
-      out->linkcnt_zero_used++;
-  }
-
-  out->free = (out->total >= out->used) ? (out->total - out->used) : 0;
-
-  free(inotbl);
   return 0;
 }
 
@@ -173,7 +71,7 @@ static int collect_hrl_summary(int fd, const kafs_ssuperblock_t *sb, uint64_t fi
   if (ent_off == 0 || ent_cnt == 0)
     return 0;
 
-  if (check_bounds(ent_off, ent_bytes, file_size) != 0)
+  if (kafs_offline_check_bounds(ent_off, ent_bytes, file_size) != 0)
     return -ERANGE;
 
   kafs_hrl_entry_t *ents = (kafs_hrl_entry_t *)malloc((size_t)ent_bytes);
@@ -212,7 +110,7 @@ static int collect_journal_summary(int fd, const kafs_ssuperblock_t *sb, uint64_
   if (j_off == 0 || j_size < sizeof(kj_header_t))
     return 0;
 
-  if (check_bounds(j_off, sizeof(kj_header_t), file_size) != 0)
+  if (kafs_offline_check_bounds(j_off, sizeof(kj_header_t), file_size) != 0)
     return -ERANGE;
 
   int rc = kafs_pread_all(fd, &out->header, sizeof(out->header), (off_t)j_off);
@@ -228,112 +126,12 @@ static int collect_journal_summary(int fd, const kafs_ssuperblock_t *sb, uint64_
   return 0;
 }
 
-static int collect_tailmeta_summary(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
-                                    struct tailmeta_summary *out)
-{
-  memset(out, 0, sizeof(*out));
-
-  if (!kafs_tailmeta_region_present(sb))
-    return 0;
-
-  uint64_t region_off = kafs_sb_tailmeta_offset_get(sb);
-  uint64_t region_size = kafs_sb_tailmeta_size_get(sb);
-  if (region_size < sizeof(out->header))
-    return -ERANGE;
-  if (check_bounds(region_off, sizeof(out->header), file_size) != 0)
-    return -ERANGE;
-
-  int rc = kafs_pread_all(fd, &out->header, sizeof(out->header), (off_t)region_off);
-  if (rc != 0)
-    return rc;
-
-  out->available = 1;
-  rc = kafs_tailmeta_region_hdr_validate(&out->header, region_size);
-  if (rc != 0)
-    return rc;
-
-  uint32_t container_count = kafs_tailmeta_region_hdr_container_count_get(&out->header);
-  if (container_count == 0)
-    return 0;
-
-  uint32_t table_off = kafs_tailmeta_region_hdr_container_table_off_get(&out->header);
-  uint32_t table_bytes = kafs_tailmeta_region_hdr_container_table_bytes_get(&out->header);
-  kafs_tailmeta_container_hdr_t *containers =
-      (kafs_tailmeta_container_hdr_t *)malloc((size_t)table_bytes);
-  if (!containers)
-    return -ENOMEM;
-
-  rc = kafs_pread_all(fd, containers, (size_t)table_bytes, (off_t)(region_off + table_off));
-  if (rc != 0)
-  {
-    free(containers);
-    return rc;
-  }
-
-  for (uint32_t index = 0; index < container_count; ++index)
-  {
-    const kafs_tailmeta_container_hdr_t *container = &containers[index];
-    rc = kafs_tailmeta_container_hdr_validate(
-        container, region_size, kafs_tailmeta_region_hdr_slot_desc_bytes_get(&out->header));
-    if (rc != 0)
-    {
-      out->invalid_containers++;
-      continue;
-    }
-
-    out->valid_containers++;
-    uint16_t slot_count = kafs_tailmeta_container_hdr_slot_count_get(container);
-    uint32_t slot_table_bytes = kafs_tailmeta_container_hdr_slot_table_bytes_get(container);
-    uint32_t slot_table_off = kafs_tailmeta_container_hdr_slot_table_off_get(container);
-    if (slot_count == 0)
-      continue;
-
-    kafs_tailmeta_slot_desc_t *slots =
-        (kafs_tailmeta_slot_desc_t *)malloc((size_t)slot_table_bytes);
-    if (!slots)
-    {
-      free(containers);
-      return -ENOMEM;
-    }
-
-    rc = kafs_pread_all(fd, slots, (size_t)slot_table_bytes, (off_t)(region_off + slot_table_off));
-    if (rc != 0)
-    {
-      free(slots);
-      free(containers);
-      return rc;
-    }
-
-    uint64_t live_slots = 0;
-    for (uint16_t slot_index = 0; slot_index < slot_count; ++slot_index)
-    {
-      rc = kafs_tailmeta_slot_validate(&slots[slot_index],
-                                       kafs_tailmeta_container_hdr_class_bytes_get(container));
-      if (rc != 0)
-      {
-        out->invalid_slots++;
-        continue;
-      }
-      if (kafs_tailmeta_slot_owner_ino_get(&slots[slot_index]) != KAFS_INO_NONE)
-        live_slots++;
-    }
-
-    out->live_slots += live_slots;
-    if (live_slots != kafs_tailmeta_container_hdr_live_count_get(container))
-      out->invalid_containers++;
-    free(slots);
-  }
-
-  free(containers);
-  return (out->invalid_containers == 0 && out->invalid_slots == 0) ? 0 : -EPROTO;
-}
-
 static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary *ino,
                        const struct hrl_summary *hrl, const struct journal_summary *jr,
                        const struct tailmeta_summary *tm, int rc_inode, int rc_hrl, int rc_journal,
                        int rc_tailmeta)
 {
-  struct sb_geometry g = superblock_geometry(sb);
+  struct sb_geometry g = kafs_offline_superblock_geometry(sb);
 
   printf("superblock:\n");
   printf("  magic: 0x%08" PRIx32 "\n", kafs_sb_magic_get(sb));
@@ -365,6 +163,18 @@ static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary 
     printf("  invalid_containers: %" PRIu64 "\n", tm->invalid_containers);
     printf("  live_slots: %" PRIu64 "\n", tm->live_slots);
     printf("  invalid_slots: %" PRIu64 "\n", tm->invalid_slots);
+    printf("  live_bytes: %" PRIu64 "\n", tm->live_bytes);
+    printf("  free_bytes: %" PRIu64 "\n", tm->free_bytes);
+    for (uint16_t index = 0; index < tm->class_summary_count; ++index)
+    {
+      const struct tailmeta_class_summary *class_summary = &tm->classes[index];
+
+      printf("  class[%u]: bytes=%u valid=%" PRIu64 " invalid=%" PRIu64 " slots=%" PRIu64
+             " live_slots=%" PRIu64 " live_bytes=%" PRIu64 " free_bytes=%" PRIu64 "\n",
+             (unsigned)index, (unsigned)class_summary->class_bytes, class_summary->valid_containers,
+             class_summary->invalid_containers, class_summary->slots, class_summary->live_slots,
+             class_summary->live_bytes, class_summary->free_bytes);
+    }
   }
 
   printf("inode_summary:\n");
@@ -373,6 +183,9 @@ static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary 
   printf("  used: %" PRIu64 "\n", ino->used);
   printf("  free: %" PRIu64 "\n", ino->free);
   printf("  linkcnt_zero_used: %" PRIu64 "\n", ino->linkcnt_zero_used);
+  printf("  regular_files: %" PRIu64 "\n", ino->regular_files);
+  printf("  tail_only_regular: %" PRIu64 "\n", ino->tail_only_regular);
+  printf("  mixed_full_tail_regular: %" PRIu64 "\n", ino->mixed_full_tail_regular);
 
   printf("hrl_summary:\n");
   printf("  status: %s\n", rc_to_text(rc_hrl));
@@ -401,7 +214,7 @@ static void print_json(const kafs_ssuperblock_t *sb, const struct inode_summary 
                        const struct tailmeta_summary *tm, int rc_inode, int rc_hrl, int rc_journal,
                        int rc_tailmeta)
 {
-  const struct sb_geometry g = superblock_geometry(sb);
+  const struct sb_geometry g = kafs_offline_superblock_geometry(sb);
 
   printf("{\n");
   printf("  \"superblock\": {\n");
@@ -436,6 +249,22 @@ static void print_json(const kafs_ssuperblock_t *sb, const struct inode_summary 
     printf(",\n    \"invalid_containers\": %" PRIu64, tm->invalid_containers);
     printf(",\n    \"live_slots\": %" PRIu64, tm->live_slots);
     printf(",\n    \"invalid_slots\": %" PRIu64, tm->invalid_slots);
+    printf(",\n    \"live_bytes\": %" PRIu64, tm->live_bytes);
+    printf(",\n    \"free_bytes\": %" PRIu64, tm->free_bytes);
+    printf(",\n    \"classes\": [");
+    for (uint16_t index = 0; index < tm->class_summary_count; ++index)
+    {
+      const struct tailmeta_class_summary *class_summary = &tm->classes[index];
+
+      printf(
+          "%s{\"class_bytes\": %u, \"valid_containers\": %" PRIu64
+          ", \"invalid_containers\": %" PRIu64 ", \"slots\": %" PRIu64 ", \"live_slots\": %" PRIu64
+          ", \"live_bytes\": %" PRIu64 ", \"free_bytes\": %" PRIu64 "}",
+          (index == 0) ? "" : ", ", (unsigned)class_summary->class_bytes,
+          class_summary->valid_containers, class_summary->invalid_containers, class_summary->slots,
+          class_summary->live_slots, class_summary->live_bytes, class_summary->free_bytes);
+    }
+    printf("]");
   }
   printf("\n  },\n");
 
@@ -444,7 +273,10 @@ static void print_json(const kafs_ssuperblock_t *sb, const struct inode_summary 
   printf("    \"total\": %" PRIu64 ",\n", ino->total);
   printf("    \"used\": %" PRIu64 ",\n", ino->used);
   printf("    \"free\": %" PRIu64 ",\n", ino->free);
-  printf("    \"linkcnt_zero_used\": %" PRIu64 "\n", ino->linkcnt_zero_used);
+  printf("    \"linkcnt_zero_used\": %" PRIu64 ",\n", ino->linkcnt_zero_used);
+  printf("    \"regular_files\": %" PRIu64 ",\n", ino->regular_files);
+  printf("    \"tail_only_regular\": %" PRIu64 ",\n", ino->tail_only_regular);
+  printf("    \"mixed_full_tail_regular\": %" PRIu64 "\n", ino->mixed_full_tail_regular);
   printf("  },\n");
 
   printf("  \"hrl_summary\": {\n");

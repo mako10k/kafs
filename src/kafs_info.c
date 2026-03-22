@@ -1,5 +1,6 @@
 #include "kafs.h"
 #include "kafs_cli_opts.h"
+#include "kafs_offline_summary.h"
 #include "kafs_superblock.h"
 #include "kafs_inode.h"
 #include "kafs_hash.h"
@@ -7,15 +8,9 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <stdio.h>
-#include <unistd.h>
 #include <stdlib.h>
-
-static uint64_t align_up_u64(uint64_t value, uint64_t align)
-{
-  if (align == 0)
-    return value;
-  return (value + align - 1u) & ~(align - 1u);
-}
+#include <sys/stat.h>
+#include <unistd.h>
 
 static int time_is_zero(kafs_time_t ts) { return ts.tv_sec == 0 && ts.tv_nsec == 0; }
 
@@ -66,10 +61,17 @@ int main(int argc, char **argv)
     return 1;
   }
   kafs_ssuperblock_t sb;
+  struct stat st;
   ssize_t r = pread(fd, &sb, sizeof(sb), 0);
   if (r != (ssize_t)sizeof(sb))
   {
     perror("pread superblock");
+    close(fd);
+    return 1;
+  }
+  if (fstat(fd, &st) != 0)
+  {
+    perror("fstat");
     close(fd);
     return 1;
   }
@@ -92,44 +94,18 @@ int main(int argc, char **argv)
          (kafs_sb_feature_flags_get(&sb) & KAFS_FEATURE_TAIL_META_REGION) ? "true" : "false",
          (uint64_t)kafs_sb_tailmeta_offset_get(&sb), (uint64_t)kafs_sb_tailmeta_size_get(&sb));
 
-  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(&sb);
-  uint64_t blksize = 1u << log_blksize;
-  uint64_t r_blkcnt = kafs_sb_r_blkcnt_get(&sb);
-  uint64_t inocnt = kafs_sb_inocnt_get(&sb);
-  uint64_t layout = sizeof(kafs_ssuperblock_t);
-  layout = align_up_u64(layout, blksize);
-  layout += (r_blkcnt + 7u) >> 3;
-  layout = align_up_u64(layout, 8u);
-  layout = align_up_u64(layout, blksize);
-  uint64_t inotbl_off = layout;
-  uint64_t inotbl_bytes =
-      kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(&sb), inocnt);
-
   uint64_t tombstone_count = 0;
   kafs_time_t oldest_tombstone = {0};
   int have_oldest_tombstone = 0;
-  if (inocnt > 0)
+  void *inotbl = NULL;
+  uint64_t inocnt = 0;
+  int rc_inode = kafs_offline_load_inode_table(fd, &sb, (uint64_t)st.st_size, &inotbl, &inocnt);
+  if (rc_inode == 0)
   {
-    kafs_sinode_t *inotbl = malloc((size_t)inotbl_bytes);
-    if (!inotbl)
-    {
-      perror("malloc inode table");
-      close(fd);
-      return 1;
-    }
-
-    ssize_t ir = pread(fd, inotbl, (size_t)inotbl_bytes, (off_t)inotbl_off);
-    if (ir != (ssize_t)inotbl_bytes)
-    {
-      perror("pread inode table");
-      free(inotbl);
-      close(fd);
-      return 1;
-    }
-
     for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
     {
-      const kafs_sinode_t *inoent = &inotbl[ino];
+      const kafs_sinode_t *inoent = (const kafs_sinode_t *)kafs_inode_ptr_const_in_table(
+          inotbl, kafs_sb_format_version_get(&sb), ino);
       if (!kafs_ino_get_usage(inoent))
         continue;
       if (kafs_ino_linkcnt_get(inoent) != 0)
@@ -146,7 +122,6 @@ int main(int argc, char **argv)
         have_oldest_tombstone = 1;
       }
     }
-    free(inotbl);
   }
 
   char tombstone_oldest_buf[64];
@@ -159,6 +134,40 @@ int main(int argc, char **argv)
   else
   {
     printf("tombstones count=0 oldest_dtime=none\n");
+  }
+
+  struct inode_summary ino = {0};
+  struct tailmeta_summary tm = {0};
+  rc_inode = collect_inode_summary(fd, &sb, (uint64_t)st.st_size, &ino);
+  int rc_tailmeta = collect_tailmeta_summary(fd, &sb, (uint64_t)st.st_size, &tm);
+  if (rc_inode == 0)
+  {
+    printf("tail layouts: regular=%" PRIu64 " tail_only=%" PRIu64 " mixed_full_tail=%" PRIu64 "\n",
+           ino.regular_files, ino.tail_only_regular, ino.mixed_full_tail_regular);
+  }
+  else
+  {
+    printf("tail layouts: unavailable (%s)\n", (rc_inode < 0) ? strerror(-rc_inode) : "error");
+  }
+  if (rc_tailmeta == 0 && tm.available)
+  {
+    printf("tail usage: live_slots=%" PRIu64 " live_bytes=%" PRIu64 " free_bytes=%" PRIu64
+           " valid_containers=%" PRIu64 " invalid_containers=%" PRIu64 "\n",
+           tm.live_slots, tm.live_bytes, tm.free_bytes, tm.valid_containers, tm.invalid_containers);
+    for (uint16_t index = 0; index < tm.class_summary_count; ++index)
+    {
+      const struct tailmeta_class_summary *class_summary = &tm.classes[index];
+
+      printf("tail class %uB: live_slots=%" PRIu64 " live_bytes=%" PRIu64 " free_bytes=%" PRIu64
+             " valid=%" PRIu64 " invalid=%" PRIu64 "\n",
+             (unsigned)class_summary->class_bytes, class_summary->live_slots,
+             class_summary->live_bytes, class_summary->free_bytes, class_summary->valid_containers,
+             class_summary->invalid_containers);
+    }
+  }
+  else if (kafs_tailmeta_region_present(&sb))
+  {
+    printf("tail usage: unavailable (%s)\n", (rc_tailmeta < 0) ? strerror(-rc_tailmeta) : "error");
   }
 
   uint64_t index_size = kafs_sb_hrl_index_size_get(&sb);
@@ -192,6 +201,7 @@ int main(int argc, char **argv)
     free(ents);
   }
 
+  free(inotbl);
   close(fd);
   return 0;
 }
