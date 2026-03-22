@@ -146,7 +146,8 @@ static int mkfs_format_version_is_supported(uint32_t format_version)
 
 static size_t mkfs_tailmeta_region_size(uint32_t format_version, kafs_blksize_t blksize)
 {
-  return (format_version == KAFS_FORMAT_VERSION_V5) ? (size_t)blksize : 0u;
+  return (format_version == KAFS_FORMAT_VERSION_V5) ? kafs_tailmeta_default_region_bytes(blksize)
+                                                    : 0u;
 }
 
 static uint64_t mkfs_feature_flags_for_format(uint32_t format_version)
@@ -630,7 +631,34 @@ int main(int argc, char **argv)
 
     assert(tailmeta_ptr >= base4 && tailmeta_ptr + layout.tailmeta_size <= end4);
     kafs_tailmeta_region_hdr_init(&region_hdr);
+    kafs_tailmeta_region_hdr_container_table_off_set(&region_hdr, (uint32_t)sizeof(region_hdr));
+    kafs_tailmeta_region_hdr_container_table_bytes_set(
+        &region_hdr,
+        (uint32_t)(KAFS_TAILMETA_DEFAULT_CLASS_COUNT * sizeof(kafs_tailmeta_container_hdr_t)));
+    kafs_tailmeta_region_hdr_container_count_set(&region_hdr, KAFS_TAILMETA_DEFAULT_CLASS_COUNT);
+    kafs_tailmeta_region_hdr_class_count_set(&region_hdr, KAFS_TAILMETA_DEFAULT_CLASS_COUNT);
     memcpy(tailmeta_ptr, &region_hdr, sizeof(region_hdr));
+
+    kafs_tailmeta_container_hdr_t *containers =
+        (kafs_tailmeta_container_hdr_t *)(tailmeta_ptr + sizeof(region_hdr));
+    memset(containers, 0,
+           KAFS_TAILMETA_DEFAULT_CLASS_COUNT * sizeof(kafs_tailmeta_container_hdr_t));
+    for (uint16_t index = 0; index < KAFS_TAILMETA_DEFAULT_CLASS_COUNT; ++index)
+    {
+      uint16_t class_bytes = kafs_tailmeta_default_class_bytes(index);
+      uint16_t slot_count = kafs_tailmeta_default_slot_count_for_class(blksize, class_bytes);
+      uint32_t slot_table_off =
+          (uint32_t)((size_t)blksize * (size_t)(KAFS_TAILMETA_DEFAULT_REGION_META_BLOCKS + index));
+
+      kafs_tailmeta_container_hdr_init(&containers[index]);
+      kafs_tailmeta_container_hdr_class_bytes_set(&containers[index], class_bytes);
+      kafs_tailmeta_container_hdr_slot_count_set(&containers[index], slot_count);
+      kafs_tailmeta_container_hdr_free_bytes_set(&containers[index],
+                                                 (uint16_t)(slot_count * class_bytes));
+      kafs_tailmeta_container_hdr_slot_table_off_set(&containers[index], slot_table_off);
+      kafs_tailmeta_container_hdr_slot_table_bytes_set(
+          &containers[index], (uint32_t)(slot_count * sizeof(kafs_tailmeta_slot_desc_t)));
+    }
   }
 
   if (trim_data_area)

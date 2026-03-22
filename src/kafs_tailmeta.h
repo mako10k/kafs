@@ -19,6 +19,9 @@
 #define KAFS_TAILCHECK_LENGTH_MISMATCH (1u << 4)
 #define KAFS_TAILCHECK_GENERATION_MISMATCH (1u << 5)
 
+#define KAFS_TAILMETA_DEFAULT_CLASS_COUNT 6u
+#define KAFS_TAILMETA_DEFAULT_REGION_META_BLOCKS 1u
+
 struct kafs_stailmeta_region_hdr
 {
   kafs_su32_t tr_magic;
@@ -63,6 +66,34 @@ struct kafs_stailmeta_slot_desc
 } __attribute__((packed));
 
 typedef struct kafs_stailmeta_slot_desc kafs_tailmeta_slot_desc_t;
+
+static inline uint16_t kafs_tailmeta_default_class_bytes(uint16_t index)
+{
+  static const uint16_t k_default_classes[KAFS_TAILMETA_DEFAULT_CLASS_COUNT] = {
+      128u, 256u, 512u, 1024u, 2048u, 3072u,
+  };
+
+  return (index < KAFS_TAILMETA_DEFAULT_CLASS_COUNT) ? k_default_classes[index] : 0u;
+}
+
+static inline uint16_t kafs_tailmeta_default_slot_count_for_class(kafs_blksize_t blksize,
+                                                                  uint16_t class_bytes)
+{
+  uint32_t slot_bytes;
+
+  if (blksize == 0u || class_bytes == 0u)
+    return 0u;
+  slot_bytes = (uint32_t)sizeof(kafs_tailmeta_slot_desc_t) + (uint32_t)class_bytes;
+  if (slot_bytes == 0u)
+    return 0u;
+  return (uint16_t)((uint32_t)blksize / slot_bytes);
+}
+
+static inline size_t kafs_tailmeta_default_region_bytes(kafs_blksize_t blksize)
+{
+  return (size_t)blksize *
+         (size_t)(KAFS_TAILMETA_DEFAULT_REGION_META_BLOCKS + KAFS_TAILMETA_DEFAULT_CLASS_COUNT);
+}
 
 struct kafs_stailmeta_inode_desc
 {

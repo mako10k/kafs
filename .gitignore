@@ -108,6 +108,7 @@
 /tests/kafsctl_links
 /tests/tailmeta_parser
 /tests/v5_mount_smoketest
+/tests/v5_tail_smallfile_smoketest
 
 ### Local mount/test workdirs (repo root)
 /mnt-*/
