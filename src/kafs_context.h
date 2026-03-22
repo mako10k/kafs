@@ -295,3 +295,47 @@ int kafs_ctx_locks_init(struct kafs_context *ctx);
 void kafs_ctx_locks_destroy(struct kafs_context *ctx);
 
 typedef struct kafs_context kafs_context_t;
+
+static inline uint32_t kafs_ctx_inode_format(const kafs_context_t *ctx)
+{
+  assert(ctx != NULL);
+  assert(ctx->c_superblock != NULL);
+  return kafs_u32_stoh(ctx->c_superblock->s_format_version);
+}
+
+static inline size_t kafs_ctx_inode_bytes(const kafs_context_t *ctx)
+{
+  return kafs_inode_bytes_for_format(kafs_ctx_inode_format(ctx));
+}
+
+static inline kafs_sinode_t *kafs_ctx_inode(kafs_context_t *ctx, kafs_inocnt_t ino)
+{
+  assert(ctx != NULL);
+  return (kafs_sinode_t *)kafs_inode_ptr_in_table(ctx->c_inotbl, kafs_ctx_inode_format(ctx), ino);
+}
+
+static inline const kafs_sinode_t *kafs_ctx_inode_const(const kafs_context_t *ctx,
+                                                        kafs_inocnt_t ino)
+{
+  assert(ctx != NULL);
+  return (const kafs_sinode_t *)kafs_inode_ptr_const_in_table(ctx->c_inotbl,
+                                                              kafs_ctx_inode_format(ctx), ino);
+}
+
+static inline kafs_inocnt_t kafs_ctx_ino_no(const kafs_context_t *ctx, const kafs_sinode_t *inoent)
+{
+  assert(ctx != NULL);
+  assert(inoent != NULL);
+  size_t inode_bytes = kafs_ctx_inode_bytes(ctx);
+  if (inode_bytes == 0)
+    inode_bytes = sizeof(kafs_sinode_t);
+  size_t diff = (size_t)((const char *)inoent - (const char *)ctx->c_inotbl);
+  assert((diff % inode_bytes) == 0);
+  return (kafs_inocnt_t)(diff / inode_bytes);
+}
+
+static inline void kafs_ctx_inode_zero(kafs_context_t *ctx, kafs_sinode_t *inoent)
+{
+  assert(ctx != NULL);
+  kafs_inode_zero_for_format(inoent, kafs_ctx_inode_format(ctx));
+}

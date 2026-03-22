@@ -255,7 +255,7 @@ static void kafs_diag_log_dir_iblk_write(const char *phase, struct kafs_context 
   kafs_log(KAFS_LOG_WARNING,
            "%s: dir-iblk-write ino=%" PRIuFAST32 " mode=%o size=%" PRIuFAST64 " iblo=%" PRIuFAST32
            " old_ref=%" PRIuFAST32 " new_ref=%" PRIuFAST32 " sample_hex=%s sample_ascii='%s'\n",
-           phase, (uint_fast32_t)(inoent - ctx->c_inotbl), (unsigned)mode,
+           phase, (uint_fast32_t)kafs_ctx_ino_no(ctx, inoent), (unsigned)mode,
            (uint_fast64_t)kafs_ino_size_get(inoent), (uint_fast32_t)iblo, (uint_fast32_t)old_ref,
            (uint_fast32_t)new_ref, hex_sample[0] ? hex_sample : "-",
            ascii_sample[0] ? ascii_sample : "-");
@@ -263,7 +263,7 @@ static void kafs_diag_log_dir_iblk_write(const char *phase, struct kafs_context 
                     "%s: dir-iblk-write ino=%" PRIuFAST32 " mode=%o size=%" PRIuFAST64
                     " iblo=%" PRIuFAST32 " old_ref=%" PRIuFAST32 " new_ref=%" PRIuFAST32
                     " src_ino=%" PRIuFAST32 " src_path=%s sample_hex=%s sample_ascii='%s'\n",
-                    phase, (uint_fast32_t)(inoent - ctx->c_inotbl), (unsigned)mode,
+                    phase, (uint_fast32_t)kafs_ctx_ino_no(ctx, inoent), (unsigned)mode,
                     (uint_fast64_t)kafs_ino_size_get(inoent), (uint_fast32_t)iblo,
                     (uint_fast32_t)old_ref, (uint_fast32_t)new_ref, (uint_fast32_t)g_diag_write_ino,
                     g_diag_write_path ? g_diag_write_path : "(null)",
@@ -332,7 +332,7 @@ static void kafs_diag_log_first_pwrite_after_create(struct kafs_context *ctx, ka
       !ctx->c_diag_create_paths || !kafs_extra_diag_enabled())
     return;
 
-  kafs_inocnt_t ino = (kafs_inocnt_t)(inoent - ctx->c_inotbl);
+  kafs_inocnt_t ino = kafs_ctx_ino_no(ctx, inoent);
   if (ino >= kafs_sb_inocnt_get(ctx->c_superblock))
     return;
   if (ctx->c_diag_create_first_write_seen[ino])
@@ -1108,7 +1108,7 @@ static int kafs_pendinglog_inode_has_pending_id(struct kafs_context *ctx, uint32
     return 0;
 
   kafs_inode_lock(ctx, ino);
-  kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+  kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
   if (kafs_ino_get_usage(inoent))
   {
     kafs_off_t cur_size = kafs_ino_size_get(inoent);
@@ -1647,7 +1647,7 @@ static int kafs_bg_dedup_try_install(struct kafs_context *ctx, uint32_t ino, kaf
     return 0;
 
   kafs_inode_lock(ctx, ino);
-  kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+  kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
   int installed = 0;
   if (kafs_ino_get_usage(inoent))
   {
@@ -1713,7 +1713,7 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
     int inode_locked = 0;
     kafs_inode_lock(ctx, ino);
     inode_locked = 1;
-    kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+    kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
     if (!kafs_ino_get_usage(inoent))
     {
       kafs_inode_unlock(ctx, ino);
@@ -1956,7 +1956,7 @@ static void *kafs_pending_worker_main(void *arg)
         if (ent.ino < kafs_sb_inocnt_get(ctx->c_superblock))
         {
           kafs_inode_lock(ctx, ent.ino);
-          kafs_sinode_t *inoent = &ctx->c_inotbl[ent.ino];
+          kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ent.ino);
           if (kafs_ino_get_usage(inoent))
           {
             uint32_t cur_epoch = kafs_inode_epoch_get(ctx, ent.ino);
@@ -2223,7 +2223,7 @@ static uint32_t kafs_tombstone_gc_step(struct kafs_context *ctx, int pressure_mo
 
     int reclaimed_now = 0;
     kafs_inode_lock(ctx, (uint32_t)ino);
-    if (kafs_inode_is_tombstone(&ctx->c_inotbl[ino]))
+    if (kafs_inode_is_tombstone(kafs_ctx_inode(ctx, ino)))
       (void)kafs_try_reclaim_unlinked_inode_locked(ctx, ino, &reclaimed_now);
     kafs_inode_unlock(ctx, (uint32_t)ino);
 
@@ -2632,7 +2632,7 @@ static void kafs_diag_log_live_dir_block0_write(struct kafs_context *ctx, kafs_b
   kafs_inocnt_t inocnt = kafs_sb_inocnt_get(ctx->c_superblock);
   for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
   {
-    kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+    kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
     if (!kafs_ino_get_usage(inoent))
       continue;
     kafs_mode_t mode = kafs_ino_mode_get(inoent);
@@ -3277,7 +3277,8 @@ static int kafs_ino_prune_empty_indirects(struct kafs_context *ctx, kafs_sinode_
 static int kafs_ino_iblk_read(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_iblkcnt_t iblo,
                               void *buf)
 {
-  kafs_dlog(3, "%s(ino = %d, iblo = %" PRIuFAST32 ")\n", __func__, inoent - ctx->c_inotbl, iblo);
+  kafs_dlog(3, "%s(ino = %d, iblo = %" PRIuFAST32 ")\n", __func__, kafs_ctx_ino_no(ctx, inoent),
+            iblo);
   assert(ctx != NULL);
   assert(buf != NULL);
   assert(inoent != NULL);
@@ -3330,7 +3331,7 @@ static int kafs_ino_iblk_write_legacy(struct kafs_context *ctx, kafs_sinode_t *i
 
   if (old_raw != KAFS_BLO_NONE)
   {
-    uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
+    uint32_t ino_idx = (uint32_t)kafs_ctx_ino_no(ctx, inoent);
     kafs_inode_unlock(ctx, ino_idx);
     kafs_blkcnt_t old_blo = KAFS_BLO_NONE;
     if (kafs_ref_resolve_data_blo(ctx, old_raw, &old_blo) == 0 && old_blo != KAFS_BLO_NONE &&
@@ -3364,7 +3365,8 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
     if (_rc < 0)                                                                                   \
       return _rc;                                                                                  \
   } while (0)
-  kafs_dlog(3, "%s(ino = %d, iblo = %" PRIuFAST32 ")\n", __func__, inoent - ctx->c_inotbl, iblo);
+  kafs_dlog(3, "%s(ino = %d, iblo = %" PRIuFAST32 ")\n", __func__, kafs_ctx_ino_no(ctx, inoent),
+            iblo);
   assert(ctx != NULL);
   assert(buf != NULL);
   assert(inoent != NULL);
@@ -3382,7 +3384,7 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
     __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_legacy_blk_write, t_lw1 - t_lw0,
                        __ATOMIC_RELAXED);
 
-    uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
+    uint32_t ino_idx = (uint32_t)kafs_ctx_ino_no(ctx, inoent);
     kafs_blkcnt_t old_raw = KAFS_BLO_NONE;
     kafs_blkcnt_t old_blo = KAFS_BLO_NONE;
     uint32_t ino_epoch = kafs_inode_epoch_get(ctx, ino_idx);
@@ -3446,7 +3448,7 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
   // Lock order policy requires hrl_global before inode. To avoid taking a lower-rank
   // HRL lock while holding the inode lock, acquire the HRL ref outside the inode lock,
   // then revalidate the target block mapping before committing the new reference.
-  uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
+  uint32_t ino_idx = (uint32_t)kafs_ctx_ino_no(ctx, inoent);
   for (unsigned retry = 0; retry < 8; ++retry)
   {
     kafs_blkcnt_t expected_old_blo = KAFS_BLO_NONE;
@@ -3530,7 +3532,8 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
 __attribute_maybe_unused__ static int
 kafs_ino_iblk_release(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_iblkcnt_t iblo)
 {
-  kafs_dlog(3, "%s(ino = %d, iblo = %" PRIuFAST32 ")\n", __func__, inoent - ctx->c_inotbl, iblo);
+  kafs_dlog(3, "%s(ino = %d, iblo = %" PRIuFAST32 ")\n", __func__, kafs_ctx_ino_no(ctx, inoent),
+            iblo);
   assert(ctx != NULL);
   assert(inoent != NULL);
   assert(kafs_ino_get_usage(inoent));
@@ -3551,7 +3554,7 @@ kafs_ino_iblk_release(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_iblk
     if (rc < 0)
       return rc;
     // dec_ref は inode ロック外で実施
-    uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
+    uint32_t ino_idx = (uint32_t)kafs_ctx_ino_no(ctx, inoent);
     kafs_inode_unlock(ctx, ino_idx);
     (void)kafs_inode_release_hrl_ref(ctx, old);
     if (f1 != KAFS_BLO_NONE)
@@ -3652,8 +3655,9 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
     if (_rc < 0)                                                                                   \
       return _rc;                                                                                  \
   } while (0)
+  uint32_t ino = kafs_ctx_ino_no(ctx, inoent);
   kafs_dlog(3, "%s(ino = %d, size = %" PRIuFAST64 ", offset = %" PRIuFAST64 ")\n", __func__,
-            inoent - ctx->c_inotbl, size, offset);
+            ino, size, offset);
   assert(ctx != NULL);
   assert(buf != NULL);
   assert(inoent != NULL);
@@ -3762,7 +3766,8 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
 
 static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_off_t filesize_new)
 {
-  kafs_dlog(2, "%s(ino = %d, filesize_new = %" PRIuFAST64 ")\n", __func__, inoent - ctx->c_inotbl,
+  uint32_t ino_idx = kafs_ctx_ino_no(ctx, inoent);
+  kafs_dlog(2, "%s(ino = %d, filesize_new = %" PRIuFAST64 ")\n", __func__, ino_idx,
             filesize_new);
   assert(ctx != NULL);
   assert(inoent != NULL);
@@ -3797,7 +3802,7 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
       deferred_free[deferred_free_cnt++] = __b;                                                    \
     }                                                                                              \
   } while (0)
-  (void)kafs_inode_epoch_bump(ctx, (uint32_t)(inoent - ctx->c_inotbl));
+  (void)kafs_inode_epoch_bump(ctx, ino_idx);
   if (filesize_new > filesize_orig)
   {
     if (filesize_orig <= KAFS_INODE_DIRECT_BYTES && filesize_new > KAFS_INODE_DIRECT_BYTES)
@@ -3811,7 +3816,6 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
     return KAFS_SUCCESS;
   }
   assert(filesize_new < filesize_orig);
-  uint32_t ino_idx = (uint32_t)(inoent - ctx->c_inotbl);
   kafs_iblkcnt_t iblooff = filesize_new >> log_blksize;
   kafs_iblkcnt_t iblocnt = (filesize_orig + blksize - 1) >> log_blksize;
   kafs_blksize_t off = (kafs_blksize_t)(filesize_new & (blksize - 1));
@@ -3957,7 +3961,7 @@ __attribute_maybe_unused__ static int kafs_trim(struct kafs_context *ctx, kafs_s
                                                 kafs_off_t off, kafs_off_t size)
 {
   kafs_dlog(2, "%s(ino = %d, off = %" PRIuFAST64 ", size = %" PRIuFAST64 ")\n", __func__,
-            inoent - ctx->c_inotbl, off, size);
+            kafs_ctx_ino_no(ctx, inoent), off, size);
   assert(ctx != NULL);
   assert(inoent != NULL);
   assert(kafs_ino_get_usage(inoent));
@@ -4012,8 +4016,8 @@ __attribute_maybe_unused__ static int kafs_release(struct kafs_context *ctx, kaf
   if (kafs_ino_linkcnt_decr(inoent) == 0)
   {
     KAFS_CALL(kafs_truncate, ctx, inoent, 0);
-    kafs_diag_clear_create_event(ctx, (kafs_inocnt_t)(inoent - ctx->c_inotbl));
-    memset(inoent, 0, sizeof(struct kafs_sinode));
+    kafs_diag_clear_create_event(ctx, kafs_ctx_ino_no(ctx, inoent));
+    kafs_ctx_inode_zero(ctx, inoent);
     // Best-effort accounting (avoid taking inode_alloc_lock here to prevent lock inversion).
     kafs_sb_inocnt_free_incr(ctx->c_superblock);
     kafs_sb_wtime_set(ctx->c_superblock, kafs_now());
@@ -4040,7 +4044,7 @@ static int kafs_try_reclaim_unlinked_inode_locked(struct kafs_context *ctx, kafs
   assert(reclaimed != NULL);
   *reclaimed = 0;
 
-  kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+  kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
   if (!kafs_ino_get_usage(inoent))
     return KAFS_SUCCESS;
   if (kafs_ino_linkcnt_get(inoent) != 0)
@@ -4060,7 +4064,7 @@ static int kafs_try_reclaim_unlinked_inode_locked(struct kafs_context *ctx, kafs
              (uint32_t)ino, trc);
   }
   kafs_diag_clear_create_event(ctx, ino);
-  memset(inoent, 0, sizeof(*inoent));
+  kafs_ctx_inode_zero(ctx, inoent);
   *reclaimed = 1;
   return KAFS_SUCCESS;
 }
@@ -4236,7 +4240,7 @@ static int kafs_dirent_search_snapshot(struct kafs_context *ctx, const char *sna
     if ((view.flags & KAFS_DIRENT_FLAG_TOMBSTONE) == 0 && view.name_hash == target_hash &&
         view.name_len == filenamelen && memcmp(view.name, filename, filenamelen) == 0)
     {
-      *pinoent_found = &ctx->c_inotbl[view.ino];
+      *pinoent_found = kafs_ctx_inode(ctx, view.ino);
       return KAFS_SUCCESS;
     }
     off = view.record_off + view.record_len;
@@ -4249,7 +4253,7 @@ static int kafs_dirent_search(struct kafs_context *ctx, kafs_sinode_t *inoent, c
                               kafs_filenamelen_t filenamelen, kafs_sinode_t **pinoent_found)
 {
   kafs_dlog(3, "%s(ino = %d, filename = %.*s, filenamelen = %" PRIuFAST16 ")\n", __func__,
-            (inoent - ctx->c_inotbl), (int)filenamelen, filename, filenamelen);
+            kafs_ctx_ino_no(ctx, inoent), (int)filenamelen, filename, filenamelen);
   assert(ctx != NULL);
   assert(inoent != NULL);
   assert(filename != NULL);
@@ -4266,7 +4270,7 @@ static int kafs_dirent_search(struct kafs_context *ctx, kafs_sinode_t *inoent, c
     return rc;
 
   rc = kafs_dirent_search_snapshot(ctx, snap, snap_len, filename, filenamelen,
-                                   (uint32_t)(inoent - ctx->c_inotbl), pinoent_found);
+                                   (uint32_t)kafs_ctx_ino_no(ctx, inoent), pinoent_found);
   free(snap);
   return rc;
 }
@@ -4288,7 +4292,7 @@ static int kafs_dir_snapshot(struct kafs_context *ctx, kafs_sinode_t *inoent_dir
   if (r < 0 || (size_t)r != len)
   {
     kafs_dlog(1, "%s: pread failed ino=%d req=%zu got=%zd\n", __func__,
-              (int)(inoent_dir - ctx->c_inotbl), len, r);
+              (int)kafs_ctx_ino_no(ctx, inoent_dir), len, r);
     free(buf);
     return -EIO;
   }
@@ -4382,7 +4386,7 @@ static int kafs_dir_is_empty_locked(struct kafs_context *ctx, kafs_sinode_t *ino
     return rc;
 
   uint32_t live_count = kafs_dir_v4_hdr_live_count_get(&hdr);
-  uint32_t floor = ((inoent_dir - ctx->c_inotbl) == KAFS_INO_ROOTDIR) ? 0u : 1u;
+  uint32_t floor = (kafs_ctx_ino_no(ctx, inoent_dir) == KAFS_INO_ROOTDIR) ? 0u : 1u;
   return (live_count <= floor) ? 1 : 0;
 }
 
@@ -4521,7 +4525,7 @@ static int kafs_dirent_add(struct kafs_context *ctx, kafs_sinode_t *inoent_dir, 
 {
   int rc = kafs_dirent_add_nolink(ctx, inoent_dir, ino, filename);
   if (rc == 0)
-    kafs_ino_linkcnt_incr(&ctx->c_inotbl[ino]);
+    kafs_ino_linkcnt_incr(kafs_ctx_inode(ctx, ino));
   return rc;
 }
 
@@ -4604,7 +4608,7 @@ static int kafs_dirent_remove(struct kafs_context *ctx, kafs_sinode_t *inoent_di
   kafs_inocnt_t d_ino;
   int rc = kafs_dirent_remove_nolink(ctx, inoent_dir, filename, &d_ino);
   if (rc == 0 && d_ino != KAFS_INO_NONE)
-    kafs_ino_linkcnt_decr(&ctx->c_inotbl[d_ino]);
+    kafs_ino_linkcnt_decr(kafs_ctx_inode(ctx, d_ino));
   return rc;
 }
 
@@ -4721,7 +4725,7 @@ static int kafs_resolve_fh_inode(struct kafs_context *ctx, const struct fuse_fil
   if (ino >= kafs_sb_inocnt_get(ctx->c_superblock))
     return -EBADF;
 
-  kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+  kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
   if (!kafs_ino_get_usage(inoent))
     return -EBADF;
 
@@ -4769,7 +4773,7 @@ static int kafs_access(struct fuse_context *fctx, kafs_context_t *ctx, const cha
   else
   {
     __atomic_add_fetch(&ctx->c_stat_access_path_walk_calls, 1u, __ATOMIC_RELAXED);
-    inoent = &ctx->c_inotbl[KAFS_INO_ROOTDIR];
+    inoent = kafs_ctx_inode(ctx, KAFS_INO_ROOTDIR);
     p = path + 1;
   }
 
@@ -4780,13 +4784,13 @@ static int kafs_access(struct fuse_context *fctx, kafs_context_t *ctx, const cha
     __atomic_add_fetch(&ctx->c_stat_access_path_components, 1u, __ATOMIC_RELAXED);
     kafs_mode_t cur_mode = kafs_ino_mode_get(inoent);
     kafs_dlog(2, "%s: component='%.*s' checking dir ino=%u mode=%o\n", __func__, (int)(n - p), p,
-              (unsigned)(inoent - ctx->c_inotbl), (unsigned)cur_mode);
+              (unsigned)kafs_ctx_ino_no(ctx, inoent), (unsigned)cur_mode);
     int ok_dirs = X_OK;
     int rc_ac = kafs_access_check(ok_dirs, inoent, KAFS_TRUE, uid, gid, ngroups, groups);
     if (rc_ac < 0)
       return rc_ac;
 
-    uint32_t ino_dir = (uint32_t)(inoent - ctx->c_inotbl);
+    uint32_t ino_dir = (uint32_t)kafs_ctx_ino_no(ctx, inoent);
     char *snap = NULL;
     size_t snap_len = 0;
     kafs_inode_lock(ctx, ino_dir);
@@ -4809,7 +4813,7 @@ static int kafs_access(struct fuse_context *fctx, kafs_context_t *ctx, const cha
 
   kafs_mode_t final_mode = kafs_ino_mode_get(inoent);
   kafs_dlog(2, "%s: final node ino=%u mode=%o ok=%d\n", __func__,
-            (unsigned)(inoent - ctx->c_inotbl), (unsigned)final_mode, ok_final);
+            (unsigned)kafs_ctx_ino_no(ctx, inoent), (unsigned)final_mode, ok_final);
   KAFS_CALL(kafs_access_check, ok_final, inoent, KAFS_FALSE, uid, gid, ngroups, groups);
   if (pinoent != NULL)
     *pinoent = inoent;
@@ -5315,7 +5319,7 @@ static int kafs_hotplug_call_getattr(struct fuse_context *fctx, kafs_context_t *
   if (wait_rc != 0)
     return wait_rc;
   kafs_rpc_getattr_req_t req;
-  req.ino = (uint32_t)(inoent - ctx->c_inotbl);
+  req.ino = kafs_ctx_ino_no(ctx, inoent);
   req.uid = (uint32_t)fctx->uid;
   req.gid = (uint32_t)fctx->gid;
   req.pid = (uint32_t)fctx->pid;
@@ -5351,6 +5355,127 @@ static int kafs_hotplug_call_getattr(struct fuse_context *fctx, kafs_context_t *
   return rc;
 }
 
+static int kafs_ctx_is_empty_v5_scaffold(const kafs_context_t *ctx)
+{
+  struct kafs_runtime_tailmeta_region_hdr
+  {
+    kafs_su32_t tr_magic;
+    uint16_t tr_version;
+    uint16_t tr_flags;
+    kafs_su32_t tr_header_bytes;
+    kafs_su32_t tr_container_table_off;
+    kafs_su32_t tr_container_table_bytes;
+    kafs_su32_t tr_container_count;
+    uint16_t tr_class_count;
+    uint16_t tr_slot_desc_bytes;
+    kafs_su32_t tr_generation;
+    kafs_su32_t tr_reserved0;
+  } __attribute__((packed));
+  typedef struct kafs_runtime_tailmeta_region_hdr kafs_runtime_tailmeta_region_hdr_t;
+  enum
+  {
+    KAFS_RUNTIME_TAILMETA_REGION_MAGIC = 0x4B544D52u,
+    KAFS_RUNTIME_TAILMETA_REGION_VERSION = 1u,
+    KAFS_RUNTIME_TAILMETA_SLOT_DESC_BYTES = 12u,
+  };
+  const kafs_ssuperblock_t *sb;
+  const kafs_sinode_t *root;
+  const kafs_sdir_v4_hdr_t *dir_hdr;
+  const kafs_runtime_tailmeta_region_hdr_t *region_hdr;
+  kafs_inocnt_t inocnt;
+  uint64_t tail_off;
+  uint64_t tail_size;
+
+  if (!ctx || !ctx->c_superblock || !ctx->c_img_base)
+    return 0;
+
+  sb = ctx->c_superblock;
+  if (kafs_ctx_inode_format(ctx) != KAFS_FORMAT_VERSION_V5)
+    return 0;
+  if ((kafs_sb_feature_flags_get(sb) & KAFS_FEATURE_TAIL_META_REGION) == 0 &&
+      kafs_sb_tailmeta_offset_get(sb) == 0 && kafs_sb_tailmeta_size_get(sb) == 0)
+    return 0;
+
+  root = kafs_ctx_inode_const(ctx, KAFS_INO_ROOTDIR);
+  if (!root || !kafs_ino_get_usage(root))
+    return 0;
+  if (!S_ISDIR(kafs_ino_mode_get(root)))
+    return 0;
+  if (kafs_ino_blocks_get(root) != 0)
+    return 0;
+  if (kafs_ino_linkcnt_get(root) != 1)
+    return 0;
+  if (kafs_ino_size_get(root) != (kafs_off_t)sizeof(kafs_sdir_v4_hdr_t))
+    return 0;
+
+  dir_hdr = (const kafs_sdir_v4_hdr_t *)root->i_blkreftbl;
+  if (kafs_u32_stoh(dir_hdr->dh_magic) != KAFS_DIRENT_V4_MAGIC)
+    return 0;
+  if (kafs_dir_v4_hdr_format_get(dir_hdr) != KAFS_DIRENT_V4_FORMAT_VERSION)
+    return 0;
+  if (kafs_dir_v4_hdr_flags_get(dir_hdr) != 0u)
+    return 0;
+  if (kafs_dir_v4_hdr_live_count_get(dir_hdr) != 0u)
+    return 0;
+  if (kafs_dir_v4_hdr_tombstone_count_get(dir_hdr) != 0u)
+    return 0;
+  if (kafs_dir_v4_hdr_record_bytes_get(dir_hdr) != 0u)
+    return 0;
+
+  inocnt = kafs_inocnt_stoh(sb->s_inocnt);
+  for (kafs_inocnt_t ino = 0; ino < inocnt; ++ino)
+  {
+    const kafs_sinode_t *inoent;
+
+    if (ino == KAFS_INO_ROOTDIR)
+      continue;
+    inoent = kafs_ctx_inode_const(ctx, ino);
+    if (inoent && kafs_ino_get_usage(inoent))
+      return 0;
+  }
+
+  tail_off = kafs_sb_tailmeta_offset_get(sb);
+  tail_size = kafs_sb_tailmeta_size_get(sb);
+  if (tail_off == 0 || tail_size < sizeof(*region_hdr))
+    return 0;
+  if (tail_off > (uint64_t)ctx->c_img_size || tail_size > (uint64_t)ctx->c_img_size - tail_off)
+    return 0;
+
+  region_hdr = (const kafs_runtime_tailmeta_region_hdr_t *)((const char *)ctx->c_img_base + tail_off);
+  if (kafs_u32_stoh(region_hdr->tr_magic) != KAFS_RUNTIME_TAILMETA_REGION_MAGIC)
+    return 0;
+  if (le16toh(region_hdr->tr_version) != KAFS_RUNTIME_TAILMETA_REGION_VERSION)
+    return 0;
+  if (le16toh(region_hdr->tr_flags) != 0u)
+    return 0;
+  if (kafs_u32_stoh(region_hdr->tr_header_bytes) < (uint32_t)sizeof(*region_hdr) ||
+      (uint64_t)kafs_u32_stoh(region_hdr->tr_header_bytes) > tail_size)
+    return 0;
+  if (le16toh(region_hdr->tr_slot_desc_bytes) != KAFS_RUNTIME_TAILMETA_SLOT_DESC_BYTES)
+    return 0;
+  if (kafs_u32_stoh(region_hdr->tr_container_count) != 0u)
+    return 0;
+  if (kafs_u32_stoh(region_hdr->tr_container_table_bytes) != 0u)
+    return 0;
+
+  return 1;
+}
+
+static int kafs_ctx_runtime_mount_supported(const kafs_context_t *ctx)
+{
+  uint32_t fmt_ver;
+
+  if (!ctx || !ctx->c_superblock)
+    return 0;
+
+  fmt_ver = kafs_ctx_inode_format(ctx);
+  if (fmt_ver == KAFS_FORMAT_VERSION)
+    return 1;
+  if (fmt_ver == KAFS_FORMAT_VERSION_V5)
+    return kafs_ctx_is_empty_v5_scaffold(ctx);
+  return 0;
+}
+
 int kafs_core_open_image(const char *image_path, kafs_context_t *ctx)
 {
   if (!image_path || !ctx)
@@ -5376,7 +5501,8 @@ int kafs_core_open_image(const char *image_path, kafs_context_t *ctx)
     ctx->c_fd = -1;
     return -EINVAL;
   }
-  if (kafs_sb_format_version_get(&sbdisk) != KAFS_FORMAT_VERSION)
+  uint32_t fmt_ver = kafs_sb_format_version_get(&sbdisk);
+  if (fmt_ver != KAFS_FORMAT_VERSION && fmt_ver != KAFS_FORMAT_VERSION_V5)
   {
     close(ctx->c_fd);
     ctx->c_fd = -1;
@@ -5440,6 +5566,15 @@ int kafs_core_open_image(const char *image_path, kafs_context_t *ctx)
   ctx->c_mapsize = (size_t)mapsize;
   ctx->c_blkmasktbl = (void *)ctx->c_superblock + (intptr_t)blkmask_off;
   ctx->c_inotbl = (void *)ctx->c_superblock + (intptr_t)inotbl_off;
+  if (!kafs_ctx_runtime_mount_supported(ctx))
+  {
+    munmap(ctx->c_img_base, ctx->c_img_size);
+    ctx->c_img_base = NULL;
+    ctx->c_img_size = 0;
+    close(ctx->c_fd);
+    ctx->c_fd = -1;
+    return -EPROTONOSUPPORT;
+  }
   ctx->c_alloc_v3_summary_dirty = 1;
 
   (void)kafs_hrl_open(ctx);
@@ -5510,7 +5645,7 @@ int kafs_core_getattr(kafs_context_t *ctx, kafs_inocnt_t ino, struct stat *st)
     return -EINVAL;
   if (ino >= kafs_sb_inocnt_get(ctx->c_superblock))
     return -ENOENT;
-  kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+  kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
   st->st_dev = 0;
   st->st_ino = ino;
   st->st_mode = kafs_ino_mode_get(inoent);
@@ -5535,7 +5670,7 @@ ssize_t kafs_core_read(kafs_context_t *ctx, kafs_inocnt_t ino, void *buf, size_t
   if (ino >= kafs_sb_inocnt_get(ctx->c_superblock))
     return -ENOENT;
   kafs_inode_lock(ctx, (uint32_t)ino);
-  ssize_t rr = kafs_pread(ctx, &ctx->c_inotbl[ino], buf, size, offset);
+  ssize_t rr = kafs_pread(ctx, kafs_ctx_inode(ctx, ino), buf, size, offset);
   kafs_inode_unlock(ctx, (uint32_t)ino);
   return rr;
 }
@@ -5548,7 +5683,7 @@ ssize_t kafs_core_write(kafs_context_t *ctx, kafs_inocnt_t ino, const void *buf,
   if (ino >= kafs_sb_inocnt_get(ctx->c_superblock))
     return -ENOENT;
   kafs_inode_lock(ctx, (uint32_t)ino);
-  ssize_t ww = kafs_pwrite(ctx, &ctx->c_inotbl[ino], buf, size, offset);
+  ssize_t ww = kafs_pwrite(ctx, kafs_ctx_inode(ctx, ino), buf, size, offset);
   kafs_inode_unlock(ctx, (uint32_t)ino);
   return ww;
 }
@@ -5560,7 +5695,7 @@ int kafs_core_truncate(kafs_context_t *ctx, kafs_inocnt_t ino, off_t size)
   if (ino >= kafs_sb_inocnt_get(ctx->c_superblock))
     return -ENOENT;
   kafs_inode_lock(ctx, (uint32_t)ino);
-  int rc = kafs_truncate(ctx, &ctx->c_inotbl[ino], (kafs_off_t)size);
+  int rc = kafs_truncate(ctx, kafs_ctx_inode(ctx, ino), (kafs_off_t)size);
   kafs_inode_unlock(ctx, (uint32_t)ino);
   return rc;
 }
@@ -5728,7 +5863,7 @@ static int kafs_hotplug_call_truncate(struct fuse_context *fctx, kafs_context_t 
     return wait_rc;
 
   kafs_rpc_truncate_req_t req;
-  req.ino = (uint32_t)(inoent - ctx->c_inotbl);
+  req.ino = (uint32_t)kafs_ctx_ino_no(ctx, inoent);
   req.reserved = 0;
   req.size = (uint64_t)size;
   uint64_t req_id = kafs_rpc_next_req_id();
@@ -5790,7 +5925,7 @@ static int kafs_op_getattr(const char *path, struct stat *st, struct fuse_file_i
   if (!kafs_hotplug_should_fallback(rc_hp))
     return rc_hp;
   st->st_dev = 0;
-  st->st_ino = inoent - ctx->c_inotbl;
+  st->st_ino = kafs_ctx_ino_no(ctx, inoent);
   st->st_mode = kafs_ino_mode_get(inoent);
   st->st_nlink = kafs_ino_linkcnt_get(inoent);
   st->st_uid = kafs_ino_uid_get(inoent);
@@ -5912,7 +6047,7 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out, uint32_t
       int is_tombstone = 0;
 
       kafs_inode_lock(ctx, ino);
-      const kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+      const kafs_sinode_t *inoent = kafs_ctx_inode_const(ctx, ino);
       if (kafs_inode_is_tombstone(inoent))
       {
         dtime = kafs_ino_dtime_get(inoent);
@@ -6142,7 +6277,7 @@ static int kafs_reflink_clone(kafs_context_t *ctx, kafs_sinode_t *src, kafs_sino
   char inline_buf[KAFS_INODE_DIRECT_BYTES];
   int is_inline = 0;
 
-  uint32_t ino_src = (uint32_t)(src - ctx->c_inotbl);
+  uint32_t ino_src = kafs_ctx_ino_no(ctx, src);
   kafs_inode_lock(ctx, ino_src);
   size = kafs_ino_size_get(src);
   if (size <= (kafs_off_t)KAFS_INODE_DIRECT_BYTES)
@@ -6178,7 +6313,7 @@ static int kafs_reflink_clone(kafs_context_t *ctx, kafs_sinode_t *src, kafs_sino
   }
   kafs_inode_unlock(ctx, ino_src);
 
-  uint32_t ino_dst = (uint32_t)(dst - ctx->c_inotbl);
+  uint32_t ino_dst = kafs_ctx_ino_no(ctx, dst);
   kafs_inode_lock(ctx, ino_dst);
   int trc = kafs_truncate(ctx, dst, 0);
   if (trc < 0)
@@ -6243,8 +6378,8 @@ static ssize_t kafs_copy_regular_range(kafs_context_t *ctx, kafs_sinode_t *ino_i
                                        kafs_sinode_t *ino_out, off_t offset_in, off_t offset_out,
                                        size_t size)
 {
-  uint32_t ino_src = (uint32_t)(ino_in - ctx->c_inotbl);
-  uint32_t ino_dst = (uint32_t)(ino_out - ctx->c_inotbl);
+  uint32_t ino_src = kafs_ctx_ino_no(ctx, ino_in);
+  uint32_t ino_dst = kafs_ctx_ino_no(ctx, ino_out);
   if (ino_src == ino_dst)
     return 0;
 
@@ -6861,7 +6996,7 @@ static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_
     {
       kafs_inocnt_t ino_new;
       KAFS_CALL(kafs_create, req.dst, 0644 | S_IFREG, 0, NULL, &ino_new);
-      ino_dst = &ctx->c_inotbl[ino_new];
+      ino_dst = kafs_ctx_inode(ctx, ino_new);
     }
     else
     {
@@ -6873,7 +7008,7 @@ static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_
     if ((req.flags & KAFS_IOCTL_COPY_F_REFLINK) != 0)
       return kafs_reflink_clone(ctx, ino_src, ino_dst);
 
-    uint32_t ino_dst_no = (uint32_t)(ino_dst - ctx->c_inotbl);
+    uint32_t ino_dst_no = (uint32_t)kafs_ctx_ino_no(ctx, ino_dst);
     kafs_inode_lock(ctx, ino_dst_no);
     int trc = kafs_truncate(ctx, ino_dst, 0);
     kafs_inode_unlock(ctx, ino_dst_no);
@@ -6916,11 +7051,11 @@ static ssize_t kafs_op_copy_file_range(const char *path_in, struct fuse_file_inf
   kafs_sinode_t *ino_in = NULL;
   kafs_sinode_t *ino_out = NULL;
   if (fi_in)
-    ino_in = &ctx->c_inotbl[fi_in->fh];
+    ino_in = kafs_ctx_inode(ctx, fi_in->fh);
   else
     KAFS_CALL(kafs_access, fctx, ctx, path_in, NULL, R_OK, &ino_in);
   if (fi_out)
-    ino_out = &ctx->c_inotbl[fi_out->fh];
+    ino_out = kafs_ctx_inode(ctx, fi_out->fh);
   else
     KAFS_CALL(kafs_access, fctx, ctx, path_out, NULL, W_OK, &ino_out);
 
@@ -6966,14 +7101,14 @@ static int kafs_op_open(const char *path, struct fuse_file_info *fi)
     ok |= W_OK;
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, NULL, ok, &inoent);
-  fi->fh = inoent - ctx->c_inotbl;
+  fi->fh = kafs_ctx_ino_no(ctx, inoent);
   if (ctx->c_open_cnt)
     __atomic_add_fetch(&ctx->c_open_cnt[fi->fh], 1u, __ATOMIC_RELAXED);
   // Handle O_TRUNC on open for existing files to match POSIX semantics
   if ((fi->flags & O_TRUNC) && (accmode == O_WRONLY || accmode == O_RDWR))
   {
     kafs_inode_lock(ctx, (uint32_t)fi->fh);
-    (void)kafs_truncate(ctx, &ctx->c_inotbl[fi->fh], 0);
+    (void)kafs_truncate(ctx, kafs_ctx_inode(ctx, fi->fh), 0);
     kafs_inode_unlock(ctx, (uint32_t)fi->fh);
   }
   return 0;
@@ -6985,7 +7120,7 @@ static int kafs_op_opendir(const char *path, struct fuse_file_info *fi)
   struct kafs_context *ctx = fctx->private_data;
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, NULL, R_OK, &inoent);
-  fi->fh = inoent - ctx->c_inotbl;
+  fi->fh = kafs_ctx_ino_no(ctx, inoent);
   return 0;
 }
 
@@ -6998,7 +7133,7 @@ static int kafs_op_readdir(const char *path, void *buf, fuse_fill_dir_t filler, 
   struct kafs_context *ctx = fctx->private_data;
   kafs_sinode_t *inoent_dir;
   KAFS_CALL(kafs_access, fctx, ctx, path, fi, R_OK, &inoent_dir);
-  uint32_t ino_dir = (uint32_t)(inoent_dir - ctx->c_inotbl);
+  uint32_t ino_dir = (uint32_t)kafs_ctx_ino_no(ctx, inoent_dir);
 
   kafs_inode_lock(ctx, ino_dir);
   char *snap = NULL;
@@ -7087,7 +7222,7 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   kafs_sinode_t *inoent_dir;
   ret = kafs_access(fctx, ctx, dirpath, NULL, W_OK, &inoent_dir);
   kafs_dlog(2, "%s: access(dirpath='%s') rc=%d ino_dir=%u\n", __func__, dirpath, ret,
-            (unsigned)(inoent_dir ? (inoent_dir - ctx->c_inotbl) : 0));
+            (unsigned)(inoent_dir ? kafs_ctx_ino_no(ctx, inoent_dir) : 0));
   if (ret < 0)
   {
     kafs_journal_abort(ctx, jseq, "parent access=%d", ret);
@@ -7101,7 +7236,7 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   }
   kafs_inocnt_t ino_new;
   kafs_inode_alloc_lock(ctx);
-  ret = kafs_ino_find_free(ctx->c_inotbl, &ino_new, &ctx->c_ino_search,
+  ret = kafs_ino_find_free(ctx->c_inotbl, kafs_ctx_inode_format(ctx), &ino_new, &ctx->c_ino_search,
                            kafs_sb_inocnt_get(ctx->c_superblock));
   if (ret < 0)
   {
@@ -7111,9 +7246,10 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   }
 
   kafs_dlog(2, "%s: alloc ino=%u\n", __func__, (unsigned)ino_new);
-  struct kafs_sinode *inoent_new = &ctx->c_inotbl[ino_new];
+  struct kafs_sinode *inoent_new = kafs_ctx_inode(ctx, ino_new);
 
   // Reserve/initialize the inode while holding alloc lock so no other thread can allocate it.
+  kafs_ctx_inode_zero(ctx, inoent_new);
   kafs_ino_mode_set(inoent_new, mode);
   kafs_ino_uid_set(inoent_new, fctx->uid);
   kafs_ino_size_set(inoent_new, 0);
@@ -7138,7 +7274,7 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
 
   kafs_inode_alloc_unlock(ctx);
 
-  uint32_t ino_dir_u32 = (uint32_t)(inoent_dir - ctx->c_inotbl);
+  uint32_t ino_dir_u32 = (uint32_t)kafs_ctx_ino_no(ctx, inoent_dir);
   uint32_t ino_new_u32 = (uint32_t)ino_new;
   // lock ordering: always by inode number to avoid deadlock with other ops
   if (ino_dir_u32 < ino_new_u32)
@@ -7159,7 +7295,7 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   kafs_dlog(2, "%s: dirent_add done rc=%d\n", __func__, ret);
   if (ret < 0)
   {
-    memset(inoent_new, 0, sizeof(*inoent_new));
+    kafs_ctx_inode_zero(ctx, inoent_new);
     if (ino_dir_u32 < ino_new_u32)
     {
       kafs_inode_unlock(ctx, ino_new_u32);
@@ -7176,7 +7312,7 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   }
 
   if (pino_dir != NULL)
-    *pino_dir = inoent_dir - ctx->c_inotbl;
+    *pino_dir = kafs_ctx_ino_no(ctx, inoent_dir);
   if (pino_new != NULL)
     *pino_new = ino_new;
 
@@ -7216,7 +7352,7 @@ static int kafs_op_create(const char *path, mode_t mode, struct fuse_file_info *
   KAFS_CALL(kafs_create, path, mode | S_IFREG, 0, NULL, &ino_new);
   if (ctx)
   {
-    kafs_mode_t created_mode = kafs_ino_mode_get(&ctx->c_inotbl[ino_new]);
+    kafs_mode_t created_mode = kafs_ino_mode_get(kafs_ctx_inode(ctx, ino_new));
     if (!S_ISREG(created_mode))
     {
       kafs_log(KAFS_LOG_ERR,
@@ -7247,7 +7383,7 @@ static int kafs_op_truncate(const char *path, off_t size, struct fuse_file_info 
     return -EACCES;
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
-  uint32_t ino = (uint32_t)(inoent - ctx->c_inotbl);
+  uint32_t ino = (uint32_t)kafs_ctx_ino_no(ctx, inoent);
   kafs_dlog(2, "%s: enter path=%s ino=%" PRIuFAST32 " size=%" PRIuFAST64 "\n", __func__,
             path ? path : "(null)", ino, (uint64_t)size);
   int rc_hp = kafs_hotplug_call_truncate(fctx, ctx, inoent, size);
@@ -7263,9 +7399,10 @@ static int kafs_op_truncate(const char *path, off_t size, struct fuse_file_info 
               __func__, rc_hp, path ? path : "(null)", ino, (uint64_t)size);
     return rc_hp;
   }
-  kafs_inode_lock(ctx, (uint32_t)(inoent - ctx->c_inotbl));
+  uint32_t inode_no = kafs_ctx_ino_no(ctx, inoent);
+  kafs_inode_lock(ctx, inode_no);
   int rc = kafs_truncate(ctx, inoent, (kafs_off_t)size);
-  kafs_inode_unlock(ctx, (uint32_t)(inoent - ctx->c_inotbl));
+  kafs_inode_unlock(ctx, inode_no);
   kafs_dlog(2, "%s: exit rc=%d path=%s ino=%" PRIuFAST32 " size=%" PRIuFAST64 " hotplug=fallback\n",
             __func__, (rc == 0 ? 0 : rc), path ? path : "(null)", ino, (uint64_t)size);
   return rc == 0 ? 0 : rc;
@@ -7298,12 +7435,12 @@ static int kafs_op_fallocate(const char *path, int mode, off_t offset, off_t len
 
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
-  uint32_t ino = (uint32_t)(inoent - ctx->c_inotbl);
+  uint32_t ino = kafs_ctx_ino_no(ctx, inoent);
 
 #ifdef FALLOC_FL_PUNCH_HOLE
   if ((mode & FALLOC_FL_PUNCH_HOLE) == 0)
   {
-    // 拡大系: 元 EOF 以降は hole とみなし、必要時のみ疎拡張する。
+      // Expansion path treats the region past EOF as sparse until data is written.
     if ((mode & FALLOC_FL_KEEP_SIZE) != 0)
       return 0;
 
@@ -7436,7 +7573,7 @@ static off_t kafs_op_lseek(const char *path, off_t off, int whence, struct fuse_
 
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
-  uint32_t ino = (uint32_t)(inoent - ctx->c_inotbl);
+  uint32_t ino = kafs_ctx_ino_no(ctx, inoent);
 
   kafs_inode_lock(ctx, ino);
   kafs_off_t size = kafs_ino_size_get(inoent);
@@ -7524,7 +7661,7 @@ static int kafs_op_mkdir(const char *path, mode_t mode)
   kafs_inocnt_t ino_dir;
   kafs_inocnt_t ino_new;
   KAFS_CALL(kafs_create, path, mode | S_IFDIR, 0, &ino_dir, &ino_new);
-  kafs_sinode_t *inoent_new = &ctx->c_inotbl[ino_new];
+  kafs_sinode_t *inoent_new = kafs_ctx_inode(ctx, ino_new);
   if (!S_ISDIR(kafs_ino_mode_get(inoent_new)))
   {
     kafs_log(KAFS_LOG_ERR,
@@ -7610,8 +7747,8 @@ static int kafs_op_rmdir(const char *path)
   KAFS_CALL(kafs_access, fctx, ctx, dirpath, NULL, W_OK, &inoent_dir);
 
   // lock parent then target dir in stable order by inode number to avoid deadlock
-  uint32_t ino_parent = (uint32_t)(inoent_dir - ctx->c_inotbl);
-  uint32_t ino_target = (uint32_t)(inoent - ctx->c_inotbl);
+  uint32_t ino_parent = kafs_ctx_ino_no(ctx, inoent_dir);
+  uint32_t ino_target = kafs_ctx_ino_no(ctx, inoent);
   if (ino_parent < ino_target)
   {
     kafs_inode_lock(ctx, ino_parent);
@@ -7678,7 +7815,7 @@ static int kafs_op_readlink(const char *path, char *buf, size_t buflen)
   struct kafs_context *ctx = fctx->private_data;
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, NULL, F_OK, &inoent);
-  uint32_t ino = (uint32_t)(inoent - ctx->c_inotbl);
+  uint32_t ino = kafs_ctx_ino_no(ctx, inoent);
   kafs_inode_lock(ctx, ino);
   ssize_t r = kafs_pread(ctx, inoent, buf, buflen - 1, 0);
   if (r < 0)
@@ -7715,7 +7852,7 @@ static int kafs_op_read(const char *path, char *buf, size_t size, off_t offset,
   if (!kafs_hotplug_should_fallback((int)rc_hp))
     return (int)rc_hp;
   kafs_inode_lock(ctx, (uint32_t)ino);
-  ssize_t rr = kafs_pread(ctx, &ctx->c_inotbl[ino], buf, size, offset);
+  ssize_t rr = kafs_pread(ctx, kafs_ctx_inode(ctx, ino), buf, size, offset);
   kafs_inode_unlock(ctx, (uint32_t)ino);
   return rr;
 }
@@ -7767,7 +7904,7 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
     return (int)rc_hp;
   }
   kafs_inode_lock(ctx, (uint32_t)ino);
-  kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+  kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
   kafs_mode_t mode = kafs_ino_mode_get(inoent);
   if (S_ISDIR(mode))
   {
@@ -7812,10 +7949,10 @@ static int kafs_op_utimens(const char *path, const struct timespec tv[2], struct
   {
     kafs_inocnt_t fh_ino = (kafs_inocnt_t)fi->fh;
     if (fh_ino < kafs_sb_inocnt_get(ctx->c_superblock) &&
-        kafs_ino_get_usage(&ctx->c_inotbl[fh_ino]))
+        kafs_ino_get_usage(kafs_ctx_inode(ctx, fh_ino)))
     {
       ino = (uint32_t)fh_ino;
-      inoent = &ctx->c_inotbl[ino];
+      inoent = kafs_ctx_inode(ctx, ino);
       KAFS_CALL(kafs_access_check, F_OK, inoent, KAFS_FALSE, fctx->uid, fctx->gid, 0, NULL);
     }
   }
@@ -7823,7 +7960,7 @@ static int kafs_op_utimens(const char *path, const struct timespec tv[2], struct
   if (!inoent)
   {
     KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
-    ino = (uint32_t)(inoent - ctx->c_inotbl);
+    ino = (uint32_t)kafs_ctx_ino_no(ctx, inoent);
   }
 
   kafs_inode_lock(ctx, ino);
@@ -7869,7 +8006,7 @@ static int kafs_op_utimens(const char *path, const struct timespec tv[2], struct
 static kafs_linkcnt_t kafs_inode_drop_link_locked(struct kafs_context *ctx, kafs_inocnt_t ino,
                                                   int reclaim_now, int *reclaimed_now)
 {
-  kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+  kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
   kafs_linkcnt_t nl = kafs_ino_linkcnt_get(inoent);
 
   if (nl > 0)
@@ -7929,7 +8066,7 @@ static int kafs_op_unlink(const char *path)
     kafs_journal_abort(ctx, jseq, "parent access=%d", arc);
     return arc;
   }
-  uint32_t ino_dir = (uint32_t)(inoent_dir - ctx->c_inotbl);
+  uint32_t ino_dir = kafs_ctx_ino_no(ctx, inoent_dir);
 
   kafs_inocnt_t target_ino = KAFS_INO_NONE;
   kafs_sinode_t *inoent_target = NULL;
@@ -7943,7 +8080,7 @@ static int kafs_op_unlink(const char *path)
     kafs_journal_abort(ctx, jseq, "ENOENT");
     return s;
   }
-  target_ino = (kafs_inocnt_t)(inoent_target - ctx->c_inotbl);
+  target_ino = kafs_ctx_ino_no(ctx, inoent_target);
   // unlink(2) should not remove directories
   if (S_ISDIR(kafs_ino_mode_get(inoent_target)))
   {
@@ -8061,8 +8198,8 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
   KAFS_CALL(kafs_access, fctx, ctx, from_dir, NULL, W_OK, &inoent_dir_from);
   kafs_sinode_t *inoent_dir_to;
   KAFS_CALL(kafs_access, fctx, ctx, to_dir, NULL, W_OK, &inoent_dir_to);
-  uint32_t ino_from_dir = (uint32_t)(inoent_dir_from - ctx->c_inotbl);
-  uint32_t ino_to_dir = (uint32_t)(inoent_dir_to - ctx->c_inotbl);
+  uint32_t ino_from_dir = kafs_ctx_ino_no(ctx, inoent_dir_from);
+  uint32_t ino_to_dir = kafs_ctx_ino_no(ctx, inoent_dir_to);
 
   // RENAME_NOREPLACE: 既存なら EEXIST
   if (flags & RENAME_NOREPLACE)
@@ -8082,7 +8219,7 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
   }
 
   // 取得しておく（from の inode番号）
-  kafs_inocnt_t ino_src = (kafs_inocnt_t)(inoent_src - ctx->c_inotbl);
+  kafs_inocnt_t ino_src = kafs_ctx_ino_no(ctx, inoent_src);
 
   // 置換先が存在する場合は削除（通常ファイルのみ）
   kafs_sinode_t *inoent_to_exist = NULL;
@@ -8118,7 +8255,7 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
   uint32_t ino_src_u32 = (uint32_t)ino_src;
   uint32_t ino_dst_u32 = UINT32_MAX;
   if (exists_to == 0 && inoent_to_exist)
-    ino_dst_u32 = (uint32_t)(inoent_to_exist - ctx->c_inotbl);
+    ino_dst_u32 = kafs_ctx_ino_no(ctx, inoent_to_exist);
 
   uint32_t lock_list[4];
   size_t lock_n = 0;
@@ -8271,7 +8408,7 @@ static int kafs_op_chmod(const char *path, mode_t mode, struct fuse_file_info *f
   uint64_t jseq = kafs_journal_begin(ctx, "CHMOD", "path=%s mode=%o", path, (unsigned)mode);
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
-  uint32_t ino = (uint32_t)(inoent - ctx->c_inotbl);
+  uint32_t ino = (uint32_t)kafs_ctx_ino_no(ctx, inoent);
   kafs_inode_lock(ctx, ino);
   kafs_mode_t m = kafs_ino_mode_get(inoent);
   kafs_ino_mode_set(inoent, (m & S_IFMT) | mode);
@@ -8290,7 +8427,7 @@ static int kafs_op_chown(const char *path, uid_t uid, gid_t gid, struct fuse_fil
       kafs_journal_begin(ctx, "CHOWN", "path=%s uid=%u gid=%u", path, (unsigned)uid, (unsigned)gid);
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
-  uint32_t ino = (uint32_t)(inoent - ctx->c_inotbl);
+  uint32_t ino = (uint32_t)kafs_ctx_ino_no(ctx, inoent);
   kafs_inode_lock(ctx, ino);
   kafs_ino_uid_set(inoent, uid);
   kafs_ino_gid_set(inoent, gid);
@@ -8308,7 +8445,7 @@ static int kafs_op_symlink(const char *target, const char *linkpath)
   uint64_t jseq = kafs_journal_begin(ctx, "SYMLINK", "target=%s linkpath=%s", target, linkpath);
   kafs_inocnt_t ino;
   KAFS_CALL(kafs_create, linkpath, 0777 | S_IFLNK, 0, NULL, &ino);
-  kafs_sinode_t *inoent = &ctx->c_inotbl[ino];
+  kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
   kafs_mode_t created_mode = kafs_ino_mode_get(inoent);
   if (!S_ISLNK(created_mode))
   {
@@ -8388,8 +8525,8 @@ static int kafs_op_link(const char *from, const char *to)
     return arc;
   }
 
-  uint32_t ino_src = (uint32_t)(inoent_src - ctx->c_inotbl);
-  uint32_t ino_dir = (uint32_t)(inoent_dir - ctx->c_inotbl);
+  uint32_t ino_src = (uint32_t)kafs_ctx_ino_no(ctx, inoent_src);
+  uint32_t ino_dir = (uint32_t)kafs_ctx_ino_no(ctx, inoent_dir);
   kafs_inode_lock(ctx, ino_src);
   kafs_ino_linkcnt_incr(inoent_src);
   kafs_inode_unlock(ctx, ino_src);
@@ -8450,7 +8587,7 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
     kafs_sinode_t *inoent = NULL;
     int arc = kafs_access(fctx, ctx, path, fi, F_OK, &inoent);
     if (arc == 0 && inoent)
-      ino = (uint32_t)(inoent - ctx->c_inotbl);
+      ino = (uint32_t)kafs_ctx_ino_no(ctx, inoent);
   }
   if (ino != KAFS_INO_NONE)
   {
@@ -8608,7 +8745,7 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
     {
       int reclaim_now = kafs_tombstone_pressure(ctx);
       kafs_inode_lock(ctx, (uint32_t)ino);
-      if (reclaim_now && kafs_inode_is_tombstone(&ctx->c_inotbl[ino]))
+      if (reclaim_now && kafs_inode_is_tombstone(kafs_ctx_inode(ctx, ino)))
         (void)kafs_try_reclaim_unlinked_inode_locked(ctx, ino, &reclaimed);
       kafs_inode_unlock(ctx, (uint32_t)ino);
 
@@ -9102,7 +9239,7 @@ int kafs_core_migrate_image(const char *image_path, int assume_yes)
   kafs_inocnt_t inocnt = kafs_sb_inocnt_get(ctx.c_superblock);
   for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
   {
-    kafs_sinode_t *inoent = &ctx.c_inotbl[ino];
+    kafs_sinode_t *inoent = kafs_ctx_inode(&ctx, ino);
     if (!kafs_ino_get_usage(inoent))
       continue;
     if (!S_ISDIR(kafs_ino_mode_get(inoent)))
@@ -10249,9 +10386,9 @@ int main(int argc, char **argv)
     fprintf(stderr, "invalid magic. run mkfs.kafs to format.\n");
     exit(2);
   }
-  if (kafs_sb_format_version_get(&sbdisk) != KAFS_FORMAT_VERSION)
+  uint32_t fmt_ver = kafs_sb_format_version_get(&sbdisk);
+  if (fmt_ver != KAFS_FORMAT_VERSION)
   {
-    uint32_t fmt_ver = kafs_sb_format_version_get(&sbdisk);
     if (fmt_ver == KAFS_FORMAT_VERSION_V2 || fmt_ver == KAFS_FORMAT_VERSION_V3)
     {
       if (auto_migrate)
@@ -10280,11 +10417,14 @@ int main(int argc, char **argv)
               "unsupported format version: v%u.\n"
               "Run kafsctl migrate <image> or kafs --migrate before mounting.\n",
               (unsigned)fmt_ver);
+      exit(2);
     }
-    else
+    else if (fmt_ver != KAFS_FORMAT_VERSION_V5)
+    {
       fprintf(stderr, "unsupported format version: %u (expected %u).\n", fmt_ver,
               (unsigned)KAFS_FORMAT_VERSION);
-    exit(2);
+      exit(2);
+    }
   }
   // 読み出し値からレイアウト計算
   kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(&sbdisk);
@@ -10345,6 +10485,17 @@ int main(int argc, char **argv)
   ctx.c_mapsize = (size_t)mapsize; // metadata region length (subset of img)
   ctx.c_blkmasktbl = (void *)ctx.c_superblock + (intptr_t)blkmask_off;
   ctx.c_inotbl = (void *)ctx.c_superblock + (intptr_t)inotbl_off;
+  if (!kafs_ctx_runtime_mount_supported(&ctx))
+  {
+    if (fmt_ver == KAFS_FORMAT_VERSION_V5)
+      fprintf(stderr,
+              "unsupported format version: v%u runtime mount is limited to empty scaffold images.\n",
+              (unsigned)fmt_ver);
+    else
+      fprintf(stderr, "unsupported format version: %u (expected %u).\n", fmt_ver,
+              (unsigned)KAFS_FORMAT_VERSION);
+    exit(2);
+  }
   ctx.c_diag_log_fd = -1;
   ctx.c_ino_epoch = calloc((size_t)inocnt, sizeof(uint32_t));
   if (ctx.c_ino_epoch)
