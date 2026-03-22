@@ -72,6 +72,7 @@ Create a filesystem image:
 Key options:
 - `-s, --size-bytes`: total image size (accepts K/M/G suffixes)
 - `-b, --blksize-log`: block size as log2 (default 12 = 4096 bytes)
+- `--format-version`: on-disk format version to emit (default 4; version 5 creates an empty dedicated tail metadata region scaffold)
 - `-i, --inodes`: inode count
 - `-J, --journal-size-bytes`: journal size (accepts K/M/G suffixes)
 - `--hrl-entry-ratio`: HRL entries/data-block ratio (default 0.75, range 0<R<=1)
@@ -162,7 +163,8 @@ Inspect an offline image without modifying it:
 ```
 
 Output sections:
-- `superblock`: magic/version/block geometry and free counts
+- `superblock`: magic/version/block geometry, free counts, and tail metadata region flags/offset/size
+- `tail_metadata`: probe status and, when available, region header/container/slot summary
 - `inode_summary`: used/free inode counts and `linkcnt==0` in-use count
 - `hrl_summary`: HRL entry/live/refcnt totals
 - `journal_header`: in-image journal header fields and header CRC check result
@@ -187,7 +189,7 @@ the destination file without mutating the source image.
 
 ### kafsresize
 
-Grow-only resize for offline images:
+Offline resize and migration-image creation:
 
 ```sh
 ./kafsresize --grow --size-bytes 2G /tmp/kafs.img
@@ -199,6 +201,8 @@ Grow-only resize for offline images:
 
 Current v0 constraint: growth is only supported within preallocated headroom
 (`s_blkcnt < s_r_blkcnt`). Shrink is not supported.
+`--grow` accepts both v4 and v5 scaffold images.
+`--migrate-create` can emit a destination image with `--format-version 5` for offline migration preparation.
 
 ### kafsctl
 
