@@ -236,6 +236,78 @@ static int read_tailmeta_region_header(const char *img, uint64_t off,
   return 0;
 }
 
+static int read_image_bytes(const char *img, uint64_t off, void *buf, size_t size)
+{
+  int fd = open(img, O_RDONLY);
+  if (fd < 0)
+    return -errno;
+  ssize_t n = pread(fd, buf, size, (off_t)off);
+  int saved = errno;
+  close(fd);
+  if (n != (ssize_t)size)
+    return (n < 0) ? -saved : -EIO;
+  return 0;
+}
+
+static int validate_empty_v5_tailmeta_layout(const char *img, uint64_t region_off,
+                                             uint64_t region_size, uint64_t blksize,
+                                             const kafs_tailmeta_region_hdr_t *region_hdr)
+{
+  uint32_t table_off = kafs_tailmeta_region_hdr_container_table_off_get(region_hdr);
+  uint32_t table_bytes = kafs_tailmeta_region_hdr_container_table_bytes_get(region_hdr);
+  uint32_t container_count = kafs_tailmeta_region_hdr_container_count_get(region_hdr);
+  uint16_t slot_desc_bytes = kafs_tailmeta_region_hdr_slot_desc_bytes_get(region_hdr);
+  kafs_tailmeta_container_hdr_t containers[KAFS_TAILMETA_DEFAULT_CLASS_COUNT];
+
+  if (container_count != KAFS_TAILMETA_DEFAULT_CLASS_COUNT ||
+      kafs_tailmeta_region_hdr_class_count_get(region_hdr) != KAFS_TAILMETA_DEFAULT_CLASS_COUNT)
+    return -EPROTO;
+  if (table_off != sizeof(*region_hdr) ||
+      table_bytes != KAFS_TAILMETA_DEFAULT_CLASS_COUNT * sizeof(kafs_tailmeta_container_hdr_t))
+    return -EPROTO;
+  if (slot_desc_bytes != sizeof(kafs_tailmeta_slot_desc_t))
+    return -EPROTO;
+  if (read_image_bytes(img, region_off + table_off, containers, sizeof(containers)) != 0)
+    return -EIO;
+
+  for (uint16_t index = 0; index < KAFS_TAILMETA_DEFAULT_CLASS_COUNT; ++index)
+  {
+    const kafs_tailmeta_container_hdr_t *container = &containers[index];
+    uint16_t class_bytes = kafs_tailmeta_default_class_bytes(index);
+    uint16_t slot_count = kafs_tailmeta_default_slot_count_for_class((kafs_blksize_t)blksize,
+                                                                     class_bytes);
+    uint32_t slot_table_off =
+        (uint32_t)(blksize * (uint64_t)(KAFS_TAILMETA_DEFAULT_REGION_META_BLOCKS + index));
+    uint32_t slot_table_bytes = (uint32_t)(slot_count * sizeof(kafs_tailmeta_slot_desc_t));
+
+    if (kafs_tailmeta_container_hdr_validate(container, region_size, slot_desc_bytes) != 0)
+      return -EPROTO;
+    if (kafs_tailmeta_container_hdr_class_bytes_get(container) != class_bytes ||
+        kafs_tailmeta_container_hdr_slot_count_get(container) != slot_count ||
+        kafs_tailmeta_container_hdr_live_count_get(container) != 0u ||
+        kafs_tailmeta_container_hdr_free_bytes_get(container) !=
+            (uint16_t)(slot_count * class_bytes) ||
+        kafs_tailmeta_container_hdr_slot_table_off_get(container) != slot_table_off ||
+        kafs_tailmeta_container_hdr_slot_table_bytes_get(container) != slot_table_bytes)
+      return -EPROTO;
+
+    if (slot_count == 0u)
+      continue;
+
+    kafs_tailmeta_slot_desc_t slots[slot_count];
+    if (read_image_bytes(img, region_off + slot_table_off, slots, sizeof(slots)) != 0)
+      return -EIO;
+    for (uint16_t slot_index = 0; slot_index < slot_count; ++slot_index)
+    {
+      if (kafs_tailmeta_slot_validate(&slots[slot_index], class_bytes) != 0 ||
+          kafs_tailmeta_slot_owner_ino_get(&slots[slot_index]) != KAFS_INO_NONE)
+        return -EPROTO;
+    }
+  }
+
+  return 0;
+}
+
 static int write_inode_at(const char *img, kafs_inocnt_t ino, const kafs_sinode_t *inode)
 {
   kafs_ssuperblock_t sb = {0};
@@ -948,10 +1020,10 @@ int main(void)
       fprintf(stderr, "tailmeta region header is invalid\n");
       return 1;
     }
-    if (kafs_tailmeta_region_hdr_container_count_get(&region_hdr) != 0 ||
-        kafs_tailmeta_region_hdr_container_table_bytes_get(&region_hdr) != 0)
+    if (validate_empty_v5_tailmeta_layout(tailmeta_img, region_off, region_size, blksize_v5,
+                                          &region_hdr) != 0)
     {
-      fprintf(stderr, "tailmeta region should be initialized empty\n");
+      fprintf(stderr, "tailmeta region should be initialized with an empty default layout\n");
       return 1;
     }
   }
@@ -972,7 +1044,9 @@ int main(void)
   }
   if (!strstr(dump_stdout, "format_version: 5") || !strstr(dump_stdout, "tailmeta_enabled: true") ||
       !strstr(dump_stdout, "tail_metadata:") || !strstr(dump_stdout, "  available: true") ||
-      !strstr(dump_stdout, "  container_count: 0") || !strstr(dump_stdout, "  invalid_slots: 0"))
+      !strstr(dump_stdout, "  container_count: 6") ||
+      !strstr(dump_stdout, "  valid_containers: 6") ||
+      !strstr(dump_stdout, "  live_slots: 0") || !strstr(dump_stdout, "  invalid_slots: 0"))
   {
     fprintf(stderr, "kafsdump output missing empty v5 tailmeta summary: %s\n", dump_stdout);
     return 1;
