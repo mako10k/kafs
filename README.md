@@ -334,5 +334,5 @@ make check
 - docs/hotplug-*.md and docs/hotplug-pipe-*.md: hotplug plans/designs
 - docs/dedup-design.md: deduplication design notes
 - docs/kafsimage-format.md: kafsimage mode semantics and output rules
-- man/: manual pages for kafs, mkfs.kafs, fsck.kafs, kafsctl
+- man/: manual pages for kafs, kafsctl, mkfs.kafs, fsck.kafs, kafs-info, kafsdump, kafsimage, and kafsresize
 - CHANGELOG.md: release notes
