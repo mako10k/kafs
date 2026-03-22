@@ -1,7 +1,7 @@
 '.\" -*- nroff -*-
 .TH KAFSIMAGE 8 "2026-03-17" "kafs 0.4.0" "System Administration"
 .SH NAME
-kafsimage \- export offline KAFS image data in metadata-only mode
+kafsimage \- export offline KAFS image data in metadata-only, raw, or sparse modes
 .SH SYNOPSIS
 .B kafsimage
 .B --metadata-only
@@ -22,10 +22,13 @@ kafsimage \- export offline KAFS image data in metadata-only mode
 .I dst-file
 .SH DESCRIPTION
 .B kafsimage
-reads an offline source image and writes a metadata-only export file.
-Current v0 behavior copies the metadata prefix
-.IR [0, first_data_block * block_size) .
+reads an offline source image and writes an export file in metadata-only, raw,
+or sparse mode.
 The source image is never modified.
+With
+.BR --metadata-only ,
+current v0 behavior copies the metadata prefix
+.IR [0, first_data_block * block_size) .
 With
 .BR --raw ,
 the full source image is copied byte-for-byte.
