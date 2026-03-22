@@ -107,6 +107,7 @@
 /tests/fallocate_lseek_block
 /tests/kafsctl_links
 /tests/tailmeta_parser
+/tests/v5_mount_smoketest
 
 ### Local mount/test workdirs (repo root)
 /mnt-*/
