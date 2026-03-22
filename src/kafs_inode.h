@@ -447,8 +447,7 @@ static kafs_linkcnt_t kafs_ino_linkcnt_decr(kafs_sinode_t *inoent)
 /// @param inocnt inode 番号の最大数
 /// @return 0: 成功、 < 0: 失敗 (-errno)
 static int kafs_ino_find_free(const void *inode_table_base, uint32_t format_version,
-                              kafs_inocnt_t *pino, kafs_inocnt_t *pino_search,
-                              kafs_inocnt_t inocnt)
+                              kafs_inocnt_t *pino, kafs_inocnt_t *pino_search, kafs_inocnt_t inocnt)
 {
   assert(inode_table_base != NULL);
   assert(pino != NULL);

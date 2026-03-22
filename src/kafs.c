@@ -3656,8 +3656,8 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
       return _rc;                                                                                  \
   } while (0)
   uint32_t ino = kafs_ctx_ino_no(ctx, inoent);
-  kafs_dlog(3, "%s(ino = %d, size = %" PRIuFAST64 ", offset = %" PRIuFAST64 ")\n", __func__,
-            ino, size, offset);
+  kafs_dlog(3, "%s(ino = %d, size = %" PRIuFAST64 ", offset = %" PRIuFAST64 ")\n", __func__, ino,
+            size, offset);
   assert(ctx != NULL);
   assert(buf != NULL);
   assert(inoent != NULL);
@@ -3767,8 +3767,7 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
 static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_off_t filesize_new)
 {
   uint32_t ino_idx = kafs_ctx_ino_no(ctx, inoent);
-  kafs_dlog(2, "%s(ino = %d, filesize_new = %" PRIuFAST64 ")\n", __func__, ino_idx,
-            filesize_new);
+  kafs_dlog(2, "%s(ino = %d, filesize_new = %" PRIuFAST64 ")\n", __func__, ino_idx, filesize_new);
   assert(ctx != NULL);
   assert(inoent != NULL);
   assert(kafs_ino_get_usage(inoent));
@@ -5441,7 +5440,8 @@ static int kafs_ctx_is_empty_v5_scaffold(const kafs_context_t *ctx)
   if (tail_off > (uint64_t)ctx->c_img_size || tail_size > (uint64_t)ctx->c_img_size - tail_off)
     return 0;
 
-  region_hdr = (const kafs_runtime_tailmeta_region_hdr_t *)((const char *)ctx->c_img_base + tail_off);
+  region_hdr =
+      (const kafs_runtime_tailmeta_region_hdr_t *)((const char *)ctx->c_img_base + tail_off);
   if (kafs_u32_stoh(region_hdr->tr_magic) != KAFS_RUNTIME_TAILMETA_REGION_MAGIC)
     return 0;
   if (le16toh(region_hdr->tr_version) != KAFS_RUNTIME_TAILMETA_REGION_VERSION)
@@ -7440,7 +7440,7 @@ static int kafs_op_fallocate(const char *path, int mode, off_t offset, off_t len
 #ifdef FALLOC_FL_PUNCH_HOLE
   if ((mode & FALLOC_FL_PUNCH_HOLE) == 0)
   {
-      // Expansion path treats the region past EOF as sparse until data is written.
+    // Expansion path treats the region past EOF as sparse until data is written.
     if ((mode & FALLOC_FL_KEEP_SIZE) != 0)
       return 0;
 
@@ -10488,9 +10488,10 @@ int main(int argc, char **argv)
   if (!kafs_ctx_runtime_mount_supported(&ctx))
   {
     if (fmt_ver == KAFS_FORMAT_VERSION_V5)
-      fprintf(stderr,
-              "unsupported format version: v%u runtime mount is limited to empty scaffold images.\n",
-              (unsigned)fmt_ver);
+      fprintf(
+          stderr,
+          "unsupported format version: v%u runtime mount is limited to empty scaffold images.\n",
+          (unsigned)fmt_ver);
     else
       fprintf(stderr, "unsupported format version: %u (expected %u).\n", fmt_ver,
               (unsigned)KAFS_FORMAT_VERSION);
