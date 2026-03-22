@@ -17,7 +17,14 @@ tombstone inode count and oldest deletion timestamp,
 .IP \[bu] 2
 hash settings,
 .IP \[bu] 2
-HRL index/entry region summary.
+HRL index/entry region summary,
+.IP \[bu] 2
+tail metadata region state, offset, and size.
+.PP
+For format version 5 images,
+.B kafs-info
+reports whether the dedicated tail metadata region is enabled and prints its
+byte offset and byte size as part of the top-level summary.
 .PP
 This command does not modify image contents.
 .SH EXIT STATUS
