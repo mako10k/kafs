@@ -91,6 +91,15 @@ static const char *pick_mkfs_exe(void)
   return pick_exe("KAFS_TEST_MKFS", cands);
 }
 
+static const char *pick_tool_exe(const char *env_name, const char *tool_name)
+{
+  static char resolved[2][PATH_MAX];
+  static int slot = 0;
+
+  slot = (slot + 1) % 2;
+  return resolve_tool_from_self(env_name, tool_name, resolved[slot]);
+}
+
 static int run_cmd(char *const argv[])
 {
   pid_t pid = fork();
@@ -109,6 +118,61 @@ static int run_cmd(char *const argv[])
   if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
     return 0;
   return -1;
+}
+
+static int run_cmd_capture_stdout(char *const argv[], char *stdout_buf, size_t stdout_buf_sz)
+{
+  int pipefd[2];
+
+  if (pipe(pipefd) != 0)
+    return -errno;
+
+  pid_t pid = fork();
+  if (pid < 0)
+  {
+    int saved = errno;
+
+    close(pipefd[0]);
+    close(pipefd[1]);
+    return -saved;
+  }
+  if (pid == 0)
+  {
+    close(pipefd[0]);
+    if (dup2(pipefd[1], STDOUT_FILENO) < 0)
+      _exit(127);
+    close(pipefd[1]);
+    execvp(argv[0], argv);
+    _exit(127);
+  }
+
+  close(pipefd[1]);
+  size_t used = 0;
+  while (stdout_buf && used + 1 < stdout_buf_sz)
+  {
+    ssize_t n = read(pipefd[0], stdout_buf + used, stdout_buf_sz - used - 1);
+    if (n < 0)
+    {
+      int saved = errno;
+
+      close(pipefd[0]);
+      (void)waitpid(pid, NULL, 0);
+      return -saved;
+    }
+    if (n == 0)
+      break;
+    used += (size_t)n;
+  }
+  if (stdout_buf && stdout_buf_sz > 0)
+    stdout_buf[used] = '\0';
+  close(pipefd[0]);
+
+  int status = 0;
+  if (waitpid(pid, &status, 0) < 0)
+    return -errno;
+  if (WIFEXITED(status))
+    return WEXITSTATUS(status);
+  return 255;
 }
 
 static int mkfs_v5_image(const char *img)
@@ -367,6 +431,48 @@ static int inspect_mixed_tail_packed_file(const char *img, const char *expected,
   return rc;
 }
 
+static int inspect_offline_tool_output(const char *img)
+{
+  char info_stdout[4096];
+  char dump_stdout[8192];
+  char dump_json_stdout[8192];
+  const char *info = pick_tool_exe("KAFS_TEST_INFO", "kafs-info");
+  const char *dump = pick_tool_exe("KAFS_TEST_DUMP", "kafsdump");
+  int rc;
+
+  if (!info || !dump)
+    return -ENOENT;
+
+  char *info_argv[] = {(char *)info, (char *)img, NULL};
+  rc = run_cmd_capture_stdout(info_argv, info_stdout, sizeof(info_stdout));
+  if (rc != 0)
+    return -EIO;
+  if (!strstr(info_stdout, "tail layouts: regular=1 tail_only=0 mixed_full_tail=1") ||
+      !strstr(info_stdout, "tail usage: live_slots=1 live_bytes=200"))
+    return -EPROTO;
+
+  char *dump_argv[] = {(char *)dump, (char *)img, NULL};
+  rc = run_cmd_capture_stdout(dump_argv, dump_stdout, sizeof(dump_stdout));
+  if (rc != 0)
+    return -EIO;
+  if (!strstr(dump_stdout, "live_bytes: 200") ||
+      !strstr(dump_stdout, "tail_only_regular: 0") ||
+      !strstr(dump_stdout, "mixed_full_tail_regular: 1"))
+    return -EPROTO;
+
+  char *dump_json_argv[] = {(char *)dump, (char *)"--json", (char *)img, NULL};
+  rc = run_cmd_capture_stdout(dump_json_argv, dump_json_stdout, sizeof(dump_json_stdout));
+  if (rc != 0)
+    return -EIO;
+  if (!strstr(dump_json_stdout, "\"live_bytes\": 200") ||
+      !strstr(dump_json_stdout, "\"tail_only_regular\": 0") ||
+      !strstr(dump_json_stdout, "\"mixed_full_tail_regular\": 1") ||
+      !strstr(dump_json_stdout, "\"classes\": ["))
+    return -EPROTO;
+
+  return 0;
+}
+
 static const kafs_test_mount_options_t k_mount_options = {
     .debug = "1",
     .log_path = "v5_tail_mixed.log",
@@ -504,6 +610,13 @@ int main(void)
   if (rc != 0)
   {
     tlogf("offline mixed tail inspection failed rc=%d", rc);
+    return 1;
+  }
+
+  rc = inspect_offline_tool_output(img);
+  if (rc != 0)
+  {
+    tlogf("offline tool inspection failed rc=%d", rc);
     return 1;
   }
 
