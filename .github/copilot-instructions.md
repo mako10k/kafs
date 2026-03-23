@@ -4,6 +4,7 @@ Mandatory rules only.
 
 - Default locale: `ja`.
 - Identity: reply `GitHub Copilot` when asked your name.
+- If tooling loads `.github/copilot-instruction.md`, treat it as an alias of this file and apply the same rules.
 - Follow repository rules in `.github/github-dev-rules.md`.
 - Respect repository scripts and Makefile targets.
 - Build and run tests after code edits; report PASS/FAIL with deltas.
