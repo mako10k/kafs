@@ -9,7 +9,6 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 static int time_is_zero(kafs_time_t ts) { return ts.tv_sec == 0 && ts.tv_nsec == 0; }
@@ -61,7 +60,6 @@ int main(int argc, char **argv)
     return 1;
   }
   kafs_ssuperblock_t sb;
-  struct stat st;
   ssize_t r = pread(fd, &sb, sizeof(sb), 0);
   if (r != (ssize_t)sizeof(sb))
   {
@@ -69,9 +67,12 @@ int main(int argc, char **argv)
     close(fd);
     return 1;
   }
-  if (fstat(fd, &st) != 0)
+
+  uint64_t file_size = 0;
+  int rc = kafs_offline_detect_file_size(fd, &file_size);
+  if (rc != 0)
   {
-    perror("fstat");
+    fprintf(stderr, "failed to detect image size: %s\n", strerror(-rc));
     close(fd);
     return 1;
   }
@@ -99,7 +100,7 @@ int main(int argc, char **argv)
   int have_oldest_tombstone = 0;
   void *inotbl = NULL;
   uint64_t inocnt = 0;
-  int rc_inode = kafs_offline_load_inode_table(fd, &sb, (uint64_t)st.st_size, &inotbl, &inocnt);
+  int rc_inode = kafs_offline_load_inode_table(fd, &sb, file_size, &inotbl, &inocnt);
   if (rc_inode == 0)
   {
     for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
@@ -138,8 +139,8 @@ int main(int argc, char **argv)
 
   struct inode_summary ino = {0};
   struct tailmeta_summary tm = {0};
-  rc_inode = collect_inode_summary(fd, &sb, (uint64_t)st.st_size, &ino);
-  int rc_tailmeta = collect_tailmeta_summary(fd, &sb, (uint64_t)st.st_size, &tm);
+  rc_inode = collect_inode_summary(fd, &sb, file_size, &ino);
+  int rc_tailmeta = collect_tailmeta_summary(fd, &sb, file_size, &tm);
   if (rc_inode == 0)
   {
     printf("tail layouts: regular=%" PRIu64 " tail_only=%" PRIu64 " mixed_full_tail=%" PRIu64 "\n",

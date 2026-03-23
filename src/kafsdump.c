@@ -16,13 +16,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-#ifdef __linux__
-#include <linux/fs.h>
-#endif
 
 struct hrl_summary
 {
@@ -342,42 +338,17 @@ int main(int argc, char **argv)
     return 1;
   }
 
-  struct stat st;
-  if (fstat(fd, &st) != 0)
-  {
-    perror("fstat");
-    close(fd);
-    return 1;
-  }
   uint64_t file_size = 0;
-  if (S_ISREG(st.st_mode))
+  int rc = kafs_offline_detect_file_size(fd, &file_size);
+  if (rc != 0)
   {
-    file_size = (uint64_t)st.st_size;
-  }
-  else if (S_ISBLK(st.st_mode))
-  {
-#ifdef __linux__
-    if (ioctl(fd, BLKGETSIZE64, &file_size) != 0)
-    {
-      perror("ioctl(BLKGETSIZE64)");
-      close(fd);
-      return 1;
-    }
-#else
-    fprintf(stderr, "block devices are not supported on this platform\n");
-    close(fd);
-    return 1;
-#endif
-  }
-  else
-  {
-    fprintf(stderr, "unsupported file type\n");
+    fprintf(stderr, "failed to detect image size: %s\n", rc_to_text(rc));
     close(fd);
     return 1;
   }
 
   kafs_ssuperblock_t sb;
-  int rc = load_superblock(fd, &sb);
+  rc = load_superblock(fd, &sb);
   if (rc != 0)
   {
     fprintf(stderr, "failed to read superblock: %s\n", strerror(-rc));

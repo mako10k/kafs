@@ -9,7 +9,11 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
+#ifdef __linux__
+#include <linux/fs.h>
+#endif
 
 struct inode_summary
 {
@@ -69,6 +73,36 @@ static inline int kafs_offline_check_bounds(uint64_t off, uint64_t len, uint64_t
   if (len > file_size - off)
     return -ERANGE;
   return 0;
+}
+
+static inline int kafs_offline_detect_file_size(int fd, uint64_t *out_file_size)
+{
+  struct stat st;
+
+  if (!out_file_size)
+    return -EINVAL;
+
+  *out_file_size = 0;
+  if (fstat(fd, &st) != 0)
+    return -errno;
+
+  if (S_ISREG(st.st_mode))
+  {
+    *out_file_size = (uint64_t)st.st_size;
+    return 0;
+  }
+  if (S_ISBLK(st.st_mode))
+  {
+#ifdef __linux__
+    if (ioctl(fd, BLKGETSIZE64, out_file_size) != 0)
+      return -errno;
+    return 0;
+#else
+    return -EOPNOTSUPP;
+#endif
+  }
+
+  return -EINVAL;
 }
 
 static inline struct sb_geometry kafs_offline_superblock_geometry(const kafs_ssuperblock_t *sb)
