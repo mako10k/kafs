@@ -6365,6 +6365,91 @@ static int kafs_ctx_is_empty_v5_scaffold(const kafs_context_t *ctx)
   return 1;
 }
 
+static int kafs_ctx_validate_v5_runtime_mount(const kafs_context_t *ctx)
+{
+  const kafs_ssuperblock_t *sb;
+  kafs_inocnt_t inocnt;
+  uint64_t tail_off;
+  uint64_t tail_size;
+  const kafs_tailmeta_region_hdr_t *region_hdr;
+  const kafs_tailmeta_container_hdr_t *containers;
+  uint32_t container_count;
+  uint32_t table_off;
+  uint32_t table_bytes;
+  uint16_t slot_desc_bytes;
+
+  if (!ctx || !ctx->c_superblock || !ctx->c_img_base)
+    return 0;
+
+  sb = ctx->c_superblock;
+  if (kafs_ctx_inode_format(ctx) != KAFS_FORMAT_VERSION_V5)
+    return 0;
+  if ((kafs_sb_feature_flags_get(sb) & KAFS_FEATURE_TAIL_META_REGION) == 0 &&
+      kafs_sb_tailmeta_offset_get(sb) == 0 && kafs_sb_tailmeta_size_get(sb) == 0)
+    return 0;
+
+  inocnt = kafs_inocnt_stoh(sb->s_inocnt);
+  for (kafs_inocnt_t ino = 0; ino < inocnt; ++ino)
+  {
+    const kafs_sinode_t *inoent = kafs_ctx_inode_const(ctx, ino);
+
+    if (!inoent || !kafs_ino_get_usage(inoent))
+      continue;
+    if (kafs_ino_mode_get(inoent) == 0)
+      return 0;
+  }
+
+  tail_off = kafs_sb_tailmeta_offset_get(sb);
+  tail_size = kafs_sb_tailmeta_size_get(sb);
+  if (tail_off == 0 || tail_size < sizeof(*region_hdr))
+    return 0;
+  if (tail_off > (uint64_t)ctx->c_img_size || tail_size > (uint64_t)ctx->c_img_size - tail_off)
+    return 0;
+
+  region_hdr = (const kafs_tailmeta_region_hdr_t *)((const char *)ctx->c_img_base + tail_off);
+  if (kafs_tailmeta_region_hdr_validate(region_hdr, tail_size) != 0)
+    return 0;
+
+  container_count = kafs_tailmeta_region_hdr_container_count_get(region_hdr);
+  table_off = kafs_tailmeta_region_hdr_container_table_off_get(region_hdr);
+  table_bytes = kafs_tailmeta_region_hdr_container_table_bytes_get(region_hdr);
+  if (container_count == 0u)
+    return table_bytes == 0u;
+  if (table_off >= tail_size || table_bytes > tail_size - table_off)
+    return 0;
+
+  containers = (const kafs_tailmeta_container_hdr_t *)((const char *)region_hdr + table_off);
+  slot_desc_bytes = kafs_tailmeta_region_hdr_slot_desc_bytes_get(region_hdr);
+  for (uint32_t index = 0; index < container_count; ++index)
+  {
+    const kafs_tailmeta_container_hdr_t *container = &containers[index];
+    uint16_t slot_count;
+    uint16_t class_bytes;
+    uint32_t slot_table_off;
+
+    if (kafs_tailmeta_container_hdr_validate(container, tail_size, slot_desc_bytes) != 0)
+      return 0;
+
+    slot_count = kafs_tailmeta_container_hdr_slot_count_get(container);
+    class_bytes = kafs_tailmeta_container_hdr_class_bytes_get(container);
+    slot_table_off = kafs_tailmeta_container_hdr_slot_table_off_get(container);
+    for (uint16_t slot_index = 0; slot_index < slot_count; ++slot_index)
+    {
+      uint32_t slot_off =
+          slot_table_off + (uint32_t)slot_index * (uint32_t)sizeof(kafs_tailmeta_slot_desc_t);
+      const kafs_tailmeta_slot_desc_t *slot;
+
+      if (slot_off >= tail_size || sizeof(kafs_tailmeta_slot_desc_t) > tail_size - slot_off)
+        return 0;
+      slot = (const kafs_tailmeta_slot_desc_t *)((const char *)region_hdr + slot_off);
+      if (kafs_tailmeta_slot_validate(slot, class_bytes) != 0)
+        return 0;
+    }
+  }
+
+  return 1;
+}
+
 static int kafs_ctx_runtime_mount_supported(const kafs_context_t *ctx)
 {
   uint32_t fmt_ver;
@@ -6376,7 +6461,7 @@ static int kafs_ctx_runtime_mount_supported(const kafs_context_t *ctx)
   if (fmt_ver == KAFS_FORMAT_VERSION)
     return 1;
   if (fmt_ver == KAFS_FORMAT_VERSION_V5)
-    return kafs_ctx_is_empty_v5_scaffold(ctx);
+    return kafs_ctx_validate_v5_runtime_mount(ctx);
   return 0;
 }
 

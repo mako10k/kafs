@@ -9,10 +9,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+#ifndef FUSE_SUPER_MAGIC
+#define FUSE_SUPER_MAGIC 0x65735546
+#endif
 
 static void tlogf(const char *fmt, ...)
 {
@@ -38,8 +43,41 @@ static const char *pick_exe(const char *env_name, const char *const *cands)
   return NULL;
 }
 
+static const char *resolve_tool_from_self(const char *env_name, const char *tool_name,
+                                          char out[PATH_MAX])
+{
+  const char *envv = getenv(env_name);
+  if (envv && *envv)
+  {
+    if (strlen(envv) < PATH_MAX)
+    {
+      strcpy(out, envv);
+      return out;
+    }
+    return envv;
+  }
+
+  char exe_path[PATH_MAX];
+  ssize_t exe_len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+  if (exe_len > 0)
+  {
+    exe_path[exe_len] = '\0';
+    char *slash = strrchr(exe_path, '/');
+    if (slash)
+    {
+      *slash = '\0';
+      if ((size_t)snprintf(out, PATH_MAX, "%s/../src/%s", exe_path, tool_name) < PATH_MAX &&
+          access(out, X_OK) == 0)
+        return out;
+    }
+  }
+
+  return NULL;
+}
+
 static const char *pick_mkfs_exe(void)
 {
+  static char resolved[PATH_MAX];
   static const char *const cands[] = {
       "./mkfs.kafs",
       "../src/mkfs.kafs",
@@ -48,6 +86,10 @@ static const char *pick_mkfs_exe(void)
       "mkfs.kafs",
       NULL,
   };
+
+  const char *resolved_path = resolve_tool_from_self("KAFS_TEST_MKFS", "mkfs.kafs", resolved);
+  if (resolved_path)
+    return resolved_path;
 
   return pick_exe("KAFS_TEST_MKFS", cands);
 }
@@ -91,7 +133,8 @@ static int mkfs_v5_image(const char *img)
   return run_cmd(argv);
 }
 
-static int mount_expect_failure(const char *img, const char *mnt, const char *log_path, int timeout_ms)
+static pid_t mount_expect_success(const char *img, const char *mnt, const char *log_path,
+                                  int timeout_ms)
 {
   const char *kafs = kafs_test_kafs_bin();
   pid_t pid;
@@ -128,12 +171,14 @@ static int mount_expect_failure(const char *img, const char *mnt, const char *lo
 
     if (rc == pid)
     {
-      if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
-        return 0;
       return -1;
     }
     if (rc < 0)
       return -errno;
+
+    struct statfs stfs;
+    if (statfs(mnt, &stfs) == 0 && (unsigned long)stfs.f_type == (unsigned long)FUSE_SUPER_MAGIC)
+      return pid;
 
     struct timespec ts = {0, step_ms * 1000 * 1000};
     nanosleep(&ts, NULL);
@@ -141,7 +186,7 @@ static int mount_expect_failure(const char *img, const char *mnt, const char *lo
   }
 
   kafs_test_stop_kafs(mnt, pid);
-  return 1;
+  return -ETIMEDOUT;
 }
 
 static const kafs_test_mount_options_t k_mount_options = {
@@ -203,13 +248,33 @@ int main(void)
 
   kafs_test_stop_kafs(mnt, srv);
 
-  int rc = mount_expect_failure(img, "mnt-v5-remount", "v5_remount.log", 5000);
-  if (rc != 0)
+  pid_t remount_srv = mount_expect_success(img, "mnt-v5-remount", "v5_remount.log", 5000);
+  if (remount_srv <= 0)
   {
-    kafs_test_dump_log("v5_remount.log", "non-empty v5 image should be rejected");
-    tlogf("non-empty v5 remount unexpectedly succeeded or hung rc=%d", rc);
+    kafs_test_dump_log("v5_remount.log", "non-empty v5 image should mount");
+    tlogf("non-empty v5 remount failed rc=%d", (int)remount_srv);
     return 1;
   }
+
+  snprintf(path, sizeof(path), "%s/hello.txt", "mnt-v5-remount");
+  fd = open(path, O_RDONLY);
+  if (fd < 0)
+  {
+    tlogf("reopen hello.txt after remount failed: %s", strerror(errno));
+    kafs_test_stop_kafs("mnt-v5-remount", remount_srv);
+    return 1;
+  }
+  char verify[sizeof(payload)] = {0};
+  if (read(fd, verify, sizeof(payload) - 1) != (ssize_t)(sizeof(payload) - 1) ||
+      memcmp(verify, payload, sizeof(payload) - 1) != 0)
+  {
+    tlogf("readback mismatch after remount");
+    close(fd);
+    kafs_test_stop_kafs("mnt-v5-remount", remount_srv);
+    return 1;
+  }
+  close(fd);
+  kafs_test_stop_kafs("mnt-v5-remount", remount_srv);
 
   tlogf("v5_mount_smoketest OK");
   return 0;
