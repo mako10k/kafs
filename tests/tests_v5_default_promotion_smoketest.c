@@ -70,9 +70,17 @@ static int run_cmd_capture_stdout(char *const argv[], char *stdout_buf, size_t s
 
   close(pipefd[1]);
   size_t used = 0;
-  while (stdout_buf && used + 1 < stdout_buf_sz)
+  for (;;)
   {
-    ssize_t n = read(pipefd[0], stdout_buf + used, stdout_buf_sz - used - 1);
+    char discard[1024];
+    char *dst = discard;
+    size_t cap = sizeof(discard);
+    if (stdout_buf && used + 1 < stdout_buf_sz)
+    {
+      dst = stdout_buf + used;
+      cap = stdout_buf_sz - used - 1;
+    }
+    ssize_t n = read(pipefd[0], dst, cap);
     if (n < 0)
     {
       int saved = errno;
@@ -83,7 +91,12 @@ static int run_cmd_capture_stdout(char *const argv[], char *stdout_buf, size_t s
     }
     if (n == 0)
       break;
-    used += (size_t)n;
+    if (stdout_buf && used + 1 < stdout_buf_sz)
+    {
+      size_t avail = stdout_buf_sz - used - 1;
+      size_t keep = (size_t)n < avail ? (size_t)n : avail;
+      used += keep;
+    }
   }
   if (stdout_buf && stdout_buf_sz > 0)
     stdout_buf[used] = '\0';

@@ -85,6 +85,29 @@ static int corrupt_v5_tailmeta_header(const char *img)
   return (nwritten == (ssize_t)sizeof(bad_magic)) ? 0 : -EIO;
 }
 
+static int clear_v5_tailmeta_region(const char *img)
+{
+  int fd = open(img, O_RDWR);
+  if (fd < 0)
+    return -errno;
+
+  kafs_ssuperblock_t sb;
+  ssize_t nread = pread(fd, &sb, sizeof(sb), 0);
+  if (nread != (ssize_t)sizeof(sb))
+  {
+    close(fd);
+    return -EIO;
+  }
+
+  kafs_sb_feature_flags_set(&sb, kafs_sb_feature_flags_get(&sb) & ~KAFS_FEATURE_TAIL_META_REGION);
+  kafs_sb_tailmeta_offset_set(&sb, 0);
+  kafs_sb_tailmeta_size_set(&sb, 0);
+
+  ssize_t nwritten = pwrite(fd, &sb, sizeof(sb), 0);
+  close(fd);
+  return (nwritten == (ssize_t)sizeof(sb)) ? 0 : -EIO;
+}
+
 static const kafs_test_mount_options_t k_mount_options = {
     .debug = "1",
     .log_path = "v5_mount.log",
@@ -219,6 +242,27 @@ int main(void)
     kafs_test_dump_log(k_mount_options.log_path, "corrupt v5 image mount should fail");
     kafs_test_stop_kafs(bad_mnt, bad_srv);
     tlogf("corrupt v5 image mount unexpectedly succeeded");
+    return 1;
+  }
+
+  if (mkfs_v5_image(img) != 0)
+  {
+    tlogf("mkfs v5 image for missing tailmeta case failed");
+    return 77;
+  }
+  if (clear_v5_tailmeta_region(img) != 0)
+  {
+    tlogf("clear v5 tailmeta region failed");
+    return 1;
+  }
+
+  const char *missing_mnt = "mnt-v5-missing-tailmeta";
+  pid_t missing_srv = kafs_test_start_kafs(img, missing_mnt, &k_mount_options);
+  if (missing_srv > 0)
+  {
+    kafs_test_dump_log(k_mount_options.log_path, "v5 image without tailmeta should fail");
+    kafs_test_stop_kafs(missing_mnt, missing_srv);
+    tlogf("v5 image without tailmeta unexpectedly succeeded");
     return 1;
   }
 

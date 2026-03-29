@@ -6281,7 +6281,7 @@ static int kafs_ctx_validate_runtime_mount_state(kafs_context_t *ctx)
   if (fmt_ver != KAFS_FORMAT_VERSION_V5)
     return 0;
   if (!kafs_tailmeta_region_present(ctx->c_superblock))
-    return 0;
+    return -EPROTO;
 
   return kafs_tailmeta_region_view_get(ctx, &view);
 }
