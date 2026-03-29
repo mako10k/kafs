@@ -628,9 +628,15 @@ int main(void)
   }
 
   if (kafs_sb_magic_get(&sb) != KAFS_MAGIC ||
-      kafs_sb_format_version_get(&sb) != KAFS_FORMAT_VERSION)
+      kafs_sb_format_version_get(&sb) != KAFS_FORMAT_VERSION_V5)
   {
     fprintf(stderr, "unexpected image format\n");
+    return 1;
+  }
+  if ((kafs_sb_feature_flags_get(&sb) & KAFS_FEATURE_TAIL_META_REGION) == 0 ||
+      kafs_sb_tailmeta_size_get(&sb) == 0)
+  {
+    fprintf(stderr, "default mkfs image missing v5 tailmeta scaffold\n");
     return 1;
   }
 
@@ -851,10 +857,16 @@ int main(void)
     return 1;
   }
   if (kafs_sb_magic_get(&migrate_sb) != KAFS_MAGIC ||
-      kafs_sb_format_version_get(&migrate_sb) != KAFS_FORMAT_VERSION ||
+      kafs_sb_format_version_get(&migrate_sb) != KAFS_FORMAT_VERSION_V5 ||
       kafs_sb_inocnt_get(&migrate_sb) != 4096)
   {
     fprintf(stderr, "unexpected migrate-create image format\n");
+    return 1;
+  }
+  if ((kafs_sb_feature_flags_get(&migrate_sb) & KAFS_FEATURE_TAIL_META_REGION) == 0 ||
+      kafs_sb_tailmeta_size_get(&migrate_sb) == 0)
+  {
+    fprintf(stderr, "default migrate-create image missing v5 tailmeta scaffold\n");
     return 1;
   }
   if (!strstr(migrate_stdout, "initial seed copy:") ||
@@ -939,6 +951,11 @@ int main(void)
         (unsigned long)kafs_sb_inocnt_get(&info_sb));
     return 1;
   }
+  if (kafs_sb_format_version_get(&info_sb) != KAFS_FORMAT_VERSION_V5)
+  {
+    fprintf(stderr, "default mkfs should emit v5 for info image\n");
+    return 1;
+  }
 
   const char *small_img = "default-inodes-small.img";
   char *small_mkfs_argv[] = {(char *)mkfs_abs, (char *)small_img, (char *)"-s", (char *)"5M", NULL};
@@ -958,6 +975,11 @@ int main(void)
   {
     fprintf(stderr, "unexpected default inode count for 5M image: got=%lu want=320\n",
             (unsigned long)kafs_sb_inocnt_get(&small_sb));
+    return 1;
+  }
+  if (kafs_sb_format_version_get(&small_sb) != KAFS_FORMAT_VERSION_V5)
+  {
+    fprintf(stderr, "default mkfs should emit v5 for small image\n");
     return 1;
   }
 
@@ -1145,7 +1167,12 @@ int main(void)
   }
 
   const char *legacy_img = "legacy-v3.img";
-  char *legacy_mkfs_argv[] = {(char *)mkfs_abs, (char *)legacy_img, (char *)"-s", (char *)"32M",
+  char *legacy_mkfs_argv[] = {(char *)mkfs_abs,
+                              (char *)legacy_img,
+                              (char *)"-s",
+                              (char *)"32M",
+                              (char *)"--format-version",
+                              (char *)"4",
                               NULL};
   if (run_cmd_status(legacy_mkfs_argv) != 0)
   {
@@ -1222,7 +1249,12 @@ int main(void)
   }
 
   const char *startup_img = "legacy-startup.img";
-  char *startup_mkfs_argv[] = {(char *)mkfs_abs, (char *)startup_img, (char *)"-s", (char *)"32M",
+  char *startup_mkfs_argv[] = {(char *)mkfs_abs,
+                               (char *)startup_img,
+                               (char *)"-s",
+                               (char *)"32M",
+                               (char *)"--format-version",
+                               (char *)"4",
                                NULL};
   if (run_cmd_status(startup_mkfs_argv) != 0 ||
       write_legacy_dir_inline(startup_img, KAFS_INO_ROOTDIR, S_IFDIR | 0755, root_entries,

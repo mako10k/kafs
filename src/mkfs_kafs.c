@@ -36,7 +36,7 @@ static void usage(const char *prog)
   fprintf(stderr, "  [Layout]\n");
   fprintf(stderr, "    -s, --size-bytes <N>              Total image size (default: 1GiB)\n");
   fprintf(stderr, "    -b, --blksize-log <L>             Block size log2 (default: 12 => 4096B)\n");
-  fprintf(stderr, "    --format-version <V>              On-disk format version (default: 4)\n");
+  fprintf(stderr, "    --format-version <V>              On-disk format version (default: 5)\n");
   fprintf(
       stderr,
       "    -i, --inodes <I>                  Inode count (default: 1 inode per 16KiB, min: 256)\n");
@@ -54,6 +54,8 @@ static void usage(const char *prog)
   fprintf(stderr, "    Size values accept K/M/G suffixes (binary units).\n");
   fprintf(stderr,
           "    If the image file already exists and has non-zero size, that size overrides -s.\n");
+    fprintf(stderr,
+      "    New images default to format version 5; use --format-version 4 for legacy v4 images.\n");
 }
 
 static int mkfs_confirm_overwrite_stdin(void)
@@ -288,7 +290,7 @@ static int compute_blkcnt_for_total(uint32_t format_version, off_t total_bytes,
 int main(int argc, char **argv)
 {
   const char *img = NULL;
-  uint32_t format_version = KAFS_FORMAT_VERSION;
+  uint32_t format_version = KAFS_FORMAT_VERSION_V5;
   kafs_logblksize_t log_blksize = 12; // 4096B
   kafs_blksize_t blksize = 1u << log_blksize;
   kafs_blksize_t blksizemask = blksize - 1u;

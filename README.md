@@ -72,7 +72,7 @@ Create a filesystem image:
 Key options:
 - `-s, --size-bytes`: total image size (accepts K/M/G suffixes)
 - `-b, --blksize-log`: block size as log2 (default 12 = 4096 bytes)
-- `--format-version`: on-disk format version to emit (default 4; version 5 creates an empty dedicated tail metadata region scaffold)
+- `--format-version`: on-disk format version to emit (default 5; use `--format-version 4` for a legacy v4 image)
 - `-i, --inodes`: inode count
 - `-J, --journal-size-bytes`: journal size (accepts K/M/G suffixes)
 - `--hrl-entry-ratio`: HRL entries/data-block ratio (default 0.75, range 0<R<=1)
@@ -201,8 +201,13 @@ Offline resize and migration-image creation:
 
 Current v0 constraint: growth is only supported within preallocated headroom
 (`s_blkcnt < s_r_blkcnt`). Shrink is not supported.
-`--grow` accepts both v4 and v5 scaffold images.
-`--migrate-create` can emit a destination image with `--format-version 5` for offline migration preparation.
+`--grow` accepts both v4 and v5 images when the requested size stays within preallocated headroom.
+`--migrate-create` now defaults to a v5 destination image; pass `--format-version 4` when you need a legacy v4 destination.
+
+Operator guidance:
+- Existing v4 images can remain in place; runtime mount continues to accept v4 images.
+- Newly created images default to v5 so tail metadata scaffolding is provisioned from mkfs time.
+- If you are staging an offline migration and want the destination to stay on v4, create it explicitly with `--format-version 4`.
 
 ### kafsctl
 
