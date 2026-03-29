@@ -139,7 +139,13 @@ int main(void)
   close(fd);
 
   struct stat st = {0};
-  if (stat(path, &st) != 0 || st.st_size != (off_t)(sizeof(payload) - 1))
+  if (stat(path, &st) != 0)
+  {
+    tlogf("stat hello.txt failed: %s", strerror(errno));
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  if (st.st_size != (off_t)(sizeof(payload) - 1))
   {
     tlogf("unexpected hello.txt size: %ld", (long)st.st_size);
     kafs_test_stop_kafs(mnt, srv);
@@ -159,7 +165,13 @@ int main(void)
 
   snprintf(path, sizeof(path), "%s/hello.txt", remount);
   memset(&st, 0, sizeof(st));
-  if (stat(path, &st) != 0 || st.st_size != (off_t)(sizeof(payload) - 1))
+  if (stat(path, &st) != 0)
+  {
+    tlogf("stat hello.txt after remount failed: %s", strerror(errno));
+    kafs_test_stop_kafs(remount, remount_srv);
+    return 1;
+  }
+  if (st.st_size != (off_t)(sizeof(payload) - 1))
   {
     tlogf("unexpected hello.txt size after remount: %ld", (long)st.st_size);
     kafs_test_stop_kafs(remount, remount_srv);
@@ -176,7 +188,20 @@ int main(void)
   }
   ssize_t nread = read(fd, verify, sizeof(verify) - 1);
   close(fd);
-  if (nread != (ssize_t)(sizeof(payload) - 1) || memcmp(verify, payload, sizeof(payload) - 1) != 0)
+  if (nread < 0)
+  {
+    tlogf("read hello.txt after remount failed: %s", strerror(errno));
+    kafs_test_stop_kafs(remount, remount_srv);
+    return 1;
+  }
+  if (nread != (ssize_t)(sizeof(payload) - 1))
+  {
+    tlogf("hello.txt short read after remount: expected %zu bytes, got %zd",
+          sizeof(payload) - 1, nread);
+    kafs_test_stop_kafs(remount, remount_srv);
+    return 1;
+  }
+  if (memcmp(verify, payload, sizeof(payload) - 1) != 0)
   {
     tlogf("hello.txt readback mismatch after remount");
     kafs_test_stop_kafs(remount, remount_srv);

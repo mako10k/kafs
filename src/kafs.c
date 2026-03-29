@@ -11322,14 +11322,7 @@ int main(int argc, char **argv)
   ctx.c_inotbl = (void *)ctx.c_superblock + (intptr_t)inotbl_off;
   if (!kafs_ctx_runtime_mount_supported(&ctx))
   {
-    if (fmt_ver == KAFS_FORMAT_VERSION_V5)
-      fprintf(
-          stderr,
-          "unsupported format version: v%u runtime mount is limited to empty scaffold images.\n",
-          (unsigned)fmt_ver);
-    else
-      fprintf(stderr, "unsupported format version: %u (expected %u).\n", fmt_ver,
-              (unsigned)KAFS_FORMAT_VERSION);
+    fprintf(stderr, "unsupported format version: %u (runtime admission failed).\n", fmt_ver);
     exit(2);
   }
   ctx.c_diag_log_fd = -1;
