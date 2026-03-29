@@ -54,8 +54,9 @@ static void usage(const char *prog)
   fprintf(stderr, "    Size values accept K/M/G suffixes (binary units).\n");
   fprintf(stderr,
           "    If the image file already exists and has non-zero size, that size overrides -s.\n");
-  fprintf(stderr,
-          "    New images default to format version 5; use --format-version 4 for legacy v4 images.\n");
+  fprintf(
+      stderr,
+      "    New images default to format version 5; use --format-version 4 for legacy v4 images.\n");
 }
 
 static int mkfs_confirm_overwrite_stdin(void)
