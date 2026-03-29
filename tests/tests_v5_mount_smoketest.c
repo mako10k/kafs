@@ -22,34 +22,6 @@ static void tlogf(const char *fmt, ...)
   va_end(ap);
 }
 
-static const char *pick_exe(const char *env_name, const char *const *cands)
-{
-  const char *envv = getenv(env_name);
-
-  if (envv && *envv)
-    return envv;
-  for (size_t i = 0; cands[i] != NULL; ++i)
-  {
-    if (access(cands[i], X_OK) == 0)
-      return cands[i];
-  }
-  return NULL;
-}
-
-static const char *pick_mkfs_exe(void)
-{
-  static const char *const cands[] = {
-      "./mkfs.kafs",
-      "../src/mkfs.kafs",
-      "./src/mkfs.kafs",
-      "src/mkfs.kafs",
-      "mkfs.kafs",
-      NULL,
-  };
-
-  return pick_exe("KAFS_TEST_MKFS", cands);
-}
-
 static int run_cmd(char *const argv[])
 {
   pid_t pid = fork();
@@ -72,7 +44,7 @@ static int run_cmd(char *const argv[])
 
 static int mkfs_v5_image(const char *img)
 {
-  const char *mkfs = pick_mkfs_exe();
+  const char *mkfs = kafs_test_mkfs_bin();
 
   if (!mkfs)
     return -ENOENT;

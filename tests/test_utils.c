@@ -213,6 +213,12 @@ const char *kafs_test_kafs_bin(void)
   return kafs_test_resolve_tool("KAFS_TEST_KAFS", "kafs", path);
 }
 
+const char *kafs_test_mkfs_bin(void)
+{
+  static char path[PATH_MAX];
+  return kafs_test_resolve_tool("KAFS_TEST_MKFS", "mkfs.kafs", path);
+}
+
 const char *kafs_test_kafsctl_bin(void)
 {
   static char path[PATH_MAX];
@@ -223,6 +229,18 @@ const char *kafs_test_fsck_bin(void)
 {
   static char path[PATH_MAX];
   return kafs_test_resolve_tool("KAFS_TEST_FSCK", "fsck.kafs", path);
+}
+
+const char *kafs_test_kafs_info_bin(void)
+{
+  static char path[PATH_MAX];
+  return kafs_test_resolve_tool("KAFS_TEST_KAFS_INFO", "kafs-info", path);
+}
+
+const char *kafs_test_kafsdump_bin(void)
+{
+  static char path[PATH_MAX];
+  return kafs_test_resolve_tool("KAFS_TEST_KAFSDUMP", "kafsdump", path);
 }
 
 void kafs_test_dump_log(const char *log_path, const char *reason)
