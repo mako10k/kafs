@@ -15,6 +15,7 @@ historical investigations and deep design notes.
 - [crash-diagnostics.md](crash-diagnostics.md): crash logs, core dumps, and failure capture
 - [kafsctl-path-ops-requirements.md](kafsctl-path-ops-requirements.md): mounted-tree control and path-based operation expectations
 - [kafsimage-format.md](kafsimage-format.md): export modes and output semantics for kafsimage
+- [kafsresize-cutover-playbook.md](kafsresize-cutover-playbook.md): staged destination-image cutover workflow for `kafsresize --migrate-create`
 
 ## Design And Planning
 

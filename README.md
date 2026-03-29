@@ -220,6 +220,7 @@ Operator guidance:
 - Existing v4 images can remain in place; runtime mount continues to accept v4 images.
 - Newly created images default to v5 so tail metadata scaffolding is provisioned from mkfs time.
 - If you are staging an offline migration and want the destination to stay on v4, create it explicitly with `--format-version 4`.
+- For an end-to-end destination-image workflow, see [docs/kafsresize-cutover-playbook.md](docs/kafsresize-cutover-playbook.md).
 
 ### kafsctl
 
