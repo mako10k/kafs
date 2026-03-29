@@ -223,17 +223,26 @@ Operator guidance:
 
 ### kafsctl
 
-Inspect stats, migration, and hotplug controls:
+Inspect stats, migration, hotplug controls, and mounted-tree operations:
 
 ```sh
 ./kafsctl fsstat /tmp/kafs-mnt --json --mib    # alias: stats
 ./kafsctl hotplug status /tmp/kafs-mnt
 ./kafsctl hotplug compat /tmp/kafs-mnt --json
+./kafsctl hotplug restart-back /tmp/kafs-mnt
 ./kafsctl hotplug set-timeout /tmp/kafs-mnt 2000
 ./kafsctl hotplug set-dedup-priority /tmp/kafs-mnt idle 10
+./kafsctl hotplug set-runtime /tmp/kafs-mnt --fsync-policy=adaptive
 ./kafsctl hotplug env list /tmp/kafs-mnt
 ./kafsctl hotplug env set /tmp/kafs-mnt KAFS_BACK_ENABLE_IMAGE=1
 ./kafsctl hotplug env unset /tmp/kafs-mnt KAFS_BACK_ENABLE_IMAGE
+./kafsctl stat /tmp/kafs-mnt/path/to/file
+./kafsctl cat /tmp/kafs-mnt/path/to/file
+./kafsctl write /tmp/kafs-mnt/path/to/file < local.txt
+./kafsctl cp /tmp/kafs-mnt/src /tmp/kafs-mnt/dst --reflink
+./kafsctl readlink /tmp/kafs-mnt/path/to/link
+./kafsctl chmod 644 /tmp/kafs-mnt/path/to/file
+./kafsctl touch /tmp/kafs-mnt/path/to/file
 ./kafsctl migrate /tmp/kafs.img
 ```
 
@@ -241,6 +250,13 @@ Inspect stats, migration, and hotplug controls:
 When `--yes` is not specified, it requires a Yes/No confirmation prompt.
 
 `fsstat` supports output units via `--bytes`, `--mib`, and `--gib`.
+
+Mounted-tree file operations accept path-first forms and auto-detect the containing
+KAFS mount when possible. Legacy forms that pass an explicit mountpoint remain
+accepted for compatibility.
+
+For the full mounted-tree command set, runtime policy switches, and hotplug
+subcommand details, see `kafsctl --help` and `man/kafsctl.1`.
 
 Background dedup observability (live dashboard):
 
