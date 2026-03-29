@@ -25,6 +25,27 @@ static void tlogf(const char *fmt, ...)
   va_end(ap);
 }
 
+static ssize_t read_full(int fd, void *buf, size_t len)
+{
+  size_t total = 0;
+
+  while (total < len)
+  {
+    ssize_t nread = read(fd, (char *)buf + total, len - total);
+    if (nread < 0)
+    {
+      if (errno == EINTR)
+        continue;
+      return -1;
+    }
+    if (nread == 0)
+      break;
+    total += (size_t)nread;
+  }
+
+  return (ssize_t)total;
+}
+
 static int run_cmd(char *const argv[])
 {
   pid_t pid = fork();
@@ -54,6 +75,7 @@ static int mkfs_v5_image(const char *img)
 
   char *argv[] = {
       (char *)mkfs,
+      (char *)"--yes",
       (char *)"--format-version",
       (char *)"5",
       (char *)img,
@@ -205,7 +227,7 @@ int main(void)
     kafs_test_stop_kafs(remount, remount_srv);
     return 1;
   }
-  ssize_t nread = read(fd, verify, sizeof(verify) - 1);
+  ssize_t nread = read_full(fd, verify, sizeof(verify) - 1);
   close(fd);
   if (nread < 0)
   {

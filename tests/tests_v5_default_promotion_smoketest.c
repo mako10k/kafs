@@ -22,6 +22,27 @@ static void tlogf(const char *fmt, ...)
   va_end(ap);
 }
 
+static ssize_t pread_full(int fd, void *buf, size_t len, off_t offset)
+{
+  size_t total = 0;
+
+  while (total < len)
+  {
+    ssize_t nread = pread(fd, (char *)buf + total, len - total, offset + (off_t)total);
+    if (nread < 0)
+    {
+      if (errno == EINTR)
+        continue;
+      return -1;
+    }
+    if (nread == 0)
+      break;
+    total += (size_t)nread;
+  }
+
+  return (ssize_t)total;
+}
+
 static int run_cmd(char *const argv[])
 {
   pid_t pid = fork();
@@ -83,6 +104,8 @@ static int run_cmd_capture_stdout(char *const argv[], char *stdout_buf, size_t s
     ssize_t n = read(pipefd[0], dst, cap);
     if (n < 0)
     {
+      if (errno == EINTR)
+        continue;
       int saved = errno;
 
       close(pipefd[0]);
@@ -141,7 +164,7 @@ static int assert_file_readback(const char *path, const char *expected, size_t e
     return -errno;
   }
 
-  ssize_t nread = pread(fd, actual, expected_len, 0);
+  ssize_t nread = pread_full(fd, actual, expected_len, 0);
   close(fd);
   if (nread != (ssize_t)expected_len || memcmp(actual, expected, expected_len) != 0)
   {
