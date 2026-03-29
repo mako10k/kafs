@@ -192,6 +192,7 @@ int main(void)
   {
     k_blksize = 4096,
     k_small_size = 300,
+    k_mixed_seed_size = 300,
     k_initial_size = k_blksize + 300,
     k_final_size = k_blksize + 200,
     k_tail_patch_off = k_blksize + 40,
@@ -255,9 +256,17 @@ int main(void)
     kafs_test_stop_kafs(mnt, srv);
     return 1;
   }
-  if (write(fd, mixed_payload, k_initial_size) != k_initial_size)
+  if (write(fd, mixed_payload, k_mixed_seed_size) != k_mixed_seed_size)
   {
-    tlogf("initial mixed write failed: %s", strerror(errno));
+    tlogf("initial mixed seed write failed: %s", strerror(errno));
+    close(fd);
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  if (pwrite(fd, mixed_payload + k_mixed_seed_size, k_initial_size - k_mixed_seed_size,
+             k_mixed_seed_size) != k_initial_size - k_mixed_seed_size)
+  {
+    tlogf("mixed promotion write failed: %s", strerror(errno));
     close(fd);
     kafs_test_stop_kafs(mnt, srv);
     return 1;

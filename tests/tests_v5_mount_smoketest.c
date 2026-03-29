@@ -1,8 +1,11 @@
 #include "test_utils.h"
 
+#include "kafs_superblock.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,6 +62,27 @@ static int mkfs_v5_image(const char *img)
       NULL,
   };
   return run_cmd(argv);
+}
+
+static int corrupt_v5_tailmeta_header(const char *img)
+{
+  int fd = open(img, O_RDWR);
+  if (fd < 0)
+    return -errno;
+
+  kafs_ssuperblock_t sb;
+  ssize_t nread = pread(fd, &sb, sizeof(sb), 0);
+  if (nread != (ssize_t)sizeof(sb))
+  {
+    close(fd);
+    return -EIO;
+  }
+
+  uint64_t tailmeta_off = kafs_sb_tailmeta_offset_get(&sb);
+  uint32_t bad_magic = 0;
+  ssize_t nwritten = pwrite(fd, &bad_magic, sizeof(bad_magic), (off_t)tailmeta_off);
+  close(fd);
+  return (nwritten == (ssize_t)sizeof(bad_magic)) ? 0 : -EIO;
 }
 
 static const kafs_test_mount_options_t k_mount_options = {
@@ -181,6 +205,22 @@ int main(void)
   }
 
   kafs_test_stop_kafs(remount, remount_srv);
+
+  if (corrupt_v5_tailmeta_header(img) != 0)
+  {
+    tlogf("corrupt v5 tailmeta header failed");
+    return 1;
+  }
+
+  const char *bad_mnt = "mnt-v5-corrupt";
+  pid_t bad_srv = kafs_test_start_kafs(img, bad_mnt, &k_mount_options);
+  if (bad_srv > 0)
+  {
+    kafs_test_dump_log(k_mount_options.log_path, "corrupt v5 image mount should fail");
+    kafs_test_stop_kafs(bad_mnt, bad_srv);
+    tlogf("corrupt v5 image mount unexpectedly succeeded");
+    return 1;
+  }
 
   tlogf("v5_mount_smoketest OK");
   return 0;

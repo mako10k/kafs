@@ -6269,6 +6269,23 @@ static int kafs_ctx_runtime_mount_supported(const kafs_context_t *ctx)
   return (fmt_ver == KAFS_FORMAT_VERSION || fmt_ver == KAFS_FORMAT_VERSION_V5);
 }
 
+static int kafs_ctx_validate_runtime_mount_state(kafs_context_t *ctx)
+{
+  struct kafs_tailmeta_region_view view;
+  uint32_t fmt_ver;
+
+  if (!ctx || !ctx->c_superblock)
+    return -EINVAL;
+
+  fmt_ver = kafs_ctx_inode_format(ctx);
+  if (fmt_ver != KAFS_FORMAT_VERSION_V5)
+    return 0;
+  if (!kafs_tailmeta_region_present(ctx->c_superblock))
+    return 0;
+
+  return kafs_tailmeta_region_view_get(ctx, &view);
+}
+
 int kafs_core_open_image(const char *image_path, kafs_context_t *ctx)
 {
   if (!image_path || !ctx)
@@ -6371,6 +6388,19 @@ int kafs_core_open_image(const char *image_path, kafs_context_t *ctx)
     close(ctx->c_fd);
     ctx->c_fd = -1;
     return -EPROTONOSUPPORT;
+  }
+  if (kafs_ctx_validate_runtime_mount_state(ctx) != 0)
+  {
+    munmap(ctx->c_img_base, ctx->c_img_size);
+    ctx->c_img_base = NULL;
+    ctx->c_img_size = 0;
+    ctx->c_superblock = NULL;
+    ctx->c_inotbl = NULL;
+    ctx->c_blkmasktbl = NULL;
+    ctx->c_mapsize = 0;
+    close(ctx->c_fd);
+    ctx->c_fd = -1;
+    return -EPROTO;
   }
   ctx->c_alloc_v3_summary_dirty = 1;
 
@@ -11323,6 +11353,11 @@ int main(int argc, char **argv)
   if (!kafs_ctx_runtime_mount_supported(&ctx))
   {
     fprintf(stderr, "unsupported format version: %u (runtime admission failed).\n", fmt_ver);
+    exit(2);
+  }
+  if (kafs_ctx_validate_runtime_mount_state(&ctx) != 0)
+  {
+    fprintf(stderr, "invalid v5 tail metadata region; refusing runtime mount.\n");
     exit(2);
   }
   ctx.c_diag_log_fd = -1;
