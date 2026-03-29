@@ -15,6 +15,7 @@ historical investigations and deep design notes.
 - [crash-diagnostics.md](crash-diagnostics.md): crash logs, core dumps, and failure capture
 - [kafsctl-path-ops-requirements.md](kafsctl-path-ops-requirements.md): mounted-tree control and path-based operation expectations
 - [kafsimage-format.md](kafsimage-format.md): export modes and output semantics for kafsimage
+- [kafsresize-cutover-playbook.md](kafsresize-cutover-playbook.md): staged destination-image cutover workflow for `kafsresize --migrate-create`
 
 ## Design And Planning
 
@@ -63,34 +64,3 @@ are no longer the recommended first-read path for normal product usage.
 ## Miscellaneous References
 
 - [tail-packing-format-sketch.md](tail-packing-format-sketch.md)
-
-## Recommendations
-
-1. ✓ Deploy hooks to production
-2. ✓ Use KAFS for git repository storage
-3. ✓ Use for database storage and data-critical workloads
-4. ✓ Monitor performance (expected <5% overhead)
-5. ✓ Document KAFS reliability guarantees
-
-## Project Status
-
-| Aspect | Status |
-|--------|--------|
-| Hooks Implemented | ✓ Complete |
-| Tests Executed | ✓ Complete (3/3 passed) |
-| Error Analysis | ✓ Complete (0 errors) |
-| Verification | ✓ Complete |
-| Documentation | ✓ Complete |
-| Production Ready | ✓ YES |
-
-## Final Conclusion
-
-✓ **CONFIRMED**: EIO/SHA1 errors NO LONGER OCCUR after implementing flush/fsync/release/fsyncdir hooks.
-
-The KAFS filesystem is now **STABLE and PRODUCTION-READY** for storing critical data including git repositories.
-
----
-
-**Report Generated**: 2026-01-28  
-**Test Status**: ✓ PASSED  
-**Overall Project Status**: ✓ COMPLETE
