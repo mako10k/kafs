@@ -6258,113 +6258,6 @@ static int kafs_hotplug_call_getattr(struct fuse_context *fctx, kafs_context_t *
   return rc;
 }
 
-static int kafs_ctx_is_empty_v5_scaffold(const kafs_context_t *ctx)
-{
-  const kafs_ssuperblock_t *sb;
-  const kafs_sinode_t *root;
-  const kafs_sdir_v4_hdr_t *dir_hdr;
-  const kafs_tailmeta_region_hdr_t *region_hdr;
-  kafs_inocnt_t inocnt;
-  uint64_t tail_off;
-  uint64_t tail_size;
-
-  if (!ctx || !ctx->c_superblock || !ctx->c_img_base)
-    return 0;
-
-  sb = ctx->c_superblock;
-  if (kafs_ctx_inode_format(ctx) != KAFS_FORMAT_VERSION_V5)
-    return 0;
-  if ((kafs_sb_feature_flags_get(sb) & KAFS_FEATURE_TAIL_META_REGION) == 0 &&
-      kafs_sb_tailmeta_offset_get(sb) == 0 && kafs_sb_tailmeta_size_get(sb) == 0)
-    return 0;
-
-  root = kafs_ctx_inode_const(ctx, KAFS_INO_ROOTDIR);
-  if (!root || !kafs_ino_get_usage(root))
-    return 0;
-  if (!S_ISDIR(kafs_ino_mode_get(root)))
-    return 0;
-  if (kafs_ino_blocks_get(root) != 0)
-    return 0;
-  if (kafs_ino_linkcnt_get(root) != 1)
-    return 0;
-  if (kafs_ino_size_get(root) != (kafs_off_t)sizeof(kafs_sdir_v4_hdr_t))
-    return 0;
-
-  dir_hdr = (const kafs_sdir_v4_hdr_t *)root->i_blkreftbl;
-  if (kafs_u32_stoh(dir_hdr->dh_magic) != KAFS_DIRENT_V4_MAGIC)
-    return 0;
-  if (kafs_dir_v4_hdr_format_get(dir_hdr) != KAFS_DIRENT_V4_FORMAT_VERSION)
-    return 0;
-  if (kafs_dir_v4_hdr_flags_get(dir_hdr) != 0u)
-    return 0;
-  if (kafs_dir_v4_hdr_live_count_get(dir_hdr) != 0u)
-    return 0;
-  if (kafs_dir_v4_hdr_tombstone_count_get(dir_hdr) != 0u)
-    return 0;
-  if (kafs_dir_v4_hdr_record_bytes_get(dir_hdr) != 0u)
-    return 0;
-
-  inocnt = kafs_inocnt_stoh(sb->s_inocnt);
-  for (kafs_inocnt_t ino = 0; ino < inocnt; ++ino)
-  {
-    const kafs_sinode_t *inoent;
-
-    if (ino == KAFS_INO_ROOTDIR)
-      continue;
-    inoent = kafs_ctx_inode_const(ctx, ino);
-    if (inoent && kafs_ino_get_usage(inoent))
-      return 0;
-  }
-
-  tail_off = kafs_sb_tailmeta_offset_get(sb);
-  tail_size = kafs_sb_tailmeta_size_get(sb);
-  if (tail_off == 0 || tail_size < sizeof(*region_hdr))
-    return 0;
-  if (tail_off > (uint64_t)ctx->c_img_size || tail_size > (uint64_t)ctx->c_img_size - tail_off)
-    return 0;
-
-  region_hdr = (const kafs_tailmeta_region_hdr_t *)((const char *)ctx->c_img_base + tail_off);
-  if (kafs_tailmeta_region_hdr_validate(region_hdr, tail_size) != 0)
-    return 0;
-  uint32_t container_count = kafs_tailmeta_region_hdr_container_count_get(region_hdr);
-  uint32_t table_off = kafs_tailmeta_region_hdr_container_table_off_get(region_hdr);
-  uint32_t table_bytes = kafs_tailmeta_region_hdr_container_table_bytes_get(region_hdr);
-  if (container_count == 0u)
-    return table_bytes == 0u;
-  if (table_off >= tail_size || table_bytes > tail_size - table_off)
-    return 0;
-
-  const kafs_tailmeta_container_hdr_t *containers =
-      (const kafs_tailmeta_container_hdr_t *)((const char *)region_hdr + table_off);
-  uint16_t slot_desc_bytes = kafs_tailmeta_region_hdr_slot_desc_bytes_get(region_hdr);
-  for (uint32_t index = 0; index < container_count; ++index)
-  {
-    const kafs_tailmeta_container_hdr_t *container = &containers[index];
-    if (kafs_tailmeta_container_hdr_validate(container, tail_size, slot_desc_bytes) != 0)
-      return 0;
-    if (kafs_tailmeta_container_hdr_live_count_get(container) != 0u)
-      return 0;
-    uint16_t slot_count = kafs_tailmeta_container_hdr_slot_count_get(container);
-    for (uint16_t slot_index = 0; slot_index < slot_count; ++slot_index)
-    {
-      uint32_t slot_table_off = kafs_tailmeta_container_hdr_slot_table_off_get(container);
-      uint32_t slot_off =
-          slot_table_off + (uint32_t)slot_index * (uint32_t)sizeof(kafs_tailmeta_slot_desc_t);
-      if (slot_off >= tail_size || sizeof(kafs_tailmeta_slot_desc_t) > tail_size - slot_off)
-        return 0;
-      const kafs_tailmeta_slot_desc_t *slot =
-          (const kafs_tailmeta_slot_desc_t *)((const char *)region_hdr + slot_off);
-      if (kafs_tailmeta_slot_validate(slot,
-                                      kafs_tailmeta_container_hdr_class_bytes_get(container)) != 0)
-        return 0;
-      if (kafs_tailmeta_slot_owner_ino_get(slot) != KAFS_INO_NONE)
-        return 0;
-    }
-  }
-
-  return 1;
-}
-
 static int kafs_ctx_runtime_mount_supported(const kafs_context_t *ctx)
 {
   uint32_t fmt_ver;
@@ -6373,11 +6266,7 @@ static int kafs_ctx_runtime_mount_supported(const kafs_context_t *ctx)
     return 0;
 
   fmt_ver = kafs_ctx_inode_format(ctx);
-  if (fmt_ver == KAFS_FORMAT_VERSION)
-    return 1;
-  if (fmt_ver == KAFS_FORMAT_VERSION_V5)
-    return kafs_ctx_is_empty_v5_scaffold(ctx);
-  return 0;
+  return (fmt_ver == KAFS_FORMAT_VERSION || fmt_ver == KAFS_FORMAT_VERSION_V5);
 }
 
 int kafs_core_open_image(const char *image_path, kafs_context_t *ctx)

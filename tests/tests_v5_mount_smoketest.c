@@ -3,7 +3,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,7 +10,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <time.h>
 #include <unistd.h>
 
 static void tlogf(const char *fmt, ...)
@@ -91,59 +89,6 @@ static int mkfs_v5_image(const char *img)
   return run_cmd(argv);
 }
 
-static int mount_expect_failure(const char *img, const char *mnt, const char *log_path, int timeout_ms)
-{
-  const char *kafs = kafs_test_kafs_bin();
-  pid_t pid;
-  int waited = 0;
-  const int step_ms = 100;
-
-  if (mkdir(mnt, 0700) != 0 && errno != EEXIST)
-    return -errno;
-
-  pid = fork();
-  if (pid < 0)
-    return -errno;
-  if (pid == 0)
-  {
-    int lfd;
-
-    setenv("KAFS_IMAGE", img, 1);
-    lfd = open(log_path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    if (lfd >= 0)
-    {
-      dup2(lfd, STDERR_FILENO);
-      dup2(lfd, STDOUT_FILENO);
-      close(lfd);
-    }
-    char *args[] = {(char *)kafs, (char *)mnt, (char *)"-f", NULL};
-    execvp(args[0], args);
-    _exit(127);
-  }
-
-  while (waited < timeout_ms)
-  {
-    int status = 0;
-    pid_t rc = waitpid(pid, &status, WNOHANG);
-
-    if (rc == pid)
-    {
-      if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
-        return 0;
-      return -1;
-    }
-    if (rc < 0)
-      return -errno;
-
-    struct timespec ts = {0, step_ms * 1000 * 1000};
-    nanosleep(&ts, NULL);
-    waited += step_ms;
-  }
-
-  kafs_test_stop_kafs(mnt, pid);
-  return 1;
-}
-
 static const kafs_test_mount_options_t k_mount_options = {
     .debug = "1",
     .log_path = "v5_mount.log",
@@ -203,13 +148,42 @@ int main(void)
 
   kafs_test_stop_kafs(mnt, srv);
 
-  int rc = mount_expect_failure(img, "mnt-v5-remount", "v5_remount.log", 5000);
-  if (rc != 0)
+  const char *remount = "mnt-v5-remount";
+  pid_t remount_srv = kafs_test_start_kafs(img, remount, &k_mount_options);
+  if (remount_srv <= 0)
   {
-    kafs_test_dump_log("v5_remount.log", "non-empty v5 image should be rejected");
-    tlogf("non-empty v5 remount unexpectedly succeeded or hung rc=%d", rc);
+    kafs_test_dump_log(k_mount_options.log_path, "non-empty v5 remount should succeed");
+    tlogf("non-empty v5 remount failed");
     return 1;
   }
+
+  snprintf(path, sizeof(path), "%s/hello.txt", remount);
+  memset(&st, 0, sizeof(st));
+  if (stat(path, &st) != 0 || st.st_size != (off_t)(sizeof(payload) - 1))
+  {
+    tlogf("unexpected hello.txt size after remount: %ld", (long)st.st_size);
+    kafs_test_stop_kafs(remount, remount_srv);
+    return 1;
+  }
+
+  char verify[sizeof(payload)];
+  fd = open(path, O_RDONLY);
+  if (fd < 0)
+  {
+    tlogf("open hello.txt after remount failed: %s", strerror(errno));
+    kafs_test_stop_kafs(remount, remount_srv);
+    return 1;
+  }
+  ssize_t nread = read(fd, verify, sizeof(verify) - 1);
+  close(fd);
+  if (nread != (ssize_t)(sizeof(payload) - 1) || memcmp(verify, payload, sizeof(payload) - 1) != 0)
+  {
+    tlogf("hello.txt readback mismatch after remount");
+    kafs_test_stop_kafs(remount, remount_srv);
+    return 1;
+  }
+
+  kafs_test_stop_kafs(remount, remount_srv);
 
   tlogf("v5_mount_smoketest OK");
   return 0;
