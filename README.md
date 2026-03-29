@@ -6,10 +6,10 @@ implementation, tools, and tests.
 
 ## Release Highlights (v0.4.0)
 
-- Added offline pre-start migration from legacy v2/v3 images to the current v4 format
-- Unified the migration path so `kafsctl migrate` and `kafs --migrate` use the same shared converter
-- Renamed the startup migration flag to `--migrate` and kept `--migrate-v2` only as a deprecated compatibility alias
-- Expanded regression coverage and updated README/man/migration guidance for the v4 migration workflow
+- New images now default to on-disk format v5, including v5 migration destinations created by `kafsresize --migrate-create`
+- Runtime mount continues to accept existing v4 images, so operators can keep legacy images in place while moving new provisioning to v5
+- Unified the offline migration path so `kafsctl migrate` and `kafs --migrate` use the same shared converter for legacy v2/v3 images
+- Expanded regression coverage and refreshed operator guidance for the current v5-default, v4-compatible workflow
 
 ## Features
 
@@ -18,6 +18,13 @@ implementation, tools, and tests.
 - mkfs and fsck tooling
 - Hotplug control via a hidden control endpoint
 - Test suites and reproducible scripts
+
+## Current Defaults
+
+- New images created by `mkfs.kafs` default to format v5
+- `kafsresize --migrate-create` also defaults to a v5 destination image
+- Existing v4 images remain supported for runtime mount
+- Legacy v2/v3 images still require an explicit offline migration step before use
 
 ## Build
 
@@ -58,6 +65,11 @@ In another shell:
 ```sh
 ./kafsctl stats /tmp/kafs-mnt
 ```
+
+Documentation entrypoints:
+
+- Product and operator docs index: [docs/INDEX.md](docs/INDEX.md)
+- Tool overview and roadmap: [docs/tools-suite.md](docs/tools-suite.md)
 
 ## Tools and Options
 
