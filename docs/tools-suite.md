@@ -40,6 +40,7 @@
 - `kafs-journalctl` / `kafs-journal-clear` / `mount.kafs` など、理想像にある補助ユーティリティはまだ未実装。
 - populated v5 image の runtime mount/remount と offline default-promotion gate まで通っており、新規 image の既定を v5 に寄せる前提が揃っている。
 - デフォルト・リプレイ方針（再適用の有無・条件）が保守的（スキャン/クリーンのみ）。
+- 最小 operator diagnostics の staged plan は [operator-diagnostics-plan.md](operator-diagnostics-plan.md) を参照。
 
 ## 理想像（ユーティリティ群と役割）
 
@@ -121,6 +122,8 @@
 
 ## ロードマップ（段階整備）
 
+- 実装着手前メモ
+  - operator diagnostics の次スライスは [operator-diagnostics-plan.md](operator-diagnostics-plan.md) の staged design に従い、control path の選択を先に確定する。
 - フェーズ A（最小実用セット）
   1) `mkfs.kafs` をビルドターゲットに追加・インストール対応
   2) `fsck.kafs` 雛形（ジャーナル CRC 検証 + クリーン + オプション）
