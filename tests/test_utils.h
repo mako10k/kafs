@@ -47,11 +47,20 @@ int kafs_test_lookup_root_dirent_ino(void *base, off_t mapsize, const char *name
 // If KAFS_TEST_KAFS is set, it is used; otherwise falls back to "./kafs".
 const char *kafs_test_kafs_bin(void);
 
+// If KAFS_TEST_MKFS is set, it is used; otherwise resolves mkfs.kafs near the test binary.
+const char *kafs_test_mkfs_bin(void);
+
 // If KAFS_TEST_KAFSCTL is set, it is used; otherwise falls back to "./kafsctl".
 const char *kafs_test_kafsctl_bin(void);
 
 // If KAFS_TEST_FSCK is set, it is used; otherwise resolves fsck.kafs near the test binary.
 const char *kafs_test_fsck_bin(void);
+
+// If KAFS_TEST_KAFS_INFO is set, it is used; otherwise resolves kafs-info near the test binary.
+const char *kafs_test_kafs_info_bin(void);
+
+// If KAFS_TEST_KAFSDUMP is set, it is used; otherwise resolves kafsdump near the test binary.
+const char *kafs_test_kafsdump_bin(void);
 
 static inline int kafs_test_mkimg_with_hrl(const char *path, size_t bytes, unsigned log_bs,
                                            unsigned inodes, kafs_context_t *out_ctx,

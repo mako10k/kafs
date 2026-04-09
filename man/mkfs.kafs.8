@@ -38,9 +38,12 @@ is used and overrides this option.
 .BR -b ", " --blksize-log "=" log2
 Block size as log2 value (default: 12 => 4096 bytes).
 .TP
-.BR --format-version "=" version
-On-disk format version to emit (default: 4).
+.BR --format-version " " version
+On-disk format version to emit (default: 5).
 Version 5 enables an empty dedicated tail metadata region scaffold during mkfs.
+Use
+.BR --format-version " " 4
+to create a legacy v4 image.
 .TP
 .BR -i ", " --inodes "=" count
 Number of inodes.

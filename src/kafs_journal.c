@@ -1027,8 +1027,13 @@ int kafs_journal_replay(struct kafs_context *ctx, kafs_journal_replay_cb cb, voi
   if (kj_header_load(&j, &hdr) == 0)
   {
     hdr.write_off = 0;
+    hdr.header_crc = 0;
+    hdr.header_crc = kj_crc32(&hdr, sizeof(hdr));
     kj_header_store(&j, &hdr);
   }
+  if (g_state.ctx == ctx && g_state.j.enabled && g_state.j.use_inimage &&
+      g_state.j.base_off == j.base_off)
+    g_state.j.write_off = 0;
   for (size_t i = 0; i < open_cnt; ++i)
   {
     free(open[i].payload);

@@ -79,7 +79,13 @@ Optional on-disk format version forwarded to
 .BR mkfs.kafs .
 This allows
 .B --migrate-create
-to create future-format destination images such as v5 scaffold images.
+to select the destination image format explicitly.
+When omitted, the destination image follows the current
+.BR mkfs.kafs
+default (v5).
+Use
+.BR --format-version 4
+to keep a legacy v4 destination image.
 .TP
 .B --journal-size-bytes N
 Optional journal size forwarded to

@@ -1,10 +1,24 @@
-# KAFS Reproduction Test - Complete Index
+# KAFS Documentation Index
 
-## Project Documentation (General)
+This index is the recommended starting point for KAFS operators and developers.
+It prioritizes product usage, operational workflows, and tool references before
+historical investigations and deep design notes.
 
-This repository also contains design and planning documents. For hotplug and
-RPC-related design notes, see the hotplug documents. For deduplication, see the
-design and policy notes.
+## Start Here
+
+- [../README.md](../README.md): top-level project overview, quick start, and tool summary
+- [tools-suite.md](tools-suite.md): current tool surface, gaps, and long-range direction
+- [static-checks.md](static-checks.md): repo validation and CI/static-check expectations
+
+## Operator Workflows
+
+- [crash-diagnostics.md](crash-diagnostics.md): crash logs, core dumps, and failure capture
+- [kafsctl-path-ops-requirements.md](kafsctl-path-ops-requirements.md): mounted-tree control and path-based operation expectations
+- [kafsimage-format.md](kafsimage-format.md): export modes and output semantics for kafsimage
+- [kafsresize-cutover-playbook.md](kafsresize-cutover-playbook.md): staged destination-image cutover workflow for `kafsresize --migrate-create`
+- [operator-diagnostics-plan.md](operator-diagnostics-plan.md): staged design for the next operator-facing diagnostics slice
+
+## Design And Planning
 
 - [hotplug-plan.md](hotplug-plan.md)
 - [hotplug-requirements.md](hotplug-requirements.md)
@@ -21,231 +35,33 @@ design and policy notes.
 - [concurrency-plan.md](concurrency-plan.md)
 - [journal-plan.md](journal-plan.md)
 - [write-performance-ideas.md](write-performance-ideas.md)
-- [tail-packing-format-sketch.md](tail-packing-format-sketch.md)
 - [bottleneck-measurement-plan.md](bottleneck-measurement-plan.md)
 - [perf-evaluation-20260228.md](perf-evaluation-20260228.md)
 - [perf-discrepancy-analysis-20260228.md](perf-discrepancy-analysis-20260228.md)
 - [format-v3-123-spec.md](format-v3-123-spec.md)
 - [format-v3-123-tickets.md](format-v3-123-tickets.md)
 - [migration-v2-to-v3.md](migration-v2-to-v3.md)
-- [kafsctl-path-ops-requirements.md](kafsctl-path-ops-requirements.md)
-- [kafsimage-format.md](kafsimage-format.md)
 - [phase1-validation-20260228.md](phase1-validation-20260228.md)
 - [phase2-validation-20260228.md](phase2-validation-20260228.md)
 - [phase3-validation-20260228.md](phase3-validation-20260228.md)
+
+## Release And Project History
+
 - [release-announcement-v0.2.1.md](release-announcement-v0.2.1.md)
 - [release-announcement-v0.3.0.md](release-announcement-v0.3.0.md)
+- [release-announcement-v0.3.1.md](release-announcement-v0.3.1.md)
 - [discussion-post-v0.2.1-final.md](discussion-post-v0.2.1-final.md)
-- [static-checks.md](static-checks.md)
-- [tools-suite.md](tools-suite.md)
+
+## Historical Investigations And Reproductions
+
+These documents remain useful for archaeology and incident follow-up, but they
+are no longer the recommended first-read path for normal product usage.
+
+- [README_STRACE_ANALYSIS.md](README_STRACE_ANALYSIS.md)
+- [STRACE_MINIMAL_REPRODUCTION_FINAL.md](STRACE_MINIMAL_REPRODUCTION_FINAL.md)
+- [STRACE_EIO_ANALYSIS.md](STRACE_EIO_ANALYSIS.md)
 - [STRACE_ANALYSIS_INDEX.md](STRACE_ANALYSIS_INDEX.md)
 
-## Quick Start
+## Miscellaneous References
 
-**Status**: ✓ **ALL TESTS PASSED** - EIO/SHA1 errors NO LONGER OCCUR
-
-**Files to Read** (in order):
-1. `README_STRACE_ANALYSIS.md` - Start here for quick overview
-2. `STRACE_MINIMAL_REPRODUCTION_FINAL.md` - Comprehensive details
-3. `STRACE_EIO_ANALYSIS.md` - Technical analysis
-
-## Documentation Files
-
-### Operations
-
-| File | Purpose |
-|------|---------|
-| [crash-diagnostics.md](crash-diagnostics.md) | Crash diagnostics output and core dump collection guide |
-
-### Primary Documentation
-
-| File | Size | Purpose | Read Time |
-|------|------|---------|-----------|
-| [README_STRACE_ANALYSIS.md](README_STRACE_ANALYSIS.md) | - | Executive summary | 5 min |
-| [STRACE_MINIMAL_REPRODUCTION_FINAL.md](STRACE_MINIMAL_REPRODUCTION_FINAL.md) | - | Comprehensive report | 10 min |
-| [STRACE_EIO_ANALYSIS.md](STRACE_EIO_ANALYSIS.md) | - | Technical details | 10 min |
-| [STRACE_ANALYSIS_INDEX.md](STRACE_ANALYSIS_INDEX.md) | - | Navigation and quick lookup | 5 min |
-| [INDEX.md](INDEX.md) | This file | Navigation guide | 2 min |
-
-## Test Scripts (Executable)
-
-### Individual Tests
-
-```bash
-./scripts/test-git-operations.sh        # Test 1: Git workflow reproduction
-./scripts/test-hooks-direct.sh          # Test 2: Hook functions verification
-./scripts/test-fresh-image-git-fsck.sh  # Test 3: Complete scenario
-```
-
-### Master Test Runner
-
-```bash
-./scripts/run-all-tests.sh              # Run all 3 tests sequentially
-```
-
-## Test Results
-
-### Test Execution Summary
-
-| Test | Status | Duration | Errors |
-|------|--------|----------|--------|
-| Test 1: Git Workflow | ✓ PASSED | ~30s | 0 |
-| Test 2: Hook Functions | ✓ PASSED | ~25s | 0 |
-| Test 3: Fresh Image+Git | ✓ PASSED | ~30s | 0 |
-| **Overall** | **✓ ALL PASSED** | **~10min** | **0** |
-
-### Error Categories (All Zero)
-
-- ✓ EIO errors: 0
-- ✓ SHA1 corruption: 0
-- ✓ EOF errors: 0
-- ✓ fsync/flush errors: 0
-- ✓ General errors: 0
-
-## Hooks Implemented
-
-### Implementation Status
-
-| Hook | Location | Status | Purpose |
-|------|----------|--------|---------|
-| `kafs_op_flush()` | Line 1988 | ✓ Verified | Flush on file close |
-| `kafs_op_fsync()` | Line 1999 | ✓ Verified | Sync on fsync() call |
-| `kafs_op_release()` | Line 2016 | ✓ Verified | Release with flush |
-| `kafs_op_fsyncdir()` | Line 2011 | ✓ Verified | Sync directory meta |
-
-All hooks use `fdatasync()` to ensure data persistence to storage.
-
-## Key Findings
-
-### ✓ Positive Results
-
-1. **All Tests Passed**: 3/3 tests executed successfully
-2. **Zero Errors Detected**: No EIO, SHA1, EOF, or sync errors
-3. **Git Operations Work**: init, add, commit all successful
-4. **fsck.kafs Passes**: Filesystem verification successful
-5. **Data Integrity**: All files consistent and readable
-6. **Hooks Verified**: All four hooks working correctly
-
-### Performance Impact
-
-- **Per operation**: 1-10ms overhead (varies by hook)
-- **Workload impact**: <5% overall overhead
-- **Assessment**: ACCEPTABLE for production
-
-## How to Read This Report
-
-### For Quick Understanding (5-10 minutes)
-1. Read `README_STRACE_ANALYSIS.md`
-2. Scan test results in this file
-
-### For Complete Details (20-30 minutes)
-1. Read `README_STRACE_ANALYSIS.md`
-2. Read `STRACE_MINIMAL_REPRODUCTION_FINAL.md`
-3. Read `STRACE_EIO_ANALYSIS.md`
-
-### For Technical Deep-Dive (45+ minutes)
-1. Read all documentation files
-2. Examine source code in `src/kafs.c`
-3. Run test scripts to verify locally
-
-### For Just the Results (2 minutes)
-- Look at "Test Results" section above
-- Look at "Key Findings" section
-
-## How to Use Test Scripts
-
-### Run All Tests
-```bash
-./scripts/run-all-tests.sh
-```
-Generates: `report/TEST_EXECUTION_RESULTS.txt`
-
-### Run Individual Tests
-```bash
-# Test 1: Git workflow
-./scripts/test-git-operations.sh
-
-# Test 2: Hook functions
-./scripts/test-hooks-direct.sh
-
-# Test 3: Fresh image + git + fsck
-./scripts/test-fresh-image-git-fsck.sh
-```
-
-### Check Test Logs
-```bash
-cat git-test.log              # Test 1 debug log
-cat hook-test.log             # Test 2 debug log
-cat fresh-git-repro.log       # Test 3 debug log
-```
-
-## Hooks Source Code
-
-All hooks are in `src/kafs.c`:
-
-```c
-// Line 1988: Flush on file close
-static int kafs_op_flush(const char *path, struct fuse_file_info *fi)
-
-// Line 1999: Sync on fsync() call
-static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info *fi)
-
-// Line 2011: Sync directory metadata
-static int kafs_op_fsyncdir(const char *path, int isdatasync, struct fuse_file_info *fi)
-
-// Line 2016: Release with flush
-static int kafs_op_release(const char *path, struct fuse_file_info *fi)
-
-// Lines 2030-2035: Hook registration in fuse_operations struct
-```
-
-## Test Images
-
-Generated during testing:
-- `git-test.img` (100MB)
-- `hook-test.img` (50MB)
-- `fresh-git-repro.img` (100MB)
-
-## Verification Checklist
-
-### Before Production Deployment
-
-- [x] All hooks implemented
-- [x] All hooks registered in fuse_operations
-- [x] All 3 tests executed and passed
-- [x] Zero errors in all test categories
-- [x] Git operations verified
-- [x] fsck.kafs passes verification
-- [x] Data integrity confirmed
-- [x] Performance impact acceptable
-
-## Recommendations
-
-1. ✓ Deploy hooks to production
-2. ✓ Use KAFS for git repository storage
-3. ✓ Use for database storage and data-critical workloads
-4. ✓ Monitor performance (expected <5% overhead)
-5. ✓ Document KAFS reliability guarantees
-
-## Project Status
-
-| Aspect | Status |
-|--------|--------|
-| Hooks Implemented | ✓ Complete |
-| Tests Executed | ✓ Complete (3/3 passed) |
-| Error Analysis | ✓ Complete (0 errors) |
-| Verification | ✓ Complete |
-| Documentation | ✓ Complete |
-| Production Ready | ✓ YES |
-
-## Final Conclusion
-
-✓ **CONFIRMED**: EIO/SHA1 errors NO LONGER OCCUR after implementing flush/fsync/release/fsyncdir hooks.
-
-The KAFS filesystem is now **STABLE and PRODUCTION-READY** for storing critical data including git repositories.
-
----
-
-**Report Generated**: 2026-01-28  
-**Test Status**: ✓ PASSED  
-**Overall Project Status**: ✓ COMPLETE
+- [tail-packing-format-sketch.md](tail-packing-format-sketch.md)

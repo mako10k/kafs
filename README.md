@@ -6,10 +6,10 @@ implementation, tools, and tests.
 
 ## Release Highlights (v0.4.0)
 
-- Added offline pre-start migration from legacy v2/v3 images to the current v4 format
-- Unified the migration path so `kafsctl migrate` and `kafs --migrate` use the same shared converter
-- Renamed the startup migration flag to `--migrate` and kept `--migrate-v2` only as a deprecated compatibility alias
-- Expanded regression coverage and updated README/man/migration guidance for the v4 migration workflow
+- New images now default to on-disk format v5, including v5 migration destinations created by `kafsresize --migrate-create`
+- Runtime mount continues to accept existing v4 images, so operators can keep legacy images in place while moving new provisioning to v5
+- Unified the offline migration path so `kafsctl migrate` and `kafs --migrate` use the same shared converter for legacy v2/v3 images
+- Expanded regression coverage and refreshed operator guidance for the current v5-default, v4-compatible workflow
 
 ## Features
 
@@ -18,6 +18,13 @@ implementation, tools, and tests.
 - mkfs and fsck tooling
 - Hotplug control via a hidden control endpoint
 - Test suites and reproducible scripts
+
+## Current Defaults
+
+- New images created by `mkfs.kafs` default to format v5
+- `kafsresize --migrate-create` also defaults to a v5 destination image
+- Existing v4 images remain supported for runtime mount
+- Legacy v2/v3 images still require an explicit offline migration step before use
 
 ## Build
 
@@ -59,6 +66,11 @@ In another shell:
 ./kafsctl stats /tmp/kafs-mnt
 ```
 
+Documentation entrypoints:
+
+- Product and operator docs index: [docs/INDEX.md](docs/INDEX.md)
+- Tool overview and roadmap: [docs/tools-suite.md](docs/tools-suite.md)
+
 ## Tools and Options
 
 ### mkfs.kafs
@@ -72,7 +84,7 @@ Create a filesystem image:
 Key options:
 - `-s, --size-bytes`: total image size (accepts K/M/G suffixes)
 - `-b, --blksize-log`: block size as log2 (default 12 = 4096 bytes)
-- `--format-version`: on-disk format version to emit (default 4; version 5 creates an empty dedicated tail metadata region scaffold)
+- `--format-version`: on-disk format version to emit (default 5; use `--format-version 4` for a legacy v4 image)
 - `-i, --inodes`: inode count
 - `-J, --journal-size-bytes`: journal size (accepts K/M/G suffixes)
 - `--hrl-entry-ratio`: HRL entries/data-block ratio (default 0.75, range 0<R<=1)
@@ -201,22 +213,37 @@ Offline resize and migration-image creation:
 
 Current v0 constraint: growth is only supported within preallocated headroom
 (`s_blkcnt < s_r_blkcnt`). Shrink is not supported.
-`--grow` accepts both v4 and v5 scaffold images.
-`--migrate-create` can emit a destination image with `--format-version 5` for offline migration preparation.
+`--grow` accepts both v4 and v5 images when the requested size stays within preallocated headroom.
+`--migrate-create` now defaults to a v5 destination image; pass `--format-version 4` when you need a legacy v4 destination.
+
+Operator guidance:
+- Existing v4 images can remain in place; runtime mount continues to accept v4 images.
+- Newly created images default to v5 so tail metadata scaffolding is provisioned from mkfs time.
+- If you are staging an offline migration and want the destination to stay on v4, create it explicitly with `--format-version 4`.
+- For an end-to-end destination-image workflow, see [docs/kafsresize-cutover-playbook.md](docs/kafsresize-cutover-playbook.md).
 
 ### kafsctl
 
-Inspect stats, migration, and hotplug controls:
+Inspect stats, migration, hotplug controls, and mounted-tree operations:
 
 ```sh
 ./kafsctl fsstat /tmp/kafs-mnt --json --mib    # alias: stats
 ./kafsctl hotplug status /tmp/kafs-mnt
 ./kafsctl hotplug compat /tmp/kafs-mnt --json
+./kafsctl hotplug restart-back /tmp/kafs-mnt
 ./kafsctl hotplug set-timeout /tmp/kafs-mnt 2000
 ./kafsctl hotplug set-dedup-priority /tmp/kafs-mnt idle 10
+./kafsctl hotplug set-runtime /tmp/kafs-mnt --fsync-policy=adaptive
 ./kafsctl hotplug env list /tmp/kafs-mnt
 ./kafsctl hotplug env set /tmp/kafs-mnt KAFS_BACK_ENABLE_IMAGE=1
 ./kafsctl hotplug env unset /tmp/kafs-mnt KAFS_BACK_ENABLE_IMAGE
+./kafsctl stat /tmp/kafs-mnt/path/to/file
+./kafsctl cat /tmp/kafs-mnt/path/to/file
+./kafsctl write /tmp/kafs-mnt/path/to/file < local.txt
+./kafsctl cp /tmp/kafs-mnt/src /tmp/kafs-mnt/dst --reflink
+./kafsctl readlink /tmp/kafs-mnt/path/to/link
+./kafsctl chmod 644 /tmp/kafs-mnt/path/to/file
+./kafsctl touch /tmp/kafs-mnt/path/to/file
 ./kafsctl migrate /tmp/kafs.img
 ```
 
@@ -224,6 +251,13 @@ Inspect stats, migration, and hotplug controls:
 When `--yes` is not specified, it requires a Yes/No confirmation prompt.
 
 `fsstat` supports output units via `--bytes`, `--mib`, and `--gib`.
+
+Mounted-tree file operations accept path-first forms and auto-detect the containing
+KAFS mount when possible. Legacy forms that pass an explicit mountpoint remain
+accepted for compatibility.
+
+For the full mounted-tree command set, runtime policy switches, and hotplug
+subcommand details, see `kafsctl --help` and `man/kafsctl.1`.
 
 Background dedup observability (live dashboard):
 

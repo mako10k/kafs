@@ -28,7 +28,7 @@
     - 事前確保ヘッドルーム（`s_blkcnt < s_r_blkcnt`）内の増設のみ対応。
     - format version 5 scaffold image の grow と offline migrate-create を受け付ける。
   - `mkfs.kafs` / `fsck.kafs`
-    - `mkfs.kafs` は `--format-version` に対応し、v5 では empty tail metadata region scaffold を作成する。
+    - `mkfs.kafs` は `--format-version` に対応し、新規 image は既定で v5 を作成する。legacy v4 image が必要な場合は `--format-version 4` を明示する。
     - `fsck.kafs` は統合モードに加えて tail metadata region の境界と owner 整合も検査する。
   - `stress_fs` テスト（Automake tests）。マウント/並行操作のストレス検証で PASS。
   - offline tool 回帰は `tests/tests_kafsresize.c` に集約され、empty v5 tailmeta scaffold に対する mkfs/fsck/kafsresize/kafsdump/kafsimage/kafs-info の read-only coverage を持つ。
@@ -38,8 +38,9 @@
 
 課題（ギャップ）
 - `kafs-journalctl` / `kafs-journal-clear` / `mount.kafs` など、理想像にある補助ユーティリティはまだ未実装。
-- offline v5 scaffold は可視化・検査・export まで揃ったが、tail packing 実データを扱う runtime/control-plane は未着手。
+- populated v5 image の runtime mount/remount と offline default-promotion gate まで通っており、新規 image の既定を v5 に寄せる前提が揃っている。
 - デフォルト・リプレイ方針（再適用の有無・条件）が保守的（スキャン/クリーンのみ）。
+- 最小 operator diagnostics の staged plan は [operator-diagnostics-plan.md](operator-diagnostics-plan.md) を参照。
 
 ## 理想像（ユーティリティ群と役割）
 
@@ -121,6 +122,8 @@
 
 ## ロードマップ（段階整備）
 
+- 実装着手前メモ
+  - operator diagnostics の次スライスは [operator-diagnostics-plan.md](operator-diagnostics-plan.md) の staged design に従い、control path の選択を先に確定する。
 - フェーズ A（最小実用セット）
   1) `mkfs.kafs` をビルドターゲットに追加・インストール対応
   2) `fsck.kafs` 雛形（ジャーナル CRC 検証 + クリーン + オプション）
