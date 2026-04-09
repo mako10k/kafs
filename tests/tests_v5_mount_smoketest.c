@@ -3,21 +3,14 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/statfs.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <time.h>
 #include <unistd.h>
-
-#ifndef FUSE_SUPER_MAGIC
-#define FUSE_SUPER_MAGIC 0x65735546
-#endif
 
 static void tlogf(const char *fmt, ...)
 {
@@ -43,41 +36,8 @@ static const char *pick_exe(const char *env_name, const char *const *cands)
   return NULL;
 }
 
-static const char *resolve_tool_from_self(const char *env_name, const char *tool_name,
-                                          char out[PATH_MAX])
-{
-  const char *envv = getenv(env_name);
-  if (envv && *envv)
-  {
-    if (strlen(envv) < PATH_MAX)
-    {
-      strcpy(out, envv);
-      return out;
-    }
-    return envv;
-  }
-
-  char exe_path[PATH_MAX];
-  ssize_t exe_len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-  if (exe_len > 0)
-  {
-    exe_path[exe_len] = '\0';
-    char *slash = strrchr(exe_path, '/');
-    if (slash)
-    {
-      *slash = '\0';
-      if ((size_t)snprintf(out, PATH_MAX, "%s/../src/%s", exe_path, tool_name) < PATH_MAX &&
-          access(out, X_OK) == 0)
-        return out;
-    }
-  }
-
-  return NULL;
-}
-
 static const char *pick_mkfs_exe(void)
 {
-  static char resolved[PATH_MAX];
   static const char *const cands[] = {
       "./mkfs.kafs",
       "../src/mkfs.kafs",
@@ -86,10 +46,6 @@ static const char *pick_mkfs_exe(void)
       "mkfs.kafs",
       NULL,
   };
-
-  const char *resolved_path = resolve_tool_from_self("KAFS_TEST_MKFS", "mkfs.kafs", resolved);
-  if (resolved_path)
-    return resolved_path;
 
   return pick_exe("KAFS_TEST_MKFS", cands);
 }
@@ -131,62 +87,6 @@ static int mkfs_v5_image(const char *img)
       NULL,
   };
   return run_cmd(argv);
-}
-
-static pid_t mount_expect_success(const char *img, const char *mnt, const char *log_path,
-                                  int timeout_ms)
-{
-  const char *kafs = kafs_test_kafs_bin();
-  pid_t pid;
-  int waited = 0;
-  const int step_ms = 100;
-
-  if (mkdir(mnt, 0700) != 0 && errno != EEXIST)
-    return -errno;
-
-  pid = fork();
-  if (pid < 0)
-    return -errno;
-  if (pid == 0)
-  {
-    int lfd;
-
-    setenv("KAFS_IMAGE", img, 1);
-    lfd = open(log_path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
-    if (lfd >= 0)
-    {
-      dup2(lfd, STDERR_FILENO);
-      dup2(lfd, STDOUT_FILENO);
-      close(lfd);
-    }
-    char *args[] = {(char *)kafs, (char *)mnt, (char *)"-f", NULL};
-    execvp(args[0], args);
-    _exit(127);
-  }
-
-  while (waited < timeout_ms)
-  {
-    int status = 0;
-    pid_t rc = waitpid(pid, &status, WNOHANG);
-
-    if (rc == pid)
-    {
-      return -1;
-    }
-    if (rc < 0)
-      return -errno;
-
-    struct statfs stfs;
-    if (statfs(mnt, &stfs) == 0 && (unsigned long)stfs.f_type == (unsigned long)FUSE_SUPER_MAGIC)
-      return pid;
-
-    struct timespec ts = {0, step_ms * 1000 * 1000};
-    nanosleep(&ts, NULL);
-    waited += step_ms;
-  }
-
-  kafs_test_stop_kafs(mnt, pid);
-  return -ETIMEDOUT;
 }
 
 static const kafs_test_mount_options_t k_mount_options = {
@@ -239,7 +139,13 @@ int main(void)
   close(fd);
 
   struct stat st = {0};
-  if (stat(path, &st) != 0 || st.st_size != (off_t)(sizeof(payload) - 1))
+  if (stat(path, &st) != 0)
+  {
+    tlogf("stat hello.txt failed: %s", strerror(errno));
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  if (st.st_size != (off_t)(sizeof(payload) - 1))
   {
     tlogf("unexpected hello.txt size: %ld", (long)st.st_size);
     kafs_test_stop_kafs(mnt, srv);
@@ -248,33 +154,61 @@ int main(void)
 
   kafs_test_stop_kafs(mnt, srv);
 
-  pid_t remount_srv = mount_expect_success(img, "mnt-v5-remount", "v5_remount.log", 5000);
+  const char *remount = "mnt-v5-remount";
+  pid_t remount_srv = kafs_test_start_kafs(img, remount, &k_mount_options);
   if (remount_srv <= 0)
   {
-    kafs_test_dump_log("v5_remount.log", "non-empty v5 image should mount");
-    tlogf("non-empty v5 remount failed rc=%d", (int)remount_srv);
+    kafs_test_dump_log(k_mount_options.log_path, "non-empty v5 remount should succeed");
+    tlogf("non-empty v5 remount failed");
     return 1;
   }
 
-  snprintf(path, sizeof(path), "%s/hello.txt", "mnt-v5-remount");
+  snprintf(path, sizeof(path), "%s/hello.txt", remount);
+  memset(&st, 0, sizeof(st));
+  if (stat(path, &st) != 0)
+  {
+    tlogf("stat hello.txt after remount failed: %s", strerror(errno));
+    kafs_test_stop_kafs(remount, remount_srv);
+    return 1;
+  }
+  if (st.st_size != (off_t)(sizeof(payload) - 1))
+  {
+    tlogf("unexpected hello.txt size after remount: %ld", (long)st.st_size);
+    kafs_test_stop_kafs(remount, remount_srv);
+    return 1;
+  }
+
+  char verify[sizeof(payload)];
   fd = open(path, O_RDONLY);
   if (fd < 0)
   {
-    tlogf("reopen hello.txt after remount failed: %s", strerror(errno));
-    kafs_test_stop_kafs("mnt-v5-remount", remount_srv);
+    tlogf("open hello.txt after remount failed: %s", strerror(errno));
+    kafs_test_stop_kafs(remount, remount_srv);
     return 1;
   }
-  char verify[sizeof(payload)] = {0};
-  if (read(fd, verify, sizeof(payload) - 1) != (ssize_t)(sizeof(payload) - 1) ||
-      memcmp(verify, payload, sizeof(payload) - 1) != 0)
-  {
-    tlogf("readback mismatch after remount");
-    close(fd);
-    kafs_test_stop_kafs("mnt-v5-remount", remount_srv);
-    return 1;
-  }
+  ssize_t nread = read(fd, verify, sizeof(verify) - 1);
   close(fd);
-  kafs_test_stop_kafs("mnt-v5-remount", remount_srv);
+  if (nread < 0)
+  {
+    tlogf("read hello.txt after remount failed: %s", strerror(errno));
+    kafs_test_stop_kafs(remount, remount_srv);
+    return 1;
+  }
+  if (nread != (ssize_t)(sizeof(payload) - 1))
+  {
+    tlogf("hello.txt short read after remount: expected %zu bytes, got %zd",
+          sizeof(payload) - 1, nread);
+    kafs_test_stop_kafs(remount, remount_srv);
+    return 1;
+  }
+  if (memcmp(verify, payload, sizeof(payload) - 1) != 0)
+  {
+    tlogf("hello.txt readback mismatch after remount");
+    kafs_test_stop_kafs(remount, remount_srv);
+    return 1;
+  }
+
+  kafs_test_stop_kafs(remount, remount_srv);
 
   tlogf("v5_mount_smoketest OK");
   return 0;
