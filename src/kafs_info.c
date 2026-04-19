@@ -42,34 +42,25 @@ static void fmt_time(char out[64], const kafs_time_t *ts)
 
 static void usage(const char *prog) { fprintf(stderr, "Usage: %s <image>\n", prog); }
 
-int main(int argc, char **argv)
+static int load_image_superblock(const char *img, int *fd_out, kafs_ssuperblock_t *sb_out,
+                                 uint64_t *file_size_out)
 {
-  if (kafs_cli_exit_if_help(argc, argv, usage, argv[0]) == 0)
-    return 0;
-
-  if (argc < 2)
-  {
-    usage(argv[0]);
-    return 2;
-  }
-  const char *img = argv[1];
   int fd = open(img, O_RDONLY);
   if (fd < 0)
   {
     perror("open");
     return 1;
   }
-  kafs_ssuperblock_t sb;
-  ssize_t r = pread(fd, &sb, sizeof(sb), 0);
-  if (r != (ssize_t)sizeof(sb))
+
+  ssize_t r = pread(fd, sb_out, sizeof(*sb_out), 0);
+  if (r != (ssize_t)sizeof(*sb_out))
   {
     perror("pread superblock");
     close(fd);
     return 1;
   }
 
-  uint64_t file_size = 0;
-  int rc = kafs_offline_detect_file_size(fd, &file_size);
+  int rc = kafs_offline_detect_file_size(fd, file_size_out);
   if (rc != 0)
   {
     fprintf(stderr, "failed to detect image size: %s\n", strerror(-rc));
@@ -77,36 +68,45 @@ int main(int argc, char **argv)
     return 1;
   }
 
+  *fd_out = fd;
+  return 0;
+}
+
+static void print_superblock_summary(const kafs_ssuperblock_t *sb)
+{
   printf("magic=0x%08" PRIx32 " version=%" PRIu32 " log_blksize=%" PRIuFAST16 " (bytes=%u)\n",
-         kafs_sb_magic_get(&sb), kafs_sb_format_version_get(&sb), kafs_sb_log_blksize_get(&sb),
-         1u << kafs_sb_log_blksize_get(&sb));
-  printf("inodes total=%" PRIuFAST32 " free=%" PRIuFAST32 "\n", kafs_sb_inocnt_get(&sb),
-         (uint_fast32_t)kafs_sb_inocnt_free_get(&sb));
+         kafs_sb_magic_get(sb), kafs_sb_format_version_get(sb), kafs_sb_log_blksize_get(sb),
+         1u << kafs_sb_log_blksize_get(sb));
+  printf("inodes total=%" PRIuFAST32 " free=%" PRIuFAST32 "\n", kafs_sb_inocnt_get(sb),
+         (uint_fast32_t)kafs_sb_inocnt_free_get(sb));
   printf("blocks user=%" PRIuFAST32 " root=%" PRIuFAST32 " free=%" PRIuFAST32
          " first_data=%" PRIuFAST32 "\n",
-         kafs_sb_blkcnt_get(&sb), kafs_sb_r_blkcnt_get(&sb), kafs_sb_blkcnt_free_get(&sb),
-         kafs_blkcnt_stoh(sb.s_first_data_block));
-  printf("hash fast=%" PRIu32 " strong=%" PRIu32 "\n", kafs_sb_hash_fast_get(&sb),
-         kafs_sb_hash_strong_get(&sb));
+         kafs_sb_blkcnt_get(sb), kafs_sb_r_blkcnt_get(sb), kafs_sb_blkcnt_free_get(sb),
+         kafs_blkcnt_stoh(sb->s_first_data_block));
+  printf("hash fast=%" PRIu32 " strong=%" PRIu32 "\n", kafs_sb_hash_fast_get(sb),
+         kafs_sb_hash_strong_get(sb));
   printf("hrl index: off=%" PRIu64 " size=%" PRIu64 "; entries: off=%" PRIu64 " cnt=%" PRIu32 "\n",
-         (uint64_t)kafs_sb_hrl_index_offset_get(&sb), (uint64_t)kafs_sb_hrl_index_size_get(&sb),
-         (uint64_t)kafs_sb_hrl_entry_offset_get(&sb), (uint32_t)kafs_sb_hrl_entry_cnt_get(&sb));
+         (uint64_t)kafs_sb_hrl_index_offset_get(sb), (uint64_t)kafs_sb_hrl_index_size_get(sb),
+         (uint64_t)kafs_sb_hrl_entry_offset_get(sb), (uint32_t)kafs_sb_hrl_entry_cnt_get(sb));
   printf("tail metadata: enabled=%s off=%" PRIu64 " size=%" PRIu64 "\n",
-         (kafs_sb_feature_flags_get(&sb) & KAFS_FEATURE_TAIL_META_REGION) ? "true" : "false",
-         (uint64_t)kafs_sb_tailmeta_offset_get(&sb), (uint64_t)kafs_sb_tailmeta_size_get(&sb));
+         (kafs_sb_feature_flags_get(sb) & KAFS_FEATURE_TAIL_META_REGION) ? "true" : "false",
+         (uint64_t)kafs_sb_tailmeta_offset_get(sb), (uint64_t)kafs_sb_tailmeta_size_get(sb));
+}
 
+static void print_tombstone_summary(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size)
+{
   uint64_t tombstone_count = 0;
   kafs_time_t oldest_tombstone = {0};
   int have_oldest_tombstone = 0;
   void *inotbl = NULL;
   uint64_t inocnt = 0;
-  int rc_inode = kafs_offline_load_inode_table(fd, &sb, file_size, &inotbl, &inocnt);
+  int rc_inode = kafs_offline_load_inode_table(fd, sb, file_size, &inotbl, &inocnt);
   if (rc_inode == 0)
   {
     for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
     {
       const kafs_sinode_t *inoent = (const kafs_sinode_t *)kafs_inode_ptr_const_in_table(
-          inotbl, kafs_sb_format_version_get(&sb), ino);
+          inotbl, kafs_sb_format_version_get(sb), ino);
       if (!kafs_ino_get_usage(inoent))
         continue;
       if (kafs_ino_linkcnt_get(inoent) != 0)
@@ -137,10 +137,15 @@ int main(int argc, char **argv)
     printf("tombstones count=0 oldest_dtime=none\n");
   }
 
+  free(inotbl);
+}
+
+static void print_tail_summary(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size)
+{
   struct inode_summary ino = {0};
   struct tailmeta_summary tm = {0};
-  rc_inode = collect_inode_summary(fd, &sb, file_size, &ino);
-  int rc_tailmeta = collect_tailmeta_summary(fd, &sb, file_size, &tm);
+  int rc_inode = collect_inode_summary(fd, sb, file_size, &ino);
+  int rc_tailmeta = collect_tailmeta_summary(fd, sb, file_size, &tm);
   if (rc_inode == 0)
   {
     printf("tail layouts: regular=%" PRIu64 " tail_only=%" PRIu64 " mixed_full_tail=%" PRIu64 "\n",
@@ -166,43 +171,73 @@ int main(int argc, char **argv)
              class_summary->invalid_containers);
     }
   }
-  else if (kafs_tailmeta_region_present(&sb))
+  else if (kafs_tailmeta_region_present(sb))
   {
     printf("tail usage: unavailable (%s)\n", (rc_tailmeta < 0) ? strerror(-rc_tailmeta) : "error");
   }
+}
 
-  uint64_t index_size = kafs_sb_hrl_index_size_get(&sb);
-  uint64_t entry_off = kafs_sb_hrl_entry_offset_get(&sb);
-  uint32_t entry_cnt = kafs_sb_hrl_entry_cnt_get(&sb);
-  if (index_size && entry_off && entry_cnt)
+static int print_hrl_summary(int fd, const kafs_ssuperblock_t *sb)
+{
+  uint64_t index_size = kafs_sb_hrl_index_size_get(sb);
+  uint64_t entry_off = kafs_sb_hrl_entry_offset_get(sb);
+  uint32_t entry_cnt = kafs_sb_hrl_entry_cnt_get(sb);
+  if (!(index_size && entry_off && entry_cnt))
+    return 0;
+
+  uint32_t buckets = (uint32_t)(index_size / sizeof(uint32_t));
+  printf("hrl buckets=%u\n", buckets);
+  size_t ents_bytes = (size_t)entry_cnt * sizeof(kafs_hrl_entry_t);
+  kafs_hrl_entry_t *ents = malloc(ents_bytes);
+  if (!ents)
   {
-    uint32_t buckets = (uint32_t)(index_size / sizeof(uint32_t));
-    printf("hrl buckets=%u\n", buckets);
-    size_t ents_bytes = (size_t)entry_cnt * sizeof(kafs_hrl_entry_t);
-    kafs_hrl_entry_t *ents = malloc(ents_bytes);
-    if (!ents)
-    {
-      perror("malloc");
-      close(fd);
-      return 1;
-    }
-    ssize_t er = pread(fd, ents, ents_bytes, (off_t)entry_off);
-    if (er != (ssize_t)ents_bytes)
-    {
-      perror("pread hrl entries");
-      free(ents);
-      close(fd);
-      return 1;
-    }
-    uint32_t used = 0;
-    for (uint32_t i = 0; i < entry_cnt; ++i)
-      if (ents[i].refcnt)
-        ++used;
-    printf("hrl entries used=%u / %u\n", used, entry_cnt);
-    free(ents);
+    perror("malloc");
+    return 1;
   }
 
-  free(inotbl);
+  ssize_t er = pread(fd, ents, ents_bytes, (off_t)entry_off);
+  if (er != (ssize_t)ents_bytes)
+  {
+    perror("pread hrl entries");
+    free(ents);
+    return 1;
+  }
+
+  uint32_t used = 0;
+  for (uint32_t i = 0; i < entry_cnt; ++i)
+    if (ents[i].refcnt)
+      ++used;
+  printf("hrl entries used=%u / %u\n", used, entry_cnt);
+  free(ents);
+  return 0;
+}
+
+int main(int argc, char **argv)
+{
+  if (kafs_cli_exit_if_help(argc, argv, usage, argv[0]) == 0)
+    return 0;
+
+  if (argc < 2)
+  {
+    usage(argv[0]);
+    return 2;
+  }
+  const char *img = argv[1];
+  int fd = -1;
+  kafs_ssuperblock_t sb;
+  uint64_t file_size = 0;
+  if (load_image_superblock(img, &fd, &sb, &file_size) != 0)
+    return 1;
+
+  print_superblock_summary(&sb);
+  print_tombstone_summary(fd, &sb, file_size);
+  print_tail_summary(fd, &sb, file_size);
+  if (print_hrl_summary(fd, &sb) != 0)
+  {
+    close(fd);
+    return 1;
+  }
+
   close(fd);
   return 0;
 }
