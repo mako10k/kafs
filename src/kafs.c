@@ -11314,6 +11314,221 @@ static void kafs_main_log_runtime_options(kafs_context_t *ctx, kafs_bool_t write
   }
 }
 
+static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *image_path,
+                                           kafs_bool_t auto_migrate, kafs_bool_t migrate_yes)
+{
+  ctx->c_fd = open(image_path, O_RDWR, 0666);
+  if (ctx->c_fd < 0)
+  {
+    perror("open image");
+    fprintf(stderr, "image not found. run mkfs.kafs first.\n");
+    exit(2);
+  }
+  ctx->c_blo_search = 0;
+  ctx->c_ino_search = 0;
+
+  kafs_ssuperblock_t sbdisk;
+  ssize_t r = pread(ctx->c_fd, &sbdisk, sizeof(sbdisk), 0);
+  if (r != (ssize_t)sizeof(sbdisk))
+  {
+    perror("pread superblock");
+    exit(2);
+  }
+  if (kafs_sb_magic_get(&sbdisk) != KAFS_MAGIC)
+  {
+    fprintf(stderr, "invalid magic. run mkfs.kafs to format.\n");
+    exit(2);
+  }
+
+  uint32_t fmt_ver = kafs_sb_format_version_get(&sbdisk);
+  if (fmt_ver != KAFS_FORMAT_VERSION)
+  {
+    if (fmt_ver == KAFS_FORMAT_VERSION_V2 || fmt_ver == KAFS_FORMAT_VERSION_V3)
+    {
+      if (auto_migrate)
+      {
+        int mrc = kafs_core_migrate_image(image_path, migrate_yes ? 1 : 0);
+        if (mrc == 0)
+        {
+          fprintf(stderr, "migration completed. please restart mount.\n");
+          exit(0);
+        }
+        if (mrc == 1)
+        {
+          fprintf(stderr, "image already v%u; continue normal mount without --migrate.\n",
+                  (unsigned)KAFS_FORMAT_VERSION);
+          exit(0);
+        }
+        if (mrc == -EPROTONOSUPPORT)
+          fprintf(stderr, "offline migration supports only v2/v3 images.\n");
+        else if (mrc == -ECANCELED)
+          fprintf(stderr, "migration canceled by user.\n");
+        else
+          fprintf(stderr, "migration failed rc=%d.\n", mrc);
+        exit(2);
+      }
+      fprintf(stderr,
+              "unsupported format version: v%u.\n"
+              "Run kafsctl migrate <image> or kafs --migrate before mounting.\n",
+              (unsigned)fmt_ver);
+      exit(2);
+    }
+    if (fmt_ver != KAFS_FORMAT_VERSION_V5)
+    {
+      fprintf(stderr, "unsupported format version: %u (expected %u).\n", fmt_ver,
+              (unsigned)KAFS_FORMAT_VERSION);
+      exit(2);
+    }
+  }
+
+  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(&sbdisk);
+  kafs_blksize_t blksize = 1u << log_blksize;
+  kafs_blksize_t blksizemask = blksize - 1u;
+  kafs_inocnt_t inocnt = kafs_inocnt_stoh(sbdisk.s_inocnt);
+  kafs_blkcnt_t r_blkcnt = kafs_blkcnt_stoh(sbdisk.s_r_blkcnt);
+
+  off_t mapsize = 0;
+  mapsize += sizeof(kafs_ssuperblock_t);
+  mapsize = (mapsize + blksizemask) & ~blksizemask;
+  void *blkmask_off = (void *)mapsize;
+  assert(sizeof(kafs_blkmask_t) <= 8);
+  mapsize += (r_blkcnt + 7) >> 3;
+  mapsize = (mapsize + 7) & ~7;
+  mapsize = (mapsize + blksizemask) & ~blksizemask;
+  void *inotbl_off = (void *)mapsize;
+  mapsize += (off_t)kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(&sbdisk), inocnt);
+  mapsize = (mapsize + blksizemask) & ~blksizemask;
+
+  off_t imgsize = (off_t)r_blkcnt << log_blksize;
+  {
+    uint64_t idx_off = kafs_sb_hrl_index_offset_get(&sbdisk);
+    uint64_t idx_size = kafs_sb_hrl_index_size_get(&sbdisk);
+    uint64_t ent_off = kafs_sb_hrl_entry_offset_get(&sbdisk);
+    uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(&sbdisk);
+    uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
+    uint64_t j_off = kafs_sb_journal_offset_get(&sbdisk);
+    uint64_t j_size = kafs_sb_journal_size_get(&sbdisk);
+    uint64_t p_off = kafs_sb_pendinglog_offset_get(&sbdisk);
+    uint64_t p_size = kafs_sb_pendinglog_size_get(&sbdisk);
+    uint64_t end1 = (idx_off && idx_size) ? (idx_off + idx_size) : 0;
+    uint64_t end2 = (ent_off && ent_size) ? (ent_off + ent_size) : 0;
+    uint64_t end3 = (j_off && j_size) ? (j_off + j_size) : 0;
+    uint64_t end4 = (p_off && p_size) ? (p_off + p_size) : 0;
+    uint64_t max_end = end1;
+    if (end2 > max_end)
+      max_end = end2;
+    if (end3 > max_end)
+      max_end = end3;
+    if (end4 > max_end)
+      max_end = end4;
+    if ((off_t)max_end > imgsize)
+      imgsize = (off_t)max_end;
+    imgsize = (imgsize + blksizemask) & ~blksizemask;
+  }
+
+  ctx->c_img_base = mmap(NULL, imgsize, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->c_fd, 0);
+  if (ctx->c_img_base == MAP_FAILED)
+  {
+    perror("mmap");
+    exit(2);
+  }
+  ctx->c_img_size = (size_t)imgsize;
+  ctx->c_superblock = (kafs_ssuperblock_t *)ctx->c_img_base;
+  ctx->c_mapsize = (size_t)mapsize;
+  ctx->c_blkmasktbl = (void *)ctx->c_superblock + (intptr_t)blkmask_off;
+  ctx->c_inotbl = (void *)ctx->c_superblock + (intptr_t)inotbl_off;
+  if (!kafs_ctx_runtime_mount_supported(ctx))
+  {
+    fprintf(stderr, "unsupported format version: %u (runtime admission failed).\n", fmt_ver);
+    exit(2);
+  }
+  if (kafs_ctx_validate_runtime_mount_state(ctx) != 0)
+  {
+    fprintf(stderr, "invalid v5 tail metadata region; refusing runtime mount.\n");
+    exit(2);
+  }
+
+  ctx->c_diag_log_fd = -1;
+  ctx->c_ino_epoch = calloc((size_t)inocnt, sizeof(uint32_t));
+  if (ctx->c_ino_epoch)
+  {
+    for (kafs_inocnt_t i = 0; i < inocnt; ++i)
+      ctx->c_ino_epoch[i] = 1u;
+  }
+  if (kafs_extra_diag_enabled())
+  {
+    ctx->c_diag_create_seq = calloc((size_t)inocnt, sizeof(uint64_t));
+    ctx->c_diag_create_mode = calloc((size_t)inocnt, sizeof(uint16_t));
+    ctx->c_diag_create_first_write_seen = calloc((size_t)inocnt, sizeof(uint8_t));
+    ctx->c_diag_create_paths = calloc((size_t)inocnt, KAFS_DIAG_CREATE_PATH_MAX);
+    if (!ctx->c_diag_create_seq || !ctx->c_diag_create_mode ||
+        !ctx->c_diag_create_first_write_seen || !ctx->c_diag_create_paths)
+    {
+      free(ctx->c_diag_create_seq);
+      free(ctx->c_diag_create_mode);
+      free(ctx->c_diag_create_first_write_seen);
+      free(ctx->c_diag_create_paths);
+      ctx->c_diag_create_seq = NULL;
+      ctx->c_diag_create_mode = NULL;
+      ctx->c_diag_create_first_write_seen = NULL;
+      ctx->c_diag_create_paths = NULL;
+    }
+    ctx->c_diag_create_seq_next = 0;
+  }
+  kafs_diag_log_open(ctx, image_path);
+  ctx->c_alloc_v3_summary_dirty = 1;
+
+  (void)kafs_hrl_open(ctx);
+  (void)kafs_journal_init(ctx, image_path);
+  ctx->c_meta_delta_enabled = (uint32_t)kafs_journal_is_enabled(ctx);
+  if (ctx->c_meta_delta_enabled)
+  {
+    size_t bits = sizeof(kafs_blkmask_t) * 8u;
+    size_t words = ((size_t)r_blkcnt + bits - 1u) / bits;
+    ctx->c_meta_bitmap_words = calloc(words, sizeof(kafs_blkmask_t));
+    ctx->c_meta_bitmap_dirty = calloc(words, sizeof(uint8_t));
+    if (!ctx->c_meta_bitmap_words || !ctx->c_meta_bitmap_dirty)
+    {
+      free(ctx->c_meta_bitmap_words);
+      free(ctx->c_meta_bitmap_dirty);
+      ctx->c_meta_bitmap_words = NULL;
+      ctx->c_meta_bitmap_dirty = NULL;
+      ctx->c_meta_bitmap_wordcnt = 0;
+      ctx->c_meta_bitmap_dirty_count = 0;
+      ctx->c_meta_bitmap_words_enabled = 0;
+      ctx->c_meta_delta_enabled = 0;
+    }
+    else
+    {
+      memcpy(ctx->c_meta_bitmap_words, ctx->c_blkmasktbl, words * sizeof(kafs_blkmask_t));
+      ctx->c_meta_bitmap_wordcnt = words;
+      ctx->c_meta_bitmap_dirty_count = 0;
+      ctx->c_meta_bitmap_words_enabled = 1u;
+    }
+  }
+
+  (void)kafs_journal_replay(ctx, NULL, NULL);
+  (void)kafs_pendinglog_init_or_load(ctx);
+  if (ctx->c_pendinglog_enabled)
+  {
+    (void)kafs_pendinglog_replay_mount(ctx);
+    kafs_journal_note(ctx, "PENDINGLOG", "loaded entries=%u cap=%u", kafs_pendinglog_count(ctx),
+                      ctx->c_pendinglog_capacity);
+  }
+
+  struct flock lk = {0};
+  lk.l_type = F_WRLCK;
+  lk.l_whence = SEEK_SET;
+  lk.l_start = 0;
+  lk.l_len = 0;
+  if (fcntl(ctx->c_fd, F_SETLK, &lk) == -1)
+  {
+    perror("fcntl(F_SETLK)");
+    fprintf(stderr, "image '%s' is busy (already mounted?).\n", image_path);
+    exit(2);
+  }
+}
+
 static int kafs_main_cleanup(kafs_context_t *ctx, char *hotplug_uds_path, int rc)
 {
   kafs_bg_dedup_worker_stop(ctx);
@@ -11410,223 +11625,7 @@ int main(int argc, char **argv)
   if (kafs_main_start_hotplug(&ctx, image_path, hotplug_uds, hotplug_back_bin, hotplug_uds_path,
                               sizeof(hotplug_uds_path)) != 0)
     return 2;
-
-  ctx.c_fd = open(image_path, O_RDWR, 0666);
-  if (ctx.c_fd < 0)
-  {
-    perror("open image");
-    fprintf(stderr, "image not found. run mkfs.kafs first.\n");
-    exit(2);
-  }
-  ctx.c_blo_search = 0;
-  ctx.c_ino_search = 0;
-
-  // まずスーパーブロックだけ読み出してレイアウトを決定
-  kafs_ssuperblock_t sbdisk;
-  ssize_t r = pread(ctx.c_fd, &sbdisk, sizeof(sbdisk), 0);
-  if (r != (ssize_t)sizeof(sbdisk))
-  {
-    perror("pread superblock");
-    exit(2);
-  }
-  if (kafs_sb_magic_get(&sbdisk) != KAFS_MAGIC)
-  {
-    fprintf(stderr, "invalid magic. run mkfs.kafs to format.\n");
-    exit(2);
-  }
-  uint32_t fmt_ver = kafs_sb_format_version_get(&sbdisk);
-  if (fmt_ver != KAFS_FORMAT_VERSION)
-  {
-    if (fmt_ver == KAFS_FORMAT_VERSION_V2 || fmt_ver == KAFS_FORMAT_VERSION_V3)
-    {
-      if (auto_migrate)
-      {
-        int mrc = kafs_core_migrate_image(image_path, migrate_yes ? 1 : 0);
-        if (mrc == 0)
-        {
-          fprintf(stderr, "migration completed. please restart mount.\n");
-          exit(0);
-        }
-        if (mrc == 1)
-        {
-          fprintf(stderr, "image already v%u; continue normal mount without --migrate.\n",
-                  (unsigned)KAFS_FORMAT_VERSION);
-          exit(0);
-        }
-        if (mrc == -EPROTONOSUPPORT)
-          fprintf(stderr, "offline migration supports only v2/v3 images.\n");
-        else if (mrc == -ECANCELED)
-          fprintf(stderr, "migration canceled by user.\n");
-        else
-          fprintf(stderr, "migration failed rc=%d.\n", mrc);
-        exit(2);
-      }
-      fprintf(stderr,
-              "unsupported format version: v%u.\n"
-              "Run kafsctl migrate <image> or kafs --migrate before mounting.\n",
-              (unsigned)fmt_ver);
-      exit(2);
-    }
-    else if (fmt_ver != KAFS_FORMAT_VERSION_V5)
-    {
-      fprintf(stderr, "unsupported format version: %u (expected %u).\n", fmt_ver,
-              (unsigned)KAFS_FORMAT_VERSION);
-      exit(2);
-    }
-  }
-  // 読み出し値からレイアウト計算
-  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(&sbdisk);
-  kafs_blksize_t blksize = 1u << log_blksize;
-  kafs_blksize_t blksizemask = blksize - 1u;
-  kafs_inocnt_t inocnt = kafs_inocnt_stoh(sbdisk.s_inocnt);
-  kafs_blkcnt_t r_blkcnt = kafs_blkcnt_stoh(sbdisk.s_r_blkcnt);
-
-  off_t mapsize = 0;
-  mapsize += sizeof(kafs_ssuperblock_t);
-  mapsize = (mapsize + blksizemask) & ~blksizemask;
-  void *blkmask_off = (void *)mapsize;
-  assert(sizeof(kafs_blkmask_t) <= 8);
-  mapsize += (r_blkcnt + 7) >> 3;
-  mapsize = (mapsize + 7) & ~7;
-  mapsize = (mapsize + blksizemask) & ~blksizemask;
-  void *inotbl_off = (void *)mapsize;
-  mapsize += (off_t)kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(&sbdisk), inocnt);
-  mapsize = (mapsize + blksizemask) & ~blksizemask;
-  // Full-image mapping size: use r_blkcnt * blksize (and ensure it also covers HRL/journal)
-  off_t imgsize = (off_t)r_blkcnt << log_blksize;
-  {
-    uint64_t idx_off = kafs_sb_hrl_index_offset_get(&sbdisk);
-    uint64_t idx_size = kafs_sb_hrl_index_size_get(&sbdisk);
-    uint64_t ent_off = kafs_sb_hrl_entry_offset_get(&sbdisk);
-    uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(&sbdisk);
-    uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
-    uint64_t j_off = kafs_sb_journal_offset_get(&sbdisk);
-    uint64_t j_size = kafs_sb_journal_size_get(&sbdisk);
-    uint64_t p_off = kafs_sb_pendinglog_offset_get(&sbdisk);
-    uint64_t p_size = kafs_sb_pendinglog_size_get(&sbdisk);
-    uint64_t end1 = (idx_off && idx_size) ? (idx_off + idx_size) : 0;
-    uint64_t end2 = (ent_off && ent_size) ? (ent_off + ent_size) : 0;
-    uint64_t end3 = (j_off && j_size) ? (j_off + j_size) : 0;
-    uint64_t end4 = (p_off && p_size) ? (p_off + p_size) : 0;
-    uint64_t max_end = end1;
-    if (end2 > max_end)
-      max_end = end2;
-    if (end3 > max_end)
-      max_end = end3;
-    if (end4 > max_end)
-      max_end = end4;
-    if ((off_t)max_end > imgsize)
-      imgsize = (off_t)max_end;
-    imgsize = (imgsize + blksizemask) & ~blksizemask;
-  }
-
-  ctx.c_img_base = mmap(NULL, imgsize, PROT_READ | PROT_WRITE, MAP_SHARED, ctx.c_fd, 0);
-  if (ctx.c_img_base == MAP_FAILED)
-  {
-    perror("mmap");
-    exit(2);
-  }
-  ctx.c_img_size = (size_t)imgsize;
-
-  // Keep existing pointers for metadata access
-  ctx.c_superblock = (kafs_ssuperblock_t *)ctx.c_img_base;
-  ctx.c_mapsize = (size_t)mapsize; // metadata region length (subset of img)
-  ctx.c_blkmasktbl = (void *)ctx.c_superblock + (intptr_t)blkmask_off;
-  ctx.c_inotbl = (void *)ctx.c_superblock + (intptr_t)inotbl_off;
-  if (!kafs_ctx_runtime_mount_supported(&ctx))
-  {
-    fprintf(stderr, "unsupported format version: %u (runtime admission failed).\n", fmt_ver);
-    exit(2);
-  }
-  if (kafs_ctx_validate_runtime_mount_state(&ctx) != 0)
-  {
-    fprintf(stderr, "invalid v5 tail metadata region; refusing runtime mount.\n");
-    exit(2);
-  }
-  ctx.c_diag_log_fd = -1;
-  ctx.c_ino_epoch = calloc((size_t)inocnt, sizeof(uint32_t));
-  if (ctx.c_ino_epoch)
-  {
-    for (kafs_inocnt_t i = 0; i < inocnt; ++i)
-      ctx.c_ino_epoch[i] = 1u;
-  }
-  if (kafs_extra_diag_enabled())
-  {
-    ctx.c_diag_create_seq = calloc((size_t)inocnt, sizeof(uint64_t));
-    ctx.c_diag_create_mode = calloc((size_t)inocnt, sizeof(uint16_t));
-    ctx.c_diag_create_first_write_seen = calloc((size_t)inocnt, sizeof(uint8_t));
-    ctx.c_diag_create_paths = calloc((size_t)inocnt, KAFS_DIAG_CREATE_PATH_MAX);
-    if (!ctx.c_diag_create_seq || !ctx.c_diag_create_mode || !ctx.c_diag_create_first_write_seen ||
-        !ctx.c_diag_create_paths)
-    {
-      free(ctx.c_diag_create_seq);
-      free(ctx.c_diag_create_mode);
-      free(ctx.c_diag_create_first_write_seen);
-      free(ctx.c_diag_create_paths);
-      ctx.c_diag_create_seq = NULL;
-      ctx.c_diag_create_mode = NULL;
-      ctx.c_diag_create_first_write_seen = NULL;
-      ctx.c_diag_create_paths = NULL;
-    }
-    ctx.c_diag_create_seq_next = 0;
-  }
-  kafs_diag_log_open(&ctx, image_path);
-  ctx.c_alloc_v3_summary_dirty = 1;
-
-  // HRL オープン
-  (void)kafs_hrl_open(&ctx);
-
-  // Journal 初期化（KAFS_JOURNAL=0/1/パス）
-  (void)kafs_journal_init(&ctx, image_path);
-  ctx.c_meta_delta_enabled = (uint32_t)kafs_journal_is_enabled(&ctx);
-  if (ctx.c_meta_delta_enabled)
-  {
-    size_t bits = sizeof(kafs_blkmask_t) * 8u;
-    size_t words = ((size_t)r_blkcnt + bits - 1u) / bits;
-    ctx.c_meta_bitmap_words = calloc(words, sizeof(kafs_blkmask_t));
-    ctx.c_meta_bitmap_dirty = calloc(words, sizeof(uint8_t));
-    if (!ctx.c_meta_bitmap_words || !ctx.c_meta_bitmap_dirty)
-    {
-      free(ctx.c_meta_bitmap_words);
-      free(ctx.c_meta_bitmap_dirty);
-      ctx.c_meta_bitmap_words = NULL;
-      ctx.c_meta_bitmap_dirty = NULL;
-      ctx.c_meta_bitmap_wordcnt = 0;
-      ctx.c_meta_bitmap_dirty_count = 0;
-      ctx.c_meta_bitmap_words_enabled = 0;
-      ctx.c_meta_delta_enabled = 0;
-    }
-    else
-    {
-      memcpy(ctx.c_meta_bitmap_words, ctx.c_blkmasktbl, words * sizeof(kafs_blkmask_t));
-      ctx.c_meta_bitmap_wordcnt = words;
-      ctx.c_meta_bitmap_dirty_count = 0;
-      ctx.c_meta_bitmap_words_enabled = 1u;
-    }
-  }
-
-  // 起動時リプレイ（in-image のみ対象）。致命的ではなくベストエフォート。
-  (void)kafs_journal_replay(&ctx, NULL, NULL);
-  (void)kafs_pendinglog_init_or_load(&ctx);
-  if (ctx.c_pendinglog_enabled)
-  {
-    (void)kafs_pendinglog_replay_mount(&ctx);
-    kafs_journal_note(&ctx, "PENDINGLOG", "loaded entries=%u cap=%u", kafs_pendinglog_count(&ctx),
-                      ctx.c_pendinglog_capacity);
-  }
-
-  // 画像ファイルに排他ロック（複数プロセスによる同時RW起動を防止）
-  struct flock lk = {0};
-  lk.l_type = F_WRLCK;
-  lk.l_whence = SEEK_SET;
-  lk.l_start = 0;
-  lk.l_len = 0; // whole file
-  if (fcntl(ctx.c_fd, F_SETLK, &lk) == -1)
-  {
-    perror("fcntl(F_SETLK)");
-    fprintf(stderr, "image '%s' is busy (already mounted?).\n", image_path);
-    exit(2);
-  }
+  kafs_main_open_runtime_context(&ctx, image_path, auto_migrate, migrate_yes);
 
   char *argv_fuse[argc_clean + 10];
   char mt_opt_buf[64];
