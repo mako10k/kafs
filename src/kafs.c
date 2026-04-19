@@ -7708,6 +7708,167 @@ static void kafs_ctl_fill_status(const kafs_context_t *ctx, kafs_rpc_hotplug_sta
   out->pending_ttl_over_hard = ctx->c_pending_ttl_over_hard;
 }
 
+static void kafs_ctl_write_status_response(const kafs_context_t *ctx, unsigned char *resp_payload,
+                                           uint32_t *resp_len)
+{
+  kafs_rpc_hotplug_status_t st;
+  kafs_ctl_fill_status(ctx, &st);
+  memcpy(resp_payload, &st, sizeof(st));
+  *resp_len = (uint32_t)sizeof(st);
+}
+
+static int kafs_ctl_handle_set_timeout(kafs_context_t *ctx, uint32_t payload_len,
+                                       const unsigned char *payload)
+{
+  if (payload_len != sizeof(kafs_rpc_set_timeout_t))
+    return -EINVAL;
+
+  const kafs_rpc_set_timeout_t *req = (const kafs_rpc_set_timeout_t *)payload;
+  if (req->timeout_ms == 0)
+    return -EINVAL;
+
+  ctx->c_hotplug_wait_timeout_ms = req->timeout_ms;
+  return 0;
+}
+
+static void kafs_ctl_write_env_list_response(kafs_context_t *ctx, unsigned char *resp_payload,
+                                             uint32_t *resp_len)
+{
+  kafs_rpc_env_list_t env;
+  memset(&env, 0, sizeof(env));
+  kafs_hotplug_env_lock(ctx);
+  env.count = ctx->c_hotplug_env_count;
+  for (uint32_t i = 0; i < env.count; ++i)
+    env.entries[i] = ctx->c_hotplug_env[i];
+  kafs_hotplug_env_unlock(ctx);
+  memcpy(resp_payload, &env, sizeof(env));
+  *resp_len = (uint32_t)sizeof(env);
+}
+
+static int kafs_ctl_handle_env_update(kafs_context_t *ctx, uint32_t payload_len,
+                                      const unsigned char *payload, int unset)
+{
+  if (payload_len != sizeof(kafs_rpc_env_update_t))
+    return -EINVAL;
+
+  const kafs_rpc_env_update_t *req = (const kafs_rpc_env_update_t *)payload;
+  if (unset)
+    return kafs_hotplug_env_unset(ctx, req->key);
+  return kafs_hotplug_env_set(ctx, req->key, req->value);
+}
+
+static void kafs_ctl_apply_pending_worker_priority(kafs_context_t *ctx, uint32_t mode,
+                                                   int32_t nice_value, uint32_t flags)
+{
+  ctx->c_pending_worker_prio_mode = mode;
+  if ((flags & KAFS_RPC_SET_DEDUP_PRIO_F_HAS_NICE) != 0)
+    ctx->c_pending_worker_nice = nice_value;
+  ctx->c_pending_worker_prio_base_mode = mode;
+  if ((flags & KAFS_RPC_SET_DEDUP_PRIO_F_HAS_NICE) != 0)
+    ctx->c_pending_worker_nice_base = nice_value;
+
+  if (ctx->c_pending_worker_auto_boosted)
+  {
+    ctx->c_pending_worker_prio_mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
+    ctx->c_pending_worker_nice = 0;
+  }
+  else
+  {
+    ctx->c_pending_worker_prio_mode = ctx->c_pending_worker_prio_base_mode;
+    ctx->c_pending_worker_nice = ctx->c_pending_worker_nice_base;
+  }
+  ctx->c_pending_worker_prio_dirty = 1;
+  kafs_pending_worker_notify_all(ctx);
+}
+
+static void kafs_ctl_apply_bg_dedup_worker_priority(kafs_context_t *ctx, uint32_t mode,
+                                                    int32_t nice_value, uint32_t flags)
+{
+  ctx->c_bg_dedup_worker_prio_base_mode = mode;
+  if ((flags & KAFS_RPC_SET_DEDUP_PRIO_F_HAS_NICE) != 0)
+    ctx->c_bg_dedup_worker_nice_base = nice_value;
+
+  if (ctx->c_bg_dedup_worker_auto_boosted)
+  {
+    ctx->c_bg_dedup_worker_prio_mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
+    ctx->c_bg_dedup_worker_nice = 0;
+  }
+  else
+  {
+    ctx->c_bg_dedup_worker_prio_mode = ctx->c_bg_dedup_worker_prio_base_mode;
+    ctx->c_bg_dedup_worker_nice = ctx->c_bg_dedup_worker_nice_base;
+  }
+  ctx->c_bg_dedup_worker_prio_dirty = 1;
+  if (ctx->c_bg_dedup_worker_lock_init)
+  {
+    pthread_mutex_lock(&ctx->c_bg_dedup_worker_lock);
+    pthread_cond_broadcast(&ctx->c_bg_dedup_worker_cond);
+    pthread_mutex_unlock(&ctx->c_bg_dedup_worker_lock);
+  }
+}
+
+static int kafs_ctl_handle_set_dedup_prio(kafs_context_t *ctx, uint32_t payload_len,
+                                          const unsigned char *payload)
+{
+  if (payload_len != sizeof(kafs_rpc_set_dedup_prio_t))
+    return -EINVAL;
+
+  const kafs_rpc_set_dedup_prio_t *req = (const kafs_rpc_set_dedup_prio_t *)payload;
+  if (req->mode != KAFS_PENDING_WORKER_PRIO_NORMAL && req->mode != KAFS_PENDING_WORKER_PRIO_IDLE)
+    return -EINVAL;
+  if ((req->flags & KAFS_RPC_SET_DEDUP_PRIO_F_HAS_NICE) != 0 &&
+      (req->nice_value < 0 || req->nice_value > 19))
+    return -ERANGE;
+
+  kafs_ctl_apply_pending_worker_priority(ctx, req->mode, req->nice_value, req->flags);
+  kafs_ctl_apply_bg_dedup_worker_priority(ctx, req->mode, req->nice_value, req->flags);
+  return 0;
+}
+
+static int kafs_ctl_handle_set_runtime(kafs_context_t *ctx, uint32_t payload_len,
+                                       const unsigned char *payload)
+{
+  if (payload_len != sizeof(kafs_rpc_set_runtime_t))
+    return -EINVAL;
+
+  const kafs_rpc_set_runtime_t *req = (const kafs_rpc_set_runtime_t *)payload;
+  uint32_t next_policy = ctx->c_fsync_policy;
+  uint32_t next_soft = ctx->c_pending_ttl_soft_ms;
+  uint32_t next_hard = ctx->c_pending_ttl_hard_ms;
+
+  if ((req->flags & KAFS_RPC_SET_RUNTIME_F_HAS_FSYNC_POLICY) != 0)
+  {
+    if (req->fsync_policy != KAFS_FSYNC_POLICY_FULL &&
+        req->fsync_policy != KAFS_FSYNC_POLICY_JOURNAL_ONLY &&
+        req->fsync_policy != KAFS_FSYNC_POLICY_ADAPTIVE)
+      return -EINVAL;
+    next_policy = req->fsync_policy;
+  }
+
+  if ((req->flags & KAFS_RPC_SET_RUNTIME_F_HAS_PENDING_TTL_SOFT_MS) != 0)
+    next_soft = req->pending_ttl_soft_ms;
+
+  if ((req->flags & KAFS_RPC_SET_RUNTIME_F_HAS_PENDING_TTL_HARD_MS) != 0)
+    next_hard = req->pending_ttl_hard_ms;
+
+  if (next_soft > 0 && next_hard > 0 && next_hard < next_soft)
+    return -ERANGE;
+
+  ctx->c_fsync_policy = next_policy;
+  ctx->c_pending_ttl_soft_ms = next_soft;
+  ctx->c_pending_ttl_hard_ms = next_hard;
+
+  if (ctx->c_pending_worker_lock_init)
+  {
+    pthread_mutex_lock(&ctx->c_pending_worker_lock);
+    kafs_pending_worker_adjust_priority_locked(ctx);
+    if (ctx->c_pending_worker_prio_dirty)
+      pthread_cond_broadcast(&ctx->c_pending_worker_cond);
+    pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+  }
+  return 0;
+}
+
 static int kafs_ctl_handle_request(kafs_context_t *ctx, kafs_ctl_session_t *sess,
                                    const unsigned char *buf, size_t size)
 {
@@ -7734,168 +7895,28 @@ static int kafs_ctl_handle_request(kafs_context_t *ctx, kafs_ctl_session_t *sess
   {
   case KAFS_RPC_OP_CTL_STATUS:
   case KAFS_RPC_OP_CTL_COMPAT:
-  {
-    kafs_rpc_hotplug_status_t st;
-    kafs_ctl_fill_status(ctx, &st);
-    memcpy(resp_payload, &st, sizeof(st));
-    resp_len = (uint32_t)sizeof(st);
+    kafs_ctl_write_status_response(ctx, resp_payload, &resp_len);
     break;
-  }
   case KAFS_RPC_OP_CTL_RESTART:
     result = kafs_hotplug_restart_back(ctx);
     break;
   case KAFS_RPC_OP_CTL_SET_TIMEOUT:
-    if (hdr.payload_len != sizeof(kafs_rpc_set_timeout_t))
-      result = -EINVAL;
-    else
-    {
-      const kafs_rpc_set_timeout_t *req = (const kafs_rpc_set_timeout_t *)payload;
-      if (req->timeout_ms == 0)
-        result = -EINVAL;
-      else
-        ctx->c_hotplug_wait_timeout_ms = req->timeout_ms;
-    }
+    result = kafs_ctl_handle_set_timeout(ctx, hdr.payload_len, payload);
     break;
   case KAFS_RPC_OP_CTL_ENV_LIST:
-  {
-    kafs_rpc_env_list_t env;
-    memset(&env, 0, sizeof(env));
-    kafs_hotplug_env_lock(ctx);
-    env.count = ctx->c_hotplug_env_count;
-    for (uint32_t i = 0; i < env.count; ++i)
-      env.entries[i] = ctx->c_hotplug_env[i];
-    kafs_hotplug_env_unlock(ctx);
-    memcpy(resp_payload, &env, sizeof(env));
-    resp_len = (uint32_t)sizeof(env);
+    kafs_ctl_write_env_list_response(ctx, resp_payload, &resp_len);
     break;
-  }
   case KAFS_RPC_OP_CTL_ENV_SET:
-    if (hdr.payload_len != sizeof(kafs_rpc_env_update_t))
-      result = -EINVAL;
-    else
-    {
-      const kafs_rpc_env_update_t *req = (const kafs_rpc_env_update_t *)payload;
-      result = kafs_hotplug_env_set(ctx, req->key, req->value);
-    }
+    result = kafs_ctl_handle_env_update(ctx, hdr.payload_len, payload, 0);
     break;
   case KAFS_RPC_OP_CTL_ENV_UNSET:
-    if (hdr.payload_len != sizeof(kafs_rpc_env_update_t))
-      result = -EINVAL;
-    else
-    {
-      const kafs_rpc_env_update_t *req = (const kafs_rpc_env_update_t *)payload;
-      result = kafs_hotplug_env_unset(ctx, req->key);
-    }
+    result = kafs_ctl_handle_env_update(ctx, hdr.payload_len, payload, 1);
     break;
   case KAFS_RPC_OP_CTL_SET_DEDUP_PRIO:
-    if (hdr.payload_len != sizeof(kafs_rpc_set_dedup_prio_t))
-      result = -EINVAL;
-    else
-    {
-      const kafs_rpc_set_dedup_prio_t *req = (const kafs_rpc_set_dedup_prio_t *)payload;
-      if (req->mode != KAFS_PENDING_WORKER_PRIO_NORMAL &&
-          req->mode != KAFS_PENDING_WORKER_PRIO_IDLE)
-      {
-        result = -EINVAL;
-      }
-      else if ((req->flags & KAFS_RPC_SET_DEDUP_PRIO_F_HAS_NICE) != 0 &&
-               (req->nice_value < 0 || req->nice_value > 19))
-      {
-        result = -ERANGE;
-      }
-      else
-      {
-        ctx->c_pending_worker_prio_mode = req->mode;
-        if ((req->flags & KAFS_RPC_SET_DEDUP_PRIO_F_HAS_NICE) != 0)
-          ctx->c_pending_worker_nice = req->nice_value;
-        ctx->c_pending_worker_prio_base_mode = req->mode;
-        if ((req->flags & KAFS_RPC_SET_DEDUP_PRIO_F_HAS_NICE) != 0)
-          ctx->c_pending_worker_nice_base = req->nice_value;
-
-        if (ctx->c_pending_worker_auto_boosted)
-        {
-          ctx->c_pending_worker_prio_mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
-          ctx->c_pending_worker_nice = 0;
-        }
-        else
-        {
-          ctx->c_pending_worker_prio_mode = ctx->c_pending_worker_prio_base_mode;
-          ctx->c_pending_worker_nice = ctx->c_pending_worker_nice_base;
-        }
-        ctx->c_pending_worker_prio_dirty = 1;
-        kafs_pending_worker_notify_all(ctx);
-
-        ctx->c_bg_dedup_worker_prio_base_mode = req->mode;
-        if ((req->flags & KAFS_RPC_SET_DEDUP_PRIO_F_HAS_NICE) != 0)
-          ctx->c_bg_dedup_worker_nice_base = req->nice_value;
-
-        if (ctx->c_bg_dedup_worker_auto_boosted)
-        {
-          ctx->c_bg_dedup_worker_prio_mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
-          ctx->c_bg_dedup_worker_nice = 0;
-        }
-        else
-        {
-          ctx->c_bg_dedup_worker_prio_mode = ctx->c_bg_dedup_worker_prio_base_mode;
-          ctx->c_bg_dedup_worker_nice = ctx->c_bg_dedup_worker_nice_base;
-        }
-        ctx->c_bg_dedup_worker_prio_dirty = 1;
-        if (ctx->c_bg_dedup_worker_lock_init)
-        {
-          pthread_mutex_lock(&ctx->c_bg_dedup_worker_lock);
-          pthread_cond_broadcast(&ctx->c_bg_dedup_worker_cond);
-          pthread_mutex_unlock(&ctx->c_bg_dedup_worker_lock);
-        }
-      }
-    }
+    result = kafs_ctl_handle_set_dedup_prio(ctx, hdr.payload_len, payload);
     break;
   case KAFS_RPC_OP_CTL_SET_RUNTIME:
-    if (hdr.payload_len != sizeof(kafs_rpc_set_runtime_t))
-      result = -EINVAL;
-    else
-    {
-      const kafs_rpc_set_runtime_t *req = (const kafs_rpc_set_runtime_t *)payload;
-      uint32_t next_policy = ctx->c_fsync_policy;
-      uint32_t next_soft = ctx->c_pending_ttl_soft_ms;
-      uint32_t next_hard = ctx->c_pending_ttl_hard_ms;
-
-      if ((req->flags & KAFS_RPC_SET_RUNTIME_F_HAS_FSYNC_POLICY) != 0)
-      {
-        if (req->fsync_policy != KAFS_FSYNC_POLICY_FULL &&
-            req->fsync_policy != KAFS_FSYNC_POLICY_JOURNAL_ONLY &&
-            req->fsync_policy != KAFS_FSYNC_POLICY_ADAPTIVE)
-        {
-          result = -EINVAL;
-          break;
-        }
-        next_policy = req->fsync_policy;
-      }
-
-      if ((req->flags & KAFS_RPC_SET_RUNTIME_F_HAS_PENDING_TTL_SOFT_MS) != 0)
-        next_soft = req->pending_ttl_soft_ms;
-
-      if ((req->flags & KAFS_RPC_SET_RUNTIME_F_HAS_PENDING_TTL_HARD_MS) != 0)
-        next_hard = req->pending_ttl_hard_ms;
-
-      if (next_soft > 0 && next_hard > 0 && next_hard < next_soft)
-      {
-        result = -ERANGE;
-        break;
-      }
-
-      ctx->c_fsync_policy = next_policy;
-      ctx->c_pending_ttl_soft_ms = next_soft;
-      ctx->c_pending_ttl_hard_ms = next_hard;
-
-      if (ctx->c_pending_worker_lock_init)
-      {
-        pthread_mutex_lock(&ctx->c_pending_worker_lock);
-        kafs_pending_worker_adjust_priority_locked(ctx);
-        if (ctx->c_pending_worker_prio_dirty)
-          pthread_cond_broadcast(&ctx->c_pending_worker_cond);
-        pthread_mutex_unlock(&ctx->c_pending_worker_lock);
-      }
-    }
+    result = kafs_ctl_handle_set_runtime(ctx, hdr.payload_len, payload);
     break;
   default:
     result = -ENOSYS;
