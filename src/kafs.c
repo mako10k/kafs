@@ -216,25 +216,21 @@ static void kafs_diag_format_sample(const void *buf, size_t len, char *hex_out, 
   if (!buf || len == 0)
     return;
 
+  size_t sample_len = len < 16 ? len : 16;
   const unsigned char *bytes = (const unsigned char *)buf;
-  size_t sample_len = len;
-  if (sample_len > 16u)
-    sample_len = 16u;
-
-  size_t hex_off = 0;
-  size_t ascii_off = 0;
+  size_t hex_used = 0;
+  size_t ascii_used = 0;
   for (size_t i = 0; i < sample_len; ++i)
   {
-    if (hex_off + 4 >= hex_cap || ascii_off + 2 >= ascii_cap)
+    int n = snprintf(hex_out + hex_used, hex_cap - hex_used, "%s%02x", i == 0 ? "" : " ", bytes[i]);
+    if (n < 0 || (size_t)n >= hex_cap - hex_used)
       break;
-    int hex_written = snprintf(hex_out + hex_off, hex_cap - hex_off, "%s%02x", (i == 0) ? "" : " ",
-                               (unsigned)bytes[i]);
-    if (hex_written < 0)
+    hex_used += (size_t)n;
+    ascii_out[ascii_used++] = isprint(bytes[i]) ? (char)bytes[i] : '.';
+    if (ascii_used + 1 >= ascii_cap)
       break;
-    hex_off += (size_t)hex_written;
-    ascii_out[ascii_off++] = (bytes[i] >= 32 && bytes[i] <= 126) ? (char)bytes[i] : '.';
   }
-  ascii_out[ascii_off] = '\0';
+  ascii_out[ascii_used] = '\0';
 }
 
 static void kafs_diag_log_dir_iblk_write(const char *phase, struct kafs_context *ctx,
@@ -246,9 +242,6 @@ static void kafs_diag_log_dir_iblk_write(const char *phase, struct kafs_context 
     return;
 
   kafs_mode_t mode = kafs_ino_mode_get(inoent);
-  if (!S_ISDIR(mode))
-    return;
-
   char hex_sample[3 * 16 + 1];
   char ascii_sample[16 + 1];
   kafs_diag_format_sample(buf, len, hex_sample, sizeof(hex_sample), ascii_sample,
@@ -3691,6 +3684,53 @@ static int kafs_ino_iblk_write_pending(struct kafs_context *ctx, kafs_sinode_t *
   return 0;
 }
 
+static int kafs_iblk_write_hrl_acquire_candidate(struct kafs_context *ctx, const void *buf,
+                                                 int *is_new, kafs_blkcnt_t *candidate_blo,
+                                                 int *candidate_kind)
+{
+  *is_new = 0;
+  *candidate_blo = KAFS_BLO_NONE;
+  *candidate_kind = 0;
+
+  kafs_hrid_t hrid = 0;
+  ctx->c_stat_hrl_put_calls++;
+  uint64_t t_hrl0 = kafs_now_ns();
+  int rc = kafs_hrl_put(ctx, buf, &hrid, is_new, candidate_blo);
+  uint64_t t_hrl1 = kafs_now_ns();
+  __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_hrl_put, t_hrl1 - t_hrl0, __ATOMIC_RELAXED);
+  if (rc == 0)
+  {
+    *candidate_kind = 1;
+    return 0;
+  }
+  if (rc == -ENOSPC)
+  {
+    int rescue_is_new = 0;
+    kafs_blkcnt_t rescue_blo = KAFS_BLO_NONE;
+    int rrc = kafs_hrl_try_enospc_rescue(ctx, buf, &rescue_blo, &rescue_is_new);
+    if (rrc == 0)
+    {
+      *is_new = rescue_is_new;
+      *candidate_blo = rescue_blo;
+      *candidate_kind = 2;
+      return 0;
+    }
+  }
+
+  return rc;
+}
+
+static void kafs_iblk_write_release_candidate(struct kafs_context *ctx, uint32_t ino_idx,
+                                              kafs_blkcnt_t candidate_blo)
+{
+  if (candidate_blo == KAFS_BLO_NONE)
+    return;
+
+  kafs_inode_unlock(ctx, ino_idx);
+  (void)kafs_inode_release_hrl_ref(ctx, candidate_blo);
+  kafs_inode_lock(ctx, ino_idx);
+}
+
 static int kafs_ino_iblk_write_hrl_retry(struct kafs_context *ctx, kafs_sinode_t *inoent,
                                          kafs_iblkcnt_t iblo, const void *buf)
 {
@@ -3704,31 +3744,11 @@ static int kafs_ino_iblk_write_hrl_retry(struct kafs_context *ctx, kafs_sinode_t
 
     kafs_inode_unlock(ctx, ino_idx);
 
-    kafs_hrid_t hrid = 0;
-    int is_new = 0;
-    kafs_blkcnt_t candidate_blo = KAFS_BLO_NONE;
-    int candidate_kind = 0;
-
-    ctx->c_stat_hrl_put_calls++;
-    uint64_t t_hrl0 = kafs_now_ns();
-    rc = kafs_hrl_put(ctx, buf, &hrid, &is_new, &candidate_blo);
-    uint64_t t_hrl1 = kafs_now_ns();
-    __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_hrl_put, t_hrl1 - t_hrl0, __ATOMIC_RELAXED);
-    if (rc == 0)
-      candidate_kind = 1;
-    else if (rc == -ENOSPC)
-    {
-      int rescue_is_new = 0;
-      kafs_blkcnt_t rescue_blo = KAFS_BLO_NONE;
-      int rrc = kafs_hrl_try_enospc_rescue(ctx, buf, &rescue_blo, &rescue_is_new);
-      if (rrc == 0)
-      {
-        rc = 0;
-        is_new = rescue_is_new;
-        candidate_blo = rescue_blo;
-        candidate_kind = 2;
-      }
-    }
+    int is_new;
+    kafs_blkcnt_t candidate_blo;
+    int candidate_kind;
+    int hrl_rc =
+        kafs_iblk_write_hrl_acquire_candidate(ctx, buf, &is_new, &candidate_blo, &candidate_kind);
 
     kafs_inode_lock(ctx, ino_idx);
 
@@ -3738,16 +3758,12 @@ static int kafs_ino_iblk_write_hrl_retry(struct kafs_context *ctx, kafs_sinode_t
       return rc;
     if (current_old_blo != expected_old_blo)
     {
-      if (rc == 0 && candidate_blo != KAFS_BLO_NONE)
-      {
-        kafs_inode_unlock(ctx, ino_idx);
-        (void)kafs_inode_release_hrl_ref(ctx, candidate_blo);
-        kafs_inode_lock(ctx, ino_idx);
-      }
+      if (hrl_rc == 0)
+        kafs_iblk_write_release_candidate(ctx, ino_idx, candidate_blo);
       continue;
     }
 
-    if (rc == 0)
+    if (hrl_rc == 0)
     {
       if (is_new)
         ctx->c_stat_hrl_put_misses++;
@@ -3771,6 +3787,7 @@ static int kafs_ino_iblk_write_hrl_retry(struct kafs_context *ctx, kafs_sinode_t
       return 0;
     }
 
+    rc = hrl_rc;
     break;
   }
 
