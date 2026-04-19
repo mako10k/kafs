@@ -6817,9 +6817,7 @@ static ssize_t kafs_hotplug_call_read(struct fuse_context *fctx, kafs_context_t 
   return rc;
 }
 
-static ssize_t kafs_hotplug_call_write(struct fuse_context *fctx, kafs_context_t *ctx,
-                                       kafs_inocnt_t ino, const char *buf, size_t size,
-                                       off_t offset)
+static int kafs_hotplug_write_validate_request(kafs_context_t *ctx, size_t size)
 {
   int wait_rc = kafs_hotplug_wait_ready(ctx);
   if (wait_rc != 0)
@@ -6829,8 +6827,13 @@ static ssize_t kafs_hotplug_call_write(struct fuse_context *fctx, kafs_context_t
   if (ctx->c_hotplug_data_mode == KAFS_RPC_DATA_INLINE &&
       size > (KAFS_RPC_MAX_PAYLOAD - sizeof(kafs_rpc_write_req_t)))
     return -EOPNOTSUPP;
+  return 0;
+}
 
-  uint8_t payload[KAFS_RPC_MAX_PAYLOAD];
+static uint32_t kafs_hotplug_write_prepare_payload(struct fuse_context *fctx, kafs_context_t *ctx,
+                                                   kafs_inocnt_t ino, const char *buf, size_t size,
+                                                   off_t offset, uint8_t *payload)
+{
   kafs_rpc_write_req_t *req = (kafs_rpc_write_req_t *)payload;
   req->ino = (uint32_t)ino;
   req->uid = (uint32_t)fctx->uid;
@@ -6845,13 +6848,42 @@ static ssize_t kafs_hotplug_call_write(struct fuse_context *fctx, kafs_context_t
     memcpy(payload + sizeof(*req), buf, size);
     payload_len = (uint32_t)(sizeof(*req) + size);
   }
+  return payload_len;
+}
+
+static int kafs_hotplug_write_finish(kafs_context_t *ctx, int rc, int need_local, kafs_inocnt_t ino,
+                                     const char *buf, size_t size, off_t offset)
+{
+  if (kafs_hotplug_is_disconnect_error(rc))
+  {
+    kafs_hotplug_mark_disconnected(ctx, rc);
+    rc = -EIO;
+  }
+  if (rc == 0 && need_local)
+  {
+    ssize_t wlen = kafs_core_write(ctx, ino, buf, size, offset);
+    rc = wlen < 0 ? (int)wlen : (int)wlen;
+  }
+  return rc;
+}
+
+static ssize_t kafs_hotplug_call_write(struct fuse_context *fctx, kafs_context_t *ctx,
+                                       kafs_inocnt_t ino, const char *buf, size_t size,
+                                       off_t offset)
+{
+  int rc = kafs_hotplug_write_validate_request(ctx, size);
+  if (rc != 0)
+    return rc;
+
+  uint8_t payload[KAFS_RPC_MAX_PAYLOAD];
+  uint32_t payload_len =
+      kafs_hotplug_write_prepare_payload(fctx, ctx, ino, buf, size, offset, payload);
   uint64_t req_id = kafs_rpc_next_req_id();
 
   if (ctx->c_hotplug_lock_init)
     pthread_mutex_lock(&ctx->c_hotplug_lock);
-  int rc =
-      kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_WRITE, KAFS_RPC_FLAG_ENDIAN_HOST, req_id,
-                        ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, payload, payload_len);
+  rc = kafs_rpc_send_msg(ctx->c_hotplug_fd, KAFS_RPC_OP_WRITE, KAFS_RPC_FLAG_ENDIAN_HOST, req_id,
+                         ctx->c_hotplug_session_id, ctx->c_hotplug_epoch, payload, payload_len);
   int need_local = 0;
   if (rc == 0)
   {
@@ -6877,17 +6909,7 @@ static ssize_t kafs_hotplug_call_write(struct fuse_context *fctx, kafs_context_t
   }
   if (ctx->c_hotplug_lock_init)
     pthread_mutex_unlock(&ctx->c_hotplug_lock);
-  if (kafs_hotplug_is_disconnect_error(rc))
-  {
-    kafs_hotplug_mark_disconnected(ctx, rc);
-    rc = -EIO;
-  }
-  if (rc == 0 && need_local)
-  {
-    ssize_t wlen = kafs_core_write(ctx, ino, buf, size, offset);
-    rc = wlen < 0 ? (int)wlen : (int)wlen;
-  }
-  return rc;
+  return kafs_hotplug_write_finish(ctx, rc, need_local, ino, buf, size, offset);
 }
 
 static int kafs_hotplug_call_truncate(struct fuse_context *fctx, kafs_context_t *ctx,
