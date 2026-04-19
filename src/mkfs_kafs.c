@@ -288,102 +288,178 @@ static int compute_blkcnt_for_total(uint32_t format_version, off_t total_bytes,
   return 0;
 }
 
-int main(int argc, char **argv)
+typedef struct mkfs_options
 {
-  const char *img = NULL;
-  uint32_t format_version = KAFS_FORMAT_VERSION_V5;
-  kafs_logblksize_t log_blksize = 12; // 4096B
-  kafs_blksize_t blksize = 1u << log_blksize;
-  kafs_blksize_t blksizemask = blksize - 1u;
-  off_t total_bytes = 1024ll * 1024ll * 1024ll; // 1GiB
-  kafs_inocnt_t inocnt = 0;                     // number of inodes
-  size_t journal_bytes = 1u << 20;              // 1MiB default journal region
-  double hrl_entry_ratio = 0.75;
-  int size_arg_provided = 0;
-  int inocnt_arg_provided = 0;
-  int trim_data_area = 0;
-  int assume_yes = 0;
+  const char *img;
+  uint32_t format_version;
+  kafs_logblksize_t log_blksize;
+  kafs_blksize_t blksize;
+  kafs_blksize_t blksizemask;
+  off_t total_bytes;
+  kafs_inocnt_t inocnt;
+  size_t journal_bytes;
+  double hrl_entry_ratio;
+  int size_arg_provided;
+  int inocnt_arg_provided;
+  int trim_data_area;
+  int assume_yes;
+} mkfs_options_t;
 
-  if (kafs_cli_exit_if_help(argc, argv, usage, argv[0]) == 0)
+static void mkfs_options_init(mkfs_options_t *opts)
+{
+  memset(opts, 0, sizeof(*opts));
+  opts->format_version = KAFS_FORMAT_VERSION_V5;
+  opts->log_blksize = 12;
+  opts->blksize = 1u << opts->log_blksize;
+  opts->blksizemask = opts->blksize - 1u;
+  opts->total_bytes = 1024ll * 1024ll * 1024ll;
+  opts->journal_bytes = 1u << 20;
+  opts->hrl_entry_ratio = 0.75;
+}
+
+static int mkfs_parse_size_option(const char *value, off_t *total_bytes)
+{
+  uint64_t tmp = 0;
+  if (kafs_parse_size_bytes_u64(value, &tmp) != 0)
+  {
+    fprintf(stderr, "invalid size: %s\n", value);
+    return 2;
+  }
+  *total_bytes = (off_t)tmp;
+  return 0;
+}
+
+static int mkfs_parse_journal_size_option(const char *value, size_t *journal_bytes)
+{
+  uint64_t tmp = 0;
+  if (kafs_parse_size_bytes_u64(value, &tmp) != 0)
+  {
+    fprintf(stderr, "invalid journal size: %s\n", value);
+    return 2;
+  }
+  *journal_bytes = (size_t)tmp;
+  if (*journal_bytes < 4096)
+    *journal_bytes = 4096;
+  return 0;
+}
+
+static int mkfs_parse_format_version_option(const char *value, uint32_t *format_version)
+{
+  *format_version = (uint32_t)strtoul(value, NULL, 0);
+  if (!mkfs_format_version_is_supported(*format_version))
+  {
+    fprintf(stderr, "unsupported format version: %u\n", *format_version);
+    return 2;
+  }
+  return 0;
+}
+
+static int mkfs_handle_arg(int argc, char **argv, int *index, mkfs_options_t *opts)
+{
+  const char *arg = argv[*index];
+
+  if ((strcmp(arg, "--size-bytes") == 0 || strcmp(arg, "-s") == 0) && *index + 1 < argc)
+  {
+    *index += 1;
+    if (mkfs_parse_size_option(argv[*index], &opts->total_bytes) != 0)
+      return 2;
+    opts->size_arg_provided = 1;
     return 0;
+  }
+  if ((strcmp(arg, "--blksize-log") == 0 || strcmp(arg, "-b") == 0) && *index + 1 < argc)
+  {
+    opts->log_blksize = (kafs_logblksize_t)strtoul(argv[++*index], NULL, 0);
+    opts->blksize = 1u << opts->log_blksize;
+    opts->blksizemask = opts->blksize - 1u;
+    return 0;
+  }
+  if (strcmp(arg, "--format-version") == 0 && *index + 1 < argc)
+  {
+    *index += 1;
+    return mkfs_parse_format_version_option(argv[*index], &opts->format_version);
+  }
+  if ((strcmp(arg, "--inodes") == 0 || strcmp(arg, "-i") == 0) && *index + 1 < argc)
+  {
+    opts->inocnt = (kafs_inocnt_t)strtoul(argv[++*index], NULL, 0);
+    opts->inocnt_arg_provided = 1;
+    return 0;
+  }
+  if ((strcmp(arg, "--journal-size-bytes") == 0 || strcmp(arg, "-J") == 0) && *index + 1 < argc)
+  {
+    *index += 1;
+    return mkfs_parse_journal_size_option(argv[*index], &opts->journal_bytes);
+  }
+  if (strcmp(arg, "--hrl-entry-ratio") == 0 && *index + 1 < argc)
+  {
+    *index += 1;
+    if (kafs_parse_ratio_0_to_1(argv[*index], &opts->hrl_entry_ratio) != 0)
+    {
+      fprintf(stderr, "invalid hrl-entry-ratio (expected 0<R<=1): %s\n", argv[*index]);
+      return 2;
+    }
+    return 0;
+  }
+  if (strcmp(arg, "--trim-data-area") == 0)
+  {
+    opts->trim_data_area = 1;
+    return 0;
+  }
+  if (strcmp(arg, "--yes") == 0)
+  {
+    opts->assume_yes = 1;
+    return 0;
+  }
+  if (arg[0] != '-' && opts->img == NULL)
+  {
+    opts->img = arg;
+    return 0;
+  }
 
+  return 2;
+}
+
+static int mkfs_collect_args(int argc, char **argv, mkfs_options_t *opts)
+{
   for (int i = 1; i < argc; ++i)
   {
-    if ((strcmp(argv[i], "--size-bytes") == 0 || strcmp(argv[i], "-s") == 0) && i + 1 < argc)
-    {
-      uint64_t tmp = 0;
-      if (kafs_parse_size_bytes_u64(argv[++i], &tmp) != 0)
-      {
-        fprintf(stderr, "invalid size: %s\n", argv[i]);
-        return 2;
-      }
-      total_bytes = (off_t)tmp;
-      size_arg_provided = 1;
-    }
-    else if ((strcmp(argv[i], "--blksize-log") == 0 || strcmp(argv[i], "-b") == 0) && i + 1 < argc)
-    {
-      log_blksize = (kafs_logblksize_t)strtoul(argv[++i], NULL, 0);
-      blksize = 1u << log_blksize;
-      blksizemask = blksize - 1u;
-    }
-    else if (strcmp(argv[i], "--format-version") == 0 && i + 1 < argc)
-    {
-      format_version = (uint32_t)strtoul(argv[++i], NULL, 0);
-      if (!mkfs_format_version_is_supported(format_version))
-      {
-        fprintf(stderr, "unsupported format version: %u\n", format_version);
-        return 2;
-      }
-    }
-    else if ((strcmp(argv[i], "--inodes") == 0 || strcmp(argv[i], "-i") == 0) && i + 1 < argc)
-    {
-      inocnt = (kafs_inocnt_t)strtoul(argv[++i], NULL, 0);
-      inocnt_arg_provided = 1;
-    }
-    else if ((strcmp(argv[i], "--journal-size-bytes") == 0 || strcmp(argv[i], "-J") == 0) &&
-             i + 1 < argc)
-    {
-      uint64_t tmp = 0;
-      if (kafs_parse_size_bytes_u64(argv[++i], &tmp) != 0)
-      {
-        fprintf(stderr, "invalid journal size: %s\n", argv[i]);
-        return 2;
-      }
-      journal_bytes = (size_t)tmp;
-      if (journal_bytes < 4096)
-        journal_bytes = 4096; // minimum
-    }
-    else if (strcmp(argv[i], "--hrl-entry-ratio") == 0 && i + 1 < argc)
-    {
-      if (kafs_parse_ratio_0_to_1(argv[++i], &hrl_entry_ratio) != 0)
-      {
-        fprintf(stderr, "invalid hrl-entry-ratio (expected 0<R<=1): %s\n", argv[i]);
-        return 2;
-      }
-    }
-    else if (strcmp(argv[i], "--trim-data-area") == 0)
-    {
-      trim_data_area = 1;
-    }
-    else if (strcmp(argv[i], "--yes") == 0)
-    {
-      assume_yes = 1;
-    }
-    else if (argv[i][0] != '-' && img == NULL)
-    {
-      img = argv[i];
-    }
-    else
+    if (mkfs_handle_arg(argc, argv, &i, opts) != 0)
     {
       usage(argv[0]);
       return 2;
     }
   }
-  if (!img)
+  if (!opts->img)
   {
     usage(argv[0]);
     return 2;
   }
+  return 0;
+}
+
+int main(int argc, char **argv)
+{
+  mkfs_options_t opts;
+
+  if (kafs_cli_exit_if_help(argc, argv, usage, argv[0]) == 0)
+    return 0;
+
+  mkfs_options_init(&opts);
+  if (mkfs_collect_args(argc, argv, &opts) != 0)
+    return 2;
+
+  const char *img = opts.img;
+  uint32_t format_version = opts.format_version;
+  kafs_logblksize_t log_blksize = opts.log_blksize;
+  kafs_blksize_t blksize = opts.blksize;
+  kafs_blksize_t blksizemask = opts.blksizemask;
+  off_t total_bytes = opts.total_bytes;
+  kafs_inocnt_t inocnt = opts.inocnt;
+  size_t journal_bytes = opts.journal_bytes;
+  double hrl_entry_ratio = opts.hrl_entry_ratio;
+  int size_arg_provided = opts.size_arg_provided;
+  int inocnt_arg_provided = opts.inocnt_arg_provided;
+  int trim_data_area = opts.trim_data_area;
+  int assume_yes = opts.assume_yes;
 
   struct stat st;
   int have_stat = (stat(img, &st) == 0);
