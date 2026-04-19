@@ -493,158 +493,228 @@ static int cmd_migrate_create(const char *dst_image, uint64_t size_bytes, uint32
   return 0;
 }
 
-int main(int argc, char **argv)
+typedef struct kafsresize_options
 {
-  int do_grow = 0;
-  int do_migrate_create = 0;
-  int assume_yes = 0;
-  int force = 0;
-  uint64_t target_bytes = 0;
-  uint32_t format_version = 0;
-  uint64_t journal_bytes = 0;
-  int blksize_log = 0;
-  double hrl_entry_ratio = 0.0;
-  uint32_t inodes = 0;
-  const char *image = NULL;
-  const char *dst_image = NULL;
-  const char *src_mount = NULL;
-  const char *dst_mount = NULL;
+  int do_grow;
+  int do_migrate_create;
+  int assume_yes;
+  int force;
+  uint64_t target_bytes;
+  uint32_t format_version;
+  uint64_t journal_bytes;
+  int blksize_log;
+  double hrl_entry_ratio;
+  uint32_t inodes;
+  const char *image;
+  const char *dst_image;
+  const char *src_mount;
+  const char *dst_mount;
+} kafsresize_options_t;
 
-  if (kafs_cli_exit_if_help(argc, argv, usage, argv[0]) == 0)
-    return 0;
+static int kafsresize_parse_u32_arg(const char *name, const char *value, uint32_t *out)
+{
+  unsigned long long parsed = strtoull(value, NULL, 0);
+  if (parsed == 0 || parsed > UINT32_MAX)
+  {
+    fprintf(stderr, "invalid %s: %s\n", name, value);
+    return 2;
+  }
+  *out = (uint32_t)parsed;
+  return 0;
+}
 
+static int kafsresize_parse_flag_arg(const char *arg, kafsresize_options_t *opts)
+{
+  if (strcmp(arg, "--grow") == 0)
+  {
+    opts->do_grow = 1;
+    return 1;
+  }
+  if (strcmp(arg, "--migrate-create") == 0)
+  {
+    opts->do_migrate_create = 1;
+    return 1;
+  }
+  if (strcmp(arg, "--yes") == 0)
+  {
+    opts->assume_yes = 1;
+    return 1;
+  }
+  if (strcmp(arg, "--force") == 0)
+  {
+    opts->force = 1;
+    return 1;
+  }
+  return 0;
+}
+
+static int kafsresize_parse_size_value_arg(int argc, char **argv, int *index,
+                                           kafsresize_options_t *opts)
+{
+  const char *arg = argv[*index];
+  if (strcmp(arg, "--size-bytes") == 0 && *index + 1 < argc)
+  {
+    if (kafs_parse_size_bytes_u64(argv[++(*index)], &opts->target_bytes) != 0)
+    {
+      fprintf(stderr, "invalid size-bytes: %s\n", argv[*index]);
+      return 2;
+    }
+    return 1;
+  }
+  if (strcmp(arg, "--journal-size-bytes") == 0 && *index + 1 < argc)
+  {
+    if (kafs_parse_size_bytes_u64(argv[++(*index)], &opts->journal_bytes) != 0)
+    {
+      fprintf(stderr, "invalid journal-size-bytes: %s\n", argv[*index]);
+      return 2;
+    }
+    return 1;
+  }
+  return 0;
+}
+
+static int kafsresize_parse_setting_value_arg(int argc, char **argv, int *index,
+                                              kafsresize_options_t *opts)
+{
+  const char *arg = argv[*index];
+  if (strcmp(arg, "--format-version") == 0 && *index + 1 < argc)
+  {
+    if (kafsresize_parse_u32_arg("format-version", argv[++(*index)], &opts->format_version) != 0)
+      return 2;
+    return 1;
+  }
+  if (strcmp(arg, "--blksize-log") == 0 && *index + 1 < argc)
+  {
+    opts->blksize_log = atoi(argv[++(*index)]);
+    if (opts->blksize_log <= 0)
+    {
+      fprintf(stderr, "invalid blksize-log: %s\n", argv[*index]);
+      return 2;
+    }
+    return 1;
+  }
+  if (strcmp(arg, "--hrl-entry-ratio") == 0 && *index + 1 < argc)
+  {
+    if (kafs_parse_ratio_0_to_1(argv[++(*index)], &opts->hrl_entry_ratio) != 0)
+    {
+      fprintf(stderr, "invalid hrl-entry-ratio (expected 0<R<=1): %s\n", argv[*index]);
+      return 2;
+    }
+    return 1;
+  }
+  if (strcmp(arg, "--inodes") == 0 && *index + 1 < argc)
+  {
+    if (kafsresize_parse_u32_arg("inodes", argv[++(*index)], &opts->inodes) != 0)
+      return 2;
+    return 1;
+  }
+  return 0;
+}
+
+static int kafsresize_parse_path_value_arg(int argc, char **argv, int *index,
+                                           kafsresize_options_t *opts)
+{
+  const char *arg = argv[*index];
+  if (strcmp(arg, "--dst-image") == 0 && *index + 1 < argc)
+  {
+    opts->dst_image = argv[++(*index)];
+    return 1;
+  }
+  if (strcmp(arg, "--src-mount") == 0 && *index + 1 < argc)
+  {
+    opts->src_mount = argv[++(*index)];
+    return 1;
+  }
+  if (strcmp(arg, "--dst-mount") == 0 && *index + 1 < argc)
+  {
+    opts->dst_mount = argv[++(*index)];
+    return 1;
+  }
+  return 0;
+}
+
+static int kafsresize_parse_value_arg(int argc, char **argv, int *index, kafsresize_options_t *opts)
+{
+  int rc = kafsresize_parse_size_value_arg(argc, argv, index, opts);
+  if (rc != 0)
+    return rc;
+
+  rc = kafsresize_parse_setting_value_arg(argc, argv, index, opts);
+  if (rc != 0)
+    return rc;
+
+  return kafsresize_parse_path_value_arg(argc, argv, index, opts);
+}
+
+static int kafsresize_parse_args(int argc, char **argv, kafsresize_options_t *opts)
+{
   for (int i = 1; i < argc; ++i)
   {
-    if (strcmp(argv[i], "--grow") == 0)
-    {
-      do_grow = 1;
+    const char *arg = argv[i];
+    if (kafsresize_parse_flag_arg(arg, opts) != 0)
       continue;
-    }
-    if (strcmp(argv[i], "--migrate-create") == 0)
-    {
-      do_migrate_create = 1;
+
+    int rc = kafsresize_parse_value_arg(argc, argv, &i, opts);
+    if (rc == 2)
+      return 2;
+    if (rc == 1)
       continue;
-    }
-    if (strcmp(argv[i], "--size-bytes") == 0 && i + 1 < argc)
-    {
-      if (kafs_parse_size_bytes_u64(argv[++i], &target_bytes) != 0)
-      {
-        fprintf(stderr, "invalid size-bytes: %s\n", argv[i]);
-        return 2;
-      }
-      continue;
-    }
-    if (strcmp(argv[i], "--journal-size-bytes") == 0 && i + 1 < argc)
-    {
-      if (kafs_parse_size_bytes_u64(argv[++i], &journal_bytes) != 0)
-      {
-        fprintf(stderr, "invalid journal-size-bytes: %s\n", argv[i]);
-        return 2;
-      }
-      continue;
-    }
-    if (strcmp(argv[i], "--format-version") == 0 && i + 1 < argc)
-    {
-      unsigned long long v = strtoull(argv[++i], NULL, 0);
-      if (v == 0 || v > UINT32_MAX)
-      {
-        fprintf(stderr, "invalid format-version: %s\n", argv[i]);
-        return 2;
-      }
-      format_version = (uint32_t)v;
-      continue;
-    }
-    if (strcmp(argv[i], "--blksize-log") == 0 && i + 1 < argc)
-    {
-      blksize_log = atoi(argv[++i]);
-      if (blksize_log <= 0)
-      {
-        fprintf(stderr, "invalid blksize-log: %s\n", argv[i]);
-        return 2;
-      }
-      continue;
-    }
-    if (strcmp(argv[i], "--hrl-entry-ratio") == 0 && i + 1 < argc)
-    {
-      if (kafs_parse_ratio_0_to_1(argv[++i], &hrl_entry_ratio) != 0)
-      {
-        fprintf(stderr, "invalid hrl-entry-ratio (expected 0<R<=1): %s\n", argv[i]);
-        return 2;
-      }
-      continue;
-    }
-    if (strcmp(argv[i], "--inodes") == 0 && i + 1 < argc)
-    {
-      unsigned long long v = strtoull(argv[++i], NULL, 0);
-      if (v == 0 || v > UINT32_MAX)
-      {
-        fprintf(stderr, "invalid inodes: %s\n", argv[i]);
-        return 2;
-      }
-      inodes = (uint32_t)v;
-      continue;
-    }
-    if (strcmp(argv[i], "--dst-image") == 0 && i + 1 < argc)
-    {
-      dst_image = argv[++i];
-      continue;
-    }
-    if (strcmp(argv[i], "--src-mount") == 0 && i + 1 < argc)
-    {
-      src_mount = argv[++i];
-      continue;
-    }
-    if (strcmp(argv[i], "--dst-mount") == 0 && i + 1 < argc)
-    {
-      dst_mount = argv[++i];
-      continue;
-    }
-    if (strcmp(argv[i], "--yes") == 0)
-    {
-      assume_yes = 1;
-      continue;
-    }
-    if (strcmp(argv[i], "--force") == 0)
-    {
-      force = 1;
-      continue;
-    }
-    if (argv[i][0] == '-')
+
+    if (arg[0] == '-')
     {
       usage(argv[0]);
       return 2;
     }
-    image = argv[i];
+    opts->image = arg;
   }
 
-  if (do_grow && do_migrate_create)
+  return 0;
+}
+
+static int kafsresize_run(const char *prog, const kafsresize_options_t *opts)
+{
+  if (opts->do_grow && opts->do_migrate_create)
   {
     fprintf(stderr, "--grow and --migrate-create are mutually exclusive\n");
     return 2;
   }
 
-  if (do_grow)
+  if (opts->do_grow)
   {
-    if (target_bytes == 0 || !image)
+    if (opts->target_bytes == 0 || !opts->image)
     {
-      usage(argv[0]);
+      usage(prog);
       return 2;
     }
-    return cmd_grow(image, target_bytes);
+    return cmd_grow(opts->image, opts->target_bytes);
   }
 
-  if (do_migrate_create)
+  if (opts->do_migrate_create)
   {
-    if (inodes == 0 || !dst_image)
+    if (opts->inodes == 0 || !opts->dst_image)
     {
-      usage(argv[0]);
+      usage(prog);
       return 2;
     }
-    return cmd_migrate_create(dst_image, target_bytes, inodes, format_version, journal_bytes,
-                              blksize_log, hrl_entry_ratio, src_mount, dst_mount, assume_yes,
-                              force);
+    return cmd_migrate_create(opts->dst_image, opts->target_bytes, opts->inodes,
+                              opts->format_version, opts->journal_bytes, opts->blksize_log,
+                              opts->hrl_entry_ratio, opts->src_mount, opts->dst_mount,
+                              opts->assume_yes, opts->force);
   }
 
-  usage(argv[0]);
+  usage(prog);
   return 2;
+}
+
+int main(int argc, char **argv)
+{
+  kafsresize_options_t opts = {0};
+
+  if (kafs_cli_exit_if_help(argc, argv, usage, argv[0]) == 0)
+    return 0;
+
+  if (kafsresize_parse_args(argc, argv, &opts) != 0)
+    return 2;
+
+  return kafsresize_run(argv[0], &opts);
 }
