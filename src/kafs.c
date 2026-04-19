@@ -6078,43 +6078,49 @@ static void kafs_hotplug_set_fd_timeout_ms(int fd, uint32_t timeout_ms)
   (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 }
 
-static int kafs_hotplug_complete_handshake(kafs_context_t *ctx, int cli)
+static int kafs_hotplug_handshake_fail(kafs_context_t *ctx, int error)
+{
+  ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
+  ctx->c_hotplug_last_error = error;
+  return error;
+}
+
+static int kafs_hotplug_handshake_reject(kafs_context_t *ctx, int error)
+{
+  ctx->c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_REJECT;
+  ctx->c_hotplug_compat_reason = error;
+  return kafs_hotplug_handshake_fail(ctx, error);
+}
+
+static int kafs_hotplug_recv_hello(int cli, kafs_rpc_hello_t *hello_out)
 {
   kafs_rpc_hdr_t hdr;
-  kafs_rpc_hello_t hello;
   uint32_t payload_len = 0;
-  int rc = kafs_rpc_recv_msg(cli, &hdr, &hello, sizeof(hello), &payload_len);
-  if (rc != 0 || hdr.op != KAFS_RPC_OP_HELLO)
-  {
-    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
-    ctx->c_hotplug_last_error = rc != 0 ? rc : -EBADMSG;
-    ctx->c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_REJECT;
-    ctx->c_hotplug_compat_reason = rc != 0 ? rc : -EBADMSG;
-    return rc != 0 ? rc : -EBADMSG;
-  }
-  if (payload_len != sizeof(hello))
-  {
-    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
-    ctx->c_hotplug_last_error = -EBADMSG;
-    ctx->c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_REJECT;
-    ctx->c_hotplug_compat_reason = -EBADMSG;
+  int rc = kafs_rpc_recv_msg(cli, &hdr, hello_out, sizeof(*hello_out), &payload_len);
+  if (rc != 0)
+    return rc;
+  if (hdr.op != KAFS_RPC_OP_HELLO || payload_len != sizeof(*hello_out))
     return -EBADMSG;
-  }
-  ctx->c_hotplug_back_major = hello.major;
-  ctx->c_hotplug_back_minor = hello.minor;
-  ctx->c_hotplug_back_features = hello.feature_flags;
-  if (hello.major != KAFS_RPC_HELLO_MAJOR || hello.minor != KAFS_RPC_HELLO_MINOR ||
-      (hello.feature_flags & ~KAFS_RPC_HELLO_FEATURES) != 0)
-  {
-    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
-    ctx->c_hotplug_last_error = -EPROTONOSUPPORT;
-    ctx->c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_REJECT;
-    ctx->c_hotplug_compat_reason = -EPROTONOSUPPORT;
-    return -EPROTONOSUPPORT;
-  }
+  return 0;
+}
+
+static int kafs_hotplug_accept_hello(kafs_context_t *ctx, const kafs_rpc_hello_t *hello)
+{
+  ctx->c_hotplug_back_major = hello->major;
+  ctx->c_hotplug_back_minor = hello->minor;
+  ctx->c_hotplug_back_features = hello->feature_flags;
+  if (hello->major != KAFS_RPC_HELLO_MAJOR || hello->minor != KAFS_RPC_HELLO_MINOR ||
+      (hello->feature_flags & ~KAFS_RPC_HELLO_FEATURES) != 0)
+    return kafs_hotplug_handshake_reject(ctx, -EPROTONOSUPPORT);
+
   ctx->c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_OK;
   ctx->c_hotplug_compat_reason = 0;
+  return 0;
+}
 
+static void kafs_hotplug_prepare_session(kafs_context_t *ctx, uint64_t *session_id_out,
+                                         uint32_t *next_epoch_out)
+{
   uint64_t session_id = ctx->c_hotplug_session_id;
   uint32_t next_epoch = ctx->c_hotplug_epoch;
   if (session_id == 0)
@@ -6126,35 +6132,38 @@ static int kafs_hotplug_complete_handshake(kafs_context_t *ctx, int cli)
   {
     next_epoch = ctx->c_hotplug_epoch + 1u;
   }
+  *session_id_out = session_id;
+  *next_epoch_out = next_epoch;
+}
 
+static int kafs_hotplug_send_session_restore(kafs_context_t *ctx, int cli, uint64_t session_id,
+                                             uint32_t next_epoch)
+{
   kafs_rpc_session_restore_t restore;
   restore.open_handle_count = 0u;
   uint64_t req_id = kafs_rpc_next_req_id();
-  rc = kafs_rpc_send_msg(cli, KAFS_RPC_OP_SESSION_RESTORE, KAFS_RPC_FLAG_ENDIAN_HOST, req_id,
-                         session_id, next_epoch, &restore, sizeof(restore));
+  int rc = kafs_rpc_send_msg(cli, KAFS_RPC_OP_SESSION_RESTORE, KAFS_RPC_FLAG_ENDIAN_HOST, req_id,
+                             session_id, next_epoch, &restore, sizeof(restore));
   if (rc != 0)
-  {
-    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
-    ctx->c_hotplug_last_error = rc;
-    return rc;
-  }
+    return kafs_hotplug_handshake_fail(ctx, rc);
+  return 0;
+}
 
+static int kafs_hotplug_recv_ready(kafs_context_t *ctx, int cli)
+{
   kafs_rpc_hdr_t ready_hdr;
   uint32_t ready_len = 0;
-  rc = kafs_rpc_recv_msg(cli, &ready_hdr, NULL, 0, &ready_len);
-  if (rc != 0 || ready_hdr.op != KAFS_RPC_OP_READY)
-  {
-    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
-    ctx->c_hotplug_last_error = rc != 0 ? rc : -EBADMSG;
-    return rc != 0 ? rc : -EBADMSG;
-  }
-  if (ready_len != 0)
-  {
-    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
-    ctx->c_hotplug_last_error = -EBADMSG;
-    return -EBADMSG;
-  }
+  int rc = kafs_rpc_recv_msg(cli, &ready_hdr, NULL, 0, &ready_len);
+  if (rc != 0)
+    return kafs_hotplug_handshake_fail(ctx, rc);
+  if (ready_hdr.op != KAFS_RPC_OP_READY || ready_len != 0)
+    return kafs_hotplug_handshake_fail(ctx, -EBADMSG);
+  return 0;
+}
 
+static void kafs_hotplug_finish_handshake(kafs_context_t *ctx, int cli, uint64_t session_id,
+                                          uint32_t next_epoch)
+{
   ctx->c_hotplug_fd = cli;
   ctx->c_hotplug_active = 1;
   ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_CONNECTED;
@@ -6167,6 +6176,32 @@ static int kafs_hotplug_complete_handshake(kafs_context_t *ctx, int cli)
       ctx->c_hotplug_lock_init = 1;
   }
   kafs_hotplug_wait_notify(ctx);
+}
+
+static int kafs_hotplug_complete_handshake(kafs_context_t *ctx, int cli)
+{
+  kafs_rpc_hello_t hello;
+  int rc = kafs_hotplug_recv_hello(cli, &hello);
+  if (rc != 0)
+    return kafs_hotplug_handshake_reject(ctx, rc);
+
+  rc = kafs_hotplug_accept_hello(ctx, &hello);
+  if (rc != 0)
+    return rc;
+
+  uint64_t session_id;
+  uint32_t next_epoch;
+  kafs_hotplug_prepare_session(ctx, &session_id, &next_epoch);
+
+  rc = kafs_hotplug_send_session_restore(ctx, cli, session_id, next_epoch);
+  if (rc != 0)
+    return rc;
+
+  rc = kafs_hotplug_recv_ready(ctx, cli);
+  if (rc != 0)
+    return rc;
+
+  kafs_hotplug_finish_handshake(ctx, cli, session_id, next_epoch);
   return 0;
 }
 
