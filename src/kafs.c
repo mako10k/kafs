@@ -7362,6 +7362,121 @@ static int kafs_procfd_to_kafs_path(kafs_context_t *ctx, pid_t pid, int fd, char
 }
 #endif
 
+static int kafs_reflink_snapshot_source(kafs_context_t *ctx, kafs_sinode_t *src,
+                                        kafs_off_t *size_out, char *inline_buf, int *is_inline_out,
+                                        kafs_blkcnt_t **blos_out, kafs_iblkcnt_t *iblocnt_out)
+{
+  *size_out = 0;
+  *is_inline_out = 0;
+  *blos_out = NULL;
+  *iblocnt_out = 0;
+
+  uint32_t ino_src = kafs_ctx_ino_no(ctx, src);
+  kafs_inode_lock(ctx, ino_src);
+  kafs_off_t size = kafs_ino_size_get(src);
+  if (size <= (kafs_off_t)KAFS_INODE_DIRECT_BYTES)
+  {
+    memcpy(inline_buf, (void *)src->i_blkreftbl, (size_t)size);
+    kafs_inode_unlock(ctx, ino_src);
+    *size_out = size;
+    *is_inline_out = 1;
+    return 0;
+  }
+
+  kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
+  kafs_iblkcnt_t iblocnt = (kafs_iblkcnt_t)((size + (kafs_off_t)bs - 1) / (kafs_off_t)bs);
+  kafs_blkcnt_t *blos =
+      (kafs_blkcnt_t *)calloc((size_t)iblocnt ? (size_t)iblocnt : 1u, sizeof(*blos));
+  if (!blos)
+  {
+    kafs_inode_unlock(ctx, ino_src);
+    return -ENOMEM;
+  }
+
+  for (kafs_iblkcnt_t i = 0; i < iblocnt; ++i)
+  {
+    kafs_blkcnt_t b = KAFS_BLO_NONE;
+    int rc = kafs_ino_ibrk_run(ctx, src, i, &b, KAFS_IBLKREF_FUNC_GET);
+    if (rc < 0)
+    {
+      free(blos);
+      kafs_inode_unlock(ctx, ino_src);
+      return rc;
+    }
+    blos[i] = b;
+  }
+
+  kafs_inode_unlock(ctx, ino_src);
+  *size_out = size;
+  *blos_out = blos;
+  *iblocnt_out = iblocnt;
+  return 0;
+}
+
+static int kafs_reflink_prepare_destination(kafs_context_t *ctx, kafs_sinode_t *dst)
+{
+  uint32_t ino_dst = kafs_ctx_ino_no(ctx, dst);
+  kafs_inode_lock(ctx, ino_dst);
+  int trc = kafs_truncate(ctx, dst, 0);
+  if (trc < 0)
+  {
+    kafs_inode_unlock(ctx, ino_dst);
+    return trc;
+  }
+  memset(dst->i_blkreftbl, 0, sizeof(dst->i_blkreftbl));
+  return 0;
+}
+
+static int kafs_reflink_apply_inline_locked(kafs_context_t *ctx, kafs_sinode_t *dst,
+                                            kafs_off_t size, const char *inline_buf)
+{
+  uint32_t ino_dst = kafs_ctx_ino_no(ctx, dst);
+  kafs_ino_size_set(dst, size);
+  memcpy((void *)dst->i_blkreftbl, inline_buf, (size_t)size);
+  kafs_time_t now = kafs_now();
+  kafs_ino_mtime_set(dst, now);
+  kafs_ino_ctime_set(dst, now);
+  kafs_inode_unlock(ctx, ino_dst);
+  return 0;
+}
+
+static int kafs_reflink_apply_blocks_locked(kafs_context_t *ctx, kafs_sinode_t *dst,
+                                            kafs_off_t size, kafs_blkcnt_t *blos,
+                                            kafs_iblkcnt_t iblocnt)
+{
+  uint32_t ino_dst = kafs_ctx_ino_no(ctx, dst);
+  kafs_ino_size_set(dst, size);
+  for (kafs_iblkcnt_t i = 0; i < iblocnt; ++i)
+  {
+    kafs_blkcnt_t b = blos[i];
+    if (b == KAFS_BLO_NONE)
+      continue;
+
+    int irc = kafs_hrl_inc_ref_by_blo(ctx, b);
+    if (irc != 0)
+    {
+      (void)kafs_truncate(ctx, dst, 0);
+      kafs_inode_unlock(ctx, ino_dst);
+      return (irc == -ENOENT || irc == -ENOSYS) ? -EOPNOTSUPP : irc;
+    }
+
+    int s = kafs_ino_ibrk_run(ctx, dst, i, &b, KAFS_IBLKREF_FUNC_SET);
+    if (s < 0)
+    {
+      (void)kafs_truncate(ctx, dst, 0);
+      kafs_inode_unlock(ctx, ino_dst);
+      (void)kafs_inode_release_hrl_ref(ctx, b);
+      return s;
+    }
+  }
+
+  kafs_time_t now = kafs_now();
+  kafs_ino_mtime_set(dst, now);
+  kafs_ino_ctime_set(dst, now);
+  kafs_inode_unlock(ctx, ino_dst);
+  return 0;
+}
+
 static int kafs_reflink_clone(kafs_context_t *ctx, kafs_sinode_t *src, kafs_sinode_t *dst)
 {
   if (!ctx || !src || !dst)
@@ -7376,101 +7491,27 @@ static int kafs_reflink_clone(kafs_context_t *ctx, kafs_sinode_t *src, kafs_sino
   if (!S_ISREG(sm) || !S_ISREG(dm))
     return -EINVAL;
 
-  kafs_off_t size;
+  kafs_off_t size = 0;
   char inline_buf[KAFS_INODE_DIRECT_BYTES];
   int is_inline = 0;
-
-  uint32_t ino_src = kafs_ctx_ino_no(ctx, src);
-  kafs_inode_lock(ctx, ino_src);
-  size = kafs_ino_size_get(src);
-  if (size <= (kafs_off_t)KAFS_INODE_DIRECT_BYTES)
-  {
-    memcpy(inline_buf, (void *)src->i_blkreftbl, (size_t)size);
-    is_inline = 1;
-  }
-
   kafs_blkcnt_t *blos = NULL;
   kafs_iblkcnt_t iblocnt = 0;
-  if (!is_inline)
+  int rc = kafs_reflink_snapshot_source(ctx, src, &size, inline_buf, &is_inline, &blos, &iblocnt);
+  if (rc < 0)
+    return rc;
+  rc = kafs_reflink_prepare_destination(ctx, dst);
+  if (rc < 0)
   {
-    kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
-    iblocnt = (kafs_iblkcnt_t)((size + (kafs_off_t)bs - 1) / (kafs_off_t)bs);
-    blos = (kafs_blkcnt_t *)calloc((size_t)iblocnt ? (size_t)iblocnt : 1u, sizeof(*blos));
-    if (!blos)
-    {
-      kafs_inode_unlock(ctx, ino_src);
-      return -ENOMEM;
-    }
-    for (kafs_iblkcnt_t i = 0; i < iblocnt; ++i)
-    {
-      kafs_blkcnt_t b = KAFS_BLO_NONE;
-      int rc = kafs_ino_ibrk_run(ctx, src, i, &b, KAFS_IBLKREF_FUNC_GET);
-      if (rc < 0)
-      {
-        free(blos);
-        kafs_inode_unlock(ctx, ino_src);
-        return rc;
-      }
-      blos[i] = b;
-    }
-  }
-  kafs_inode_unlock(ctx, ino_src);
-
-  uint32_t ino_dst = kafs_ctx_ino_no(ctx, dst);
-  kafs_inode_lock(ctx, ino_dst);
-  int trc = kafs_truncate(ctx, dst, 0);
-  if (trc < 0)
-  {
-    kafs_inode_unlock(ctx, ino_dst);
     free(blos);
-    return trc;
+    return rc;
   }
-  memset(dst->i_blkreftbl, 0, sizeof(dst->i_blkreftbl));
 
   if (is_inline)
-  {
-    kafs_ino_size_set(dst, size);
-    memcpy((void *)dst->i_blkreftbl, inline_buf, (size_t)size);
-    kafs_time_t now = kafs_now();
-    kafs_ino_mtime_set(dst, now);
-    kafs_ino_ctime_set(dst, now);
-    kafs_inode_unlock(ctx, ino_dst);
-    return 0;
-  }
+    return kafs_reflink_apply_inline_locked(ctx, dst, size, inline_buf);
 
-  kafs_ino_size_set(dst, size);
-  for (kafs_iblkcnt_t i = 0; i < iblocnt; ++i)
-  {
-    kafs_blkcnt_t b = blos[i];
-    if (b == KAFS_BLO_NONE)
-      continue;
-
-    int irc = kafs_hrl_inc_ref_by_blo(ctx, b);
-    if (irc != 0)
-    {
-      (void)kafs_truncate(ctx, dst, 0);
-      kafs_inode_unlock(ctx, ino_dst);
-      free(blos);
-      return (irc == -ENOENT || irc == -ENOSYS) ? -EOPNOTSUPP : irc;
-    }
-
-    int s = kafs_ino_ibrk_run(ctx, dst, i, &b, KAFS_IBLKREF_FUNC_SET);
-    if (s < 0)
-    {
-      (void)kafs_truncate(ctx, dst, 0);
-      kafs_inode_unlock(ctx, ino_dst);
-      free(blos);
-      (void)kafs_inode_release_hrl_ref(ctx, b);
-      return s;
-    }
-  }
-
-  kafs_time_t now = kafs_now();
-  kafs_ino_mtime_set(dst, now);
-  kafs_ino_ctime_set(dst, now);
-  kafs_inode_unlock(ctx, ino_dst);
+  rc = kafs_reflink_apply_blocks_locked(ctx, dst, size, blos, iblocnt);
   free(blos);
-  return 0;
+  return rc;
 }
 
 static int kafs_copy_share_one_iblk_locked(kafs_context_t *ctx, kafs_sinode_t *src,
