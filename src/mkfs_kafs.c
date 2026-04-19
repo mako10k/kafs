@@ -554,6 +554,189 @@ static int mkfs_prepare_target(kafs_context_t *ctx, const char *img, uint32_t fo
   return 0;
 }
 
+static int mkfs_map_metadata(kafs_context_t *ctx, off_t mapsize, kafs_blkcnt_t blkcnt,
+                             uint32_t format_version, kafs_inocnt_t inocnt,
+                             const struct mkfs_layout *layout)
+{
+  ctx->c_superblock = mmap(NULL, mapsize, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->c_fd, 0);
+  if (ctx->c_superblock == MAP_FAILED)
+  {
+    perror("mmap");
+    return 1;
+  }
+
+  memset(ctx->c_superblock, 0, (size_t)mapsize);
+  ctx->c_blkmasktbl = (kafs_blkmask_t *)((char *)ctx->c_superblock + (intptr_t)layout->blkmask_off);
+  ctx->c_inotbl = (kafs_sinode_t *)((char *)ctx->c_superblock + (intptr_t)layout->inotbl_off);
+
+  size_t blkmask_bytes = ((size_t)blkcnt + 7) >> 3;
+  size_t inotbl_bytes = (size_t)kafs_inode_table_bytes_for_format(format_version, inocnt);
+  char *base = (char *)ctx->c_superblock;
+  char *end = base + mapsize;
+  char *bm_ptr = (char *)ctx->c_blkmasktbl;
+  char *ino_ptr = (char *)ctx->c_inotbl;
+  assert(bm_ptr >= base && bm_ptr + blkmask_bytes <= end);
+  assert(ino_ptr >= base && ino_ptr + inotbl_bytes <= end);
+  memset(bm_ptr, 0, blkmask_bytes);
+  memset(ino_ptr, 0, inotbl_bytes);
+
+  if (layout->allocator_size > 0)
+  {
+    char *alloc_ptr = (char *)ctx->c_superblock + layout->allocator_off;
+    assert(alloc_ptr >= base && alloc_ptr + layout->allocator_size <= end);
+    memset(alloc_ptr, 0, layout->allocator_size);
+  }
+
+  return 0;
+}
+
+static void mkfs_init_superblock(kafs_context_t *ctx, uint32_t format_version,
+                                 kafs_logblksize_t log_blksize, kafs_inocnt_t inocnt,
+                                 kafs_blkcnt_t blkcnt, off_t mapsize, size_t journal_bytes,
+                                 const struct mkfs_layout *layout)
+{
+  kafs_sb_log_blksize_set(ctx->c_superblock, log_blksize);
+  kafs_sb_magic_set(ctx->c_superblock, KAFS_MAGIC);
+  kafs_sb_format_version_set(ctx->c_superblock, format_version);
+  kafs_sb_hash_fast_set(ctx->c_superblock, KAFS_HASH_FAST_XXH64);
+  kafs_sb_hash_strong_set(ctx->c_superblock, KAFS_HASH_STRONG_BLAKE3_256);
+  kafs_sb_hrl_index_offset_set(ctx->c_superblock, (uint64_t)layout->hrl_index_off);
+  kafs_sb_hrl_index_size_set(ctx->c_superblock, (uint64_t)layout->hrl_index_size);
+  kafs_sb_hrl_entry_offset_set(ctx->c_superblock, (uint64_t)layout->hrl_entry_off);
+  kafs_sb_hrl_entry_cnt_set(ctx->c_superblock, (uint32_t)layout->hrl_entry_cnt);
+  kafs_sb_journal_offset_set(ctx->c_superblock, (uint64_t)layout->journal_off);
+  kafs_sb_journal_size_set(ctx->c_superblock, (uint64_t)journal_bytes);
+  kafs_sb_journal_flags_set(ctx->c_superblock, 0);
+  kafs_sb_allocator_version_set(ctx->c_superblock, 2);
+  kafs_sb_allocator_offset_set(ctx->c_superblock, (uint64_t)layout->allocator_off);
+  kafs_sb_allocator_size_set(ctx->c_superblock, (uint64_t)layout->allocator_size);
+  kafs_sb_pendinglog_offset_set(ctx->c_superblock, (uint64_t)layout->pendinglog_off);
+  kafs_sb_pendinglog_size_set(ctx->c_superblock, (uint64_t)layout->pendinglog_size);
+  kafs_sb_checkpoint_seq_set(ctx->c_superblock, 0);
+  kafs_sb_commit_seq_set(ctx->c_superblock, 0);
+  kafs_sb_tailmeta_offset_set(ctx->c_superblock, (uint64_t)layout->tailmeta_off);
+  kafs_sb_tailmeta_size_set(ctx->c_superblock, (uint64_t)layout->tailmeta_size);
+  kafs_sb_feature_flags_set(ctx->c_superblock, mkfs_feature_flags_for_format(format_version));
+  kafs_sb_compat_flags_set(ctx->c_superblock, 0);
+
+  ctx->c_superblock->s_inocnt = kafs_inocnt_htos(inocnt);
+  kafs_sb_inocnt_free_set(ctx->c_superblock,
+                          (inocnt > (kafs_inocnt_t)KAFS_INO_ROOTDIR) ? (inocnt - 1) : 0);
+  ctx->c_superblock->s_blkcnt = kafs_blkcnt_htos(blkcnt);
+  ctx->c_superblock->s_r_blkcnt = kafs_blkcnt_htos(blkcnt);
+  kafs_blkcnt_t fdb = (kafs_blkcnt_t)(mapsize >> log_blksize);
+  ctx->c_superblock->s_first_data_block = kafs_blkcnt_htos(fdb);
+  kafs_sb_blkcnt_free_set(ctx->c_superblock, blkcnt - fdb);
+
+  for (kafs_blkcnt_t blo = 0; blo < fdb; ++blo)
+    kafs_blk_set_usage(ctx, blo, KAFS_TRUE);
+}
+
+static void mkfs_init_root_inode(kafs_context_t *ctx, uint32_t format_version, off_t mapsize)
+{
+  kafs_sinode_t *inoent_rootdir =
+      (kafs_sinode_t *)kafs_inode_ptr_in_table(ctx->c_inotbl, format_version, KAFS_INO_ROOTDIR);
+  {
+    char *ptr = (char *)inoent_rootdir;
+    char *base = (char *)ctx->c_superblock;
+    char *end = base + mapsize;
+    if (!(ptr >= base && ptr + sizeof(*inoent_rootdir) <= end))
+    {
+      fprintf(stderr, "inotbl/root inode out of range: ptr=%p base=%p end=%p mapsize=%lld\n",
+              (void *)ptr, (void *)base, (void *)end, (long long)mapsize);
+      abort();
+    }
+  }
+
+  kafs_ino_mode_set(inoent_rootdir, S_IFDIR | 0755);
+  kafs_ino_uid_set(inoent_rootdir, (kafs_uid_t)getuid());
+  kafs_ino_size_set(inoent_rootdir, 0);
+  kafs_time_t now = kafs_now();
+  kafs_time_t nulltime = (kafs_time_t){0, 0};
+  kafs_ino_atime_set(inoent_rootdir, now);
+  kafs_ino_ctime_set(inoent_rootdir, now);
+  kafs_ino_mtime_set(inoent_rootdir, now);
+  kafs_ino_dtime_set(inoent_rootdir, nulltime);
+  kafs_ino_gid_set(inoent_rootdir, (kafs_gid_t)getgid());
+  inoent_rootdir->i_linkcnt = kafs_linkcnt_htos(1);
+  kafs_ino_blocks_set(inoent_rootdir, 0);
+  kafs_ino_dev_set(inoent_rootdir, 0);
+
+  kafs_sdir_v4_hdr_t root_dir_hdr;
+  kafs_dir_v4_hdr_init(&root_dir_hdr);
+  memcpy(inoent_rootdir->i_blkreftbl, &root_dir_hdr, sizeof(root_dir_hdr));
+  kafs_ino_size_set(inoent_rootdir, (kafs_off_t)sizeof(root_dir_hdr));
+}
+
+static void mkfs_init_runtime_regions(kafs_context_t *ctx, const struct mkfs_layout *layout,
+                                      size_t journal_bytes, kafs_blksize_t blksize, off_t mapsize)
+{
+  ctx->c_hrl_index = (void *)((char *)ctx->c_superblock + layout->hrl_index_off);
+  ctx->c_hrl_bucket_cnt = layout->hrl_bucket_cnt;
+  (void)kafs_hrl_format(ctx);
+
+  if (journal_bytes > kj_header_size())
+  {
+    kj_header_t jh;
+    char *jhdr_ptr = (char *)ctx->c_superblock + layout->journal_off;
+    char *base = (char *)ctx->c_superblock;
+    char *end = base + mapsize;
+
+    memset(&jh, 0, sizeof(jh));
+    jh.magic = KJ_MAGIC;
+    jh.version = KJ_VER;
+    jh.flags = 0;
+    jh.area_size = (uint64_t)journal_bytes - (uint64_t)kj_header_size();
+    jh.write_off = 0;
+    jh.seq = 0;
+    jh.reserved0 = 0;
+    jh.header_crc = 0;
+    jh.header_crc = kj_crc32(&jh, sizeof(jh));
+
+    assert(jhdr_ptr >= base && jhdr_ptr + sizeof(jh) <= end);
+    memcpy(jhdr_ptr, &jh, sizeof(jh));
+  }
+
+  if (layout->tailmeta_size >= sizeof(kafs_tailmeta_region_hdr_t))
+  {
+    kafs_tailmeta_region_hdr_t region_hdr;
+    char *tailmeta_ptr = (char *)ctx->c_superblock + layout->tailmeta_off;
+    char *base = (char *)ctx->c_superblock;
+    char *end = base + mapsize;
+
+    assert(tailmeta_ptr >= base && tailmeta_ptr + layout->tailmeta_size <= end);
+    kafs_tailmeta_region_hdr_init(&region_hdr);
+    kafs_tailmeta_region_hdr_container_table_off_set(&region_hdr, (uint32_t)sizeof(region_hdr));
+    kafs_tailmeta_region_hdr_container_table_bytes_set(
+        &region_hdr,
+        (uint32_t)(KAFS_TAILMETA_DEFAULT_CLASS_COUNT * sizeof(kafs_tailmeta_container_hdr_t)));
+    kafs_tailmeta_region_hdr_container_count_set(&region_hdr, KAFS_TAILMETA_DEFAULT_CLASS_COUNT);
+    kafs_tailmeta_region_hdr_class_count_set(&region_hdr, KAFS_TAILMETA_DEFAULT_CLASS_COUNT);
+    memcpy(tailmeta_ptr, &region_hdr, sizeof(region_hdr));
+
+    kafs_tailmeta_container_hdr_t *containers =
+        (kafs_tailmeta_container_hdr_t *)(tailmeta_ptr + sizeof(region_hdr));
+    memset(containers, 0,
+           KAFS_TAILMETA_DEFAULT_CLASS_COUNT * sizeof(kafs_tailmeta_container_hdr_t));
+    for (uint16_t index = 0; index < KAFS_TAILMETA_DEFAULT_CLASS_COUNT; ++index)
+    {
+      uint16_t class_bytes = kafs_tailmeta_default_class_bytes(index);
+      uint16_t slot_count = kafs_tailmeta_default_slot_count_for_class(blksize, class_bytes);
+      uint32_t slot_table_off =
+          (uint32_t)((size_t)blksize * (size_t)(KAFS_TAILMETA_DEFAULT_REGION_META_BLOCKS + index));
+
+      kafs_tailmeta_container_hdr_init(&containers[index]);
+      kafs_tailmeta_container_hdr_class_bytes_set(&containers[index], class_bytes);
+      kafs_tailmeta_container_hdr_slot_count_set(&containers[index], slot_count);
+      kafs_tailmeta_container_hdr_free_bytes_set(&containers[index],
+                                                 (uint16_t)(slot_count * class_bytes));
+      kafs_tailmeta_container_hdr_slot_table_off_set(&containers[index], slot_table_off);
+      kafs_tailmeta_container_hdr_slot_table_bytes_set(
+          &containers[index], (uint32_t)(slot_count * sizeof(kafs_tailmeta_slot_desc_t)));
+    }
+  }
+}
+
 int main(int argc, char **argv)
 {
   mkfs_options_t opts;
@@ -591,191 +774,17 @@ int main(int argc, char **argv)
     return prepare_rc;
 
   off_t mapsize = layout.mapsize;
-  ctx.c_superblock = NULL;
-  ctx.c_blkmasktbl = (void *)layout.blkmask_off;
-  ctx.c_inotbl = (void *)layout.inotbl_off;
-
-  ctx.c_superblock = mmap(NULL, mapsize, PROT_READ | PROT_WRITE, MAP_SHARED, ctx.c_fd, 0);
-  if (ctx.c_superblock == MAP_FAILED)
-  {
-    perror("mmap");
+  if (mkfs_map_metadata(&ctx, mapsize, blkcnt, format_version, inocnt, &layout) != 0)
     return 1;
-  }
-  // Reformat safety: clear the full metadata mapping so stale pendinglog/journal/HRL
-  // state from previous formats cannot survive when the superblock shape remains valid.
-  memset(ctx.c_superblock, 0, (size_t)mapsize);
-  // 先頭アドレスにオフセットを加算（byte単位）
-  ctx.c_blkmasktbl = (kafs_blkmask_t *)((char *)ctx.c_superblock + (intptr_t)ctx.c_blkmasktbl);
-  ctx.c_inotbl = (kafs_sinode_t *)((char *)ctx.c_superblock + (intptr_t)ctx.c_inotbl);
 
-  // 境界チェックとゼロ初期化
-  size_t blkmask_bytes = ((size_t)blkcnt + 7) >> 3; // ビットマップの総バイト数
-  size_t inotbl_bytes = (size_t)kafs_inode_table_bytes_for_format(format_version, inocnt);
-  char *base = (char *)ctx.c_superblock;
-  char *end = base + mapsize;
-  char *bm_ptr = (char *)ctx.c_blkmasktbl;
-  char *ino_ptr = (char *)ctx.c_inotbl;
-  assert(bm_ptr >= base && bm_ptr + blkmask_bytes <= end);
-  assert(ino_ptr >= base && ino_ptr + inotbl_bytes <= end);
-  memset(bm_ptr, 0, blkmask_bytes);
-  memset(ino_ptr, 0, inotbl_bytes);
-  if (layout.allocator_size > 0)
-  {
-    char *alloc_ptr = (char *)ctx.c_superblock + layout.allocator_off;
-    assert(alloc_ptr >= base && alloc_ptr + layout.allocator_size <= end);
-    memset(alloc_ptr, 0, layout.allocator_size);
-  }
-
-  // スーパーブロック基本
-  kafs_sb_log_blksize_set(ctx.c_superblock, log_blksize);
-  kafs_sb_magic_set(ctx.c_superblock, KAFS_MAGIC);
-  kafs_sb_format_version_set(ctx.c_superblock, format_version);
-  kafs_sb_hash_fast_set(ctx.c_superblock, KAFS_HASH_FAST_XXH64);
-  kafs_sb_hash_strong_set(ctx.c_superblock, KAFS_HASH_STRONG_BLAKE3_256);
-  // HRL領域の割当
-  kafs_sb_hrl_index_offset_set(ctx.c_superblock, (uint64_t)layout.hrl_index_off);
-  kafs_sb_hrl_index_size_set(ctx.c_superblock, (uint64_t)layout.hrl_index_size);
-  kafs_sb_hrl_entry_offset_set(ctx.c_superblock, (uint64_t)layout.hrl_entry_off);
-  kafs_sb_hrl_entry_cnt_set(ctx.c_superblock, (uint32_t)layout.hrl_entry_cnt);
-  // Journal region metadata
-  kafs_sb_journal_offset_set(ctx.c_superblock, (uint64_t)layout.journal_off);
-  kafs_sb_journal_size_set(ctx.c_superblock, (uint64_t)journal_bytes);
-  kafs_sb_journal_flags_set(ctx.c_superblock, 0);
-  kafs_sb_allocator_version_set(ctx.c_superblock, 2);
-  kafs_sb_allocator_offset_set(ctx.c_superblock, (uint64_t)layout.allocator_off);
-  kafs_sb_allocator_size_set(ctx.c_superblock, (uint64_t)layout.allocator_size);
-  kafs_sb_pendinglog_offset_set(ctx.c_superblock, (uint64_t)layout.pendinglog_off);
-  kafs_sb_pendinglog_size_set(ctx.c_superblock, (uint64_t)layout.pendinglog_size);
-  kafs_sb_checkpoint_seq_set(ctx.c_superblock, 0);
-  kafs_sb_commit_seq_set(ctx.c_superblock, 0);
-  kafs_sb_tailmeta_offset_set(ctx.c_superblock, (uint64_t)layout.tailmeta_off);
-  kafs_sb_tailmeta_size_set(ctx.c_superblock, (uint64_t)layout.tailmeta_size);
-  kafs_sb_feature_flags_set(ctx.c_superblock, mkfs_feature_flags_for_format(format_version));
-  kafs_sb_compat_flags_set(ctx.c_superblock, 0);
-
-  // R/O items
-  ctx.c_superblock->s_inocnt = kafs_inocnt_htos(inocnt);
-  // root inode uses one entry
-  kafs_sb_inocnt_free_set(ctx.c_superblock,
-                          (inocnt > (kafs_inocnt_t)KAFS_INO_ROOTDIR) ? (inocnt - 1) : 0);
-  // 一般/ルートどちらも同一のブロック数で初期化（シンプル化）
-  ctx.c_superblock->s_blkcnt = kafs_blkcnt_htos(blkcnt);
-  ctx.c_superblock->s_r_blkcnt = kafs_blkcnt_htos(blkcnt);
-  kafs_blkcnt_t fdb = (kafs_blkcnt_t)(mapsize >> log_blksize);
-  ctx.c_superblock->s_first_data_block = kafs_blkcnt_htos(fdb);
-  kafs_sb_blkcnt_free_set(ctx.c_superblock, blkcnt - fdb);
-
-  for (kafs_blkcnt_t blo = 0; blo < fdb; ++blo)
-    kafs_blk_set_usage(&ctx, blo, KAFS_TRUE);
-
-  // root inode
-  // inotbl はゼロ初期化済み
-  kafs_sinode_t *inoent_rootdir = (kafs_sinode_t *)kafs_inode_ptr_in_table(
-      ctx.c_inotbl, kafs_sb_format_version_get(ctx.c_superblock), KAFS_INO_ROOTDIR);
-  // 安全性チェック
-  {
-    char *p = (char *)inoent_rootdir;
-    char *base2 = (char *)ctx.c_superblock;
-    char *end2 = base2 + mapsize;
-    if (!(p >= base2 && p + sizeof(*inoent_rootdir) <= end2))
-    {
-      fprintf(stderr, "inotbl/root inode out of range: ptr=%p base=%p end=%p mapsize=%lld\n",
-              (void *)p, (void *)base2, (void *)end2, (long long)mapsize);
-      abort();
-    }
-  }
-  kafs_ino_mode_set(inoent_rootdir, S_IFDIR | 0755);
-  // For unprivileged FUSE mounts, make the filesystem root owned by the image creator.
-  kafs_ino_uid_set(inoent_rootdir, (kafs_uid_t)getuid());
-  kafs_ino_size_set(inoent_rootdir, 0);
-  kafs_time_t now = kafs_now();
-  kafs_time_t nulltime = (kafs_time_t){0, 0};
-  kafs_ino_atime_set(inoent_rootdir, now);
-  kafs_ino_ctime_set(inoent_rootdir, now);
-  kafs_ino_mtime_set(inoent_rootdir, now);
-  kafs_ino_dtime_set(inoent_rootdir, nulltime);
-  kafs_ino_gid_set(inoent_rootdir, (kafs_gid_t)getgid());
-  // ログ呼び出しを避けて直接設定（デバッグ）
-  inoent_rootdir->i_linkcnt = kafs_linkcnt_htos(1);
-  kafs_ino_blocks_set(inoent_rootdir, 0);
-  kafs_ino_dev_set(inoent_rootdir, 0);
-  kafs_sdir_v4_hdr_t root_dir_hdr;
-  kafs_dir_v4_hdr_init(&root_dir_hdr);
-  memcpy(inoent_rootdir->i_blkreftbl, &root_dir_hdr, sizeof(root_dir_hdr));
-  kafs_ino_size_set(inoent_rootdir, (kafs_off_t)sizeof(root_dir_hdr));
-  // ルートディレクトリの実レコードは空開始（"." は readdir で注入、".." は保持しない）
-
-  // HRL 初期化（ゼロクリア）
-  ctx.c_hrl_index = (void *)((char *)ctx.c_superblock + layout.hrl_index_off);
-  ctx.c_hrl_bucket_cnt = layout.hrl_bucket_cnt;
-  (void)kafs_hrl_format(&ctx);
-
-  // Journal header 初期化（fresh image が fsck --fast-check を通る前提）
-  {
-    size_t hsz = kj_header_size();
-    if (journal_bytes > hsz)
-    {
-      kj_header_t jh;
-      memset(&jh, 0, sizeof(jh));
-      jh.magic = KJ_MAGIC;
-      jh.version = KJ_VER;
-      jh.flags = 0;
-      jh.area_size = (uint64_t)journal_bytes - (uint64_t)hsz;
-      jh.write_off = 0;
-      jh.seq = 0;
-      jh.reserved0 = 0;
-      jh.header_crc = 0;
-      jh.header_crc = kj_crc32(&jh, sizeof(jh));
-
-      char *jhdr_ptr = (char *)ctx.c_superblock + layout.journal_off;
-      char *base3 = (char *)ctx.c_superblock;
-      char *end3 = base3 + mapsize;
-      assert(jhdr_ptr >= base3 && jhdr_ptr + sizeof(jh) <= end3);
-      memcpy(jhdr_ptr, &jh, sizeof(jh));
-    }
-  }
-
-  if (layout.tailmeta_size >= sizeof(kafs_tailmeta_region_hdr_t))
-  {
-    kafs_tailmeta_region_hdr_t region_hdr;
-    char *tailmeta_ptr = (char *)ctx.c_superblock + layout.tailmeta_off;
-    char *base4 = (char *)ctx.c_superblock;
-    char *end4 = base4 + mapsize;
-
-    assert(tailmeta_ptr >= base4 && tailmeta_ptr + layout.tailmeta_size <= end4);
-    kafs_tailmeta_region_hdr_init(&region_hdr);
-    kafs_tailmeta_region_hdr_container_table_off_set(&region_hdr, (uint32_t)sizeof(region_hdr));
-    kafs_tailmeta_region_hdr_container_table_bytes_set(
-        &region_hdr,
-        (uint32_t)(KAFS_TAILMETA_DEFAULT_CLASS_COUNT * sizeof(kafs_tailmeta_container_hdr_t)));
-    kafs_tailmeta_region_hdr_container_count_set(&region_hdr, KAFS_TAILMETA_DEFAULT_CLASS_COUNT);
-    kafs_tailmeta_region_hdr_class_count_set(&region_hdr, KAFS_TAILMETA_DEFAULT_CLASS_COUNT);
-    memcpy(tailmeta_ptr, &region_hdr, sizeof(region_hdr));
-
-    kafs_tailmeta_container_hdr_t *containers =
-        (kafs_tailmeta_container_hdr_t *)(tailmeta_ptr + sizeof(region_hdr));
-    memset(containers, 0,
-           KAFS_TAILMETA_DEFAULT_CLASS_COUNT * sizeof(kafs_tailmeta_container_hdr_t));
-    for (uint16_t index = 0; index < KAFS_TAILMETA_DEFAULT_CLASS_COUNT; ++index)
-    {
-      uint16_t class_bytes = kafs_tailmeta_default_class_bytes(index);
-      uint16_t slot_count = kafs_tailmeta_default_slot_count_for_class(blksize, class_bytes);
-      uint32_t slot_table_off =
-          (uint32_t)((size_t)blksize * (size_t)(KAFS_TAILMETA_DEFAULT_REGION_META_BLOCKS + index));
-
-      kafs_tailmeta_container_hdr_init(&containers[index]);
-      kafs_tailmeta_container_hdr_class_bytes_set(&containers[index], class_bytes);
-      kafs_tailmeta_container_hdr_slot_count_set(&containers[index], slot_count);
-      kafs_tailmeta_container_hdr_free_bytes_set(&containers[index],
-                                                 (uint16_t)(slot_count * class_bytes));
-      kafs_tailmeta_container_hdr_slot_table_off_set(&containers[index], slot_table_off);
-      kafs_tailmeta_container_hdr_slot_table_bytes_set(
-          &containers[index], (uint32_t)(slot_count * sizeof(kafs_tailmeta_slot_desc_t)));
-    }
-  }
+  mkfs_init_superblock(&ctx, format_version, log_blksize, inocnt, blkcnt, mapsize, journal_bytes,
+                       &layout);
+  mkfs_init_root_inode(&ctx, format_version, mapsize);
+  mkfs_init_runtime_regions(&ctx, &layout, journal_bytes, blksize, mapsize);
 
   if (trim_data_area)
   {
+    kafs_blkcnt_t fdb = (kafs_blkcnt_t)(mapsize >> log_blksize);
     off_t data_off = (off_t)fdb << log_blksize;
     off_t data_len = ((off_t)blkcnt - (off_t)fdb) << log_blksize;
     int trc = mkfs_trim_range(ctx.c_fd, data_off, data_len);
