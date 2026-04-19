@@ -2,7 +2,6 @@
 #include "kafs_cli_opts.h"
 #include "kafs_core.h"
 #include "kafs_rpc.h"
-#include "kafs_superblock.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -645,6 +644,205 @@ static int cmd_hotplug_set_runtime(const char *mnt, int argc, char **argv)
     return 1;
   }
   return 0;
+}
+
+static int cmd_hotplug_status(const char *mnt, int json);
+static int cmd_hotplug_restart(const char *mnt);
+static int cmd_hotplug_compat(const char *mnt, int json);
+static int cmd_hotplug_set_timeout(const char *mnt, const char *timeout_str);
+static int cmd_hotplug_set_dedup_priority(const char *mnt, const char *mode_str,
+                                          const char *nice_str);
+static int cmd_hotplug_env_list(const char *mnt);
+static int cmd_hotplug_env_set(const char *mnt, const char *kv);
+static int cmd_hotplug_env_unset(const char *mnt, const char *key);
+static int cmd_stats(const char *mnt, int json, int verbose, kafs_unit_t unit);
+static int cmd_chmod(const char *mnt, const char *mode_str, const char *path);
+
+typedef int (*kafsctl_path_cmd_fn)(const char *mountpoint, const char *path);
+
+static int kafsctl_dispatch_path_cmd(int argc, char **argv, kafsctl_path_cmd_fn fn)
+{
+  if (argc == 3)
+    return fn(NULL, argv[2]);
+  if (argc != 4)
+  {
+    usage(argv[0]);
+    return 2;
+  }
+  return fn(argv[2], argv[3]);
+}
+
+static int kafsctl_dispatch_chmod_cmd(int argc, char **argv)
+{
+  if (argc == 4)
+    return cmd_chmod(NULL, argv[2], argv[3]);
+  if (argc != 5)
+  {
+    usage(argv[0]);
+    return 2;
+  }
+  return cmd_chmod(argv[2], argv[3], argv[4]);
+}
+
+static int kafsctl_handle_migrate_command(int argc, char **argv)
+{
+  int assume_yes = 0;
+  for (int i = 3; i < argc; ++i)
+  {
+    if (strcmp(argv[i], "--yes") == 0)
+      assume_yes = 1;
+    else
+    {
+      usage(argv[0]);
+      return 2;
+    }
+  }
+  return cmd_migrate(argv[2], assume_yes);
+}
+
+static int kafsctl_handle_fsstat_command(int argc, char **argv)
+{
+  int json = 0;
+  int verbose = 0;
+  kafs_unit_t unit = KAFS_UNIT_KIB;
+
+  for (int i = 3; i < argc; ++i)
+  {
+    if (strcmp(argv[i], "--json") == 0)
+      json = 1;
+    else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0)
+      verbose = 1;
+    else if (strcmp(argv[i], "--bytes") == 0)
+      unit = KAFS_UNIT_BYTES;
+    else if (strcmp(argv[i], "--mib") == 0)
+      unit = KAFS_UNIT_MIB;
+    else if (strcmp(argv[i], "--gib") == 0)
+      unit = KAFS_UNIT_GIB;
+    else
+    {
+      usage(argv[0]);
+      return 2;
+    }
+  }
+
+  return cmd_stats(argv[2], json, verbose, unit);
+}
+
+static int kafsctl_handle_hotplug_env_command(int argc, char **argv)
+{
+  if (argc < 5)
+  {
+    usage(argv[0]);
+    return 2;
+  }
+  if (strcmp(argv[3], "list") == 0)
+  {
+    if (argc != 5)
+    {
+      usage(argv[0]);
+      return 2;
+    }
+    return cmd_hotplug_env_list(argv[4]);
+  }
+  if (strcmp(argv[3], "set") == 0)
+  {
+    if (argc != 6)
+    {
+      usage(argv[0]);
+      return 2;
+    }
+    return cmd_hotplug_env_set(argv[4], argv[5]);
+  }
+  if (strcmp(argv[3], "unset") == 0)
+  {
+    if (argc != 6)
+    {
+      usage(argv[0]);
+      return 2;
+    }
+    return cmd_hotplug_env_unset(argv[4], argv[5]);
+  }
+  usage(argv[0]);
+  return 2;
+}
+
+static int kafsctl_parse_json_flag_args(int argc, char **argv, int start_index, int *json_out)
+{
+  for (int i = start_index; i < argc; ++i)
+  {
+    if (strcmp(argv[i], "--json") == 0)
+      *json_out = 1;
+    else
+    {
+      usage(argv[0]);
+      return 2;
+    }
+  }
+  return 0;
+}
+
+static int kafsctl_handle_hotplug_command(int argc, char **argv)
+{
+  if (argc < 4)
+  {
+    usage(argv[0]);
+    return 2;
+  }
+  if (strcmp(argv[2], "status") == 0)
+  {
+    int json = 0;
+    if (kafsctl_parse_json_flag_args(argc, argv, 4, &json) != 0)
+      return 2;
+    return cmd_hotplug_status(argv[3], json);
+  }
+  if (strcmp(argv[2], "restart-back") == 0)
+  {
+    if (argc != 4)
+    {
+      usage(argv[0]);
+      return 2;
+    }
+    return cmd_hotplug_restart(argv[3]);
+  }
+  if (strcmp(argv[2], "compat") == 0)
+  {
+    int json = 0;
+    if (kafsctl_parse_json_flag_args(argc, argv, 4, &json) != 0)
+      return 2;
+    return cmd_hotplug_compat(argv[3], json);
+  }
+  if (strcmp(argv[2], "set-timeout") == 0)
+  {
+    if (argc != 5)
+    {
+      usage(argv[0]);
+      return 2;
+    }
+    return cmd_hotplug_set_timeout(argv[3], argv[4]);
+  }
+  if (strcmp(argv[2], "set-dedup-priority") == 0)
+  {
+    if (argc != 5 && argc != 6)
+    {
+      usage(argv[0]);
+      return 2;
+    }
+    return cmd_hotplug_set_dedup_priority(argv[3], argv[4], argc == 6 ? argv[5] : NULL);
+  }
+  if (strcmp(argv[2], "set-runtime") == 0)
+  {
+    if (argc < 5)
+    {
+      usage(argv[0]);
+      return 2;
+    }
+    return cmd_hotplug_set_runtime(argv[3], argc - 4, &argv[4]);
+  }
+  if (strcmp(argv[2], "env") == 0)
+    return kafsctl_handle_hotplug_env_command(argc, argv);
+
+  usage(argv[0]);
+  return 2;
 }
 
 #define KAFS_CTL_REL ".kafs.sock"
@@ -3213,196 +3411,22 @@ int main(int argc, char **argv)
   }
 
   if (strcmp(argv[1], "migrate") == 0)
-  {
-    int assume_yes = 0;
-    for (int i = 3; i < argc; ++i)
-    {
-      if (strcmp(argv[i], "--yes") == 0)
-        assume_yes = 1;
-      else
-      {
-        usage(argv[0]);
-        return 2;
-      }
-    }
-    return cmd_migrate(argv[2], assume_yes);
-  }
+    return kafsctl_handle_migrate_command(argc, argv);
 
   if (strcmp(argv[1], "fsstat") == 0 || strcmp(argv[1], "stats") == 0)
-  {
-    int json = 0;
-    int verbose = 0;
-    kafs_unit_t unit = KAFS_UNIT_KIB;
-    for (int i = 3; i < argc; ++i)
-    {
-      if (strcmp(argv[i], "--json") == 0)
-        json = 1;
-      else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0)
-        verbose = 1;
-      else if (strcmp(argv[i], "--bytes") == 0)
-        unit = KAFS_UNIT_BYTES;
-      else if (strcmp(argv[i], "--mib") == 0)
-        unit = KAFS_UNIT_MIB;
-      else if (strcmp(argv[i], "--gib") == 0)
-        unit = KAFS_UNIT_GIB;
-      else
-      {
-        usage(argv[0]);
-        return 2;
-      }
-    }
-    return cmd_stats(argv[2], json, verbose, unit);
-  }
+    return kafsctl_handle_fsstat_command(argc, argv);
 
   if (strcmp(argv[1], "hotplug") == 0)
-  {
-    if (argc < 4)
-    {
-      usage(argv[0]);
-      return 2;
-    }
-    if (strcmp(argv[2], "status") == 0)
-    {
-      int json = 0;
-      for (int i = 4; i < argc; ++i)
-      {
-        if (strcmp(argv[i], "--json") == 0)
-          json = 1;
-        else
-        {
-          usage(argv[0]);
-          return 2;
-        }
-      }
-      return cmd_hotplug_status(argv[3], json);
-    }
-    if (strcmp(argv[2], "restart-back") == 0)
-    {
-      if (argc != 4)
-      {
-        usage(argv[0]);
-        return 2;
-      }
-      return cmd_hotplug_restart(argv[3]);
-    }
-    if (strcmp(argv[2], "compat") == 0)
-    {
-      int json = 0;
-      for (int i = 4; i < argc; ++i)
-      {
-        if (strcmp(argv[i], "--json") == 0)
-          json = 1;
-        else
-        {
-          usage(argv[0]);
-          return 2;
-        }
-      }
-      return cmd_hotplug_compat(argv[3], json);
-    }
-    if (strcmp(argv[2], "set-timeout") == 0)
-    {
-      if (argc != 5)
-      {
-        usage(argv[0]);
-        return 2;
-      }
-      return cmd_hotplug_set_timeout(argv[3], argv[4]);
-    }
-    if (strcmp(argv[2], "set-dedup-priority") == 0)
-    {
-      if (argc != 5 && argc != 6)
-      {
-        usage(argv[0]);
-        return 2;
-      }
-      return cmd_hotplug_set_dedup_priority(argv[3], argv[4], argc == 6 ? argv[5] : NULL);
-    }
-    if (strcmp(argv[2], "set-runtime") == 0)
-    {
-      if (argc < 5)
-      {
-        usage(argv[0]);
-        return 2;
-      }
-      return cmd_hotplug_set_runtime(argv[3], argc - 4, &argv[4]);
-    }
-    if (strcmp(argv[2], "env") == 0)
-    {
-      if (argc < 5)
-      {
-        usage(argv[0]);
-        return 2;
-      }
-      if (strcmp(argv[3], "list") == 0)
-      {
-        if (argc != 5)
-        {
-          usage(argv[0]);
-          return 2;
-        }
-        return cmd_hotplug_env_list(argv[4]);
-      }
-      if (strcmp(argv[3], "set") == 0)
-      {
-        if (argc != 6)
-        {
-          usage(argv[0]);
-          return 2;
-        }
-        return cmd_hotplug_env_set(argv[4], argv[5]);
-      }
-      if (strcmp(argv[3], "unset") == 0)
-      {
-        if (argc != 6)
-        {
-          usage(argv[0]);
-          return 2;
-        }
-        return cmd_hotplug_env_unset(argv[4], argv[5]);
-      }
-      usage(argv[0]);
-      return 2;
-    }
-    usage(argv[0]);
-    return 2;
-  }
+    return kafsctl_handle_hotplug_command(argc, argv);
 
   if (strcmp(argv[1], "stat") == 0)
-  {
-    if (argc == 3)
-      return cmd_stat(NULL, argv[2]);
-    if (argc != 4)
-    {
-      usage(argv[0]);
-      return 2;
-    }
-    return cmd_stat(argv[2], argv[3]);
-  }
+    return kafsctl_dispatch_path_cmd(argc, argv, cmd_stat);
 
   if (strcmp(argv[1], "cat") == 0)
-  {
-    if (argc == 3)
-      return cmd_cat(NULL, argv[2]);
-    if (argc != 4)
-    {
-      usage(argv[0]);
-      return 2;
-    }
-    return cmd_cat(argv[2], argv[3]);
-  }
+    return kafsctl_dispatch_path_cmd(argc, argv, cmd_cat);
 
   if (strcmp(argv[1], "write") == 0)
-  {
-    if (argc == 3)
-      return cmd_write(NULL, argv[2]);
-    if (argc != 4)
-    {
-      usage(argv[0]);
-      return 2;
-    }
-    return cmd_write(argv[2], argv[3]);
-  }
+    return kafsctl_dispatch_path_cmd(argc, argv, cmd_write);
 
   if (strcmp(argv[1], "cp") == 0)
   {
@@ -3442,40 +3466,13 @@ int main(int argc, char **argv)
   }
 
   if (strcmp(argv[1], "rm") == 0)
-  {
-    if (argc == 3)
-      return cmd_rm(NULL, argv[2]);
-    if (argc != 4)
-    {
-      usage(argv[0]);
-      return 2;
-    }
-    return cmd_rm(argv[2], argv[3]);
-  }
+    return kafsctl_dispatch_path_cmd(argc, argv, cmd_rm);
 
   if (strcmp(argv[1], "mkdir") == 0)
-  {
-    if (argc == 3)
-      return cmd_mkdir(NULL, argv[2]);
-    if (argc != 4)
-    {
-      usage(argv[0]);
-      return 2;
-    }
-    return cmd_mkdir(argv[2], argv[3]);
-  }
+    return kafsctl_dispatch_path_cmd(argc, argv, cmd_mkdir);
 
   if (strcmp(argv[1], "rmdir") == 0)
-  {
-    if (argc == 3)
-      return cmd_rmdir(NULL, argv[2]);
-    if (argc != 4)
-    {
-      usage(argv[0]);
-      return 2;
-    }
-    return cmd_rmdir(argv[2], argv[3]);
-  }
+    return kafsctl_dispatch_path_cmd(argc, argv, cmd_rmdir);
 
   if (strcmp(argv[1], "ln") == 0)
     return cmd_ln_dispatch(argc, argv);
@@ -3503,40 +3500,13 @@ int main(int argc, char **argv)
   }
 
   if (strcmp(argv[1], "readlink") == 0)
-  {
-    if (argc == 3)
-      return cmd_readlink(NULL, argv[2]);
-    if (argc != 4)
-    {
-      usage(argv[0]);
-      return 2;
-    }
-    return cmd_readlink(argv[2], argv[3]);
-  }
+    return kafsctl_dispatch_path_cmd(argc, argv, cmd_readlink);
 
   if (strcmp(argv[1], "chmod") == 0)
-  {
-    if (argc == 4)
-      return cmd_chmod(NULL, argv[2], argv[3]);
-    if (argc != 5)
-    {
-      usage(argv[0]);
-      return 2;
-    }
-    return cmd_chmod(argv[2], argv[3], argv[4]);
-  }
+    return kafsctl_dispatch_chmod_cmd(argc, argv);
 
   if (strcmp(argv[1], "touch") == 0)
-  {
-    if (argc == 3)
-      return cmd_touch(NULL, argv[2]);
-    if (argc != 4)
-    {
-      usage(argv[0]);
-      return 2;
-    }
-    return cmd_touch(argv[2], argv[3]);
-  }
+    return kafsctl_dispatch_path_cmd(argc, argv, cmd_touch);
 
   usage(argv[0]);
   return 2;
