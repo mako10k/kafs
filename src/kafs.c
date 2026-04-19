@@ -8380,6 +8380,87 @@ static int kafs_op_truncate(const char *path, off_t size, struct fuse_file_info 
   return rc == 0 ? 0 : rc;
 }
 
+static int kafs_fallocate_expand_locked(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                        uint32_t ino, kafs_off_t end_req)
+{
+  kafs_inode_lock(ctx, ino);
+  kafs_off_t filesize = kafs_ino_size_get(inoent);
+  int rc = 0;
+  if (end_req > filesize)
+    rc = kafs_truncate(ctx, inoent, end_req);
+  kafs_inode_unlock(ctx, ino);
+  return rc;
+}
+
+static int kafs_fallocate_zero_left_edge(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                         kafs_off_t offset, kafs_off_t end, kafs_blksize_t blksize,
+                                         kafs_logblksize_t log_blksize)
+{
+  if ((offset & ((kafs_off_t)blksize - 1)) == 0)
+    return 0;
+
+  kafs_iblkcnt_t iblo = (kafs_iblkcnt_t)(offset >> log_blksize);
+  char wbuf[blksize];
+  int rc = kafs_ino_iblk_read_or_zero(ctx, inoent, iblo, wbuf);
+  if (rc < 0)
+    return rc;
+
+  kafs_blksize_t start = (kafs_blksize_t)(offset & ((kafs_off_t)blksize - 1));
+  kafs_blksize_t stop = blksize;
+  if ((kafs_off_t)(iblo + 1) << log_blksize > end)
+    stop = (kafs_blksize_t)(end & ((kafs_off_t)blksize - 1));
+  if (stop <= start)
+    return 0;
+
+  memset(wbuf + start, 0, stop - start);
+  return kafs_ino_iblk_write(ctx, inoent, iblo, wbuf);
+}
+
+static int kafs_fallocate_release_full_blocks(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                              kafs_off_t filesize, kafs_iblkcnt_t first_full,
+                                              kafs_iblkcnt_t last_full_excl)
+{
+  if (filesize <= KAFS_INODE_DIRECT_BYTES)
+    return 0;
+
+  for (kafs_iblkcnt_t iblo = first_full; iblo < last_full_excl; ++iblo)
+  {
+    int rc = kafs_ino_iblk_release(ctx, inoent, iblo);
+    if (rc < 0)
+      return rc;
+  }
+  return 0;
+}
+
+static int kafs_fallocate_zero_right_edge(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                          kafs_off_t offset, kafs_off_t end, kafs_off_t filesize,
+                                          kafs_blksize_t blksize, kafs_logblksize_t log_blksize)
+{
+  if ((end & ((kafs_off_t)blksize - 1)) == 0)
+    return 0;
+
+  kafs_iblkcnt_t iblo = (kafs_iblkcnt_t)(end >> log_blksize);
+  if ((offset >> log_blksize) == (kafs_off_t)iblo && (offset & ((kafs_off_t)blksize - 1)) != 0)
+    return 0;
+
+  kafs_blksize_t stop = (kafs_blksize_t)(end & ((kafs_off_t)blksize - 1));
+  if (end == filesize)
+  {
+    kafs_blksize_t valid = (kafs_blksize_t)(filesize & ((kafs_off_t)blksize - 1));
+    if (valid == 0)
+      valid = blksize;
+    if (stop == valid && filesize > KAFS_INODE_DIRECT_BYTES)
+      return kafs_ino_iblk_release(ctx, inoent, iblo);
+  }
+
+  char wbuf[blksize];
+  int rc = kafs_ino_iblk_read_or_zero(ctx, inoent, iblo, wbuf);
+  if (rc < 0)
+    return rc;
+  memset(wbuf, 0, stop);
+  return kafs_ino_iblk_write(ctx, inoent, iblo, wbuf);
+}
+
 static int kafs_op_fallocate(const char *path, int mode, off_t offset, off_t length,
                              struct fuse_file_info *fi)
 {
@@ -8416,13 +8497,7 @@ static int kafs_op_fallocate(const char *path, int mode, off_t offset, off_t len
     if ((mode & FALLOC_FL_KEEP_SIZE) != 0)
       return 0;
 
-    kafs_inode_lock(ctx, ino);
-    kafs_off_t filesize = kafs_ino_size_get(inoent);
-    int rc = 0;
-    if (end_req > filesize)
-      rc = kafs_truncate(ctx, inoent, end_req);
-    kafs_inode_unlock(ctx, ino);
-    return rc;
+    return kafs_fallocate_expand_locked(ctx, inoent, ino, end_req);
   }
 
   if ((mode & FALLOC_FL_KEEP_SIZE) == 0)
@@ -8444,88 +8519,18 @@ static int kafs_op_fallocate(const char *path, int mode, off_t offset, off_t len
 
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
   kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
-  char zbuf[blksize];
-  memset(zbuf, 0, blksize);
+  rc = kafs_fallocate_zero_left_edge(ctx, inoent, (kafs_off_t)offset, end, blksize, log_blksize);
+  if (rc < 0)
+    goto fallocate_unlock;
 
-  // 左端の部分ブロックは穴化せずゼロ埋めする。
-  if (((kafs_off_t)offset & ((kafs_off_t)blksize - 1)) != 0)
-  {
-    kafs_iblkcnt_t iblo = (kafs_iblkcnt_t)((kafs_off_t)offset >> log_blksize);
-    char wbuf[blksize];
-    rc = kafs_ino_iblk_read_or_zero(ctx, inoent, iblo, wbuf);
-    if (rc < 0)
-      goto fallocate_unlock;
-    kafs_blksize_t s = (kafs_blksize_t)((kafs_off_t)offset & ((kafs_off_t)blksize - 1));
-    kafs_blksize_t e = blksize;
-    if ((kafs_off_t)(iblo + 1) << log_blksize > end)
-      e = (kafs_blksize_t)(end & ((kafs_off_t)blksize - 1));
-    if (e > s)
-    {
-      memset(wbuf + s, 0, e - s);
-      rc = kafs_ino_iblk_write(ctx, inoent, iblo, wbuf);
-      if (rc < 0)
-        goto fallocate_unlock;
-    }
-  }
-
-  // 完全に範囲に含まれるブロックのみ穴化する。
   kafs_iblkcnt_t first_full = (kafs_iblkcnt_t)(((kafs_off_t)offset + blksize - 1) >> log_blksize);
   kafs_iblkcnt_t last_full_excl = (kafs_iblkcnt_t)(end >> log_blksize);
-  for (kafs_iblkcnt_t iblo = first_full; iblo < last_full_excl; ++iblo)
-  {
-    if (filesize > KAFS_INODE_DIRECT_BYTES)
-    {
-      rc = kafs_ino_iblk_release(ctx, inoent, iblo);
-      if (rc < 0)
-        goto fallocate_unlock;
-    }
-  }
+  rc = kafs_fallocate_release_full_blocks(ctx, inoent, filesize, first_full, last_full_excl);
+  if (rc < 0)
+    goto fallocate_unlock;
 
-  // 右端の部分ブロックは穴化せずゼロ埋めする。
-  if ((end & ((kafs_off_t)blksize - 1)) != 0)
-  {
-    kafs_iblkcnt_t iblo = (kafs_iblkcnt_t)(end >> log_blksize);
-    if (((kafs_off_t)offset >> log_blksize) != (kafs_off_t)iblo ||
-        ((kafs_off_t)offset & ((kafs_off_t)blksize - 1)) == 0)
-    {
-      kafs_blksize_t e = (kafs_blksize_t)(end & ((kafs_off_t)blksize - 1));
-      // 右端が EOF の場合、EOF 外は hole とみなし、論理ファイル範囲が全て対象なら穴化する。
-      if (end == filesize)
-      {
-        kafs_blksize_t valid = (kafs_blksize_t)(filesize & ((kafs_off_t)blksize - 1));
-        if (valid == 0)
-          valid = blksize;
-        if (e == valid && filesize > KAFS_INODE_DIRECT_BYTES)
-        {
-          rc = kafs_ino_iblk_release(ctx, inoent, iblo);
-          if (rc < 0)
-            goto fallocate_unlock;
-        }
-        else
-        {
-          char wbuf[blksize];
-          rc = kafs_ino_iblk_read_or_zero(ctx, inoent, iblo, wbuf);
-          if (rc < 0)
-            goto fallocate_unlock;
-          memset(wbuf, 0, e);
-          rc = kafs_ino_iblk_write(ctx, inoent, iblo, wbuf);
-          if (rc < 0)
-            goto fallocate_unlock;
-        }
-      }
-      else
-      {
-        char wbuf[blksize];
-        rc = kafs_ino_iblk_read_or_zero(ctx, inoent, iblo, wbuf);
-        if (rc < 0)
-          goto fallocate_unlock;
-        memset(wbuf, 0, e);
-        rc = kafs_ino_iblk_write(ctx, inoent, iblo, wbuf);
-        if (rc < 0)
-          goto fallocate_unlock;
-      }
-    }
-  }
+  rc = kafs_fallocate_zero_right_edge(ctx, inoent, (kafs_off_t)offset, end, filesize, blksize,
+                                      log_blksize);
 
 fallocate_unlock:
   kafs_inode_unlock(ctx, ino);
