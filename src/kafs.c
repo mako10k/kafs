@@ -4614,6 +4614,181 @@ out_success:
   return size;
 }
 
+static int kafs_truncate_push_free_ref(kafs_blkcnt_t **deferred_free, size_t *deferred_free_cnt,
+                                       size_t *deferred_free_cap, kafs_blkcnt_t blo)
+{
+  if (blo == KAFS_BLO_NONE)
+    return 0;
+  if (*deferred_free_cnt == *deferred_free_cap)
+  {
+    size_t new_cap = *deferred_free_cap ? (*deferred_free_cap << 1) : 256u;
+    kafs_blkcnt_t *nw = realloc(*deferred_free, new_cap * sizeof(*nw));
+    if (!nw)
+      return -ENOMEM;
+    *deferred_free = nw;
+    *deferred_free_cap = new_cap;
+  }
+  (*deferred_free)[(*deferred_free_cnt)++] = blo;
+  return 0;
+}
+
+static int kafs_truncate_collect_free_range(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                            kafs_iblkcnt_t start, kafs_iblkcnt_t end,
+                                            kafs_blkcnt_t **deferred_free,
+                                            size_t *deferred_free_cnt, size_t *deferred_free_cap)
+{
+  for (kafs_iblkcnt_t iblo = start; iblo < end; iblo++)
+  {
+    kafs_blkcnt_t old;
+    int rc = kafs_ino_ibrk_run(ctx, inoent, iblo, &old, KAFS_IBLKREF_FUNC_GET);
+    if (rc != 0)
+      return rc;
+    if (old == KAFS_BLO_NONE)
+      continue;
+
+    kafs_blkcnt_t none = KAFS_BLO_NONE;
+    rc = kafs_ino_ibrk_run(ctx, inoent, iblo, &none, KAFS_IBLKREF_FUNC_SET);
+    if (rc != 0)
+      return rc;
+
+    kafs_blkcnt_t f1, f2, f3;
+    rc = kafs_ino_prune_empty_indirects(ctx, inoent, iblo, &f1, &f2, &f3);
+    if (rc != 0)
+      return rc;
+
+    rc = kafs_truncate_push_free_ref(deferred_free, deferred_free_cnt, deferred_free_cap, old);
+    if (rc != 0)
+      return rc;
+    rc = kafs_truncate_push_free_ref(deferred_free, deferred_free_cnt, deferred_free_cap, f1);
+    if (rc != 0)
+      return rc;
+    rc = kafs_truncate_push_free_ref(deferred_free, deferred_free_cnt, deferred_free_cap, f2);
+    if (rc != 0)
+      return rc;
+    rc = kafs_truncate_push_free_ref(deferred_free, deferred_free_cnt, deferred_free_cap, f3);
+    if (rc != 0)
+      return rc;
+  }
+  return 0;
+}
+
+static void kafs_truncate_release_deferred_refs(struct kafs_context *ctx, uint32_t ino_idx,
+                                                kafs_blkcnt_t *deferred_free,
+                                                size_t deferred_free_cnt)
+{
+  if (deferred_free_cnt == 0)
+    return;
+  kafs_inode_unlock(ctx, ino_idx);
+  for (size_t i = 0; i < deferred_free_cnt; ++i)
+    (void)kafs_inode_release_hrl_ref(ctx, deferred_free[i]);
+  kafs_inode_lock(ctx, ino_idx);
+}
+
+static int kafs_truncate_handle_tail_only(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                          const kafs_sinode_taildesc_v5_t *taildesc,
+                                          kafs_off_t filesize_new, kafs_blksize_t blksize)
+{
+  if (filesize_new == 0)
+  {
+    struct kafs_tailmeta_region_view view;
+    uint32_t container_index;
+    uint16_t class_bytes;
+    uint16_t slot_index;
+    int rc = kafs_tailmeta_region_view_get(ctx, &view);
+    if (rc != 0)
+      return rc;
+    rc = kafs_tailmeta_find_container_index_by_blo(
+        &view, kafs_ino_taildesc_v5_container_blo_get(taildesc), &container_index);
+    if (rc != 0)
+      return rc;
+    class_bytes = kafs_tailmeta_container_hdr_class_bytes_get(&view.containers[container_index]);
+    if (class_bytes == 0u || kafs_ino_taildesc_v5_fragment_off_get(taildesc) % class_bytes != 0u)
+      return -EPROTO;
+    slot_index = (uint16_t)(kafs_ino_taildesc_v5_fragment_off_get(taildesc) / class_bytes);
+    KAFS_CALL(kafs_tailmeta_release_slot, &view, container_index, slot_index);
+    memset(inoent->i_blkreftbl, 0, sizeof(inoent->i_blkreftbl));
+    kafs_ino_blocks_set(inoent, 0);
+    kafs_ino_size_set(inoent, 0);
+    kafs_tailmeta_inode_taildesc_set_inline(ctx, inoent);
+    return KAFS_SUCCESS;
+  }
+
+  if (filesize_new <= (kafs_off_t)KAFS_INODE_DIRECT_BYTES)
+  {
+    struct kafs_tailmeta_region_view view;
+    uint32_t container_index;
+    uint16_t class_bytes;
+    uint16_t slot_index;
+    char inline_buf[KAFS_INODE_DIRECT_BYTES];
+    int rc = kafs_tailmeta_tail_only_load(ctx, inoent, inline_buf, filesize_new, 0);
+    if (rc != 0)
+      return rc;
+    rc = kafs_tailmeta_region_view_get(ctx, &view);
+    if (rc != 0)
+      return rc;
+    rc = kafs_tailmeta_find_container_index_by_blo(
+        &view, kafs_ino_taildesc_v5_container_blo_get(taildesc), &container_index);
+    if (rc != 0)
+      return rc;
+    class_bytes = kafs_tailmeta_container_hdr_class_bytes_get(&view.containers[container_index]);
+    if (class_bytes == 0u || kafs_ino_taildesc_v5_fragment_off_get(taildesc) % class_bytes != 0u)
+      return -EPROTO;
+    slot_index = (uint16_t)(kafs_ino_taildesc_v5_fragment_off_get(taildesc) / class_bytes);
+    KAFS_CALL(kafs_tailmeta_release_slot, &view, container_index, slot_index);
+    memset(inoent->i_blkreftbl, 0, sizeof(inoent->i_blkreftbl));
+    memcpy(inoent->i_blkreftbl, inline_buf, (size_t)filesize_new);
+    if (filesize_new < (kafs_off_t)KAFS_INODE_DIRECT_BYTES)
+      memset((char *)inoent->i_blkreftbl + filesize_new, 0,
+             KAFS_INODE_DIRECT_BYTES - (size_t)filesize_new);
+    kafs_ino_blocks_set(inoent, 0);
+    kafs_ino_size_set(inoent, filesize_new);
+    kafs_tailmeta_inode_taildesc_set_inline(ctx, inoent);
+    return KAFS_SUCCESS;
+  }
+
+  if (filesize_new < (kafs_off_t)blksize)
+  {
+    char smallbuf[blksize];
+    KAFS_CALL(kafs_tailmeta_load_small_file_bytes, ctx, inoent, smallbuf, filesize_new);
+    KAFS_CALL(kafs_tailmeta_store_tail_only, ctx, inoent, smallbuf, filesize_new);
+    return KAFS_SUCCESS;
+  }
+
+  KAFS_CALL(kafs_tailmeta_promote_tail_only_to_full_block, ctx, inoent);
+  kafs_ino_size_set(inoent, filesize_new);
+  kafs_tailmeta_inode_taildesc_set_full_block(ctx, inoent);
+  return KAFS_SUCCESS;
+}
+
+static int kafs_truncate_handle_growth(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                       kafs_off_t filesize_orig, kafs_off_t filesize_new,
+                                       kafs_blksize_t blksize)
+{
+  if (kafs_tailmeta_inode_is_regular_v5(ctx, inoent) &&
+      filesize_orig <= (kafs_off_t)KAFS_INODE_DIRECT_BYTES &&
+      filesize_new > (kafs_off_t)KAFS_INODE_DIRECT_BYTES && filesize_new < (kafs_off_t)blksize)
+  {
+    char smallbuf[blksize];
+    memset(smallbuf, 0, sizeof(smallbuf));
+    memcpy(smallbuf, inoent->i_blkreftbl, (size_t)filesize_orig);
+    KAFS_CALL(kafs_tailmeta_store_tail_only, ctx, inoent, smallbuf, filesize_new);
+    return KAFS_SUCCESS;
+  }
+
+  if (filesize_orig <= KAFS_INODE_DIRECT_BYTES && filesize_new > KAFS_INODE_DIRECT_BYTES)
+  {
+    char buf[blksize];
+    memcpy(buf, inoent->i_blkreftbl, filesize_orig);
+    memset(buf + filesize_orig, 0, blksize - filesize_orig);
+    KAFS_CALL(kafs_ino_iblk_write, ctx, inoent, 0, buf);
+  }
+
+  kafs_ino_size_set(inoent, filesize_new);
+  if (kafs_tailmeta_inode_is_regular_v5(ctx, inoent))
+    kafs_tailmeta_inode_taildesc_set_full_block(ctx, inoent);
+  return KAFS_SUCCESS;
+}
+
 static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_off_t filesize_new)
 {
   uint32_t ino_idx = kafs_ctx_ino_no(ctx, inoent);
@@ -4629,28 +4804,6 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
   kafs_blkcnt_t *deferred_free = NULL;
   size_t deferred_free_cnt = 0;
   size_t deferred_free_cap = 0;
-#define KAFS_TRUNC_PUSH_FREE(_blo)                                                                 \
-  do                                                                                               \
-  {                                                                                                \
-    kafs_blkcnt_t __b = (_blo);                                                                    \
-    if (__b != KAFS_BLO_NONE)                                                                      \
-    {                                                                                              \
-      kafs_dlog(2, "%s: ino=%u queue free blo=%" PRIuFAST32 "\n", __func__, ino_idx, __b);         \
-      if (deferred_free_cnt == deferred_free_cap)                                                  \
-      {                                                                                            \
-        size_t new_cap = deferred_free_cap ? (deferred_free_cap << 1) : 256u;                      \
-        kafs_blkcnt_t *nw = realloc(deferred_free, new_cap * sizeof(*nw));                         \
-        if (!nw)                                                                                   \
-        {                                                                                          \
-          free(deferred_free);                                                                     \
-          return -ENOMEM;                                                                          \
-        }                                                                                          \
-        deferred_free = nw;                                                                        \
-        deferred_free_cap = new_cap;                                                               \
-      }                                                                                            \
-      deferred_free[deferred_free_cnt++] = __b;                                                    \
-    }                                                                                              \
-  } while (0)
   (void)kafs_inode_epoch_bump(ctx, ino_idx);
   const kafs_sinode_taildesc_v5_t *taildesc = kafs_ctx_inode_taildesc_v5_const(ctx, inoent);
   if (taildesc &&
@@ -4663,102 +4816,15 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
   }
   if (taildesc && kafs_ino_taildesc_v5_layout_kind_get(taildesc) == KAFS_TAIL_LAYOUT_TAIL_ONLY)
   {
-    if (filesize_new == 0)
-    {
-      struct kafs_tailmeta_region_view view;
-      uint32_t container_index;
-      uint16_t class_bytes;
-      uint16_t slot_index;
-      int rc = kafs_tailmeta_region_view_get(ctx, &view);
-      if (rc != 0)
-        return rc;
-      rc = kafs_tailmeta_find_container_index_by_blo(
-          &view, kafs_ino_taildesc_v5_container_blo_get(taildesc), &container_index);
-      if (rc != 0)
-        return rc;
-      class_bytes = kafs_tailmeta_container_hdr_class_bytes_get(&view.containers[container_index]);
-      if (class_bytes == 0u || kafs_ino_taildesc_v5_fragment_off_get(taildesc) % class_bytes != 0u)
-        return -EPROTO;
-      slot_index = (uint16_t)(kafs_ino_taildesc_v5_fragment_off_get(taildesc) / class_bytes);
-      KAFS_CALL(kafs_tailmeta_release_slot, &view, container_index, slot_index);
-      memset(inoent->i_blkreftbl, 0, sizeof(inoent->i_blkreftbl));
-      kafs_ino_blocks_set(inoent, 0);
-      kafs_ino_size_set(inoent, 0);
-      kafs_tailmeta_inode_taildesc_set_inline(ctx, inoent);
-      free(deferred_free);
-      return KAFS_SUCCESS;
-    }
-    if (filesize_new <= (kafs_off_t)KAFS_INODE_DIRECT_BYTES)
-    {
-      struct kafs_tailmeta_region_view view;
-      uint32_t container_index;
-      uint16_t class_bytes;
-      uint16_t slot_index;
-      char inline_buf[KAFS_INODE_DIRECT_BYTES];
-      int rc = kafs_tailmeta_tail_only_load(ctx, inoent, inline_buf, filesize_new, 0);
-      if (rc != 0)
-        return rc;
-      rc = kafs_tailmeta_region_view_get(ctx, &view);
-      if (rc != 0)
-        return rc;
-      rc = kafs_tailmeta_find_container_index_by_blo(
-          &view, kafs_ino_taildesc_v5_container_blo_get(taildesc), &container_index);
-      if (rc != 0)
-        return rc;
-      class_bytes = kafs_tailmeta_container_hdr_class_bytes_get(&view.containers[container_index]);
-      if (class_bytes == 0u || kafs_ino_taildesc_v5_fragment_off_get(taildesc) % class_bytes != 0u)
-        return -EPROTO;
-      slot_index = (uint16_t)(kafs_ino_taildesc_v5_fragment_off_get(taildesc) / class_bytes);
-      KAFS_CALL(kafs_tailmeta_release_slot, &view, container_index, slot_index);
-      memset(inoent->i_blkreftbl, 0, sizeof(inoent->i_blkreftbl));
-      memcpy(inoent->i_blkreftbl, inline_buf, (size_t)filesize_new);
-      if (filesize_new < (kafs_off_t)KAFS_INODE_DIRECT_BYTES)
-        memset((char *)inoent->i_blkreftbl + filesize_new, 0,
-               KAFS_INODE_DIRECT_BYTES - (size_t)filesize_new);
-      kafs_ino_blocks_set(inoent, 0);
-      kafs_ino_size_set(inoent, filesize_new);
-      kafs_tailmeta_inode_taildesc_set_inline(ctx, inoent);
-      free(deferred_free);
-      return KAFS_SUCCESS;
-    }
-    if (filesize_new < (kafs_off_t)blksize)
-    {
-      char smallbuf[blksize];
-      KAFS_CALL(kafs_tailmeta_load_small_file_bytes, ctx, inoent, smallbuf, filesize_new);
-      KAFS_CALL(kafs_tailmeta_store_tail_only, ctx, inoent, smallbuf, filesize_new);
-      free(deferred_free);
-      return KAFS_SUCCESS;
-    }
-    KAFS_CALL(kafs_tailmeta_promote_tail_only_to_full_block, ctx, inoent);
-    kafs_ino_size_set(inoent, filesize_new);
-    kafs_tailmeta_inode_taildesc_set_full_block(ctx, inoent);
+    int rc = kafs_truncate_handle_tail_only(ctx, inoent, taildesc, filesize_new, blksize);
     free(deferred_free);
-    return KAFS_SUCCESS;
+    return rc;
   }
   if (filesize_new > filesize_orig)
   {
-    if (kafs_tailmeta_inode_is_regular_v5(ctx, inoent) &&
-        filesize_orig <= (kafs_off_t)KAFS_INODE_DIRECT_BYTES &&
-        filesize_new > (kafs_off_t)KAFS_INODE_DIRECT_BYTES && filesize_new < (kafs_off_t)blksize)
-    {
-      char smallbuf[blksize];
-      memset(smallbuf, 0, sizeof(smallbuf));
-      memcpy(smallbuf, inoent->i_blkreftbl, (size_t)filesize_orig);
-      KAFS_CALL(kafs_tailmeta_store_tail_only, ctx, inoent, smallbuf, filesize_new);
-      free(deferred_free);
-      return KAFS_SUCCESS;
-    }
-    if (filesize_orig <= KAFS_INODE_DIRECT_BYTES && filesize_new > KAFS_INODE_DIRECT_BYTES)
-    {
-      char buf[blksize];
-      memcpy(buf, inoent->i_blkreftbl, filesize_orig);
-      memset(buf + filesize_orig, 0, blksize - filesize_orig);
-      KAFS_CALL(kafs_ino_iblk_write, ctx, inoent, 0, buf);
-    }
-    kafs_ino_size_set(inoent, filesize_new);
-    if (kafs_tailmeta_inode_is_regular_v5(ctx, inoent))
-      kafs_tailmeta_inode_taildesc_set_full_block(ctx, inoent);
-    return KAFS_SUCCESS;
+    int rc = kafs_truncate_handle_growth(ctx, inoent, filesize_orig, filesize_new, blksize);
+    free(deferred_free);
+    return rc;
   }
   assert(filesize_new < filesize_orig);
   kafs_iblkcnt_t iblooff = filesize_new >> log_blksize;
@@ -4792,31 +4858,12 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
       if (end > iblocnt)
         end = iblocnt;
 
-      kafs_blkcnt_t to_free[TRUNC_BATCH * 4];
-      size_t to_free_cnt = 0;
-      for (kafs_iblkcnt_t iblo = cur; iblo < end; iblo++)
+      int rc = kafs_truncate_collect_free_range(ctx, inoent, cur, end, &deferred_free,
+                                                &deferred_free_cnt, &deferred_free_cap);
+      if (rc != 0)
       {
-        kafs_blkcnt_t old;
-        KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old, KAFS_IBLKREF_FUNC_GET);
-        if (old == KAFS_BLO_NONE)
-          continue;
-        kafs_blkcnt_t none = KAFS_BLO_NONE;
-        KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &none, KAFS_IBLKREF_FUNC_SET);
-        kafs_blkcnt_t f1, f2, f3;
-        KAFS_CALL(kafs_ino_prune_empty_indirects, ctx, inoent, iblo, &f1, &f2, &f3);
-        to_free[to_free_cnt++] = old;
-        if (f1 != KAFS_BLO_NONE)
-          to_free[to_free_cnt++] = f1;
-        if (f2 != KAFS_BLO_NONE)
-          to_free[to_free_cnt++] = f2;
-        if (f3 != KAFS_BLO_NONE)
-          to_free[to_free_cnt++] = f3;
-      }
-
-      if (to_free_cnt)
-      {
-        for (size_t i = 0; i < to_free_cnt; i++)
-          KAFS_TRUNC_PUSH_FREE(to_free[i]);
+        free(deferred_free);
+        return rc;
       }
       cur = end;
     }
@@ -4826,13 +4873,7 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
       memset((void *)inoent->i_blkreftbl + filesize_new, 0, KAFS_INODE_DIRECT_BYTES - filesize_new);
     if (kafs_tailmeta_inode_is_regular_v5(ctx, inoent))
       kafs_tailmeta_inode_taildesc_set_inline(ctx, inoent);
-    if (deferred_free_cnt)
-    {
-      kafs_inode_unlock(ctx, ino_idx);
-      for (size_t i = 0; i < deferred_free_cnt; ++i)
-        (void)kafs_inode_release_hrl_ref(ctx, deferred_free[i]);
-      kafs_inode_lock(ctx, ino_idx);
-    }
+    kafs_truncate_release_deferred_refs(ctx, ino_idx, deferred_free, deferred_free_cnt);
     free(deferred_free);
     return KAFS_SUCCESS;
   }
@@ -4868,44 +4909,18 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
     if (end > iblocnt)
       end = iblocnt;
 
-    kafs_blkcnt_t to_free[TRUNC_BATCH * 4];
-    size_t to_free_cnt = 0;
-    for (kafs_iblkcnt_t iblo = iblooff; iblo < end; iblo++)
+    int rc = kafs_truncate_collect_free_range(ctx, inoent, iblooff, end, &deferred_free,
+                                              &deferred_free_cnt, &deferred_free_cap);
+    if (rc != 0)
     {
-      kafs_blkcnt_t old;
-      KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &old, KAFS_IBLKREF_FUNC_GET);
-      if (old == KAFS_BLO_NONE)
-        continue;
-      kafs_blkcnt_t none = KAFS_BLO_NONE;
-      KAFS_CALL(kafs_ino_ibrk_run, ctx, inoent, iblo, &none, KAFS_IBLKREF_FUNC_SET);
-      kafs_blkcnt_t f1, f2, f3;
-      KAFS_CALL(kafs_ino_prune_empty_indirects, ctx, inoent, iblo, &f1, &f2, &f3);
-      to_free[to_free_cnt++] = old;
-      if (f1 != KAFS_BLO_NONE)
-        to_free[to_free_cnt++] = f1;
-      if (f2 != KAFS_BLO_NONE)
-        to_free[to_free_cnt++] = f2;
-      if (f3 != KAFS_BLO_NONE)
-        to_free[to_free_cnt++] = f3;
-    }
-
-    if (to_free_cnt)
-    {
-      for (size_t i = 0; i < to_free_cnt; i++)
-        KAFS_TRUNC_PUSH_FREE(to_free[i]);
+      free(deferred_free);
+      return rc;
     }
     iblooff = end;
   }
 
-  if (deferred_free_cnt)
-  {
-    kafs_inode_unlock(ctx, ino_idx);
-    for (size_t i = 0; i < deferred_free_cnt; ++i)
-      (void)kafs_inode_release_hrl_ref(ctx, deferred_free[i]);
-    kafs_inode_lock(ctx, ino_idx);
-  }
+  kafs_truncate_release_deferred_refs(ctx, ino_idx, deferred_free, deferred_free_cnt);
   free(deferred_free);
-#undef KAFS_TRUNC_PUSH_FREE
   {
     int rc = kafs_tailmeta_normalize_block_layout(ctx, inoent);
     if (rc != 0)
