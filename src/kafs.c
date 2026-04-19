@@ -12097,6 +12097,84 @@ static void kafs_main_validate_image_format(const char *image_path, uint32_t fmt
   }
 }
 
+static void kafs_main_calc_runtime_layout(const kafs_ssuperblock_t *sbdisk,
+                                          kafs_blksize_t blksizemask, kafs_inocnt_t inocnt,
+                                          kafs_blkcnt_t r_blkcnt, off_t *mapsize_out,
+                                          intptr_t *blkmask_off_out, intptr_t *inotbl_off_out)
+{
+  off_t mapsize = 0;
+
+  mapsize += sizeof(kafs_ssuperblock_t);
+  mapsize = (mapsize + blksizemask) & ~blksizemask;
+  *blkmask_off_out = (intptr_t)mapsize;
+  assert(sizeof(kafs_blkmask_t) <= 8);
+  mapsize += (r_blkcnt + 7) >> 3;
+  mapsize = (mapsize + 7) & ~7;
+  mapsize = (mapsize + blksizemask) & ~blksizemask;
+  *inotbl_off_out = (intptr_t)mapsize;
+  mapsize += (off_t)kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(sbdisk), inocnt);
+  mapsize = (mapsize + blksizemask) & ~blksizemask;
+  *mapsize_out = mapsize;
+}
+
+static off_t kafs_main_runtime_imgsize(const kafs_ssuperblock_t *sbdisk,
+                                       kafs_logblksize_t log_blksize, kafs_blksize_t blksizemask,
+                                       kafs_blkcnt_t r_blkcnt)
+{
+  off_t imgsize = (off_t)r_blkcnt << log_blksize;
+  uint64_t idx_off = kafs_sb_hrl_index_offset_get(sbdisk);
+  uint64_t idx_size = kafs_sb_hrl_index_size_get(sbdisk);
+  uint64_t ent_off = kafs_sb_hrl_entry_offset_get(sbdisk);
+  uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sbdisk);
+  uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
+  uint64_t j_off = kafs_sb_journal_offset_get(sbdisk);
+  uint64_t j_size = kafs_sb_journal_size_get(sbdisk);
+  uint64_t p_off = kafs_sb_pendinglog_offset_get(sbdisk);
+  uint64_t p_size = kafs_sb_pendinglog_size_get(sbdisk);
+  uint64_t end1 = (idx_off && idx_size) ? (idx_off + idx_size) : 0;
+  uint64_t end2 = (ent_off && ent_size) ? (ent_off + ent_size) : 0;
+  uint64_t end3 = (j_off && j_size) ? (j_off + j_size) : 0;
+  uint64_t end4 = (p_off && p_size) ? (p_off + p_size) : 0;
+  uint64_t max_end = end1;
+
+  if (end2 > max_end)
+    max_end = end2;
+  if (end3 > max_end)
+    max_end = end3;
+  if (end4 > max_end)
+    max_end = end4;
+  if ((off_t)max_end > imgsize)
+    imgsize = (off_t)max_end;
+  return (imgsize + blksizemask) & ~blksizemask;
+}
+
+static void kafs_main_map_runtime_memory(kafs_context_t *ctx, uint32_t fmt_ver, off_t imgsize,
+                                         off_t mapsize, intptr_t blkmask_off, intptr_t inotbl_off)
+{
+  ctx->c_img_base = mmap(NULL, imgsize, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->c_fd, 0);
+  if (ctx->c_img_base == MAP_FAILED)
+  {
+    perror("mmap");
+    exit(2);
+  }
+
+  ctx->c_img_size = (size_t)imgsize;
+  ctx->c_superblock = (kafs_ssuperblock_t *)ctx->c_img_base;
+  ctx->c_mapsize = (size_t)mapsize;
+  ctx->c_blkmasktbl = (void *)ctx->c_superblock + blkmask_off;
+  ctx->c_inotbl = (void *)ctx->c_superblock + inotbl_off;
+  if (!kafs_ctx_runtime_mount_supported(ctx))
+  {
+    fprintf(stderr, "unsupported format version: %u (runtime admission failed).\n", fmt_ver);
+    exit(2);
+  }
+  if (kafs_ctx_validate_runtime_mount_state(ctx) != 0)
+  {
+    fprintf(stderr, "invalid v5 tail metadata region; refusing runtime mount.\n");
+    exit(2);
+  }
+}
+
 static void kafs_main_map_runtime_image(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk,
                                         uint32_t fmt_ver, kafs_inocnt_t *inocnt_out,
                                         kafs_blkcnt_t *r_blkcnt_out)
@@ -12108,65 +12186,13 @@ static void kafs_main_map_runtime_image(kafs_context_t *ctx, const kafs_ssuperbl
   kafs_blkcnt_t r_blkcnt = kafs_blkcnt_stoh(sbdisk->s_r_blkcnt);
 
   off_t mapsize = 0;
-  mapsize += sizeof(kafs_ssuperblock_t);
-  mapsize = (mapsize + blksizemask) & ~blksizemask;
-  void *blkmask_off = (void *)mapsize;
-  assert(sizeof(kafs_blkmask_t) <= 8);
-  mapsize += (r_blkcnt + 7) >> 3;
-  mapsize = (mapsize + 7) & ~7;
-  mapsize = (mapsize + blksizemask) & ~blksizemask;
-  void *inotbl_off = (void *)mapsize;
-  mapsize += (off_t)kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(sbdisk), inocnt);
-  mapsize = (mapsize + blksizemask) & ~blksizemask;
+  intptr_t blkmask_off = 0;
+  intptr_t inotbl_off = 0;
+  kafs_main_calc_runtime_layout(sbdisk, blksizemask, inocnt, r_blkcnt, &mapsize, &blkmask_off,
+                                &inotbl_off);
 
-  off_t imgsize = (off_t)r_blkcnt << log_blksize;
-  {
-    uint64_t idx_off = kafs_sb_hrl_index_offset_get(sbdisk);
-    uint64_t idx_size = kafs_sb_hrl_index_size_get(sbdisk);
-    uint64_t ent_off = kafs_sb_hrl_entry_offset_get(sbdisk);
-    uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sbdisk);
-    uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
-    uint64_t j_off = kafs_sb_journal_offset_get(sbdisk);
-    uint64_t j_size = kafs_sb_journal_size_get(sbdisk);
-    uint64_t p_off = kafs_sb_pendinglog_offset_get(sbdisk);
-    uint64_t p_size = kafs_sb_pendinglog_size_get(sbdisk);
-    uint64_t end1 = (idx_off && idx_size) ? (idx_off + idx_size) : 0;
-    uint64_t end2 = (ent_off && ent_size) ? (ent_off + ent_size) : 0;
-    uint64_t end3 = (j_off && j_size) ? (j_off + j_size) : 0;
-    uint64_t end4 = (p_off && p_size) ? (p_off + p_size) : 0;
-    uint64_t max_end = end1;
-    if (end2 > max_end)
-      max_end = end2;
-    if (end3 > max_end)
-      max_end = end3;
-    if (end4 > max_end)
-      max_end = end4;
-    if ((off_t)max_end > imgsize)
-      imgsize = (off_t)max_end;
-    imgsize = (imgsize + blksizemask) & ~blksizemask;
-  }
-
-  ctx->c_img_base = mmap(NULL, imgsize, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->c_fd, 0);
-  if (ctx->c_img_base == MAP_FAILED)
-  {
-    perror("mmap");
-    exit(2);
-  }
-  ctx->c_img_size = (size_t)imgsize;
-  ctx->c_superblock = (kafs_ssuperblock_t *)ctx->c_img_base;
-  ctx->c_mapsize = (size_t)mapsize;
-  ctx->c_blkmasktbl = (void *)ctx->c_superblock + (intptr_t)blkmask_off;
-  ctx->c_inotbl = (void *)ctx->c_superblock + (intptr_t)inotbl_off;
-  if (!kafs_ctx_runtime_mount_supported(ctx))
-  {
-    fprintf(stderr, "unsupported format version: %u (runtime admission failed).\n", fmt_ver);
-    exit(2);
-  }
-  if (kafs_ctx_validate_runtime_mount_state(ctx) != 0)
-  {
-    fprintf(stderr, "invalid v5 tail metadata region; refusing runtime mount.\n");
-    exit(2);
-  }
+  off_t imgsize = kafs_main_runtime_imgsize(sbdisk, log_blksize, blksizemask, r_blkcnt);
+  kafs_main_map_runtime_memory(ctx, fmt_ver, imgsize, mapsize, blkmask_off, inotbl_off);
 
   *inocnt_out = inocnt;
   *r_blkcnt_out = r_blkcnt;
