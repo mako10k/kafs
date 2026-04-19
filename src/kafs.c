@@ -27,6 +27,7 @@
 #include <sys/mman.h>
 #include <sys/statvfs.h>
 #include <sys/resource.h>
+
 #include <sys/time.h>
 #include <sys/un.h>
 #include <stdlib.h>
@@ -11314,78 +11315,58 @@ static void kafs_main_log_runtime_options(kafs_context_t *ctx, kafs_bool_t write
   }
 }
 
-static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *image_path,
-                                           kafs_bool_t auto_migrate, kafs_bool_t migrate_yes)
+static void kafs_main_validate_image_format(const char *image_path, uint32_t fmt_ver,
+                                            kafs_bool_t auto_migrate, kafs_bool_t migrate_yes)
 {
-  ctx->c_fd = open(image_path, O_RDWR, 0666);
-  if (ctx->c_fd < 0)
+  if (fmt_ver == KAFS_FORMAT_VERSION)
+    return;
+  if (fmt_ver == KAFS_FORMAT_VERSION_V2 || fmt_ver == KAFS_FORMAT_VERSION_V3)
   {
-    perror("open image");
-    fprintf(stderr, "image not found. run mkfs.kafs first.\n");
-    exit(2);
-  }
-  ctx->c_blo_search = 0;
-  ctx->c_ino_search = 0;
-
-  kafs_ssuperblock_t sbdisk;
-  ssize_t r = pread(ctx->c_fd, &sbdisk, sizeof(sbdisk), 0);
-  if (r != (ssize_t)sizeof(sbdisk))
-  {
-    perror("pread superblock");
-    exit(2);
-  }
-  if (kafs_sb_magic_get(&sbdisk) != KAFS_MAGIC)
-  {
-    fprintf(stderr, "invalid magic. run mkfs.kafs to format.\n");
-    exit(2);
-  }
-
-  uint32_t fmt_ver = kafs_sb_format_version_get(&sbdisk);
-  if (fmt_ver != KAFS_FORMAT_VERSION)
-  {
-    if (fmt_ver == KAFS_FORMAT_VERSION_V2 || fmt_ver == KAFS_FORMAT_VERSION_V3)
+    if (auto_migrate)
     {
-      if (auto_migrate)
+      int mrc = kafs_core_migrate_image(image_path, migrate_yes ? 1 : 0);
+      if (mrc == 0)
       {
-        int mrc = kafs_core_migrate_image(image_path, migrate_yes ? 1 : 0);
-        if (mrc == 0)
-        {
-          fprintf(stderr, "migration completed. please restart mount.\n");
-          exit(0);
-        }
-        if (mrc == 1)
-        {
-          fprintf(stderr, "image already v%u; continue normal mount without --migrate.\n",
-                  (unsigned)KAFS_FORMAT_VERSION);
-          exit(0);
-        }
-        if (mrc == -EPROTONOSUPPORT)
-          fprintf(stderr, "offline migration supports only v2/v3 images.\n");
-        else if (mrc == -ECANCELED)
-          fprintf(stderr, "migration canceled by user.\n");
-        else
-          fprintf(stderr, "migration failed rc=%d.\n", mrc);
-        exit(2);
+        fprintf(stderr, "migration completed. please restart mount.\n");
+        exit(0);
       }
-      fprintf(stderr,
-              "unsupported format version: v%u.\n"
-              "Run kafsctl migrate <image> or kafs --migrate before mounting.\n",
-              (unsigned)fmt_ver);
+      if (mrc == 1)
+      {
+        fprintf(stderr, "image already v%u; continue normal mount without --migrate.\n",
+                (unsigned)KAFS_FORMAT_VERSION);
+        exit(0);
+      }
+      if (mrc == -EPROTONOSUPPORT)
+        fprintf(stderr, "offline migration supports only v2/v3 images.\n");
+      else if (mrc == -ECANCELED)
+        fprintf(stderr, "migration canceled by user.\n");
+      else
+        fprintf(stderr, "migration failed rc=%d.\n", mrc);
       exit(2);
     }
-    if (fmt_ver != KAFS_FORMAT_VERSION_V5)
-    {
-      fprintf(stderr, "unsupported format version: %u (expected %u).\n", fmt_ver,
-              (unsigned)KAFS_FORMAT_VERSION);
-      exit(2);
-    }
+    fprintf(stderr,
+            "unsupported format version: v%u.\n"
+            "Run kafsctl migrate <image> or kafs --migrate before mounting.\n",
+            (unsigned)fmt_ver);
+    exit(2);
   }
+  if (fmt_ver != KAFS_FORMAT_VERSION_V5)
+  {
+    fprintf(stderr, "unsupported format version: %u (expected %u).\n", fmt_ver,
+            (unsigned)KAFS_FORMAT_VERSION);
+    exit(2);
+  }
+}
 
-  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(&sbdisk);
+static void kafs_main_map_runtime_image(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk,
+                                        uint32_t fmt_ver, kafs_inocnt_t *inocnt_out,
+                                        kafs_blkcnt_t *r_blkcnt_out)
+{
+  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(sbdisk);
   kafs_blksize_t blksize = 1u << log_blksize;
   kafs_blksize_t blksizemask = blksize - 1u;
-  kafs_inocnt_t inocnt = kafs_inocnt_stoh(sbdisk.s_inocnt);
-  kafs_blkcnt_t r_blkcnt = kafs_blkcnt_stoh(sbdisk.s_r_blkcnt);
+  kafs_inocnt_t inocnt = kafs_inocnt_stoh(sbdisk->s_inocnt);
+  kafs_blkcnt_t r_blkcnt = kafs_blkcnt_stoh(sbdisk->s_r_blkcnt);
 
   off_t mapsize = 0;
   mapsize += sizeof(kafs_ssuperblock_t);
@@ -11396,20 +11377,20 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
   mapsize = (mapsize + 7) & ~7;
   mapsize = (mapsize + blksizemask) & ~blksizemask;
   void *inotbl_off = (void *)mapsize;
-  mapsize += (off_t)kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(&sbdisk), inocnt);
+  mapsize += (off_t)kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(sbdisk), inocnt);
   mapsize = (mapsize + blksizemask) & ~blksizemask;
 
   off_t imgsize = (off_t)r_blkcnt << log_blksize;
   {
-    uint64_t idx_off = kafs_sb_hrl_index_offset_get(&sbdisk);
-    uint64_t idx_size = kafs_sb_hrl_index_size_get(&sbdisk);
-    uint64_t ent_off = kafs_sb_hrl_entry_offset_get(&sbdisk);
-    uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(&sbdisk);
+    uint64_t idx_off = kafs_sb_hrl_index_offset_get(sbdisk);
+    uint64_t idx_size = kafs_sb_hrl_index_size_get(sbdisk);
+    uint64_t ent_off = kafs_sb_hrl_entry_offset_get(sbdisk);
+    uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sbdisk);
     uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
-    uint64_t j_off = kafs_sb_journal_offset_get(&sbdisk);
-    uint64_t j_size = kafs_sb_journal_size_get(&sbdisk);
-    uint64_t p_off = kafs_sb_pendinglog_offset_get(&sbdisk);
-    uint64_t p_size = kafs_sb_pendinglog_size_get(&sbdisk);
+    uint64_t j_off = kafs_sb_journal_offset_get(sbdisk);
+    uint64_t j_size = kafs_sb_journal_size_get(sbdisk);
+    uint64_t p_off = kafs_sb_pendinglog_offset_get(sbdisk);
+    uint64_t p_size = kafs_sb_pendinglog_size_get(sbdisk);
     uint64_t end1 = (idx_off && idx_size) ? (idx_off + idx_size) : 0;
     uint64_t end2 = (ent_off && ent_size) ? (ent_off + ent_size) : 0;
     uint64_t end3 = (j_off && j_size) ? (j_off + j_size) : 0;
@@ -11448,6 +11429,13 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
     exit(2);
   }
 
+  *inocnt_out = inocnt;
+  *r_blkcnt_out = r_blkcnt;
+}
+
+static void kafs_main_init_runtime_diag(kafs_context_t *ctx, const char *image_path,
+                                        kafs_inocnt_t inocnt)
+{
   ctx->c_diag_log_fd = -1;
   ctx->c_ino_epoch = calloc((size_t)inocnt, sizeof(uint32_t));
   if (ctx->c_ino_epoch)
@@ -11477,7 +11465,11 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
   }
   kafs_diag_log_open(ctx, image_path);
   ctx->c_alloc_v3_summary_dirty = 1;
+}
 
+static void kafs_main_init_runtime_journal(kafs_context_t *ctx, const char *image_path,
+                                           kafs_blkcnt_t r_blkcnt)
+{
   (void)kafs_hrl_open(ctx);
   (void)kafs_journal_init(ctx, image_path);
   ctx->c_meta_delta_enabled = (uint32_t)kafs_journal_is_enabled(ctx);
@@ -11515,7 +11507,10 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
     kafs_journal_note(ctx, "PENDINGLOG", "loaded entries=%u cap=%u", kafs_pendinglog_count(ctx),
                       ctx->c_pendinglog_capacity);
   }
+}
 
+static void kafs_main_lock_runtime_image(kafs_context_t *ctx, const char *image_path)
+{
   struct flock lk = {0};
   lk.l_type = F_WRLCK;
   lk.l_whence = SEEK_SET;
@@ -11527,6 +11522,42 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
     fprintf(stderr, "image '%s' is busy (already mounted?).\n", image_path);
     exit(2);
   }
+}
+
+static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *image_path,
+                                           kafs_bool_t auto_migrate, kafs_bool_t migrate_yes)
+{
+  ctx->c_fd = open(image_path, O_RDWR, 0666);
+  if (ctx->c_fd < 0)
+  {
+    perror("open image");
+    fprintf(stderr, "image not found. run mkfs.kafs first.\n");
+    exit(2);
+  }
+  ctx->c_blo_search = 0;
+  ctx->c_ino_search = 0;
+
+  kafs_ssuperblock_t sbdisk;
+  ssize_t r = pread(ctx->c_fd, &sbdisk, sizeof(sbdisk), 0);
+  if (r != (ssize_t)sizeof(sbdisk))
+  {
+    perror("pread superblock");
+    exit(2);
+  }
+  if (kafs_sb_magic_get(&sbdisk) != KAFS_MAGIC)
+  {
+    fprintf(stderr, "invalid magic. run mkfs.kafs to format.\n");
+    exit(2);
+  }
+
+  uint32_t fmt_ver = kafs_sb_format_version_get(&sbdisk);
+  kafs_inocnt_t inocnt = 0;
+  kafs_blkcnt_t r_blkcnt = 0;
+  kafs_main_validate_image_format(image_path, fmt_ver, auto_migrate, migrate_yes);
+  kafs_main_map_runtime_image(ctx, &sbdisk, fmt_ver, &inocnt, &r_blkcnt);
+  kafs_main_init_runtime_diag(ctx, image_path, inocnt);
+  kafs_main_init_runtime_journal(ctx, image_path, r_blkcnt);
+  kafs_main_lock_runtime_image(ctx, image_path);
 }
 
 static int kafs_main_cleanup(kafs_context_t *ctx, char *hotplug_uds_path, int rc)
@@ -11572,8 +11603,6 @@ int main(int argc, char **argv)
       kafs_main_collect_args(argc, argv, argv[0], &opts, argv_clean, &argc_clean) != 0)
     return 2;
 
-  // mount(8) helper compatibility: allow "kafs <image> <mountpoint> [FUSE options...]"
-  // When invoked via mount -t fuse.kafs, the image path is typically passed as the first argument.
   if (opts.image_path == NULL && argc_clean >= 3 && argv_clean[1][0] != '-')
   {
     opts.image_path = argv_clean[1];
@@ -11625,6 +11654,7 @@ int main(int argc, char **argv)
   if (kafs_main_start_hotplug(&ctx, image_path, hotplug_uds, hotplug_back_bin, hotplug_uds_path,
                               sizeof(hotplug_uds_path)) != 0)
     return 2;
+
   kafs_main_open_runtime_context(&ctx, image_path, auto_migrate, migrate_yes);
 
   char *argv_fuse[argc_clean + 10];
