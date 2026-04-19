@@ -8834,6 +8834,62 @@ fallocate_unlock:
   return rc;
 }
 
+static off_t kafs_lseek_find_data_locked(kafs_context_t *ctx, kafs_sinode_t *inoent, uint32_t ino,
+                                         off_t off, kafs_logblksize_t log_blksize,
+                                         kafs_iblkcnt_t start_iblo, kafs_iblkcnt_t end_iblo)
+{
+  for (kafs_iblkcnt_t iblo = start_iblo; iblo < end_iblo; ++iblo)
+  {
+    kafs_blkcnt_t blo = KAFS_BLO_NONE;
+    int rc = kafs_ino_ibrk_run(ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_GET);
+    if (rc < 0)
+    {
+      kafs_inode_unlock(ctx, ino);
+      return rc;
+    }
+    if (blo == KAFS_BLO_NONE)
+      continue;
+
+    kafs_off_t pos = ((kafs_off_t)iblo << log_blksize);
+    if (pos < (kafs_off_t)off)
+      pos = (kafs_off_t)off;
+    kafs_inode_unlock(ctx, ino);
+    return (off_t)pos;
+  }
+
+  kafs_inode_unlock(ctx, ino);
+  return -ENXIO;
+}
+
+static off_t kafs_lseek_find_hole_locked(kafs_context_t *ctx, kafs_sinode_t *inoent, uint32_t ino,
+                                         off_t off, kafs_off_t size, kafs_logblksize_t log_blksize,
+                                         kafs_iblkcnt_t start_iblo, kafs_iblkcnt_t end_iblo)
+{
+  for (kafs_iblkcnt_t iblo = start_iblo; iblo < end_iblo; ++iblo)
+  {
+    kafs_blkcnt_t blo = KAFS_BLO_NONE;
+    int rc = kafs_ino_ibrk_run(ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_GET);
+    if (rc < 0)
+    {
+      kafs_inode_unlock(ctx, ino);
+      return rc;
+    }
+    if (blo != KAFS_BLO_NONE)
+      continue;
+
+    kafs_off_t pos = ((kafs_off_t)iblo << log_blksize);
+    if (pos < (kafs_off_t)off)
+      pos = (kafs_off_t)off;
+    if (pos > size)
+      pos = size;
+    kafs_inode_unlock(ctx, ino);
+    return (off_t)pos;
+  }
+
+  kafs_inode_unlock(ctx, ino);
+  return (off_t)size;
+}
+
 static off_t kafs_op_lseek(const char *path, off_t off, int whence, struct fuse_file_info *fi)
 {
   struct fuse_context *fctx = fuse_get_context();
@@ -8865,9 +8921,7 @@ static off_t kafs_op_lseek(const char *path, off_t off, int whence, struct fuse_
   if (size <= KAFS_INODE_DIRECT_BYTES)
   {
     kafs_inode_unlock(ctx, ino);
-    if (whence == SEEK_DATA)
-      return off;
-    return (off_t)size;
+    return (whence == SEEK_DATA) ? off : (off_t)size;
   }
 
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
@@ -8876,53 +8930,9 @@ static off_t kafs_op_lseek(const char *path, off_t off, int whence, struct fuse_
   kafs_iblkcnt_t end_iblo = (kafs_iblkcnt_t)((size + blksize - 1) >> log_blksize);
 
   if (whence == SEEK_DATA)
-  {
-    for (kafs_iblkcnt_t iblo = start_iblo; iblo < end_iblo; ++iblo)
-    {
-      kafs_blkcnt_t blo = KAFS_BLO_NONE;
-      int rc = kafs_ino_ibrk_run(ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_GET);
-      if (rc < 0)
-      {
-        kafs_inode_unlock(ctx, ino);
-        return rc;
-      }
-      if (blo != KAFS_BLO_NONE)
-      {
-        kafs_off_t pos = ((kafs_off_t)iblo << log_blksize);
-        if (pos < (kafs_off_t)off)
-          pos = (kafs_off_t)off;
-        kafs_inode_unlock(ctx, ino);
-        return (off_t)pos;
-      }
-    }
-    kafs_inode_unlock(ctx, ino);
-    return -ENXIO;
-  }
-
-  // SEEK_HOLE
-  for (kafs_iblkcnt_t iblo = start_iblo; iblo < end_iblo; ++iblo)
-  {
-    kafs_blkcnt_t blo = KAFS_BLO_NONE;
-    int rc = kafs_ino_ibrk_run(ctx, inoent, iblo, &blo, KAFS_IBLKREF_FUNC_GET);
-    if (rc < 0)
-    {
-      kafs_inode_unlock(ctx, ino);
-      return rc;
-    }
-    if (blo == KAFS_BLO_NONE)
-    {
-      kafs_off_t pos = ((kafs_off_t)iblo << log_blksize);
-      if (pos < (kafs_off_t)off)
-        pos = (kafs_off_t)off;
-      if (pos > size)
-        pos = size;
-      kafs_inode_unlock(ctx, ino);
-      return (off_t)pos;
-    }
-  }
-
-  kafs_inode_unlock(ctx, ino);
-  return (off_t)size;
+    return kafs_lseek_find_data_locked(ctx, inoent, ino, off, log_blksize, start_iblo, end_iblo);
+  return kafs_lseek_find_hole_locked(ctx, inoent, ino, off, size, log_blksize, start_iblo,
+                                     end_iblo);
 }
 
 static int kafs_op_mkdir(const char *path, mode_t mode)
