@@ -436,6 +436,124 @@ static int mkfs_collect_args(int argc, char **argv, mkfs_options_t *opts)
   return 0;
 }
 
+static int mkfs_open_target(kafs_context_t *ctx, const char *img, struct stat *st, int *have_stat)
+{
+  *have_stat = (stat(img, st) == 0);
+  if (!*have_stat && errno != ENOENT)
+  {
+    perror("stat");
+    return 1;
+  }
+
+  memset(ctx, 0, sizeof(*ctx));
+  ctx->c_fd = open(img, O_RDWR | (*have_stat ? 0 : O_CREAT), 0666);
+  if (ctx->c_fd < 0)
+  {
+    perror("open");
+    return 1;
+  }
+  ctx->c_blo_search = 0;
+  ctx->c_ino_search = 0;
+
+  if (fstat(ctx->c_fd, st) != 0)
+  {
+    perror("fstat");
+    close(ctx->c_fd);
+    return 1;
+  }
+  return 0;
+}
+
+static int mkfs_resolve_total_bytes(kafs_context_t *ctx, const struct stat *st,
+                                    int size_arg_provided, off_t *total_bytes)
+{
+  if (S_ISREG(st->st_mode) && st->st_size > 0)
+  {
+    if (size_arg_provided)
+      fprintf(stderr, "warning: size overridden by existing file size\n");
+    *total_bytes = st->st_size;
+    return 0;
+  }
+  if (!S_ISBLK(st->st_mode))
+    return 0;
+
+#ifdef __linux__
+  uint64_t dev_bytes = 0;
+  if (ioctl(ctx->c_fd, BLKGETSIZE64, &dev_bytes) != 0)
+  {
+    perror("ioctl(BLKGETSIZE64)");
+    close(ctx->c_fd);
+    return 1;
+  }
+  if (dev_bytes == 0)
+  {
+    fprintf(stderr, "invalid block device size: 0\n");
+    close(ctx->c_fd);
+    return 1;
+  }
+  if (size_arg_provided)
+    fprintf(stderr, "warning: size overridden by block device size\n");
+  *total_bytes = (off_t)dev_bytes;
+  return 0;
+#else
+  fprintf(stderr, "block devices are not supported on this platform\n");
+  close(ctx->c_fd);
+  return 1;
+#endif
+}
+
+static int mkfs_prepare_target(kafs_context_t *ctx, const char *img, uint32_t format_version,
+                               kafs_logblksize_t log_blksize, kafs_blksize_t blksizemask,
+                               kafs_blksize_t blksize, kafs_inocnt_t *inocnt,
+                               int inocnt_arg_provided, size_t journal_bytes,
+                               double hrl_entry_ratio, int size_arg_provided, int assume_yes,
+                               off_t *total_bytes, struct stat *st, struct mkfs_layout *layout,
+                               kafs_blkcnt_t *blkcnt)
+{
+  int have_stat = 0;
+  if (mkfs_open_target(ctx, img, st, &have_stat) != 0)
+    return 1;
+  if (mkfs_resolve_total_bytes(ctx, st, size_arg_provided, total_bytes) != 0)
+    return 1;
+
+  if (!inocnt_arg_provided)
+    *inocnt = mkfs_default_inocnt_for_size(*total_bytes);
+
+  if (compute_blkcnt_for_total(format_version, *total_bytes, log_blksize, blksizemask, blksize,
+                               *inocnt, journal_bytes, hrl_entry_ratio, blkcnt, layout) != 0)
+  {
+    fprintf(stderr, "invalid total size: %lld\n", (long long)*total_bytes);
+    close(ctx->c_fd);
+    return 2;
+  }
+
+  if (*total_bytes >= (off_t)sizeof(kafs_ssuperblock_t))
+  {
+    kafs_ssuperblock_t sbcheck;
+    if (pread(ctx->c_fd, &sbcheck, sizeof(sbcheck), 0) == (ssize_t)sizeof(sbcheck) &&
+        kafs_sb_magic_get(&sbcheck) == KAFS_MAGIC &&
+        mkfs_format_version_is_supported(kafs_sb_format_version_get(&sbcheck)))
+    {
+      fprintf(stderr, "warning: image appears formatted and will be overwritten: %s\n", img);
+      if (!assume_yes && !mkfs_confirm_overwrite_stdin())
+      {
+        fprintf(stderr, "mkfs.kafs: aborted\n");
+        close(ctx->c_fd);
+        return 1;
+      }
+    }
+  }
+
+  if (S_ISREG(st->st_mode) && ftruncate(ctx->c_fd, *total_bytes) < 0)
+  {
+    perror("ftruncate");
+    close(ctx->c_fd);
+    return 1;
+  }
+
+  return 0;
+}
+
 int main(int argc, char **argv)
 {
   mkfs_options_t opts;
@@ -462,99 +580,15 @@ int main(int argc, char **argv)
   int assume_yes = opts.assume_yes;
 
   struct stat st;
-  int have_stat = (stat(img, &st) == 0);
-  if (!have_stat && errno != ENOENT)
-  {
-    perror("stat");
-    return 1;
-  }
-  kafs_context_t ctx = {0};
-  ctx.c_fd = open(img, O_RDWR | (have_stat ? 0 : O_CREAT), 0666);
-  if (ctx.c_fd < 0)
-  {
-    perror("open");
-    return 1;
-  }
-  ctx.c_blo_search = 0;
-  ctx.c_ino_search = 0;
-
-  if (fstat(ctx.c_fd, &st) != 0)
-  {
-    perror("fstat");
-    close(ctx.c_fd);
-    return 1;
-  }
-
-  if (S_ISREG(st.st_mode) && st.st_size > 0)
-  {
-    if (size_arg_provided)
-      fprintf(stderr, "warning: size overridden by existing file size\n");
-    total_bytes = st.st_size;
-  }
-  else if (S_ISBLK(st.st_mode))
-  {
-#ifdef __linux__
-    uint64_t dev_bytes = 0;
-    if (ioctl(ctx.c_fd, BLKGETSIZE64, &dev_bytes) != 0)
-    {
-      perror("ioctl(BLKGETSIZE64)");
-      close(ctx.c_fd);
-      return 1;
-    }
-    if (dev_bytes == 0)
-    {
-      fprintf(stderr, "invalid block device size: 0\n");
-      close(ctx.c_fd);
-      return 1;
-    }
-    if (size_arg_provided)
-      fprintf(stderr, "warning: size overridden by block device size\n");
-    total_bytes = (off_t)dev_bytes;
-#else
-    fprintf(stderr, "block devices are not supported on this platform\n");
-    close(ctx.c_fd);
-    return 1;
-#endif
-  }
-
-  if (!inocnt_arg_provided)
-    inocnt = mkfs_default_inocnt_for_size(total_bytes);
-
+  kafs_context_t ctx;
   struct mkfs_layout layout = {0};
   kafs_blkcnt_t blkcnt = 0;
-  if (compute_blkcnt_for_total(format_version, total_bytes, log_blksize, blksizemask, blksize,
-                               inocnt, journal_bytes, hrl_entry_ratio, &blkcnt, &layout) != 0)
-  {
-    fprintf(stderr, "invalid total size: %lld\n", (long long)total_bytes);
-    close(ctx.c_fd);
-    return 2;
-  }
-
-  if (total_bytes >= (off_t)sizeof(kafs_ssuperblock_t))
-  {
-    kafs_ssuperblock_t sbcheck;
-    if (pread(ctx.c_fd, &sbcheck, sizeof(sbcheck), 0) == (ssize_t)sizeof(sbcheck))
-    {
-      if (kafs_sb_magic_get(&sbcheck) == KAFS_MAGIC &&
-          mkfs_format_version_is_supported(kafs_sb_format_version_get(&sbcheck)))
-      {
-        fprintf(stderr, "warning: image appears formatted and will be overwritten: %s\n", img);
-        if (!assume_yes && !mkfs_confirm_overwrite_stdin())
-        {
-          fprintf(stderr, "mkfs.kafs: aborted\n");
-          close(ctx.c_fd);
-          return 1;
-        }
-      }
-    }
-  }
-
-  if (S_ISREG(st.st_mode) && ftruncate(ctx.c_fd, total_bytes) < 0)
-  {
-    perror("ftruncate");
-    close(ctx.c_fd);
-    return 1;
-  }
+  int prepare_rc =
+      mkfs_prepare_target(&ctx, img, format_version, log_blksize, blksizemask, blksize, &inocnt,
+                          inocnt_arg_provided, journal_bytes, hrl_entry_ratio, size_arg_provided,
+                          assume_yes, &total_bytes, &st, &layout, &blkcnt);
+  if (prepare_rc != 0)
+    return prepare_rc;
 
   off_t mapsize = layout.mapsize;
   ctx.c_superblock = NULL;
