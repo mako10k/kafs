@@ -5448,6 +5448,98 @@ static int kafs_dir_is_empty_locked(struct kafs_context *ctx, kafs_sinode_t *ino
 }
 
 // NOTE: caller holds dir inode lock. For rename(2) we must not change linkcount of the moved inode.
+static int kafs_dirent_find_existing_v4(struct kafs_context *ctx, const char *old,
+                                        const kafs_dir_snapshot_meta_t *meta, const char *filename,
+                                        kafs_filenamelen_t filenamelen, uint32_t target_hash,
+                                        kafs_dirent_view_t *tombstone_out, int *have_tombstone_out)
+{
+  size_t off = 0;
+  while (1)
+  {
+    kafs_dirent_view_t view;
+    __atomic_add_fetch(&ctx->c_stat_dirent_view_next_calls, 1u, __ATOMIC_RELAXED);
+    int step = kafs_dirent_view_next_meta(old, meta, off, &view);
+    if (step == 0)
+      return 0;
+    if (step < 0)
+      return -EIO;
+    if (view.name_hash == target_hash && view.name_len == filenamelen &&
+        memcmp(view.name, filename, filenamelen) == 0)
+    {
+      if ((view.flags & KAFS_DIRENT_FLAG_TOMBSTONE) != 0)
+      {
+        *tombstone_out = view;
+        *have_tombstone_out = 1;
+      }
+      else
+      {
+        return -EEXIST;
+      }
+    }
+    off = view.record_off + view.record_len;
+  }
+}
+
+static int kafs_dirent_reuse_tombstone(struct kafs_context *ctx, kafs_sinode_t *inoent_dir,
+                                       kafs_dirent_view_t tombstone, kafs_inocnt_t ino,
+                                       kafs_filenamelen_t filenamelen, uint32_t target_hash,
+                                       kafs_sdir_v4_hdr_t *hdr)
+{
+  uint32_t live_count = kafs_dir_v4_hdr_live_count_get(hdr);
+  uint32_t tombstone_count = kafs_dir_v4_hdr_tombstone_count_get(hdr);
+  int rc = kafs_dir_v4_write_record_head(ctx, inoent_dir, tombstone.record_off,
+                                         (uint16_t)tombstone.record_len, 0u, ino, filenamelen,
+                                         target_hash);
+  if (rc == 0)
+  {
+    kafs_dir_v4_hdr_live_count_set(hdr, live_count + 1u);
+    kafs_dir_v4_hdr_tombstone_count_set(hdr, tombstone_count - 1u);
+    rc = kafs_dir_v4_write_header(ctx, inoent_dir, hdr);
+  }
+  return rc;
+}
+
+static int kafs_dirent_append_new_v4(struct kafs_context *ctx, kafs_sinode_t *inoent_dir,
+                                     size_t old_len, const kafs_dir_snapshot_meta_t *meta,
+                                     kafs_sdir_v4_hdr_t *hdr, kafs_inocnt_t ino,
+                                     const char *filename, kafs_filenamelen_t filenamelen,
+                                     uint32_t target_hash)
+{
+  size_t rec_len = sizeof(kafs_sdirent_v4_t) + (size_t)filenamelen;
+  size_t append_off = (old_len == 0) ? sizeof(kafs_sdir_v4_hdr_t) : meta->logical_len;
+  if (old_len != 0 && append_off != old_len)
+    return -EIO;
+
+  char recbuf[sizeof(kafs_sdirent_v4_t) + FILENAME_MAX];
+  kafs_sdirent_v4_t *rec = (kafs_sdirent_v4_t *)recbuf;
+  memset(recbuf, 0, rec_len);
+  kafs_dirent_v4_rec_len_set(rec, (uint16_t)rec_len);
+  kafs_dirent_v4_flags_set(rec, 0u);
+  kafs_dirent_v4_ino_set(rec, ino);
+  kafs_dirent_v4_filenamelen_set(rec, filenamelen);
+  kafs_dirent_v4_name_hash_set(rec, target_hash);
+  memcpy(recbuf + sizeof(kafs_sdirent_v4_t), filename, filenamelen);
+
+  if (old_len == 0)
+  {
+    int rc = kafs_dir_v4_write_header(ctx, inoent_dir, hdr);
+    if (rc < 0)
+      return rc;
+  }
+
+  ssize_t w = kafs_pwrite(ctx, inoent_dir, recbuf, (kafs_off_t)rec_len, (kafs_off_t)append_off);
+  if (w < 0 || (size_t)w != rec_len)
+    return (w < 0) ? (int)w : -EIO;
+
+  uint32_t live_count = kafs_dir_v4_hdr_live_count_get(hdr);
+  uint32_t tombstone_count = kafs_dir_v4_hdr_tombstone_count_get(hdr);
+  uint32_t record_bytes = kafs_dir_v4_hdr_record_bytes_get(hdr);
+  kafs_dir_v4_hdr_live_count_set(hdr, live_count + 1u);
+  kafs_dir_v4_hdr_tombstone_count_set(hdr, tombstone_count);
+  kafs_dir_v4_hdr_record_bytes_set(hdr, record_bytes + (uint32_t)rec_len);
+  return kafs_dir_v4_write_header(ctx, inoent_dir, hdr);
+}
+
 static int kafs_dirent_add_nolink(struct kafs_context *ctx, kafs_sinode_t *inoent_dir,
                                   kafs_inocnt_t ino, const char *filename)
 {
@@ -5480,99 +5572,28 @@ static int kafs_dirent_add_nolink(struct kafs_context *ctx, kafs_sinode_t *inoen
   uint32_t target_hash = kafs_dirent_name_hash(filename, filenamelen);
   kafs_dirent_view_t tombstone = {0};
   int have_tombstone = 0;
-
-  size_t off = 0;
-  while (1)
+  rc = kafs_dirent_find_existing_v4(ctx, old, &meta, filename, filenamelen, target_hash, &tombstone,
+                                    &have_tombstone);
+  if (rc < 0)
   {
-    kafs_dirent_view_t view;
-    __atomic_add_fetch(&ctx->c_stat_dirent_view_next_calls, 1u, __ATOMIC_RELAXED);
-    int step = kafs_dirent_view_next_meta(old, &meta, off, &view);
-    if (step == 0)
-      break;
-    if (step < 0)
-    {
-      free(old);
-      return -EIO;
-    }
-    if (view.name_hash == target_hash && view.name_len == filenamelen &&
-        memcmp(view.name, filename, filenamelen) == 0)
-    {
-      if ((view.flags & KAFS_DIRENT_FLAG_TOMBSTONE) != 0)
-      {
-        tombstone = view;
-        have_tombstone = 1;
-      }
-      else
-      {
-        free(old);
-        return -EEXIST;
-      }
-    }
-    off = view.record_off + view.record_len;
+    free(old);
+    return rc;
   }
 
   kafs_sdir_v4_hdr_t hdr = meta.hdr;
   if (old_len == 0)
     kafs_dir_v4_hdr_init(&hdr);
 
-  uint32_t live_count = kafs_dir_v4_hdr_live_count_get(&hdr);
-  uint32_t tombstone_count = kafs_dir_v4_hdr_tombstone_count_get(&hdr);
-  uint32_t record_bytes = kafs_dir_v4_hdr_record_bytes_get(&hdr);
-
   if (have_tombstone)
   {
-    rc = kafs_dir_v4_write_record_head(ctx, inoent_dir, tombstone.record_off,
-                                       (uint16_t)tombstone.record_len, 0u, ino, filenamelen,
-                                       target_hash);
-    if (rc == 0)
-    {
-      kafs_dir_v4_hdr_live_count_set(&hdr, live_count + 1u);
-      kafs_dir_v4_hdr_tombstone_count_set(&hdr, tombstone_count - 1u);
-      rc = kafs_dir_v4_write_header(ctx, inoent_dir, &hdr);
-    }
+    rc = kafs_dirent_reuse_tombstone(ctx, inoent_dir, tombstone, ino, filenamelen, target_hash,
+                                     &hdr);
     free(old);
     return rc;
   }
 
-  size_t rec_len = sizeof(kafs_sdirent_v4_t) + (size_t)filenamelen;
-  size_t append_off = (old_len == 0) ? sizeof(kafs_sdir_v4_hdr_t) : meta.logical_len;
-  if (old_len != 0 && append_off != old_len)
-  {
-    free(old);
-    return -EIO;
-  }
-
-  char recbuf[sizeof(kafs_sdirent_v4_t) + FILENAME_MAX];
-  kafs_sdirent_v4_t *rec = (kafs_sdirent_v4_t *)recbuf;
-  memset(recbuf, 0, rec_len);
-  kafs_dirent_v4_rec_len_set(rec, (uint16_t)rec_len);
-  kafs_dirent_v4_flags_set(rec, 0u);
-  kafs_dirent_v4_ino_set(rec, ino);
-  kafs_dirent_v4_filenamelen_set(rec, filenamelen);
-  kafs_dirent_v4_name_hash_set(rec, target_hash);
-  memcpy(recbuf + sizeof(kafs_sdirent_v4_t), filename, filenamelen);
-
-  if (old_len == 0)
-  {
-    rc = kafs_dir_v4_write_header(ctx, inoent_dir, &hdr);
-    if (rc < 0)
-    {
-      free(old);
-      return rc;
-    }
-  }
-
-  ssize_t w = kafs_pwrite(ctx, inoent_dir, recbuf, (kafs_off_t)rec_len, (kafs_off_t)append_off);
-  if (w < 0 || (size_t)w != rec_len)
-  {
-    free(old);
-    return (w < 0) ? (int)w : -EIO;
-  }
-
-  kafs_dir_v4_hdr_live_count_set(&hdr, live_count + 1u);
-  kafs_dir_v4_hdr_tombstone_count_set(&hdr, tombstone_count);
-  kafs_dir_v4_hdr_record_bytes_set(&hdr, record_bytes + (uint32_t)rec_len);
-  rc = kafs_dir_v4_write_header(ctx, inoent_dir, &hdr);
+  rc = kafs_dirent_append_new_v4(ctx, inoent_dir, old_len, &meta, &hdr, ino, filename, filenamelen,
+                                 target_hash);
   free(old);
   return rc;
 }
