@@ -2,7 +2,6 @@
 #include "kafs_inode.h"
 #include "kafs_dirent.h"
 #include "kafs_hash.h"
-#include "kafs_locks.h"
 #include "kafs_tailmeta.h"
 #include "kafs_block.h"
 #include "kafs_cli_opts.h"
@@ -90,6 +89,18 @@ struct dir_v4_stats
   uint64_t repaired_dirs;
 };
 
+struct fsck_dir_v4_scan_result
+{
+  uint32_t live_count;
+  uint32_t tombstone_count;
+  uint32_t dotdot_live;
+  size_t bad_off;
+  uint16_t bad_rec_len;
+  uint16_t bad_flags;
+  kafs_inocnt_t bad_dino;
+  kafs_filenamelen_t bad_namelen;
+};
+
 typedef enum fsck_mode
 {
   FSCK_MODE_UNSET = 0,
@@ -100,6 +111,696 @@ typedef enum fsck_mode
   FSCK_MODE_FULL_CHECK,
   FSCK_MODE_FULL_REPAIR,
 } fsck_mode_t;
+
+struct fsck_options
+{
+  int do_journal_reset;
+  int do_check_dirent_ino_orphans;
+  int do_repair_dirent_ino_orphans;
+  int do_check_hrl_blo_refcounts;
+  int do_repair_hrl_blo_refcounts;
+  int do_check_inode_block_counts;
+  int do_repair_inode_block_counts;
+  int do_replay_journal;
+  int do_punch_hole_unreferenced_data_blocks;
+  int do_trim_free_data_blocks;
+  int do_check_journal;
+  int has_preset_mode;
+  int has_low_level_mode;
+  fsck_mode_t mode;
+  const char *img;
+};
+
+struct fsck_image_info
+{
+  int fd;
+  kafs_ssuperblock_t sb;
+  uint64_t file_size;
+};
+
+static int check_tailmeta_live_slot_owner(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
+                                          uint64_t inode_table_off, uint32_t container_index,
+                                          uint16_t slot_index,
+                                          const kafs_tailmeta_slot_desc_t *slot);
+
+static int pread_all(int fd, void *buf, size_t sz, off_t off);
+static int pwrite_all(int fd, const void *buf, size_t sz, off_t off);
+static int orphan_reclaim(kafs_context_t *ctx, int do_fix, struct orphan_stats *stats);
+static int fsck_check_or_repair_dir_v4(kafs_context_t *ctx, int do_fix, struct dir_v4_stats *stats);
+static int check_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_refcheck_stats *stats);
+static int repair_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_repair_stats *stats);
+static int punch_unreferenced_data_blocks(kafs_context_t *ctx, int fd, struct punch_stats *stats);
+static int trim_free_data_blocks(kafs_context_t *ctx, int fd, struct punch_stats *stats);
+static int check_or_repair_inode_block_counts(kafs_context_t *ctx, int do_fix,
+                                              struct inode_blocks_stats *stats);
+static int check_region_bounds(const char *name, uint64_t off, uint64_t size, uint64_t file_size);
+static int check_tailmeta_region(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size);
+
+static void fsck_options_init(struct fsck_options *opts)
+{
+  memset(opts, 0, sizeof(*opts));
+  opts->do_check_journal = 1;
+  opts->mode = FSCK_MODE_UNSET;
+}
+
+static int fsck_parse_preset_mode(const char *arg, struct fsck_options *opts)
+{
+  if (strcmp(arg, "--full-check") == 0)
+    opts->mode = FSCK_MODE_FULL_CHECK;
+  else if (strcmp(arg, "--full-repair") == 0)
+    opts->mode = FSCK_MODE_FULL_REPAIR;
+  else if (strcmp(arg, "--balanced-check") == 0 || strcmp(arg, "--check") == 0)
+    opts->mode = FSCK_MODE_BALANCED_CHECK;
+  else if (strcmp(arg, "--balanced-repair") == 0 || strcmp(arg, "--repair") == 0)
+    opts->mode = FSCK_MODE_BALANCED_REPAIR;
+  else if (strcmp(arg, "--fast-check") == 0)
+    opts->mode = FSCK_MODE_FAST_CHECK;
+  else if (strcmp(arg, "--fast-repair") == 0)
+    opts->mode = FSCK_MODE_FAST_REPAIR;
+  else
+    return 0;
+
+  opts->has_preset_mode = 1;
+  return 1;
+}
+
+static int fsck_parse_low_level_mode(const char *arg, struct fsck_options *opts)
+{
+  if (strcmp(arg, "--check-journal") == 0)
+  {
+    opts->has_low_level_mode = 1;
+    return 1;
+  }
+  if (strcmp(arg, "--repair-journal-reset") == 0)
+    opts->do_journal_reset = 1;
+  else if (strcmp(arg, "--repair-dirent-ino-orphans") == 0)
+    opts->do_repair_dirent_ino_orphans = 1;
+  else if (strcmp(arg, "--check-dirent-ino-orphans") == 0)
+    opts->do_check_dirent_ino_orphans = 1;
+  else if (strcmp(arg, "--check-hrl-blo-refcounts") == 0)
+    opts->do_check_hrl_blo_refcounts = 1;
+  else if (strcmp(arg, "--repair-hrl-blo-refcounts") == 0)
+    opts->do_repair_hrl_blo_refcounts = 1;
+  else if (strcmp(arg, "--check-inode-block-counts") == 0)
+    opts->do_check_inode_block_counts = 1;
+  else if (strcmp(arg, "--repair-inode-block-counts") == 0)
+    opts->do_repair_inode_block_counts = 1;
+  else if (strcmp(arg, "--replay-journal") == 0)
+    opts->do_replay_journal = 1;
+  else if (strcmp(arg, "--punch-hole-unreferenced-data-blocks") == 0)
+    opts->do_punch_hole_unreferenced_data_blocks = 1;
+  else if (strcmp(arg, "--trim-free-data-blocks") == 0)
+    opts->do_trim_free_data_blocks = 1;
+  else
+    return 0;
+
+  opts->has_low_level_mode = 1;
+  return 1;
+}
+
+static int fsck_parse_args(int argc, char **argv, struct fsck_options *opts)
+{
+  for (int i = 1; i < argc; ++i)
+  {
+    if (fsck_parse_preset_mode(argv[i], opts) || fsck_parse_low_level_mode(argv[i], opts))
+      continue;
+    if (argv[i][0] != '-' && !opts->img)
+    {
+      opts->img = argv[i];
+      continue;
+    }
+    return -1;
+  }
+
+  if (!opts->img || (opts->has_preset_mode && opts->has_low_level_mode))
+    return -1;
+  return 0;
+}
+
+static void fsck_apply_mode_defaults(struct fsck_options *opts)
+{
+  if (opts->has_preset_mode)
+  {
+    opts->do_check_journal = 1;
+    opts->do_journal_reset = 0;
+    opts->do_check_dirent_ino_orphans = 0;
+    opts->do_repair_dirent_ino_orphans = 0;
+    opts->do_check_hrl_blo_refcounts = 0;
+    opts->do_repair_hrl_blo_refcounts = 0;
+
+    switch (opts->mode)
+    {
+    case FSCK_MODE_FAST_CHECK:
+      break;
+    case FSCK_MODE_FAST_REPAIR:
+      opts->do_journal_reset = 1;
+      break;
+    case FSCK_MODE_BALANCED_CHECK:
+      opts->do_check_dirent_ino_orphans = 1;
+      break;
+    case FSCK_MODE_BALANCED_REPAIR:
+      opts->do_journal_reset = 1;
+      opts->do_repair_dirent_ino_orphans = 1;
+      break;
+    case FSCK_MODE_FULL_CHECK:
+      opts->do_check_dirent_ino_orphans = 1;
+      opts->do_check_hrl_blo_refcounts = 1;
+      break;
+    case FSCK_MODE_FULL_REPAIR:
+      opts->do_journal_reset = 1;
+      opts->do_repair_dirent_ino_orphans = 1;
+      opts->do_check_hrl_blo_refcounts = 1;
+      opts->do_repair_hrl_blo_refcounts = 1;
+      break;
+    case FSCK_MODE_UNSET:
+    default:
+      break;
+    }
+    return;
+  }
+
+  if (!opts->has_low_level_mode)
+  {
+    opts->do_check_journal = 1;
+    opts->do_check_dirent_ino_orphans = 1;
+  }
+}
+
+static int fsck_want_write(const struct fsck_options *opts)
+{
+  return opts->do_journal_reset || opts->do_repair_dirent_ino_orphans ||
+         opts->do_repair_hrl_blo_refcounts || opts->do_repair_inode_block_counts ||
+         opts->do_replay_journal || opts->do_punch_hole_unreferenced_data_blocks ||
+         opts->do_trim_free_data_blocks;
+}
+
+static int fsck_detect_file_size(int fd, uint64_t *file_size)
+{
+  struct stat st;
+
+  if (fstat(fd, &st) != 0)
+  {
+    perror("fstat");
+    return -1;
+  }
+  if (S_ISREG(st.st_mode))
+  {
+    *file_size = (uint64_t)st.st_size;
+    return 0;
+  }
+  if (S_ISBLK(st.st_mode))
+  {
+#ifdef __linux__
+    if (ioctl(fd, BLKGETSIZE64, file_size) != 0)
+    {
+      perror("ioctl(BLKGETSIZE64)");
+      return -1;
+    }
+    return 0;
+#else
+    fprintf(stderr, "block devices are not supported on this platform\n");
+    return -1;
+#endif
+  }
+
+  fprintf(stderr, "unsupported file type\n");
+  return -1;
+}
+
+static int fsck_open_image(const struct fsck_options *opts, int want_write,
+                           struct fsck_image_info *info)
+{
+  memset(info, 0, sizeof(*info));
+  info->fd = open(opts->img, want_write ? O_RDWR : O_RDONLY);
+  if (info->fd < 0)
+  {
+    perror("open");
+    return -1;
+  }
+  if (pread_all(info->fd, &info->sb, sizeof(info->sb), 0) != 0)
+  {
+    perror("pread superblock");
+    close(info->fd);
+    return -1;
+  }
+  if (fsck_detect_file_size(info->fd, &info->file_size) != 0)
+  {
+    close(info->fd);
+    return -1;
+  }
+  return 0;
+}
+
+static int fsck_validate_regions(const struct fsck_image_info *info)
+{
+  if (check_region_bounds("allocator", kafs_sb_allocator_offset_get(&info->sb),
+                          kafs_sb_allocator_size_get(&info->sb), info->file_size) != 0)
+    return 3;
+  if (check_region_bounds("pendinglog", kafs_sb_pendinglog_offset_get(&info->sb),
+                          kafs_sb_pendinglog_size_get(&info->sb), info->file_size) != 0)
+    return FSCK_EXIT_JOURNAL_CHECK_FAILED;
+
+  uint64_t tail_off = kafs_sb_tailmeta_offset_get(&info->sb);
+  uint64_t tail_size = kafs_sb_tailmeta_size_get(&info->sb);
+  uint64_t feature_flags = kafs_sb_feature_flags_get(&info->sb);
+  if (((feature_flags & KAFS_FEATURE_TAIL_META_REGION) != 0 || tail_off != 0 || tail_size != 0) &&
+      check_region_bounds("tailmeta", tail_off, tail_size, info->file_size) != 0)
+    return 3;
+
+  if (check_tailmeta_region(info->fd, &info->sb, info->file_size) != 0)
+    return FSCK_EXIT_TAILMETA_INCONSISTENT;
+  return 0;
+}
+
+static int fsck_map_context(int fd, const kafs_ssuperblock_t *sb, int want_write,
+                            kafs_context_t *ctx)
+{
+  memset(ctx, 0, sizeof(*ctx));
+  ctx->c_fd = fd;
+
+  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(sb);
+  kafs_blksize_t blksize = 1u << log_blksize;
+  kafs_blksize_t blksizemask = blksize - 1u;
+  kafs_inocnt_t inocnt = kafs_inocnt_stoh(sb->s_inocnt);
+  kafs_blkcnt_t r_blkcnt = kafs_blkcnt_stoh(sb->s_r_blkcnt);
+
+  off_t mapsize = sizeof(kafs_ssuperblock_t);
+  mapsize = (mapsize + blksizemask) & ~blksizemask;
+  void *blkmask_off = (void *)mapsize;
+  mapsize += (r_blkcnt + 7) >> 3;
+  mapsize = (mapsize + 7) & ~7;
+  mapsize = (mapsize + blksizemask) & ~blksizemask;
+  void *inotbl_off = (void *)mapsize;
+  mapsize += (off_t)kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(sb), inocnt);
+  mapsize = (mapsize + blksizemask) & ~blksizemask;
+
+  off_t imgsize = (off_t)r_blkcnt << log_blksize;
+  uint64_t idx_off = kafs_sb_hrl_index_offset_get(sb);
+  uint64_t idx_size = kafs_sb_hrl_index_size_get(sb);
+  uint64_t ent_off = kafs_sb_hrl_entry_offset_get(sb);
+  uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sb);
+  uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
+  uint64_t j_off = kafs_sb_journal_offset_get(sb);
+  uint64_t j_size = kafs_sb_journal_size_get(sb);
+  uint64_t max_end = (idx_off && idx_size) ? (idx_off + idx_size) : 0;
+  if (((ent_off && ent_size) ? (ent_off + ent_size) : 0) > max_end)
+    max_end = ent_off + ent_size;
+  if (((j_off && j_size) ? (j_off + j_size) : 0) > max_end)
+    max_end = j_off + j_size;
+  if ((off_t)max_end > imgsize)
+    imgsize = (off_t)max_end;
+  imgsize = (imgsize + blksizemask) & ~blksizemask;
+
+  int prot = want_write ? (PROT_READ | PROT_WRITE) : PROT_READ;
+  ctx->c_img_base = mmap(NULL, (size_t)imgsize, prot, MAP_SHARED, fd, 0);
+  if (ctx->c_img_base == MAP_FAILED)
+  {
+    perror("mmap");
+    return -1;
+  }
+
+  ctx->c_img_size = (size_t)imgsize;
+  ctx->c_superblock = (kafs_ssuperblock_t *)ctx->c_img_base;
+  ctx->c_mapsize = (size_t)mapsize;
+  ctx->c_blkmasktbl = (void *)((char *)ctx->c_superblock + (intptr_t)blkmask_off);
+  ctx->c_inotbl = (void *)((char *)ctx->c_superblock + (intptr_t)inotbl_off);
+  return 0;
+}
+
+static int fsck_handle_dirent_ops(kafs_context_t *ctx, const struct fsck_options *opts,
+                                  int *exit_code)
+{
+  struct orphan_stats ost;
+  struct dir_v4_stats dst;
+  memset(&ost, 0, sizeof(ost));
+  memset(&dst, 0, sizeof(dst));
+
+  int drc = fsck_check_or_repair_dir_v4(ctx, opts->do_repair_dirent_ino_orphans, &dst);
+  if (drc != 0)
+    return -1;
+
+  if (dst.invalid_dirs > 0)
+  {
+    fprintf(stderr,
+            "Dir-v4 summary: checked=%" PRIu64 " invalid=%" PRIu64 " repaired=%" PRIu64 "\n",
+            dst.dirs_checked, dst.invalid_dirs, dst.repaired_dirs);
+    if (opts->do_repair_dirent_ino_orphans)
+    {
+      if (dst.invalid_dirs != dst.repaired_dirs)
+        *exit_code = FSCK_EXIT_DIRENT_FORMAT_INCONSISTENT;
+    }
+    else
+    {
+      *exit_code = FSCK_EXIT_DIRENT_FORMAT_INCONSISTENT;
+    }
+  }
+
+  if (opts->do_repair_dirent_ino_orphans)
+    (void)kafs_hrl_open(ctx);
+
+  int found = orphan_reclaim(ctx, opts->do_repair_dirent_ino_orphans, &ost);
+  if (found < 0)
+  {
+    if (opts->do_repair_dirent_ino_orphans)
+      (void)kafs_hrl_close(ctx);
+    return -1;
+  }
+
+  if (opts->do_repair_dirent_ino_orphans)
+  {
+    (void)kafs_hrl_close(ctx);
+    fprintf(stderr,
+            "Dirent->ino orphan repair summary: found=%" PRIu64 " dec_attempted=%" PRIu64
+            " dec_failed=%" PRIu64 "\n",
+            ost.found, ost.dec_attempted, ost.dec_failed);
+    if (ost.dec_failed > 0)
+      *exit_code = FSCK_EXIT_DIRENT_INO_REPAIR_PARTIAL;
+  }
+  else if (ost.found > 0)
+  {
+    *exit_code = FSCK_EXIT_DIRENT_INO_INCONSISTENT;
+  }
+
+  return 0;
+}
+
+static int fsck_handle_hrl_ops(kafs_context_t *ctx, const struct fsck_options *opts, int *exit_code)
+{
+  if (opts->do_repair_hrl_blo_refcounts)
+  {
+    struct hrl_repair_stats rst;
+    memset(&rst, 0, sizeof(rst));
+    if (kafs_hrl_open(ctx) != 0)
+      return -1;
+    int rc = repair_hrl_blo_refcounts(ctx, &rst);
+    (void)kafs_hrl_close(ctx);
+    if (rc != 0)
+      return -1;
+
+    fprintf(stderr,
+            "HRL->BLO repair summary: inc_attempted=%" PRIu64 " inc_failed=%" PRIu64
+            " dec_attempted=%" PRIu64 " dec_failed=%" PRIu64 "\n",
+            rst.inc_attempted, rst.inc_failed, rst.dec_attempted, rst.dec_failed);
+    if ((rst.inc_failed > 0 || rst.dec_failed > 0) && *exit_code == 0)
+      *exit_code = FSCK_EXIT_HRL_BLO_INCONSISTENT;
+  }
+
+  if (opts->do_check_hrl_blo_refcounts)
+  {
+    struct hrl_refcheck_stats hst;
+    memset(&hst, 0, sizeof(hst));
+    if (check_hrl_blo_refcounts(ctx, &hst) != 0)
+      return -1;
+
+    fprintf(stderr,
+            "HRL->BLO check summary: inode_refs=%" PRIu64 " pending_refs=%" PRIu64
+            " invalid_refs=%" PRIu64 " live_entries=%" PRIu64 " invalid_entries=%" PRIu64
+            " mismatches=%" PRIu64 "\n",
+            hst.inode_refs, hst.pending_refs, hst.invalid_refs, hst.live_entries,
+            hst.hrl_invalid_entries, hst.mismatch_entries);
+    if ((hst.mismatch_entries > 0 || hst.pending_refs > 0 || hst.invalid_refs > 0 ||
+         hst.hrl_invalid_entries > 0) &&
+        *exit_code == 0)
+      *exit_code = FSCK_EXIT_HRL_BLO_INCONSISTENT;
+  }
+
+  return 0;
+}
+
+static int fsck_handle_inode_and_punch_ops(kafs_context_t *ctx, int fd,
+                                           const struct fsck_options *opts, int *exit_code)
+{
+  if (opts->do_check_inode_block_counts || opts->do_repair_inode_block_counts)
+  {
+    struct inode_blocks_stats ibs;
+    memset(&ibs, 0, sizeof(ibs));
+    if (check_or_repair_inode_block_counts(ctx, opts->do_repair_inode_block_counts, &ibs) != 0)
+      return -1;
+
+    fprintf(stderr,
+            "inode block-count %s summary: checked=%" PRIu64 " mismatches=%" PRIu64
+            " repaired=%" PRIu64 "\n",
+            opts->do_repair_inode_block_counts ? "repair" : "check", ibs.checked, ibs.mismatches,
+            ibs.repaired);
+    if (!opts->do_repair_inode_block_counts && ibs.mismatches > 0 && *exit_code == 0)
+      *exit_code = FSCK_EXIT_INODE_BLOCKS_INCONSISTENT;
+  }
+
+  if (opts->do_punch_hole_unreferenced_data_blocks)
+  {
+    struct punch_stats pst;
+    memset(&pst, 0, sizeof(pst));
+    if (punch_unreferenced_data_blocks(ctx, fd, &pst) != 0)
+      return -1;
+
+    fprintf(stderr,
+            "Punch-hole summary: candidates=%" PRIu64 " already_free=%" PRIu64 " punched=%" PRIu64
+            " punch_failed=%" PRIu64 " mark_failed=%" PRIu64 "\n",
+            pst.candidates, pst.already_free, pst.punched, pst.punch_failed, pst.mark_failed);
+    if ((pst.punch_failed > 0 || pst.mark_failed > 0) && *exit_code == 0)
+      *exit_code = FSCK_EXIT_PUNCH_HOLE_PARTIAL;
+  }
+
+  if (opts->do_trim_free_data_blocks)
+  {
+    struct punch_stats tst;
+    if (trim_free_data_blocks(ctx, fd, &tst) != 0)
+      return -1;
+
+    fprintf(stderr,
+            "Trim-free summary: candidates=%" PRIu64 " punched=%" PRIu64 " punch_failed=%" PRIu64
+            "\n",
+            tst.candidates, tst.punched, tst.punch_failed);
+    if (tst.punch_failed > 0 && *exit_code == 0)
+      *exit_code = FSCK_EXIT_PUNCH_HOLE_PARTIAL;
+  }
+
+  return 0;
+}
+
+static int fsck_run_mapped_ops(int fd, int want_write, const struct fsck_options *opts,
+                               int *exit_code, const kafs_ssuperblock_t *sb)
+{
+  kafs_context_t ctx;
+  if (fsck_map_context(fd, sb, want_write, &ctx) != 0)
+    return 1;
+
+  ctx.c_blo_search = 0;
+  ctx.c_ino_search = 0;
+  if (opts->do_replay_journal)
+  {
+    int rc = kafs_journal_replay(&ctx, NULL, NULL);
+    if (rc != 0)
+    {
+      munmap(ctx.c_img_base, ctx.c_img_size);
+      return FSCK_EXIT_JOURNAL_REPLAY_FAILED;
+    }
+    fprintf(stderr, "Journal replay: applied pending metadata and cleared ring.\n");
+  }
+
+  if ((opts->do_check_dirent_ino_orphans || opts->do_repair_dirent_ino_orphans) &&
+      fsck_handle_dirent_ops(&ctx, opts, exit_code) != 0)
+  {
+    munmap(ctx.c_img_base, ctx.c_img_size);
+    return 1;
+  }
+  if (fsck_handle_hrl_ops(&ctx, opts, exit_code) != 0 ||
+      fsck_handle_inode_and_punch_ops(&ctx, fd, opts, exit_code) != 0)
+  {
+    munmap(ctx.c_img_base, ctx.c_img_size);
+    return 1;
+  }
+
+  if (want_write)
+  {
+    (void)msync(ctx.c_img_base, ctx.c_img_size, MS_SYNC);
+    (void)fsync(fd);
+  }
+  munmap(ctx.c_img_base, ctx.c_img_size);
+  return 0;
+}
+
+static int fsck_handle_offline_ops(int fd, int want_write, const struct fsck_options *opts,
+                                   int *exit_code, const kafs_ssuperblock_t *sb)
+{
+  if (!opts->do_check_dirent_ino_orphans && !opts->do_repair_dirent_ino_orphans &&
+      !opts->do_check_hrl_blo_refcounts && !opts->do_repair_hrl_blo_refcounts &&
+      !opts->do_check_inode_block_counts && !opts->do_repair_inode_block_counts &&
+      !opts->do_replay_journal && !opts->do_punch_hole_unreferenced_data_blocks &&
+      !opts->do_trim_free_data_blocks)
+    return 0;
+
+  return fsck_run_mapped_ops(fd, want_write, opts, exit_code, sb);
+}
+
+static int fsck_reset_journal_ring(int fd, uint64_t joff, uint64_t data_off, uint64_t area_size,
+                                   const kj_header_t *hdr, int header_ok, int exit_code)
+{
+  const size_t chunk = 4096;
+  char z[chunk];
+  memset(z, 0, sizeof(z));
+
+  for (uint64_t rem = area_size, off = 0; rem != 0;)
+  {
+    size_t n = rem > chunk ? chunk : (size_t)rem;
+    if (pwrite_all(fd, z, n, (off_t)(data_off + off)) != 0)
+    {
+      perror("pwrite zero");
+      return FSCK_EXIT_JOURNAL_RESET_FAILED;
+    }
+    off += n;
+    rem -= n;
+  }
+
+  kj_header_t nh = {
+      .magic = KJ_MAGIC,
+      .version = KJ_VER,
+      .flags = 0,
+      .area_size = area_size,
+      .write_off = 0,
+      .seq = (header_ok ? hdr->seq : 0),
+      .reserved0 = 0,
+      .header_crc = 0,
+  };
+  nh.header_crc = kj_crc32(&nh, sizeof(nh));
+  if (pwrite_all(fd, &nh, sizeof(nh), (off_t)joff) != 0)
+  {
+    perror("pwrite header");
+    return FSCK_EXIT_JOURNAL_RESET_FAILED;
+  }
+  if (fsync(fd) != 0)
+  {
+    perror("fsync");
+    return FSCK_EXIT_JOURNAL_RESET_FAILED;
+  }
+  fprintf(stderr, "Journal cleared.\n");
+  return exit_code;
+}
+
+static int fsck_scan_journal_records(int fd, uint64_t data_off, const kj_header_t *hdr)
+{
+  uint64_t pos = 0;
+
+  while (pos + sizeof(kj_rec_hdr_t) <= hdr->write_off)
+  {
+    kj_rec_hdr_t rh;
+    if (pread_all(fd, &rh, sizeof(rh), (off_t)(data_off + pos)) != 0)
+    {
+      perror("pread rec hdr");
+      return -1;
+    }
+    pos += sizeof(rh);
+    if (rh.tag == KJ_TAG_WRAP)
+    {
+      pos = 0;
+      continue;
+    }
+    if (pos + rh.size > hdr->write_off)
+    {
+      fprintf(stderr, "Journal: partial tail\n");
+      return -1;
+    }
+
+    char *pl = NULL;
+    if (rh.size)
+    {
+      pl = (char *)malloc((size_t)rh.size);
+      if (!pl)
+      {
+        perror("malloc");
+        return -1;
+      }
+      if (pread_all(fd, pl, rh.size, (off_t)(data_off + pos)) != 0)
+      {
+        perror("pread rec payload");
+        free(pl);
+        return -1;
+      }
+    }
+
+    kj_rec_hdr_t rh2 = rh;
+    rh2.crc32 = 0;
+    uint32_t c = kj_crc32_update(0, (const uint8_t *)&rh2, sizeof(rh2));
+    if (rh.size && pl)
+      c = kj_crc32_update(c, (const uint8_t *)pl, rh.size);
+    free(pl);
+    if (c != rh.crc32)
+    {
+      fprintf(stderr, "Journal: record CRC mismatch at off=%" PRIu64 "\n",
+              (uint64_t)(pos - sizeof(rh)));
+      return -1;
+    }
+    pos += rh.size;
+  }
+
+  return 0;
+}
+
+static int fsck_validate_or_reset_journal(const struct fsck_options *opts,
+                                          const struct fsck_image_info *info, int exit_code)
+{
+  uint64_t joff = kafs_sb_journal_offset_get(&info->sb);
+  uint64_t jsize = kafs_sb_journal_size_get(&info->sb);
+  if (check_region_bounds("journal", joff, jsize, info->file_size) != 0)
+    return FSCK_EXIT_JOURNAL_CHECK_FAILED;
+  if (joff == 0 || jsize < 4096)
+  {
+    fprintf(stderr, "No in-image journal: off=%" PRIu64 " size=%" PRIu64 "\n", joff, jsize);
+    return exit_code;
+  }
+
+  size_t hsz = kj_header_size();
+  uint64_t data_off = joff + hsz;
+  uint64_t area_size = (jsize > hsz) ? (jsize - hsz) : 0;
+  if (area_size == 0)
+  {
+    fprintf(stderr, "Invalid journal area size 0\n");
+    return 1;
+  }
+
+  kj_header_t hdr;
+  if (pread_all(info->fd, &hdr, sizeof(hdr), (off_t)joff) != 0)
+  {
+    perror("pread journal header");
+    return 1;
+  }
+
+  int header_ok = 1;
+  if (hdr.magic != KJ_MAGIC)
+  {
+    fprintf(stderr, "Journal: bad magic\n");
+    header_ok = 0;
+  }
+  if (hdr.version != KJ_VER)
+  {
+    fprintf(stderr, "Journal: bad version (%u)\n", hdr.version);
+    header_ok = 0;
+  }
+  if (hdr.area_size != area_size)
+  {
+    fprintf(stderr, "Journal: area_size mismatch (sb=%" PRIu64 ", hdr=%" PRIu64 ")\n", area_size,
+            (uint64_t)hdr.area_size);
+    header_ok = 0;
+  }
+  kj_header_t tmp = hdr;
+  tmp.header_crc = 0;
+  if (kj_crc32(&tmp, sizeof(tmp)) != hdr.header_crc)
+  {
+    fprintf(stderr, "Journal: header CRC mismatch\n");
+    header_ok = 0;
+  }
+
+  int ok = header_ok;
+  if (ok)
+    ok = (fsck_scan_journal_records(info->fd, data_off, &hdr) == 0);
+  if (!ok && !opts->do_journal_reset)
+    return FSCK_EXIT_JOURNAL_CHECK_FAILED;
+  if (!ok)
+    return fsck_reset_journal_ring(info->fd, joff, data_off, area_size, &hdr, header_ok, exit_code);
+
+  fprintf(stderr, "Journal check: OK\n");
+  return exit_code;
+}
 
 static int fsck_decode_data_ref(kafs_blkcnt_t raw, kafs_blkcnt_t *out_blo, int *out_is_pending)
 {
@@ -401,6 +1102,171 @@ static void fsck_log_dir_head_sample(kafs_context_t *ctx, const kafs_sinode_t *i
   fprintf(stderr, "'\n");
 }
 
+static void fsck_dir_v4_log_invalid_inode(kafs_context_t *ctx, kafs_inocnt_t ino,
+                                          const kafs_sinode_t *inoent)
+{
+  fsck_log_inode_brief(ino, inoent);
+  fsck_log_dir_head_sample(ctx, inoent, ino);
+}
+
+static int fsck_dir_v4_read_header(kafs_context_t *ctx, const kafs_sinode_t *inoent,
+                                   kafs_sdir_v4_hdr_t *hdr)
+{
+  ssize_t hdr_read = fsck_inode_pread(ctx, inoent, hdr, (kafs_off_t)sizeof(*hdr), 0);
+  return (hdr_read == (ssize_t)sizeof(*hdr)) ? 0 : -EIO;
+}
+
+static int fsck_dir_v4_load_file(kafs_context_t *ctx, const kafs_sinode_t *inoent, kafs_off_t size,
+                                 char **out_buf)
+{
+  *out_buf = NULL;
+  if (size <= 0)
+    return 0;
+
+  char *buf = (char *)malloc((size_t)size);
+  if (!buf)
+    return -ENOMEM;
+
+  ssize_t dir_read = fsck_inode_pread(ctx, inoent, buf, size, 0);
+  if (dir_read != (ssize_t)size)
+  {
+    free(buf);
+    return -EIO;
+  }
+
+  *out_buf = buf;
+  return 0;
+}
+
+static int fsck_dir_v4_validate_header_fields(const kafs_sdir_v4_hdr_t *hdr, kafs_off_t size)
+{
+  if (kafs_u32_stoh(hdr->dh_magic) != KAFS_DIRENT_V4_MAGIC ||
+      kafs_dir_v4_hdr_format_get(hdr) != KAFS_DIRENT_V4_FORMAT_VERSION ||
+      kafs_dir_v4_hdr_flags_get(hdr) != 0u)
+    return -1;
+
+  uint32_t record_bytes = kafs_dir_v4_hdr_record_bytes_get(hdr);
+  return ((kafs_off_t)sizeof(*hdr) + (kafs_off_t)record_bytes == size) ? 0 : -1;
+}
+
+static void fsck_dir_v4_report_bad_header(kafs_context_t *ctx, kafs_inocnt_t ino,
+                                          const kafs_sinode_t *inoent,
+                                          const kafs_sdir_v4_hdr_t *hdr, kafs_off_t size)
+{
+  if (kafs_u32_stoh(hdr->dh_magic) != KAFS_DIRENT_V4_MAGIC ||
+      kafs_dir_v4_hdr_format_get(hdr) != KAFS_DIRENT_V4_FORMAT_VERSION ||
+      kafs_dir_v4_hdr_flags_get(hdr) != 0u)
+  {
+    fprintf(stderr, "dir-v4 invalid: ino=%" PRIuFAST32 " bad header magic=%08x fmt=%u flags=%u\n",
+            ino, kafs_u32_stoh(hdr->dh_magic), (unsigned)kafs_dir_v4_hdr_format_get(hdr),
+            (unsigned)kafs_dir_v4_hdr_flags_get(hdr));
+  }
+  else
+  {
+    fprintf(stderr,
+            "dir-v4 invalid: ino=%" PRIuFAST32 " size/header mismatch size=%" PRIiFAST64
+            " record_bytes=%u\n",
+            ino, (int64_t)size, (unsigned)kafs_dir_v4_hdr_record_bytes_get(hdr));
+  }
+  fsck_dir_v4_log_invalid_inode(ctx, ino, inoent);
+}
+
+static int fsck_dir_v4_scan_records(kafs_context_t *ctx, const char *buf, kafs_off_t size,
+                                    kafs_inocnt_t inocnt, struct fsck_dir_v4_scan_result *scan)
+{
+  memset(scan, 0, sizeof(*scan));
+  scan->bad_dino = KAFS_INO_NONE;
+
+  for (size_t off = sizeof(kafs_sdir_v4_hdr_t); off < (size_t)size;)
+  {
+    scan->bad_off = off;
+    if ((size_t)size - off < sizeof(kafs_sdirent_v4_t))
+      return -1;
+
+    kafs_sdirent_v4_t rec;
+    memcpy(&rec, buf + off, sizeof(rec));
+    uint16_t rec_len = kafs_dirent_v4_rec_len_get(&rec);
+    uint16_t flags = kafs_dirent_v4_flags_get(&rec);
+    kafs_inocnt_t dino = kafs_dirent_v4_ino_get(&rec);
+    kafs_filenamelen_t namelen = kafs_dirent_v4_filenamelen_get(&rec);
+    scan->bad_rec_len = rec_len;
+    scan->bad_flags = flags;
+    scan->bad_dino = dino;
+    scan->bad_namelen = namelen;
+
+    if (rec_len < sizeof(kafs_sdirent_v4_t) || off + rec_len > (size_t)size || namelen == 0 ||
+        namelen >= FILENAME_MAX || (size_t)namelen > rec_len - sizeof(kafs_sdirent_v4_t) ||
+        (flags & ~KAFS_DIRENT_FLAG_TOMBSTONE) != 0u)
+      return -1;
+
+    const char *name = buf + off + sizeof(kafs_sdirent_v4_t);
+    if ((flags & KAFS_DIRENT_FLAG_TOMBSTONE) != 0)
+    {
+      scan->tombstone_count++;
+    }
+    else
+    {
+      if (dino == KAFS_INO_NONE || dino >= inocnt || !kafs_ino_get_usage(kafs_ctx_inode(ctx, dino)))
+        return -1;
+      scan->live_count++;
+      if (namelen == 2 && memcmp(name, "..", 2) == 0)
+        scan->dotdot_live++;
+    }
+    off += rec_len;
+  }
+
+  return 0;
+}
+
+static void fsck_dir_v4_report_malformed(kafs_context_t *ctx, kafs_inocnt_t ino,
+                                         const kafs_sinode_t *inoent, const char *buf,
+                                         kafs_off_t size,
+                                         const struct fsck_dir_v4_scan_result *scan)
+{
+  fprintf(stderr,
+          "dir-v4 invalid: ino=%" PRIuFAST32
+          " malformed record stream off=%zu rec_len=%u flags=%u dino=%" PRIuFAST32
+          " namelen=%" PRIuFAST16 "\n",
+          ino, scan->bad_off, (unsigned)scan->bad_rec_len, (unsigned)scan->bad_flags,
+          scan->bad_dino, (uint_fast16_t)scan->bad_namelen);
+  fsck_dir_v4_log_invalid_inode(ctx, ino, inoent);
+  if (buf && scan->bad_off < (size_t)size)
+  {
+    size_t remain = (size_t)size - scan->bad_off;
+    size_t sample_len = remain < 32u ? remain : 32u;
+    fprintf(stderr, "  bad-record-head: off=%zu bytes[%zu]=", scan->bad_off, sample_len);
+    fsck_dump_bytes_hex(stderr, buf + scan->bad_off, sample_len);
+    fprintf(stderr, " ascii='");
+    fsck_dump_bytes_ascii(stderr, buf + scan->bad_off, sample_len);
+    fprintf(stderr, "'\n");
+  }
+}
+
+static int fsck_dir_v4_has_bad_counts(kafs_inocnt_t ino, const kafs_sdir_v4_hdr_t *hdr,
+                                      const struct fsck_dir_v4_scan_result *scan)
+{
+  if (scan->live_count != kafs_dir_v4_hdr_live_count_get(hdr) ||
+      scan->tombstone_count != kafs_dir_v4_hdr_tombstone_count_get(hdr))
+    return 1;
+  if (ino == KAFS_INO_ROOTDIR)
+    return scan->dotdot_live != 0;
+  return scan->dotdot_live != 1;
+}
+
+static void fsck_dir_v4_report_count_mismatch(kafs_context_t *ctx, kafs_inocnt_t ino,
+                                              const kafs_sinode_t *inoent,
+                                              const kafs_sdir_v4_hdr_t *hdr,
+                                              const struct fsck_dir_v4_scan_result *scan)
+{
+  fprintf(stderr,
+          "dir-v4 mismatch: ino=%" PRIuFAST32
+          " hdr_live=%u calc_live=%u hdr_tomb=%u calc_tomb=%u dotdot=%u\n",
+          ino, (unsigned)kafs_dir_v4_hdr_live_count_get(hdr), (unsigned)scan->live_count,
+          (unsigned)kafs_dir_v4_hdr_tombstone_count_get(hdr), (unsigned)scan->tombstone_count,
+          (unsigned)scan->dotdot_live);
+  fsck_dir_v4_log_invalid_inode(ctx, ino, inoent);
+}
+
 static int fsck_inode_is_tombstone(const kafs_sinode_t *inoent)
 {
   if (!inoent || !kafs_ino_get_usage(inoent))
@@ -565,168 +1431,180 @@ static int fsck_check_or_repair_dir_v4(kafs_context_t *ctx, int do_fix, struct d
     {
       fprintf(stderr, "dir-v4 invalid: ino=%" PRIuFAST32 " size=%" PRIiFAST64 " too small\n", ino,
               (int64_t)size);
-      fsck_log_inode_brief(ino, inoent);
-      fsck_log_dir_head_sample(ctx, inoent, ino);
+      fsck_dir_v4_log_invalid_inode(ctx, ino, inoent);
       stats->invalid_dirs++;
       continue;
     }
 
     kafs_sdir_v4_hdr_t hdr;
-    ssize_t hdr_read = fsck_inode_pread(ctx, inoent, &hdr, (kafs_off_t)sizeof(hdr), 0);
-    if (hdr_read != (ssize_t)sizeof(hdr))
+    if (fsck_dir_v4_read_header(ctx, inoent, &hdr) != 0)
       return -EIO;
-    if (kafs_u32_stoh(hdr.dh_magic) != KAFS_DIRENT_V4_MAGIC ||
-        kafs_dir_v4_hdr_format_get(&hdr) != KAFS_DIRENT_V4_FORMAT_VERSION ||
-        kafs_dir_v4_hdr_flags_get(&hdr) != 0u)
+    if (fsck_dir_v4_validate_header_fields(&hdr, size) != 0)
     {
-      fprintf(stderr, "dir-v4 invalid: ino=%" PRIuFAST32 " bad header magic=%08x fmt=%u flags=%u\n",
-              ino, kafs_u32_stoh(hdr.dh_magic), (unsigned)kafs_dir_v4_hdr_format_get(&hdr),
-              (unsigned)kafs_dir_v4_hdr_flags_get(&hdr));
-      fsck_log_inode_brief(ino, inoent);
-      fsck_log_dir_head_sample(ctx, inoent, ino);
-      stats->invalid_dirs++;
-      continue;
-    }
-
-    uint32_t record_bytes = kafs_dir_v4_hdr_record_bytes_get(&hdr);
-    if ((kafs_off_t)sizeof(hdr) + (kafs_off_t)record_bytes != size)
-    {
-      fprintf(stderr,
-              "dir-v4 invalid: ino=%" PRIuFAST32 " size/header mismatch size=%" PRIiFAST64
-              " record_bytes=%u\n",
-              ino, (int64_t)size, (unsigned)record_bytes);
-      fsck_log_inode_brief(ino, inoent);
-      fsck_log_dir_head_sample(ctx, inoent, ino);
+      fsck_dir_v4_report_bad_header(ctx, ino, inoent, &hdr, size);
       stats->invalid_dirs++;
       continue;
     }
 
     char *buf = NULL;
-    if (size > 0)
-    {
-      buf = (char *)malloc((size_t)size);
-      if (!buf)
-        return -ENOMEM;
-      ssize_t dir_read = fsck_inode_pread(ctx, inoent, buf, size, 0);
-      if (dir_read != (ssize_t)size)
-      {
-        free(buf);
-        return -EIO;
-      }
-    }
+    int rc = fsck_dir_v4_load_file(ctx, inoent, size, &buf);
+    if (rc != 0)
+      return rc;
 
-    uint32_t live_count = 0;
-    uint32_t tombstone_count = 0;
-    uint32_t dotdot_live = 0;
-    size_t off = sizeof(kafs_sdir_v4_hdr_t);
-    int malformed = 0;
-    size_t bad_off = 0;
-    uint16_t bad_rec_len = 0;
-    uint16_t bad_flags = 0;
-    kafs_inocnt_t bad_dino = KAFS_INO_NONE;
-    kafs_filenamelen_t bad_namelen = 0;
-    while (off < (size_t)size)
+    struct fsck_dir_v4_scan_result scan;
+    if (fsck_dir_v4_scan_records(ctx, buf, size, inocnt, &scan) != 0)
     {
-      if ((size_t)size - off < sizeof(kafs_sdirent_v4_t))
-      {
-        malformed = 1;
-        bad_off = off;
-        break;
-      }
-      kafs_sdirent_v4_t rec;
-      memcpy(&rec, buf + off, sizeof(rec));
-      uint16_t rec_len = kafs_dirent_v4_rec_len_get(&rec);
-      uint16_t flags = kafs_dirent_v4_flags_get(&rec);
-      kafs_inocnt_t dino = kafs_dirent_v4_ino_get(&rec);
-      kafs_filenamelen_t namelen = kafs_dirent_v4_filenamelen_get(&rec);
-      bad_off = off;
-      bad_rec_len = rec_len;
-      bad_flags = flags;
-      bad_dino = dino;
-      bad_namelen = namelen;
-      if (rec_len < sizeof(kafs_sdirent_v4_t) || off + rec_len > (size_t)size || namelen == 0 ||
-          namelen >= FILENAME_MAX || (size_t)namelen > rec_len - sizeof(kafs_sdirent_v4_t) ||
-          (flags & ~KAFS_DIRENT_FLAG_TOMBSTONE) != 0u)
-      {
-        malformed = 1;
-        break;
-      }
-      const char *name = buf + off + sizeof(kafs_sdirent_v4_t);
-      if ((flags & KAFS_DIRENT_FLAG_TOMBSTONE) != 0)
-      {
-        tombstone_count++;
-      }
-      else
-      {
-        if (dino == KAFS_INO_NONE || dino >= inocnt ||
-            !kafs_ino_get_usage(kafs_ctx_inode(ctx, dino)))
-        {
-          malformed = 1;
-          break;
-        }
-        live_count++;
-        if (namelen == 2 && memcmp(name, "..", 2) == 0)
-          dotdot_live++;
-      }
-      off += rec_len;
-    }
-    if (malformed)
-    {
-      fprintf(stderr,
-              "dir-v4 invalid: ino=%" PRIuFAST32
-              " malformed record stream off=%zu rec_len=%u flags=%u dino=%" PRIuFAST32
-              " namelen=%" PRIuFAST16 "\n",
-              ino, bad_off, (unsigned)bad_rec_len, (unsigned)bad_flags, bad_dino,
-              (uint_fast16_t)bad_namelen);
-      fsck_log_inode_brief(ino, inoent);
-      fsck_log_dir_head_sample(ctx, inoent, ino);
-      if (buf && bad_off < (size_t)size)
-      {
-        size_t remain = (size_t)size - bad_off;
-        size_t sample_len = remain < 32u ? remain : 32u;
-        fprintf(stderr, "  bad-record-head: off=%zu bytes[%zu]=", bad_off, sample_len);
-        fsck_dump_bytes_hex(stderr, buf + bad_off, sample_len);
-        fprintf(stderr, " ascii='");
-        fsck_dump_bytes_ascii(stderr, buf + bad_off, sample_len);
-        fprintf(stderr, "'\n");
-      }
+      fsck_dir_v4_report_malformed(ctx, ino, inoent, buf, size, &scan);
       free(buf);
       stats->invalid_dirs++;
       continue;
     }
 
     free(buf);
-
-    int bad_counts = 0;
-    if (live_count != kafs_dir_v4_hdr_live_count_get(&hdr) ||
-        tombstone_count != kafs_dir_v4_hdr_tombstone_count_get(&hdr))
-      bad_counts = 1;
-    if (ino == KAFS_INO_ROOTDIR)
-    {
-      if (dotdot_live != 0)
-        bad_counts = 1;
-    }
-    else if (dotdot_live != 1)
-    {
-      bad_counts = 1;
-    }
-
-    if (!bad_counts)
+    if (!fsck_dir_v4_has_bad_counts(ino, &hdr, &scan))
       continue;
 
-    fprintf(stderr,
-            "dir-v4 mismatch: ino=%" PRIuFAST32
-            " hdr_live=%u calc_live=%u hdr_tomb=%u calc_tomb=%u dotdot=%u\n",
-            ino, (unsigned)kafs_dir_v4_hdr_live_count_get(&hdr), (unsigned)live_count,
-            (unsigned)kafs_dir_v4_hdr_tombstone_count_get(&hdr), (unsigned)tombstone_count,
-            (unsigned)dotdot_live);
-    fsck_log_inode_brief(ino, inoent);
-    fsck_log_dir_head_sample(ctx, inoent, ino);
+    fsck_dir_v4_report_count_mismatch(ctx, ino, inoent, &hdr, &scan);
     stats->invalid_dirs++;
     (void)do_fix;
   }
 
   return 0;
+}
+
+static int fsck_tailmeta_read_region_header(int fd, uint64_t region_off, uint64_t region_size,
+                                            kafs_tailmeta_region_hdr_t *region_hdr)
+{
+  if (pread_all(fd, region_hdr, sizeof(*region_hdr), (off_t)region_off) != 0)
+  {
+    fprintf(stderr, "failed to read tailmeta header\n");
+    return -1;
+  }
+
+  int rc = kafs_tailmeta_region_hdr_validate(region_hdr, region_size);
+  if (rc != 0)
+  {
+    fprintf(stderr, "tailmeta header invalid: magic=0x%08" PRIx32 " version=%u flags=%u rc=%d\n",
+            kafs_u32_stoh(region_hdr->tr_magic),
+            (unsigned)kafs_tailmeta_region_hdr_version_get(region_hdr),
+            (unsigned)kafs_tailmeta_region_hdr_flags_get(region_hdr), rc);
+    return -1;
+  }
+
+  return 0;
+}
+
+static kafs_tailmeta_container_hdr_t *
+fsck_tailmeta_load_containers(int fd, uint64_t region_off,
+                              const kafs_tailmeta_region_hdr_t *region_hdr)
+{
+  uint32_t table_off = kafs_tailmeta_region_hdr_container_table_off_get(region_hdr);
+  uint32_t table_bytes = kafs_tailmeta_region_hdr_container_table_bytes_get(region_hdr);
+  kafs_tailmeta_container_hdr_t *containers =
+      (kafs_tailmeta_container_hdr_t *)malloc((size_t)table_bytes);
+  {
+    fprintf(stderr, "tailmeta container table alloc failed\n");
+    return NULL;
+  }
+  if (pread_all(fd, containers, (size_t)table_bytes, (off_t)(region_off + table_off)) != 0)
+  {
+    fprintf(stderr, "failed to read tailmeta container table\n");
+    free(containers);
+    return NULL;
+  }
+  return containers;
+}
+
+static kafs_tailmeta_slot_desc_t *
+fsck_tailmeta_load_slots(int fd, uint64_t region_off, uint32_t index,
+                         const kafs_tailmeta_container_hdr_t *container)
+{
+  uint32_t slot_table_off = kafs_tailmeta_container_hdr_slot_table_off_get(container);
+  uint32_t slot_table_bytes = kafs_tailmeta_container_hdr_slot_table_bytes_get(container);
+  kafs_tailmeta_slot_desc_t *slots = (kafs_tailmeta_slot_desc_t *)malloc((size_t)slot_table_bytes);
+  if (!slots)
+  {
+    fprintf(stderr, "tailmeta slot table alloc failed for container[%u]\n", index);
+    return NULL;
+  }
+  if (pread_all(fd, slots, (size_t)slot_table_bytes, (off_t)(region_off + slot_table_off)) != 0)
+  {
+    fprintf(stderr, "failed to read tailmeta slot table for container[%u]\n", index);
+    free(slots);
+    return NULL;
+  }
+  return slots;
+}
+
+static int fsck_tailmeta_validate_slots(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
+                                        uint64_t inode_table_off, uint32_t index,
+                                        const kafs_tailmeta_container_hdr_t *container,
+                                        const kafs_tailmeta_slot_desc_t *slots)
+{
+  uint16_t slot_count = kafs_tailmeta_container_hdr_slot_count_get(container);
+  uint16_t class_bytes = kafs_tailmeta_container_hdr_class_bytes_get(container);
+  uint16_t live_slots = 0;
+  int failed = 0;
+
+  for (uint16_t slot_index = 0; slot_index < slot_count; ++slot_index)
+  {
+    int rc = kafs_tailmeta_slot_validate(&slots[slot_index], class_bytes);
+    if (rc != 0)
+    {
+      fprintf(stderr,
+              "tailmeta container[%u] slot[%u] invalid: owner=%" PRIuFAST32
+              " len=%u flags=%u rc=%d\n",
+              index, slot_index, kafs_tailmeta_slot_owner_ino_get(&slots[slot_index]),
+              (unsigned)kafs_tailmeta_slot_len_get(&slots[slot_index]),
+              (unsigned)kafs_tailmeta_slot_flags_get(&slots[slot_index]), rc);
+      failed = 1;
+      continue;
+    }
+    if (kafs_tailmeta_slot_owner_ino_get(&slots[slot_index]) != KAFS_INO_NONE)
+    {
+      if (check_tailmeta_live_slot_owner(fd, sb, file_size, inode_table_off, index, slot_index,
+                                         &slots[slot_index]) != 0)
+        failed = 1;
+      live_slots++;
+    }
+  }
+
+  if (live_slots != kafs_tailmeta_container_hdr_live_count_get(container))
+  {
+    fprintf(stderr, "tailmeta container[%u] live slot mismatch: header=%u actual=%u\n", index,
+            (unsigned)kafs_tailmeta_container_hdr_live_count_get(container), (unsigned)live_slots);
+    failed = 1;
+  }
+
+  return failed ? -1 : 0;
+}
+
+static int fsck_tailmeta_validate_container(int fd, const kafs_ssuperblock_t *sb,
+                                            uint64_t file_size, uint64_t region_off,
+                                            uint64_t region_size, uint64_t inode_table_off,
+                                            uint16_t slot_desc_bytes, uint32_t index,
+                                            const kafs_tailmeta_container_hdr_t *container)
+{
+  int rc = kafs_tailmeta_container_hdr_validate(container, region_size, slot_desc_bytes);
+  if (rc != 0)
+  {
+    fprintf(stderr, "tailmeta container[%u] invalid: class=%u slots=%u live=%u free=%u rc=%d\n",
+            index, (unsigned)kafs_tailmeta_container_hdr_class_bytes_get(container),
+            (unsigned)kafs_tailmeta_container_hdr_slot_count_get(container),
+            (unsigned)kafs_tailmeta_container_hdr_live_count_get(container),
+            (unsigned)kafs_tailmeta_container_hdr_free_bytes_get(container), rc);
+    return -1;
+  }
+
+  if (kafs_tailmeta_container_hdr_slot_count_get(container) == 0)
+    return 0;
+
+  kafs_tailmeta_slot_desc_t *slots = fsck_tailmeta_load_slots(fd, region_off, index, container);
+  if (!slots)
+    return -1;
+  rc = fsck_tailmeta_validate_slots(fd, sb, file_size, inode_table_off, index, container, slots);
+  free(slots);
+  return rc;
 }
 
 struct hrl_scan_ctx
@@ -1381,113 +2259,26 @@ static int check_tailmeta_region(int fd, const kafs_ssuperblock_t *sb, uint64_t 
     return -1;
 
   kafs_tailmeta_region_hdr_t region_hdr;
-  if (pread_all(fd, &region_hdr, sizeof(region_hdr), (off_t)region_off) != 0)
-  {
-    fprintf(stderr, "failed to read tailmeta header\n");
+  if (fsck_tailmeta_read_region_header(fd, region_off, region_size, &region_hdr) != 0)
     return -1;
-  }
-  int rc = kafs_tailmeta_region_hdr_validate(&region_hdr, region_size);
-  if (rc != 0)
-  {
-    fprintf(stderr, "tailmeta header invalid: magic=0x%08" PRIx32 " version=%u flags=%u rc=%d\n",
-            kafs_u32_stoh(region_hdr.tr_magic),
-            (unsigned)kafs_tailmeta_region_hdr_version_get(&region_hdr),
-            (unsigned)kafs_tailmeta_region_hdr_flags_get(&region_hdr), rc);
-    return -1;
-  }
 
   uint32_t container_count = kafs_tailmeta_region_hdr_container_count_get(&region_hdr);
   if (container_count == 0)
     return 0;
 
-  uint32_t table_off = kafs_tailmeta_region_hdr_container_table_off_get(&region_hdr);
-  uint32_t table_bytes = kafs_tailmeta_region_hdr_container_table_bytes_get(&region_hdr);
   kafs_tailmeta_container_hdr_t *containers =
-      (kafs_tailmeta_container_hdr_t *)malloc((size_t)table_bytes);
+      fsck_tailmeta_load_containers(fd, region_off, &region_hdr);
   if (!containers)
-  {
-    fprintf(stderr, "tailmeta container table alloc failed\n");
     return -1;
-  }
-  if (pread_all(fd, containers, (size_t)table_bytes, (off_t)(region_off + table_off)) != 0)
-  {
-    fprintf(stderr, "failed to read tailmeta container table\n");
-    free(containers);
-    return -1;
-  }
 
   int failed = 0;
   uint16_t slot_desc_bytes = kafs_tailmeta_region_hdr_slot_desc_bytes_get(&region_hdr);
   for (uint32_t index = 0; index < container_count; ++index)
   {
-    const kafs_tailmeta_container_hdr_t *container = &containers[index];
-    rc = kafs_tailmeta_container_hdr_validate(container, region_size, slot_desc_bytes);
-    if (rc != 0)
-    {
-      fprintf(stderr, "tailmeta container[%u] invalid: class=%u slots=%u live=%u free=%u rc=%d\n",
-              index, (unsigned)kafs_tailmeta_container_hdr_class_bytes_get(container),
-              (unsigned)kafs_tailmeta_container_hdr_slot_count_get(container),
-              (unsigned)kafs_tailmeta_container_hdr_live_count_get(container),
-              (unsigned)kafs_tailmeta_container_hdr_free_bytes_get(container), rc);
+    if (fsck_tailmeta_validate_container(fd, sb, file_size, region_off, region_size,
+                                         inode_table_off, slot_desc_bytes, index,
+                                         &containers[index]) != 0)
       failed = 1;
-      continue;
-    }
-
-    uint16_t slot_count = kafs_tailmeta_container_hdr_slot_count_get(container);
-    if (slot_count == 0)
-      continue;
-
-    uint16_t class_bytes = kafs_tailmeta_container_hdr_class_bytes_get(container);
-    uint32_t slot_table_off = kafs_tailmeta_container_hdr_slot_table_off_get(container);
-    uint32_t slot_table_bytes = kafs_tailmeta_container_hdr_slot_table_bytes_get(container);
-    kafs_tailmeta_slot_desc_t *slots =
-        (kafs_tailmeta_slot_desc_t *)malloc((size_t)slot_table_bytes);
-    if (!slots)
-    {
-      fprintf(stderr, "tailmeta slot table alloc failed for container[%u]\n", index);
-      failed = 1;
-      continue;
-    }
-    if (pread_all(fd, slots, (size_t)slot_table_bytes, (off_t)(region_off + slot_table_off)) != 0)
-    {
-      fprintf(stderr, "failed to read tailmeta slot table for container[%u]\n", index);
-      free(slots);
-      failed = 1;
-      continue;
-    }
-
-    uint16_t live_slots = 0;
-    for (uint16_t slot_index = 0; slot_index < slot_count; ++slot_index)
-    {
-      rc = kafs_tailmeta_slot_validate(&slots[slot_index], class_bytes);
-      if (rc != 0)
-      {
-        fprintf(stderr,
-                "tailmeta container[%u] slot[%u] invalid: owner=%" PRIuFAST32
-                " len=%u flags=%u rc=%d\n",
-                index, slot_index, kafs_tailmeta_slot_owner_ino_get(&slots[slot_index]),
-                (unsigned)kafs_tailmeta_slot_len_get(&slots[slot_index]),
-                (unsigned)kafs_tailmeta_slot_flags_get(&slots[slot_index]), rc);
-        failed = 1;
-        continue;
-      }
-      if (kafs_tailmeta_slot_owner_ino_get(&slots[slot_index]) != KAFS_INO_NONE)
-      {
-        if (check_tailmeta_live_slot_owner(fd, sb, file_size, inode_table_off, index, slot_index,
-                                           &slots[slot_index]) != 0)
-          failed = 1;
-        live_slots++;
-      }
-    }
-
-    if (live_slots != kafs_tailmeta_container_hdr_live_count_get(container))
-    {
-      fprintf(stderr, "tailmeta container[%u] live slot mismatch: header=%u actual=%u\n", index,
-              (unsigned)kafs_tailmeta_container_hdr_live_count_get(container),
-              (unsigned)live_slots);
-      failed = 1;
-    }
-    free(slots);
   }
 
   free(containers);
@@ -1496,737 +2287,42 @@ static int check_tailmeta_region(int fd, const kafs_ssuperblock_t *sb, uint64_t 
 
 int main(int argc, char **argv)
 {
-  int do_journal_reset = 0; // repair: journal layer
-  int do_check_dirent_ino_orphans = 0;
-  int do_repair_dirent_ino_orphans = 0;
-  int do_check_hrl_blo_refcounts = 0;
-  int do_repair_hrl_blo_refcounts = 0;
-  int do_check_inode_block_counts = 0;
-  int do_repair_inode_block_counts = 0;
-  int do_replay_journal = 0;
-  int do_punch_hole_unreferenced_data_blocks = 0;
-  int do_trim_free_data_blocks = 0;
-  int do_check_journal = 1;
-
-  int has_preset_mode = 0;
-  int has_low_level_mode = 0;
-  fsck_mode_t mode = FSCK_MODE_UNSET;
-
+  struct fsck_options opts;
+  struct fsck_image_info info;
   int exit_code = 0;
-  const char *img = NULL;
+
+  fsck_options_init(&opts);
   if (kafs_cli_exit_if_help(argc, argv, usage, argv[0]) == 0)
     return 0;
-
-  for (int i = 1; i < argc; ++i)
-  {
-    if (strcmp(argv[i], "--full-check") == 0)
-    {
-      has_preset_mode = 1;
-      mode = FSCK_MODE_FULL_CHECK;
-    }
-    else if (strcmp(argv[i], "--full-repair") == 0)
-    {
-      has_preset_mode = 1;
-      mode = FSCK_MODE_FULL_REPAIR;
-    }
-    else if (strcmp(argv[i], "--balanced-check") == 0)
-    {
-      has_preset_mode = 1;
-      mode = FSCK_MODE_BALANCED_CHECK;
-    }
-    else if (strcmp(argv[i], "--check") == 0)
-    {
-      has_preset_mode = 1;
-      mode = FSCK_MODE_BALANCED_CHECK;
-    }
-    else if (strcmp(argv[i], "--balanced-repair") == 0)
-    {
-      has_preset_mode = 1;
-      mode = FSCK_MODE_BALANCED_REPAIR;
-    }
-    else if (strcmp(argv[i], "--repair") == 0)
-    {
-      has_preset_mode = 1;
-      mode = FSCK_MODE_BALANCED_REPAIR;
-    }
-    else if (strcmp(argv[i], "--fast-check") == 0)
-    {
-      has_preset_mode = 1;
-      mode = FSCK_MODE_FAST_CHECK;
-    }
-    else if (strcmp(argv[i], "--fast-repair") == 0)
-    {
-      has_preset_mode = 1;
-      mode = FSCK_MODE_FAST_REPAIR;
-    }
-    else if (strcmp(argv[i], "--check-journal") == 0)
-    {
-      // no-op: default behavior is journal validation
-      has_low_level_mode = 1;
-    }
-    else if (strcmp(argv[i], "--repair-journal-reset") == 0)
-    {
-      do_journal_reset = 1;
-      has_low_level_mode = 1;
-    }
-    else if (strcmp(argv[i], "--repair-dirent-ino-orphans") == 0)
-    {
-      do_repair_dirent_ino_orphans = 1;
-      has_low_level_mode = 1;
-    }
-    else if (strcmp(argv[i], "--check-dirent-ino-orphans") == 0)
-    {
-      do_check_dirent_ino_orphans = 1;
-      has_low_level_mode = 1;
-    }
-    else if (strcmp(argv[i], "--check-hrl-blo-refcounts") == 0)
-    {
-      do_check_hrl_blo_refcounts = 1;
-      has_low_level_mode = 1;
-    }
-    else if (strcmp(argv[i], "--repair-hrl-blo-refcounts") == 0)
-    {
-      do_repair_hrl_blo_refcounts = 1;
-      has_low_level_mode = 1;
-    }
-    else if (strcmp(argv[i], "--check-inode-block-counts") == 0)
-    {
-      do_check_inode_block_counts = 1;
-      has_low_level_mode = 1;
-    }
-    else if (strcmp(argv[i], "--repair-inode-block-counts") == 0)
-    {
-      do_repair_inode_block_counts = 1;
-      has_low_level_mode = 1;
-    }
-    else if (strcmp(argv[i], "--replay-journal") == 0)
-    {
-      do_replay_journal = 1;
-      has_low_level_mode = 1;
-    }
-    else if (strcmp(argv[i], "--punch-hole-unreferenced-data-blocks") == 0)
-    {
-      do_punch_hole_unreferenced_data_blocks = 1;
-      has_low_level_mode = 1;
-    }
-    else if (strcmp(argv[i], "--trim-free-data-blocks") == 0)
-    {
-      do_trim_free_data_blocks = 1;
-      has_low_level_mode = 1;
-    }
-    else if (argv[i][0] != '-' && !img)
-    {
-      img = argv[i];
-    }
-    else
-    {
-      usage(argv[0]);
-      return FSCK_EXIT_USAGE;
-    }
-  }
-  if (!img)
+  if (fsck_parse_args(argc, argv, &opts) != 0)
   {
     usage(argv[0]);
     return FSCK_EXIT_USAGE;
   }
-
-  if (has_preset_mode && has_low_level_mode)
-  {
-    fprintf(stderr, "fsck.kafs: preset mode and low-level flags cannot be mixed\n");
-    usage(argv[0]);
-    return FSCK_EXIT_USAGE;
-  }
-
-  if (has_preset_mode)
-  {
-    do_check_journal = 1;
-    do_journal_reset = 0;
-    do_check_dirent_ino_orphans = 0;
-    do_repair_dirent_ino_orphans = 0;
-    do_check_hrl_blo_refcounts = 0;
-    do_repair_hrl_blo_refcounts = 0;
-
-    switch (mode)
-    {
-    case FSCK_MODE_FAST_CHECK:
-      break;
-    case FSCK_MODE_FAST_REPAIR:
-      do_journal_reset = 1;
-      break;
-    case FSCK_MODE_BALANCED_CHECK:
-      do_check_dirent_ino_orphans = 1;
-      break;
-    case FSCK_MODE_BALANCED_REPAIR:
-      do_journal_reset = 1;
-      do_repair_dirent_ino_orphans = 1;
-      break;
-    case FSCK_MODE_FULL_CHECK:
-      do_check_dirent_ino_orphans = 1;
-      do_check_hrl_blo_refcounts = 1;
-      break;
-    case FSCK_MODE_FULL_REPAIR:
-      do_journal_reset = 1;
-      do_repair_dirent_ino_orphans = 1;
-      do_check_hrl_blo_refcounts = 1;
-      do_repair_hrl_blo_refcounts = 1;
-      break;
-    case FSCK_MODE_UNSET:
-    default:
-      break;
-    }
-  }
-  else if (!has_low_level_mode)
-  {
-    // default: balanced check
-    do_check_journal = 1;
-    do_check_dirent_ino_orphans = 1;
-  }
-
-  int want_write = do_journal_reset || do_repair_dirent_ino_orphans ||
-                   do_repair_hrl_blo_refcounts || do_repair_inode_block_counts;
-  if (do_replay_journal || do_punch_hole_unreferenced_data_blocks || do_trim_free_data_blocks)
-    want_write = 1;
-  int fd = open(img, want_write ? O_RDWR : O_RDONLY);
-  if (fd < 0)
-  {
-    perror("open");
+  fsck_apply_mode_defaults(&opts);
+  int want_write = fsck_want_write(&opts);
+  if (fsck_open_image(&opts, want_write, &info) != 0)
     return 1;
-  }
 
-  // read superblock
-  kafs_ssuperblock_t sb;
-  if (pread_all(fd, &sb, sizeof(sb), 0) != 0)
+  int rc = fsck_validate_regions(&info);
+  if (rc != 0)
   {
-    perror("pread superblock");
-    close(fd);
-    return 1;
+    close(info.fd);
+    return rc;
   }
-
-  struct stat st;
-  if (fstat(fd, &st) != 0)
+  rc = fsck_handle_offline_ops(info.fd, want_write, &opts, &exit_code, &info.sb);
+  if (rc != 0)
   {
-    perror("fstat");
-    close(fd);
-    return 1;
+    close(info.fd);
+    return rc;
   }
-  uint64_t file_size = 0;
-  if (S_ISREG(st.st_mode))
+  if (!opts.do_check_journal)
   {
-    file_size = (uint64_t)st.st_size;
-  }
-  else if (S_ISBLK(st.st_mode))
-  {
-#ifdef __linux__
-    if (ioctl(fd, BLKGETSIZE64, &file_size) != 0)
-    {
-      perror("ioctl(BLKGETSIZE64)");
-      close(fd);
-      return 1;
-    }
-#else
-    fprintf(stderr, "block devices are not supported on this platform\n");
-    close(fd);
-    return 1;
-#endif
-  }
-  else
-  {
-    fprintf(stderr, "unsupported file type\n");
-    close(fd);
-    return 1;
-  }
-
-  if (check_region_bounds("allocator", kafs_sb_allocator_offset_get(&sb),
-                          kafs_sb_allocator_size_get(&sb), file_size) != 0)
-  {
-    close(fd);
-    return 3;
-  }
-  if (check_region_bounds("pendinglog", kafs_sb_pendinglog_offset_get(&sb),
-                          kafs_sb_pendinglog_size_get(&sb), file_size) != 0)
-  {
-    close(fd);
-    return FSCK_EXIT_JOURNAL_CHECK_FAILED;
-  }
-  {
-    uint64_t tail_off = kafs_sb_tailmeta_offset_get(&sb);
-    uint64_t tail_size = kafs_sb_tailmeta_size_get(&sb);
-    uint64_t feature_flags = kafs_sb_feature_flags_get(&sb);
-    if ((feature_flags & KAFS_FEATURE_TAIL_META_REGION) != 0 || tail_off != 0 || tail_size != 0)
-    {
-      if (check_region_bounds("tailmeta", tail_off, tail_size, file_size) != 0)
-      {
-        close(fd);
-        return 3;
-      }
-    }
-  }
-  if (check_tailmeta_region(fd, &sb, file_size) != 0)
-  {
-    close(fd);
-    return FSCK_EXIT_TAILMETA_INCONSISTENT;
-  }
-
-  if (do_check_dirent_ino_orphans || do_repair_dirent_ino_orphans || do_check_hrl_blo_refcounts ||
-      do_repair_hrl_blo_refcounts || do_check_inode_block_counts || do_repair_inode_block_counts ||
-      do_replay_journal || do_punch_hole_unreferenced_data_blocks || do_trim_free_data_blocks)
-  {
-    kafs_context_t ctx;
-    memset(&ctx, 0, sizeof(ctx));
-    ctx.c_fd = fd;
-
-    // layout and full-image mmap (matches kafs.c)
-    kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(&sb);
-    kafs_blksize_t blksize = 1u << log_blksize;
-    kafs_blksize_t blksizemask = blksize - 1u;
-    kafs_inocnt_t inocnt = kafs_inocnt_stoh(sb.s_inocnt);
-    kafs_blkcnt_t r_blkcnt = kafs_blkcnt_stoh(sb.s_r_blkcnt);
-
-    off_t mapsize = 0;
-    mapsize += sizeof(kafs_ssuperblock_t);
-    mapsize = (mapsize + blksizemask) & ~blksizemask;
-    void *blkmask_off = (void *)mapsize;
-    mapsize += (r_blkcnt + 7) >> 3;
-    mapsize = (mapsize + 7) & ~7;
-    mapsize = (mapsize + blksizemask) & ~blksizemask;
-    void *inotbl_off = (void *)mapsize;
-    mapsize += (off_t)kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(&sb), inocnt);
-    mapsize = (mapsize + blksizemask) & ~blksizemask;
-
-    off_t imgsize = (off_t)r_blkcnt << log_blksize;
-    {
-      uint64_t idx_off = kafs_sb_hrl_index_offset_get(&sb);
-      uint64_t idx_size = kafs_sb_hrl_index_size_get(&sb);
-      uint64_t ent_off = kafs_sb_hrl_entry_offset_get(&sb);
-      uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(&sb);
-      uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
-      uint64_t j_off = kafs_sb_journal_offset_get(&sb);
-      uint64_t j_size = kafs_sb_journal_size_get(&sb);
-      uint64_t end1 = (idx_off && idx_size) ? (idx_off + idx_size) : 0;
-      uint64_t end2 = (ent_off && ent_size) ? (ent_off + ent_size) : 0;
-      uint64_t end3 = (j_off && j_size) ? (j_off + j_size) : 0;
-      uint64_t max_end = end1;
-      if (end2 > max_end)
-        max_end = end2;
-      if (end3 > max_end)
-        max_end = end3;
-      if ((off_t)max_end > imgsize)
-        imgsize = (off_t)max_end;
-      imgsize = (imgsize + blksizemask) & ~blksizemask;
-    }
-
-    int prot = want_write ? (PROT_READ | PROT_WRITE) : PROT_READ;
-    ctx.c_img_base = mmap(NULL, (size_t)imgsize, prot, MAP_SHARED, fd, 0);
-    if (ctx.c_img_base == MAP_FAILED)
-    {
-      perror("mmap");
-      close(fd);
-      return 1;
-    }
-    ctx.c_img_size = (size_t)imgsize;
-    ctx.c_superblock = (kafs_ssuperblock_t *)ctx.c_img_base;
-    ctx.c_mapsize = (size_t)mapsize;
-    ctx.c_blkmasktbl = (void *)((char *)ctx.c_superblock + (intptr_t)blkmask_off);
-    ctx.c_inotbl = (void *)((char *)ctx.c_superblock + (intptr_t)inotbl_off);
-    ctx.c_blo_search = 0;
-    ctx.c_ino_search = 0;
-
-    if (do_replay_journal)
-    {
-      int rrc = kafs_journal_replay(&ctx, NULL, NULL);
-      if (rrc != 0)
-      {
-        munmap(ctx.c_img_base, ctx.c_img_size);
-        close(fd);
-        return FSCK_EXIT_JOURNAL_REPLAY_FAILED;
-      }
-      fprintf(stderr, "Journal replay: applied pending metadata and cleared ring.\n");
-    }
-
-    if (do_check_dirent_ino_orphans || do_repair_dirent_ino_orphans)
-    {
-      struct orphan_stats ost;
-      memset(&ost, 0, sizeof(ost));
-      struct dir_v4_stats dst;
-      memset(&dst, 0, sizeof(dst));
-
-      int drc = fsck_check_or_repair_dir_v4(&ctx, do_repair_dirent_ino_orphans, &dst);
-      if (drc != 0)
-      {
-        if (do_repair_dirent_ino_orphans)
-          (void)kafs_hrl_close(&ctx);
-        munmap(ctx.c_img_base, ctx.c_img_size);
-        close(fd);
-        return 1;
-      }
-      if (dst.invalid_dirs > 0)
-      {
-        fprintf(stderr,
-                "Dir-v4 summary: checked=%" PRIu64 " invalid=%" PRIu64 " repaired=%" PRIu64 "\n",
-                dst.dirs_checked, dst.invalid_dirs, dst.repaired_dirs);
-        if (do_repair_dirent_ino_orphans)
-        {
-          if (dst.invalid_dirs != dst.repaired_dirs)
-            exit_code = FSCK_EXIT_DIRENT_FORMAT_INCONSISTENT;
-        }
-        else
-        {
-          exit_code = FSCK_EXIT_DIRENT_FORMAT_INCONSISTENT;
-        }
-      }
-
-      if (do_repair_dirent_ino_orphans)
-        (void)kafs_hrl_open(&ctx);
-
-      int found = orphan_reclaim(&ctx, do_repair_dirent_ino_orphans, &ost);
-      if (found < 0)
-      {
-        if (do_repair_dirent_ino_orphans)
-          (void)kafs_hrl_close(&ctx);
-        munmap(ctx.c_img_base, ctx.c_img_size);
-        close(fd);
-        return 1;
-      }
-
-      if (do_repair_dirent_ino_orphans)
-      {
-        (void)kafs_hrl_close(&ctx);
-        fprintf(stderr,
-                "Dirent->ino orphan repair summary: found=%" PRIu64 " dec_attempted=%" PRIu64
-                " dec_failed=%" PRIu64 "\n",
-                ost.found, ost.dec_attempted, ost.dec_failed);
-        if (ost.dec_failed > 0)
-          exit_code = FSCK_EXIT_DIRENT_INO_REPAIR_PARTIAL;
-      }
-      else if (ost.found > 0)
-      {
-        exit_code = FSCK_EXIT_DIRENT_INO_INCONSISTENT;
-      }
-    }
-
-    if (do_repair_hrl_blo_refcounts)
-    {
-      struct hrl_repair_stats rst;
-      memset(&rst, 0, sizeof(rst));
-
-      int ohrc = kafs_hrl_open(&ctx);
-      if (ohrc != 0)
-      {
-        munmap(ctx.c_img_base, ctx.c_img_size);
-        close(fd);
-        return 1;
-      }
-
-      int rrc = repair_hrl_blo_refcounts(&ctx, &rst);
-      (void)kafs_hrl_close(&ctx);
-      if (rrc != 0)
-      {
-        munmap(ctx.c_img_base, ctx.c_img_size);
-        close(fd);
-        return 1;
-      }
-
-      fprintf(stderr,
-              "HRL->BLO repair summary: inc_attempted=%" PRIu64 " inc_failed=%" PRIu64
-              " dec_attempted=%" PRIu64 " dec_failed=%" PRIu64 "\n",
-              rst.inc_attempted, rst.inc_failed, rst.dec_attempted, rst.dec_failed);
-
-      if ((rst.inc_failed > 0 || rst.dec_failed > 0) && exit_code == 0)
-        exit_code = FSCK_EXIT_HRL_BLO_INCONSISTENT;
-    }
-
-    if (do_check_hrl_blo_refcounts)
-    {
-      struct hrl_refcheck_stats hst;
-      memset(&hst, 0, sizeof(hst));
-      int hrc = check_hrl_blo_refcounts(&ctx, &hst);
-      if (hrc != 0)
-      {
-        munmap(ctx.c_img_base, ctx.c_img_size);
-        close(fd);
-        return 1;
-      }
-
-      fprintf(stderr,
-              "HRL->BLO check summary: inode_refs=%" PRIu64 " pending_refs=%" PRIu64
-              " invalid_refs=%" PRIu64 " live_entries=%" PRIu64 " invalid_entries=%" PRIu64
-              " mismatches=%" PRIu64 "\n",
-              hst.inode_refs, hst.pending_refs, hst.invalid_refs, hst.live_entries,
-              hst.hrl_invalid_entries, hst.mismatch_entries);
-
-      if (hst.mismatch_entries > 0 || hst.pending_refs > 0 || hst.invalid_refs > 0 ||
-          hst.hrl_invalid_entries > 0)
-      {
-        if (exit_code == 0)
-          exit_code = FSCK_EXIT_HRL_BLO_INCONSISTENT;
-      }
-    }
-
-    if (do_check_inode_block_counts || do_repair_inode_block_counts)
-    {
-      struct inode_blocks_stats ibs;
-      memset(&ibs, 0, sizeof(ibs));
-
-      int irc = check_or_repair_inode_block_counts(&ctx, do_repair_inode_block_counts, &ibs);
-      if (irc != 0)
-      {
-        munmap(ctx.c_img_base, ctx.c_img_size);
-        close(fd);
-        return 1;
-      }
-
-      fprintf(stderr,
-              "inode block-count %s summary: checked=%" PRIu64 " mismatches=%" PRIu64
-              " repaired=%" PRIu64 "\n",
-              do_repair_inode_block_counts ? "repair" : "check", ibs.checked, ibs.mismatches,
-              ibs.repaired);
-
-      if (!do_repair_inode_block_counts && ibs.mismatches > 0 && exit_code == 0)
-        exit_code = FSCK_EXIT_INODE_BLOCKS_INCONSISTENT;
-    }
-
-    if (do_punch_hole_unreferenced_data_blocks)
-    {
-      struct punch_stats pst;
-      memset(&pst, 0, sizeof(pst));
-      int prc = punch_unreferenced_data_blocks(&ctx, fd, &pst);
-      if (prc != 0)
-      {
-        munmap(ctx.c_img_base, ctx.c_img_size);
-        close(fd);
-        return 1;
-      }
-
-      fprintf(stderr,
-              "Punch-hole summary: candidates=%" PRIu64 " already_free=%" PRIu64 " punched=%" PRIu64
-              " punch_failed=%" PRIu64 " mark_failed=%" PRIu64 "\n",
-              pst.candidates, pst.already_free, pst.punched, pst.punch_failed, pst.mark_failed);
-
-      if ((pst.punch_failed > 0 || pst.mark_failed > 0) && exit_code == 0)
-        exit_code = FSCK_EXIT_PUNCH_HOLE_PARTIAL;
-    }
-
-    if (do_trim_free_data_blocks)
-    {
-      struct punch_stats tst;
-      int trc = trim_free_data_blocks(&ctx, fd, &tst);
-      if (trc != 0)
-      {
-        munmap(ctx.c_img_base, ctx.c_img_size);
-        close(fd);
-        return 1;
-      }
-
-      fprintf(stderr,
-              "Trim-free summary: candidates=%" PRIu64 " punched=%" PRIu64 " punch_failed=%" PRIu64
-              "\n",
-              tst.candidates, tst.punched, tst.punch_failed);
-
-      if (tst.punch_failed > 0 && exit_code == 0)
-        exit_code = FSCK_EXIT_PUNCH_HOLE_PARTIAL;
-    }
-
-    if (want_write)
-    {
-      (void)msync(ctx.c_img_base, ctx.c_img_size, MS_SYNC);
-      (void)fsync(fd);
-    }
-    munmap(ctx.c_img_base, ctx.c_img_size);
-  }
-
-  if (!do_check_journal)
-  {
-    close(fd);
+    close(info.fd);
     return exit_code;
   }
 
-  uint64_t joff = kafs_sb_journal_offset_get(&sb);
-  uint64_t jsize = kafs_sb_journal_size_get(&sb);
-  if (check_region_bounds("journal", joff, jsize, file_size) != 0)
-  {
-    close(fd);
-    return FSCK_EXIT_JOURNAL_CHECK_FAILED;
-  }
-  if (joff == 0 || jsize < 4096)
-  {
-    fprintf(stderr, "No in-image journal: off=%" PRIu64 " size=%" PRIu64 "\n", joff, jsize);
-    close(fd);
-    return exit_code;
-  }
-
-  size_t hsz = kj_header_size();
-  uint64_t data_off = joff + hsz;
-  uint64_t area_size = (jsize > hsz) ? (jsize - hsz) : 0;
-  if (area_size == 0)
-  {
-    fprintf(stderr, "Invalid journal area size 0\n");
-    close(fd);
-    return 1;
-  }
-
-  kj_header_t hdr;
-  if (pread_all(fd, &hdr, sizeof(hdr), (off_t)joff) != 0)
-  {
-    perror("pread journal header");
-    close(fd);
-    return 1;
-  }
-
-  int header_ok = 1;
-  int ok = 1;
-  if (hdr.magic != KJ_MAGIC)
-  {
-    fprintf(stderr, "Journal: bad magic\n");
-    header_ok = 0;
-  }
-  if (hdr.version != KJ_VER)
-  {
-    fprintf(stderr, "Journal: bad version (%u)\n", hdr.version);
-    header_ok = 0;
-  }
-  if (hdr.area_size != area_size)
-  {
-    fprintf(stderr, "Journal: area_size mismatch (sb=%" PRIu64 ", hdr=%" PRIu64 ")\n", area_size,
-            (uint64_t)hdr.area_size);
-    header_ok = 0;
-  }
-  {
-    kj_header_t tmp = hdr;
-    tmp.header_crc = 0;
-    uint32_t c = kj_crc32(&tmp, sizeof(tmp));
-    if (c != hdr.header_crc)
-    {
-      fprintf(stderr, "Journal: header CRC mismatch\n");
-      header_ok = 0;
-    }
-  }
-
-  ok = header_ok;
-
-  if (!ok && !do_journal_reset)
-  {
-    close(fd);
-    return FSCK_EXIT_JOURNAL_CHECK_FAILED;
-  }
-
-  // scan records up to write_off
-  if (ok)
-  {
-    uint64_t pos = 0;
-    while (pos + sizeof(kj_rec_hdr_t) <= hdr.write_off)
-    {
-      kj_rec_hdr_t rh;
-      if (pread_all(fd, &rh, sizeof(rh), (off_t)(data_off + pos)) != 0)
-      {
-        perror("pread rec hdr");
-        ok = 0;
-        break;
-      }
-      pos += sizeof(rh);
-      if (rh.tag == KJ_TAG_WRAP)
-      {
-        pos = 0;
-        continue;
-      }
-      if (pos + rh.size > hdr.write_off)
-      {
-        fprintf(stderr, "Journal: partial tail\n");
-        ok = 0;
-        break;
-      }
-      char *pl = NULL;
-      if (rh.size)
-      {
-        pl = (char *)malloc((size_t)rh.size);
-        if (!pl)
-        {
-          perror("malloc");
-          ok = 0;
-          break;
-        }
-        if (pread_all(fd, pl, rh.size, (off_t)(data_off + pos)) != 0)
-        {
-          perror("pread rec payload");
-          free(pl);
-          ok = 0;
-          break;
-        }
-      }
-      // CRC check
-      kj_rec_hdr_t rh2 = rh;
-      rh2.crc32 = 0;
-      uint32_t c = kj_crc32_update(0, (const uint8_t *)&rh2, sizeof(rh2));
-      if (rh.size && pl)
-        c = kj_crc32_update(c, (const uint8_t *)pl, rh.size);
-      if (pl)
-        free(pl);
-      if (c != rh.crc32)
-      {
-        fprintf(stderr, "Journal: record CRC mismatch at off=%" PRIu64 "\n",
-                (uint64_t)(pos - sizeof(rh)));
-        ok = 0;
-        break;
-      }
-      pos += rh.size;
-    }
-  }
-
-  if (!ok && do_journal_reset)
-  {
-    // Reset ring: zero data area and write fresh header with write_off=0 (seq preserved if hdr
-    // valid) zero data area in chunks
-    const size_t chunk = 4096;
-    char z[chunk];
-    memset(z, 0, sizeof(z));
-    uint64_t rem = area_size;
-    uint64_t off = 0;
-    while (rem)
-    {
-      size_t n = rem > chunk ? chunk : (size_t)rem;
-      if (pwrite_all(fd, z, n, (off_t)(data_off + off)) != 0)
-      {
-        perror("pwrite zero");
-        close(fd);
-        return FSCK_EXIT_JOURNAL_RESET_FAILED;
-      }
-      off += n;
-      rem -= n;
-    }
-    kj_header_t nh = {
-        .magic = KJ_MAGIC,
-        .version = KJ_VER,
-        .flags = 0,
-        .area_size = area_size,
-        .write_off = 0,
-        .seq = (header_ok ? hdr.seq : 0),
-        .reserved0 = 0,
-        .header_crc = 0,
-    };
-    nh.header_crc = kj_crc32(&nh, sizeof(nh));
-    if (pwrite_all(fd, &nh, sizeof(nh), (off_t)joff) != 0)
-    {
-      perror("pwrite header");
-      close(fd);
-      return FSCK_EXIT_JOURNAL_RESET_FAILED;
-    }
-    if (fsync(fd) != 0)
-    {
-      perror("fsync");
-      close(fd);
-      return FSCK_EXIT_JOURNAL_RESET_FAILED;
-    }
-    fprintf(stderr, "Journal cleared.\n");
-    close(fd);
-    return exit_code;
-  }
-
-  if (!ok)
-  {
-    fprintf(stderr, "Journal check: FAIL\n");
-    close(fd);
-    return FSCK_EXIT_JOURNAL_CHECK_FAILED;
-  }
-  fprintf(stderr, "Journal check: OK\n");
-  close(fd);
-  return exit_code;
+  rc = fsck_validate_or_reset_journal(&opts, &info, exit_code);
+  close(info.fd);
+  return rc;
 }

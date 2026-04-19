@@ -4,7 +4,6 @@
 #include <inttypes.h>
 #include <string.h>
 #include <unistd.h>
-#include <errno.h>
 #include <time.h>
 
 #if KAFS_ENABLE_EXTRA_DIAG
@@ -125,73 +124,104 @@ static int hrl_read_blo(kafs_context_t *ctx, kafs_blkcnt_t blo, void *out)
   return (r == (ssize_t)bs) ? 0 : -EIO;
 }
 
+#if KAFS_ENABLE_EXTRA_DIAG
+static void hrl_build_sample_strings(const unsigned char *buf, size_t len, char *hex,
+                                     size_t hex_size, char *ascii, size_t ascii_size)
+{
+  size_t hex_off = 0;
+  size_t ascii_off = 0;
+
+  if (hex_size == 0 || ascii_size == 0)
+    return;
+
+  hex[0] = '\0';
+  ascii[0] = '\0';
+  for (size_t i = 0; i < 16u && i < len; ++i)
+  {
+    int whex = snprintf(hex + hex_off, hex_size - hex_off, "%s%02x", (i == 0) ? "" : " ",
+                        (unsigned)buf[i]);
+    if (whex < 0 || (size_t)whex >= hex_size - hex_off)
+      break;
+    hex_off += (size_t)whex;
+    if (ascii_off + 1u >= ascii_size)
+      break;
+    ascii[ascii_off++] = (buf[i] >= 32 && buf[i] <= 126) ? (char)buf[i] : '.';
+  }
+  ascii[ascii_off] = '\0';
+}
+
+static void hrl_write_diag_line(int fd, const char *line, size_t len)
+{
+  size_t off = 0;
+
+  while (off < len)
+  {
+    ssize_t wr = write(fd, line + off, len - off);
+    if (wr <= 0)
+      return;
+    off += (size_t)wr;
+  }
+}
+
+static void hrl_log_dir_block0_match(kafs_context_t *ctx, kafs_blkcnt_t blo, const void *buf,
+                                     kafs_inocnt_t ino)
+{
+  kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
+  kafs_mode_t mode = kafs_ino_mode_get(inoent);
+  const unsigned char *p = (const unsigned char *)buf;
+  char hex[3 * 16 + 1];
+  char ascii[16 + 1];
+  char line[1024];
+
+  hrl_build_sample_strings(p, (size_t)hrl_blksize(ctx), hex, sizeof(hex), ascii, sizeof(ascii));
+
+  int n = snprintf(
+      line, sizeof(line),
+      "hrl_write_blo: blk=%" PRIuFAST32 " matches live dir block0 ino=%" PRIuFAST32
+      " mode=%o size=%" PRIuFAST64 " src_ino=%" PRIuFAST32
+      " src_path=%s sample_hex=%s sample_ascii='%s'\n",
+      (uint_fast32_t)blo, (uint_fast32_t)ino, (unsigned)mode,
+      (uint_fast64_t)kafs_ino_size_get(inoent),
+      (uint_fast32_t)(kafs_diag_current_write_ino ? kafs_diag_current_write_ino() : KAFS_INO_NONE),
+      (kafs_diag_current_write_path && kafs_diag_current_write_path())
+          ? kafs_diag_current_write_path()
+          : "(null)",
+      hex[0] ? hex : "-", ascii[0] ? ascii : "-");
+  if (n > 0)
+  {
+    size_t len = (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1u;
+    hrl_write_diag_line(ctx->c_diag_log_fd, line, len);
+  }
+}
+
+static void hrl_maybe_log_write_diag(kafs_context_t *ctx, kafs_blkcnt_t blo, const void *buf)
+{
+  if (!ctx || !buf || blo == KAFS_BLO_NONE || ctx->c_diag_log_fd < 0)
+    return;
+
+  kafs_inocnt_t inocnt = kafs_sb_inocnt_get(ctx->c_superblock);
+  for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
+  {
+    kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
+    if (!kafs_ino_get_usage(inoent))
+      continue;
+    if (!S_ISDIR(kafs_ino_mode_get(inoent)))
+      continue;
+    if (kafs_inode_size_is_inline(kafs_ino_size_get(inoent)))
+      continue;
+    if (kafs_blkcnt_stoh(inoent->i_blkreftbl[0]) != blo)
+      continue;
+    hrl_log_dir_block0_match(ctx, blo, buf, ino);
+  }
+}
+#endif
+
 static int hrl_write_blo(kafs_context_t *ctx, kafs_blkcnt_t blo, const void *buf)
 {
   kafs_blksize_t bs = hrl_blksize(ctx);
   kafs_logblksize_t l2 = hrl_log_blksize(ctx);
 #if KAFS_ENABLE_EXTRA_DIAG
-  if (ctx && buf && blo != KAFS_BLO_NONE && ctx->c_diag_log_fd >= 0)
-  {
-    kafs_inocnt_t inocnt = kafs_sb_inocnt_get(ctx->c_superblock);
-    for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
-    {
-      kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
-      if (!kafs_ino_get_usage(inoent))
-        continue;
-      kafs_mode_t mode = kafs_ino_mode_get(inoent);
-      if (!S_ISDIR(mode))
-        continue;
-      if (kafs_inode_size_is_inline(kafs_ino_size_get(inoent)))
-        continue;
-      kafs_blkcnt_t cur_ref = kafs_blkcnt_stoh(inoent->i_blkreftbl[0]);
-      if (cur_ref != blo)
-        continue;
-
-      const unsigned char *p = (const unsigned char *)buf;
-      char hex[3 * 16 + 1];
-      char ascii[16 + 1];
-      size_t hex_off = 0;
-      size_t ascii_off = 0;
-      hex[0] = '\0';
-      ascii[0] = '\0';
-      for (size_t i = 0; i < 16u && i < (size_t)bs; ++i)
-      {
-        int whex = snprintf(hex + hex_off, sizeof(hex) - hex_off, "%s%02x", (i == 0) ? "" : " ",
-                            (unsigned)p[i]);
-        if (whex < 0 || (size_t)whex >= sizeof(hex) - hex_off)
-          break;
-        hex_off += (size_t)whex;
-        ascii[ascii_off++] = (p[i] >= 32 && p[i] <= 126) ? (char)p[i] : '.';
-      }
-      ascii[ascii_off] = '\0';
-
-      char line[1024];
-      int n = snprintf(line, sizeof(line),
-                       "hrl_write_blo: blk=%" PRIuFAST32 " matches live dir block0 ino=%" PRIuFAST32
-                       " mode=%o size=%" PRIuFAST64 " src_ino=%" PRIuFAST32
-                       " src_path=%s sample_hex=%s sample_ascii='%s'\n",
-                       (uint_fast32_t)blo, (uint_fast32_t)ino, (unsigned)mode,
-                       (uint_fast64_t)kafs_ino_size_get(inoent),
-                       (uint_fast32_t)(kafs_diag_current_write_ino ? kafs_diag_current_write_ino()
-                                                                   : KAFS_INO_NONE),
-                       (kafs_diag_current_write_path && kafs_diag_current_write_path())
-                           ? kafs_diag_current_write_path()
-                           : "(null)",
-                       hex[0] ? hex : "-", ascii[0] ? ascii : "-");
-      if (n > 0)
-      {
-        size_t len = (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1u;
-        size_t off = 0;
-        while (off < len)
-        {
-          ssize_t wr = write(ctx->c_diag_log_fd, line + off, len - off);
-          if (wr <= 0)
-            break;
-          off += (size_t)wr;
-        }
-      }
-    }
-  }
+  hrl_maybe_log_write_diag(ctx, blo, buf);
 #endif
   ssize_t w = pwrite(ctx->c_fd, buf, bs, (off_t)blo << l2);
   return (w == (ssize_t)bs) ? 0 : -EIO;
@@ -443,6 +473,67 @@ int kafs_hrl_format(kafs_context_t *ctx)
   return 0;
 }
 
+static int hrl_publish_existing_hit(kafs_hrl_entry_t *e, uint32_t idx, kafs_hrid_t *out_hrid,
+                                    int *out_is_new, kafs_blkcnt_t *out_blo)
+{
+  if (e->refcnt == 0xFFFFFFFFu)
+    return -EOVERFLOW;
+
+  e->refcnt += 1u;
+  *out_hrid = idx;
+  *out_is_new = 0;
+  *out_blo = e->blo;
+  return 0;
+}
+
+static int hrl_find_existing_locked(kafs_context_t *ctx, uint64_t fast, const void *block_data,
+                                    kafs_hrid_t *out_hrid, int *out_is_new, kafs_blkcnt_t *out_blo)
+{
+  uint32_t idx = 0;
+  uint64_t t_find0 = hrl_now_ns();
+  int find_rc = hrl_find_by_hash(ctx, fast, block_data, &idx);
+  uint64_t t_find1 = hrl_now_ns();
+
+  __atomic_add_fetch(&ctx->c_stat_hrl_put_ns_find, t_find1 - t_find0, __ATOMIC_RELAXED);
+  if (find_rc != 0)
+    return find_rc;
+
+  return hrl_publish_existing_hit(hrl_entries_tbl(ctx) + idx, idx, out_hrid, out_is_new, out_blo);
+}
+
+static int hrl_populate_new_entry_locked(kafs_context_t *ctx, uint32_t idx, uint64_t fast,
+                                         const void *block_data, kafs_blkcnt_t *out_blo)
+{
+  kafs_hrl_entry_t *e = hrl_entries_tbl(ctx) + idx;
+  kafs_blkcnt_t blo = KAFS_BLO_NONE;
+  uint64_t t_blk_alloc0 = hrl_now_ns();
+  int rc = kafs_blk_alloc(ctx, &blo);
+  uint64_t t_blk_alloc1 = hrl_now_ns();
+
+  __atomic_add_fetch(&ctx->c_stat_hrl_put_ns_blk_alloc, t_blk_alloc1 - t_blk_alloc0,
+                     __ATOMIC_RELAXED);
+  if (rc != 0)
+    return rc;
+
+  uint64_t t_blk_write0 = hrl_now_ns();
+  rc = hrl_write_blo(ctx, blo, block_data);
+  uint64_t t_blk_write1 = hrl_now_ns();
+  __atomic_add_fetch(&ctx->c_stat_hrl_put_ns_blk_write, t_blk_write1 - t_blk_write0,
+                     __ATOMIC_RELAXED);
+  if (rc != 0)
+  {
+    (void)hrl_release_blo(ctx, &blo);
+    return rc;
+  }
+
+  e->blo = blo;
+  e->fast = fast;
+  e->next_plus1 = 0;
+  hrl_chain_insert_head(ctx, idx, fast);
+  *out_blo = blo;
+  return 0;
+}
+
 int kafs_hrl_put(kafs_context_t *ctx, const void *block_data, kafs_hrid_t *out_hrid,
                  int *out_is_new, kafs_blkcnt_t *out_blo)
 {
@@ -455,29 +546,10 @@ int kafs_hrl_put(kafs_context_t *ctx, const void *block_data, kafs_hrid_t *out_h
   uint64_t fast = hrl_hash64(block_data, hrl_blksize(ctx));
   uint64_t t_hash1 = hrl_now_ns();
   __atomic_add_fetch(&ctx->c_stat_hrl_put_ns_hash, t_hash1 - t_hash0, __ATOMIC_RELAXED);
-  uint32_t idx;
   int b = hrl_bucket_index(ctx, fast);
 
   kafs_hrl_bucket_lock(ctx, (uint32_t)b);
-  uint64_t t_find0 = hrl_now_ns();
-  int find_rc = hrl_find_by_hash(ctx, fast, block_data, &idx);
-  uint64_t t_find1 = hrl_now_ns();
-  __atomic_add_fetch(&ctx->c_stat_hrl_put_ns_find, t_find1 - t_find0, __ATOMIC_RELAXED);
-  if (find_rc == 0)
-  {
-    kafs_hrl_entry_t *e = hrl_entries_tbl(ctx) + idx;
-    if (e->refcnt == 0xFFFFFFFFu)
-    {
-      kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
-      return -EOVERFLOW;
-    }
-    e->refcnt += 1u;
-    *out_hrid = idx;
-    *out_is_new = 0;
-    *out_blo = e->blo;
-    kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
-    return 0;
-  }
+  int find_rc = hrl_find_existing_locked(ctx, fast, block_data, out_hrid, out_is_new, out_blo);
   if (find_rc != -ENOENT)
   {
     kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
@@ -496,24 +568,9 @@ int kafs_hrl_put(kafs_context_t *ctx, const void *block_data, kafs_hrid_t *out_h
     return slot_rc;
 
   kafs_hrl_bucket_lock(ctx, (uint32_t)b);
-  uint32_t found_idx = 0;
-  t_find0 = hrl_now_ns();
-  find_rc = hrl_find_by_hash(ctx, fast, block_data, &found_idx);
-  t_find1 = hrl_now_ns();
-  __atomic_add_fetch(&ctx->c_stat_hrl_put_ns_find, t_find1 - t_find0, __ATOMIC_RELAXED);
+  find_rc = hrl_find_existing_locked(ctx, fast, block_data, out_hrid, out_is_new, out_blo);
   if (find_rc == 0)
   {
-    kafs_hrl_entry_t *existing = hrl_entries_tbl(ctx) + found_idx;
-    if (existing->refcnt == 0xFFFFFFFFu)
-    {
-      kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
-      hrl_release_reserved_slot(ctx, reserved_idx);
-      return -EOVERFLOW;
-    }
-    existing->refcnt += 1u;
-    *out_hrid = found_idx;
-    *out_is_new = 0;
-    *out_blo = existing->blo;
     kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
     hrl_release_reserved_slot(ctx, reserved_idx);
     return 0;
@@ -525,45 +582,20 @@ int kafs_hrl_put(kafs_context_t *ctx, const void *block_data, kafs_hrid_t *out_h
     return find_rc;
   }
 
-  idx = reserved_idx;
-  kafs_hrl_entry_t *e = hrl_entries_tbl(ctx) + idx;
+  kafs_hrl_entry_t *e = hrl_entries_tbl(ctx) + reserved_idx;
   e->next_plus1 = 0;
 
-  // allocate physical block and write
-  kafs_blkcnt_t blo = KAFS_BLO_NONE;
-  uint64_t t_blk_alloc0 = hrl_now_ns();
-  int rc = kafs_blk_alloc(ctx, &blo);
-  uint64_t t_blk_alloc1 = hrl_now_ns();
-  __atomic_add_fetch(&ctx->c_stat_hrl_put_ns_blk_alloc, t_blk_alloc1 - t_blk_alloc0,
-                     __ATOMIC_RELAXED);
+  int rc = hrl_populate_new_entry_locked(ctx, reserved_idx, fast, block_data, out_blo);
   if (rc != 0)
   {
     kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
-    hrl_release_reserved_slot(ctx, idx);
+    hrl_release_reserved_slot(ctx, reserved_idx);
     return rc;
   }
-  uint64_t t_blk_write0 = hrl_now_ns();
-  rc = hrl_write_blo(ctx, blo, block_data);
-  uint64_t t_blk_write1 = hrl_now_ns();
-  __atomic_add_fetch(&ctx->c_stat_hrl_put_ns_blk_write, t_blk_write1 - t_blk_write0,
-                     __ATOMIC_RELAXED);
-  if (rc != 0)
-  {
-    (void)hrl_release_blo(ctx, &blo);
-    kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
-    hrl_release_reserved_slot(ctx, idx);
-    return rc;
-  }
-
-  e->blo = blo;
-  e->fast = fast;
-  e->next_plus1 = 0;
-  hrl_chain_insert_head(ctx, idx, fast);
   kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
 
-  *out_hrid = idx;
+  *out_hrid = reserved_idx;
   *out_is_new = 1;
-  *out_blo = blo;
   return 0;
 }
 
@@ -657,6 +689,66 @@ int kafs_hrl_inc_ref_by_blo(kafs_context_t *ctx, kafs_blkcnt_t blo)
   return 0;
 }
 
+static int hrl_dec_ref_matched_locked(kafs_context_t *ctx, uint32_t bucket, uint32_t idx,
+                                      kafs_hrl_entry_t *e)
+{
+  e->refcnt -= 1u;
+  if (e->refcnt != 0)
+  {
+    kafs_hrl_bucket_unlock(ctx, bucket);
+    return 0;
+  }
+
+  kafs_blkcnt_t pblo = e->blo;
+  int rc = hrl_release_blo(ctx, &pblo);
+  if (rc != 0)
+  {
+    kafs_hrl_bucket_unlock(ctx, bucket);
+    return rc;
+  }
+
+  (void)hrl_chain_remove(ctx, idx, e->fast);
+  hrl_slot_reset(e);
+  kafs_hrl_bucket_unlock(ctx, bucket);
+  hrl_publish_free_slot(ctx, idx);
+  return 0;
+}
+
+static int hrl_try_dec_ref_in_bucket(kafs_context_t *ctx, uint32_t bucket, uint64_t fast,
+                                     kafs_blkcnt_t blo)
+{
+  uint32_t *index = hrl_index_tbl(ctx);
+  kafs_hrl_entry_t *ents = hrl_entries_tbl(ctx);
+  uint32_t cap = hrl_capacity(ctx);
+  uint32_t head = index[bucket];
+
+  kafs_hrl_bucket_lock(ctx, bucket);
+  for (uint32_t steps = 0; head != 0 && steps < cap; ++steps)
+  {
+    uint32_t idx = head - 1u;
+    if (idx >= cap)
+    {
+      kafs_hrl_bucket_unlock(ctx, bucket);
+      return -EIO;
+    }
+
+    kafs_hrl_entry_t *e = &ents[idx];
+    if (e->refcnt != 0 && e->fast == fast && e->blo == blo)
+      return hrl_dec_ref_matched_locked(ctx, bucket, idx, e);
+
+    head = e->next_plus1;
+  }
+  kafs_hrl_bucket_unlock(ctx, bucket);
+  return (head == 0) ? -ENOENT : -EIO;
+}
+
+static int hrl_release_legacy_blo(kafs_context_t *ctx, kafs_blkcnt_t blo)
+{
+  if (kafs_blk_get_usage_locked(ctx, blo) == 0)
+    return 0;
+  return hrl_release_blo(ctx, &blo);
+}
+
 int kafs_hrl_dec_ref_by_blo(kafs_context_t *ctx, kafs_blkcnt_t blo)
 {
   if (!ctx || ctx->c_hrl_bucket_cnt == 0 || hrl_capacity(ctx) == 0)
@@ -672,56 +764,13 @@ int kafs_hrl_dec_ref_by_blo(kafs_context_t *ctx, kafs_blkcnt_t blo)
     return rc;
 
   uint64_t fast = hrl_hash64(buf, bs);
-  int b = hrl_bucket_index(ctx, fast);
-  uint32_t *index = hrl_index_tbl(ctx);
-  kafs_hrl_entry_t *ents = hrl_entries_tbl(ctx);
-  uint32_t cap = hrl_capacity(ctx);
-
-  kafs_hrl_bucket_lock(ctx, (uint32_t)b);
-  uint32_t head = index[b];
-  for (uint32_t steps = 0; head != 0 && steps < cap; ++steps)
-  {
-    uint32_t i = head - 1u;
-    if (i >= cap)
-    {
-      kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
-      return -EIO;
-    }
-    kafs_hrl_entry_t *e = &ents[i];
-    if (e->refcnt != 0 && e->fast == fast && e->blo == blo)
-    {
-      e->refcnt -= 1u;
-      if (e->refcnt == 0)
-      {
-        kafs_blkcnt_t pblo = e->blo;
-        uint32_t free_idx = i;
-        int rc2 = hrl_release_blo(ctx, &pblo);
-        if (rc2 != 0)
-        {
-          kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
-          return rc2;
-        }
-        (void)hrl_chain_remove(ctx, i, e->fast);
-        hrl_slot_reset(e);
-        kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
-        hrl_publish_free_slot(ctx, free_idx);
-        return 0;
-      }
-      kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
-      return 0;
-    }
-    head = e->next_plus1;
-  }
-  kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
-
-  if (head != 0)
-    return -EIO;
+  rc = hrl_try_dec_ref_in_bucket(ctx, (uint32_t)hrl_bucket_index(ctx, fast), fast, blo);
+  if (rc != -ENOENT)
+    return rc;
 
   // not managed by HRL => legacy, free directly.
   // If it's already free (e.g. another thread just dropped the last HRL ref), treat as success.
-  if (kafs_blk_get_usage_locked(ctx, blo) == 0)
-    return 0;
-  return hrl_release_blo(ctx, &blo);
+  return hrl_release_legacy_blo(ctx, blo);
 }
 
 int kafs_hrl_match_inc_by_block_excluding_blo(kafs_context_t *ctx, const void *block_data,

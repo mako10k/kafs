@@ -6,7 +6,23 @@
 #include <time.h>
 #include <endian.h>
 #include <fuse.h>
+#if defined(__has_include)
+#if __has_include(<fuse_log.h>)
+#include <fuse_log.h>
+#endif
+#endif
 #include <stdlib.h>
+
+#ifndef FUSE_LOG_EMERG
+#define FUSE_LOG_EMERG 0
+#define FUSE_LOG_ALERT 1
+#define FUSE_LOG_CRIT 2
+#define FUSE_LOG_ERR 3
+#define FUSE_LOG_WARNING 4
+#define FUSE_LOG_NOTICE 5
+#define FUSE_LOG_INFO 6
+#define FUSE_LOG_DEBUG 7
+#endif
 
 #ifndef KAFS_ENABLE_EXTRA_DIAG
 #define KAFS_ENABLE_EXTRA_DIAG 0
