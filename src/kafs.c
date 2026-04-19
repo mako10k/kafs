@@ -11348,7 +11348,7 @@ static void kafs_main_set_hotplug_default(kafs_main_options_t *opts)
   snprintf(opts->hotplug_uds_opt, sizeof(opts->hotplug_uds_opt), "%s", KAFS_HOTPLUG_UDS_DEFAULT);
 }
 
-static int kafs_main_handle_cache_hotplug_token(kafs_main_options_t *opts, const char *tok)
+static int kafs_main_handle_writeback_cache_token(kafs_main_options_t *opts, const char *tok)
 {
   if (strcmp(tok, "writeback_cache") == 0)
   {
@@ -11362,6 +11362,11 @@ static int kafs_main_handle_cache_hotplug_token(kafs_main_options_t *opts, const
     opts->writeback_cache_explicit = KAFS_TRUE;
     return 1;
   }
+  return 0;
+}
+
+static int kafs_main_handle_trim_on_free_token(kafs_main_options_t *opts, const char *tok)
+{
   if (strcmp(tok, "trim_on_free") == 0 || strcmp(tok, "trim-on-free") == 0)
   {
     opts->trim_on_free_enabled = KAFS_TRUE;
@@ -11374,48 +11379,66 @@ static int kafs_main_handle_cache_hotplug_token(kafs_main_options_t *opts, const
     opts->trim_on_free_explicit = KAFS_TRUE;
     return 1;
   }
+  return 0;
+}
+
+static const char *kafs_main_hotplug_uds_value(const char *tok)
+{
+  if (strncmp(tok, "hotplug=", 8) == 0)
+    return tok + 8;
+  if (strncmp(tok, "hotplug_uds=", 12) == 0)
+    return tok + 12;
+  if (strncmp(tok, "hotplug-uds=", 12) == 0)
+    return tok + 12;
+  return NULL;
+}
+
+static const char *kafs_main_hotplug_back_bin_value(const char *tok)
+{
+  if (strncmp(tok, "hotplug_back_bin=", 17) == 0)
+    return tok + 17;
+  if (strncmp(tok, "hotplug-back-bin=", 17) == 0)
+    return tok + 17;
+  return NULL;
+}
+
+static int kafs_main_store_hotplug_token_path(char *dst, size_t dst_size, const char *value,
+                                              const char *label, const char *error_detail)
+{
+  if (!value)
+    return 0;
+  if (!*value || snprintf(dst, dst_size, "%s", value) >= (int)dst_size)
+  {
+    fprintf(stderr, "invalid -o %s %s: '%s'\n", label, error_detail, value);
+    return 2;
+  }
+  return 1;
+}
+
+static int kafs_main_handle_cache_hotplug_token(kafs_main_options_t *opts, const char *tok)
+{
+  int rc = kafs_main_handle_writeback_cache_token(opts, tok);
+  if (rc != 0)
+    return rc;
+
+  rc = kafs_main_handle_trim_on_free_token(opts, tok);
+  if (rc != 0)
+    return rc;
+
   if (strcmp(tok, "hotplug") == 0)
   {
     kafs_main_set_hotplug_default(opts);
     return 1;
   }
 
-  const char *hotplug_uds_v = NULL;
-  if (strncmp(tok, "hotplug=", 8) == 0)
-    hotplug_uds_v = tok + 8;
-  else if (strncmp(tok, "hotplug_uds=", 12) == 0)
-    hotplug_uds_v = tok + 12;
-  else if (strncmp(tok, "hotplug-uds=", 12) == 0)
-    hotplug_uds_v = tok + 12;
-  if (hotplug_uds_v)
-  {
-    if (!*hotplug_uds_v || snprintf(opts->hotplug_uds_opt, sizeof(opts->hotplug_uds_opt), "%s",
-                                    hotplug_uds_v) >= (int)sizeof(opts->hotplug_uds_opt))
-    {
-      fprintf(stderr, "invalid -o hotplug uds path: '%s'\n", hotplug_uds_v);
-      return 2;
-    }
-    return 1;
-  }
+  rc = kafs_main_store_hotplug_token_path(opts->hotplug_uds_opt, sizeof(opts->hotplug_uds_opt),
+                                          kafs_main_hotplug_uds_value(tok), "hotplug", "uds path");
+  if (rc != 0)
+    return rc;
 
-  const char *hotplug_back_bin_v = NULL;
-  if (strncmp(tok, "hotplug_back_bin=", 17) == 0)
-    hotplug_back_bin_v = tok + 17;
-  else if (strncmp(tok, "hotplug-back-bin=", 17) == 0)
-    hotplug_back_bin_v = tok + 17;
-  if (hotplug_back_bin_v)
-  {
-    if (!*hotplug_back_bin_v ||
-        snprintf(opts->hotplug_back_bin_opt, sizeof(opts->hotplug_back_bin_opt), "%s",
-                 hotplug_back_bin_v) >= (int)sizeof(opts->hotplug_back_bin_opt))
-    {
-      fprintf(stderr, "invalid -o hotplug_back_bin path: '%s'\n", hotplug_back_bin_v);
-      return 2;
-    }
-    return 1;
-  }
-
-  return 0;
+  return kafs_main_store_hotplug_token_path(
+      opts->hotplug_back_bin_opt, sizeof(opts->hotplug_back_bin_opt),
+      kafs_main_hotplug_back_bin_value(tok), "hotplug_back_bin", "path");
 }
 
 static int kafs_main_handle_mt_token(kafs_main_options_t *opts, const char *tok, int *want_mt)
