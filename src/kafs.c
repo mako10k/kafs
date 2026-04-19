@@ -9258,6 +9258,120 @@ static int kafs_rename_update_dotdot_locked(struct kafs_context *ctx, uint64_t j
   return 0;
 }
 
+static int kafs_rename_validate_request(const char *from, const char *to, unsigned int flags)
+{
+  if (kafs_is_ctl_path(from) || kafs_is_ctl_path(to))
+    return -EACCES;
+  if (from == NULL || to == NULL || from[0] != '/' || to[0] != '/')
+    return -EINVAL;
+  if (strcmp(from, to) == 0)
+    return 0;
+
+  size_t from_len = strlen(from);
+  if (from_len > 1 && strncmp(to, from, from_len) == 0 && to[from_len] == '/')
+    return -EINVAL;
+
+  if (flags & ~RENAME_NOREPLACE)
+    return -EOPNOTSUPP;
+  return 1;
+}
+
+static int kafs_rename_check_source(struct fuse_context *fctx, struct kafs_context *ctx,
+                                    const char *from, kafs_sinode_t **inoent_src_out,
+                                    int *src_is_dir_out)
+{
+  int rc = kafs_access(fctx, ctx, from, NULL, F_OK, inoent_src_out);
+  if (rc < 0)
+    return rc;
+
+  kafs_mode_t src_mode = kafs_ino_mode_get(*inoent_src_out);
+  *src_is_dir_out = S_ISDIR(src_mode) ? 1 : 0;
+  if (!S_ISREG(src_mode) && !S_ISLNK(src_mode) && !*src_is_dir_out)
+    return -EOPNOTSUPP;
+  return 0;
+}
+
+static int kafs_rename_parse_paths(const char *from, const char *to, char *from_copy,
+                                   const char **from_dir, char **from_base, char *to_copy,
+                                   const char **to_dir, char **to_base)
+{
+  int rc = kafs_split_parent_basename(from, from_copy, from_dir, from_base);
+  if (rc < 0)
+    return rc;
+  return kafs_split_parent_basename(to, to_copy, to_dir, to_base);
+}
+
+static int kafs_rename_lookup_parent_dirs(struct fuse_context *fctx, struct kafs_context *ctx,
+                                          const char *from_dir, const char *to_dir,
+                                          kafs_sinode_t **inoent_dir_from,
+                                          kafs_sinode_t **inoent_dir_to, uint32_t *ino_from_dir,
+                                          uint32_t *ino_to_dir)
+{
+  int rc = kafs_access(fctx, ctx, from_dir, NULL, W_OK, inoent_dir_from);
+  if (rc < 0)
+    return rc;
+  rc = kafs_access(fctx, ctx, to_dir, NULL, W_OK, inoent_dir_to);
+  if (rc < 0)
+    return rc;
+  *ino_from_dir = kafs_ctx_ino_no(ctx, *inoent_dir_from);
+  *ino_to_dir = kafs_ctx_ino_no(ctx, *inoent_dir_to);
+  return 0;
+}
+
+static int kafs_rename_check_noreplace(struct fuse_context *fctx, struct kafs_context *ctx,
+                                       const char *to, unsigned int flags, uint64_t jseq)
+{
+  if (!(flags & RENAME_NOREPLACE))
+    return 0;
+
+  kafs_sinode_t *inoent_tmp;
+  int ex = kafs_access(fctx, ctx, to, NULL, F_OK, &inoent_tmp);
+  if (ex == 0)
+  {
+    kafs_journal_abort(ctx, jseq, "EEXIST");
+    return -EEXIST;
+  }
+  if (ex != -ENOENT)
+  {
+    kafs_journal_abort(ctx, jseq, "access(to)=%d", ex);
+    return ex;
+  }
+  return 0;
+}
+
+static int kafs_rename_check_destination_type(struct fuse_context *fctx, struct kafs_context *ctx,
+                                              const char *to, uint64_t jseq, int src_is_dir,
+                                              kafs_sinode_t **inoent_to_exist, int *exists_to)
+{
+  *inoent_to_exist = NULL;
+  *exists_to = kafs_access(fctx, ctx, to, NULL, F_OK, inoent_to_exist);
+  if (*exists_to != 0)
+    return (*exists_to == -ENOENT) ? 0 : *exists_to;
+
+  kafs_mode_t dst_mode = kafs_ino_mode_get(*inoent_to_exist);
+  if (src_is_dir)
+  {
+    if (!S_ISDIR(dst_mode))
+    {
+      kafs_journal_abort(ctx, jseq, "DST_NOT_DIR");
+      return -ENOTDIR;
+    }
+    return 0;
+  }
+
+  if (S_ISDIR(dst_mode))
+  {
+    kafs_journal_abort(ctx, jseq, "DST_IS_DIR");
+    return -EISDIR;
+  }
+  if (!S_ISREG(dst_mode) && !S_ISLNK(dst_mode))
+  {
+    kafs_journal_abort(ctx, jseq, "DST_NOT_FILE");
+    return -EOPNOTSUPP;
+  }
+  return 0;
+}
+
 static void kafs_rename_finalize_replaced_inode(struct kafs_context *ctx,
                                                 kafs_inocnt_t removed_dst_ino)
 {
@@ -9286,107 +9400,52 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
   struct kafs_context *ctx = fctx->private_data;
   kafs_dlog(2, "%s: enter from=%s to=%s flags=%u\n", __func__, from ? from : "(null)",
             to ? to : "(null)", flags);
-  if (kafs_is_ctl_path(from) || kafs_is_ctl_path(to))
-    return -EACCES;
-  if (from == NULL || to == NULL || from[0] != '/' || to[0] != '/')
-    return -EINVAL;
-  if (strcmp(from, to) == 0)
-    return 0;
-
-  // ディレクトリを自身の配下へ移動する rename は許可しない（ループ防止）。
-  // 例: rename("/a", "/a/b")
-  size_t from_len = strlen(from);
-  if (from_len > 1 && strncmp(to, from, from_len) == 0 && to[from_len] == '/')
-    return -EINVAL;
-
-  const unsigned int supported = RENAME_NOREPLACE;
-  if (flags & ~supported)
-    return -EOPNOTSUPP;
-
-  // 事前に対象 inode を確認（ディレクトリは同一親ディレクトリ内のみ対応）
   kafs_sinode_t *inoent_src;
-  int rc = kafs_access(fctx, ctx, from, NULL, F_OK, &inoent_src);
+  int src_is_dir = 0;
+  int rc = kafs_rename_validate_request(from, to, flags);
+  if (rc <= 0)
+    return rc;
+  rc = kafs_rename_check_source(fctx, ctx, from, &inoent_src, &src_is_dir);
   if (rc < 0)
     return rc;
-  kafs_mode_t src_mode = kafs_ino_mode_get(inoent_src);
-  int src_is_dir = S_ISDIR(src_mode) ? 1 : 0;
-  if (!S_ISREG(src_mode) && !S_ISLNK(src_mode) && !src_is_dir)
-    return -EOPNOTSUPP;
 
   char from_copy[strlen(from) + 1];
   const char *from_dir = from_copy;
   char *from_base = NULL;
-  rc = kafs_split_parent_basename(from, from_copy, &from_dir, &from_base);
-  if (rc < 0)
-    return rc;
-
   char to_copy[strlen(to) + 1];
   const char *to_dir = to_copy;
   char *to_base = NULL;
-  rc = kafs_split_parent_basename(to, to_copy, &to_dir, &to_base);
+  rc = kafs_rename_parse_paths(from, to, from_copy, &from_dir, &from_base, to_copy, &to_dir,
+                               &to_base);
   if (rc < 0)
     return rc;
 
   uint64_t jseq = kafs_journal_begin(ctx, "RENAME", "from=%s to=%s flags=%u", from, to, flags);
 
   kafs_sinode_t *inoent_dir_from;
-  KAFS_CALL(kafs_access, fctx, ctx, from_dir, NULL, W_OK, &inoent_dir_from);
   kafs_sinode_t *inoent_dir_to;
-  KAFS_CALL(kafs_access, fctx, ctx, to_dir, NULL, W_OK, &inoent_dir_to);
-  uint32_t ino_from_dir = kafs_ctx_ino_no(ctx, inoent_dir_from);
-  uint32_t ino_to_dir = kafs_ctx_ino_no(ctx, inoent_dir_to);
-
-  // RENAME_NOREPLACE: 既存なら EEXIST
-  if (flags & RENAME_NOREPLACE)
+  uint32_t ino_from_dir = 0;
+  uint32_t ino_to_dir = 0;
+  rc = kafs_rename_lookup_parent_dirs(fctx, ctx, from_dir, to_dir, &inoent_dir_from, &inoent_dir_to,
+                                      &ino_from_dir, &ino_to_dir);
+  if (rc < 0)
   {
-    kafs_sinode_t *inoent_tmp;
-    int ex = kafs_access(fctx, ctx, to, NULL, F_OK, &inoent_tmp);
-    if (ex == 0)
-    {
-      kafs_journal_abort(ctx, jseq, "EEXIST");
-      return -EEXIST;
-    }
-    if (ex != -ENOENT)
-    {
-      kafs_journal_abort(ctx, jseq, "access(to)=%d", ex);
-      return ex;
-    }
+    kafs_journal_abort(ctx, jseq, "parent_lookup=%d", rc);
+    return rc;
   }
+  rc = kafs_rename_check_noreplace(fctx, ctx, to, flags, jseq);
+  if (rc < 0)
+    return rc;
 
-  // 取得しておく（from の inode番号）
   kafs_inocnt_t ino_src = kafs_ctx_ino_no(ctx, inoent_src);
 
-  // 置換先が存在する場合は削除（通常ファイルのみ）
   kafs_sinode_t *inoent_to_exist = NULL;
-  int exists_to = kafs_access(fctx, ctx, to, NULL, F_OK, &inoent_to_exist);
-  if (exists_to == 0)
-  {
-    kafs_mode_t dst_mode = kafs_ino_mode_get(inoent_to_exist);
-    int dst_is_dir = S_ISDIR(dst_mode) ? 1 : 0;
-    if (src_is_dir)
-    {
-      if (!dst_is_dir)
-      {
-        kafs_journal_abort(ctx, jseq, "DST_NOT_DIR");
-        return -ENOTDIR;
-      }
-    }
-    else
-    {
-      if (dst_is_dir)
-      {
-        kafs_journal_abort(ctx, jseq, "DST_IS_DIR");
-        return -EISDIR;
-      }
-      if (!S_ISREG(dst_mode) && !S_ISLNK(dst_mode))
-      {
-        kafs_journal_abort(ctx, jseq, "DST_NOT_FILE");
-        return -EOPNOTSUPP;
-      }
-    }
-  }
+  int exists_to = 0;
+  rc = kafs_rename_check_destination_type(fctx, ctx, to, jseq, src_is_dir, &inoent_to_exist,
+                                          &exists_to);
+  if (rc < 0)
+    return rc;
 
-  // ロック順序: 関係 inode を番号昇順に取得（親ディレクトリ2つ + 対象 inode + (置換先 inode)）。
   uint32_t ino_src_u32 = (uint32_t)ino_src;
   uint32_t ino_dst_u32 = UINT32_MAX;
   if (exists_to == 0 && inoent_to_exist)
