@@ -6382,6 +6382,117 @@ static int kafs_hotplug_call_getattr(struct fuse_context *fctx, kafs_context_t *
   return rc;
 }
 
+static void kafs_ctx_close_fd(kafs_context_t *ctx)
+{
+  if (ctx->c_fd >= 0)
+    close(ctx->c_fd);
+  ctx->c_fd = -1;
+}
+
+static void kafs_ctx_reset_mapping(kafs_context_t *ctx)
+{
+  ctx->c_img_base = NULL;
+  ctx->c_img_size = 0;
+  ctx->c_superblock = NULL;
+  ctx->c_inotbl = NULL;
+  ctx->c_blkmasktbl = NULL;
+  ctx->c_mapsize = 0;
+}
+
+static void kafs_ctx_unmap_image(kafs_context_t *ctx)
+{
+  if (ctx->c_img_base && ctx->c_img_base != MAP_FAILED)
+    munmap(ctx->c_img_base, ctx->c_img_size);
+  kafs_ctx_reset_mapping(ctx);
+}
+
+static int kafs_ctx_read_superblock_fd(kafs_context_t *ctx, kafs_ssuperblock_t *sbdisk)
+{
+  ssize_t r = pread(ctx->c_fd, sbdisk, sizeof(*sbdisk), 0);
+  if (r == (ssize_t)sizeof(*sbdisk))
+    return 0;
+
+  int err = -errno;
+  kafs_ctx_close_fd(ctx);
+  return err ? err : -EIO;
+}
+
+static void kafs_ctx_compute_map_layout(const kafs_ssuperblock_t *sbdisk, off_t *mapsize_out,
+                                        off_t *imgsize_out, intptr_t *blkmask_off_out,
+                                        intptr_t *inotbl_off_out)
+{
+  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(sbdisk);
+  kafs_blksize_t blksize = 1u << log_blksize;
+  kafs_blksize_t blksizemask = blksize - 1u;
+  kafs_inocnt_t inocnt = kafs_inocnt_stoh(sbdisk->s_inocnt);
+  kafs_blkcnt_t r_blkcnt = kafs_blkcnt_stoh(sbdisk->s_r_blkcnt);
+
+  off_t mapsize = sizeof(kafs_ssuperblock_t);
+  mapsize = (mapsize + blksizemask) & ~blksizemask;
+  intptr_t blkmask_off = (intptr_t)mapsize;
+  mapsize += (r_blkcnt + 7) >> 3;
+  mapsize = (mapsize + 7) & ~7;
+  mapsize = (mapsize + blksizemask) & ~blksizemask;
+  intptr_t inotbl_off = (intptr_t)mapsize;
+  mapsize += (off_t)kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(sbdisk), inocnt);
+  mapsize = (mapsize + blksizemask) & ~blksizemask;
+
+  off_t imgsize = (off_t)r_blkcnt << log_blksize;
+  uint64_t idx_off = kafs_sb_hrl_index_offset_get(sbdisk);
+  uint64_t idx_size = kafs_sb_hrl_index_size_get(sbdisk);
+  uint64_t ent_off = kafs_sb_hrl_entry_offset_get(sbdisk);
+  uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sbdisk);
+  uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
+  uint64_t j_off = kafs_sb_journal_offset_get(sbdisk);
+  uint64_t j_size = kafs_sb_journal_size_get(sbdisk);
+  uint64_t p_off = kafs_sb_pendinglog_offset_get(sbdisk);
+  uint64_t p_size = kafs_sb_pendinglog_size_get(sbdisk);
+  uint64_t end1 = (idx_off && idx_size) ? (idx_off + idx_size) : 0;
+  uint64_t end2 = (ent_off && ent_size) ? (ent_off + ent_size) : 0;
+  uint64_t end3 = (j_off && j_size) ? (j_off + j_size) : 0;
+  uint64_t end4 = (p_off && p_size) ? (p_off + p_size) : 0;
+  uint64_t max_end = end1;
+  if (end2 > max_end)
+    max_end = end2;
+  if (end3 > max_end)
+    max_end = end3;
+  if (end4 > max_end)
+    max_end = end4;
+  if ((off_t)max_end > imgsize)
+    imgsize = (off_t)max_end;
+  imgsize = (imgsize + blksizemask) & ~blksizemask;
+
+  *mapsize_out = mapsize;
+  *imgsize_out = imgsize;
+  *blkmask_off_out = blkmask_off;
+  *inotbl_off_out = inotbl_off;
+}
+
+static int kafs_ctx_map_image(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk)
+{
+  off_t mapsize = 0;
+  off_t imgsize = 0;
+  intptr_t blkmask_off = 0;
+  intptr_t inotbl_off = 0;
+  kafs_ctx_compute_map_layout(sbdisk, &mapsize, &imgsize, &blkmask_off, &inotbl_off);
+
+  ctx->c_img_base = mmap(NULL, imgsize, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->c_fd, 0);
+  if (ctx->c_img_base == MAP_FAILED)
+  {
+    int err = -errno;
+    kafs_ctx_reset_mapping(ctx);
+    kafs_ctx_close_fd(ctx);
+    return err;
+  }
+
+  ctx->c_img_size = (size_t)imgsize;
+  ctx->c_superblock = (kafs_ssuperblock_t *)ctx->c_img_base;
+  ctx->c_mapsize = (size_t)mapsize;
+  ctx->c_blkmasktbl = (void *)ctx->c_superblock + blkmask_off;
+  ctx->c_inotbl = (void *)ctx->c_superblock + inotbl_off;
+  return 0;
+}
+
 static int kafs_ctx_runtime_mount_supported(const kafs_context_t *ctx)
 {
   uint32_t fmt_ver;
@@ -6421,109 +6532,35 @@ int kafs_core_open_image(const char *image_path, kafs_context_t *ctx)
     return -errno;
 
   kafs_ssuperblock_t sbdisk;
-  ssize_t r = pread(ctx->c_fd, &sbdisk, sizeof(sbdisk), 0);
-  if (r != (ssize_t)sizeof(sbdisk))
-  {
-    int err = -errno;
-    close(ctx->c_fd);
-    ctx->c_fd = -1;
-    return err ? err : -EIO;
-  }
+  int rc = kafs_ctx_read_superblock_fd(ctx, &sbdisk);
+  if (rc != 0)
+    return rc;
   if (kafs_sb_magic_get(&sbdisk) != KAFS_MAGIC)
   {
-    close(ctx->c_fd);
-    ctx->c_fd = -1;
+    kafs_ctx_close_fd(ctx);
     return -EINVAL;
   }
   uint32_t fmt_ver = kafs_sb_format_version_get(&sbdisk);
   if (fmt_ver != KAFS_FORMAT_VERSION && fmt_ver != KAFS_FORMAT_VERSION_V5)
   {
-    close(ctx->c_fd);
-    ctx->c_fd = -1;
+    kafs_ctx_close_fd(ctx);
     return -EPROTONOSUPPORT;
   }
 
-  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(&sbdisk);
-  kafs_blksize_t blksize = 1u << log_blksize;
-  kafs_blksize_t blksizemask = blksize - 1u;
-  kafs_inocnt_t inocnt = kafs_inocnt_stoh(sbdisk.s_inocnt);
   kafs_blkcnt_t r_blkcnt = kafs_blkcnt_stoh(sbdisk.s_r_blkcnt);
-
-  off_t mapsize = 0;
-  mapsize += sizeof(kafs_ssuperblock_t);
-  mapsize = (mapsize + blksizemask) & ~blksizemask;
-  void *blkmask_off = (void *)mapsize;
-  mapsize += (r_blkcnt + 7) >> 3;
-  mapsize = (mapsize + 7) & ~7;
-  mapsize = (mapsize + blksizemask) & ~blksizemask;
-  void *inotbl_off = (void *)mapsize;
-  mapsize += (off_t)kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(&sbdisk), inocnt);
-  mapsize = (mapsize + blksizemask) & ~blksizemask;
-
-  off_t imgsize = (off_t)r_blkcnt << log_blksize;
-  {
-    uint64_t idx_off = kafs_sb_hrl_index_offset_get(&sbdisk);
-    uint64_t idx_size = kafs_sb_hrl_index_size_get(&sbdisk);
-    uint64_t ent_off = kafs_sb_hrl_entry_offset_get(&sbdisk);
-    uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(&sbdisk);
-    uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
-    uint64_t j_off = kafs_sb_journal_offset_get(&sbdisk);
-    uint64_t j_size = kafs_sb_journal_size_get(&sbdisk);
-    uint64_t p_off = kafs_sb_pendinglog_offset_get(&sbdisk);
-    uint64_t p_size = kafs_sb_pendinglog_size_get(&sbdisk);
-    uint64_t end1 = (idx_off && idx_size) ? (idx_off + idx_size) : 0;
-    uint64_t end2 = (ent_off && ent_size) ? (ent_off + ent_size) : 0;
-    uint64_t end3 = (j_off && j_size) ? (j_off + j_size) : 0;
-    uint64_t end4 = (p_off && p_size) ? (p_off + p_size) : 0;
-    uint64_t max_end = end1;
-    if (end2 > max_end)
-      max_end = end2;
-    if (end3 > max_end)
-      max_end = end3;
-    if (end4 > max_end)
-      max_end = end4;
-    if ((off_t)max_end > imgsize)
-      imgsize = (off_t)max_end;
-    imgsize = (imgsize + blksizemask) & ~blksizemask;
-  }
-
-  ctx->c_img_base = mmap(NULL, imgsize, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->c_fd, 0);
-  if (ctx->c_img_base == MAP_FAILED)
-  {
-    int err = -errno;
-    close(ctx->c_fd);
-    ctx->c_fd = -1;
-    return err;
-  }
-  ctx->c_img_size = (size_t)imgsize;
-  ctx->c_superblock = (kafs_ssuperblock_t *)ctx->c_img_base;
-  ctx->c_mapsize = (size_t)mapsize;
-  ctx->c_blkmasktbl = (void *)ctx->c_superblock + (intptr_t)blkmask_off;
-  ctx->c_inotbl = (void *)ctx->c_superblock + (intptr_t)inotbl_off;
+  rc = kafs_ctx_map_image(ctx, &sbdisk);
+  if (rc != 0)
+    return rc;
   if (!kafs_ctx_runtime_mount_supported(ctx))
   {
-    munmap(ctx->c_img_base, ctx->c_img_size);
-    ctx->c_img_base = NULL;
-    ctx->c_img_size = 0;
-    ctx->c_superblock = NULL;
-    ctx->c_inotbl = NULL;
-    ctx->c_blkmasktbl = NULL;
-    ctx->c_mapsize = 0;
-    close(ctx->c_fd);
-    ctx->c_fd = -1;
+    kafs_ctx_unmap_image(ctx);
+    kafs_ctx_close_fd(ctx);
     return -EPROTONOSUPPORT;
   }
   if (kafs_ctx_validate_runtime_mount_state(ctx) != 0)
   {
-    munmap(ctx->c_img_base, ctx->c_img_size);
-    ctx->c_img_base = NULL;
-    ctx->c_img_size = 0;
-    ctx->c_superblock = NULL;
-    ctx->c_inotbl = NULL;
-    ctx->c_blkmasktbl = NULL;
-    ctx->c_mapsize = 0;
-    close(ctx->c_fd);
-    ctx->c_fd = -1;
+    kafs_ctx_unmap_image(ctx);
+    kafs_ctx_close_fd(ctx);
     return -EPROTO;
   }
   ctx->c_alloc_v3_summary_dirty = 1;
@@ -10217,79 +10254,19 @@ static int kafs_migrate_ctx_open(const char *image_path, kafs_context_t *ctx,
   if (ctx->c_fd < 0)
     return -errno;
 
-  ssize_t r = pread(ctx->c_fd, sbdisk, sizeof(*sbdisk), 0);
-  if (r != (ssize_t)sizeof(*sbdisk))
-  {
-    int err = -errno;
-    close(ctx->c_fd);
-    ctx->c_fd = -1;
-    return err ? err : -EIO;
-  }
+  int rc = kafs_ctx_read_superblock_fd(ctx, sbdisk);
+  if (rc != 0)
+    return rc;
   if (kafs_sb_magic_get(sbdisk) != KAFS_MAGIC)
   {
-    close(ctx->c_fd);
-    ctx->c_fd = -1;
+    kafs_ctx_close_fd(ctx);
     return -EINVAL;
   }
 
-  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(sbdisk);
-  kafs_blksize_t blksize = 1u << log_blksize;
-  kafs_blksize_t blksizemask = blksize - 1u;
   kafs_inocnt_t inocnt = kafs_inocnt_stoh(sbdisk->s_inocnt);
-  kafs_blkcnt_t r_blkcnt = kafs_blkcnt_stoh(sbdisk->s_r_blkcnt);
-
-  off_t mapsize = 0;
-  mapsize += sizeof(kafs_ssuperblock_t);
-  mapsize = (mapsize + blksizemask) & ~blksizemask;
-  void *blkmask_off = (void *)mapsize;
-  mapsize += (r_blkcnt + 7) >> 3;
-  mapsize = (mapsize + 7) & ~7;
-  mapsize = (mapsize + blksizemask) & ~blksizemask;
-  void *inotbl_off = (void *)mapsize;
-  mapsize += (off_t)kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(sbdisk), inocnt);
-  mapsize = (mapsize + blksizemask) & ~blksizemask;
-
-  off_t imgsize = (off_t)r_blkcnt << log_blksize;
-  {
-    uint64_t idx_off = kafs_sb_hrl_index_offset_get(sbdisk);
-    uint64_t idx_size = kafs_sb_hrl_index_size_get(sbdisk);
-    uint64_t ent_off = kafs_sb_hrl_entry_offset_get(sbdisk);
-    uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sbdisk);
-    uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
-    uint64_t j_off = kafs_sb_journal_offset_get(sbdisk);
-    uint64_t j_size = kafs_sb_journal_size_get(sbdisk);
-    uint64_t p_off = kafs_sb_pendinglog_offset_get(sbdisk);
-    uint64_t p_size = kafs_sb_pendinglog_size_get(sbdisk);
-    uint64_t end1 = (idx_off && idx_size) ? (idx_off + idx_size) : 0;
-    uint64_t end2 = (ent_off && ent_size) ? (ent_off + ent_size) : 0;
-    uint64_t end3 = (j_off && j_size) ? (j_off + j_size) : 0;
-    uint64_t end4 = (p_off && p_size) ? (p_off + p_size) : 0;
-    uint64_t max_end = end1;
-    if (end2 > max_end)
-      max_end = end2;
-    if (end3 > max_end)
-      max_end = end3;
-    if (end4 > max_end)
-      max_end = end4;
-    if ((off_t)max_end > imgsize)
-      imgsize = (off_t)max_end;
-    imgsize = (imgsize + blksizemask) & ~blksizemask;
-  }
-
-  ctx->c_img_base = mmap(NULL, imgsize, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->c_fd, 0);
-  if (ctx->c_img_base == MAP_FAILED)
-  {
-    int err = -errno;
-    close(ctx->c_fd);
-    ctx->c_fd = -1;
-    return err;
-  }
-
-  ctx->c_img_size = (size_t)imgsize;
-  ctx->c_superblock = (kafs_ssuperblock_t *)ctx->c_img_base;
-  ctx->c_mapsize = (size_t)mapsize;
-  ctx->c_blkmasktbl = (void *)ctx->c_superblock + (intptr_t)blkmask_off;
-  ctx->c_inotbl = (void *)ctx->c_superblock + (intptr_t)inotbl_off;
+  rc = kafs_ctx_map_image(ctx, sbdisk);
+  if (rc != 0)
+    return rc;
   ctx->c_alloc_v3_summary_dirty = 1;
   ctx->c_diag_log_fd = -1;
   ctx->c_ino_epoch = calloc((size_t)inocnt, sizeof(uint32_t));
