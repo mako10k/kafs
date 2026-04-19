@@ -12013,58 +12013,89 @@ static int kafs_main_start_hotplug(kafs_context_t *ctx, const char *image_path,
   return 0;
 }
 
+static int kafs_main_copy_fuse_args(char **argv_clean, int argc_clean, char **argv_fuse)
+{
+  int saw_single = 0;
+
+  for (int i = 0; i < argc_clean; ++i)
+  {
+    if (strcmp(argv_clean[i], "-s") == 0)
+      saw_single = 1;
+    argv_fuse[i] = argv_clean[i];
+  }
+
+  return saw_single;
+}
+
+static unsigned kafs_main_mt_thread_count(unsigned mt_cnt_override, int mt_cnt_override_set)
+{
+  unsigned mt_cnt = 8;
+
+  if (mt_cnt_override_set)
+  {
+    mt_cnt = mt_cnt_override;
+  }
+  else
+  {
+    const char *mt_env = getenv("KAFS_MAX_THREADS");
+    if (mt_env && *mt_env)
+    {
+      char *endp = NULL;
+      unsigned long v = strtoul(mt_env, &endp, 10);
+      if (endp && *endp == '\0')
+        mt_cnt = (unsigned)v;
+    }
+    if (mt_cnt < 1)
+      mt_cnt = 1;
+    if (mt_cnt > 100000)
+      mt_cnt = 100000;
+  }
+
+  return mt_cnt;
+}
+
+static void kafs_main_apply_fuse_debug_arg(char **argv_fuse, int *argc_fuse)
+{
+  if (kafs_debug_level() >= 3)
+    argv_fuse[(*argc_fuse)++] = "-d";
+}
+
+static void kafs_main_apply_fuse_single_arg(kafs_bool_t *enable_mt, int saw_single,
+                                            char **argv_fuse, int *argc_fuse)
+{
+  if (!*enable_mt && !saw_single)
+    argv_fuse[(*argc_fuse)++] = "-s";
+  if (*enable_mt && saw_single)
+    *enable_mt = KAFS_FALSE;
+}
+
+static void kafs_main_apply_fuse_mt_arg(kafs_bool_t enable_mt, int saw_max_threads,
+                                        unsigned mt_cnt_override, int mt_cnt_override_set,
+                                        char **argv_fuse, int *argc_fuse, char *mt_opt_buf,
+                                        size_t mt_opt_buf_size)
+{
+  if (!enable_mt || saw_max_threads)
+    return;
+
+  unsigned mt_cnt = kafs_main_mt_thread_count(mt_cnt_override, mt_cnt_override_set);
+  snprintf(mt_opt_buf, mt_opt_buf_size, "max_threads=%u", mt_cnt);
+  argv_fuse[(*argc_fuse)++] = "-o";
+  argv_fuse[(*argc_fuse)++] = mt_opt_buf;
+  kafs_log(KAFS_LOG_INFO, "kafs: enabling multithread with -o %s\n", mt_opt_buf);
+}
+
 static void kafs_main_build_fuse_argv(char **argv_clean, int argc_clean, kafs_bool_t *enable_mt,
                                       int saw_max_threads, unsigned mt_cnt_override,
                                       int mt_cnt_override_set, char **argv_fuse, int *argc_fuse,
                                       char *mt_opt_buf, size_t mt_opt_buf_size)
 {
-  int saw_single = 0;
-  for (int i = 0; i < argc_clean; ++i)
-  {
-    if (strcmp(argv_clean[i], "-s") == 0)
-    {
-      saw_single = 1;
-      break;
-    }
-    argv_fuse[i] = argv_clean[i];
-  }
+  int saw_single = kafs_main_copy_fuse_args(argv_clean, argc_clean, argv_fuse);
 
   *argc_fuse = argc_clean;
-  if (!*enable_mt && !saw_single)
-    argv_fuse[(*argc_fuse)++] = "-s";
-  if (*enable_mt && saw_single)
-    *enable_mt = KAFS_FALSE;
-  if (kafs_debug_level() >= 3)
-    argv_fuse[(*argc_fuse)++] = "-d";
-
-  if (*enable_mt && !saw_max_threads)
-  {
-    unsigned mt_cnt = 8;
-    if (mt_cnt_override_set)
-    {
-      mt_cnt = mt_cnt_override;
-    }
-    else
-    {
-      const char *mt_env = getenv("KAFS_MAX_THREADS");
-      if (mt_env && *mt_env)
-      {
-        char *endp = NULL;
-        unsigned long v = strtoul(mt_env, &endp, 10);
-        if (endp && *endp == '\0')
-          mt_cnt = (unsigned)v;
-      }
-      if (mt_cnt < 1)
-        mt_cnt = 1;
-      if (mt_cnt > 100000)
-        mt_cnt = 100000;
-    }
-
-    snprintf(mt_opt_buf, mt_opt_buf_size, "max_threads=%u", mt_cnt);
-    argv_fuse[(*argc_fuse)++] = "-o";
-    argv_fuse[(*argc_fuse)++] = mt_opt_buf;
-    kafs_log(KAFS_LOG_INFO, "kafs: enabling multithread with -o %s\n", mt_opt_buf);
-  }
+  kafs_main_apply_fuse_single_arg(enable_mt, saw_single, argv_fuse, argc_fuse);
+  kafs_main_apply_fuse_debug_arg(argv_fuse, argc_fuse);
+  kafs_main_apply_fuse_mt_arg(*enable_mt, saw_max_threads, mt_cnt_override, mt_cnt_override_set,
+                              argv_fuse, argc_fuse, mt_opt_buf, mt_opt_buf_size);
 
   argv_fuse[*argc_fuse] = NULL;
 }
