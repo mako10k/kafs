@@ -2809,6 +2809,8 @@ static void kafs_diag_log_live_dir_block0_write(struct kafs_context *ctx, kafs_b
                       g_diag_write_path ? g_diag_write_path : "(null)",
                       hex_sample[0] ? hex_sample : "-", ascii_sample[0] ? ascii_sample : "-");
   }
+}
+
 #else
   (void)ctx;
   (void)blo;
