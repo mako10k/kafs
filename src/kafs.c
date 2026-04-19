@@ -2404,6 +2404,142 @@ static void kafs_bg_dedup_worker_adjust_priority_locked(kafs_context_t *ctx, int
   ctx->c_bg_dedup_worker_auto_boosted = pressure_mode ? 1u : 0u;
 }
 
+typedef struct kafs_bg_dedup_worker_plan
+{
+  uint32_t sleep_ms;
+  int run_scan;
+  int pressure_mode;
+  int apply_prio;
+  uint32_t mode;
+} kafs_bg_dedup_worker_plan_t;
+
+static void kafs_bg_dedup_worker_plan_locked(kafs_context_t *ctx, uint64_t now_ns,
+                                             kafs_bg_dedup_worker_plan_t *plan)
+{
+  plan->sleep_ms = ctx->c_bg_dedup_quiet_interval_ms;
+  plan->run_scan = 0;
+  plan->pressure_mode = 0;
+  plan->mode = KAFS_BG_DEDUP_MODE_COLD;
+
+  if (ctx->c_bg_dedup_enabled && ctx->c_bg_dedup_interval_ms > 0)
+  {
+    uint32_t used_pct = kafs_bg_dedup_used_pct(ctx);
+    int over_start =
+        (ctx->c_bg_dedup_start_used_pct == 0 || used_pct >= ctx->c_bg_dedup_start_used_pct);
+    plan->pressure_mode =
+        (ctx->c_bg_dedup_pressure_used_pct > 0 && used_pct >= ctx->c_bg_dedup_pressure_used_pct);
+
+    if (plan->pressure_mode)
+    {
+      plan->mode = KAFS_BG_DEDUP_MODE_PRESSURE;
+      plan->run_scan = 1;
+      plan->sleep_ms = ctx->c_bg_dedup_pressure_interval_ms;
+      ctx->c_bg_dedup_idle_skip_streak = 0;
+    }
+    else if (!ctx->c_bg_dedup_telemetry_valid)
+    {
+      if (ctx->c_bg_dedup_cold_start_due_ns == 0)
+        ctx->c_bg_dedup_cold_start_due_ns =
+            now_ns + (uint64_t)ctx->c_bg_dedup_quiet_interval_ms * 1000000ull;
+
+      if (over_start || now_ns >= ctx->c_bg_dedup_cold_start_due_ns)
+      {
+        plan->run_scan = 1;
+        plan->sleep_ms = ctx->c_bg_dedup_interval_ms;
+        ctx->c_bg_dedup_idle_skip_streak = 0;
+        ctx->c_bg_dedup_cold_start_due_ns =
+            now_ns + (uint64_t)ctx->c_bg_dedup_quiet_interval_ms * 1000000ull;
+      }
+    }
+    else
+    {
+      int should_run = 0;
+      plan->mode = KAFS_BG_DEDUP_MODE_ADAPTIVE;
+      if (ctx->c_bg_dedup_last_direct_candidates > 0 || ctx->c_bg_dedup_last_replacements > 0)
+        should_run = 1;
+      else
+      {
+        ctx->c_bg_dedup_idle_skip_streak++;
+        if (ctx->c_bg_dedup_idle_skip_streak >= KAFS_BG_DEDUP_RESAMPLE_QUIET_CYCLES)
+          should_run = 1;
+      }
+
+      if (should_run)
+      {
+        plan->run_scan = 1;
+        plan->sleep_ms = ctx->c_bg_dedup_interval_ms;
+        ctx->c_bg_dedup_idle_skip_streak = 0;
+      }
+    }
+
+    kafs_bg_dedup_worker_adjust_priority_locked(ctx, plan->pressure_mode);
+  }
+
+  ctx->c_bg_dedup_mode = plan->mode;
+  plan->apply_prio = (ctx->c_bg_dedup_worker_prio_dirty != 0);
+}
+
+static void kafs_bg_dedup_worker_run_scan(kafs_context_t *ctx, int pressure_mode)
+{
+  uint64_t before_steps = __atomic_load_n(&ctx->c_stat_bg_dedup_steps, __ATOMIC_RELAXED);
+  uint64_t before_scanned = __atomic_load_n(&ctx->c_stat_bg_dedup_scanned_blocks, __ATOMIC_RELAXED);
+  uint64_t before_candidates =
+      __atomic_load_n(&ctx->c_stat_bg_dedup_direct_candidates, __ATOMIC_RELAXED);
+  uint64_t before_repl = __atomic_load_n(&ctx->c_stat_bg_dedup_replacements, __ATOMIC_RELAXED);
+  uint32_t steps = pressure_mode ? KAFS_BG_DEDUP_PRESSURE_BURST_STEPS : 1u;
+
+  for (uint32_t i = 0; i < steps; ++i)
+    kafs_bg_dedup_step(ctx, pressure_mode);
+
+  uint64_t after_steps = __atomic_load_n(&ctx->c_stat_bg_dedup_steps, __ATOMIC_RELAXED);
+  uint64_t after_scanned = __atomic_load_n(&ctx->c_stat_bg_dedup_scanned_blocks, __ATOMIC_RELAXED);
+  uint64_t after_candidates =
+      __atomic_load_n(&ctx->c_stat_bg_dedup_direct_candidates, __ATOMIC_RELAXED);
+  uint64_t after_repl = __atomic_load_n(&ctx->c_stat_bg_dedup_replacements, __ATOMIC_RELAXED);
+
+  if (after_steps > before_steps)
+  {
+    pthread_mutex_lock(&ctx->c_bg_dedup_worker_lock);
+    ctx->c_bg_dedup_telemetry_valid = 1u;
+    ctx->c_bg_dedup_last_scanned_blocks =
+        (after_scanned >= before_scanned) ? (after_scanned - before_scanned) : 0u;
+    ctx->c_bg_dedup_last_direct_candidates =
+        (after_candidates >= before_candidates) ? (after_candidates - before_candidates) : 0u;
+    ctx->c_bg_dedup_last_replacements =
+        (after_repl >= before_repl) ? (after_repl - before_repl) : 0u;
+    pthread_mutex_unlock(&ctx->c_bg_dedup_worker_lock);
+  }
+}
+
+static int kafs_bg_dedup_worker_wait(kafs_context_t *ctx, int pressure_mode, uint32_t sleep_ms)
+{
+  uint32_t wait_ms =
+      pressure_mode ? sleep_ms : kafs_u32_min(sleep_ms, KAFS_BG_DEDUP_MONITOR_INTERVAL_MS);
+  if (wait_ms == 0)
+    wait_ms = 1;
+
+  pthread_mutex_lock(&ctx->c_bg_dedup_worker_lock);
+  if (ctx->c_bg_dedup_worker_stop)
+  {
+    pthread_mutex_unlock(&ctx->c_bg_dedup_worker_lock);
+    return 1;
+  }
+
+  struct timespec wake;
+  clock_gettime(CLOCK_REALTIME, &wake);
+  wake.tv_nsec += (long)(wait_ms % 1000u) * 1000000l;
+  wake.tv_sec += (time_t)(wait_ms / 1000u);
+  if (wake.tv_nsec >= 1000000000l)
+  {
+    wake.tv_sec += 1;
+    wake.tv_nsec -= 1000000000l;
+  }
+
+  (void)pthread_cond_timedwait(&ctx->c_bg_dedup_worker_cond, &ctx->c_bg_dedup_worker_lock, &wake);
+  pthread_mutex_unlock(&ctx->c_bg_dedup_worker_lock);
+  return 0;
+}
+
 static void *kafs_bg_dedup_worker_main(void *arg)
 {
   kafs_context_t *ctx = (kafs_context_t *)arg;
@@ -2414,11 +2550,7 @@ static void *kafs_bg_dedup_worker_main(void *arg)
 
   for (;;)
   {
-    uint32_t sleep_ms = ctx->c_bg_dedup_quiet_interval_ms;
-    int run_scan = 0;
-    int pressure_mode = 0;
-    int apply_prio = 0;
-    uint32_t mode = KAFS_BG_DEDUP_MODE_COLD;
+    kafs_bg_dedup_worker_plan_t plan;
     uint64_t now_ns = kafs_now_ns();
 
     pthread_mutex_lock(&ctx->c_bg_dedup_worker_lock);
@@ -2428,136 +2560,17 @@ static void *kafs_bg_dedup_worker_main(void *arg)
       return NULL;
     }
 
-    if (ctx->c_bg_dedup_enabled && ctx->c_bg_dedup_interval_ms > 0)
-    {
-      uint32_t used_pct = kafs_bg_dedup_used_pct(ctx);
-      pressure_mode =
-          (ctx->c_bg_dedup_pressure_used_pct > 0 && used_pct >= ctx->c_bg_dedup_pressure_used_pct);
-      int over_start =
-          (ctx->c_bg_dedup_start_used_pct == 0 || used_pct >= ctx->c_bg_dedup_start_used_pct);
-
-      if (pressure_mode)
-      {
-        mode = KAFS_BG_DEDUP_MODE_PRESSURE;
-        run_scan = 1;
-        sleep_ms = ctx->c_bg_dedup_pressure_interval_ms;
-        ctx->c_bg_dedup_idle_skip_streak = 0;
-      }
-      else if (!ctx->c_bg_dedup_telemetry_valid)
-      {
-        mode = KAFS_BG_DEDUP_MODE_COLD;
-        if (ctx->c_bg_dedup_cold_start_due_ns == 0)
-          ctx->c_bg_dedup_cold_start_due_ns =
-              now_ns + (uint64_t)ctx->c_bg_dedup_quiet_interval_ms * 1000000ull;
-
-        if (over_start || now_ns >= ctx->c_bg_dedup_cold_start_due_ns)
-        {
-          run_scan = 1;
-          sleep_ms = ctx->c_bg_dedup_interval_ms;
-          ctx->c_bg_dedup_idle_skip_streak = 0;
-          ctx->c_bg_dedup_cold_start_due_ns =
-              now_ns + (uint64_t)ctx->c_bg_dedup_quiet_interval_ms * 1000000ull;
-        }
-        else
-        {
-          run_scan = 0;
-          sleep_ms = ctx->c_bg_dedup_quiet_interval_ms;
-        }
-      }
-      else
-      {
-        mode = KAFS_BG_DEDUP_MODE_ADAPTIVE;
-        int should_run = 0;
-        if (ctx->c_bg_dedup_last_direct_candidates > 0 || ctx->c_bg_dedup_last_replacements > 0)
-          should_run = 1;
-        else
-        {
-          ctx->c_bg_dedup_idle_skip_streak++;
-          if (ctx->c_bg_dedup_idle_skip_streak >= KAFS_BG_DEDUP_RESAMPLE_QUIET_CYCLES)
-            should_run = 1;
-        }
-
-        if (should_run)
-        {
-          run_scan = 1;
-          sleep_ms = ctx->c_bg_dedup_interval_ms;
-          ctx->c_bg_dedup_idle_skip_streak = 0;
-        }
-        else
-        {
-          run_scan = 0;
-          sleep_ms = ctx->c_bg_dedup_quiet_interval_ms;
-        }
-      }
-
-      kafs_bg_dedup_worker_adjust_priority_locked(ctx, pressure_mode);
-    }
-    ctx->c_bg_dedup_mode = mode;
-
-    apply_prio = (ctx->c_bg_dedup_worker_prio_dirty != 0);
+    kafs_bg_dedup_worker_plan_locked(ctx, now_ns, &plan);
     pthread_mutex_unlock(&ctx->c_bg_dedup_worker_lock);
 
-    if (apply_prio)
+    if (plan.apply_prio)
       (void)kafs_bg_dedup_worker_apply_priority_self(ctx);
 
-    if (run_scan)
-    {
-      uint64_t before_steps = __atomic_load_n(&ctx->c_stat_bg_dedup_steps, __ATOMIC_RELAXED);
-      uint64_t before_scanned =
-          __atomic_load_n(&ctx->c_stat_bg_dedup_scanned_blocks, __ATOMIC_RELAXED);
-      uint64_t before_candidates =
-          __atomic_load_n(&ctx->c_stat_bg_dedup_direct_candidates, __ATOMIC_RELAXED);
-      uint64_t before_repl = __atomic_load_n(&ctx->c_stat_bg_dedup_replacements, __ATOMIC_RELAXED);
+    if (plan.run_scan)
+      kafs_bg_dedup_worker_run_scan(ctx, plan.pressure_mode);
 
-      uint32_t steps = pressure_mode ? KAFS_BG_DEDUP_PRESSURE_BURST_STEPS : 1u;
-      for (uint32_t i = 0; i < steps; ++i)
-        kafs_bg_dedup_step(ctx, pressure_mode);
-
-      uint64_t after_steps = __atomic_load_n(&ctx->c_stat_bg_dedup_steps, __ATOMIC_RELAXED);
-      uint64_t after_scanned =
-          __atomic_load_n(&ctx->c_stat_bg_dedup_scanned_blocks, __ATOMIC_RELAXED);
-      uint64_t after_candidates =
-          __atomic_load_n(&ctx->c_stat_bg_dedup_direct_candidates, __ATOMIC_RELAXED);
-      uint64_t after_repl = __atomic_load_n(&ctx->c_stat_bg_dedup_replacements, __ATOMIC_RELAXED);
-
-      if (after_steps > before_steps)
-      {
-        pthread_mutex_lock(&ctx->c_bg_dedup_worker_lock);
-        ctx->c_bg_dedup_telemetry_valid = 1u;
-        ctx->c_bg_dedup_last_scanned_blocks =
-            (after_scanned >= before_scanned) ? (after_scanned - before_scanned) : 0u;
-        ctx->c_bg_dedup_last_direct_candidates =
-            (after_candidates >= before_candidates) ? (after_candidates - before_candidates) : 0u;
-        ctx->c_bg_dedup_last_replacements =
-            (after_repl >= before_repl) ? (after_repl - before_repl) : 0u;
-        pthread_mutex_unlock(&ctx->c_bg_dedup_worker_lock);
-      }
-    }
-
-    pthread_mutex_lock(&ctx->c_bg_dedup_worker_lock);
-    if (ctx->c_bg_dedup_worker_stop)
-    {
-      pthread_mutex_unlock(&ctx->c_bg_dedup_worker_lock);
+    if (kafs_bg_dedup_worker_wait(ctx, plan.pressure_mode, plan.sleep_ms) != 0)
       return NULL;
-    }
-
-    uint32_t wait_ms =
-        pressure_mode ? sleep_ms : kafs_u32_min(sleep_ms, KAFS_BG_DEDUP_MONITOR_INTERVAL_MS);
-    if (wait_ms == 0)
-      wait_ms = 1;
-
-    struct timespec wake;
-    clock_gettime(CLOCK_REALTIME, &wake);
-    wake.tv_nsec += (long)(wait_ms % 1000u) * 1000000l;
-    wake.tv_sec += (time_t)(wait_ms / 1000u);
-    if (wake.tv_nsec >= 1000000000l)
-    {
-      wake.tv_sec += 1;
-      wake.tv_nsec -= 1000000000l;
-    }
-
-    (void)pthread_cond_timedwait(&ctx->c_bg_dedup_worker_cond, &ctx->c_bg_dedup_worker_lock, &wake);
-    pthread_mutex_unlock(&ctx->c_bg_dedup_worker_lock);
   }
 }
 
