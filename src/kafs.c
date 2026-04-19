@@ -9070,6 +9070,190 @@ static int kafs_op_access(const char *path, int mode)
   return 0;
 }
 
+static int kafs_split_parent_basename(const char *path, char *path_copy, const char **dir,
+                                      char **base)
+{
+  strcpy(path_copy, path);
+  *dir = path_copy;
+  *base = strrchr(path_copy, '/');
+  if (*dir == *base)
+    *dir = "/";
+  **base = '\0';
+  (*base)++;
+  if ((*base)[0] == '\0')
+    return -EINVAL;
+  if (strcmp(*base, ".") == 0 || strcmp(*base, "..") == 0)
+    return -EINVAL;
+  return 0;
+}
+
+static size_t kafs_rename_prepare_lock_list(uint32_t lock_list[4], uint32_t ino_from_dir,
+                                            uint32_t ino_to_dir, uint32_t ino_src_u32,
+                                            uint32_t ino_dst_u32)
+{
+  size_t lock_n = 0;
+  lock_list[lock_n++] = ino_from_dir;
+  if (ino_to_dir != ino_from_dir)
+    lock_list[lock_n++] = ino_to_dir;
+  if (ino_src_u32 != ino_from_dir && ino_src_u32 != ino_to_dir)
+    lock_list[lock_n++] = ino_src_u32;
+  if (ino_dst_u32 != UINT32_MAX && ino_dst_u32 != ino_from_dir && ino_dst_u32 != ino_to_dir &&
+      ino_dst_u32 != ino_src_u32)
+    lock_list[lock_n++] = ino_dst_u32;
+
+  for (size_t i = 0; i < lock_n; ++i)
+    for (size_t j = i + 1; j < lock_n; ++j)
+      if (lock_list[j] < lock_list[i])
+      {
+        uint32_t tmp = lock_list[i];
+        lock_list[i] = lock_list[j];
+        lock_list[j] = tmp;
+      }
+
+  return lock_n;
+}
+
+static void kafs_rename_lock_list_acquire(struct kafs_context *ctx, const uint32_t *lock_list,
+                                          size_t lock_n)
+{
+  for (size_t i = 0; i < lock_n; ++i)
+    kafs_inode_lock(ctx, lock_list[i]);
+}
+
+static void kafs_rename_lock_list_release(struct kafs_context *ctx, const uint32_t *lock_list,
+                                          size_t lock_n)
+{
+  for (size_t i = lock_n; i > 0; --i)
+    kafs_inode_unlock(ctx, lock_list[i - 1]);
+}
+
+static int kafs_rename_prepare_existing_destination_locked(struct kafs_context *ctx, uint64_t jseq,
+                                                           const uint32_t *lock_list, size_t lock_n,
+                                                           int src_is_dir, int exists_to,
+                                                           kafs_sinode_t *inoent_to_exist)
+{
+  if (!src_is_dir || exists_to != 0 || !inoent_to_exist)
+    return 0;
+
+  int empty_rc = kafs_dir_is_empty_locked(ctx, inoent_to_exist);
+  if (empty_rc < 0)
+  {
+    kafs_journal_abort(ctx, jseq, "dst_dir_empty=%d", empty_rc);
+    kafs_rename_lock_list_release(ctx, lock_list, lock_n);
+    return empty_rc;
+  }
+  if (empty_rc == 0)
+  {
+    kafs_journal_abort(ctx, jseq, "DST_DIR_NOT_EMPTY");
+    kafs_rename_lock_list_release(ctx, lock_list, lock_n);
+    return -ENOTEMPTY;
+  }
+
+  int rr = kafs_dirent_remove(ctx, inoent_to_exist, "..");
+  if (rr < 0)
+  {
+    kafs_journal_abort(ctx, jseq, "dst_remove_dotdot=%d", rr);
+    kafs_rename_lock_list_release(ctx, lock_list, lock_n);
+    return rr;
+  }
+
+  return 0;
+}
+
+static int kafs_rename_move_entries_locked(struct kafs_context *ctx, uint64_t jseq,
+                                           const uint32_t *lock_list, size_t lock_n,
+                                           kafs_sinode_t *inoent_dir_from,
+                                           kafs_sinode_t *inoent_dir_to, kafs_inocnt_t ino_src,
+                                           const char *from_base, const char *to_base,
+                                           kafs_inocnt_t *removed_dst_ino)
+{
+  int rc_locked;
+  kafs_inocnt_t moved_ino = KAFS_INO_NONE;
+
+  *removed_dst_ino = KAFS_INO_NONE;
+  rc_locked = kafs_dirent_remove_nolink(ctx, inoent_dir_to, to_base, removed_dst_ino);
+  if (rc_locked < 0 && rc_locked != -ENOENT)
+  {
+    kafs_journal_abort(ctx, jseq, "dst_remove=%d", rc_locked);
+    kafs_rename_lock_list_release(ctx, lock_list, lock_n);
+    return rc_locked;
+  }
+  if (rc_locked == -ENOENT)
+    *removed_dst_ino = KAFS_INO_NONE;
+
+  rc_locked = kafs_dirent_remove_nolink(ctx, inoent_dir_from, from_base, &moved_ino);
+  if (rc_locked < 0)
+  {
+    kafs_journal_abort(ctx, jseq, "src_remove=%d", rc_locked);
+    kafs_rename_lock_list_release(ctx, lock_list, lock_n);
+    return rc_locked;
+  }
+  if (moved_ino != ino_src)
+  {
+    kafs_journal_abort(ctx, jseq, "ESTALE moved_ino=%u src=%u", (unsigned)moved_ino,
+                       (unsigned)ino_src);
+    kafs_rename_lock_list_release(ctx, lock_list, lock_n);
+    return -ESTALE;
+  }
+
+  rc_locked = kafs_dirent_add_nolink(ctx, inoent_dir_to, ino_src, to_base);
+  if (rc_locked < 0)
+  {
+    kafs_journal_abort(ctx, jseq, "dst_add=%d", rc_locked);
+    kafs_rename_lock_list_release(ctx, lock_list, lock_n);
+    return rc_locked;
+  }
+
+  return 0;
+}
+
+static int kafs_rename_update_dotdot_locked(struct kafs_context *ctx, uint64_t jseq,
+                                            const uint32_t *lock_list, size_t lock_n,
+                                            int src_is_dir, uint32_t ino_from_dir,
+                                            uint32_t ino_to_dir, kafs_sinode_t *inoent_src)
+{
+  if (!src_is_dir || ino_from_dir == ino_to_dir)
+    return 0;
+
+  int rr = kafs_dirent_remove(ctx, inoent_src, "..");
+  if (rr < 0)
+  {
+    kafs_journal_abort(ctx, jseq, "src_remove_dotdot=%d", rr);
+    kafs_rename_lock_list_release(ctx, lock_list, lock_n);
+    return rr;
+  }
+  rr = kafs_dirent_add(ctx, inoent_src, (kafs_inocnt_t)ino_to_dir, "..");
+  if (rr < 0)
+  {
+    kafs_journal_abort(ctx, jseq, "src_add_dotdot=%d", rr);
+    kafs_rename_lock_list_release(ctx, lock_list, lock_n);
+    return rr;
+  }
+
+  return 0;
+}
+
+static void kafs_rename_finalize_replaced_inode(struct kafs_context *ctx,
+                                                kafs_inocnt_t removed_dst_ino)
+{
+  if (removed_dst_ino == KAFS_INO_NONE)
+    return;
+
+  int reclaim_dst_now = kafs_tombstone_pressure(ctx);
+  kafs_inode_lock(ctx, (uint32_t)removed_dst_ino);
+  int reclaimed_dst = 0;
+  (void)kafs_inode_drop_link_locked(ctx, removed_dst_ino, reclaim_dst_now, &reclaimed_dst);
+  kafs_inode_unlock(ctx, (uint32_t)removed_dst_ino);
+
+  if (reclaimed_dst)
+  {
+    kafs_inode_alloc_lock(ctx);
+    (void)kafs_sb_inocnt_free_incr(ctx->c_superblock);
+    kafs_sb_wtime_set(ctx->c_superblock, kafs_now());
+    kafs_inode_alloc_unlock(ctx);
+  }
+}
+
 static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
 {
   // 最小実装: 通常ファイルのみ対応。RENAME_NOREPLACE は尊重。その他のフラグは未対応。
@@ -9104,32 +9288,19 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
   if (!S_ISREG(src_mode) && !S_ISLNK(src_mode) && !src_is_dir)
     return -EOPNOTSUPP;
 
-  // パス分解
   char from_copy[strlen(from) + 1];
-  strcpy(from_copy, from);
   const char *from_dir = from_copy;
-  char *from_base = strrchr(from_copy, '/');
-  if (from_dir == from_base)
-    from_dir = "/";
-  *from_base = '\0';
-  from_base++;
-  if (from_base[0] == '\0')
-    return -EINVAL;
-  if (strcmp(from_base, ".") == 0 || strcmp(from_base, "..") == 0)
-    return -EINVAL;
+  char *from_base = NULL;
+  rc = kafs_split_parent_basename(from, from_copy, &from_dir, &from_base);
+  if (rc < 0)
+    return rc;
 
   char to_copy[strlen(to) + 1];
-  strcpy(to_copy, to);
   const char *to_dir = to_copy;
-  char *to_base = strrchr(to_copy, '/');
-  if (to_dir == to_base)
-    to_dir = "/";
-  *to_base = '\0';
-  to_base++;
-  if (to_base[0] == '\0')
-    return -EINVAL;
-  if (strcmp(to_base, ".") == 0 || strcmp(to_base, "..") == 0)
-    return -EINVAL;
+  char *to_base = NULL;
+  rc = kafs_split_parent_basename(to, to_copy, &to_dir, &to_base);
+  if (rc < 0)
+    return rc;
 
   uint64_t jseq = kafs_journal_begin(ctx, "RENAME", "from=%s to=%s flags=%u", from, to, flags);
 
@@ -9197,141 +9368,29 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
     ino_dst_u32 = kafs_ctx_ino_no(ctx, inoent_to_exist);
 
   uint32_t lock_list[4];
-  size_t lock_n = 0;
-  lock_list[lock_n++] = ino_from_dir;
-  if (ino_to_dir != ino_from_dir)
-    lock_list[lock_n++] = ino_to_dir;
-  if (ino_src_u32 != ino_from_dir && ino_src_u32 != ino_to_dir)
-    lock_list[lock_n++] = ino_src_u32;
-  if (ino_dst_u32 != UINT32_MAX && ino_dst_u32 != ino_from_dir && ino_dst_u32 != ino_to_dir &&
-      ino_dst_u32 != ino_src_u32)
-    lock_list[lock_n++] = ino_dst_u32;
+  size_t lock_n =
+      kafs_rename_prepare_lock_list(lock_list, ino_from_dir, ino_to_dir, ino_src_u32, ino_dst_u32);
+  kafs_rename_lock_list_acquire(ctx, lock_list, lock_n);
 
-  for (size_t i = 0; i < lock_n; ++i)
-    for (size_t j = i + 1; j < lock_n; ++j)
-      if (lock_list[j] < lock_list[i])
-      {
-        uint32_t tmp = lock_list[i];
-        lock_list[i] = lock_list[j];
-        lock_list[j] = tmp;
-      }
+  rc = kafs_rename_prepare_existing_destination_locked(ctx, jseq, lock_list, lock_n, src_is_dir,
+                                                       exists_to, inoent_to_exist);
+  if (rc < 0)
+    return rc;
 
-  for (size_t i = 0; i < lock_n; ++i)
-    kafs_inode_lock(ctx, lock_list[i]);
-
-  // ディレクトリ置換の場合は、空 (".." のみ) を確認して ".." を除去する（親リンク数整合）。
-  if (src_is_dir && exists_to == 0 && inoent_to_exist)
-  {
-    int empty_rc = kafs_dir_is_empty_locked(ctx, inoent_to_exist);
-    if (empty_rc < 0)
-    {
-      kafs_journal_abort(ctx, jseq, "dst_dir_empty=%d", empty_rc);
-      for (size_t i = lock_n; i > 0; --i)
-        kafs_inode_unlock(ctx, lock_list[i - 1]);
-      return empty_rc;
-    }
-    if (empty_rc == 0)
-    {
-      kafs_journal_abort(ctx, jseq, "DST_DIR_NOT_EMPTY");
-      for (size_t i = lock_n; i > 0; --i)
-        kafs_inode_unlock(ctx, lock_list[i - 1]);
-      return -ENOTEMPTY;
-    }
-
-    int rr = kafs_dirent_remove(ctx, inoent_to_exist, "..");
-    if (rr < 0)
-    {
-      kafs_journal_abort(ctx, jseq, "dst_remove_dotdot=%d", rr);
-      for (size_t i = lock_n; i > 0; --i)
-        kafs_inode_unlock(ctx, lock_list[i - 1]);
-      return rr;
-    }
-  }
-
-  // 置換先が存在していればエントリを除去（rename では moved inode の linkcount は変えない）
   kafs_inocnt_t removed_dst_ino = KAFS_INO_NONE;
-  if (exists_to == 0)
-  {
-    // Remove dirent only; decrement linkcount later under inode lock.
-    int rc_locked = kafs_dirent_remove_nolink(ctx, inoent_dir_to, to_base, &removed_dst_ino);
-    if (rc_locked < 0)
-    {
-      kafs_journal_abort(ctx, jseq, "dst_remove=%d", rc_locked);
-      for (size_t i = lock_n; i > 0; --i)
-        kafs_inode_unlock(ctx, lock_list[i - 1]);
-      return rc_locked;
-    }
-  }
-  // from から削除（rename ではリンク数を変更しない）
-  kafs_inocnt_t moved_ino = KAFS_INO_NONE;
-  int rc_locked = kafs_dirent_remove_nolink(ctx, inoent_dir_from, from_base, &moved_ino);
-  if (rc_locked < 0)
-  {
-    kafs_journal_abort(ctx, jseq, "src_remove=%d", rc_locked);
-    for (size_t i = lock_n; i > 0; --i)
-      kafs_inode_unlock(ctx, lock_list[i - 1]);
-    return rc_locked;
-  }
-  if (moved_ino != ino_src)
-  {
-    kafs_journal_abort(ctx, jseq, "ESTALE moved_ino=%u src=%u", (unsigned)moved_ino,
-                       (unsigned)ino_src);
-    for (size_t i = lock_n; i > 0; --i)
-      kafs_inode_unlock(ctx, lock_list[i - 1]);
-    return -ESTALE;
-  }
-  // to に追加（rename ではリンク数を変更しない）
-  rc_locked = kafs_dirent_add_nolink(ctx, inoent_dir_to, ino_src, to_base);
-  if (rc_locked < 0)
-  {
-    kafs_journal_abort(ctx, jseq, "dst_add=%d", rc_locked);
-    for (size_t i = lock_n; i > 0; --i)
-      kafs_inode_unlock(ctx, lock_list[i - 1]);
-    return rc_locked;
-  }
+  rc = kafs_rename_move_entries_locked(ctx, jseq, lock_list, lock_n, inoent_dir_from, inoent_dir_to,
+                                       ino_src, from_base, to_base, &removed_dst_ino);
+  if (rc < 0)
+    return rc;
 
-  // ディレクトリを親またぎで移動した場合は、".." を新しい親へ付け替える。
-  if (src_is_dir && ino_from_dir != ino_to_dir)
-  {
-    int rr = kafs_dirent_remove(ctx, inoent_src, "..");
-    if (rr < 0)
-    {
-      kafs_journal_abort(ctx, jseq, "src_remove_dotdot=%d", rr);
-      for (size_t i = lock_n; i > 0; --i)
-        kafs_inode_unlock(ctx, lock_list[i - 1]);
-      return rr;
-    }
-    rr = kafs_dirent_add(ctx, inoent_src, (kafs_inocnt_t)ino_to_dir, "..");
-    if (rr < 0)
-    {
-      kafs_journal_abort(ctx, jseq, "src_add_dotdot=%d", rr);
-      for (size_t i = lock_n; i > 0; --i)
-        kafs_inode_unlock(ctx, lock_list[i - 1]);
-      return rr;
-    }
-  }
+  rc = kafs_rename_update_dotdot_locked(ctx, jseq, lock_list, lock_n, src_is_dir, ino_from_dir,
+                                        ino_to_dir, inoent_src);
+  if (rc < 0)
+    return rc;
 
-  // ロック解除（取得の逆順）
-  for (size_t i = lock_n; i > 0; --i)
-    kafs_inode_unlock(ctx, lock_list[i - 1]);
+  kafs_rename_lock_list_release(ctx, lock_list, lock_n);
 
-  // If we replaced an existing dst, decrement its linkcount under inode lock.
-  if (removed_dst_ino != KAFS_INO_NONE)
-  {
-    int reclaim_dst_now = kafs_tombstone_pressure(ctx);
-    kafs_inode_lock(ctx, (uint32_t)removed_dst_ino);
-    int reclaimed_dst = 0;
-    (void)kafs_inode_drop_link_locked(ctx, removed_dst_ino, reclaim_dst_now, &reclaimed_dst);
-    kafs_inode_unlock(ctx, (uint32_t)removed_dst_ino);
-
-    if (reclaimed_dst)
-    {
-      kafs_inode_alloc_lock(ctx);
-      (void)kafs_sb_inocnt_free_incr(ctx->c_superblock);
-      kafs_sb_wtime_set(ctx->c_superblock, kafs_now());
-      kafs_inode_alloc_unlock(ctx);
-    }
-  }
+  kafs_rename_finalize_replaced_inode(ctx, removed_dst_ino);
 
   kafs_journal_commit(ctx, jseq);
   kafs_dlog(2, "%s: exit rc=0 from=%s to=%s flags=%u\n", __func__, from, to, flags);
