@@ -11705,6 +11705,99 @@ static int kafs_main_handle_mount_token(kafs_main_options_t *opts, const char *t
   return kafs_main_handle_bg_dedup_token(opts, tok);
 }
 
+static int kafs_main_extract_mount_arg(char **argv_clean, int argc_clean, int *index,
+                                       const char **oval_out, int *is_compact_out)
+{
+  const char *arg = argv_clean[*index];
+
+  *oval_out = NULL;
+  *is_compact_out = 0;
+  if (strcmp(arg, "-o") == 0)
+  {
+    if (*index + 1 < argc_clean)
+    {
+      *oval_out = argv_clean[++(*index)];
+      return 0;
+    }
+    return 1;
+  }
+
+  if (strncmp(arg, "-o", 2) == 0 && arg[2] != '\0')
+  {
+    *oval_out = arg + 2;
+    *is_compact_out = 1;
+  }
+  return 0;
+}
+
+static int kafs_main_filter_mount_tokens(kafs_main_options_t *opts, const char *oval,
+                                         char *filtered, size_t filtered_size, int *want_mt_out)
+{
+  char *dup = strdup(oval);
+  if (!dup)
+  {
+    perror("strdup");
+    return 2;
+  }
+
+  filtered[0] = '\0';
+  size_t used = 0;
+  int want_mt = 0;
+  char *saveptr = NULL;
+  for (char *tok = strtok_r(dup, ",", &saveptr); tok; tok = strtok_r(NULL, ",", &saveptr))
+  {
+    int rc = kafs_main_handle_mount_token(opts, tok, &want_mt);
+    if (rc == 2)
+    {
+      free(dup);
+      return 2;
+    }
+    if (rc == 1)
+      continue;
+
+    kafs_main_append_filtered_token(filtered, &used, tok);
+  }
+
+  free(dup);
+  (void)filtered_size;
+  *want_mt_out = want_mt;
+  return 0;
+}
+
+static int kafs_main_append_mount_arg(char **argv_user, int *argc_user, char **o_owned,
+                                      int *o_owned_cnt, const char *filtered, int is_compact)
+{
+  char *kept = NULL;
+
+  if (is_compact)
+  {
+    kept = (char *)malloc(strlen(filtered) + 3);
+    if (!kept)
+    {
+      perror("malloc");
+      return 2;
+    }
+    kept[0] = '-';
+    kept[1] = 'o';
+    strcpy(kept + 2, filtered);
+    argv_user[(*argc_user)++] = kept;
+  }
+  else
+  {
+    kept = strdup(filtered);
+    if (!kept)
+    {
+      perror("strdup");
+      return 2;
+    }
+    argv_user[(*argc_user)++] = "-o";
+    argv_user[(*argc_user)++] = kept;
+  }
+
+  o_owned[(*o_owned_cnt)++] = kept;
+  return 0;
+}
+
 static int kafs_main_filter_mount_options(kafs_main_options_t *opts, char **argv_clean,
                                           int *argc_clean)
 {
@@ -11715,23 +11808,13 @@ static int kafs_main_filter_mount_options(kafs_main_options_t *opts, char **argv
 
   for (int i = 0; i < *argc_clean; ++i)
   {
-    const char *a = argv_clean[i];
     const char *oval = NULL;
     int is_compact = 0;
-    if (strcmp(a, "-o") == 0)
+    int rc = kafs_main_extract_mount_arg(argv_clean, *argc_clean, &i, &oval, &is_compact);
+    if (rc == 1)
     {
-      if (i + 1 < *argc_clean)
-        oval = argv_clean[++i];
-      else
-      {
-        argv_user[argc_user++] = argv_clean[i];
-        continue;
-      }
-    }
-    else if (strncmp(a, "-o", 2) == 0 && a[2] != '\0')
-    {
-      oval = a + 2;
-      is_compact = 1;
+      argv_user[argc_user++] = argv_clean[i];
+      continue;
     }
 
     if (!oval)
@@ -11740,64 +11823,20 @@ static int kafs_main_filter_mount_options(kafs_main_options_t *opts, char **argv
       continue;
     }
 
-    char *dup = strdup(oval);
-    if (!dup)
-    {
-      perror("strdup");
-      return 2;
-    }
     char filtered[strlen(oval) + 1];
-    filtered[0] = '\0';
-    size_t used = 0;
     int want_mt = 0;
-
-    char *saveptr = NULL;
-    for (char *tok = strtok_r(dup, ",", &saveptr); tok; tok = strtok_r(NULL, ",", &saveptr))
-    {
-      int rc = kafs_main_handle_mount_token(opts, tok, &want_mt);
-      if (rc == 2)
-      {
-        free(dup);
-        return 2;
-      }
-      if (rc == 1)
-        continue;
-
-      kafs_main_append_filtered_token(filtered, &used, tok);
-    }
-
-    free(dup);
+    rc = kafs_main_filter_mount_tokens(opts, oval, filtered, sizeof(filtered), &want_mt);
+    if (rc != 0)
+      return rc;
     if (want_mt)
       opts->enable_mt = KAFS_TRUE;
 
     if (filtered[0] != '\0')
     {
-      char *kept = NULL;
-      if (is_compact)
-      {
-        kept = (char *)malloc(strlen(filtered) + 3);
-        if (!kept)
-        {
-          perror("malloc");
-          return 2;
-        }
-        kept[0] = '-';
-        kept[1] = 'o';
-        strcpy(kept + 2, filtered);
-        argv_user[argc_user++] = kept;
-      }
-      else
-      {
-        kept = strdup(filtered);
-        if (!kept)
-        {
-          perror("strdup");
-          return 2;
-        }
-        argv_user[argc_user++] = "-o";
-        argv_user[argc_user++] = kept;
-      }
-      o_owned[o_owned_cnt++] = kept;
+      rc = kafs_main_append_mount_arg(argv_user, &argc_user, o_owned, &o_owned_cnt, filtered,
+                                      is_compact);
+      if (rc != 0)
+        return rc;
     }
   }
 
