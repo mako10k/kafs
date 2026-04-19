@@ -556,6 +556,7 @@ typedef enum
 static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_iblkcnt_t iblo,
                              kafs_blkcnt_t *pblo, kafs_iblkref_func_t ifunc);
 static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf);
+static void kafs_ino_blocks_adjust(kafs_sinode_t *inoent, int delta);
 static int kafs_pending_worker_start(struct kafs_context *ctx);
 static void kafs_pending_worker_stop(struct kafs_context *ctx);
 static int kafs_tombstone_gc_worker_start(struct kafs_context *ctx);
@@ -2768,6 +2769,47 @@ static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
   return KAFS_SUCCESS;
 }
 
+#if KAFS_ENABLE_EXTRA_DIAG
+static int kafs_diag_live_dir_block0_matches(kafs_sinode_t *inoent, kafs_blkcnt_t blo,
+                                             kafs_mode_t *mode_out)
+{
+  if (!kafs_ino_get_usage(inoent))
+    return 0;
+
+  kafs_mode_t mode = kafs_ino_mode_get(inoent);
+  if (!S_ISDIR(mode))
+    return 0;
+  if (kafs_ino_size_get(inoent) <= KAFS_INODE_DIRECT_BYTES)
+    return 0;
+  if (kafs_blkcnt_stoh(inoent->i_blkreftbl[0]) != blo)
+    return 0;
+
+  *mode_out = mode;
+  return 1;
+}
+
+static void kafs_diag_log_live_dir_block0_match(struct kafs_context *ctx, kafs_inocnt_t ino,
+                                                kafs_sinode_t *inoent, kafs_blkcnt_t blo,
+                                                kafs_mode_t mode, const char *hex_sample,
+                                                const char *ascii_sample)
+{
+  kafs_log(KAFS_LOG_WARNING,
+           "%s: blk=%" PRIuFAST32 " matches live dir block0 ino=%" PRIuFAST32
+           " mode=%o size=%" PRIuFAST64 " sample_hex=%s sample_ascii='%s'\n",
+           __func__, (uint_fast32_t)blo, (uint_fast32_t)ino, (unsigned)mode,
+           (uint_fast64_t)kafs_ino_size_get(inoent), hex_sample[0] ? hex_sample : "-",
+           ascii_sample[0] ? ascii_sample : "-");
+  kafs_diag_appendf(ctx,
+                    "%s: blk=%" PRIuFAST32 " matches live dir block0 ino=%" PRIuFAST32
+                    " mode=%o size=%" PRIuFAST64 " src_ino=%" PRIuFAST32
+                    " src_path=%s sample_hex=%s sample_ascii='%s'\n",
+                    __func__, (uint_fast32_t)blo, (uint_fast32_t)ino, (unsigned)mode,
+                    (uint_fast64_t)kafs_ino_size_get(inoent), (uint_fast32_t)g_diag_write_ino,
+                    g_diag_write_path ? g_diag_write_path : "(null)",
+                    hex_sample[0] ? hex_sample : "-", ascii_sample[0] ? ascii_sample : "-");
+}
+#endif
+
 static void kafs_diag_log_live_dir_block0_write(struct kafs_context *ctx, kafs_blkcnt_t blo,
                                                 const void *buf, size_t len)
 {
@@ -2779,35 +2821,15 @@ static void kafs_diag_log_live_dir_block0_write(struct kafs_context *ctx, kafs_b
   for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < inocnt; ++ino)
   {
     kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
-    if (!kafs_ino_get_usage(inoent))
-      continue;
-    kafs_mode_t mode = kafs_ino_mode_get(inoent);
-    if (!S_ISDIR(mode))
-      continue;
-    if (kafs_ino_size_get(inoent) <= KAFS_INODE_DIRECT_BYTES)
-      continue;
-    kafs_blkcnt_t cur_ref = kafs_blkcnt_stoh(inoent->i_blkreftbl[0]);
-    if (cur_ref != blo)
+    kafs_mode_t mode;
+    if (!kafs_diag_live_dir_block0_matches(inoent, blo, &mode))
       continue;
 
     char hex_sample[3 * 16 + 1];
     char ascii_sample[16 + 1];
     kafs_diag_format_sample(buf, len, hex_sample, sizeof(hex_sample), ascii_sample,
                             sizeof(ascii_sample));
-    kafs_log(KAFS_LOG_WARNING,
-             "%s: blk=%" PRIuFAST32 " matches live dir block0 ino=%" PRIuFAST32
-             " mode=%o size=%" PRIuFAST64 " sample_hex=%s sample_ascii='%s'\n",
-             __func__, (uint_fast32_t)blo, (uint_fast32_t)ino, (unsigned)mode,
-             (uint_fast64_t)kafs_ino_size_get(inoent), hex_sample[0] ? hex_sample : "-",
-             ascii_sample[0] ? ascii_sample : "-");
-    kafs_diag_appendf(ctx,
-                      "%s: blk=%" PRIuFAST32 " matches live dir block0 ino=%" PRIuFAST32
-                      " mode=%o size=%" PRIuFAST64 " src_ino=%" PRIuFAST32
-                      " src_path=%s sample_hex=%s sample_ascii='%s'\n",
-                      __func__, (uint_fast32_t)blo, (uint_fast32_t)ino, (unsigned)mode,
-                      (uint_fast64_t)kafs_ino_size_get(inoent), (uint_fast32_t)g_diag_write_ino,
-                      g_diag_write_path ? g_diag_write_path : "(null)",
-                      hex_sample[0] ? hex_sample : "-", ascii_sample[0] ? ascii_sample : "-");
+    kafs_diag_log_live_dir_block0_match(ctx, ino, inoent, blo, mode, hex_sample, ascii_sample);
   }
 }
 
