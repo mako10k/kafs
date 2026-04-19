@@ -439,6 +439,33 @@ int main(void)
 
   kafs_test_stop_kafs(mnt, srv);
 
+  srv = kafs_test_start_kafs(img, mnt, &k_mount_options);
+  if (srv <= 0)
+  {
+    tlogf("remount keep failed");
+    return 1;
+  }
+
+  snprintf(path, sizeof(path), "%s/keep", mnt);
+  fd = open(path, O_RDONLY);
+  if (fd < 0)
+  {
+    tlogf("open keep after remount failed: %s", strerror(errno));
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  memset(verify, 0, sizeof(verify));
+  if (read(fd, verify, sizeof(verify)) != (ssize_t)sizeof(verify) ||
+      memcmp(verify, payload, sizeof(payload)) != 0)
+  {
+    tlogf("readback mismatch on remounted keep");
+    close(fd);
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  close(fd);
+  kafs_test_stop_kafs(mnt, srv);
+
   char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)img, NULL};
   int rc = run_cmd(fsck_argv);
   if (rc != 0)

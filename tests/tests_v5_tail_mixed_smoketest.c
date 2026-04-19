@@ -327,21 +327,31 @@ static int inspect_mixed_tail_packed_file(const char *img, const char *expected,
       const kafs_tailmeta_container_hdr_t *container = &containers[container_index];
       uint16_t class_bytes = kafs_tailmeta_container_hdr_class_bytes_get(container);
       uint16_t fragment_off = kafs_ino_taildesc_v5_fragment_off_get(taildesc);
+      uint16_t slot_count = kafs_tailmeta_container_hdr_slot_count_get(container);
       uint16_t slot_index;
-      uint32_t payload_off;
-      const char *payload;
+      uint32_t slot_table_off = kafs_tailmeta_container_hdr_slot_table_off_get(container);
+      uint32_t data_off = slot_table_off + kafs_tailmeta_container_hdr_slot_table_bytes_get(container);
+      const kafs_tailmeta_slot_desc_t *slots =
+          (const kafs_tailmeta_slot_desc_t *)((const char *)region_hdr + slot_table_off);
+      const char *tail_data = (const char *)region_hdr + data_off;
 
       if (class_bytes == 0u || fragment_off % class_bytes != 0u)
         rc = -EPROTO;
       slot_index = (uint16_t)(fragment_off / class_bytes);
-      payload_off = kafs_tailmeta_container_hdr_slot_table_off_get(container) +
-                    kafs_tailmeta_container_hdr_slot_table_bytes_get(container) +
-                    (uint32_t)slot_index * class_bytes;
-      payload = (const char *)region_hdr + payload_off;
-      if (memcmp(payload, expected + blksize, fragment_len) != 0)
-        rc = -EIO;
-      if (kafs_tailmeta_container_hdr_live_count_get(container) == 0u)
+      if (rc == 0 && slot_index >= slot_count)
         rc = -EPROTO;
+      if (rc == 0)
+      {
+        const kafs_tailmeta_slot_desc_t *slot = &slots[slot_index];
+        const char *tail_ptr = tail_data + (size_t)slot_index * class_bytes;
+
+        if (kafs_tailmeta_slot_validate(slot, class_bytes) != 0)
+          rc = -EPROTO;
+        else if (kafs_tailmeta_slot_owner_ino_get(slot) == KAFS_INO_NONE)
+          rc = -EPROTO;
+        else if (memcmp(tail_ptr, expected + blksize, fragment_len) != 0)
+          rc = -EIO;
+      }
     }
   }
 
@@ -365,13 +375,12 @@ static int inspect_offline_tool_output(const char *img)
   char dump_json_stdout[8192];
   const char *info = kafs_test_kafs_info_bin();
   const char *dump = kafs_test_kafsdump_bin();
-  int rc;
 
   if (!info || !dump)
     return -ENOENT;
 
   char *info_argv[] = {(char *)info, (char *)img, NULL};
-  rc = run_cmd_capture_stdout(info_argv, info_stdout, sizeof(info_stdout));
+  int rc = run_cmd_capture_stdout(info_argv, info_stdout, sizeof(info_stdout));
   if (rc != 0)
     return -EIO;
   if (!strstr(info_stdout, "tail layouts: regular=1 tail_only=0 mixed_full_tail=1") ||
@@ -523,6 +532,33 @@ int main(void)
   }
   close(fd);
 
+  kafs_test_stop_kafs(mnt, srv);
+
+  srv = kafs_test_start_kafs(img, mnt, &k_mount_options);
+  if (srv <= 0)
+  {
+    tlogf("remount mixed failed");
+    return 1;
+  }
+
+  snprintf(path, sizeof(path), "%s/mixed", mnt);
+  fd = open(path, O_RDONLY);
+  if (fd < 0)
+  {
+    tlogf("open mixed after remount failed: %s", strerror(errno));
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  memset(verify, 0, sizeof(verify));
+  nread = pread(fd, verify, k_final_size, 0);
+  if (nread != k_final_size || memcmp(verify, payload, k_final_size) != 0)
+  {
+    tlogf("readback mismatch on remounted mixed file nread=%zd", nread);
+    close(fd);
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  close(fd);
   kafs_test_stop_kafs(mnt, srv);
 
   char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)img, NULL};

@@ -1502,6 +1502,7 @@ fsck_tailmeta_load_containers(int fd, uint64_t region_off,
   uint32_t table_bytes = kafs_tailmeta_region_hdr_container_table_bytes_get(region_hdr);
   kafs_tailmeta_container_hdr_t *containers =
       (kafs_tailmeta_container_hdr_t *)malloc((size_t)table_bytes);
+  if (!containers)
   {
     fprintf(stderr, "tailmeta container table alloc failed\n");
     return NULL;

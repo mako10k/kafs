@@ -16,6 +16,7 @@ historical investigations and deep design notes.
 - [kafsctl-path-ops-requirements.md](kafsctl-path-ops-requirements.md): mounted-tree control and path-based operation expectations
 - [kafsimage-format.md](kafsimage-format.md): export modes and output semantics for kafsimage
 - [kafsresize-cutover-playbook.md](kafsresize-cutover-playbook.md): staged destination-image cutover workflow for `kafsresize --migrate-create`
+- [operator-diagnostics-plan.md](operator-diagnostics-plan.md): staged design for the next operator-facing diagnostics slice
 
 ## Design And Planning
 
