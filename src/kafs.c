@@ -1675,6 +1675,140 @@ static int kafs_bg_dedup_try_install(struct kafs_context *ctx, uint32_t ino, kaf
   return installed;
 }
 
+typedef struct kafs_bg_dedup_sweep_state
+{
+  uint32_t bucket_heads[KAFS_BG_DEDUP_SWEEP_BUCKETS];
+  uint64_t entry_fast[KAFS_BG_DEDUP_SWEEP_IDX_CAP_PRESSURE];
+  uint32_t entry_blo[KAFS_BG_DEDUP_SWEEP_IDX_CAP_PRESSURE];
+  uint32_t entry_next[KAFS_BG_DEDUP_SWEEP_IDX_CAP_PRESSURE];
+  uint32_t entry_count;
+} kafs_bg_dedup_sweep_state_t;
+
+static void kafs_bg_dedup_advance_or_cooldown(struct kafs_context *ctx, kafs_inocnt_t inocnt,
+                                              uint32_t next_iblk, int pressure_mode)
+{
+  if (kafs_bg_advance_cursor(ctx, inocnt, next_iblk))
+    kafs_bg_enter_cooldown(ctx, pressure_mode);
+}
+
+static void kafs_bg_dedup_sweep_state_init(kafs_bg_dedup_sweep_state_t *state)
+{
+  state->entry_count = 0;
+  for (uint32_t i = 0; i < KAFS_BG_DEDUP_SWEEP_BUCKETS; ++i)
+    state->bucket_heads[i] = UINT32_MAX;
+}
+
+static int kafs_bg_dedup_prepare_inode_scan(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                            kafs_inocnt_t scanned, kafs_inocnt_t inocnt,
+                                            int pressure_mode, kafs_blksize_t bs,
+                                            uint32_t scan_window, kafs_iblkcnt_t *iblocnt_out,
+                                            uint32_t *direct_cnt_out)
+{
+  if (!kafs_ino_get_usage(inoent) || S_ISDIR(kafs_ino_mode_get(inoent)))
+  {
+    kafs_inode_unlock(ctx, kafs_ctx_ino_no(ctx, inoent));
+    if (scanned == 0)
+      kafs_bg_dedup_advance_or_cooldown(ctx, inocnt, 0, pressure_mode);
+    return 0;
+  }
+
+  kafs_off_t size = kafs_ino_size_get(inoent);
+  if (size <= KAFS_INODE_DIRECT_BYTES)
+  {
+    kafs_inode_unlock(ctx, kafs_ctx_ino_no(ctx, inoent));
+    if (scanned == 0)
+      kafs_bg_dedup_advance_or_cooldown(ctx, inocnt, 0, pressure_mode);
+    return 0;
+  }
+
+  *iblocnt_out = (kafs_iblkcnt_t)((size + bs - 1) / bs);
+  *direct_cnt_out = (*iblocnt_out < scan_window) ? (uint32_t)*iblocnt_out : scan_window;
+  if (*direct_cnt_out == 0)
+  {
+    kafs_inode_unlock(ctx, kafs_ctx_ino_no(ctx, inoent));
+    if (scanned == 0)
+      kafs_bg_dedup_advance_or_cooldown(ctx, inocnt, 0, pressure_mode);
+    return 0;
+  }
+
+  return 1;
+}
+
+static int kafs_bg_dedup_handle_scanned_block(struct kafs_context *ctx, uint32_t ino,
+                                              kafs_iblkcnt_t iblk, kafs_blkcnt_t snapshot_raw,
+                                              kafs_blkcnt_t old_blo, const void *buf,
+                                              kafs_blksize_t bs, uint32_t sweep_cap,
+                                              uint32_t block_budget,
+                                              uint32_t *scanned_blocks_this_step,
+                                              kafs_bg_dedup_sweep_state_t *sweep_state)
+{
+  kafs_blkcnt_t match_blo = KAFS_BLO_NONE;
+  int mrc = kafs_hrl_match_inc_by_block_excluding_blo(ctx, buf, old_blo, &match_blo);
+  if (mrc == 0 && match_blo != KAFS_BLO_NONE)
+  {
+    if (kafs_bg_dedup_try_install(ctx, ino, iblk, snapshot_raw, match_blo))
+    {
+      __atomic_add_fetch(&ctx->c_stat_bg_dedup_replacements, 1u, __ATOMIC_RELAXED);
+      (void)kafs_inode_release_hrl_ref(ctx, old_blo);
+      __atomic_add_fetch(&ctx->c_stat_pending_old_block_freed, 1u, __ATOMIC_RELAXED);
+      return 2;
+    }
+    (void)kafs_inode_release_hrl_ref(ctx, match_blo);
+  }
+
+  uint64_t fast = kafs_bg_hash64(buf, bs);
+  kafs_blkcnt_t dup_direct = kafs_bg_sweep_find_dup_blo(
+      ctx, fast, old_blo, buf, sweep_state->bucket_heads, sweep_state->entry_fast,
+      sweep_state->entry_blo, sweep_state->entry_next);
+  if (dup_direct == KAFS_BLO_NONE)
+    dup_direct = kafs_bg_recent_find_dup_blo(ctx, fast, old_blo, buf);
+  if (dup_direct == KAFS_BLO_NONE)
+    dup_direct = kafs_bg_index_find_dup_blo(ctx, fast, old_blo, buf);
+  kafs_bg_sweep_note(fast, old_blo, sweep_cap, &sweep_state->entry_count, sweep_state->bucket_heads,
+                     sweep_state->entry_fast, sweep_state->entry_blo, sweep_state->entry_next);
+  kafs_bg_recent_note(ctx, fast, old_blo);
+  kafs_bg_index_note(ctx, fast, old_blo);
+  if (dup_direct == KAFS_BLO_NONE)
+  {
+    if (*scanned_blocks_this_step >= block_budget)
+      return 2;
+    return 1;
+  }
+
+  __atomic_add_fetch(&ctx->c_stat_bg_dedup_direct_hits, 1u, __ATOMIC_RELAXED);
+
+  kafs_hrid_t hrid = 0;
+  int is_new = 0;
+  kafs_blkcnt_t final_blo = KAFS_BLO_NONE;
+  int prc = kafs_hrl_put(ctx, buf, &hrid, &is_new, &final_blo);
+  if (prc == -ENOSPC)
+  {
+    kafs_blkcnt_t evicted_blo = KAFS_BLO_NONE;
+    if (kafs_hrl_evict_ref1_to_direct(ctx, &evicted_blo) == 0)
+    {
+      __atomic_add_fetch(&ctx->c_stat_bg_dedup_evicts, 1u, __ATOMIC_RELAXED);
+      __atomic_add_fetch(&ctx->c_stat_bg_dedup_retries, 1u, __ATOMIC_RELAXED);
+      prc = kafs_hrl_put(ctx, buf, &hrid, &is_new, &final_blo);
+    }
+  }
+
+  if (prc == 0 && final_blo != KAFS_BLO_NONE && final_blo != old_blo)
+  {
+    if (kafs_bg_dedup_try_install(ctx, ino, iblk, snapshot_raw, final_blo))
+    {
+      __atomic_add_fetch(&ctx->c_stat_bg_dedup_replacements, 1u, __ATOMIC_RELAXED);
+      (void)kafs_inode_release_hrl_ref(ctx, old_blo);
+      __atomic_add_fetch(&ctx->c_stat_pending_old_block_freed, 1u, __ATOMIC_RELAXED);
+      return 2;
+    }
+    (void)kafs_inode_release_hrl_ref(ctx, final_blo);
+  }
+
+  if (*scanned_blocks_this_step >= block_budget)
+    return 2;
+  return 1;
+}
+
 static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
 {
   if (!ctx || !ctx->c_superblock)
@@ -1701,13 +1835,8 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
   uint32_t sweep_cap =
       pressure_mode ? KAFS_BG_DEDUP_SWEEP_IDX_CAP_PRESSURE : KAFS_BG_DEDUP_SWEEP_IDX_CAP_DEFAULT;
   uint32_t scanned_blocks_this_step = 0;
-  uint32_t sweep_bucket_heads[KAFS_BG_DEDUP_SWEEP_BUCKETS];
-  uint64_t sweep_entry_fast[KAFS_BG_DEDUP_SWEEP_IDX_CAP_PRESSURE];
-  uint32_t sweep_entry_blo[KAFS_BG_DEDUP_SWEEP_IDX_CAP_PRESSURE];
-  uint32_t sweep_entry_next[KAFS_BG_DEDUP_SWEEP_IDX_CAP_PRESSURE];
-  uint32_t sweep_entry_count = 0;
-  for (uint32_t i = 0; i < KAFS_BG_DEDUP_SWEEP_BUCKETS; ++i)
-    sweep_bucket_heads[i] = UINT32_MAX;
+  kafs_bg_dedup_sweep_state_t sweep_state;
+  kafs_bg_dedup_sweep_state_init(&sweep_state);
 
   for (kafs_inocnt_t scanned = 0; scanned < inocnt; ++scanned)
   {
@@ -1716,54 +1845,12 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
     kafs_inode_lock(ctx, ino);
     inode_locked = 1;
     kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
-    if (!kafs_ino_get_usage(inoent))
+    kafs_iblkcnt_t iblocnt = 0;
+    uint32_t direct_cnt = 0;
+    if (!kafs_bg_dedup_prepare_inode_scan(ctx, inoent, scanned, inocnt, pressure_mode, bs,
+                                          scan_window, &iblocnt, &direct_cnt))
     {
-      kafs_inode_unlock(ctx, ino);
       inode_locked = 0;
-      if (scanned == 0)
-      {
-        if (kafs_bg_advance_cursor(ctx, inocnt, 0))
-          kafs_bg_enter_cooldown(ctx, pressure_mode);
-      }
-      continue;
-    }
-
-    if (S_ISDIR(kafs_ino_mode_get(inoent)))
-    {
-      kafs_inode_unlock(ctx, ino);
-      inode_locked = 0;
-      if (scanned == 0)
-      {
-        if (kafs_bg_advance_cursor(ctx, inocnt, 0))
-          kafs_bg_enter_cooldown(ctx, pressure_mode);
-      }
-      continue;
-    }
-
-    kafs_off_t size = kafs_ino_size_get(inoent);
-    if (size <= KAFS_INODE_DIRECT_BYTES)
-    {
-      kafs_inode_unlock(ctx, ino);
-      inode_locked = 0;
-      if (scanned == 0)
-      {
-        if (kafs_bg_advance_cursor(ctx, inocnt, 0))
-          kafs_bg_enter_cooldown(ctx, pressure_mode);
-      }
-      continue;
-    }
-
-    kafs_iblkcnt_t iblocnt = (kafs_iblkcnt_t)((size + bs - 1) / bs);
-    uint32_t direct_cnt = (iblocnt < scan_window) ? (uint32_t)iblocnt : scan_window;
-    if (direct_cnt == 0)
-    {
-      kafs_inode_unlock(ctx, ino);
-      inode_locked = 0;
-      if (scanned == 0)
-      {
-        if (kafs_bg_advance_cursor(ctx, inocnt, 0))
-          kafs_bg_enter_cooldown(ctx, pressure_mode);
-      }
       continue;
     }
 
@@ -1789,87 +1876,25 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
       __atomic_add_fetch(&ctx->c_stat_bg_dedup_scanned_blocks, 1u, __ATOMIC_RELAXED);
       scanned_blocks_this_step++;
 
-      if (kafs_bg_advance_cursor(ctx, inocnt, next_iblk))
-        kafs_bg_enter_cooldown(ctx, pressure_mode);
+      kafs_bg_dedup_advance_or_cooldown(ctx, inocnt, next_iblk, pressure_mode);
 
       kafs_blkcnt_t snapshot_raw = raw;
       kafs_inode_unlock(ctx, ino);
       inode_locked = 0;
 
-      kafs_blkcnt_t match_blo = KAFS_BLO_NONE;
-      int mrc = kafs_hrl_match_inc_by_block_excluding_blo(ctx, buf, old_blo, &match_blo);
-      if (mrc == 0 && match_blo != KAFS_BLO_NONE)
-      {
-        if (kafs_bg_dedup_try_install(ctx, ino, (kafs_iblkcnt_t)iblk, snapshot_raw, match_blo))
-        {
-          __atomic_add_fetch(&ctx->c_stat_bg_dedup_replacements, 1u, __ATOMIC_RELAXED);
-          (void)kafs_inode_release_hrl_ref(ctx, old_blo);
-          __atomic_add_fetch(&ctx->c_stat_pending_old_block_freed, 1u, __ATOMIC_RELAXED);
-          return;
-        }
-        (void)kafs_inode_release_hrl_ref(ctx, match_blo);
-      }
-
-      uint64_t fast = kafs_bg_hash64(buf, bs);
-      kafs_blkcnt_t dup_direct =
-          kafs_bg_sweep_find_dup_blo(ctx, fast, old_blo, buf, sweep_bucket_heads, sweep_entry_fast,
-                                     sweep_entry_blo, sweep_entry_next);
-      if (dup_direct == KAFS_BLO_NONE)
-        dup_direct = kafs_bg_recent_find_dup_blo(ctx, fast, old_blo, buf);
-      if (dup_direct == KAFS_BLO_NONE)
-        dup_direct = kafs_bg_index_find_dup_blo(ctx, fast, old_blo, buf);
-      kafs_bg_sweep_note(fast, old_blo, sweep_cap, &sweep_entry_count, sweep_bucket_heads,
-                         sweep_entry_fast, sweep_entry_blo, sweep_entry_next);
-      kafs_bg_recent_note(ctx, fast, old_blo);
-      kafs_bg_index_note(ctx, fast, old_blo);
-      if (dup_direct == KAFS_BLO_NONE)
-      {
-        if (scanned_blocks_this_step >= block_budget)
-          return;
-        break;
-      }
-
-      __atomic_add_fetch(&ctx->c_stat_bg_dedup_direct_hits, 1u, __ATOMIC_RELAXED);
-
-      kafs_hrid_t hrid = 0;
-      int is_new = 0;
-      kafs_blkcnt_t final_blo = KAFS_BLO_NONE;
-      int prc = kafs_hrl_put(ctx, buf, &hrid, &is_new, &final_blo);
-      if (prc == -ENOSPC)
-      {
-        kafs_blkcnt_t evicted_blo = KAFS_BLO_NONE;
-        if (kafs_hrl_evict_ref1_to_direct(ctx, &evicted_blo) == 0)
-        {
-          __atomic_add_fetch(&ctx->c_stat_bg_dedup_evicts, 1u, __ATOMIC_RELAXED);
-          __atomic_add_fetch(&ctx->c_stat_bg_dedup_retries, 1u, __ATOMIC_RELAXED);
-          prc = kafs_hrl_put(ctx, buf, &hrid, &is_new, &final_blo);
-        }
-      }
-
-      if (prc == 0 && final_blo != KAFS_BLO_NONE && final_blo != old_blo)
-      {
-        if (kafs_bg_dedup_try_install(ctx, ino, (kafs_iblkcnt_t)iblk, snapshot_raw, final_blo))
-        {
-          __atomic_add_fetch(&ctx->c_stat_bg_dedup_replacements, 1u, __ATOMIC_RELAXED);
-          (void)kafs_inode_release_hrl_ref(ctx, old_blo);
-          __atomic_add_fetch(&ctx->c_stat_pending_old_block_freed, 1u, __ATOMIC_RELAXED);
-          return;
-        }
-        (void)kafs_inode_release_hrl_ref(ctx, final_blo);
-      }
-
-      if (scanned_blocks_this_step >= block_budget)
+      int action = kafs_bg_dedup_handle_scanned_block(ctx, ino, (kafs_iblkcnt_t)iblk, snapshot_raw,
+                                                      old_blo, buf, bs, sweep_cap, block_budget,
+                                                      &scanned_blocks_this_step, &sweep_state);
+      if (action == 2)
         return;
-      break;
+      if (action == 1)
+        break;
     }
 
     if (inode_locked)
       kafs_inode_unlock(ctx, ino);
     if (scanned == 0)
-    {
-      if (kafs_bg_advance_cursor(ctx, inocnt, 0))
-        kafs_bg_enter_cooldown(ctx, pressure_mode);
-    }
+      kafs_bg_dedup_advance_or_cooldown(ctx, inocnt, 0, pressure_mode);
   }
 }
 
