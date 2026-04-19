@@ -3475,112 +3475,93 @@ static int kafs_ino_iblk_write_legacy(struct kafs_context *ctx, kafs_sinode_t *i
   return KAFS_SUCCESS;
 }
 
-/// @brief inode毎のデータを書き込む（ブロック単位）
-/// @param ctx コンテキスト
-/// @param inoent inode テーブルエントリ
-/// @param iblo ブロック番号
-/// @param buf バッファ
-/// @return 0: 成功, < 0: 失敗 (-errno)
-static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_iblkcnt_t iblo,
-                               const void *buf)
+static int kafs_ino_iblk_write_pending(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                       kafs_iblkcnt_t iblo, const void *buf, uint32_t *warned_state)
 {
-  static uint32_t s_pendinglog_full_warned = 0;
-#define KAFS_IBWRITE_TRY(_expr)                                                                    \
-  do                                                                                               \
-  {                                                                                                \
-    int _rc = (_expr);                                                                             \
-    if (_rc < 0)                                                                                   \
-      return _rc;                                                                                  \
-  } while (0)
-  kafs_dlog(3, "%s(ino = %d, iblo = %" PRIuFAST32 ")\n", __func__, kafs_ctx_ino_no(ctx, inoent),
-            iblo);
-  assert(ctx != NULL);
-  assert(buf != NULL);
-  assert(inoent != NULL);
-  assert(kafs_ino_get_usage(inoent));
-  // Directory metadata is frequently rewritten and can cross the inline/block-backed boundary.
-  // Keep that path synchronous so shrink-to-inline and unlink do not race with pendinglog writes.
-  if (ctx->c_pendinglog_enabled && ctx->c_pending_worker_running &&
-      !S_ISDIR(kafs_ino_mode_get(inoent)))
+  kafs_blkcnt_t temp_blo = KAFS_BLO_NONE;
+  int rc = kafs_blk_alloc(ctx, &temp_blo);
+  if (rc < 0)
+    return rc;
+
+  uint64_t t_lw0 = kafs_now_ns();
+  rc = kafs_blk_write(ctx, temp_blo, buf);
+  uint64_t t_lw1 = kafs_now_ns();
+  __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_legacy_blk_write, t_lw1 - t_lw0, __ATOMIC_RELAXED);
+  if (rc < 0)
+    return rc;
+
+  uint32_t ino_idx = (uint32_t)kafs_ctx_ino_no(ctx, inoent);
+  kafs_blkcnt_t old_raw = KAFS_BLO_NONE;
+  kafs_blkcnt_t old_blo = KAFS_BLO_NONE;
+  uint32_t ino_epoch = kafs_inode_epoch_get(ctx, ino_idx);
+  rc = kafs_ino_ibrk_run(ctx, inoent, iblo, &old_raw, KAFS_IBLKREF_FUNC_GET_RAW);
+  if (rc < 0)
+    return rc;
+  if (!kafs_ref_is_pending(old_raw))
   {
-    kafs_blkcnt_t temp_blo = KAFS_BLO_NONE;
-    KAFS_IBWRITE_TRY(kafs_blk_alloc(ctx, &temp_blo));
-    uint64_t t_lw0 = kafs_now_ns();
-    KAFS_IBWRITE_TRY(kafs_blk_write(ctx, temp_blo, buf));
-    uint64_t t_lw1 = kafs_now_ns();
-    __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_legacy_blk_write, t_lw1 - t_lw0,
-                       __ATOMIC_RELAXED);
-
-    uint32_t ino_idx = (uint32_t)kafs_ctx_ino_no(ctx, inoent);
-    kafs_blkcnt_t old_raw = KAFS_BLO_NONE;
-    kafs_blkcnt_t old_blo = KAFS_BLO_NONE;
-    uint32_t ino_epoch = kafs_inode_epoch_get(ctx, ino_idx);
-    KAFS_IBWRITE_TRY(kafs_ino_ibrk_run(ctx, inoent, iblo, &old_raw, KAFS_IBLKREF_FUNC_GET_RAW));
-    if (!kafs_ref_is_pending(old_raw))
-      KAFS_IBWRITE_TRY(kafs_ref_resolve_data_blo(ctx, old_raw, &old_blo));
-
-    kafs_pendinglog_entry_t ent = {0};
-    ent.ino = ino_idx;
-    ent.iblk = (uint32_t)iblo;
-    ent.ino_epoch = ino_epoch;
-    ent.temp_blo = (uint32_t)temp_blo;
-    ent.state = KAFS_PENDING_QUEUED;
-    ent.target_hrid = (uint32_t)old_blo;
-    ent.seq = kafs_now_realtime_ns();
-
-    uint64_t pending_id = 0;
-    if (ctx->c_pending_worker_lock_init)
-      pthread_mutex_lock(&ctx->c_pending_worker_lock);
-    int qrc = kafs_pendinglog_enqueue(ctx, &ent, &pending_id);
-    if (ctx->c_pending_worker_lock_init)
-    {
-      kafs_pending_worker_adjust_priority_locked(ctx);
-      pthread_mutex_unlock(&ctx->c_pending_worker_lock);
-    }
-    if (qrc < 0)
-    {
-      (void)kafs_inode_release_hrl_ref(ctx, temp_blo);
-      if (qrc != -ENOSPC)
-        return qrc;
-
-      uint32_t c = __atomic_fetch_add(&s_pendinglog_full_warned, 1u, __ATOMIC_RELAXED);
-      if (c < 8u)
-      {
-        kafs_log(KAFS_LOG_WARNING,
-                 "%s: pendinglog full (ino=%" PRIu32 ", iblk=%" PRIu32
-                 "), fallback to sync write\n",
-                 __func__, ino_idx, (uint32_t)iblo);
-      }
-
-      return kafs_ino_iblk_write_legacy(ctx, inoent, iblo, buf, 1);
-    }
-
-    if (qrc == 0)
-    {
-      kafs_blkcnt_t pref = KAFS_BLO_NONE;
-      KAFS_IBWRITE_TRY(kafs_ref_pending_encode(pending_id, &pref));
-      kafs_diag_log_dir_iblk_write("iblk_write_pending", ctx, inoent, iblo, old_raw, pref, buf,
-                                   kafs_sb_blksize_get(ctx->c_superblock));
-      KAFS_IBWRITE_TRY(kafs_ino_ibrk_run(ctx, inoent, iblo, &pref, KAFS_IBLKREF_FUNC_SET));
-
-      kafs_pending_worker_notify(ctx);
-      return KAFS_SUCCESS;
-    }
+    rc = kafs_ref_resolve_data_blo(ctx, old_raw, &old_blo);
+    if (rc < 0)
+      return rc;
   }
 
-  if (S_ISDIR(kafs_ino_mode_get(inoent)))
-    return kafs_ino_iblk_write_legacy(ctx, inoent, iblo, buf, 0);
+  kafs_pendinglog_entry_t ent = {0};
+  ent.ino = ino_idx;
+  ent.iblk = (uint32_t)iblo;
+  ent.ino_epoch = ino_epoch;
+  ent.temp_blo = (uint32_t)temp_blo;
+  ent.state = KAFS_PENDING_QUEUED;
+  ent.target_hrid = (uint32_t)old_blo;
+  ent.seq = kafs_now_realtime_ns();
 
-  // ゼロ/非ゼロを区別せず、常に通常のデータ書き込み経路を使う。
-  // Lock order policy requires hrl_global before inode. To avoid taking a lower-rank
-  // HRL lock while holding the inode lock, acquire the HRL ref outside the inode lock,
-  // then revalidate the target block mapping before committing the new reference.
+  uint64_t pending_id = 0;
+  if (ctx->c_pending_worker_lock_init)
+    pthread_mutex_lock(&ctx->c_pending_worker_lock);
+  int qrc = kafs_pendinglog_enqueue(ctx, &ent, &pending_id);
+  if (ctx->c_pending_worker_lock_init)
+  {
+    kafs_pending_worker_adjust_priority_locked(ctx);
+    pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+  }
+  if (qrc < 0)
+  {
+    (void)kafs_inode_release_hrl_ref(ctx, temp_blo);
+    if (qrc != -ENOSPC)
+      return qrc;
+
+    uint32_t c = __atomic_fetch_add(warned_state, 1u, __ATOMIC_RELAXED);
+    if (c < 8u)
+    {
+      kafs_log(KAFS_LOG_WARNING,
+               "%s: pendinglog full (ino=%" PRIu32 ", iblk=%" PRIu32 "), fallback to sync write\n",
+               __func__, ino_idx, (uint32_t)iblo);
+    }
+    return 1;
+  }
+
+  kafs_blkcnt_t pref = KAFS_BLO_NONE;
+  rc = kafs_ref_pending_encode(pending_id, &pref);
+  if (rc < 0)
+    return rc;
+  kafs_diag_log_dir_iblk_write("iblk_write_pending", ctx, inoent, iblo, old_raw, pref, buf,
+                               kafs_sb_blksize_get(ctx->c_superblock));
+  rc = kafs_ino_ibrk_run(ctx, inoent, iblo, &pref, KAFS_IBLKREF_FUNC_SET);
+  if (rc < 0)
+    return rc;
+
+  kafs_pending_worker_notify(ctx);
+  return 0;
+}
+
+static int kafs_ino_iblk_write_hrl_retry(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                         kafs_iblkcnt_t iblo, const void *buf)
+{
   uint32_t ino_idx = (uint32_t)kafs_ctx_ino_no(ctx, inoent);
   for (unsigned retry = 0; retry < 8; ++retry)
   {
     kafs_blkcnt_t expected_old_blo = KAFS_BLO_NONE;
-    KAFS_IBWRITE_TRY(
-        kafs_ino_ibrk_run(ctx, inoent, iblo, &expected_old_blo, KAFS_IBLKREF_FUNC_GET));
+    int rc = kafs_ino_ibrk_run(ctx, inoent, iblo, &expected_old_blo, KAFS_IBLKREF_FUNC_GET);
+    if (rc < 0)
+      return rc;
 
     kafs_inode_unlock(ctx, ino_idx);
 
@@ -3591,7 +3572,7 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
 
     ctx->c_stat_hrl_put_calls++;
     uint64_t t_hrl0 = kafs_now_ns();
-    int rc = kafs_hrl_put(ctx, buf, &hrid, &is_new, &candidate_blo);
+    rc = kafs_hrl_put(ctx, buf, &hrid, &is_new, &candidate_blo);
     uint64_t t_hrl1 = kafs_now_ns();
     __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_hrl_put, t_hrl1 - t_hrl0, __ATOMIC_RELAXED);
     if (rc == 0)
@@ -3613,7 +3594,9 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
     kafs_inode_lock(ctx, ino_idx);
 
     kafs_blkcnt_t current_old_blo = KAFS_BLO_NONE;
-    KAFS_IBWRITE_TRY(kafs_ino_ibrk_run(ctx, inoent, iblo, &current_old_blo, KAFS_IBLKREF_FUNC_GET));
+    rc = kafs_ino_ibrk_run(ctx, inoent, iblo, &current_old_blo, KAFS_IBLKREF_FUNC_GET);
+    if (rc < 0)
+      return rc;
     if (current_old_blo != expected_old_blo)
     {
       if (rc == 0 && candidate_blo != KAFS_BLO_NONE)
@@ -3634,7 +3617,9 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
       kafs_diag_log_dir_iblk_write(candidate_kind == 2 ? "iblk_write_rescue" : "iblk_write_hrl",
                                    ctx, inoent, iblo, current_old_blo, candidate_blo, buf,
                                    kafs_sb_blksize_get(ctx->c_superblock));
-      KAFS_IBWRITE_TRY(kafs_ino_ibrk_run(ctx, inoent, iblo, &candidate_blo, KAFS_IBLKREF_FUNC_SET));
+      rc = kafs_ino_ibrk_run(ctx, inoent, iblo, &candidate_blo, KAFS_IBLKREF_FUNC_SET);
+      if (rc < 0)
+        return rc;
       if (current_old_blo != KAFS_BLO_NONE && current_old_blo != candidate_blo)
       {
         kafs_inode_unlock(ctx, ino_idx);
@@ -3644,16 +3629,58 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
         __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
         kafs_inode_lock(ctx, ino_idx);
       }
-      return KAFS_SUCCESS;
+      return 0;
     }
 
     break;
   }
 
-  // HRL 失敗時: レガシー経路
   ctx->c_stat_hrl_put_fallback_legacy++;
+  return 1;
+}
+
+/// @brief inode毎のデータを書き込む（ブロック単位）
+/// @param ctx コンテキスト
+/// @param inoent inode テーブルエントリ
+/// @param iblo ブロック番号
+/// @param buf バッファ
+/// @return 0: 成功, < 0: 失敗 (-errno)
+static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_iblkcnt_t iblo,
+                               const void *buf)
+{
+  static uint32_t s_pendinglog_full_warned = 0;
+  kafs_dlog(3, "%s(ino = %d, iblo = %" PRIuFAST32 ")\n", __func__, kafs_ctx_ino_no(ctx, inoent),
+            iblo);
+  assert(ctx != NULL);
+  assert(buf != NULL);
+  assert(inoent != NULL);
+  assert(kafs_ino_get_usage(inoent));
+  // Directory metadata is frequently rewritten and can cross the inline/block-backed boundary.
+  // Keep that path synchronous so shrink-to-inline and unlink do not race with pendinglog writes.
+  if (ctx->c_pendinglog_enabled && ctx->c_pending_worker_running &&
+      !S_ISDIR(kafs_ino_mode_get(inoent)))
+  {
+    int prc = kafs_ino_iblk_write_pending(ctx, inoent, iblo, buf, &s_pendinglog_full_warned);
+    if (prc < 0)
+      return prc;
+    if (prc == 0)
+      return KAFS_SUCCESS;
+    return kafs_ino_iblk_write_legacy(ctx, inoent, iblo, buf, 1);
+  }
+
+  if (S_ISDIR(kafs_ino_mode_get(inoent)))
+    return kafs_ino_iblk_write_legacy(ctx, inoent, iblo, buf, 0);
+
+  // ゼロ/非ゼロを区別せず、常に通常のデータ書き込み経路を使う。
+  // Lock order policy requires hrl_global before inode. To avoid taking a lower-rank
+  // HRL lock while holding the inode lock, acquire the HRL ref outside the inode lock,
+  // then revalidate the target block mapping before committing the new reference.
+  int hrc = kafs_ino_iblk_write_hrl_retry(ctx, inoent, iblo, buf);
+  if (hrc < 0)
+    return hrc;
+  if (hrc == 0)
+    return KAFS_SUCCESS;
   return kafs_ino_iblk_write_legacy(ctx, inoent, iblo, buf, 1);
-#undef KAFS_IBWRITE_TRY
 }
 
 __attribute_maybe_unused__ static int
