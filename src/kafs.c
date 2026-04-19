@@ -5834,6 +5834,57 @@ static int kafs_dirent_add(struct kafs_context *ctx, kafs_sinode_t *inoent_dir, 
   return rc;
 }
 
+static int kafs_dirent_remove_prepare_snapshot(struct kafs_context *ctx, kafs_sinode_t *inoent_dir,
+                                               const char *filename,
+                                               kafs_filenamelen_t *filenamelen, char **old,
+                                               size_t *old_len, kafs_dir_snapshot_meta_t *meta,
+                                               uint32_t *target_hash)
+{
+  if (!S_ISDIR(kafs_ino_mode_get(inoent_dir)))
+    return -ENOTDIR;
+
+  *filenamelen = (kafs_filenamelen_t)strlen(filename);
+  if (*filenamelen == 0 || *filenamelen >= FILENAME_MAX)
+    return -EINVAL;
+
+  int rc = kafs_dir_snapshot(ctx, inoent_dir, old, old_len);
+  if (rc < 0)
+    return rc;
+
+  __atomic_add_fetch(&ctx->c_stat_dir_snapshot_meta_load_calls, 1u, __ATOMIC_RELAXED);
+  rc = kafs_dir_snapshot_meta_load(*old, *old_len, meta);
+  if (rc < 0)
+  {
+    free(*old);
+    *old = NULL;
+    return rc;
+  }
+
+  *target_hash = kafs_dirent_name_hash(filename, *filenamelen);
+  return 0;
+}
+
+static int kafs_dirent_remove_mark_tombstone(struct kafs_context *ctx, kafs_sinode_t *inoent_dir,
+                                             const kafs_dir_snapshot_meta_t *meta,
+                                             const kafs_dirent_view_t *view, kafs_inocnt_t *out_ino)
+{
+  kafs_sdir_v4_hdr_t hdr = meta->hdr;
+  uint32_t live_count = kafs_dir_v4_hdr_live_count_get(&hdr);
+  uint32_t tombstone_count = kafs_dir_v4_hdr_tombstone_count_get(&hdr);
+  int rc = kafs_dir_v4_write_record_head(ctx, inoent_dir, view->record_off,
+                                         (uint16_t)view->record_len, KAFS_DIRENT_FLAG_TOMBSTONE,
+                                         view->ino, view->name_len, view->name_hash);
+  if (rc == 0)
+  {
+    kafs_dir_v4_hdr_live_count_set(&hdr, live_count - 1u);
+    kafs_dir_v4_hdr_tombstone_count_set(&hdr, tombstone_count + 1u);
+    rc = kafs_dir_v4_write_header(ctx, inoent_dir, &hdr);
+  }
+  if (rc == 0 && out_ino)
+    *out_ino = view->ino;
+  return rc;
+}
+
 // NOTE: caller holds dir inode lock.
 static int kafs_dirent_remove_nolink(struct kafs_context *ctx, kafs_sinode_t *inoent_dir,
                                      const char *filename, kafs_inocnt_t *out_ino)
@@ -5843,29 +5894,16 @@ static int kafs_dirent_remove_nolink(struct kafs_context *ctx, kafs_sinode_t *in
   assert(filename != NULL);
   if (out_ino)
     *out_ino = KAFS_INO_NONE;
-  if (!S_ISDIR(kafs_ino_mode_get(inoent_dir)))
-    return -ENOTDIR;
 
-  kafs_filenamelen_t filenamelen = (kafs_filenamelen_t)strlen(filename);
-  if (filenamelen == 0 || filenamelen >= FILENAME_MAX)
-    return -EINVAL;
-
+  kafs_filenamelen_t filenamelen;
   char *old = NULL;
   size_t old_len = 0;
-  int rc = kafs_dir_snapshot(ctx, inoent_dir, &old, &old_len);
-  if (rc < 0)
-    return rc;
-
   kafs_dir_snapshot_meta_t meta;
-  __atomic_add_fetch(&ctx->c_stat_dir_snapshot_meta_load_calls, 1u, __ATOMIC_RELAXED);
-  rc = kafs_dir_snapshot_meta_load(old, old_len, &meta);
+  uint32_t target_hash;
+  int rc = kafs_dirent_remove_prepare_snapshot(ctx, inoent_dir, filename, &filenamelen, &old,
+                                               &old_len, &meta, &target_hash);
   if (rc < 0)
-  {
-    free(old);
     return rc;
-  }
-
-  uint32_t target_hash = kafs_dirent_name_hash(filename, filenamelen);
 
   size_t off = 0;
   while (1)
@@ -5883,20 +5921,7 @@ static int kafs_dirent_remove_nolink(struct kafs_context *ctx, kafs_sinode_t *in
     if ((view.flags & KAFS_DIRENT_FLAG_TOMBSTONE) == 0 && view.name_hash == target_hash &&
         view.name_len == filenamelen && memcmp(view.name, filename, filenamelen) == 0)
     {
-      kafs_sdir_v4_hdr_t hdr = meta.hdr;
-      uint32_t live_count = kafs_dir_v4_hdr_live_count_get(&hdr);
-      uint32_t tombstone_count = kafs_dir_v4_hdr_tombstone_count_get(&hdr);
-      rc = kafs_dir_v4_write_record_head(ctx, inoent_dir, view.record_off,
-                                         (uint16_t)view.record_len, KAFS_DIRENT_FLAG_TOMBSTONE,
-                                         view.ino, view.name_len, view.name_hash);
-      if (rc == 0)
-      {
-        kafs_dir_v4_hdr_live_count_set(&hdr, live_count - 1u);
-        kafs_dir_v4_hdr_tombstone_count_set(&hdr, tombstone_count + 1u);
-        rc = kafs_dir_v4_write_header(ctx, inoent_dir, &hdr);
-      }
-      if (rc == 0 && out_ino)
-        *out_ino = view.ino;
+      rc = kafs_dirent_remove_mark_tombstone(ctx, inoent_dir, &meta, &view, out_ino);
       free(old);
       return rc;
     }
