@@ -4568,6 +4568,162 @@ static int kafs_pwrite_commit_block(struct kafs_context *ctx, kafs_sinode_t *ino
   return kafs_ino_iblk_write(ctx, inoent, iblo, buf);
 }
 
+static void kafs_pwrite_record_write_latency(struct kafs_context *ctx, uint64_t t_w0, uint64_t t_w1)
+{
+  uint64_t d = t_w1 - t_w0;
+  __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_write, d, __ATOMIC_RELAXED);
+  kafs_stat_record_pwrite_iblk_write_latency(ctx, d);
+}
+
+static int kafs_pwrite_commit_block_timed(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                          kafs_iblkcnt_t iblo, const void *buf)
+{
+  uint64_t t_w0 = kafs_now_ns();
+  int rc = kafs_pwrite_commit_block(ctx, inoent, iblo, buf);
+  uint64_t t_w1 = kafs_now_ns();
+  kafs_pwrite_record_write_latency(ctx, t_w0, t_w1);
+  return rc;
+}
+
+static int kafs_pwrite_read_block_timed(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                        kafs_iblkcnt_t iblo, void *buf)
+{
+  uint64_t t_r0 = kafs_now_ns();
+  int rc = kafs_ino_iblk_read_or_zero(ctx, inoent, iblo, buf);
+  uint64_t t_r1 = kafs_now_ns();
+  __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_read, t_r1 - t_r0, __ATOMIC_RELAXED);
+  return rc;
+}
+
+static int kafs_pwrite_try_tail_only_store(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                           const void *buf, kafs_off_t size, kafs_off_t offset,
+                                           kafs_off_t filesize_new)
+{
+  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+  char smallbuf[blksize];
+  int rc = kafs_tailmeta_load_small_file_bytes(ctx, inoent, smallbuf, filesize_new);
+  if (rc < 0)
+    return rc;
+  memcpy(smallbuf + offset, buf, (size_t)size);
+  return kafs_tailmeta_store_tail_only(ctx, inoent, smallbuf, filesize_new);
+}
+
+static int kafs_pwrite_prepare_tail_layout(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                           const void *buf, kafs_off_t size, kafs_off_t offset,
+                                           kafs_off_t filesize, kafs_off_t filesize_new,
+                                           int *completed_out)
+{
+  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+  const kafs_sinode_taildesc_v5_t *taildesc = kafs_ctx_inode_taildesc_v5_const(ctx, inoent);
+
+  *completed_out = 0;
+  if (taildesc &&
+      kafs_ino_taildesc_v5_layout_kind_get(taildesc) == KAFS_TAIL_LAYOUT_MIXED_FULL_TAIL)
+  {
+    int rc = kafs_tailmeta_materialize_mixed_to_full_block(ctx, inoent);
+    if (rc < 0)
+      return rc;
+    taildesc = kafs_ctx_inode_taildesc_v5_const(ctx, inoent);
+  }
+
+  if (taildesc && kafs_ino_taildesc_v5_layout_kind_get(taildesc) == KAFS_TAIL_LAYOUT_TAIL_ONLY)
+  {
+    if (filesize_new < (kafs_off_t)blksize)
+    {
+      int rc = kafs_pwrite_try_tail_only_store(ctx, inoent, buf, size, offset, filesize_new);
+      if (rc < 0)
+        return rc;
+      *completed_out = 1;
+      return 0;
+    }
+
+    int rc = kafs_tailmeta_promote_tail_only_to_full_block(ctx, inoent);
+    if (rc < 0)
+      return rc;
+  }
+
+  if (kafs_tailmeta_inode_is_regular_v5(ctx, inoent) &&
+      filesize_new > (kafs_off_t)KAFS_INODE_DIRECT_BYTES && filesize_new < (kafs_off_t)blksize &&
+      filesize <= (kafs_off_t)KAFS_INODE_DIRECT_BYTES)
+  {
+    int rc = kafs_pwrite_try_tail_only_store(ctx, inoent, buf, size, offset, filesize_new);
+    if (rc < 0)
+      return rc;
+    *completed_out = 1;
+  }
+  return 0;
+}
+
+static int kafs_pwrite_extend_inode_size(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                         kafs_off_t *filesize, kafs_off_t filesize_new)
+{
+  if (*filesize >= filesize_new)
+    return 0;
+
+  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+  kafs_ino_size_set(inoent, filesize_new);
+  if (*filesize != 0 && *filesize <= KAFS_INODE_DIRECT_BYTES &&
+      filesize_new > KAFS_INODE_DIRECT_BYTES)
+  {
+    char wbuf[blksize];
+    memset(wbuf, 0, blksize);
+    memcpy(wbuf, inoent->i_blkreftbl, *filesize);
+    memset(inoent->i_blkreftbl, 0, sizeof(inoent->i_blkreftbl));
+    int rc = kafs_ino_iblk_write(ctx, inoent, 0, wbuf);
+    if (rc < 0)
+      return rc;
+  }
+
+  *filesize = filesize_new;
+  return 0;
+}
+
+static void kafs_pwrite_sync_regular_taildesc(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                              kafs_off_t filesize)
+{
+  if (!kafs_tailmeta_inode_is_regular_v5(ctx, inoent))
+    return;
+  if (filesize <= (kafs_off_t)KAFS_INODE_DIRECT_BYTES)
+    kafs_tailmeta_inode_taildesc_set_inline(ctx, inoent);
+  else
+    kafs_tailmeta_inode_taildesc_set_full_block(ctx, inoent);
+}
+
+static int kafs_pwrite_write_head_fragment(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                           const char *buf, kafs_off_t size, kafs_off_t offset,
+                                           size_t *size_written_out, int *completed_out)
+{
+  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
+  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+  kafs_blksize_t offset_blksize = offset & (blksize - 1);
+
+  *completed_out = 0;
+  if (offset_blksize == 0 && size - *size_written_out >= blksize)
+    return 0;
+
+  kafs_iblkcnt_t iblo = offset >> log_blksize;
+  char wbuf[blksize];
+  int rc = kafs_pwrite_read_block_timed(ctx, inoent, iblo, wbuf);
+  if (rc < 0)
+    return rc;
+  if (size < blksize - offset_blksize)
+  {
+    memcpy(wbuf + offset_blksize, buf, (size_t)size);
+    rc = kafs_pwrite_commit_block_timed(ctx, inoent, iblo, wbuf);
+    if (rc < 0)
+      return rc;
+    *completed_out = 1;
+    return 0;
+  }
+
+  memcpy(wbuf + offset_blksize, buf, blksize - offset_blksize);
+  rc = kafs_pwrite_commit_block_timed(ctx, inoent, iblo, wbuf);
+  if (rc < 0)
+    return rc;
+  *size_written_out += blksize - offset_blksize;
+  return 0;
+}
+
 /// @brief inode 毎にデータを読み出す
 /// @param ctx コンテキスト
 /// @param inoent inode テーブルエントリ
@@ -4597,7 +4753,7 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
   kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
   kafs_off_t filesize_new = offset + size;
-  const kafs_sinode_taildesc_v5_t *taildesc = kafs_ctx_inode_taildesc_v5_const(ctx, inoent);
+  const char *srcbuf = (const char *)buf;
 
   if (size == 0)
     return 0;
@@ -4606,61 +4762,14 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
   __atomic_add_fetch(&ctx->c_stat_pwrite_bytes, (uint64_t)size, __ATOMIC_RELAXED);
   kafs_diag_log_first_pwrite_after_create(ctx, inoent, buf, size, offset);
 
-  if (taildesc &&
-      kafs_ino_taildesc_v5_layout_kind_get(taildesc) == KAFS_TAIL_LAYOUT_MIXED_FULL_TAIL)
-  {
-    KAFS_PWRITE_TRY(kafs_tailmeta_materialize_mixed_to_full_block(ctx, inoent));
-    taildesc = kafs_ctx_inode_taildesc_v5_const(ctx, inoent);
-  }
-
-  if (taildesc && kafs_ino_taildesc_v5_layout_kind_get(taildesc) == KAFS_TAIL_LAYOUT_TAIL_ONLY)
-  {
-    if (filesize_new < (kafs_off_t)blksize)
-    {
-      char smallbuf[blksize];
-      KAFS_PWRITE_TRY(kafs_tailmeta_load_small_file_bytes(ctx, inoent, smallbuf, filesize_new));
-      memcpy(smallbuf + offset, buf, (size_t)size);
-      KAFS_PWRITE_TRY(kafs_tailmeta_store_tail_only(ctx, inoent, smallbuf, filesize_new));
-      return size;
-    }
-    KAFS_PWRITE_TRY(kafs_tailmeta_promote_tail_only_to_full_block(ctx, inoent));
-    taildesc = kafs_ctx_inode_taildesc_v5_const(ctx, inoent);
-  }
-
-  if (kafs_tailmeta_inode_is_regular_v5(ctx, inoent) &&
-      filesize_new > (kafs_off_t)KAFS_INODE_DIRECT_BYTES && filesize_new < (kafs_off_t)blksize &&
-      filesize <= (kafs_off_t)KAFS_INODE_DIRECT_BYTES)
-  {
-    char smallbuf[blksize];
-    KAFS_PWRITE_TRY(kafs_tailmeta_load_small_file_bytes(ctx, inoent, smallbuf, filesize_new));
-    memcpy(smallbuf + offset, buf, (size_t)size);
-    KAFS_PWRITE_TRY(kafs_tailmeta_store_tail_only(ctx, inoent, smallbuf, filesize_new));
+  int completed = 0;
+  KAFS_PWRITE_TRY(kafs_pwrite_prepare_tail_layout(ctx, inoent, buf, size, offset, filesize,
+                                                  filesize_new, &completed));
+  if (completed)
     return size;
-  }
 
-  if (filesize < filesize_new)
-  {
-    // サイズ拡大時
-    kafs_ino_size_set(inoent, filesize_new);
-    if (filesize != 0 && filesize <= KAFS_INODE_DIRECT_BYTES &&
-        filesize_new > KAFS_INODE_DIRECT_BYTES)
-    {
-      char wbuf[blksize];
-      memset(wbuf, 0, blksize);
-      memcpy(wbuf, inoent->i_blkreftbl, filesize);
-      memset(inoent->i_blkreftbl, 0, sizeof(inoent->i_blkreftbl));
-      KAFS_PWRITE_TRY(kafs_ino_iblk_write(ctx, inoent, 0, wbuf));
-    }
-    filesize = filesize_new;
-  }
-
-  if (kafs_tailmeta_inode_is_regular_v5(ctx, inoent))
-  {
-    if (filesize <= (kafs_off_t)KAFS_INODE_DIRECT_BYTES)
-      kafs_tailmeta_inode_taildesc_set_inline(ctx, inoent);
-    else
-      kafs_tailmeta_inode_taildesc_set_full_block(ctx, inoent);
-  }
+  KAFS_PWRITE_TRY(kafs_pwrite_extend_inode_size(ctx, inoent, &filesize, filesize_new));
+  kafs_pwrite_sync_regular_taildesc(ctx, inoent, filesize);
 
   size_t size_written = 0;
   // 60バイト以下は直接
@@ -4670,39 +4779,10 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
     return size;
   }
 
-  kafs_blksize_t offset_blksize = offset & (blksize - 1);
-  if (offset_blksize > 0 || size - size_written < blksize)
-  {
-    // 1ブロック目で端数が出る場合
-    kafs_iblkcnt_t iblo = offset >> log_blksize;
-    // 書き戻しバッファ
-    char wbuf[blksize];
-    uint64_t t_r0 = kafs_now_ns();
-    KAFS_PWRITE_TRY(kafs_ino_iblk_read_or_zero(ctx, inoent, iblo, wbuf));
-    uint64_t t_r1 = kafs_now_ns();
-    __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_read, t_r1 - t_r0, __ATOMIC_RELAXED);
-    if (size < blksize - offset_blksize)
-    {
-      // 1ブロックのみの場合
-      memcpy(wbuf + offset_blksize, buf, size);
-      uint64_t t_w0 = kafs_now_ns();
-      KAFS_PWRITE_TRY(kafs_pwrite_commit_block(ctx, inoent, iblo, wbuf));
-      uint64_t t_w1 = kafs_now_ns();
-      uint64_t d = t_w1 - t_w0;
-      __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_write, d, __ATOMIC_RELAXED);
-      kafs_stat_record_pwrite_iblk_write_latency(ctx, d);
-      goto out_success;
-    }
-    // ブロックの残り分を書き込む
-    memcpy(wbuf + offset_blksize, buf, blksize - offset_blksize);
-    uint64_t t_w0 = kafs_now_ns();
-    KAFS_PWRITE_TRY(kafs_pwrite_commit_block(ctx, inoent, iblo, wbuf));
-    uint64_t t_w1 = kafs_now_ns();
-    uint64_t d = t_w1 - t_w0;
-    __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_write, d, __ATOMIC_RELAXED);
-    kafs_stat_record_pwrite_iblk_write_latency(ctx, d);
-    size_written += blksize - offset_blksize;
-  }
+  KAFS_PWRITE_TRY(kafs_pwrite_write_head_fragment(ctx, inoent, srcbuf, size, offset, &size_written,
+                                                  &completed));
+  if (completed)
+    goto out_success;
 
   while (size_written < size)
   {
@@ -4710,25 +4790,12 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
     if (size - size_written < blksize)
     {
       char wbuf[blksize];
-      uint64_t t_r0 = kafs_now_ns();
-      KAFS_PWRITE_TRY(kafs_ino_iblk_read_or_zero(ctx, inoent, iblo, wbuf));
-      uint64_t t_r1 = kafs_now_ns();
-      __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_read, t_r1 - t_r0, __ATOMIC_RELAXED);
-      memcpy(wbuf, buf + size_written, size - size_written);
-      uint64_t t_w0 = kafs_now_ns();
-      KAFS_PWRITE_TRY(kafs_pwrite_commit_block(ctx, inoent, iblo, wbuf));
-      uint64_t t_w1 = kafs_now_ns();
-      uint64_t d = t_w1 - t_w0;
-      __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_write, d, __ATOMIC_RELAXED);
-      kafs_stat_record_pwrite_iblk_write_latency(ctx, d);
+      KAFS_PWRITE_TRY(kafs_pwrite_read_block_timed(ctx, inoent, iblo, wbuf));
+      memcpy(wbuf, srcbuf + size_written, size - size_written);
+      KAFS_PWRITE_TRY(kafs_pwrite_commit_block_timed(ctx, inoent, iblo, wbuf));
       goto out_success;
     }
-    uint64_t t_w0 = kafs_now_ns();
-    KAFS_PWRITE_TRY(kafs_pwrite_commit_block(ctx, inoent, iblo, buf + size_written));
-    uint64_t t_w1 = kafs_now_ns();
-    uint64_t d = t_w1 - t_w0;
-    __atomic_add_fetch(&ctx->c_stat_pwrite_ns_iblk_write, d, __ATOMIC_RELAXED);
-    kafs_stat_record_pwrite_iblk_write_latency(ctx, d);
+    KAFS_PWRITE_TRY(kafs_pwrite_commit_block_timed(ctx, inoent, iblo, srcbuf + size_written));
     size_written += blksize;
   }
 out_success:
