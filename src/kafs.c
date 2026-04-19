@@ -1872,6 +1872,21 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
   }
 }
 
+static void kafs_pending_worker_record_exit(kafs_context_t *ctx);
+static int kafs_pending_worker_wait_next(kafs_context_t *ctx, uint32_t *idx,
+                                         kafs_pendinglog_entry_t *ent);
+static void kafs_pending_worker_skip_terminal_entry(kafs_context_t *ctx, uint32_t idx);
+static int kafs_pending_worker_try_install_block(kafs_context_t *ctx,
+                                                 const kafs_pendinglog_entry_t *ent,
+                                                 kafs_blkcnt_t final_blo);
+static void kafs_pending_worker_finalize_success(kafs_context_t *ctx, uint32_t idx,
+                                                 const kafs_pendinglog_entry_t *ent,
+                                                 kafs_hrid_t hrid, kafs_blkcnt_t final_blo,
+                                                 int installed);
+static uint32_t kafs_pending_worker_note_retry(kafs_context_t *ctx, uint32_t idx);
+static void kafs_pending_worker_backoff(const kafs_context_t *ctx, uint32_t retry,
+                                        uint64_t entry_seq);
+
 static void *kafs_pending_worker_main(void *arg)
 {
   kafs_context_t *ctx = (kafs_context_t *)arg;
@@ -1888,48 +1903,15 @@ static void *kafs_pending_worker_main(void *arg)
   {
     uint32_t idx = 0;
     kafs_pendinglog_entry_t ent;
-    int has_work = 0;
-
-    pthread_mutex_lock(&ctx->c_pending_worker_lock);
-    for (;;)
-    {
-      kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
-      if (ctx->c_pending_worker_stop)
-      {
-        pthread_mutex_unlock(&ctx->c_pending_worker_lock);
-        __atomic_store_n(&ctx->c_stat_pending_worker_lwp_tid, 0, __ATOMIC_RELAXED);
-        __atomic_add_fetch(&ctx->c_stat_pending_worker_main_exits, 1u, __ATOMIC_RELAXED);
-        return NULL;
-      }
-      if (hdr && hdr->capacity > 0 && hdr->head != hdr->tail)
-      {
-        idx = hdr->head;
-        kafs_pendinglog_entry_t *slot = kafs_pendinglog_entry_ptr(ctx, idx);
-        if (slot)
-        {
-          ent = *slot;
-          has_work = 1;
-          break;
-        }
-      }
-      pthread_cond_wait(&ctx->c_pending_worker_cond, &ctx->c_pending_worker_lock);
-    }
-    pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+    if (kafs_pending_worker_wait_next(ctx, &idx, &ent) != 0)
+      return NULL;
 
     if (ctx->c_pending_worker_prio_dirty)
       (void)kafs_pending_worker_apply_priority_self(ctx);
 
-    if (!has_work)
-      continue;
-
     if (ent.state == KAFS_PENDING_RESOLVED || ent.state == KAFS_PENDING_FAILED)
     {
-      pthread_mutex_lock(&ctx->c_pending_worker_lock);
-      kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
-      if (hdr && hdr->capacity > 0 && hdr->head == idx)
-        hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
-      kafs_pending_worker_adjust_priority_locked(ctx);
-      pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+      kafs_pending_worker_skip_terminal_entry(ctx, idx);
       continue;
     }
 
@@ -1954,135 +1936,193 @@ static void *kafs_pending_worker_main(void *arg)
         else
           ctx->c_stat_hrl_put_hits++;
 
-        if (ent.ino < kafs_sb_inocnt_get(ctx->c_superblock))
-        {
-          kafs_inode_lock(ctx, ent.ino);
-          kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ent.ino);
-          if (kafs_ino_get_usage(inoent))
-          {
-            uint32_t cur_epoch = kafs_inode_epoch_get(ctx, ent.ino);
-            if (ent.ino_epoch == 0 || ent.ino_epoch != cur_epoch)
-            {
-              kafs_inode_unlock(ctx, ent.ino);
-              goto pending_finalize;
-            }
-            kafs_off_t cur_size = kafs_ino_size_get(inoent);
-            if (cur_size > KAFS_INODE_DIRECT_BYTES)
-            {
-              kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
-              kafs_iblkcnt_t iblocnt = (kafs_iblkcnt_t)((cur_size + bs - 1) / bs);
-              if (ent.iblk < iblocnt)
-              {
-                kafs_blkcnt_t cur_raw = KAFS_BLO_NONE;
-                if (kafs_ino_ibrk_run(ctx, inoent, ent.iblk, &cur_raw, KAFS_IBLKREF_FUNC_GET_RAW) ==
-                    0)
-                {
-                  if (kafs_ref_is_pending(cur_raw) &&
-                      kafs_ref_pending_id(cur_raw) == ent.pending_id)
-                  {
-                    if (kafs_ino_ibrk_run(ctx, inoent, ent.iblk, &final_blo,
-                                          KAFS_IBLKREF_FUNC_SET) == 0)
-                      installed = 1;
-                  }
-                }
-              }
-            }
-          }
-          kafs_inode_unlock(ctx, ent.ino);
-        }
-
-      pending_finalize:;
-
-        kafs_blkcnt_t old_blo = (kafs_blkcnt_t)ent.target_hrid;
-        if (installed && old_blo != KAFS_BLO_NONE && old_blo != (kafs_blkcnt_t)ent.temp_blo &&
-            old_blo != final_blo)
-        {
-          uint64_t t_dec0 = kafs_now_ns();
-          (void)kafs_inode_release_hrl_ref(ctx, old_blo);
-          __atomic_add_fetch(&ctx->c_stat_pending_old_block_freed, 1u, __ATOMIC_RELAXED);
-          uint64_t t_dec1 = kafs_now_ns();
-          __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
-        }
-
-        if (!installed && final_blo != KAFS_BLO_NONE && final_blo != (kafs_blkcnt_t)ent.temp_blo)
-          (void)kafs_inode_release_hrl_ref(ctx, final_blo);
-
-        if ((kafs_blkcnt_t)ent.temp_blo != KAFS_BLO_NONE &&
-            (kafs_blkcnt_t)ent.temp_blo != final_blo)
-          (void)kafs_inode_release_hrl_ref(ctx, (kafs_blkcnt_t)ent.temp_blo);
-
-        pthread_mutex_lock(&ctx->c_pending_worker_lock);
-        kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
-        kafs_pendinglog_entry_t *slot = hdr ? kafs_pendinglog_entry_ptr(ctx, idx) : NULL;
-        if (hdr && slot)
-        {
-          slot->state = KAFS_PENDING_RESOLVED;
-          __atomic_add_fetch(&ctx->c_stat_pending_resolved, 1u, __ATOMIC_RELAXED);
-          slot->target_hrid = (uint32_t)hrid;
-          slot->reserved0 = 0;
-          if (hdr->head == idx)
-            hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
-        }
-        kafs_pending_worker_adjust_priority_locked(ctx);
-        pthread_cond_broadcast(&ctx->c_pending_worker_cond);
-        pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+        installed = kafs_pending_worker_try_install_block(ctx, &ent, final_blo);
+        kafs_pending_worker_finalize_success(ctx, idx, &ent, hrid, final_blo, installed);
         continue;
       }
     }
 
-    pthread_mutex_lock(&ctx->c_pending_worker_lock);
+    uint32_t retry = kafs_pending_worker_note_retry(ctx, idx);
+    kafs_pending_worker_backoff(ctx, retry, ent.seq);
+  }
+}
+
+static void kafs_pending_worker_record_exit(kafs_context_t *ctx)
+{
+  __atomic_store_n(&ctx->c_stat_pending_worker_lwp_tid, 0, __ATOMIC_RELAXED);
+  __atomic_add_fetch(&ctx->c_stat_pending_worker_main_exits, 1u, __ATOMIC_RELAXED);
+}
+
+static int kafs_pending_worker_wait_next(kafs_context_t *ctx, uint32_t *idx,
+                                         kafs_pendinglog_entry_t *ent)
+{
+  pthread_mutex_lock(&ctx->c_pending_worker_lock);
+  for (;;)
+  {
     kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
-    kafs_pendinglog_entry_t *slot = hdr ? kafs_pendinglog_entry_ptr(ctx, idx) : NULL;
-    uint32_t retry = 0;
-    if (slot)
+    if (ctx->c_pending_worker_stop)
     {
-      slot->state = KAFS_PENDING_HASHED;
-      slot->reserved0 += 1u;
-      retry = slot->reserved0;
-      if (retry >= 32u)
+      pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+      kafs_pending_worker_record_exit(ctx);
+      return -1;
+    }
+    if (hdr && hdr->capacity > 0 && hdr->head != hdr->tail)
+    {
+      *idx = hdr->head;
+      kafs_pendinglog_entry_t *slot = kafs_pendinglog_entry_ptr(ctx, *idx);
+      if (slot)
       {
-        slot->state = KAFS_PENDING_FAILED;
-        if (hdr && hdr->head == idx)
-          hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
+        *ent = *slot;
+        pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+        return 0;
       }
     }
-    kafs_pending_worker_adjust_priority_locked(ctx);
-    pthread_cond_broadcast(&ctx->c_pending_worker_cond);
-    pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+    pthread_cond_wait(&ctx->c_pending_worker_cond, &ctx->c_pending_worker_lock);
+  }
+}
 
-    if (retry > 0)
+static void kafs_pending_worker_skip_terminal_entry(kafs_context_t *ctx, uint32_t idx)
+{
+  pthread_mutex_lock(&ctx->c_pending_worker_lock);
+  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+  if (hdr && hdr->capacity > 0 && hdr->head == idx)
+    hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
+  kafs_pending_worker_adjust_priority_locked(ctx);
+  pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+}
+
+static int kafs_pending_worker_try_install_block(kafs_context_t *ctx,
+                                                 const kafs_pendinglog_entry_t *ent,
+                                                 kafs_blkcnt_t final_blo)
+{
+  if (ent->ino >= kafs_sb_inocnt_get(ctx->c_superblock))
+    return 0;
+
+  int installed = 0;
+  kafs_inode_lock(ctx, ent->ino);
+  kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ent->ino);
+  if (kafs_ino_get_usage(inoent))
+  {
+    uint32_t cur_epoch = kafs_inode_epoch_get(ctx, ent->ino);
+    if (ent->ino_epoch != 0 && ent->ino_epoch == cur_epoch)
     {
-      int hard_ttl_exceeded = 0;
-      if (ctx->c_pending_ttl_hard_ms > 0 && ent.seq > 0)
+      kafs_off_t cur_size = kafs_ino_size_get(inoent);
+      if (cur_size > KAFS_INODE_DIRECT_BYTES)
       {
-        uint64_t now_rt_ns = kafs_now_realtime_ns();
-        if (now_rt_ns >= ent.seq)
+        kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
+        kafs_iblkcnt_t iblocnt = (kafs_iblkcnt_t)((cur_size + bs - 1) / bs);
+        if (ent->iblk < iblocnt)
         {
-          uint64_t age_ms = (now_rt_ns - ent.seq) / 1000000ull;
-          if (age_ms >= (uint64_t)ctx->c_pending_ttl_hard_ms)
-            hard_ttl_exceeded = 1;
+          kafs_blkcnt_t cur_raw = KAFS_BLO_NONE;
+          if (kafs_ino_ibrk_run(ctx, inoent, ent->iblk, &cur_raw, KAFS_IBLKREF_FUNC_GET_RAW) == 0 &&
+              kafs_ref_is_pending(cur_raw) && kafs_ref_pending_id(cur_raw) == ent->pending_id &&
+              kafs_ino_ibrk_run(ctx, inoent, ent->iblk, &final_blo, KAFS_IBLKREF_FUNC_SET) == 0)
+          {
+            installed = 1;
+          }
         }
       }
-
-      uint32_t backoff_ms;
-      if (hard_ttl_exceeded)
-      {
-        // Keep drain aggressive under hard TTL pressure, but avoid hot-spin starvation.
-        backoff_ms = 1u;
-      }
-      else
-      {
-        if (retry > 6u)
-          retry = 6u;
-        backoff_ms = 1u << retry;
-      }
-      struct timespec ts = {
-          .tv_sec = (time_t)(backoff_ms / 1000u),
-          .tv_nsec = (long)((backoff_ms % 1000u) * 1000000u),
-      };
-      nanosleep(&ts, NULL);
     }
   }
+  kafs_inode_unlock(ctx, ent->ino);
+  return installed;
+}
+
+static void kafs_pending_worker_finalize_success(kafs_context_t *ctx, uint32_t idx,
+                                                 const kafs_pendinglog_entry_t *ent,
+                                                 kafs_hrid_t hrid, kafs_blkcnt_t final_blo,
+                                                 int installed)
+{
+  kafs_blkcnt_t old_blo = (kafs_blkcnt_t)ent->target_hrid;
+  if (installed && old_blo != KAFS_BLO_NONE && old_blo != (kafs_blkcnt_t)ent->temp_blo &&
+      old_blo != final_blo)
+  {
+    uint64_t t_dec0 = kafs_now_ns();
+    (void)kafs_inode_release_hrl_ref(ctx, old_blo);
+    __atomic_add_fetch(&ctx->c_stat_pending_old_block_freed, 1u, __ATOMIC_RELAXED);
+    uint64_t t_dec1 = kafs_now_ns();
+    __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
+  }
+
+  if (!installed && final_blo != KAFS_BLO_NONE && final_blo != (kafs_blkcnt_t)ent->temp_blo)
+    (void)kafs_inode_release_hrl_ref(ctx, final_blo);
+
+  if ((kafs_blkcnt_t)ent->temp_blo != KAFS_BLO_NONE && (kafs_blkcnt_t)ent->temp_blo != final_blo)
+    (void)kafs_inode_release_hrl_ref(ctx, (kafs_blkcnt_t)ent->temp_blo);
+
+  pthread_mutex_lock(&ctx->c_pending_worker_lock);
+  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+  kafs_pendinglog_entry_t *slot = hdr ? kafs_pendinglog_entry_ptr(ctx, idx) : NULL;
+  if (hdr && slot)
+  {
+    slot->state = KAFS_PENDING_RESOLVED;
+    __atomic_add_fetch(&ctx->c_stat_pending_resolved, 1u, __ATOMIC_RELAXED);
+    slot->target_hrid = (uint32_t)hrid;
+    slot->reserved0 = 0;
+    if (hdr->head == idx)
+      hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
+  }
+  kafs_pending_worker_adjust_priority_locked(ctx);
+  pthread_cond_broadcast(&ctx->c_pending_worker_cond);
+  pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+}
+
+static uint32_t kafs_pending_worker_note_retry(kafs_context_t *ctx, uint32_t idx)
+{
+  uint32_t retry = 0;
+
+  pthread_mutex_lock(&ctx->c_pending_worker_lock);
+  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+  kafs_pendinglog_entry_t *slot = hdr ? kafs_pendinglog_entry_ptr(ctx, idx) : NULL;
+  if (slot)
+  {
+    slot->state = KAFS_PENDING_HASHED;
+    slot->reserved0 += 1u;
+    retry = slot->reserved0;
+    if (retry >= 32u)
+    {
+      slot->state = KAFS_PENDING_FAILED;
+      if (hdr && hdr->head == idx)
+        hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
+    }
+  }
+  kafs_pending_worker_adjust_priority_locked(ctx);
+  pthread_cond_broadcast(&ctx->c_pending_worker_cond);
+  pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+  return retry;
+}
+
+static void kafs_pending_worker_backoff(const kafs_context_t *ctx, uint32_t retry,
+                                        uint64_t entry_seq)
+{
+  if (retry == 0)
+    return;
+
+  int hard_ttl_exceeded = 0;
+  if (ctx->c_pending_ttl_hard_ms > 0 && entry_seq > 0)
+  {
+    uint64_t now_rt_ns = kafs_now_realtime_ns();
+    if (now_rt_ns >= entry_seq)
+    {
+      uint64_t age_ms = (now_rt_ns - entry_seq) / 1000000ull;
+      if (age_ms >= (uint64_t)ctx->c_pending_ttl_hard_ms)
+        hard_ttl_exceeded = 1;
+    }
+  }
+
+  uint32_t backoff_ms = 1u;
+  if (!hard_ttl_exceeded)
+  {
+    if (retry > 6u)
+      retry = 6u;
+    backoff_ms = 1u << retry;
+  }
+
+  struct timespec ts = {
+      .tv_sec = (time_t)(backoff_ms / 1000u),
+      .tv_nsec = (long)((backoff_ms % 1000u) * 1000000u),
+  };
+  nanosleep(&ts, NULL);
 }
 
 static int kafs_pending_worker_start(struct kafs_context *ctx)
