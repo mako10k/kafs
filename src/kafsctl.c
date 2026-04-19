@@ -3344,6 +3344,72 @@ static int cmd_symlink_auto_with_opts(const char *target, const char *linkpath,
   return rc;
 }
 
+static int parse_ln_target_directory_option(int argc, char **argv, int *index, const char *arg,
+                                            kafs_ln_opts_t *opts)
+{
+  if (strcmp(arg, "-t") == 0 || strcmp(arg, "--target-directory") == 0)
+  {
+    if (*index + 1 >= argc)
+    {
+      fprintf(stderr, "missing argument for %s\n", arg);
+      return 2;
+    }
+    opts->target_dir = argv[++(*index)];
+    return 0;
+  }
+
+  if (strncmp(arg, "--target-directory=", 19) == 0)
+  {
+    opts->target_dir = arg + 19;
+    return 0;
+  }
+
+  return -1;
+}
+
+static int parse_ln_flag_option(const char *arg, kafs_ln_opts_t *opts)
+{
+  if (is_ln_symbolic_option(arg))
+    opts->symbolic = 1;
+  else if (strcmp(arg, "-f") == 0 || strcmp(arg, "--force") == 0)
+    opts->force = 1;
+  else if (strcmp(arg, "-n") == 0 || strcmp(arg, "--no-dereference") == 0)
+    opts->no_deref = 1;
+  else if (strcmp(arg, "-T") == 0 || strcmp(arg, "--no-target-directory") == 0)
+    opts->no_target_directory = 1;
+  else if (strcmp(arg, "-v") == 0 || strcmp(arg, "--verbose") == 0)
+    opts->verbose = 1;
+  else
+    return -1;
+
+  return 0;
+}
+
+static int parse_ln_option_arg(int argc, char **argv, int *index, kafs_ln_opts_t *opts)
+{
+  const char *arg = argv[*index];
+  if (strcmp(arg, "--") == 0)
+  {
+    ++(*index);
+    return 3;
+  }
+  if (kafs_cli_is_help_arg(arg))
+    return 1;
+  if (arg[0] != '-' || strcmp(arg, "-") == 0)
+    return 4;
+
+  int rc = parse_ln_flag_option(arg, opts);
+  if (rc == 0)
+    return 0;
+
+  rc = parse_ln_target_directory_option(argc, argv, index, arg, opts);
+  if (rc >= 0)
+    return rc;
+
+  fprintf(stderr, "unknown option: %s\n", arg);
+  return 2;
+}
+
 static int parse_ln_options(int argc, char **argv, kafs_ln_opts_t *opts, int *operand_index)
 {
   if (!opts || !operand_index)
@@ -3353,43 +3419,13 @@ static int parse_ln_options(int argc, char **argv, kafs_ln_opts_t *opts, int *op
   int i = 2;
   while (i < argc)
   {
-    const char *arg = argv[i];
-    if (strcmp(arg, "--") == 0)
-    {
-      ++i;
+    int rc = parse_ln_option_arg(argc, argv, &i, opts);
+    if (rc == 3)
       break;
-    }
-    if (kafs_cli_is_help_arg(arg))
-      return 1;
-    if (arg[0] != '-' || strcmp(arg, "-") == 0)
+    if (rc == 4)
       break;
-
-    if (is_ln_symbolic_option(arg))
-      opts->symbolic = 1;
-    else if (strcmp(arg, "-f") == 0 || strcmp(arg, "--force") == 0)
-      opts->force = 1;
-    else if (strcmp(arg, "-n") == 0 || strcmp(arg, "--no-dereference") == 0)
-      opts->no_deref = 1;
-    else if (strcmp(arg, "-T") == 0 || strcmp(arg, "--no-target-directory") == 0)
-      opts->no_target_directory = 1;
-    else if (strcmp(arg, "-v") == 0 || strcmp(arg, "--verbose") == 0)
-      opts->verbose = 1;
-    else if (strcmp(arg, "-t") == 0 || strcmp(arg, "--target-directory") == 0)
-    {
-      if (i + 1 >= argc)
-      {
-        fprintf(stderr, "missing argument for %s\n", arg);
-        return 2;
-      }
-      opts->target_dir = argv[++i];
-    }
-    else if (strncmp(arg, "--target-directory=", 19) == 0)
-      opts->target_dir = arg + 19;
-    else
-    {
-      fprintf(stderr, "unknown option: %s\n", arg);
-      return 2;
-    }
+    if (rc != 0)
+      return rc;
     ++i;
   }
 
