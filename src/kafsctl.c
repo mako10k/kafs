@@ -3397,23 +3397,110 @@ static int parse_ln_options(int argc, char **argv, kafs_ln_opts_t *opts, int *op
   return 0;
 }
 
-static int cmd_ln_dispatch(int argc, char **argv)
+static int cmd_ln_dispatch_parse(int argc, char **argv, kafs_ln_opts_t *opts, int *operand_index)
 {
-  kafs_ln_opts_t opts;
-  int operand_index = 0;
-  int parse_rc = parse_ln_options(argc, argv, &opts, &operand_index);
+  int parse_rc = parse_ln_options(argc, argv, opts, operand_index);
   if (parse_rc == 1)
   {
     usage_ln_cmd(argv[0]);
     return 0;
   }
   if (parse_rc != 0)
-  {
     usage_ln_cmd(argv[0]);
-    return parse_rc;
+  return parse_rc;
+}
+
+static int cmd_ln_dispatch_target_dir(int argc, char **argv, int operand_index,
+                                      const kafs_ln_opts_t *opts, const char **mnt_out,
+                                      const char **src_out, const char **dst_out,
+                                      char dst_buf[KAFS_IOCTL_PATH_MAX])
+{
+  int remaining = argc - operand_index;
+  if (remaining == 1)
+  {
+    *src_out = argv[operand_index];
+  }
+  else if (remaining == 2)
+  {
+    *mnt_out = argv[operand_index];
+    *src_out = argv[operand_index + 1];
+  }
+  else
+  {
+    return 2;
   }
 
+  if (build_link_path(dst_buf, opts->target_dir, *src_out) != 0)
+  {
+    fprintf(stderr, "invalid target directory or source name\n");
+    return 2;
+  }
+
+  *dst_out = dst_buf;
+  return 0;
+}
+
+static int cmd_ln_dispatch_direct(int argc, char **argv, int operand_index, const char **mnt_out,
+                                  const char **src_out, const char **dst_out)
+{
   int remaining = argc - operand_index;
+  if (remaining == 2)
+  {
+    *src_out = argv[operand_index];
+    *dst_out = argv[operand_index + 1];
+    return 0;
+  }
+  if (remaining == 3)
+  {
+    *mnt_out = argv[operand_index];
+    *src_out = argv[operand_index + 1];
+    *dst_out = argv[operand_index + 2];
+    return 0;
+  }
+  return 2;
+}
+
+static int cmd_ln_dispatch_dir_destination(const char *mnt, const char *src, const char **dst_inout,
+                                           const kafs_ln_opts_t *opts,
+                                           char dst_buf[KAFS_IOCTL_PATH_MAX])
+{
+  if (opts->no_target_directory)
+    return 0;
+
+  int is_dir = path_ref_is_directory(mnt, *dst_inout, opts->no_deref);
+  if (is_dir != 0 && is_dir != 1)
+    return is_dir;
+  if (is_dir == 0)
+    return 0;
+
+  if (build_link_path(dst_buf, *dst_inout, src) != 0)
+  {
+    fprintf(stderr, "invalid destination path\n");
+    return 2;
+  }
+
+  *dst_inout = dst_buf;
+  return 0;
+}
+
+static int cmd_ln_dispatch_exec(const char *mnt, const char *src, const char *dst,
+                                const kafs_ln_opts_t *opts)
+{
+  if (opts->symbolic)
+    return mnt ? cmd_symlink_with_opts(mnt, src, dst, opts)
+               : cmd_symlink_auto_with_opts(src, dst, opts);
+
+  return mnt ? cmd_ln_with_opts(mnt, src, dst, opts) : cmd_ln_auto_with_opts(src, dst, opts);
+}
+
+static int cmd_ln_dispatch(int argc, char **argv)
+{
+  kafs_ln_opts_t opts;
+  int operand_index = 0;
+  int parse_rc = cmd_ln_dispatch_parse(argc, argv, &opts, &operand_index);
+  if (parse_rc != 0)
+    return parse_rc;
+
   const char *mnt = NULL;
   const char *src = NULL;
   const char *dst = NULL;
@@ -3421,69 +3508,29 @@ static int cmd_ln_dispatch(int argc, char **argv)
 
   if (opts.target_dir)
   {
-    if (remaining == 1)
-    {
-      src = argv[operand_index];
-    }
-    else if (remaining == 2)
-    {
-      mnt = argv[operand_index];
-      src = argv[operand_index + 1];
-    }
-    else
+    int rc =
+        cmd_ln_dispatch_target_dir(argc, argv, operand_index, &opts, &mnt, &src, &dst, dst_buf);
+    if (rc != 0)
     {
       usage_ln_cmd(argv[0]);
-      return 2;
+      return rc;
     }
-
-    if (build_link_path(dst_buf, opts.target_dir, src) != 0)
-    {
-      fprintf(stderr, "invalid target directory or source name\n");
-      return 2;
-    }
-    dst = dst_buf;
   }
   else
   {
-    if (remaining == 2)
-    {
-      src = argv[operand_index];
-      dst = argv[operand_index + 1];
-    }
-    else if (remaining == 3)
-    {
-      mnt = argv[operand_index];
-      src = argv[operand_index + 1];
-      dst = argv[operand_index + 2];
-    }
-    else
+    int rc = cmd_ln_dispatch_direct(argc, argv, operand_index, &mnt, &src, &dst);
+    if (rc != 0)
     {
       usage_ln_cmd(argv[0]);
-      return 2;
+      return rc;
     }
 
-    if (!opts.no_target_directory)
-    {
-      int is_dir = path_ref_is_directory(mnt, dst, opts.no_deref);
-      if (is_dir != 0 && is_dir != 1)
-        return is_dir;
-      if (is_dir > 0)
-      {
-        if (build_link_path(dst_buf, dst, src) != 0)
-        {
-          fprintf(stderr, "invalid destination path\n");
-          return 2;
-        }
-        dst = dst_buf;
-      }
-    }
+    rc = cmd_ln_dispatch_dir_destination(mnt, src, &dst, &opts, dst_buf);
+    if (rc != 0)
+      return rc;
   }
 
-  if (opts.symbolic)
-    return mnt ? cmd_symlink_with_opts(mnt, src, dst, &opts)
-               : cmd_symlink_auto_with_opts(src, dst, &opts);
-
-  return mnt ? cmd_ln_with_opts(mnt, src, dst, &opts) : cmd_ln_auto_with_opts(src, dst, &opts);
+  return cmd_ln_dispatch_exec(mnt, src, dst, &opts);
 }
 
 static int cmd_readlink(const char *mnt, const char *path)
