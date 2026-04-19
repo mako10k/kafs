@@ -1618,6 +1618,74 @@ static int find_kafs_mount_root(const char *dir_path, char mount[KAFS_IOCTL_PATH
   return 0;
 }
 
+static const char *skip_leading_slashes(const char *path)
+{
+  while (*path == '/')
+    ++path;
+  return path;
+}
+
+static int resolve_auto_path_build_abs(const char *existing, const char *suffix,
+                                       char resolved_abs[KAFS_IOCTL_PATH_MAX])
+{
+  const char *rel_suffix = suffix ? skip_leading_slashes(suffix) : "";
+  if (*rel_suffix == '\0')
+  {
+    if (snprintf(resolved_abs, KAFS_IOCTL_PATH_MAX, "%s", existing) >= KAFS_IOCTL_PATH_MAX)
+      return -ENAMETOOLONG;
+    return 0;
+  }
+  return path_join_components(resolved_abs, existing, rel_suffix);
+}
+
+static int resolve_auto_path_existing_dir(const char *existing, int existing_is_dir,
+                                          char existing_dir[KAFS_IOCTL_PATH_MAX])
+{
+  if (snprintf(existing_dir, KAFS_IOCTL_PATH_MAX, "%s", existing) >= KAFS_IOCTL_PATH_MAX)
+    return -ENAMETOOLONG;
+  if (existing_is_dir)
+    return 0;
+
+  char *slash = strrchr(existing_dir, '/');
+  if (!slash)
+    return -EINVAL;
+  if (slash == existing_dir)
+    slash[1] = '\0';
+  else
+    *slash = '\0';
+  return 0;
+}
+
+static int resolve_auto_path_rel_to_mount(const char *mount, const char *resolved_abs,
+                                          const char **rel_out)
+{
+  size_t mount_len = strlen(mount);
+  if (strncmp(resolved_abs, mount, mount_len) != 0 ||
+      (resolved_abs[mount_len] != '\0' && resolved_abs[mount_len] != '/'))
+    return -EINVAL;
+
+  *rel_out = skip_leading_slashes(resolved_abs + mount_len);
+  return 0;
+}
+
+static int resolve_auto_path_fill_ref(kafs_path_ref_t *out, const char *mount,
+                                      const char *resolved_abs, const char *rel)
+{
+  out->dfd = open(mount, O_RDONLY | O_DIRECTORY);
+  if (out->dfd < 0)
+    return -errno;
+  if (snprintf(out->mount, sizeof(out->mount), "%s", mount) >= (int)sizeof(out->mount) ||
+      snprintf(out->abs_path, sizeof(out->abs_path), "%s", resolved_abs) >=
+          (int)sizeof(out->abs_path) ||
+      snprintf(out->rel, sizeof(out->rel), "%s", (*rel != '\0') ? rel : ".") >=
+          (int)sizeof(out->rel))
+  {
+    close_path_ref(out);
+    return -ENAMETOOLONG;
+  }
+  return 0;
+}
+
 static int resolve_auto_path(const char *path, kafs_path_ref_t *out)
 {
   char normalized[KAFS_IOCTL_PATH_MAX];
@@ -1633,67 +1701,26 @@ static int resolve_auto_path(const char *path, kafs_path_ref_t *out)
     return rc;
 
   char resolved_abs[KAFS_IOCTL_PATH_MAX];
-  if (!suffix || *suffix == '\0')
-  {
-    if (snprintf(resolved_abs, sizeof(resolved_abs), "%s", existing) >= (int)sizeof(resolved_abs))
-      return -ENAMETOOLONG;
-  }
-  else
-  {
-    const char *rel_suffix = suffix;
-    while (*rel_suffix == '/')
-      ++rel_suffix;
-    rc = path_join_components(resolved_abs, existing, rel_suffix);
-    if (rc != 0)
-      return rc;
-  }
+  rc = resolve_auto_path_build_abs(existing, suffix, resolved_abs);
+  if (rc != 0)
+    return rc;
 
   char existing_dir[KAFS_IOCTL_PATH_MAX];
-  if (existing_is_dir)
-  {
-    if (snprintf(existing_dir, sizeof(existing_dir), "%s", existing) >= (int)sizeof(existing_dir))
-      return -ENAMETOOLONG;
-  }
-  else
-  {
-    if (snprintf(existing_dir, sizeof(existing_dir), "%s", existing) >= (int)sizeof(existing_dir))
-      return -ENAMETOOLONG;
-    char *slash = strrchr(existing_dir, '/');
-    if (!slash)
-      return -EINVAL;
-    if (slash == existing_dir)
-      slash[1] = '\0';
-    else
-      *slash = '\0';
-  }
+  rc = resolve_auto_path_existing_dir(existing, existing_is_dir, existing_dir);
+  if (rc != 0)
+    return rc;
 
   char mount[KAFS_IOCTL_PATH_MAX];
   rc = find_kafs_mount_root(existing_dir, mount);
   if (rc != 0)
     return rc;
 
-  size_t mount_len = strlen(mount);
-  if (strncmp(resolved_abs, mount, mount_len) != 0 ||
-      (resolved_abs[mount_len] != '\0' && resolved_abs[mount_len] != '/'))
-    return -EINVAL;
+  const char *rel = NULL;
+  rc = resolve_auto_path_rel_to_mount(mount, resolved_abs, &rel);
+  if (rc != 0)
+    return rc;
 
-  const char *rel = resolved_abs + mount_len;
-  while (*rel == '/')
-    ++rel;
-
-  out->dfd = open(mount, O_RDONLY | O_DIRECTORY);
-  if (out->dfd < 0)
-    return -errno;
-  if (snprintf(out->mount, sizeof(out->mount), "%s", mount) >= (int)sizeof(out->mount) ||
-      snprintf(out->abs_path, sizeof(out->abs_path), "%s", resolved_abs) >=
-          (int)sizeof(out->abs_path) ||
-      snprintf(out->rel, sizeof(out->rel), "%s", (*rel != '\0') ? rel : ".") >=
-          (int)sizeof(out->rel))
-  {
-    close_path_ref(out);
-    return -ENAMETOOLONG;
-  }
-  return 0;
+  return resolve_auto_path_fill_ref(out, mount, resolved_abs, rel);
 }
 
 static int resolve_mount_path(const char *mnt, const char *path, kafs_path_ref_t *out)
