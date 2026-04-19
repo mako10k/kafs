@@ -10404,6 +10404,157 @@ static int kafs_main_apply_env_overrides(kafs_main_options_t *opts)
   return kafs_main_apply_misc_env_overrides(opts);
 }
 
+static int kafs_main_copy_cli_string_option(char *dst, size_t dst_size, const char *value,
+                                            const char *error_message)
+{
+  if (!*value || snprintf(dst, dst_size, "%s", value) >= (int)dst_size)
+  {
+    fprintf(stderr, "%s\n", error_message);
+    return 2;
+  }
+  return 0;
+}
+
+static int kafs_main_handle_flag_arg(kafs_main_options_t *opts, const char *arg)
+{
+  if (kafs_cli_is_help_arg(arg))
+  {
+    opts->show_help = KAFS_TRUE;
+    return 1;
+  }
+  if (strcmp(arg, "--migrate") == 0 || strcmp(arg, "--migrate-v2") == 0)
+  {
+    opts->auto_migrate = KAFS_TRUE;
+    return 1;
+  }
+  if (strcmp(arg, "--yes") == 0)
+  {
+    opts->migrate_yes = KAFS_TRUE;
+    return 1;
+  }
+  if (strcmp(arg, "--no-writeback-cache") == 0)
+  {
+    opts->writeback_cache_enabled = KAFS_FALSE;
+    opts->writeback_cache_explicit = KAFS_TRUE;
+    return 1;
+  }
+  if (strcmp(arg, "--writeback-cache") == 0)
+  {
+    opts->writeback_cache_enabled = KAFS_TRUE;
+    opts->writeback_cache_explicit = KAFS_TRUE;
+    return 1;
+  }
+  if (strcmp(arg, "--trim-on-free") == 0)
+  {
+    opts->trim_on_free_enabled = KAFS_TRUE;
+    opts->trim_on_free_explicit = KAFS_TRUE;
+    return 1;
+  }
+  if (strcmp(arg, "--no-trim-on-free") == 0)
+  {
+    opts->trim_on_free_enabled = KAFS_FALSE;
+    opts->trim_on_free_explicit = KAFS_TRUE;
+    return 1;
+  }
+  if (strcmp(arg, "--hotplug") == 0)
+  {
+    snprintf(opts->hotplug_uds_opt, sizeof(opts->hotplug_uds_opt), "%s", KAFS_HOTPLUG_UDS_DEFAULT);
+    return 1;
+  }
+  return 0;
+}
+
+static int kafs_main_handle_hotplug_arg(int argc, char **argv, const char *prog, int *index,
+                                        kafs_main_options_t *opts, const char *arg)
+{
+  if (strncmp(arg, "--hotplug=", 10) == 0)
+    return kafs_main_copy_cli_string_option(opts->hotplug_uds_opt, sizeof(opts->hotplug_uds_opt),
+                                            arg + 10, "invalid --hotplug value");
+
+  if (strcmp(arg, "--hotplug-uds") == 0)
+  {
+    if (*index + 1 >= argc)
+    {
+      fprintf(stderr, "--hotplug-uds requires a path argument.\n");
+      usage(prog);
+      return 2;
+    }
+    *index += 1;
+    return kafs_main_copy_cli_string_option(opts->hotplug_uds_opt, sizeof(opts->hotplug_uds_opt),
+                                            argv[*index], "invalid --hotplug-uds value");
+  }
+
+  if (strncmp(arg, "--hotplug-uds=", 14) == 0)
+    return kafs_main_copy_cli_string_option(opts->hotplug_uds_opt, sizeof(opts->hotplug_uds_opt),
+                                            arg + 14, "invalid --hotplug-uds value");
+
+  if (strcmp(arg, "--hotplug-back-bin") == 0)
+  {
+    if (*index + 1 >= argc)
+    {
+      fprintf(stderr, "--hotplug-back-bin requires a path argument.\n");
+      usage(prog);
+      return 2;
+    }
+    *index += 1;
+    return kafs_main_copy_cli_string_option(opts->hotplug_back_bin_opt,
+                                            sizeof(opts->hotplug_back_bin_opt), argv[*index],
+                                            "invalid --hotplug-back-bin value");
+  }
+
+  if (strncmp(arg, "--hotplug-back-bin=", 19) == 0)
+    return kafs_main_copy_cli_string_option(opts->hotplug_back_bin_opt,
+                                            sizeof(opts->hotplug_back_bin_opt), arg + 19,
+                                            "invalid --hotplug-back-bin value");
+
+  return 0;
+}
+
+static int kafs_main_handle_passthrough_arg(int argc, char **argv, const char *prog, int *index,
+                                            kafs_main_options_t *opts, char **argv_clean,
+                                            int *argc_clean, const char *arg)
+{
+  if (strcmp(arg, "--option") == 0)
+  {
+    if (*index + 1 >= argc)
+    {
+      fprintf(stderr, "--option requires an argument.\n");
+      usage(prog);
+      return 2;
+    }
+    argv_clean[(*argc_clean)++] = "-o";
+    argv_clean[(*argc_clean)++] = argv[++(*index)];
+    return 1;
+  }
+
+  if (strncmp(arg, "--option=", 9) == 0)
+  {
+    argv_clean[(*argc_clean)++] = "-o";
+    argv_clean[(*argc_clean)++] = (char *)(arg + 9);
+    return 1;
+  }
+
+  if (strcmp(arg, "--image") == 0)
+  {
+    if (*index + 1 >= argc)
+    {
+      fprintf(stderr, "--image requires a path argument.\n");
+      usage(prog);
+      return 2;
+    }
+    opts->image_path = argv[++(*index)];
+    return 1;
+  }
+
+  if (strncmp(arg, "--image=", 8) == 0)
+  {
+    opts->image_path = arg + 8;
+    return 1;
+  }
+
+  return 0;
+}
+
 static int kafs_main_collect_args(int argc, char **argv, const char *prog,
                                   kafs_main_options_t *opts, char **argv_clean, int *argc_clean)
 {
@@ -10411,152 +10562,21 @@ static int kafs_main_collect_args(int argc, char **argv, const char *prog,
   for (int i = 0; i < argc; ++i)
   {
     const char *a = argv[i];
-    if (kafs_cli_is_help_arg(a))
-    {
-      opts->show_help = KAFS_TRUE;
+    if (kafs_main_handle_flag_arg(opts, a) != 0)
       continue;
-    }
-    if (strcmp(a, "--migrate") == 0 || strcmp(a, "--migrate-v2") == 0)
-    {
-      opts->auto_migrate = KAFS_TRUE;
-      continue;
-    }
-    if (strcmp(a, "--yes") == 0)
-    {
-      opts->migrate_yes = KAFS_TRUE;
-      continue;
-    }
-    if (strcmp(a, "--no-writeback-cache") == 0)
-    {
-      opts->writeback_cache_enabled = KAFS_FALSE;
-      opts->writeback_cache_explicit = KAFS_TRUE;
-      continue;
-    }
-    if (strcmp(a, "--writeback-cache") == 0)
-    {
-      opts->writeback_cache_enabled = KAFS_TRUE;
-      opts->writeback_cache_explicit = KAFS_TRUE;
-      continue;
-    }
-    if (strcmp(a, "--trim-on-free") == 0)
-    {
-      opts->trim_on_free_enabled = KAFS_TRUE;
-      opts->trim_on_free_explicit = KAFS_TRUE;
-      continue;
-    }
-    if (strcmp(a, "--no-trim-on-free") == 0)
-    {
-      opts->trim_on_free_enabled = KAFS_FALSE;
-      opts->trim_on_free_explicit = KAFS_TRUE;
-      continue;
-    }
-    if (strcmp(a, "--hotplug") == 0)
-    {
-      snprintf(opts->hotplug_uds_opt, sizeof(opts->hotplug_uds_opt), "%s",
-               KAFS_HOTPLUG_UDS_DEFAULT);
-      continue;
-    }
-    if (strncmp(a, "--hotplug=", 10) == 0)
-    {
-      const char *v = a + 10;
-      if (!*v || snprintf(opts->hotplug_uds_opt, sizeof(opts->hotplug_uds_opt), "%s", v) >=
-                     (int)sizeof(opts->hotplug_uds_opt))
-      {
-        fprintf(stderr, "invalid --hotplug value\n");
-        return 2;
-      }
-      continue;
-    }
-    if (strcmp(a, "--hotplug-uds") == 0)
-    {
-      if (i + 1 < argc)
-      {
-        const char *v = argv[++i];
-        if (!*v || snprintf(opts->hotplug_uds_opt, sizeof(opts->hotplug_uds_opt), "%s", v) >=
-                       (int)sizeof(opts->hotplug_uds_opt))
-        {
-          fprintf(stderr, "invalid --hotplug-uds value\n");
-          return 2;
-        }
-        continue;
-      }
-      fprintf(stderr, "--hotplug-uds requires a path argument.\n");
-      usage(prog);
+
+    int rc = kafs_main_handle_hotplug_arg(argc, argv, prog, &i, opts, a);
+    if (rc == 2)
       return 2;
-    }
-    if (strncmp(a, "--hotplug-uds=", 14) == 0)
-    {
-      const char *v = a + 14;
-      if (!*v || snprintf(opts->hotplug_uds_opt, sizeof(opts->hotplug_uds_opt), "%s", v) >=
-                     (int)sizeof(opts->hotplug_uds_opt))
-      {
-        fprintf(stderr, "invalid --hotplug-uds value\n");
-        return 2;
-      }
+    if (rc == 1)
       continue;
-    }
-    if (strcmp(a, "--hotplug-back-bin") == 0)
-    {
-      if (i + 1 < argc)
-      {
-        const char *v = argv[++i];
-        if (!*v || snprintf(opts->hotplug_back_bin_opt, sizeof(opts->hotplug_back_bin_opt), "%s",
-                            v) >= (int)sizeof(opts->hotplug_back_bin_opt))
-        {
-          fprintf(stderr, "invalid --hotplug-back-bin value\n");
-          return 2;
-        }
-        continue;
-      }
-      fprintf(stderr, "--hotplug-back-bin requires a path argument.\n");
-      usage(prog);
+
+    rc = kafs_main_handle_passthrough_arg(argc, argv, prog, &i, opts, argv_clean, argc_clean, a);
+    if (rc == 2)
       return 2;
-    }
-    if (strncmp(a, "--hotplug-back-bin=", 19) == 0)
-    {
-      const char *v = a + 19;
-      if (!*v || snprintf(opts->hotplug_back_bin_opt, sizeof(opts->hotplug_back_bin_opt), "%s",
-                          v) >= (int)sizeof(opts->hotplug_back_bin_opt))
-      {
-        fprintf(stderr, "invalid --hotplug-back-bin value\n");
-        return 2;
-      }
+    if (rc == 1)
       continue;
-    }
-    if (strcmp(a, "--option") == 0)
-    {
-      if (i + 1 < argc)
-      {
-        argv_clean[(*argc_clean)++] = "-o";
-        argv_clean[(*argc_clean)++] = argv[++i];
-        continue;
-      }
-      fprintf(stderr, "--option requires an argument.\n");
-      usage(prog);
-      return 2;
-    }
-    if (strncmp(a, "--option=", 9) == 0)
-    {
-      argv_clean[(*argc_clean)++] = "-o";
-      argv_clean[(*argc_clean)++] = (char *)(a + 9);
-      continue;
-    }
-    if (strcmp(a, "--image") == 0)
-    {
-      if (i + 1 < argc)
-      {
-        opts->image_path = argv[++i];
-        continue;
-      }
-      fprintf(stderr, "--image requires a path argument.\n");
-      usage(prog);
-      return 2;
-    }
-    if (strncmp(a, "--image=", 8) == 0)
-    {
-      opts->image_path = a + 8;
-      continue;
-    }
+
     argv_clean[(*argc_clean)++] = argv[i];
   }
   return 0;
