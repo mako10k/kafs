@@ -910,51 +910,53 @@ static void kafs_pending_worker_notify_all(struct kafs_context *ctx)
   pthread_mutex_unlock(&ctx->c_pending_worker_lock);
 }
 
-static void kafs_pending_worker_adjust_priority_locked(struct kafs_context *ctx)
+static void kafs_pending_worker_watermarks(struct kafs_context *ctx, uint32_t *high_wm,
+                                           uint32_t *low_wm)
 {
-  if (!ctx || !ctx->c_pending_worker_running)
-    return;
-
-  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
-  if (!hdr || hdr->capacity == 0)
-    return;
-
-  // Hysteresis: boost near full, restore after queue is drained enough.
   kafs_pendinglog_adapt_capacity_locked(ctx);
   uint32_t cap = ctx->c_pendinglog_capacity;
   if (cap < KAFS_PENDINGLOG_CAPACITY_FLOOR)
     cap = KAFS_PENDINGLOG_CAPACITY_FLOOR;
-  uint32_t high_wm = cap - (cap / 8u); // 87.5%
-  uint32_t low_wm = cap / 2u;          // 50%
-  if (high_wm <= low_wm)
-    high_wm = low_wm + 1u;
+  *high_wm = cap - (cap / 8u);
+  *low_wm = cap / 2u;
+  if (*high_wm <= *low_wm)
+    *high_wm = *low_wm + 1u;
+}
 
-  uint32_t qcnt = kafs_pendinglog_count(ctx);
-  uint64_t oldest_age_ms = 0;
-  uint32_t over_soft = 0;
-  uint32_t over_hard = 0;
+static uint64_t kafs_pending_worker_oldest_age_ms(struct kafs_context *ctx,
+                                                  kafs_pendinglog_hdr_t *hdr, uint32_t qcnt)
+{
+  if (qcnt == 0)
+    return 0;
 
-  if (qcnt > 0)
-  {
-    kafs_pendinglog_entry_t *head = kafs_pendinglog_entry_ptr(ctx, hdr->head);
-    uint64_t now_rt_ns = kafs_now_realtime_ns();
-    if (head && head->seq > 0)
-    {
-      // If timestamp looks far in the future (clock jump/corruption), ignore this sample.
-      if (head->seq <= now_rt_ns + 300000000000ull && now_rt_ns >= head->seq)
-        oldest_age_ms = (now_rt_ns - head->seq) / 1000000ull;
-    }
-  }
+  kafs_pendinglog_entry_t *head = kafs_pendinglog_entry_ptr(ctx, hdr->head);
+  uint64_t now_rt_ns = kafs_now_realtime_ns();
+  if (!head || head->seq == 0)
+    return 0;
+  if (head->seq > now_rt_ns + 300000000000ull || now_rt_ns < head->seq)
+    return 0;
+  return (now_rt_ns - head->seq) / 1000000ull;
+}
 
+static void kafs_pending_worker_update_ttl_state(struct kafs_context *ctx, uint64_t oldest_age_ms,
+                                                 uint32_t *over_soft, uint32_t *over_hard)
+{
+  *over_soft = 0;
+  *over_hard = 0;
   if (ctx->c_pending_ttl_soft_ms > 0 && oldest_age_ms >= (uint64_t)ctx->c_pending_ttl_soft_ms)
-    over_soft = 1;
+    *over_soft = 1;
   if (ctx->c_pending_ttl_hard_ms > 0 && oldest_age_ms >= (uint64_t)ctx->c_pending_ttl_hard_ms)
-    over_hard = 1;
+    *over_hard = 1;
 
   ctx->c_pending_oldest_age_ms = oldest_age_ms;
-  ctx->c_pending_ttl_over_soft = over_soft;
-  ctx->c_pending_ttl_over_hard = over_hard;
+  ctx->c_pending_ttl_over_soft = *over_soft;
+  ctx->c_pending_ttl_over_hard = *over_hard;
+}
 
+static void kafs_pending_worker_apply_auto_boost(struct kafs_context *ctx, uint32_t qcnt,
+                                                 uint32_t high_wm, uint32_t low_wm,
+                                                 uint32_t over_soft)
+{
   if (!ctx->c_pending_worker_auto_boosted)
   {
     if ((qcnt >= high_wm || over_soft) &&
@@ -976,6 +978,27 @@ static void kafs_pending_worker_adjust_priority_locked(struct kafs_context *ctx)
     ctx->c_pending_worker_prio_dirty = 1;
     ctx->c_pending_worker_auto_boosted = 0;
   }
+}
+
+static void kafs_pending_worker_adjust_priority_locked(struct kafs_context *ctx)
+{
+  if (!ctx || !ctx->c_pending_worker_running)
+    return;
+
+  kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
+  if (!hdr || hdr->capacity == 0)
+    return;
+
+  uint32_t high_wm = 0;
+  uint32_t low_wm = 0;
+  kafs_pending_worker_watermarks(ctx, &high_wm, &low_wm);
+
+  uint32_t qcnt = kafs_pendinglog_count(ctx);
+  uint32_t over_soft = 0;
+  uint32_t over_hard = 0;
+  uint64_t oldest_age_ms = kafs_pending_worker_oldest_age_ms(ctx, hdr, qcnt);
+  kafs_pending_worker_update_ttl_state(ctx, oldest_age_ms, &over_soft, &over_hard);
+  kafs_pending_worker_apply_auto_boost(ctx, qcnt, high_wm, low_wm, over_soft);
 }
 
 static void kafs_pending_worker_begin_boost(struct kafs_context *ctx, uint32_t *saved_mode,
