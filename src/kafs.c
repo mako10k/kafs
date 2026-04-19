@@ -1809,6 +1809,70 @@ static int kafs_bg_dedup_handle_scanned_block(struct kafs_context *ctx, uint32_t
   return 1;
 }
 
+static int kafs_bg_dedup_scan_inode(struct kafs_context *ctx, uint32_t ino, kafs_inocnt_t scanned,
+                                    kafs_inocnt_t inocnt, int pressure_mode, kafs_blksize_t bs,
+                                    uint32_t scan_window, uint32_t sweep_cap, uint32_t block_budget,
+                                    uint32_t *scanned_blocks_this_step,
+                                    kafs_bg_dedup_sweep_state_t *sweep_state)
+{
+  int inode_locked = 0;
+  kafs_inode_lock(ctx, ino);
+  inode_locked = 1;
+  kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
+  kafs_iblkcnt_t iblocnt = 0;
+  uint32_t direct_cnt = 0;
+  if (!kafs_bg_dedup_prepare_inode_scan(ctx, inoent, scanned, inocnt, pressure_mode, bs,
+                                        scan_window, &iblocnt, &direct_cnt))
+    return 0;
+
+  char buf[bs];
+  uint32_t start = (scanned == 0) ? (ctx->c_bg_dedup_iblk_cursor % direct_cnt) : 0u;
+  for (uint32_t delta = 0; delta < direct_cnt; ++delta)
+  {
+    uint32_t iblk = (start + delta) % direct_cnt;
+    uint32_t next_iblk = (iblk + 1u < direct_cnt) ? (iblk + 1u) : 0u;
+
+    kafs_blkcnt_t raw = KAFS_BLO_NONE;
+    if (kafs_ino_ibrk_run(ctx, inoent, (kafs_iblkcnt_t)iblk, &raw, KAFS_IBLKREF_FUNC_GET_RAW) != 0)
+      continue;
+    if (kafs_ref_is_pending(raw))
+      continue;
+
+    kafs_blkcnt_t old_blo = KAFS_BLO_NONE;
+    if (kafs_ref_resolve_data_blo(ctx, raw, &old_blo) != 0 || old_blo == KAFS_BLO_NONE)
+      continue;
+    if (kafs_blk_read(ctx, old_blo, buf) != 0)
+      continue;
+
+    __atomic_add_fetch(&ctx->c_stat_bg_dedup_scanned_blocks, 1u, __ATOMIC_RELAXED);
+    (*scanned_blocks_this_step)++;
+
+    kafs_bg_dedup_advance_or_cooldown(ctx, inocnt, next_iblk, pressure_mode);
+
+    kafs_blkcnt_t snapshot_raw = raw;
+    kafs_inode_unlock(ctx, ino);
+    inode_locked = 0;
+
+    int action = kafs_bg_dedup_handle_scanned_block(ctx, ino, (kafs_iblkcnt_t)iblk, snapshot_raw,
+                                                    old_blo, buf, bs, sweep_cap, block_budget,
+                                                    scanned_blocks_this_step, sweep_state);
+    if (action == 2)
+      return 2;
+    if (action == 1)
+      break;
+
+    kafs_inode_lock(ctx, ino);
+    inode_locked = 1;
+    inoent = kafs_ctx_inode(ctx, ino);
+  }
+
+  if (inode_locked)
+    kafs_inode_unlock(ctx, ino);
+  if (scanned == 0)
+    kafs_bg_dedup_advance_or_cooldown(ctx, inocnt, 0, pressure_mode);
+  return 0;
+}
+
 static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
 {
   if (!ctx || !ctx->c_superblock)
@@ -1827,7 +1891,6 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
   __atomic_add_fetch(&ctx->c_stat_bg_dedup_steps, 1u, __ATOMIC_RELAXED);
 
   kafs_blksize_t bs = kafs_sb_blksize_get(ctx->c_superblock);
-  char buf[bs];
   uint32_t block_budget =
       pressure_mode ? KAFS_BG_DEDUP_BLOCK_BUDGET_PRESSURE : KAFS_BG_DEDUP_BLOCK_BUDGET_DEFAULT;
   uint32_t scan_window =
@@ -1841,60 +1904,10 @@ static void kafs_bg_dedup_step(struct kafs_context *ctx, int pressure_mode)
   for (kafs_inocnt_t scanned = 0; scanned < inocnt; ++scanned)
   {
     uint32_t ino = (ctx->c_bg_dedup_ino_cursor + scanned) % inocnt;
-    int inode_locked = 0;
-    kafs_inode_lock(ctx, ino);
-    inode_locked = 1;
-    kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
-    kafs_iblkcnt_t iblocnt = 0;
-    uint32_t direct_cnt = 0;
-    if (!kafs_bg_dedup_prepare_inode_scan(ctx, inoent, scanned, inocnt, pressure_mode, bs,
-                                          scan_window, &iblocnt, &direct_cnt))
-    {
-      inode_locked = 0;
-      continue;
-    }
-
-    uint32_t start = (scanned == 0) ? (ctx->c_bg_dedup_iblk_cursor % direct_cnt) : 0u;
-    for (uint32_t delta = 0; delta < direct_cnt; ++delta)
-    {
-      uint32_t iblk = (start + delta) % direct_cnt;
-      uint32_t next_iblk = (iblk + 1u < direct_cnt) ? (iblk + 1u) : 0u;
-
-      kafs_blkcnt_t raw = KAFS_BLO_NONE;
-      if (kafs_ino_ibrk_run(ctx, inoent, (kafs_iblkcnt_t)iblk, &raw, KAFS_IBLKREF_FUNC_GET_RAW) !=
-          0)
-        continue;
-      if (kafs_ref_is_pending(raw))
-        continue;
-
-      kafs_blkcnt_t old_blo = KAFS_BLO_NONE;
-      if (kafs_ref_resolve_data_blo(ctx, raw, &old_blo) != 0 || old_blo == KAFS_BLO_NONE)
-        continue;
-      if (kafs_blk_read(ctx, old_blo, buf) != 0)
-        continue;
-
-      __atomic_add_fetch(&ctx->c_stat_bg_dedup_scanned_blocks, 1u, __ATOMIC_RELAXED);
-      scanned_blocks_this_step++;
-
-      kafs_bg_dedup_advance_or_cooldown(ctx, inocnt, next_iblk, pressure_mode);
-
-      kafs_blkcnt_t snapshot_raw = raw;
-      kafs_inode_unlock(ctx, ino);
-      inode_locked = 0;
-
-      int action = kafs_bg_dedup_handle_scanned_block(ctx, ino, (kafs_iblkcnt_t)iblk, snapshot_raw,
-                                                      old_blo, buf, bs, sweep_cap, block_budget,
-                                                      &scanned_blocks_this_step, &sweep_state);
-      if (action == 2)
-        return;
-      if (action == 1)
-        break;
-    }
-
-    if (inode_locked)
-      kafs_inode_unlock(ctx, ino);
-    if (scanned == 0)
-      kafs_bg_dedup_advance_or_cooldown(ctx, inocnt, 0, pressure_mode);
+    if (kafs_bg_dedup_scan_inode(ctx, ino, scanned, inocnt, pressure_mode, bs, scan_window,
+                                 sweep_cap, block_budget, &scanned_blocks_this_step,
+                                 &sweep_state) == 2)
+      return;
   }
 }
 
