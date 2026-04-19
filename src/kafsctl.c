@@ -1415,25 +1415,75 @@ static int path_join_components(char out[KAFS_IOCTL_PATH_MAX], const char *base,
   return 0;
 }
 
+static int normalize_path_raw_input(const char *input, char raw[KAFS_IOCTL_PATH_MAX])
+{
+  if (input[0] == '/')
+  {
+    if (snprintf(raw, KAFS_IOCTL_PATH_MAX, "%s", input) >= KAFS_IOCTL_PATH_MAX)
+      return -ENAMETOOLONG;
+    return 0;
+  }
+
+  char cwd[KAFS_IOCTL_PATH_MAX];
+  if (!getcwd(cwd, sizeof(cwd)))
+    return -errno;
+  if (snprintf(raw, KAFS_IOCTL_PATH_MAX, "%s/%s", cwd, input) >= KAFS_IOCTL_PATH_MAX)
+    return -ENAMETOOLONG;
+  return 0;
+}
+
+static void normalize_path_pop_component(char normalized[KAFS_IOCTL_PATH_MAX], size_t *norm_len)
+{
+  if (*norm_len <= 1)
+    return;
+
+  if (normalized[*norm_len - 1] == '/')
+    --(*norm_len);
+  while (*norm_len > 1 && normalized[*norm_len - 1] != '/')
+    --(*norm_len);
+  normalized[*norm_len] = '\0';
+}
+
+static int normalize_path_append_component(char normalized[KAFS_IOCTL_PATH_MAX], size_t *norm_len,
+                                           const char *start, size_t len)
+{
+  if (*norm_len > 1)
+  {
+    if (*norm_len + 1 >= KAFS_IOCTL_PATH_MAX)
+      return -ENAMETOOLONG;
+    normalized[(*norm_len)++] = '/';
+  }
+  if (*norm_len + len >= KAFS_IOCTL_PATH_MAX)
+    return -ENAMETOOLONG;
+
+  memcpy(normalized + *norm_len, start, len);
+  *norm_len += len;
+  normalized[*norm_len] = '\0';
+  return 0;
+}
+
+static int normalize_path_handle_segment(char normalized[KAFS_IOCTL_PATH_MAX], size_t *norm_len,
+                                         const char *start, size_t len)
+{
+  if (len == 1 && start[0] == '.')
+    return 0;
+  if (len == 2 && start[0] == '.' && start[1] == '.')
+  {
+    normalize_path_pop_component(normalized, norm_len);
+    return 0;
+  }
+  return normalize_path_append_component(normalized, norm_len, start, len);
+}
+
 static int normalize_path_input(const char *input, char out[KAFS_IOCTL_PATH_MAX])
 {
   if (!input || !*input)
     return -EINVAL;
 
   char raw[KAFS_IOCTL_PATH_MAX];
-  if (input[0] == '/')
-  {
-    if (snprintf(raw, sizeof(raw), "%s", input) >= (int)sizeof(raw))
-      return -ENAMETOOLONG;
-  }
-  else
-  {
-    char cwd[KAFS_IOCTL_PATH_MAX];
-    if (!getcwd(cwd, sizeof(cwd)))
-      return -errno;
-    if (snprintf(raw, sizeof(raw), "%s/%s", cwd, input) >= (int)sizeof(raw))
-      return -ENAMETOOLONG;
-  }
+  int rc = normalize_path_raw_input(input, raw);
+  if (rc != 0)
+    return rc;
 
   char normalized[KAFS_IOCTL_PATH_MAX];
   size_t norm_len = 1;
@@ -1452,32 +1502,9 @@ static int normalize_path_input(const char *input, char out[KAFS_IOCTL_PATH_MAX]
     while (*cursor && *cursor != '/')
       ++cursor;
     size_t len = (size_t)(cursor - start);
-    if (len == 1 && start[0] == '.')
-      continue;
-    if (len == 2 && start[0] == '.' && start[1] == '.')
-    {
-      if (norm_len > 1)
-      {
-        if (normalized[norm_len - 1] == '/')
-          --norm_len;
-        while (norm_len > 1 && normalized[norm_len - 1] != '/')
-          --norm_len;
-        normalized[norm_len] = '\0';
-      }
-      continue;
-    }
-
-    if (norm_len > 1)
-    {
-      if (norm_len + 1 >= sizeof(normalized))
-        return -ENAMETOOLONG;
-      normalized[norm_len++] = '/';
-    }
-    if (norm_len + len >= sizeof(normalized))
-      return -ENAMETOOLONG;
-    memcpy(normalized + norm_len, start, len);
-    norm_len += len;
-    normalized[norm_len] = '\0';
+    rc = normalize_path_handle_segment(normalized, &norm_len, start, len);
+    if (rc != 0)
+      return rc;
   }
 
   if (snprintf(out, KAFS_IOCTL_PATH_MAX, "%s", normalized) >= KAFS_IOCTL_PATH_MAX)
