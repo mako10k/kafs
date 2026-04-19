@@ -8207,62 +8207,60 @@ static int kafs_ctl_handle_set_runtime(kafs_context_t *ctx, uint32_t payload_len
   return 0;
 }
 
-static int kafs_ctl_handle_request(kafs_context_t *ctx, kafs_ctl_session_t *sess,
-                                   const unsigned char *buf, size_t size)
+static int kafs_ctl_parse_request(const unsigned char *buf, size_t size, kafs_rpc_hdr_t *hdr)
 {
-  if (!ctx || !sess || !buf)
+  if (!buf || !hdr)
     return -EINVAL;
-  if (size < sizeof(kafs_rpc_hdr_t) || size > KAFS_CTL_MAX_REQ)
+  if (size < sizeof(*hdr) || size > KAFS_CTL_MAX_REQ)
     return -EINVAL;
 
-  kafs_rpc_hdr_t hdr;
-  memcpy(&hdr, buf, sizeof(hdr));
-  if (hdr.magic != KAFS_RPC_MAGIC || hdr.version != KAFS_RPC_VERSION)
+  memcpy(hdr, buf, sizeof(*hdr));
+  if (hdr->magic != KAFS_RPC_MAGIC || hdr->version != KAFS_RPC_VERSION)
     return -EPROTONOSUPPORT;
-  if (hdr.payload_len > KAFS_RPC_MAX_PAYLOAD)
+  if (hdr->payload_len > KAFS_RPC_MAX_PAYLOAD)
     return -EMSGSIZE;
-  if (sizeof(hdr) + hdr.payload_len != size)
+  if (sizeof(*hdr) + hdr->payload_len != size)
     return -EBADMSG;
+  return 0;
+}
 
-  const unsigned char *payload = buf + sizeof(hdr);
-  unsigned char resp_payload[KAFS_RPC_MAX_PAYLOAD];
-  uint32_t resp_len = 0;
-  int32_t result = 0;
-
-  switch (hdr.op)
+static int32_t kafs_ctl_dispatch_request(kafs_context_t *ctx, const kafs_rpc_hdr_t *hdr,
+                                         const unsigned char *payload, unsigned char *resp_payload,
+                                         uint32_t *resp_len)
+{
+  switch (hdr->op)
   {
   case KAFS_RPC_OP_CTL_STATUS:
   case KAFS_RPC_OP_CTL_COMPAT:
-    kafs_ctl_write_status_response(ctx, resp_payload, &resp_len);
-    break;
+    kafs_ctl_write_status_response(ctx, resp_payload, resp_len);
+    return 0;
   case KAFS_RPC_OP_CTL_RESTART:
-    result = kafs_hotplug_restart_back(ctx);
-    break;
+    return kafs_hotplug_restart_back(ctx);
   case KAFS_RPC_OP_CTL_SET_TIMEOUT:
-    result = kafs_ctl_handle_set_timeout(ctx, hdr.payload_len, payload);
-    break;
+    return kafs_ctl_handle_set_timeout(ctx, hdr->payload_len, payload);
   case KAFS_RPC_OP_CTL_ENV_LIST:
-    kafs_ctl_write_env_list_response(ctx, resp_payload, &resp_len);
-    break;
+    kafs_ctl_write_env_list_response(ctx, resp_payload, resp_len);
+    return 0;
   case KAFS_RPC_OP_CTL_ENV_SET:
-    result = kafs_ctl_handle_env_update(ctx, hdr.payload_len, payload, 0);
-    break;
+    return kafs_ctl_handle_env_update(ctx, hdr->payload_len, payload, 0);
   case KAFS_RPC_OP_CTL_ENV_UNSET:
-    result = kafs_ctl_handle_env_update(ctx, hdr.payload_len, payload, 1);
-    break;
+    return kafs_ctl_handle_env_update(ctx, hdr->payload_len, payload, 1);
   case KAFS_RPC_OP_CTL_SET_DEDUP_PRIO:
-    result = kafs_ctl_handle_set_dedup_prio(ctx, hdr.payload_len, payload);
-    break;
+    return kafs_ctl_handle_set_dedup_prio(ctx, hdr->payload_len, payload);
   case KAFS_RPC_OP_CTL_SET_RUNTIME:
-    result = kafs_ctl_handle_set_runtime(ctx, hdr.payload_len, payload);
-    break;
+    return kafs_ctl_handle_set_runtime(ctx, hdr->payload_len, payload);
   default:
-    result = -ENOSYS;
-    break;
+    return -ENOSYS;
   }
+}
 
+static int kafs_ctl_store_response(kafs_ctl_session_t *sess, const kafs_rpc_hdr_t *hdr,
+                                   int32_t result, const unsigned char *resp_payload,
+                                   uint32_t resp_len)
+{
   kafs_rpc_resp_hdr_t rhdr;
-  rhdr.req_id = hdr.req_id;
+
+  rhdr.req_id = hdr->req_id;
   rhdr.result = result;
   rhdr.payload_len = resp_len;
   if (sizeof(rhdr) + resp_len > sizeof(sess->resp))
@@ -8271,6 +8269,28 @@ static int kafs_ctl_handle_request(kafs_context_t *ctx, kafs_ctl_session_t *sess
   if (resp_len != 0)
     memcpy(sess->resp + sizeof(rhdr), resp_payload, resp_len);
   sess->resp_len = sizeof(rhdr) + resp_len;
+  return 0;
+}
+
+static int kafs_ctl_handle_request(kafs_context_t *ctx, kafs_ctl_session_t *sess,
+                                   const unsigned char *buf, size_t size)
+{
+  if (!ctx || !sess || !buf)
+    return -EINVAL;
+
+  kafs_rpc_hdr_t hdr;
+  int rc = kafs_ctl_parse_request(buf, size, &hdr);
+  if (rc != 0)
+    return rc;
+
+  const unsigned char *payload = buf + sizeof(hdr);
+  unsigned char resp_payload[KAFS_RPC_MAX_PAYLOAD];
+  uint32_t resp_len = 0;
+  int32_t result = kafs_ctl_dispatch_request(ctx, &hdr, payload, resp_payload, &resp_len);
+
+  rc = kafs_ctl_store_response(sess, &hdr, result, resp_payload, resp_len);
+  if (rc != 0)
+    return rc;
   return (int)size;
 }
 
