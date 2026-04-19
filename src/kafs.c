@@ -10906,36 +10906,68 @@ static void kafs_migrate_ctx_close(kafs_context_t *ctx)
   ctx->c_fd = -1;
 }
 
-int kafs_core_migrate_image(const char *image_path, int assume_yes)
+static int kafs_migrate_read_superblock(const char *image_path, kafs_ssuperblock_t *sb,
+                                        uint32_t *fmt)
 {
-  if (!image_path)
-    return -EINVAL;
-
-  kafs_ssuperblock_t sb;
   int fd = open(image_path, O_RDWR, 0666);
   if (fd < 0)
     return -errno;
-  ssize_t r = pread(fd, &sb, sizeof(sb), 0);
-  if (r != (ssize_t)sizeof(sb))
+
+  ssize_t r = pread(fd, sb, sizeof(*sb), 0);
+  if (r != (ssize_t)sizeof(*sb))
   {
     int err = -errno;
     close(fd);
     return err ? err : -EIO;
   }
   close(fd);
-  if (kafs_sb_magic_get(&sb) != KAFS_MAGIC)
+
+  if (kafs_sb_magic_get(sb) != KAFS_MAGIC)
     return -EINVAL;
 
-  uint32_t fmt = kafs_sb_format_version_get(&sb);
-  if (fmt == KAFS_FORMAT_VERSION)
+  *fmt = kafs_sb_format_version_get(sb);
+  if (*fmt == KAFS_FORMAT_VERSION)
     return 1;
-  if (fmt != KAFS_FORMAT_VERSION_V2 && fmt != KAFS_FORMAT_VERSION_V3)
+  if (*fmt != KAFS_FORMAT_VERSION_V2 && *fmt != KAFS_FORMAT_VERSION_V3)
     return -EPROTONOSUPPORT;
+
+  return 0;
+}
+
+static int kafs_migrate_finalize_superblock(kafs_context_t *ctx, uint32_t fmt)
+{
+  if (fmt == KAFS_FORMAT_VERSION_V2 && kafs_sb_allocator_size_get(ctx->c_superblock) > 0)
+  {
+    if (kafs_sb_allocator_version_get(ctx->c_superblock) < 2u)
+      kafs_sb_allocator_version_set(ctx->c_superblock, 2u);
+    uint64_t ff = kafs_sb_feature_flags_get(ctx->c_superblock);
+    kafs_sb_feature_flags_set(ctx->c_superblock, ff | KAFS_FEATURE_ALLOC_V2);
+  }
+  kafs_sb_format_version_set(ctx->c_superblock, KAFS_FORMAT_VERSION);
+  kafs_sb_wtime_set(ctx->c_superblock, kafs_now());
+  if (msync(ctx->c_img_base, ctx->c_img_size, MS_SYNC) != 0)
+    return -errno;
+  if (fsync(ctx->c_fd) != 0)
+    return -errno;
+
+  return 0;
+}
+
+int kafs_core_migrate_image(const char *image_path, int assume_yes)
+{
+  if (!image_path)
+    return -EINVAL;
+
+  kafs_ssuperblock_t sb;
+  uint32_t fmt;
+  int rc = kafs_migrate_read_superblock(image_path, &sb, &fmt);
+  if (rc != 0)
+    return rc;
   if (!assume_yes && !kafs_confirm_yes_stdin())
     return -ECANCELED;
 
   kafs_context_t ctx;
-  int rc = kafs_migrate_ctx_open(image_path, &ctx, &sb);
+  rc = kafs_migrate_ctx_open(image_path, &ctx, &sb);
   if (rc != 0)
     return rc;
 
@@ -10955,21 +10987,7 @@ int kafs_core_migrate_image(const char *image_path, int assume_yes)
   }
 
   if (rc == 0)
-  {
-    if (fmt == KAFS_FORMAT_VERSION_V2 && kafs_sb_allocator_size_get(ctx.c_superblock) > 0)
-    {
-      if (kafs_sb_allocator_version_get(ctx.c_superblock) < 2u)
-        kafs_sb_allocator_version_set(ctx.c_superblock, 2u);
-      uint64_t ff = kafs_sb_feature_flags_get(ctx.c_superblock);
-      kafs_sb_feature_flags_set(ctx.c_superblock, ff | KAFS_FEATURE_ALLOC_V2);
-    }
-    kafs_sb_format_version_set(ctx.c_superblock, KAFS_FORMAT_VERSION);
-    kafs_sb_wtime_set(ctx.c_superblock, kafs_now());
-    if (msync(ctx.c_img_base, ctx.c_img_size, MS_SYNC) != 0)
-      rc = -errno;
-    else if (fsync(ctx.c_fd) != 0)
-      rc = -errno;
-  }
+    rc = kafs_migrate_finalize_superblock(&ctx, fmt);
 
   kafs_migrate_ctx_close(&ctx);
   return rc;
