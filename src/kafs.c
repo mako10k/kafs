@@ -325,31 +325,31 @@ static void kafs_diag_note_create_event(struct kafs_context *ctx, kafs_inocnt_t 
                     slot[0] ? slot : "(null)");
 }
 
-static void kafs_diag_log_first_pwrite_after_create(struct kafs_context *ctx, kafs_sinode_t *inoent,
-                                                    const void *buf, kafs_off_t size,
-                                                    kafs_off_t offset)
+static int kafs_diag_should_log_first_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                             const void *buf, kafs_off_t size,
+                                             kafs_inocnt_t *ino_out)
 {
   if (!ctx || !inoent || !buf || size <= 0 || !ctx->c_superblock || !ctx->c_diag_create_seq ||
       !ctx->c_diag_create_mode || !ctx->c_diag_create_first_write_seen ||
       !ctx->c_diag_create_paths || !kafs_extra_diag_enabled())
-    return;
+    return 0;
 
   kafs_inocnt_t ino = kafs_ctx_ino_no(ctx, inoent);
   if (ino >= kafs_sb_inocnt_get(ctx->c_superblock))
-    return;
+    return 0;
   if (ctx->c_diag_create_first_write_seen[ino])
-    return;
+    return 0;
 
-  uint64_t seq = ctx->c_diag_create_seq[ino];
-  if (seq == 0)
-    return;
-  ctx->c_diag_create_first_write_seen[ino] = 1u;
+  *ino_out = ino;
+  return 1;
+}
 
-  char hex_sample[3 * 16 + 1];
-  char ascii_sample[16 + 1];
-  kafs_diag_format_sample(buf, (size_t)size, hex_sample, sizeof(hex_sample), ascii_sample,
-                          sizeof(ascii_sample));
-
+static void kafs_diag_emit_first_pwrite_after_create(struct kafs_context *ctx,
+                                                     kafs_sinode_t *inoent, kafs_inocnt_t ino,
+                                                     uint64_t seq, kafs_off_t size,
+                                                     kafs_off_t offset, const char *hex_sample,
+                                                     const char *ascii_sample)
+{
   char *slot = ctx->c_diag_create_paths + ((size_t)ino * KAFS_DIAG_CREATE_PATH_MAX);
   kafs_log(KAFS_LOG_WARNING,
            "%s: seq=%" PRIuFAST64 " ino=%" PRIuFAST32 " expected_mode=%o current_mode=%o "
@@ -366,6 +366,27 @@ static void kafs_diag_log_first_pwrite_after_create(struct kafs_context *ctx, ka
                     (unsigned)ctx->c_diag_create_mode[ino], (unsigned)kafs_ino_mode_get(inoent),
                     (uint_fast64_t)size, (uint_fast64_t)offset, slot[0] ? slot : "(null)",
                     hex_sample[0] ? hex_sample : "-", ascii_sample[0] ? ascii_sample : "-");
+}
+
+static void kafs_diag_log_first_pwrite_after_create(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                                    const void *buf, kafs_off_t size,
+                                                    kafs_off_t offset)
+{
+  kafs_inocnt_t ino = 0;
+  if (!kafs_diag_should_log_first_pwrite(ctx, inoent, buf, size, &ino))
+    return;
+
+  uint64_t seq = ctx->c_diag_create_seq[ino];
+  if (seq == 0)
+    return;
+  ctx->c_diag_create_first_write_seen[ino] = 1u;
+
+  char hex_sample[3 * 16 + 1];
+  char ascii_sample[16 + 1];
+  kafs_diag_format_sample(buf, (size_t)size, hex_sample, sizeof(hex_sample), ascii_sample,
+                          sizeof(ascii_sample));
+  kafs_diag_emit_first_pwrite_after_create(ctx, inoent, ino, seq, size, offset, hex_sample,
+                                           ascii_sample);
 }
 
 #else
