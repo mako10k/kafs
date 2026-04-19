@@ -2014,7 +2014,7 @@ static void kafsctl_stats_report_init(kafs_stats_report_t *report, const kafs_st
   snprintf(report->tombstone_oldest_buf, sizeof(report->tombstone_oldest_buf), "%s", "none");
 }
 
-static void kafsctl_stats_compute_report(kafs_stats_report_t *report)
+static void kafsctl_stats_compute_capacity(kafs_stats_report_t *report)
 {
   report->have_verbose_scan = ((report->st.result_flags & KAFS_STATS_R_VERBOSE_SCAN) != 0);
   report->logical_bytes = report->st.hrl_refcnt_sum * (uint64_t)report->st.blksize;
@@ -2028,21 +2028,29 @@ static void kafsctl_stats_compute_report(kafs_stats_report_t *report)
 
   if (report->st.hrl_put_calls > 0)
     report->hit_rate = (double)report->st.hrl_put_hits / (double)report->st.hrl_put_calls;
-  report->hrl_put_hash_ms = (double)report->st.hrl_put_ns_hash / 1000000.0;
-  report->hrl_put_find_ms = (double)report->st.hrl_put_ns_find / 1000000.0;
-  report->hrl_put_cmp_ms = (double)report->st.hrl_put_ns_cmp_content / 1000000.0;
-  report->hrl_put_slot_alloc_ms = (double)report->st.hrl_put_ns_slot_alloc / 1000000.0;
-  report->hrl_put_blk_alloc_ms = (double)report->st.hrl_put_ns_blk_alloc / 1000000.0;
-  report->hrl_put_blk_write_ms = (double)report->st.hrl_put_ns_blk_write / 1000000.0;
-  report->hrl_put_avg_chain_steps =
+  report->fs_blocks_used = (report->st.fs_blocks_total >= report->st.fs_blocks_free)
+                               ? (report->st.fs_blocks_total - report->st.fs_blocks_free)
+                               : 0;
+  report->fs_inodes_used = (report->st.fs_inodes_total >= report->st.fs_inodes_free)
+                               ? (report->st.fs_inodes_total - report->st.fs_inodes_free)
+                               : 0;
+  report->fs_blocks_used_pct = pct_u64(report->fs_blocks_used, report->st.fs_blocks_total);
+  report->fs_inodes_used_pct = pct_u64(report->fs_inodes_used, report->st.fs_inodes_total);
+  report->hrl_entries_used_pct = pct_u64(report->st.hrl_entries_used, report->st.hrl_entries_total);
+  report->hrl_or_legacy_total = report->st.hrl_put_calls + report->st.hrl_put_fallback_legacy;
+  report->hrl_path_rate = pct_u64(report->st.hrl_put_calls, report->hrl_or_legacy_total);
+  report->legacy_path_rate =
+      pct_u64(report->st.hrl_put_fallback_legacy, report->hrl_or_legacy_total);
+  report->direct_to_hrl_ratio =
       (report->st.hrl_put_calls > 0)
-          ? (double)report->st.hrl_put_chain_steps / (double)report->st.hrl_put_calls
+          ? (double)report->st.hrl_put_fallback_legacy / (double)report->st.hrl_put_calls
           : 0.0;
-  report->hrl_put_avg_cmp_calls =
-      (report->st.hrl_put_calls > 0)
-          ? (double)report->st.hrl_put_cmp_calls / (double)report->st.hrl_put_calls
-          : 0.0;
+  report->hrl_hit_rate_pct = pct_u64(report->st.hrl_put_hits, report->st.hrl_put_calls);
+  report->hrl_miss_rate_pct = pct_u64(report->st.hrl_put_misses, report->st.hrl_put_calls);
+}
 
+static void kafsctl_stats_compute_lock_metrics(kafs_stats_report_t *report)
+{
   report->lock_inode_cont_rate =
       (report->st.lock_inode_acquire > 0)
           ? (double)report->st.lock_inode_contended / (double)report->st.lock_inode_acquire
@@ -2068,6 +2076,24 @@ static void kafsctl_stats_compute_report(kafs_stats_report_t *report)
                                                 (double)report->st.lock_hrl_global_acquire
                                           : 0.0;
   report->lock_hrl_global_wait_ms = (double)report->st.lock_hrl_global_wait_ns / 1000000.0;
+}
+
+static void kafsctl_stats_compute_io_metrics(kafs_stats_report_t *report)
+{
+  report->hrl_put_hash_ms = (double)report->st.hrl_put_ns_hash / 1000000.0;
+  report->hrl_put_find_ms = (double)report->st.hrl_put_ns_find / 1000000.0;
+  report->hrl_put_cmp_ms = (double)report->st.hrl_put_ns_cmp_content / 1000000.0;
+  report->hrl_put_slot_alloc_ms = (double)report->st.hrl_put_ns_slot_alloc / 1000000.0;
+  report->hrl_put_blk_alloc_ms = (double)report->st.hrl_put_ns_blk_alloc / 1000000.0;
+  report->hrl_put_blk_write_ms = (double)report->st.hrl_put_ns_blk_write / 1000000.0;
+  report->hrl_put_avg_chain_steps =
+      (report->st.hrl_put_calls > 0)
+          ? (double)report->st.hrl_put_chain_steps / (double)report->st.hrl_put_calls
+          : 0.0;
+  report->hrl_put_avg_cmp_calls =
+      (report->st.hrl_put_calls > 0)
+          ? (double)report->st.hrl_put_cmp_calls / (double)report->st.hrl_put_calls
+          : 0.0;
   report->access_fh_fastpath_rate =
       (report->st.access_calls > 0)
           ? (double)report->st.access_fh_fastpath_hits / (double)report->st.access_calls
@@ -2099,6 +2125,10 @@ static void kafsctl_stats_compute_report(kafs_stats_report_t *report)
   report->blk_set_usage_bit_ms = (double)report->st.blk_set_usage_ns_bit_update / 1000000.0;
   report->blk_set_usage_freecnt_ms = (double)report->st.blk_set_usage_ns_freecnt_update / 1000000.0;
   report->blk_set_usage_wtime_ms = (double)report->st.blk_set_usage_ns_wtime_update / 1000000.0;
+}
+
+static void kafsctl_stats_compute_bg_metrics(kafs_stats_report_t *report)
+{
   report->copy_share_hit_rate =
       (report->st.copy_share_attempt_blocks > 0)
           ? (double)report->st.copy_share_done_blocks / (double)report->st.copy_share_attempt_blocks
@@ -2111,34 +2141,22 @@ static void kafsctl_stats_compute_report(kafs_stats_report_t *report)
       (report->st.bg_dedup_direct_candidates > 0)
           ? (double)report->st.bg_dedup_direct_hits / (double)report->st.bg_dedup_direct_candidates
           : 0.0;
-  report->pending_worker_start_fail_rate = (report->st.pending_worker_start_calls > 0)
-                                               ? (double)report->st.pending_worker_start_failures /
-                                                     (double)report->st.pending_worker_start_calls
-                                               : 0.0;
-  report->fs_blocks_used = (report->st.fs_blocks_total >= report->st.fs_blocks_free)
-                               ? (report->st.fs_blocks_total - report->st.fs_blocks_free)
-                               : 0;
-  report->fs_inodes_used = (report->st.fs_inodes_total >= report->st.fs_inodes_free)
-                               ? (report->st.fs_inodes_total - report->st.fs_inodes_free)
-                               : 0;
-
-  report->fs_blocks_used_pct = pct_u64(report->fs_blocks_used, report->st.fs_blocks_total);
-  report->fs_inodes_used_pct = pct_u64(report->fs_inodes_used, report->st.fs_inodes_total);
-  report->hrl_entries_used_pct = pct_u64(report->st.hrl_entries_used, report->st.hrl_entries_total);
-  report->hrl_or_legacy_total = report->st.hrl_put_calls + report->st.hrl_put_fallback_legacy;
-  report->hrl_path_rate = pct_u64(report->st.hrl_put_calls, report->hrl_or_legacy_total);
-  report->legacy_path_rate =
-      pct_u64(report->st.hrl_put_fallback_legacy, report->hrl_or_legacy_total);
-  report->direct_to_hrl_ratio =
-      (report->st.hrl_put_calls > 0)
-          ? (double)report->st.hrl_put_fallback_legacy / (double)report->st.hrl_put_calls
-          : 0.0;
-  report->hrl_hit_rate_pct = pct_u64(report->st.hrl_put_hits, report->st.hrl_put_calls);
-  report->hrl_miss_rate_pct = pct_u64(report->st.hrl_put_misses, report->st.hrl_put_calls);
   report->hrl_rescue_hit_rate =
       (report->st.hrl_rescue_attempts > 0)
           ? (double)report->st.hrl_rescue_hits / (double)report->st.hrl_rescue_attempts
           : 0.0;
+  report->pending_worker_start_fail_rate = (report->st.pending_worker_start_calls > 0)
+                                               ? (double)report->st.pending_worker_start_failures /
+                                                     (double)report->st.pending_worker_start_calls
+                                               : 0.0;
+}
+
+static void kafsctl_stats_compute_report(kafs_stats_report_t *report)
+{
+  kafsctl_stats_compute_capacity(report);
+  kafsctl_stats_compute_lock_metrics(report);
+  kafsctl_stats_compute_io_metrics(report);
+  kafsctl_stats_compute_bg_metrics(report);
 
   if (report->st.tombstone_inodes > 0 &&
       (report->st.tombstone_oldest_dtime_sec != 0 || report->st.tombstone_oldest_dtime_nsec != 0))
