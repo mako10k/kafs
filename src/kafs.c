@@ -7313,9 +7313,8 @@ static inline kafs_hrl_entry_t *kafs_hrl_entries_tbl(kafs_context_t *ctx)
   return (kafs_hrl_entry_t *)(base + (uintptr_t)off);
 }
 
-static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out, uint32_t request_flags)
+static void kafs_stats_snapshot_fs(kafs_context_t *ctx, kafs_stats_t *out, uint32_t request_flags)
 {
-  memset(out, 0, sizeof(*out));
   out->struct_size = (uint32_t)sizeof(*out);
   out->version = KAFS_STATS_VERSION;
   out->request_flags = request_flags;
@@ -7327,67 +7326,74 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out, uint32_t
   kafs_bitmap_unlock(ctx);
   out->fs_inodes_total = (uint64_t)kafs_sb_inocnt_get(ctx->c_superblock);
   out->fs_inodes_free = (uint64_t)(kafs_inocnt_t)kafs_sb_inocnt_free_get(ctx->c_superblock);
-
   out->hrl_entries_total = (uint64_t)kafs_sb_hrl_entry_cnt_get(ctx->c_superblock);
+}
 
-  if ((request_flags & KAFS_STATS_F_VERBOSE_SCAN) != 0)
+static void kafs_stats_snapshot_verbose_scan(kafs_context_t *ctx, kafs_stats_t *out,
+                                             uint32_t request_flags)
+{
+  if ((request_flags & KAFS_STATS_F_VERBOSE_SCAN) == 0)
+    return;
+
+  out->result_flags |= KAFS_STATS_R_VERBOSE_SCAN;
+
+  kafs_time_t oldest_tombstone = {0};
+  int have_oldest_tombstone = 0;
+  for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < (kafs_inocnt_t)out->fs_inodes_total; ++ino)
   {
-    out->result_flags |= KAFS_STATS_R_VERBOSE_SCAN;
+    kafs_time_t dtime = {0};
+    int is_tombstone = 0;
 
-    kafs_time_t oldest_tombstone = {0};
-    int have_oldest_tombstone = 0;
-    for (kafs_inocnt_t ino = KAFS_INO_ROOTDIR; ino < (kafs_inocnt_t)out->fs_inodes_total; ++ino)
+    kafs_inode_lock(ctx, ino);
+    const kafs_sinode_t *inoent = kafs_ctx_inode_const(ctx, ino);
+    if (kafs_inode_is_tombstone(inoent))
     {
-      kafs_time_t dtime = {0};
-      int is_tombstone = 0;
-
-      kafs_inode_lock(ctx, ino);
-      const kafs_sinode_t *inoent = kafs_ctx_inode_const(ctx, ino);
-      if (kafs_inode_is_tombstone(inoent))
-      {
-        dtime = kafs_ino_dtime_get(inoent);
-        is_tombstone = 1;
-      }
-      kafs_inode_unlock(ctx, ino);
-
-      if (!is_tombstone)
-        continue;
-
-      out->tombstone_inodes++;
-      if (!have_oldest_tombstone || kafs_time_before(dtime, oldest_tombstone))
-      {
-        oldest_tombstone = dtime;
-        have_oldest_tombstone = 1;
-      }
+      dtime = kafs_ino_dtime_get(inoent);
+      is_tombstone = 1;
     }
-    if (have_oldest_tombstone)
-    {
-      out->tombstone_oldest_dtime_sec = (uint64_t)oldest_tombstone.tv_sec;
-      out->tombstone_oldest_dtime_nsec = (uint64_t)oldest_tombstone.tv_nsec;
-    }
+    kafs_inode_unlock(ctx, ino);
 
-    uint32_t entry_cnt = kafs_sb_hrl_entry_cnt_get(ctx->c_superblock);
-    kafs_hrl_entry_t *ents = kafs_hrl_entries_tbl(ctx);
-    if (ents)
+    if (!is_tombstone)
+      continue;
+
+    out->tombstone_inodes++;
+    if (!have_oldest_tombstone || kafs_time_before(dtime, oldest_tombstone))
     {
-      uint64_t used = 0, dup = 0, refsum = 0;
-      for (uint32_t i = 0; i < entry_cnt; ++i)
-      {
-        uint32_t r = ents[i].refcnt;
-        if (r)
-        {
-          used++;
-          refsum += r;
-          if (r > 1)
-            dup++;
-        }
-      }
-      out->hrl_entries_used = used;
-      out->hrl_entries_duplicated = dup;
-      out->hrl_refcnt_sum = refsum;
+      oldest_tombstone = dtime;
+      have_oldest_tombstone = 1;
     }
   }
+  if (have_oldest_tombstone)
+  {
+    out->tombstone_oldest_dtime_sec = (uint64_t)oldest_tombstone.tv_sec;
+    out->tombstone_oldest_dtime_nsec = (uint64_t)oldest_tombstone.tv_nsec;
+  }
 
+  uint32_t entry_cnt = kafs_sb_hrl_entry_cnt_get(ctx->c_superblock);
+  kafs_hrl_entry_t *ents = kafs_hrl_entries_tbl(ctx);
+  if (!ents)
+    return;
+
+  uint64_t used = 0;
+  uint64_t dup = 0;
+  uint64_t refsum = 0;
+  for (uint32_t i = 0; i < entry_cnt; ++i)
+  {
+    uint32_t refcnt = ents[i].refcnt;
+    if (refcnt == 0)
+      continue;
+    used++;
+    refsum += refcnt;
+    if (refcnt > 1)
+      dup++;
+  }
+  out->hrl_entries_used = used;
+  out->hrl_entries_duplicated = dup;
+  out->hrl_refcnt_sum = refsum;
+}
+
+static void kafs_stats_snapshot_hrl(kafs_context_t *ctx, kafs_stats_t *out)
+{
   out->hrl_put_calls = ctx->c_stat_hrl_put_calls;
   out->hrl_put_hits = ctx->c_stat_hrl_put_hits;
   out->hrl_put_misses = ctx->c_stat_hrl_put_misses;
@@ -7403,7 +7409,10 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out, uint32_t
   out->hrl_rescue_attempts = ctx->c_stat_hrl_rescue_attempts;
   out->hrl_rescue_hits = ctx->c_stat_hrl_rescue_hits;
   out->hrl_rescue_evicts = ctx->c_stat_hrl_rescue_evicts;
+}
 
+static void kafs_stats_snapshot_locks(kafs_context_t *ctx, kafs_stats_t *out)
+{
   out->lock_hrl_bucket_acquire = ctx->c_stat_lock_hrl_bucket_acquire;
   out->lock_hrl_bucket_contended = ctx->c_stat_lock_hrl_bucket_contended;
   out->lock_hrl_bucket_wait_ns = ctx->c_stat_lock_hrl_bucket_wait_ns;
@@ -7419,7 +7428,10 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out, uint32_t
   out->lock_inode_alloc_acquire = ctx->c_stat_lock_inode_alloc_acquire;
   out->lock_inode_alloc_contended = ctx->c_stat_lock_inode_alloc_contended;
   out->lock_inode_alloc_wait_ns = ctx->c_stat_lock_inode_alloc_wait_ns;
+}
 
+static void kafs_stats_snapshot_access(kafs_context_t *ctx, kafs_stats_t *out)
+{
   out->access_calls = ctx->c_stat_access_calls;
   out->access_path_walk_calls = ctx->c_stat_access_path_walk_calls;
   out->access_fh_fastpath_hits = ctx->c_stat_access_fh_fastpath_hits;
@@ -7428,7 +7440,10 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out, uint32_t
   out->dir_snapshot_bytes = ctx->c_stat_dir_snapshot_bytes;
   out->dir_snapshot_meta_load_calls = ctx->c_stat_dir_snapshot_meta_load_calls;
   out->dirent_view_next_calls = ctx->c_stat_dirent_view_next_calls;
+}
 
+static void kafs_stats_snapshot_pwrite(kafs_context_t *ctx, kafs_stats_t *out)
+{
   out->pwrite_calls = ctx->c_stat_pwrite_calls;
   out->pwrite_bytes = ctx->c_stat_pwrite_bytes;
   out->pwrite_ns_iblk_read = ctx->c_stat_pwrite_ns_iblk_read;
@@ -7453,7 +7468,10 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out, uint32_t
   out->iblk_write_ns_hrl_put = ctx->c_stat_iblk_write_ns_hrl_put;
   out->iblk_write_ns_legacy_blk_write = ctx->c_stat_iblk_write_ns_legacy_blk_write;
   out->iblk_write_ns_dec_ref = ctx->c_stat_iblk_write_ns_dec_ref;
+}
 
+static void kafs_stats_snapshot_alloc(kafs_context_t *ctx, kafs_stats_t *out)
+{
   out->blk_alloc_calls = ctx->c_stat_blk_alloc_calls;
   out->blk_alloc_claim_retries = ctx->c_stat_blk_alloc_claim_retries;
   out->blk_alloc_ns_scan = ctx->c_stat_blk_alloc_ns_scan;
@@ -7466,7 +7484,10 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out, uint32_t
   out->blk_set_usage_ns_bit_update = ctx->c_stat_blk_set_usage_ns_bit_update;
   out->blk_set_usage_ns_freecnt_update = ctx->c_stat_blk_set_usage_ns_freecnt_update;
   out->blk_set_usage_ns_wtime_update = ctx->c_stat_blk_set_usage_ns_wtime_update;
+}
 
+static void kafs_stats_snapshot_bg_dedup(kafs_context_t *ctx, kafs_stats_t *out)
+{
   out->copy_share_attempt_blocks = ctx->c_stat_copy_share_attempt_blocks;
   out->copy_share_done_blocks = ctx->c_stat_copy_share_done_blocks;
   out->copy_share_fallback_blocks = ctx->c_stat_copy_share_fallback_blocks;
@@ -7487,12 +7508,16 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out, uint32_t
   out->bg_dedup_last_direct_candidates = ctx->c_bg_dedup_last_direct_candidates;
   out->bg_dedup_last_replacements = ctx->c_bg_dedup_last_replacements;
   out->bg_dedup_idle_skip_streak = ctx->c_bg_dedup_idle_skip_streak;
+
   uint64_t now_ns = kafs_now_ns();
   if (ctx->c_bg_dedup_cold_start_due_ns > now_ns)
     out->bg_dedup_cold_start_due_ms = (ctx->c_bg_dedup_cold_start_due_ns - now_ns) / 1000000ull;
   else
     out->bg_dedup_cold_start_due_ms = 0;
+}
 
+static void kafs_stats_snapshot_pending_worker(kafs_context_t *ctx, kafs_stats_t *out)
+{
   out->pending_worker_start_calls =
       __atomic_load_n(&ctx->c_stat_pending_worker_start_calls, __ATOMIC_RELAXED);
   out->pending_worker_start_failures =
@@ -7521,6 +7546,20 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out, uint32_t
     out->pending_queue_tail = hdr->tail;
   }
   pthread_mutex_unlock(&ctx->c_pending_worker_lock);
+}
+
+static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out, uint32_t request_flags)
+{
+  memset(out, 0, sizeof(*out));
+  kafs_stats_snapshot_fs(ctx, out, request_flags);
+  kafs_stats_snapshot_verbose_scan(ctx, out, request_flags);
+  kafs_stats_snapshot_hrl(ctx, out);
+  kafs_stats_snapshot_locks(ctx, out);
+  kafs_stats_snapshot_access(ctx, out);
+  kafs_stats_snapshot_pwrite(ctx, out);
+  kafs_stats_snapshot_alloc(ctx, out);
+  kafs_stats_snapshot_bg_dedup(ctx, out);
+  kafs_stats_snapshot_pending_worker(ctx, out);
 }
 
 #ifdef __linux__
