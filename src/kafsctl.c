@@ -256,6 +256,113 @@ static void usage_chmod_cmd(const char *prog)
   usage_cmd(prog, "chmod <octal_mode> <path>\n       chmod <mountpoint> <octal_mode> <path>", NULL);
 }
 
+static void usage_primary_cmd(const char *prog, const char *cmd)
+{
+  if (strcmp(cmd, "migrate") == 0)
+    usage_migrate_cmd(prog);
+  else if (strcmp(cmd, "fsstat") == 0 || strcmp(cmd, "stats") == 0)
+    usage_fsstat_cmd(prog);
+  else if (strcmp(cmd, "hotplug") == 0)
+    usage_hotplug_cmd(prog);
+  else if (strcmp(cmd, "stat") == 0)
+    usage_single_path_cmd(prog, "stat");
+  else if (strcmp(cmd, "cat") == 0)
+    usage_single_path_cmd(prog, "cat");
+  else if (strcmp(cmd, "write") == 0)
+    usage_single_path_cmd(prog, "write");
+  else if (strcmp(cmd, "cp") == 0)
+    usage_cp_cmd(prog);
+  else if (strcmp(cmd, "mv") == 0)
+    usage_mv_cmd(prog);
+  else if (strcmp(cmd, "rm") == 0)
+    usage_single_path_cmd(prog, "rm");
+  else if (strcmp(cmd, "mkdir") == 0)
+    usage_single_path_cmd(prog, "mkdir");
+  else if (strcmp(cmd, "rmdir") == 0)
+    usage_single_path_cmd(prog, "rmdir");
+  else if (strcmp(cmd, "ln") == 0)
+    usage_ln_cmd(prog);
+  else if (strcmp(cmd, "symlink") == 0)
+    usage_symlink_cmd(prog);
+  else if (strcmp(cmd, "rsync") == 0)
+    usage_rsync_cmd(prog);
+  else if (strcmp(cmd, "readlink") == 0)
+    usage_single_path_cmd(prog, "readlink");
+  else if (strcmp(cmd, "chmod") == 0)
+    usage_chmod_cmd(prog);
+  else if (strcmp(cmd, "touch") == 0)
+    usage_single_path_cmd(prog, "touch");
+  else
+    usage(prog);
+}
+
+static void usage_hotplug_subcommand(const char *prog, const char *cmd)
+{
+  if (strcmp(cmd, "status") == 0)
+    usage_hotplug_status_cmd(prog);
+  else if (strcmp(cmd, "restart-back") == 0)
+    usage_hotplug_restart_cmd(prog);
+  else if (strcmp(cmd, "compat") == 0)
+    usage_hotplug_compat_cmd(prog);
+  else if (strcmp(cmd, "set-timeout") == 0)
+    usage_hotplug_timeout_cmd(prog);
+  else if (strcmp(cmd, "set-dedup-priority") == 0)
+    usage_hotplug_dedup_priority_cmd(prog);
+  else if (strcmp(cmd, "set-runtime") == 0)
+    usage_hotplug_set_runtime_cmd(prog);
+  else if (strcmp(cmd, "env") == 0)
+    usage_hotplug_env_cmd(prog);
+  else
+    usage_hotplug_cmd(prog);
+}
+
+static void usage_hotplug_env_subcommand(const char *prog, const char *cmd)
+{
+  if (strcmp(cmd, "list") == 0)
+    usage_hotplug_env_list_cmd(prog);
+  else if (strcmp(cmd, "set") == 0)
+    usage_hotplug_env_set_cmd(prog);
+  else if (strcmp(cmd, "unset") == 0)
+    usage_hotplug_env_unset_cmd(prog);
+  else
+    usage_hotplug_env_cmd(prog);
+}
+
+static void usage_help_target(const char *prog, int argc, char **argv)
+{
+  if (argc == 2)
+  {
+    usage(prog);
+    return;
+  }
+
+  if (strcmp(argv[2], "hotplug") != 0)
+  {
+    usage_primary_cmd(prog, argv[2]);
+    return;
+  }
+
+  if (argc == 3)
+  {
+    usage_hotplug_cmd(prog);
+    return;
+  }
+
+  if (strcmp(argv[3], "env") != 0)
+  {
+    usage_hotplug_subcommand(prog, argv[3]);
+    return;
+  }
+
+  if (argc == 4)
+  {
+    usage_hotplug_env_cmd(prog);
+    return;
+  }
+
+  usage_hotplug_env_subcommand(prog, argv[4]);
+}
+
 static int try_subcommand_help(int argc, char **argv)
 {
   if (argc < 2)
@@ -269,235 +376,26 @@ static int try_subcommand_help(int argc, char **argv)
 
   if (strcmp(argv[1], "help") == 0)
   {
-    if (argc == 2)
-    {
-      usage(argv[0]);
-      return 0;
-    }
-    if (argc >= 3)
-    {
-      if (strcmp(argv[2], "migrate") == 0)
-      {
-        usage_migrate_cmd(argv[0]);
-        return 0;
-      }
-      if (strcmp(argv[2], "fsstat") == 0 || strcmp(argv[2], "stats") == 0)
-      {
-        usage_fsstat_cmd(argv[0]);
-        return 0;
-      }
-      if (strcmp(argv[2], "hotplug") == 0)
-      {
-        if (argc == 3)
-        {
-          usage_hotplug_cmd(argv[0]);
-          return 0;
-        }
-        if (strcmp(argv[3], "status") == 0)
-        {
-          usage_hotplug_status_cmd(argv[0]);
-          return 0;
-        }
-        if (strcmp(argv[3], "restart-back") == 0)
-        {
-          usage_hotplug_restart_cmd(argv[0]);
-          return 0;
-        }
-        if (strcmp(argv[3], "compat") == 0)
-        {
-          usage_hotplug_compat_cmd(argv[0]);
-          return 0;
-        }
-        if (strcmp(argv[3], "set-timeout") == 0)
-        {
-          usage_hotplug_timeout_cmd(argv[0]);
-          return 0;
-        }
-        if (strcmp(argv[3], "set-dedup-priority") == 0)
-        {
-          usage_hotplug_dedup_priority_cmd(argv[0]);
-          return 0;
-        }
-        if (strcmp(argv[3], "set-runtime") == 0)
-        {
-          usage_hotplug_set_runtime_cmd(argv[0]);
-          return 0;
-        }
-        if (strcmp(argv[3], "env") == 0)
-        {
-          if (argc == 4)
-          {
-            usage_hotplug_env_cmd(argv[0]);
-            return 0;
-          }
-          if (strcmp(argv[4], "list") == 0)
-          {
-            usage_hotplug_env_list_cmd(argv[0]);
-            return 0;
-          }
-          if (strcmp(argv[4], "set") == 0)
-          {
-            usage_hotplug_env_set_cmd(argv[0]);
-            return 0;
-          }
-          if (strcmp(argv[4], "unset") == 0)
-          {
-            usage_hotplug_env_unset_cmd(argv[0]);
-            return 0;
-          }
-        }
-        usage_hotplug_cmd(argv[0]);
-        return 0;
-      }
-      if (strcmp(argv[2], "stat") == 0)
-      {
-        usage_single_path_cmd(argv[0], "stat");
-        return 0;
-      }
-      if (strcmp(argv[2], "cat") == 0)
-      {
-        usage_single_path_cmd(argv[0], "cat");
-        return 0;
-      }
-      if (strcmp(argv[2], "write") == 0)
-      {
-        usage_single_path_cmd(argv[0], "write");
-        return 0;
-      }
-      if (strcmp(argv[2], "cp") == 0)
-      {
-        usage_cp_cmd(argv[0]);
-        return 0;
-      }
-      if (strcmp(argv[2], "mv") == 0)
-      {
-        usage_mv_cmd(argv[0]);
-        return 0;
-      }
-      if (strcmp(argv[2], "rm") == 0)
-      {
-        usage_single_path_cmd(argv[0], "rm");
-        return 0;
-      }
-      if (strcmp(argv[2], "mkdir") == 0)
-      {
-        usage_single_path_cmd(argv[0], "mkdir");
-        return 0;
-      }
-      if (strcmp(argv[2], "rmdir") == 0)
-      {
-        usage_single_path_cmd(argv[0], "rmdir");
-        return 0;
-      }
-      if (strcmp(argv[2], "ln") == 0)
-      {
-        usage_ln_cmd(argv[0]);
-        return 0;
-      }
-      if (strcmp(argv[2], "symlink") == 0)
-      {
-        usage_symlink_cmd(argv[0]);
-        return 0;
-      }
-      if (strcmp(argv[2], "rsync") == 0)
-      {
-        usage_rsync_cmd(argv[0]);
-        return 0;
-      }
-      if (strcmp(argv[2], "readlink") == 0)
-      {
-        usage_single_path_cmd(argv[0], "readlink");
-        return 0;
-      }
-      if (strcmp(argv[2], "chmod") == 0)
-      {
-        usage_chmod_cmd(argv[0]);
-        return 0;
-      }
-      if (strcmp(argv[2], "touch") == 0)
-      {
-        usage_single_path_cmd(argv[0], "touch");
-        return 0;
-      }
-    }
-
-    usage(argv[0]);
+    usage_help_target(argv[0], argc, argv);
     return 0;
   }
 
   if (argc >= 3 && kafs_cli_is_help_arg(argv[2]))
   {
-    if (strcmp(argv[1], "migrate") == 0)
-      usage_migrate_cmd(argv[0]);
-    else if (strcmp(argv[1], "fsstat") == 0 || strcmp(argv[1], "stats") == 0)
-      usage_fsstat_cmd(argv[0]);
-    else if (strcmp(argv[1], "hotplug") == 0)
-      usage_hotplug_cmd(argv[0]);
-    else if (strcmp(argv[1], "stat") == 0)
-      usage_single_path_cmd(argv[0], "stat");
-    else if (strcmp(argv[1], "cat") == 0)
-      usage_single_path_cmd(argv[0], "cat");
-    else if (strcmp(argv[1], "write") == 0)
-      usage_single_path_cmd(argv[0], "write");
-    else if (strcmp(argv[1], "cp") == 0)
-      usage_cp_cmd(argv[0]);
-    else if (strcmp(argv[1], "mv") == 0)
-      usage_mv_cmd(argv[0]);
-    else if (strcmp(argv[1], "rm") == 0)
-      usage_single_path_cmd(argv[0], "rm");
-    else if (strcmp(argv[1], "mkdir") == 0)
-      usage_single_path_cmd(argv[0], "mkdir");
-    else if (strcmp(argv[1], "rmdir") == 0)
-      usage_single_path_cmd(argv[0], "rmdir");
-    else if (strcmp(argv[1], "ln") == 0)
-      usage_ln_cmd(argv[0]);
-    else if (strcmp(argv[1], "symlink") == 0)
-      usage_symlink_cmd(argv[0]);
-    else if (strcmp(argv[1], "rsync") == 0)
-      usage_rsync_cmd(argv[0]);
-    else if (strcmp(argv[1], "readlink") == 0)
-      usage_single_path_cmd(argv[0], "readlink");
-    else if (strcmp(argv[1], "chmod") == 0)
-      usage_chmod_cmd(argv[0]);
-    else if (strcmp(argv[1], "touch") == 0)
-      usage_single_path_cmd(argv[0], "touch");
-    else
-      usage(argv[0]);
+    usage_primary_cmd(argv[0], argv[1]);
     return 0;
   }
 
   if (argc >= 4 && strcmp(argv[1], "hotplug") == 0 && kafs_cli_is_help_arg(argv[3]))
   {
-    if (strcmp(argv[2], "status") == 0)
-      usage_hotplug_status_cmd(argv[0]);
-    else if (strcmp(argv[2], "restart-back") == 0)
-      usage_hotplug_restart_cmd(argv[0]);
-    else if (strcmp(argv[2], "compat") == 0)
-      usage_hotplug_compat_cmd(argv[0]);
-    else if (strcmp(argv[2], "set-timeout") == 0)
-      usage_hotplug_timeout_cmd(argv[0]);
-    else if (strcmp(argv[2], "set-dedup-priority") == 0)
-      usage_hotplug_dedup_priority_cmd(argv[0]);
-    else if (strcmp(argv[2], "set-runtime") == 0)
-      usage_hotplug_set_runtime_cmd(argv[0]);
-    else if (strcmp(argv[2], "env") == 0)
-      usage_hotplug_env_cmd(argv[0]);
-    else
-      usage_hotplug_cmd(argv[0]);
+    usage_hotplug_subcommand(argv[0], argv[2]);
     return 0;
   }
 
   if (argc >= 5 && strcmp(argv[1], "hotplug") == 0 && strcmp(argv[2], "env") == 0 &&
       kafs_cli_is_help_arg(argv[4]))
   {
-    if (strcmp(argv[3], "list") == 0)
-      usage_hotplug_env_list_cmd(argv[0]);
-    else if (strcmp(argv[3], "set") == 0)
-      usage_hotplug_env_set_cmd(argv[0]);
-    else if (strcmp(argv[3], "unset") == 0)
-      usage_hotplug_env_unset_cmd(argv[0]);
-    else
-      usage_hotplug_env_cmd(argv[0]);
+    usage_hotplug_env_subcommand(argv[0], argv[3]);
     return 0;
   }
 
