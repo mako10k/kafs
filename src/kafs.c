@@ -4989,28 +4989,37 @@ static void kafs_truncate_release_deferred_refs(struct kafs_context *ctx, uint32
   kafs_inode_lock(ctx, ino_idx);
 }
 
+static int kafs_truncate_release_tail_only_slot(struct kafs_context *ctx,
+                                                const kafs_sinode_taildesc_v5_t *taildesc)
+{
+  struct kafs_tailmeta_region_view view;
+  uint32_t container_index;
+  uint16_t class_bytes;
+  uint16_t slot_index;
+  int rc = kafs_tailmeta_region_view_get(ctx, &view);
+  if (rc != 0)
+    return rc;
+
+  rc = kafs_tailmeta_find_container_index_by_blo(
+      &view, kafs_ino_taildesc_v5_container_blo_get(taildesc), &container_index);
+  if (rc != 0)
+    return rc;
+
+  class_bytes = kafs_tailmeta_container_hdr_class_bytes_get(&view.containers[container_index]);
+  if (class_bytes == 0u || kafs_ino_taildesc_v5_fragment_off_get(taildesc) % class_bytes != 0u)
+    return -EPROTO;
+
+  slot_index = (uint16_t)(kafs_ino_taildesc_v5_fragment_off_get(taildesc) / class_bytes);
+  return kafs_tailmeta_release_slot(&view, container_index, slot_index);
+}
+
 static int kafs_truncate_handle_tail_only(struct kafs_context *ctx, kafs_sinode_t *inoent,
                                           const kafs_sinode_taildesc_v5_t *taildesc,
                                           kafs_off_t filesize_new, kafs_blksize_t blksize)
 {
   if (filesize_new == 0)
   {
-    struct kafs_tailmeta_region_view view;
-    uint32_t container_index;
-    uint16_t class_bytes;
-    uint16_t slot_index;
-    int rc = kafs_tailmeta_region_view_get(ctx, &view);
-    if (rc != 0)
-      return rc;
-    rc = kafs_tailmeta_find_container_index_by_blo(
-        &view, kafs_ino_taildesc_v5_container_blo_get(taildesc), &container_index);
-    if (rc != 0)
-      return rc;
-    class_bytes = kafs_tailmeta_container_hdr_class_bytes_get(&view.containers[container_index]);
-    if (class_bytes == 0u || kafs_ino_taildesc_v5_fragment_off_get(taildesc) % class_bytes != 0u)
-      return -EPROTO;
-    slot_index = (uint16_t)(kafs_ino_taildesc_v5_fragment_off_get(taildesc) / class_bytes);
-    KAFS_CALL(kafs_tailmeta_release_slot, &view, container_index, slot_index);
+    KAFS_CALL(kafs_truncate_release_tail_only_slot, ctx, taildesc);
     memset(inoent->i_blkreftbl, 0, sizeof(inoent->i_blkreftbl));
     kafs_ino_blocks_set(inoent, 0);
     kafs_ino_size_set(inoent, 0);
@@ -5020,26 +5029,11 @@ static int kafs_truncate_handle_tail_only(struct kafs_context *ctx, kafs_sinode_
 
   if (filesize_new <= (kafs_off_t)KAFS_INODE_DIRECT_BYTES)
   {
-    struct kafs_tailmeta_region_view view;
-    uint32_t container_index;
-    uint16_t class_bytes;
-    uint16_t slot_index;
     char inline_buf[KAFS_INODE_DIRECT_BYTES];
     int rc = kafs_tailmeta_tail_only_load(ctx, inoent, inline_buf, filesize_new, 0);
     if (rc != 0)
       return rc;
-    rc = kafs_tailmeta_region_view_get(ctx, &view);
-    if (rc != 0)
-      return rc;
-    rc = kafs_tailmeta_find_container_index_by_blo(
-        &view, kafs_ino_taildesc_v5_container_blo_get(taildesc), &container_index);
-    if (rc != 0)
-      return rc;
-    class_bytes = kafs_tailmeta_container_hdr_class_bytes_get(&view.containers[container_index]);
-    if (class_bytes == 0u || kafs_ino_taildesc_v5_fragment_off_get(taildesc) % class_bytes != 0u)
-      return -EPROTO;
-    slot_index = (uint16_t)(kafs_ino_taildesc_v5_fragment_off_get(taildesc) / class_bytes);
-    KAFS_CALL(kafs_tailmeta_release_slot, &view, container_index, slot_index);
+    KAFS_CALL(kafs_truncate_release_tail_only_slot, ctx, taildesc);
     memset(inoent->i_blkreftbl, 0, sizeof(inoent->i_blkreftbl));
     memcpy(inoent->i_blkreftbl, inline_buf, (size_t)filesize_new);
     if (filesize_new < (kafs_off_t)KAFS_INODE_DIRECT_BYTES)
