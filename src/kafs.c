@@ -6014,6 +6014,87 @@ static int kafs_resolve_fh_inode(struct kafs_context *ctx, const struct fuse_fil
   return KAFS_SUCCESS;
 }
 
+static size_t kafs_access_load_groups(gid_t groups[])
+{
+  ssize_t ng0 = fuse_getgroups(0, NULL);
+  size_t ngroups = (ng0 > 0) ? (size_t)ng0 : 0;
+
+  if (ngroups > 0)
+    (void)fuse_getgroups(ngroups, groups);
+  return ngroups;
+}
+
+static int kafs_access_resolve_start(struct kafs_context *ctx, const char *path,
+                                     struct fuse_file_info *fi, kafs_sinode_t **inoent,
+                                     const char **p)
+{
+  int fh_rc = -EBADF;
+
+  if (fi != NULL)
+    fh_rc = kafs_resolve_fh_inode(ctx, fi, inoent);
+
+  if (path == NULL || path[0] == '\0')
+  {
+    assert(fi != NULL);
+    if (fh_rc < 0)
+      return fh_rc;
+    *p = "";
+    return KAFS_SUCCESS;
+  }
+
+  if (fh_rc == 0)
+  {
+    __atomic_add_fetch(&ctx->c_stat_access_fh_fastpath_hits, 1u, __ATOMIC_RELAXED);
+    *p = "";
+    return KAFS_SUCCESS;
+  }
+
+  __atomic_add_fetch(&ctx->c_stat_access_path_walk_calls, 1u, __ATOMIC_RELAXED);
+  *inoent = kafs_ctx_inode(ctx, KAFS_INO_ROOTDIR);
+  *p = path + 1;
+  return KAFS_SUCCESS;
+}
+
+static int kafs_access_walk_path(struct fuse_context *fctx, kafs_context_t *ctx,
+                                 kafs_sinode_t **inoent, const char *p, gid_t groups[],
+                                 size_t ngroups)
+{
+  while (*p != '\0')
+  {
+    const char *n = strchrnul(p, '/');
+    __atomic_add_fetch(&ctx->c_stat_access_path_components, 1u, __ATOMIC_RELAXED);
+    kafs_mode_t cur_mode = kafs_ino_mode_get(*inoent);
+    kafs_dlog(2, "%s: component='%.*s' checking dir ino=%u mode=%o\n", __func__, (int)(n - p), p,
+              (unsigned)kafs_ctx_ino_no(ctx, *inoent), (unsigned)cur_mode);
+
+    int rc = kafs_access_check(X_OK, *inoent, KAFS_TRUE, fctx->uid, fctx->gid, ngroups, groups);
+    if (rc < 0)
+      return rc;
+
+    uint32_t ino_dir = (uint32_t)kafs_ctx_ino_no(ctx, *inoent);
+    char *snap = NULL;
+    size_t snap_len = 0;
+    kafs_inode_lock(ctx, ino_dir);
+    rc = kafs_dir_snapshot(ctx, *inoent, &snap, &snap_len);
+    kafs_inode_unlock(ctx, ino_dir);
+    if (rc < 0)
+      return rc;
+
+    rc = kafs_dirent_search_snapshot(ctx, snap, snap_len, p, n - p, ino_dir, inoent);
+    free(snap);
+    if (rc < 0)
+    {
+      kafs_dlog(2, "%s: dirent_search('%.*s') rc=%d\n", __func__, (int)(n - p), p, rc);
+      return rc;
+    }
+    if (*n == '\0')
+      break;
+    p = n + 1;
+  }
+
+  return KAFS_SUCCESS;
+}
+
 // cppcheck-suppress constParameterCallback
 static int kafs_access(struct fuse_context *fctx, kafs_context_t *ctx, const char *path,
                        struct fuse_file_info *fi, int ok, kafs_sinode_t **pinoent)
@@ -6028,74 +6109,18 @@ static int kafs_access(struct fuse_context *fctx, kafs_context_t *ctx, const cha
   uid_t uid = fctx->uid;
   gid_t gid = fctx->gid;
   ssize_t ng0 = fuse_getgroups(0, NULL);
-  size_t ngroups = (ng0 > 0) ? (size_t)ng0 : 0;
-  gid_t groups[(ngroups > 0) ? ngroups : 1];
-  if (ngroups > 0)
-    (void)fuse_getgroups(ngroups, groups);
+  gid_t groups[(ng0 > 0) ? (size_t)ng0 : 1];
+  size_t ngroups = kafs_access_load_groups(groups);
 
   kafs_sinode_t *inoent = NULL;
   const char *p = NULL;
-  int fh_rc = -EBADF;
-  if (fi != NULL)
-    fh_rc = kafs_resolve_fh_inode(ctx, fi, &inoent);
-
-  if (path == NULL || path[0] == '\0')
-  {
-    assert(fi != NULL);
-    if (fh_rc < 0)
-      return fh_rc;
-    p = "";
-  }
-  else if (fh_rc == 0)
-  {
-    __atomic_add_fetch(&ctx->c_stat_access_fh_fastpath_hits, 1u, __ATOMIC_RELAXED);
-    p = "";
-  }
-  else
-  {
-    __atomic_add_fetch(&ctx->c_stat_access_path_walk_calls, 1u, __ATOMIC_RELAXED);
-    inoent = kafs_ctx_inode(ctx, KAFS_INO_ROOTDIR);
-    p = path + 1;
-  }
-
-  int ok_final = ok;
-  while (*p != '\0')
-  {
-    const char *n = strchrnul(p, '/');
-    __atomic_add_fetch(&ctx->c_stat_access_path_components, 1u, __ATOMIC_RELAXED);
-    kafs_mode_t cur_mode = kafs_ino_mode_get(inoent);
-    kafs_dlog(2, "%s: component='%.*s' checking dir ino=%u mode=%o\n", __func__, (int)(n - p), p,
-              (unsigned)kafs_ctx_ino_no(ctx, inoent), (unsigned)cur_mode);
-    int ok_dirs = X_OK;
-    int rc_ac = kafs_access_check(ok_dirs, inoent, KAFS_TRUE, uid, gid, ngroups, groups);
-    if (rc_ac < 0)
-      return rc_ac;
-
-    uint32_t ino_dir = (uint32_t)kafs_ctx_ino_no(ctx, inoent);
-    char *snap = NULL;
-    size_t snap_len = 0;
-    kafs_inode_lock(ctx, ino_dir);
-    int rc = kafs_dir_snapshot(ctx, inoent, &snap, &snap_len);
-    kafs_inode_unlock(ctx, ino_dir);
-    if (rc < 0)
-      return rc;
-
-    rc = kafs_dirent_search_snapshot(ctx, snap, snap_len, p, n - p, ino_dir, &inoent);
-    free(snap);
-    if (rc < 0)
-    {
-      kafs_dlog(2, "%s: dirent_search('%.*s') rc=%d\n", __func__, (int)(n - p), p, rc);
-      return rc;
-    }
-    if (*n == '\0')
-      break;
-    p = n + 1;
-  }
+  KAFS_CALL(kafs_access_resolve_start, ctx, path, fi, &inoent, &p);
+  KAFS_CALL(kafs_access_walk_path, fctx, ctx, &inoent, p, groups, ngroups);
 
   kafs_mode_t final_mode = kafs_ino_mode_get(inoent);
   kafs_dlog(2, "%s: final node ino=%u mode=%o ok=%d\n", __func__,
-            (unsigned)kafs_ctx_ino_no(ctx, inoent), (unsigned)final_mode, ok_final);
-  KAFS_CALL(kafs_access_check, ok_final, inoent, KAFS_FALSE, uid, gid, ngroups, groups);
+            (unsigned)kafs_ctx_ino_no(ctx, inoent), (unsigned)final_mode, ok);
+  KAFS_CALL(kafs_access_check, ok, inoent, KAFS_FALSE, uid, gid, ngroups, groups);
   if (pinoent != NULL)
     *pinoent = inoent;
   return KAFS_SUCCESS;
