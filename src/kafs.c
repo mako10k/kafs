@@ -11628,7 +11628,7 @@ static int kafs_main_handle_pending_token(kafs_main_options_t *opts, const char 
   return 0;
 }
 
-static int kafs_main_handle_bg_dedup_token(kafs_main_options_t *opts, const char *tok)
+static int kafs_main_handle_bg_dedup_scan_token(kafs_main_options_t *opts, const char *tok)
 {
   if (strcmp(tok, "bg_dedup_scan") == 0 || strcmp(tok, "bg_dedup_scan=on") == 0 ||
       strcmp(tok, "dedup_scan") == 0 || strcmp(tok, "dedup_scan=on") == 0)
@@ -11643,13 +11643,14 @@ static int kafs_main_handle_bg_dedup_token(kafs_main_options_t *opts, const char
     return 1;
   }
 
-  int rc = kafs_main_parse_token_onoff_alias2(
+  return kafs_main_parse_token_onoff_alias2(
       tok, "bg_dedup_scan=", "dedup_scan=", &opts->bg_dedup_scan_enabled,
       "dedup_scan/bg_dedup_scan");
-  if (rc != 0)
-    return rc;
+}
 
-  rc = kafs_main_parse_token_u32_alias2(
+static int kafs_main_handle_bg_dedup_interval_token(kafs_main_options_t *opts, const char *tok)
+{
+  int rc = kafs_main_parse_token_u32_alias2(
       tok, "bg_dedup_interval_ms=", "dedup_interval_ms=", KAFS_BG_DEDUP_INTERVAL_MS_MIN,
       KAFS_BG_DEDUP_INTERVAL_MS_MAX, &opts->bg_dedup_interval_ms,
       "dedup_interval_ms/bg_dedup_interval_ms");
@@ -11663,39 +11664,54 @@ static int kafs_main_handle_bg_dedup_token(kafs_main_options_t *opts, const char
   if (rc != 0)
     return rc;
 
-  rc = kafs_main_parse_token_u32_alias2(
+  return kafs_main_parse_token_u32_alias2(
       tok, "bg_dedup_pressure_interval_ms=", "dedup_pressure_interval_ms=",
       KAFS_BG_DEDUP_INTERVAL_MS_MIN, KAFS_BG_DEDUP_INTERVAL_MS_MAX,
       &opts->bg_dedup_pressure_interval_ms,
       "dedup_pressure_interval_ms/bg_dedup_pressure_interval_ms");
+}
+
+static int kafs_main_handle_bg_dedup_threshold_token(kafs_main_options_t *opts, const char *tok)
+{
+  int rc = kafs_main_parse_token_u32_alias2(
+      tok, "bg_dedup_start_used_pct=", "dedup_start_used_pct=", 0, 100u,
+      &opts->bg_dedup_start_used_pct, "dedup_start_used_pct/bg_dedup_start_used_pct");
   if (rc != 0)
     return rc;
 
-  rc = kafs_main_parse_token_u32_alias2(tok, "bg_dedup_start_used_pct=", "dedup_start_used_pct=", 0,
-                                        100u, &opts->bg_dedup_start_used_pct,
-                                        "dedup_start_used_pct/bg_dedup_start_used_pct");
-  if (rc != 0)
-    return rc;
-
-  rc = kafs_main_parse_token_u32_alias2(
+  return kafs_main_parse_token_u32_alias2(
       tok, "bg_dedup_pressure_used_pct=", "dedup_pressure_used_pct=", 0, 100u,
       &opts->bg_dedup_pressure_used_pct, "dedup_pressure_used_pct/bg_dedup_pressure_used_pct");
-  if (rc != 0)
-    return rc;
+}
 
-  rc = kafs_main_parse_token_prio_alias2(
+static int kafs_main_handle_bg_dedup_priority_token(kafs_main_options_t *opts, const char *tok)
+{
+  int rc = kafs_main_parse_token_prio_alias2(
       tok, "bg_dedup_worker_prio=", "dedup_scan_worker_prio=", &opts->bg_dedup_worker_prio_mode,
       "bg_dedup_worker_prio/dedup_scan_worker_prio");
   if (rc != 0)
     return rc;
 
-  rc = kafs_main_parse_token_nice_alias2(
+  return kafs_main_parse_token_nice_alias2(
       tok, "bg_dedup_worker_nice=", "dedup_scan_worker_nice=", &opts->bg_dedup_worker_nice,
       "bg_dedup_worker_nice/dedup_scan_worker_nice");
+}
+
+static int kafs_main_handle_bg_dedup_token(kafs_main_options_t *opts, const char *tok)
+{
+  int rc = kafs_main_handle_bg_dedup_scan_token(opts, tok);
   if (rc != 0)
     return rc;
 
-  return 0;
+  rc = kafs_main_handle_bg_dedup_interval_token(opts, tok);
+  if (rc != 0)
+    return rc;
+
+  rc = kafs_main_handle_bg_dedup_threshold_token(opts, tok);
+  if (rc != 0)
+    return rc;
+
+  return kafs_main_handle_bg_dedup_priority_token(opts, tok);
 }
 
 static void kafs_main_append_filtered_token(char *filtered, size_t *used, const char *tok)
