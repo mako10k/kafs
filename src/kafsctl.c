@@ -1941,6 +1941,556 @@ static const char *to_mount_rel_path(const char *mnt_abs, const char *p,
   return out;
 }
 
+typedef struct kafs_stats_report
+{
+  kafs_stats_t st;
+  int have_verbose_scan;
+  uint64_t logical_bytes;
+  uint64_t unique_bytes;
+  uint64_t saved_bytes;
+  uint64_t fs_blocks_used;
+  uint64_t fs_inodes_used;
+  uint64_t bg_dedup_ops;
+  uint64_t hrl_or_legacy_total;
+  double dedup_ratio;
+  double hit_rate;
+  double hrl_put_hash_ms;
+  double hrl_put_find_ms;
+  double hrl_put_cmp_ms;
+  double hrl_put_slot_alloc_ms;
+  double hrl_put_blk_alloc_ms;
+  double hrl_put_blk_write_ms;
+  double hrl_put_avg_chain_steps;
+  double hrl_put_avg_cmp_calls;
+  double lock_inode_cont_rate;
+  double lock_inode_wait_ms;
+  double lock_inode_alloc_cont_rate;
+  double lock_inode_alloc_wait_ms;
+  double lock_bitmap_cont_rate;
+  double lock_bitmap_wait_ms;
+  double lock_hrl_bucket_cont_rate;
+  double lock_hrl_bucket_wait_ms;
+  double lock_hrl_global_cont_rate;
+  double lock_hrl_global_wait_ms;
+  double access_fh_fastpath_rate;
+  double access_avg_components;
+  double dir_snapshot_avg_bytes;
+  double pwrite_iblk_read_ms;
+  double pwrite_iblk_write_ms;
+  double pwrite_iblk_write_p50_ms;
+  double pwrite_iblk_write_p95_ms;
+  double pwrite_iblk_write_p99_ms;
+  double iblk_write_hrl_put_ms;
+  double iblk_write_legacy_blk_write_ms;
+  double iblk_write_dec_ref_ms;
+  double blk_alloc_scan_ms;
+  double blk_alloc_claim_ms;
+  double blk_alloc_set_usage_ms;
+  double blk_alloc_retry_rate;
+  double blk_set_usage_bit_ms;
+  double blk_set_usage_freecnt_ms;
+  double blk_set_usage_wtime_ms;
+  double copy_share_hit_rate;
+  double bg_dedup_retry_rate;
+  double bg_dedup_direct_hit_rate;
+  double pending_worker_start_fail_rate;
+  double fs_blocks_used_pct;
+  double fs_inodes_used_pct;
+  double hrl_entries_used_pct;
+  double hrl_path_rate;
+  double legacy_path_rate;
+  double direct_to_hrl_ratio;
+  double hrl_hit_rate_pct;
+  double hrl_miss_rate_pct;
+  double hrl_rescue_hit_rate;
+  char tombstone_oldest_buf[64];
+} kafs_stats_report_t;
+
+static void kafsctl_stats_report_init(kafs_stats_report_t *report, const kafs_stats_t *st)
+{
+  memset(report, 0, sizeof(*report));
+  report->st = *st;
+  report->dedup_ratio = 1.0;
+  snprintf(report->tombstone_oldest_buf, sizeof(report->tombstone_oldest_buf), "%s", "none");
+}
+
+static void kafsctl_stats_compute_report(kafs_stats_report_t *report)
+{
+  report->have_verbose_scan = ((report->st.result_flags & KAFS_STATS_R_VERBOSE_SCAN) != 0);
+  report->logical_bytes = report->st.hrl_refcnt_sum * (uint64_t)report->st.blksize;
+  report->unique_bytes = report->st.hrl_entries_used * (uint64_t)report->st.blksize;
+  report->saved_bytes =
+      (report->st.hrl_refcnt_sum > report->st.hrl_entries_used)
+          ? (report->st.hrl_refcnt_sum - report->st.hrl_entries_used) * (uint64_t)report->st.blksize
+          : 0;
+  if (report->unique_bytes > 0)
+    report->dedup_ratio = (double)report->logical_bytes / (double)report->unique_bytes;
+
+  if (report->st.hrl_put_calls > 0)
+    report->hit_rate = (double)report->st.hrl_put_hits / (double)report->st.hrl_put_calls;
+  report->hrl_put_hash_ms = (double)report->st.hrl_put_ns_hash / 1000000.0;
+  report->hrl_put_find_ms = (double)report->st.hrl_put_ns_find / 1000000.0;
+  report->hrl_put_cmp_ms = (double)report->st.hrl_put_ns_cmp_content / 1000000.0;
+  report->hrl_put_slot_alloc_ms = (double)report->st.hrl_put_ns_slot_alloc / 1000000.0;
+  report->hrl_put_blk_alloc_ms = (double)report->st.hrl_put_ns_blk_alloc / 1000000.0;
+  report->hrl_put_blk_write_ms = (double)report->st.hrl_put_ns_blk_write / 1000000.0;
+  report->hrl_put_avg_chain_steps =
+      (report->st.hrl_put_calls > 0)
+          ? (double)report->st.hrl_put_chain_steps / (double)report->st.hrl_put_calls
+          : 0.0;
+  report->hrl_put_avg_cmp_calls =
+      (report->st.hrl_put_calls > 0)
+          ? (double)report->st.hrl_put_cmp_calls / (double)report->st.hrl_put_calls
+          : 0.0;
+
+  report->lock_inode_cont_rate =
+      (report->st.lock_inode_acquire > 0)
+          ? (double)report->st.lock_inode_contended / (double)report->st.lock_inode_acquire
+          : 0.0;
+  report->lock_inode_wait_ms = (double)report->st.lock_inode_wait_ns / 1000000.0;
+  report->lock_inode_alloc_cont_rate = (report->st.lock_inode_alloc_acquire > 0)
+                                           ? (double)report->st.lock_inode_alloc_contended /
+                                                 (double)report->st.lock_inode_alloc_acquire
+                                           : 0.0;
+  report->lock_inode_alloc_wait_ms = (double)report->st.lock_inode_alloc_wait_ns / 1000000.0;
+  report->lock_bitmap_cont_rate =
+      (report->st.lock_bitmap_acquire > 0)
+          ? (double)report->st.lock_bitmap_contended / (double)report->st.lock_bitmap_acquire
+          : 0.0;
+  report->lock_bitmap_wait_ms = (double)report->st.lock_bitmap_wait_ns / 1000000.0;
+  report->lock_hrl_bucket_cont_rate = (report->st.lock_hrl_bucket_acquire > 0)
+                                          ? (double)report->st.lock_hrl_bucket_contended /
+                                                (double)report->st.lock_hrl_bucket_acquire
+                                          : 0.0;
+  report->lock_hrl_bucket_wait_ms = (double)report->st.lock_hrl_bucket_wait_ns / 1000000.0;
+  report->lock_hrl_global_cont_rate = (report->st.lock_hrl_global_acquire > 0)
+                                          ? (double)report->st.lock_hrl_global_contended /
+                                                (double)report->st.lock_hrl_global_acquire
+                                          : 0.0;
+  report->lock_hrl_global_wait_ms = (double)report->st.lock_hrl_global_wait_ns / 1000000.0;
+  report->access_fh_fastpath_rate =
+      (report->st.access_calls > 0)
+          ? (double)report->st.access_fh_fastpath_hits / (double)report->st.access_calls
+          : 0.0;
+  report->access_avg_components =
+      (report->st.access_path_walk_calls > 0)
+          ? (double)report->st.access_path_components / (double)report->st.access_path_walk_calls
+          : 0.0;
+  report->dir_snapshot_avg_bytes =
+      (report->st.dir_snapshot_calls > 0)
+          ? (double)report->st.dir_snapshot_bytes / (double)report->st.dir_snapshot_calls
+          : 0.0;
+  report->pwrite_iblk_read_ms = (double)report->st.pwrite_ns_iblk_read / 1000000.0;
+  report->pwrite_iblk_write_ms = (double)report->st.pwrite_ns_iblk_write / 1000000.0;
+  report->pwrite_iblk_write_p50_ms = (double)report->st.pwrite_iblk_write_p50_ns / 1000000.0;
+  report->pwrite_iblk_write_p95_ms = (double)report->st.pwrite_iblk_write_p95_ns / 1000000.0;
+  report->pwrite_iblk_write_p99_ms = (double)report->st.pwrite_iblk_write_p99_ns / 1000000.0;
+  report->iblk_write_hrl_put_ms = (double)report->st.iblk_write_ns_hrl_put / 1000000.0;
+  report->iblk_write_legacy_blk_write_ms =
+      (double)report->st.iblk_write_ns_legacy_blk_write / 1000000.0;
+  report->iblk_write_dec_ref_ms = (double)report->st.iblk_write_ns_dec_ref / 1000000.0;
+  report->blk_alloc_scan_ms = (double)report->st.blk_alloc_ns_scan / 1000000.0;
+  report->blk_alloc_claim_ms = (double)report->st.blk_alloc_ns_claim / 1000000.0;
+  report->blk_alloc_set_usage_ms = (double)report->st.blk_alloc_ns_set_usage / 1000000.0;
+  report->blk_alloc_retry_rate =
+      (report->st.blk_alloc_calls > 0)
+          ? (double)report->st.blk_alloc_claim_retries / (double)report->st.blk_alloc_calls
+          : 0.0;
+  report->blk_set_usage_bit_ms = (double)report->st.blk_set_usage_ns_bit_update / 1000000.0;
+  report->blk_set_usage_freecnt_ms = (double)report->st.blk_set_usage_ns_freecnt_update / 1000000.0;
+  report->blk_set_usage_wtime_ms = (double)report->st.blk_set_usage_ns_wtime_update / 1000000.0;
+  report->copy_share_hit_rate =
+      (report->st.copy_share_attempt_blocks > 0)
+          ? (double)report->st.copy_share_done_blocks / (double)report->st.copy_share_attempt_blocks
+          : 0.0;
+  report->bg_dedup_ops = report->st.bg_dedup_replacements + report->st.bg_dedup_retries;
+  report->bg_dedup_retry_rate = (report->bg_dedup_ops > 0) ? (double)report->st.bg_dedup_retries /
+                                                                 (double)report->bg_dedup_ops
+                                                           : 0.0;
+  report->bg_dedup_direct_hit_rate =
+      (report->st.bg_dedup_direct_candidates > 0)
+          ? (double)report->st.bg_dedup_direct_hits / (double)report->st.bg_dedup_direct_candidates
+          : 0.0;
+  report->pending_worker_start_fail_rate = (report->st.pending_worker_start_calls > 0)
+                                               ? (double)report->st.pending_worker_start_failures /
+                                                     (double)report->st.pending_worker_start_calls
+                                               : 0.0;
+  report->fs_blocks_used = (report->st.fs_blocks_total >= report->st.fs_blocks_free)
+                               ? (report->st.fs_blocks_total - report->st.fs_blocks_free)
+                               : 0;
+  report->fs_inodes_used = (report->st.fs_inodes_total >= report->st.fs_inodes_free)
+                               ? (report->st.fs_inodes_total - report->st.fs_inodes_free)
+                               : 0;
+
+  report->fs_blocks_used_pct = pct_u64(report->fs_blocks_used, report->st.fs_blocks_total);
+  report->fs_inodes_used_pct = pct_u64(report->fs_inodes_used, report->st.fs_inodes_total);
+  report->hrl_entries_used_pct = pct_u64(report->st.hrl_entries_used, report->st.hrl_entries_total);
+  report->hrl_or_legacy_total = report->st.hrl_put_calls + report->st.hrl_put_fallback_legacy;
+  report->hrl_path_rate = pct_u64(report->st.hrl_put_calls, report->hrl_or_legacy_total);
+  report->legacy_path_rate =
+      pct_u64(report->st.hrl_put_fallback_legacy, report->hrl_or_legacy_total);
+  report->direct_to_hrl_ratio =
+      (report->st.hrl_put_calls > 0)
+          ? (double)report->st.hrl_put_fallback_legacy / (double)report->st.hrl_put_calls
+          : 0.0;
+  report->hrl_hit_rate_pct = pct_u64(report->st.hrl_put_hits, report->st.hrl_put_calls);
+  report->hrl_miss_rate_pct = pct_u64(report->st.hrl_put_misses, report->st.hrl_put_calls);
+  report->hrl_rescue_hit_rate =
+      (report->st.hrl_rescue_attempts > 0)
+          ? (double)report->st.hrl_rescue_hits / (double)report->st.hrl_rescue_attempts
+          : 0.0;
+
+  if (report->st.tombstone_inodes > 0 &&
+      (report->st.tombstone_oldest_dtime_sec != 0 || report->st.tombstone_oldest_dtime_nsec != 0))
+  {
+    struct timespec tombstone_oldest = {
+        .tv_sec = (time_t)report->st.tombstone_oldest_dtime_sec,
+        .tv_nsec = (long)report->st.tombstone_oldest_dtime_nsec,
+    };
+    fmt_time(report->tombstone_oldest_buf, &tombstone_oldest);
+  }
+}
+
+static int kafsctl_stats_print_json(const kafs_stats_report_t *report)
+{
+  const kafs_stats_t *st = &report->st;
+  printf("{\n");
+  printf("  \"version\": %" PRIu32 ",\n", st->version);
+  printf("  \"request_flags\": %" PRIu32 ",\n", st->request_flags);
+  printf("  \"result_flags\": %" PRIu32 ",\n", st->result_flags);
+  printf("  \"verbose_scan\": %s,\n", report->have_verbose_scan ? "true" : "false");
+  printf("  \"blksize\": %" PRIu32 ",\n", st->blksize);
+  printf("  \"fs_blocks_total\": %" PRIu64 ",\n", st->fs_blocks_total);
+  printf("  \"fs_blocks_free\": %" PRIu64 ",\n", st->fs_blocks_free);
+  printf("  \"fs_inodes_total\": %" PRIu64 ",\n", st->fs_inodes_total);
+  printf("  \"fs_inodes_free\": %" PRIu64 ",\n", st->fs_inodes_free);
+  printf("  \"tombstone_inodes\": %" PRIu64 ",\n", st->tombstone_inodes);
+  printf("  \"tombstone_oldest_dtime_sec\": %" PRIu64 ",\n", st->tombstone_oldest_dtime_sec);
+  printf("  \"tombstone_oldest_dtime_nsec\": %" PRIu64 ",\n", st->tombstone_oldest_dtime_nsec);
+  printf("  \"hrl_entries_total\": %" PRIu64 ",\n", st->hrl_entries_total);
+  printf("  \"hrl_entries_used\": %" PRIu64 ",\n", st->hrl_entries_used);
+  printf("  \"hrl_entries_duplicated\": %" PRIu64 ",\n", st->hrl_entries_duplicated);
+  printf("  \"hrl_refcnt_sum\": %" PRIu64 ",\n", st->hrl_refcnt_sum);
+  printf("  \"logical_bytes\": %" PRIu64 ",\n", report->logical_bytes);
+  printf("  \"unique_bytes\": %" PRIu64 ",\n", report->unique_bytes);
+  printf("  \"saved_bytes\": %" PRIu64 ",\n", report->saved_bytes);
+  printf("  \"dedup_ratio\": %.6f,\n", report->dedup_ratio);
+  printf("  \"hrl_put_calls\": %" PRIu64 ",\n", st->hrl_put_calls);
+  printf("  \"hrl_put_hits\": %" PRIu64 ",\n", st->hrl_put_hits);
+  printf("  \"hrl_put_misses\": %" PRIu64 ",\n", st->hrl_put_misses);
+  printf("  \"hrl_put_fallback_legacy\": %" PRIu64 ",\n", st->hrl_put_fallback_legacy);
+  printf("  \"hrl_put_ns_hash\": %" PRIu64 ",\n", st->hrl_put_ns_hash);
+  printf("  \"hrl_put_ns_find\": %" PRIu64 ",\n", st->hrl_put_ns_find);
+  printf("  \"hrl_put_ns_cmp_content\": %" PRIu64 ",\n", st->hrl_put_ns_cmp_content);
+  printf("  \"hrl_put_ns_slot_alloc\": %" PRIu64 ",\n", st->hrl_put_ns_slot_alloc);
+  printf("  \"hrl_put_ns_blk_alloc\": %" PRIu64 ",\n", st->hrl_put_ns_blk_alloc);
+  printf("  \"hrl_put_ns_blk_write\": %" PRIu64 ",\n", st->hrl_put_ns_blk_write);
+  printf("  \"hrl_put_chain_steps\": %" PRIu64 ",\n", st->hrl_put_chain_steps);
+  printf("  \"hrl_put_cmp_calls\": %" PRIu64 ",\n", st->hrl_put_cmp_calls);
+  printf("  \"hrl_put_hash_ms\": %.3f,\n", report->hrl_put_hash_ms);
+  printf("  \"hrl_put_find_ms\": %.3f,\n", report->hrl_put_find_ms);
+  printf("  \"hrl_put_cmp_ms\": %.3f,\n", report->hrl_put_cmp_ms);
+  printf("  \"hrl_put_slot_alloc_ms\": %.3f,\n", report->hrl_put_slot_alloc_ms);
+  printf("  \"hrl_put_blk_alloc_ms\": %.3f,\n", report->hrl_put_blk_alloc_ms);
+  printf("  \"hrl_put_blk_write_ms\": %.3f,\n", report->hrl_put_blk_write_ms);
+  printf("  \"hrl_put_avg_chain_steps\": %.3f,\n", report->hrl_put_avg_chain_steps);
+  printf("  \"hrl_put_avg_cmp_calls\": %.3f,\n", report->hrl_put_avg_cmp_calls);
+  printf("  \"hrl_put_hit_rate\": %.6f,\n", report->hit_rate);
+  printf("  \"hrl_rescue_attempts\": %" PRIu64 ",\n", st->hrl_rescue_attempts);
+  printf("  \"hrl_rescue_hits\": %" PRIu64 ",\n", st->hrl_rescue_hits);
+  printf("  \"hrl_rescue_evicts\": %" PRIu64 ",\n", st->hrl_rescue_evicts);
+  printf("  \"hrl_rescue_hit_rate\": %.6f,\n", report->hrl_rescue_hit_rate);
+  printf("  \"lock_inode_acquire\": %" PRIu64 ",\n", st->lock_inode_acquire);
+  printf("  \"lock_inode_contended\": %" PRIu64 ",\n", st->lock_inode_contended);
+  printf("  \"lock_inode_wait_ns\": %" PRIu64 ",\n", st->lock_inode_wait_ns);
+  printf("  \"lock_inode_contended_rate\": %.6f,\n", report->lock_inode_cont_rate);
+  printf("  \"lock_inode_wait_ms\": %.3f,\n", report->lock_inode_wait_ms);
+  printf("  \"lock_inode_alloc_acquire\": %" PRIu64 ",\n", st->lock_inode_alloc_acquire);
+  printf("  \"lock_inode_alloc_contended\": %" PRIu64 ",\n", st->lock_inode_alloc_contended);
+  printf("  \"lock_inode_alloc_wait_ns\": %" PRIu64 ",\n", st->lock_inode_alloc_wait_ns);
+  printf("  \"lock_inode_alloc_contended_rate\": %.6f,\n", report->lock_inode_alloc_cont_rate);
+  printf("  \"lock_inode_alloc_wait_ms\": %.3f,\n", report->lock_inode_alloc_wait_ms);
+  printf("  \"lock_bitmap_acquire\": %" PRIu64 ",\n", st->lock_bitmap_acquire);
+  printf("  \"lock_bitmap_contended\": %" PRIu64 ",\n", st->lock_bitmap_contended);
+  printf("  \"lock_bitmap_wait_ns\": %" PRIu64 ",\n", st->lock_bitmap_wait_ns);
+  printf("  \"lock_bitmap_contended_rate\": %.6f,\n", report->lock_bitmap_cont_rate);
+  printf("  \"lock_bitmap_wait_ms\": %.3f,\n", report->lock_bitmap_wait_ms);
+  printf("  \"lock_hrl_bucket_acquire\": %" PRIu64 ",\n", st->lock_hrl_bucket_acquire);
+  printf("  \"lock_hrl_bucket_contended\": %" PRIu64 ",\n", st->lock_hrl_bucket_contended);
+  printf("  \"lock_hrl_bucket_wait_ns\": %" PRIu64 ",\n", st->lock_hrl_bucket_wait_ns);
+  printf("  \"lock_hrl_bucket_contended_rate\": %.6f,\n", report->lock_hrl_bucket_cont_rate);
+  printf("  \"lock_hrl_bucket_wait_ms\": %.3f,\n", report->lock_hrl_bucket_wait_ms);
+  printf("  \"lock_hrl_global_acquire\": %" PRIu64 ",\n", st->lock_hrl_global_acquire);
+  printf("  \"lock_hrl_global_contended\": %" PRIu64 ",\n", st->lock_hrl_global_contended);
+  printf("  \"lock_hrl_global_wait_ns\": %" PRIu64 ",\n", st->lock_hrl_global_wait_ns);
+  printf("  \"lock_hrl_global_contended_rate\": %.6f,\n", report->lock_hrl_global_cont_rate);
+  printf("  \"lock_hrl_global_wait_ms\": %.3f,\n", report->lock_hrl_global_wait_ms);
+  printf("  \"access_calls\": %" PRIu64 ",\n", st->access_calls);
+  printf("  \"access_path_walk_calls\": %" PRIu64 ",\n", st->access_path_walk_calls);
+  printf("  \"access_fh_fastpath_hits\": %" PRIu64 ",\n", st->access_fh_fastpath_hits);
+  printf("  \"access_path_components\": %" PRIu64 ",\n", st->access_path_components);
+  printf("  \"access_fh_fastpath_rate\": %.6f,\n", report->access_fh_fastpath_rate);
+  printf("  \"access_avg_components\": %.6f,\n", report->access_avg_components);
+  printf("  \"dir_snapshot_calls\": %" PRIu64 ",\n", st->dir_snapshot_calls);
+  printf("  \"dir_snapshot_bytes\": %" PRIu64 ",\n", st->dir_snapshot_bytes);
+  printf("  \"dir_snapshot_avg_bytes\": %.3f,\n", report->dir_snapshot_avg_bytes);
+  printf("  \"dir_snapshot_meta_load_calls\": %" PRIu64 ",\n", st->dir_snapshot_meta_load_calls);
+  printf("  \"dirent_view_next_calls\": %" PRIu64 ",\n", st->dirent_view_next_calls);
+  printf("  \"pwrite_calls\": %" PRIu64 ",\n", st->pwrite_calls);
+  printf("  \"pwrite_bytes\": %" PRIu64 ",\n", st->pwrite_bytes);
+  printf("  \"pwrite_ns_iblk_read\": %" PRIu64 ",\n", st->pwrite_ns_iblk_read);
+  printf("  \"pwrite_ns_iblk_write\": %" PRIu64 ",\n", st->pwrite_ns_iblk_write);
+  printf("  \"pwrite_iblk_write_sample_count\": %" PRIu64 ",\n",
+         st->pwrite_iblk_write_sample_count);
+  printf("  \"pwrite_iblk_write_sample_cap\": %" PRIu64 ",\n", st->pwrite_iblk_write_sample_cap);
+  printf("  \"pwrite_iblk_write_p50_ns\": %" PRIu64 ",\n", st->pwrite_iblk_write_p50_ns);
+  printf("  \"pwrite_iblk_write_p95_ns\": %" PRIu64 ",\n", st->pwrite_iblk_write_p95_ns);
+  printf("  \"pwrite_iblk_write_p99_ns\": %" PRIu64 ",\n", st->pwrite_iblk_write_p99_ns);
+  printf("  \"iblk_write_ns_hrl_put\": %" PRIu64 ",\n", st->iblk_write_ns_hrl_put);
+  printf("  \"iblk_write_ns_legacy_blk_write\": %" PRIu64 ",\n",
+         st->iblk_write_ns_legacy_blk_write);
+  printf("  \"iblk_write_ns_dec_ref\": %" PRIu64 ",\n", st->iblk_write_ns_dec_ref);
+  printf("  \"blk_alloc_calls\": %" PRIu64 ",\n", st->blk_alloc_calls);
+  printf("  \"blk_alloc_claim_retries\": %" PRIu64 ",\n", st->blk_alloc_claim_retries);
+  printf("  \"blk_alloc_ns_scan\": %" PRIu64 ",\n", st->blk_alloc_ns_scan);
+  printf("  \"blk_alloc_ns_claim\": %" PRIu64 ",\n", st->blk_alloc_ns_claim);
+  printf("  \"blk_alloc_ns_set_usage\": %" PRIu64 ",\n", st->blk_alloc_ns_set_usage);
+  printf("  \"blk_set_usage_calls\": %" PRIu64 ",\n", st->blk_set_usage_calls);
+  printf("  \"blk_set_usage_alloc_calls\": %" PRIu64 ",\n", st->blk_set_usage_alloc_calls);
+  printf("  \"blk_set_usage_free_calls\": %" PRIu64 ",\n", st->blk_set_usage_free_calls);
+  printf("  \"blk_set_usage_ns_bit_update\": %" PRIu64 ",\n", st->blk_set_usage_ns_bit_update);
+  printf("  \"blk_set_usage_ns_freecnt_update\": %" PRIu64 ",\n",
+         st->blk_set_usage_ns_freecnt_update);
+  printf("  \"blk_set_usage_ns_wtime_update\": %" PRIu64 ",\n", st->blk_set_usage_ns_wtime_update);
+  printf("  \"copy_share_attempt_blocks\": %" PRIu64 ",\n", st->copy_share_attempt_blocks);
+  printf("  \"copy_share_done_blocks\": %" PRIu64 ",\n", st->copy_share_done_blocks);
+  printf("  \"copy_share_fallback_blocks\": %" PRIu64 ",\n", st->copy_share_fallback_blocks);
+  printf("  \"copy_share_skip_unaligned\": %" PRIu64 ",\n", st->copy_share_skip_unaligned);
+  printf("  \"copy_share_skip_dst_inline\": %" PRIu64 ",\n", st->copy_share_skip_dst_inline);
+  printf("  \"bg_dedup_replacements\": %" PRIu64 ",\n", st->bg_dedup_replacements);
+  printf("  \"bg_dedup_evicts\": %" PRIu64 ",\n", st->bg_dedup_evicts);
+  printf("  \"bg_dedup_retries\": %" PRIu64 ",\n", st->bg_dedup_retries);
+  printf("  \"bg_dedup_steps\": %" PRIu64 ",\n", st->bg_dedup_steps);
+  printf("  \"bg_dedup_scanned_blocks\": %" PRIu64 ",\n", st->bg_dedup_scanned_blocks);
+  printf("  \"bg_dedup_direct_candidates\": %" PRIu64 ",\n", st->bg_dedup_direct_candidates);
+  printf("  \"bg_dedup_direct_hits\": %" PRIu64 ",\n", st->bg_dedup_direct_hits);
+  printf("  \"bg_dedup_direct_hit_rate\": %.6f,\n", report->bg_dedup_direct_hit_rate);
+  printf("  \"bg_dedup_index_evicts\": %" PRIu64 ",\n", st->bg_dedup_index_evicts);
+  printf("  \"bg_dedup_cooldowns\": %" PRIu64 ",\n", st->bg_dedup_cooldowns);
+  printf("  \"bg_dedup_mode\": %" PRIu32 ",\n", st->bg_dedup_mode);
+  printf("  \"bg_dedup_mode_str\": \"%s\",\n", bg_dedup_mode_str(st->bg_dedup_mode));
+  printf("  \"bg_dedup_telemetry_valid\": %" PRIu32 ",\n", st->bg_dedup_telemetry_valid);
+  printf("  \"bg_dedup_last_scanned_blocks\": %" PRIu64 ",\n", st->bg_dedup_last_scanned_blocks);
+  printf("  \"bg_dedup_last_direct_candidates\": %" PRIu64 ",\n",
+         st->bg_dedup_last_direct_candidates);
+  printf("  \"bg_dedup_last_replacements\": %" PRIu64 ",\n", st->bg_dedup_last_replacements);
+  printf("  \"bg_dedup_idle_skip_streak\": %" PRIu64 ",\n", st->bg_dedup_idle_skip_streak);
+  printf("  \"bg_dedup_cold_start_due_ms\": %" PRIu64 ",\n", st->bg_dedup_cold_start_due_ms);
+  printf("  \"pending_queue_depth\": %" PRIu64 ",\n", st->pending_queue_depth);
+  printf("  \"pending_queue_capacity\": %" PRIu64 ",\n", st->pending_queue_capacity);
+  printf("  \"pending_queue_head\": %" PRIu64 ",\n", st->pending_queue_head);
+  printf("  \"pending_queue_tail\": %" PRIu64 ",\n", st->pending_queue_tail);
+  printf("  \"pending_worker_start_calls\": %" PRIu64 ",\n", st->pending_worker_start_calls);
+  printf("  \"pending_worker_start_failures\": %" PRIu64 ",\n", st->pending_worker_start_failures);
+  printf("  \"pending_worker_start_fail_rate\": %.6f,\n", report->pending_worker_start_fail_rate);
+  printf("  \"pending_worker_start_last_error\": %" PRId32 ",\n",
+         st->pending_worker_start_last_error);
+  printf("  \"pending_worker_lwp_tid\": %" PRId32 ",\n", st->pending_worker_lwp_tid);
+  printf("  \"pending_worker_running\": %" PRId32 ",\n", st->pending_worker_running);
+  printf("  \"pending_worker_stop_flag\": %" PRId32 ",\n", st->pending_worker_stop_flag);
+  printf("  \"pending_worker_main_entries\": %" PRIu64 ",\n", st->pending_worker_main_entries);
+  printf("  \"pending_worker_main_exits\": %" PRIu64 ",\n", st->pending_worker_main_exits);
+  printf("  \"pending_resolved\": %" PRIu64 ",\n", st->pending_resolved);
+  printf("  \"pending_old_block_freed\": %" PRIu64 ",\n", st->pending_old_block_freed);
+  printf("  \"bg_dedup_retry_rate\": %.6f,\n", report->bg_dedup_retry_rate);
+  printf("  \"copy_share_hit_rate\": %.6f,\n", report->copy_share_hit_rate);
+  printf("  \"pwrite_iblk_read_ms\": %.3f,\n", report->pwrite_iblk_read_ms);
+  printf("  \"pwrite_iblk_write_ms\": %.3f,\n", report->pwrite_iblk_write_ms);
+  printf("  \"pwrite_iblk_write_p50_ms\": %.3f,\n", report->pwrite_iblk_write_p50_ms);
+  printf("  \"pwrite_iblk_write_p95_ms\": %.3f,\n", report->pwrite_iblk_write_p95_ms);
+  printf("  \"pwrite_iblk_write_p99_ms\": %.3f,\n", report->pwrite_iblk_write_p99_ms);
+  printf("  \"iblk_write_hrl_put_ms\": %.3f,\n", report->iblk_write_hrl_put_ms);
+  printf("  \"iblk_write_legacy_blk_write_ms\": %.3f,\n", report->iblk_write_legacy_blk_write_ms);
+  printf("  \"iblk_write_dec_ref_ms\": %.3f,\n", report->iblk_write_dec_ref_ms);
+  printf("  \"blk_alloc_scan_ms\": %.3f,\n", report->blk_alloc_scan_ms);
+  printf("  \"blk_alloc_claim_ms\": %.3f,\n", report->blk_alloc_claim_ms);
+  printf("  \"blk_alloc_set_usage_ms\": %.3f,\n", report->blk_alloc_set_usage_ms);
+  printf("  \"blk_alloc_retry_rate\": %.6f,\n", report->blk_alloc_retry_rate);
+  printf("  \"blk_set_usage_bit_ms\": %.3f,\n", report->blk_set_usage_bit_ms);
+  printf("  \"blk_set_usage_freecnt_ms\": %.3f,\n", report->blk_set_usage_freecnt_ms);
+  printf("  \"blk_set_usage_wtime_ms\": %.3f\n", report->blk_set_usage_wtime_ms);
+  printf("}\n");
+  return 0;
+}
+
+static int kafsctl_stats_print_text(const kafs_stats_report_t *report, kafs_unit_t unit)
+{
+  const kafs_stats_t *st = &report->st;
+  printf("kafs fsstat v%" PRIu32 "\n", st->version);
+  printf("  mode: %s\n", report->have_verbose_scan ? "verbose" : "lightweight");
+  if (!report->have_verbose_scan)
+    printf("  note: tombstone/HRL full scans are skipped by default; rerun with -v for them.\n");
+  printf("  summary.capacity:\n");
+  printf("    fs_blocks: used=");
+  print_bytes(report->fs_blocks_used * (uint64_t)st->blksize, unit);
+  printf(" / total=");
+  print_bytes(st->fs_blocks_total * (uint64_t)st->blksize, unit);
+  printf(" (%.2f%%)\n", report->fs_blocks_used_pct);
+  printf("    fs_inodes: used=%" PRIu64 " / total=%" PRIu64 " (%.2f%%)\n", report->fs_inodes_used,
+         st->fs_inodes_total, report->fs_inodes_used_pct);
+  if (report->have_verbose_scan)
+    printf("    hrl_entries: used=%" PRIu64 " / total=%" PRIu64 " (%.2f%%)\n", st->hrl_entries_used,
+           st->hrl_entries_total, report->hrl_entries_used_pct);
+  else
+    printf("    hrl_entries: total=%" PRIu64 " (used count requires -v)\n", st->hrl_entries_total);
+
+  printf("  summary.ratios:\n");
+  if (report->have_verbose_scan)
+    printf("    dedup_ratio: %.3f (logical/unique)\n", report->dedup_ratio);
+  else
+    printf("    dedup_ratio: unavailable without -v\n");
+  printf("    write_path: hrl=%.2f%% legacy_direct=%.2f%% (hrl_calls=%" PRIu64
+         " fallback_legacy=%" PRIu64 ")\n",
+         report->hrl_path_rate, report->legacy_path_rate, st->hrl_put_calls,
+         st->hrl_put_fallback_legacy);
+  printf("    direct_to_hrl: %.6f (legacy_direct/hrl_calls)\n", report->direct_to_hrl_ratio);
+  printf("    hrl_hit_miss: hit=%.2f%% miss=%.2f%%\n", report->hrl_hit_rate_pct,
+         report->hrl_miss_rate_pct);
+  printf("    copy_share_hit: %.2f%% (done/attempt)\n", report->copy_share_hit_rate * 100.0);
+
+  printf("  blksize: ");
+  print_bytes(st->blksize, unit);
+  printf("\n");
+
+  printf("  fs: blocks total=%" PRIu64 " (", st->fs_blocks_total);
+  print_bytes(st->fs_blocks_total * (uint64_t)st->blksize, unit);
+  printf(") free=%" PRIu64 " (", st->fs_blocks_free);
+  print_bytes(st->fs_blocks_free * (uint64_t)st->blksize, unit);
+  printf(")\n");
+  printf("      inodes total=%" PRIu64 " free=%" PRIu64 "\n", st->fs_inodes_total,
+         st->fs_inodes_free);
+  if (!report->have_verbose_scan)
+    printf("      tombstones: omitted without -v\n");
+  else if (st->tombstone_inodes > 0)
+    printf("      tombstones count=%" PRIu64 " oldest_dtime=%s (%" PRIu64 ".%09" PRIu64 ")\n",
+           st->tombstone_inodes, report->tombstone_oldest_buf, st->tombstone_oldest_dtime_sec,
+           st->tombstone_oldest_dtime_nsec);
+  else
+    printf("      tombstones count=0 oldest_dtime=none\n");
+
+  if (report->have_verbose_scan)
+  {
+    printf("  hrl: entries used=%" PRIu64 "/%" PRIu64 " duplicated=%" PRIu64 " refsum=%" PRIu64
+           "\n",
+           st->hrl_entries_used, st->hrl_entries_total, st->hrl_entries_duplicated,
+           st->hrl_refcnt_sum);
+    printf("  dedup: logical=");
+    print_bytes(report->logical_bytes, unit);
+    printf(" unique=");
+    print_bytes(report->unique_bytes, unit);
+    printf(" saved=");
+    print_bytes(report->saved_bytes, unit);
+    printf(" ratio=%.3f\n", report->dedup_ratio);
+  }
+  else
+  {
+    printf("  hrl: total entries=%" PRIu64 " (used/dup/refsum require -v)\n",
+           st->hrl_entries_total);
+    printf("  dedup: unavailable without -v\n");
+  }
+
+  printf("  hrl_put: calls=%" PRIu64 " hits=%" PRIu64 " misses=%" PRIu64 " fallback_legacy=%" PRIu64
+         " hit_rate=%.3f\n",
+         st->hrl_put_calls, st->hrl_put_hits, st->hrl_put_misses, st->hrl_put_fallback_legacy,
+         report->hit_rate);
+  printf("  hrl_rescue: attempts=%" PRIu64 " hits=%" PRIu64 " evicts=%" PRIu64 " hit_rate=%.3f\n",
+         st->hrl_rescue_attempts, st->hrl_rescue_hits, st->hrl_rescue_evicts,
+         report->hrl_rescue_hit_rate);
+  printf("  hrl_put_decomp: hash_ms=%.3f find_ms=%.3f cmp_ms=%.3f slot_alloc_ms=%.3f "
+         "blk_alloc_ms=%.3f blk_write_ms=%.3f avg_chain_steps=%.3f avg_cmp_calls=%.3f\n",
+         report->hrl_put_hash_ms, report->hrl_put_find_ms, report->hrl_put_cmp_ms,
+         report->hrl_put_slot_alloc_ms, report->hrl_put_blk_alloc_ms, report->hrl_put_blk_write_ms,
+         report->hrl_put_avg_chain_steps, report->hrl_put_avg_cmp_calls);
+  printf("  lock[inode]: acquire=%" PRIu64 " contended=%" PRIu64 " rate=%.3f wait_ms=%.3f\n",
+         st->lock_inode_acquire, st->lock_inode_contended, report->lock_inode_cont_rate,
+         report->lock_inode_wait_ms);
+  printf("  lock[inode_alloc]: acquire=%" PRIu64 " contended=%" PRIu64 " rate=%.3f wait_ms=%.3f\n",
+         st->lock_inode_alloc_acquire, st->lock_inode_alloc_contended,
+         report->lock_inode_alloc_cont_rate, report->lock_inode_alloc_wait_ms);
+  printf("  lock[bitmap]: acquire=%" PRIu64 " contended=%" PRIu64 " rate=%.3f wait_ms=%.3f\n",
+         st->lock_bitmap_acquire, st->lock_bitmap_contended, report->lock_bitmap_cont_rate,
+         report->lock_bitmap_wait_ms);
+  printf("  lock[hrl_bucket]: acquire=%" PRIu64 " contended=%" PRIu64 " rate=%.3f wait_ms=%.3f\n",
+         st->lock_hrl_bucket_acquire, st->lock_hrl_bucket_contended,
+         report->lock_hrl_bucket_cont_rate, report->lock_hrl_bucket_wait_ms);
+  printf("  lock[hrl_global]: acquire=%" PRIu64 " contended=%" PRIu64 " rate=%.3f wait_ms=%.3f\n",
+         st->lock_hrl_global_acquire, st->lock_hrl_global_contended,
+         report->lock_hrl_global_cont_rate, report->lock_hrl_global_wait_ms);
+  printf("  metadata_lookup: access_calls=%" PRIu64 " path_walk_calls=%" PRIu64
+         " fh_fastpath_hits=%" PRIu64 " fh_fastpath_rate=%.3f avg_components=%.3f\n",
+         st->access_calls, st->access_path_walk_calls, st->access_fh_fastpath_hits,
+         report->access_fh_fastpath_rate, report->access_avg_components);
+  printf("                   dir_snapshot_calls=%" PRIu64 " snapshot_bytes=%" PRIu64
+         " avg_snapshot_bytes=%.3f meta_load_calls=%" PRIu64 " view_next_calls=%" PRIu64 "\n",
+         st->dir_snapshot_calls, st->dir_snapshot_bytes, report->dir_snapshot_avg_bytes,
+         st->dir_snapshot_meta_load_calls, st->dirent_view_next_calls);
+  printf("  pwrite: calls=%" PRIu64 " bytes=%" PRIu64 " iblk_read_ms=%.3f iblk_write_ms=%.3f\n",
+         st->pwrite_calls, st->pwrite_bytes, report->pwrite_iblk_read_ms,
+         report->pwrite_iblk_write_ms);
+  printf("          iblk_write_lat: samples=%" PRIu64 "/%" PRIu64
+         " p50_ms=%.3f p95_ms=%.3f p99_ms=%.3f\n",
+         st->pwrite_iblk_write_sample_count, st->pwrite_iblk_write_sample_cap,
+         report->pwrite_iblk_write_p50_ms, report->pwrite_iblk_write_p95_ms,
+         report->pwrite_iblk_write_p99_ms);
+  printf("  iblk_write: hrl_put_ms=%.3f legacy_blk_write_ms=%.3f dec_ref_ms=%.3f\n",
+         report->iblk_write_hrl_put_ms, report->iblk_write_legacy_blk_write_ms,
+         report->iblk_write_dec_ref_ms);
+  printf("  blk_alloc: calls=%" PRIu64 " retries=%" PRIu64 " retry_rate=%.3f scan_ms=%.3f "
+         "claim_ms=%.3f set_usage_ms=%.3f\n",
+         st->blk_alloc_calls, st->blk_alloc_claim_retries, report->blk_alloc_retry_rate,
+         report->blk_alloc_scan_ms, report->blk_alloc_claim_ms, report->blk_alloc_set_usage_ms);
+  printf("  blk_set_usage: calls=%" PRIu64 " alloc_calls=%" PRIu64 " free_calls=%" PRIu64
+         " bit_ms=%.3f freecnt_ms=%.3f wtime_ms=%.3f\n",
+         st->blk_set_usage_calls, st->blk_set_usage_alloc_calls, st->blk_set_usage_free_calls,
+         report->blk_set_usage_bit_ms, report->blk_set_usage_freecnt_ms,
+         report->blk_set_usage_wtime_ms);
+  printf("  copy_share: attempt_blocks=%" PRIu64 " done_blocks=%" PRIu64 " fallback_blocks=%" PRIu64
+         " skip_unaligned=%" PRIu64 " skip_dst_inline=%" PRIu64 " hit_rate=%.3f\n",
+         st->copy_share_attempt_blocks, st->copy_share_done_blocks, st->copy_share_fallback_blocks,
+         st->copy_share_skip_unaligned, st->copy_share_skip_dst_inline,
+         report->copy_share_hit_rate);
+  printf("  bg_dedup: replacements=%" PRIu64 " evicts=%" PRIu64 " retries=%" PRIu64
+         " retry_rate=%.3f\n",
+         st->bg_dedup_replacements, st->bg_dedup_evicts, st->bg_dedup_retries,
+         report->bg_dedup_retry_rate);
+  printf("            steps=%" PRIu64 " scanned_blocks=%" PRIu64 " direct_candidates=%" PRIu64
+         " direct_hits=%" PRIu64 " direct_hit_rate=%.3f index_evicts=%" PRIu64 " cooldowns=%" PRIu64
+         "\n",
+         st->bg_dedup_steps, st->bg_dedup_scanned_blocks, st->bg_dedup_direct_candidates,
+         st->bg_dedup_direct_hits, report->bg_dedup_direct_hit_rate, st->bg_dedup_index_evicts,
+         st->bg_dedup_cooldowns);
+  printf("            mode=%" PRIu32 " (%s) telemetry_valid=%" PRIu32 " last_scanned=%" PRIu64
+         " last_direct_candidates=%" PRIu64 " last_replacements=%" PRIu64
+         " idle_skip_streak=%" PRIu64 " cold_due_ms=%" PRIu64 "\n",
+         st->bg_dedup_mode, bg_dedup_mode_str(st->bg_dedup_mode), st->bg_dedup_telemetry_valid,
+         st->bg_dedup_last_scanned_blocks, st->bg_dedup_last_direct_candidates,
+         st->bg_dedup_last_replacements, st->bg_dedup_idle_skip_streak,
+         st->bg_dedup_cold_start_due_ms);
+  printf("  pending: depth=%" PRIu64 "/%" PRIu64 " head=%" PRIu64 " tail=%" PRIu64 "\n",
+         st->pending_queue_depth, st->pending_queue_capacity, st->pending_queue_head,
+         st->pending_queue_tail);
+  printf("           worker running=%" PRId32 " stop=%" PRId32 " start_calls=%" PRIu64
+         " start_failures=%" PRIu64 " fail_rate=%.3f last_error=%" PRId32 " lwp_tid=%" PRId32 "\n",
+         st->pending_worker_running, st->pending_worker_stop_flag, st->pending_worker_start_calls,
+         st->pending_worker_start_failures, report->pending_worker_start_fail_rate,
+         st->pending_worker_start_last_error, st->pending_worker_lwp_tid);
+  printf("           worker_main entries=%" PRIu64 " exits=%" PRIu64 "\n",
+         st->pending_worker_main_entries, st->pending_worker_main_exits);
+  printf("           pending_resolved=%" PRIu64 " old_block_freed=%" PRIu64 "\n",
+         st->pending_resolved, st->pending_old_block_freed);
+  return 0;
+}
+
 static int cmd_stats(const char *mnt, int json, int verbose, kafs_unit_t unit)
 {
   int fd = open(mnt, O_RDONLY | O_DIRECTORY);
@@ -1962,460 +2512,13 @@ static int cmd_stats(const char *mnt, int json, int verbose, kafs_unit_t unit)
     return 1;
   }
   close(fd);
-
-  int have_verbose_scan = ((st.result_flags & KAFS_STATS_R_VERBOSE_SCAN) != 0);
-
-  uint64_t logical_bytes = st.hrl_refcnt_sum * (uint64_t)st.blksize;
-  uint64_t unique_bytes = st.hrl_entries_used * (uint64_t)st.blksize;
-  uint64_t saved_bytes = (st.hrl_refcnt_sum > st.hrl_entries_used)
-                             ? (st.hrl_refcnt_sum - st.hrl_entries_used) * (uint64_t)st.blksize
-                             : 0;
-
-  double dedup_ratio = 1.0;
-  if (unique_bytes > 0)
-    dedup_ratio = (double)logical_bytes / (double)unique_bytes;
-
-  double hit_rate = 0.0;
-  if (st.hrl_put_calls > 0)
-  {
-    hit_rate = (double)st.hrl_put_hits / (double)st.hrl_put_calls;
-  }
-  double hrl_put_hash_ms = (double)st.hrl_put_ns_hash / 1000000.0;
-  double hrl_put_find_ms = (double)st.hrl_put_ns_find / 1000000.0;
-  double hrl_put_cmp_ms = (double)st.hrl_put_ns_cmp_content / 1000000.0;
-  double hrl_put_slot_alloc_ms = (double)st.hrl_put_ns_slot_alloc / 1000000.0;
-  double hrl_put_blk_alloc_ms = (double)st.hrl_put_ns_blk_alloc / 1000000.0;
-  double hrl_put_blk_write_ms = (double)st.hrl_put_ns_blk_write / 1000000.0;
-  double hrl_put_avg_chain_steps =
-      (st.hrl_put_calls > 0) ? (double)st.hrl_put_chain_steps / (double)st.hrl_put_calls : 0.0;
-  double hrl_put_avg_cmp_calls =
-      (st.hrl_put_calls > 0) ? (double)st.hrl_put_cmp_calls / (double)st.hrl_put_calls : 0.0;
-
-  double lock_inode_cont_rate =
-      (st.lock_inode_acquire > 0) ? (double)st.lock_inode_contended / (double)st.lock_inode_acquire
-                                  : 0.0;
-  double lock_inode_wait_ms = (double)st.lock_inode_wait_ns / 1000000.0;
-  double lock_inode_alloc_cont_rate =
-      (st.lock_inode_alloc_acquire > 0)
-          ? (double)st.lock_inode_alloc_contended / (double)st.lock_inode_alloc_acquire
-          : 0.0;
-  double lock_inode_alloc_wait_ms = (double)st.lock_inode_alloc_wait_ns / 1000000.0;
-  double lock_bitmap_cont_rate = (st.lock_bitmap_acquire > 0) ? (double)st.lock_bitmap_contended /
-                                                                    (double)st.lock_bitmap_acquire
-                                                              : 0.0;
-  double lock_bitmap_wait_ms = (double)st.lock_bitmap_wait_ns / 1000000.0;
-  double lock_hrl_bucket_cont_rate =
-      (st.lock_hrl_bucket_acquire > 0)
-          ? (double)st.lock_hrl_bucket_contended / (double)st.lock_hrl_bucket_acquire
-          : 0.0;
-  double lock_hrl_bucket_wait_ms = (double)st.lock_hrl_bucket_wait_ns / 1000000.0;
-  double lock_hrl_global_cont_rate =
-      (st.lock_hrl_global_acquire > 0)
-          ? (double)st.lock_hrl_global_contended / (double)st.lock_hrl_global_acquire
-          : 0.0;
-  double lock_hrl_global_wait_ms = (double)st.lock_hrl_global_wait_ns / 1000000.0;
-  double access_fh_fastpath_rate =
-      (st.access_calls > 0) ? (double)st.access_fh_fastpath_hits / (double)st.access_calls : 0.0;
-  double access_avg_components =
-      (st.access_path_walk_calls > 0)
-          ? (double)st.access_path_components / (double)st.access_path_walk_calls
-          : 0.0;
-  double dir_snapshot_avg_bytes =
-      (st.dir_snapshot_calls > 0) ? (double)st.dir_snapshot_bytes / (double)st.dir_snapshot_calls
-                                  : 0.0;
-  double pwrite_iblk_read_ms = (double)st.pwrite_ns_iblk_read / 1000000.0;
-  double pwrite_iblk_write_ms = (double)st.pwrite_ns_iblk_write / 1000000.0;
-  double pwrite_iblk_write_p50_ms = (double)st.pwrite_iblk_write_p50_ns / 1000000.0;
-  double pwrite_iblk_write_p95_ms = (double)st.pwrite_iblk_write_p95_ns / 1000000.0;
-  double pwrite_iblk_write_p99_ms = (double)st.pwrite_iblk_write_p99_ns / 1000000.0;
-  double iblk_write_hrl_put_ms = (double)st.iblk_write_ns_hrl_put / 1000000.0;
-  double iblk_write_legacy_blk_write_ms = (double)st.iblk_write_ns_legacy_blk_write / 1000000.0;
-  double iblk_write_dec_ref_ms = (double)st.iblk_write_ns_dec_ref / 1000000.0;
-  double blk_alloc_scan_ms = (double)st.blk_alloc_ns_scan / 1000000.0;
-  double blk_alloc_claim_ms = (double)st.blk_alloc_ns_claim / 1000000.0;
-  double blk_alloc_set_usage_ms = (double)st.blk_alloc_ns_set_usage / 1000000.0;
-  double blk_alloc_retry_rate =
-      (st.blk_alloc_calls > 0) ? (double)st.blk_alloc_claim_retries / (double)st.blk_alloc_calls
-                               : 0.0;
-  double blk_set_usage_bit_ms = (double)st.blk_set_usage_ns_bit_update / 1000000.0;
-  double blk_set_usage_freecnt_ms = (double)st.blk_set_usage_ns_freecnt_update / 1000000.0;
-  double blk_set_usage_wtime_ms = (double)st.blk_set_usage_ns_wtime_update / 1000000.0;
-  double copy_share_hit_rate =
-      (st.copy_share_attempt_blocks > 0)
-          ? (double)st.copy_share_done_blocks / (double)st.copy_share_attempt_blocks
-          : 0.0;
-  uint64_t bg_dedup_ops = st.bg_dedup_replacements + st.bg_dedup_retries;
-  double bg_dedup_retry_rate =
-      (bg_dedup_ops > 0) ? (double)st.bg_dedup_retries / (double)bg_dedup_ops : 0.0;
-  double bg_dedup_direct_hit_rate =
-      (st.bg_dedup_direct_candidates > 0)
-          ? (double)st.bg_dedup_direct_hits / (double)st.bg_dedup_direct_candidates
-          : 0.0;
-  double pending_worker_start_fail_rate =
-      (st.pending_worker_start_calls > 0)
-          ? (double)st.pending_worker_start_failures / (double)st.pending_worker_start_calls
-          : 0.0;
-  uint64_t fs_blocks_used =
-      (st.fs_blocks_total >= st.fs_blocks_free) ? (st.fs_blocks_total - st.fs_blocks_free) : 0;
-  uint64_t fs_inodes_used =
-      (st.fs_inodes_total >= st.fs_inodes_free) ? (st.fs_inodes_total - st.fs_inodes_free) : 0;
-
-  double fs_blocks_used_pct = pct_u64(fs_blocks_used, st.fs_blocks_total);
-  double fs_inodes_used_pct = pct_u64(fs_inodes_used, st.fs_inodes_total);
-  double hrl_entries_used_pct = pct_u64(st.hrl_entries_used, st.hrl_entries_total);
-
-  uint64_t hrl_or_legacy_total = st.hrl_put_calls + st.hrl_put_fallback_legacy;
-  double hrl_path_rate = pct_u64(st.hrl_put_calls, hrl_or_legacy_total);
-  double legacy_path_rate = pct_u64(st.hrl_put_fallback_legacy, hrl_or_legacy_total);
-  double direct_to_hrl_ratio =
-      (st.hrl_put_calls > 0) ? (double)st.hrl_put_fallback_legacy / (double)st.hrl_put_calls : 0.0;
-  double hrl_hit_rate_pct = pct_u64(st.hrl_put_hits, st.hrl_put_calls);
-  double hrl_miss_rate_pct = pct_u64(st.hrl_put_misses, st.hrl_put_calls);
-  double hrl_rescue_hit_rate = (st.hrl_rescue_attempts > 0)
-                                   ? (double)st.hrl_rescue_hits / (double)st.hrl_rescue_attempts
-                                   : 0.0;
-  struct timespec tombstone_oldest = {
-      .tv_sec = (time_t)st.tombstone_oldest_dtime_sec,
-      .tv_nsec = (long)st.tombstone_oldest_dtime_nsec,
-  };
-  char tombstone_oldest_buf[64] = "none";
-  if (st.tombstone_inodes > 0 &&
-      (st.tombstone_oldest_dtime_sec != 0 || st.tombstone_oldest_dtime_nsec != 0))
-    fmt_time(tombstone_oldest_buf, &tombstone_oldest);
+  kafs_stats_report_t report;
+  kafsctl_stats_report_init(&report, &st);
+  kafsctl_stats_compute_report(&report);
 
   if (json)
-  {
-    printf("{\n");
-    printf("  \"version\": %" PRIu32 ",\n", st.version);
-    printf("  \"request_flags\": %" PRIu32 ",\n", st.request_flags);
-    printf("  \"result_flags\": %" PRIu32 ",\n", st.result_flags);
-    printf("  \"verbose_scan\": %s,\n", have_verbose_scan ? "true" : "false");
-    printf("  \"blksize\": %" PRIu32 ",\n", st.blksize);
-    printf("  \"fs_blocks_total\": %" PRIu64 ",\n", st.fs_blocks_total);
-    printf("  \"fs_blocks_free\": %" PRIu64 ",\n", st.fs_blocks_free);
-    printf("  \"fs_inodes_total\": %" PRIu64 ",\n", st.fs_inodes_total);
-    printf("  \"fs_inodes_free\": %" PRIu64 ",\n", st.fs_inodes_free);
-    printf("  \"tombstone_inodes\": %" PRIu64 ",\n", st.tombstone_inodes);
-    printf("  \"tombstone_oldest_dtime_sec\": %" PRIu64 ",\n", st.tombstone_oldest_dtime_sec);
-    printf("  \"tombstone_oldest_dtime_nsec\": %" PRIu64 ",\n", st.tombstone_oldest_dtime_nsec);
-    printf("  \"hrl_entries_total\": %" PRIu64 ",\n", st.hrl_entries_total);
-    printf("  \"hrl_entries_used\": %" PRIu64 ",\n", st.hrl_entries_used);
-    printf("  \"hrl_entries_duplicated\": %" PRIu64 ",\n", st.hrl_entries_duplicated);
-    printf("  \"hrl_refcnt_sum\": %" PRIu64 ",\n", st.hrl_refcnt_sum);
-    printf("  \"logical_bytes\": %" PRIu64 ",\n", logical_bytes);
-    printf("  \"unique_bytes\": %" PRIu64 ",\n", unique_bytes);
-    printf("  \"saved_bytes\": %" PRIu64 ",\n", saved_bytes);
-    printf("  \"dedup_ratio\": %.6f,\n", dedup_ratio);
-    printf("  \"hrl_put_calls\": %" PRIu64 ",\n", st.hrl_put_calls);
-    printf("  \"hrl_put_hits\": %" PRIu64 ",\n", st.hrl_put_hits);
-    printf("  \"hrl_put_misses\": %" PRIu64 ",\n", st.hrl_put_misses);
-    printf("  \"hrl_put_fallback_legacy\": %" PRIu64 ",\n", st.hrl_put_fallback_legacy);
-    printf("  \"hrl_put_ns_hash\": %" PRIu64 ",\n", st.hrl_put_ns_hash);
-    printf("  \"hrl_put_ns_find\": %" PRIu64 ",\n", st.hrl_put_ns_find);
-    printf("  \"hrl_put_ns_cmp_content\": %" PRIu64 ",\n", st.hrl_put_ns_cmp_content);
-    printf("  \"hrl_put_ns_slot_alloc\": %" PRIu64 ",\n", st.hrl_put_ns_slot_alloc);
-    printf("  \"hrl_put_ns_blk_alloc\": %" PRIu64 ",\n", st.hrl_put_ns_blk_alloc);
-    printf("  \"hrl_put_ns_blk_write\": %" PRIu64 ",\n", st.hrl_put_ns_blk_write);
-    printf("  \"hrl_put_chain_steps\": %" PRIu64 ",\n", st.hrl_put_chain_steps);
-    printf("  \"hrl_put_cmp_calls\": %" PRIu64 ",\n", st.hrl_put_cmp_calls);
-    printf("  \"hrl_put_hash_ms\": %.3f,\n", hrl_put_hash_ms);
-    printf("  \"hrl_put_find_ms\": %.3f,\n", hrl_put_find_ms);
-    printf("  \"hrl_put_cmp_ms\": %.3f,\n", hrl_put_cmp_ms);
-    printf("  \"hrl_put_slot_alloc_ms\": %.3f,\n", hrl_put_slot_alloc_ms);
-    printf("  \"hrl_put_blk_alloc_ms\": %.3f,\n", hrl_put_blk_alloc_ms);
-    printf("  \"hrl_put_blk_write_ms\": %.3f,\n", hrl_put_blk_write_ms);
-    printf("  \"hrl_put_avg_chain_steps\": %.3f,\n", hrl_put_avg_chain_steps);
-    printf("  \"hrl_put_avg_cmp_calls\": %.3f,\n", hrl_put_avg_cmp_calls);
-    printf("  \"hrl_put_hit_rate\": %.6f,\n", hit_rate);
-    printf("  \"hrl_rescue_attempts\": %" PRIu64 ",\n", st.hrl_rescue_attempts);
-    printf("  \"hrl_rescue_hits\": %" PRIu64 ",\n", st.hrl_rescue_hits);
-    printf("  \"hrl_rescue_evicts\": %" PRIu64 ",\n", st.hrl_rescue_evicts);
-    printf("  \"hrl_rescue_hit_rate\": %.6f,\n", hrl_rescue_hit_rate);
-    printf("  \"lock_inode_acquire\": %" PRIu64 ",\n", st.lock_inode_acquire);
-    printf("  \"lock_inode_contended\": %" PRIu64 ",\n", st.lock_inode_contended);
-    printf("  \"lock_inode_wait_ns\": %" PRIu64 ",\n", st.lock_inode_wait_ns);
-    printf("  \"lock_inode_contended_rate\": %.6f,\n", lock_inode_cont_rate);
-    printf("  \"lock_inode_wait_ms\": %.3f,\n", lock_inode_wait_ms);
-    printf("  \"lock_inode_alloc_acquire\": %" PRIu64 ",\n", st.lock_inode_alloc_acquire);
-    printf("  \"lock_inode_alloc_contended\": %" PRIu64 ",\n", st.lock_inode_alloc_contended);
-    printf("  \"lock_inode_alloc_wait_ns\": %" PRIu64 ",\n", st.lock_inode_alloc_wait_ns);
-    printf("  \"lock_inode_alloc_contended_rate\": %.6f,\n", lock_inode_alloc_cont_rate);
-    printf("  \"lock_inode_alloc_wait_ms\": %.3f,\n", lock_inode_alloc_wait_ms);
-    printf("  \"lock_bitmap_acquire\": %" PRIu64 ",\n", st.lock_bitmap_acquire);
-    printf("  \"lock_bitmap_contended\": %" PRIu64 ",\n", st.lock_bitmap_contended);
-    printf("  \"lock_bitmap_wait_ns\": %" PRIu64 ",\n", st.lock_bitmap_wait_ns);
-    printf("  \"lock_bitmap_contended_rate\": %.6f,\n", lock_bitmap_cont_rate);
-    printf("  \"lock_bitmap_wait_ms\": %.3f,\n", lock_bitmap_wait_ms);
-    printf("  \"lock_hrl_bucket_acquire\": %" PRIu64 ",\n", st.lock_hrl_bucket_acquire);
-    printf("  \"lock_hrl_bucket_contended\": %" PRIu64 ",\n", st.lock_hrl_bucket_contended);
-    printf("  \"lock_hrl_bucket_wait_ns\": %" PRIu64 ",\n", st.lock_hrl_bucket_wait_ns);
-    printf("  \"lock_hrl_bucket_contended_rate\": %.6f,\n", lock_hrl_bucket_cont_rate);
-    printf("  \"lock_hrl_bucket_wait_ms\": %.3f,\n", lock_hrl_bucket_wait_ms);
-    printf("  \"lock_hrl_global_acquire\": %" PRIu64 ",\n", st.lock_hrl_global_acquire);
-    printf("  \"lock_hrl_global_contended\": %" PRIu64 ",\n", st.lock_hrl_global_contended);
-    printf("  \"lock_hrl_global_wait_ns\": %" PRIu64 ",\n", st.lock_hrl_global_wait_ns);
-    printf("  \"lock_hrl_global_contended_rate\": %.6f,\n", lock_hrl_global_cont_rate);
-    printf("  \"lock_hrl_global_wait_ms\": %.3f,\n", lock_hrl_global_wait_ms);
-    printf("  \"access_calls\": %" PRIu64 ",\n", st.access_calls);
-    printf("  \"access_path_walk_calls\": %" PRIu64 ",\n", st.access_path_walk_calls);
-    printf("  \"access_fh_fastpath_hits\": %" PRIu64 ",\n", st.access_fh_fastpath_hits);
-    printf("  \"access_path_components\": %" PRIu64 ",\n", st.access_path_components);
-    printf("  \"access_fh_fastpath_rate\": %.6f,\n", access_fh_fastpath_rate);
-    printf("  \"access_avg_components\": %.6f,\n", access_avg_components);
-    printf("  \"dir_snapshot_calls\": %" PRIu64 ",\n", st.dir_snapshot_calls);
-    printf("  \"dir_snapshot_bytes\": %" PRIu64 ",\n", st.dir_snapshot_bytes);
-    printf("  \"dir_snapshot_avg_bytes\": %.3f,\n", dir_snapshot_avg_bytes);
-    printf("  \"dir_snapshot_meta_load_calls\": %" PRIu64 ",\n", st.dir_snapshot_meta_load_calls);
-    printf("  \"dirent_view_next_calls\": %" PRIu64 ",\n", st.dirent_view_next_calls);
-    printf("  \"pwrite_calls\": %" PRIu64 ",\n", st.pwrite_calls);
-    printf("  \"pwrite_bytes\": %" PRIu64 ",\n", st.pwrite_bytes);
-    printf("  \"pwrite_ns_iblk_read\": %" PRIu64 ",\n", st.pwrite_ns_iblk_read);
-    printf("  \"pwrite_ns_iblk_write\": %" PRIu64 ",\n", st.pwrite_ns_iblk_write);
-    printf("  \"pwrite_iblk_write_sample_count\": %" PRIu64 ",\n",
-           st.pwrite_iblk_write_sample_count);
-    printf("  \"pwrite_iblk_write_sample_cap\": %" PRIu64 ",\n", st.pwrite_iblk_write_sample_cap);
-    printf("  \"pwrite_iblk_write_p50_ns\": %" PRIu64 ",\n", st.pwrite_iblk_write_p50_ns);
-    printf("  \"pwrite_iblk_write_p95_ns\": %" PRIu64 ",\n", st.pwrite_iblk_write_p95_ns);
-    printf("  \"pwrite_iblk_write_p99_ns\": %" PRIu64 ",\n", st.pwrite_iblk_write_p99_ns);
-    printf("  \"iblk_write_ns_hrl_put\": %" PRIu64 ",\n", st.iblk_write_ns_hrl_put);
-    printf("  \"iblk_write_ns_legacy_blk_write\": %" PRIu64 ",\n",
-           st.iblk_write_ns_legacy_blk_write);
-    printf("  \"iblk_write_ns_dec_ref\": %" PRIu64 ",\n", st.iblk_write_ns_dec_ref);
-    printf("  \"blk_alloc_calls\": %" PRIu64 ",\n", st.blk_alloc_calls);
-    printf("  \"blk_alloc_claim_retries\": %" PRIu64 ",\n", st.blk_alloc_claim_retries);
-    printf("  \"blk_alloc_ns_scan\": %" PRIu64 ",\n", st.blk_alloc_ns_scan);
-    printf("  \"blk_alloc_ns_claim\": %" PRIu64 ",\n", st.blk_alloc_ns_claim);
-    printf("  \"blk_alloc_ns_set_usage\": %" PRIu64 ",\n", st.blk_alloc_ns_set_usage);
-    printf("  \"blk_set_usage_calls\": %" PRIu64 ",\n", st.blk_set_usage_calls);
-    printf("  \"blk_set_usage_alloc_calls\": %" PRIu64 ",\n", st.blk_set_usage_alloc_calls);
-    printf("  \"blk_set_usage_free_calls\": %" PRIu64 ",\n", st.blk_set_usage_free_calls);
-    printf("  \"blk_set_usage_ns_bit_update\": %" PRIu64 ",\n", st.blk_set_usage_ns_bit_update);
-    printf("  \"blk_set_usage_ns_freecnt_update\": %" PRIu64 ",\n",
-           st.blk_set_usage_ns_freecnt_update);
-    printf("  \"blk_set_usage_ns_wtime_update\": %" PRIu64 ",\n", st.blk_set_usage_ns_wtime_update);
-    printf("  \"copy_share_attempt_blocks\": %" PRIu64 ",\n", st.copy_share_attempt_blocks);
-    printf("  \"copy_share_done_blocks\": %" PRIu64 ",\n", st.copy_share_done_blocks);
-    printf("  \"copy_share_fallback_blocks\": %" PRIu64 ",\n", st.copy_share_fallback_blocks);
-    printf("  \"copy_share_skip_unaligned\": %" PRIu64 ",\n", st.copy_share_skip_unaligned);
-    printf("  \"copy_share_skip_dst_inline\": %" PRIu64 ",\n", st.copy_share_skip_dst_inline);
-    printf("  \"bg_dedup_replacements\": %" PRIu64 ",\n", st.bg_dedup_replacements);
-    printf("  \"bg_dedup_evicts\": %" PRIu64 ",\n", st.bg_dedup_evicts);
-    printf("  \"bg_dedup_retries\": %" PRIu64 ",\n", st.bg_dedup_retries);
-    printf("  \"bg_dedup_steps\": %" PRIu64 ",\n", st.bg_dedup_steps);
-    printf("  \"bg_dedup_scanned_blocks\": %" PRIu64 ",\n", st.bg_dedup_scanned_blocks);
-    printf("  \"bg_dedup_direct_candidates\": %" PRIu64 ",\n", st.bg_dedup_direct_candidates);
-    printf("  \"bg_dedup_direct_hits\": %" PRIu64 ",\n", st.bg_dedup_direct_hits);
-    printf("  \"bg_dedup_direct_hit_rate\": %.6f,\n", bg_dedup_direct_hit_rate);
-    printf("  \"bg_dedup_index_evicts\": %" PRIu64 ",\n", st.bg_dedup_index_evicts);
-    printf("  \"bg_dedup_cooldowns\": %" PRIu64 ",\n", st.bg_dedup_cooldowns);
-    printf("  \"bg_dedup_mode\": %" PRIu32 ",\n", st.bg_dedup_mode);
-    printf("  \"bg_dedup_mode_str\": \"%s\",\n", bg_dedup_mode_str(st.bg_dedup_mode));
-    printf("  \"bg_dedup_telemetry_valid\": %" PRIu32 ",\n", st.bg_dedup_telemetry_valid);
-    printf("  \"bg_dedup_last_scanned_blocks\": %" PRIu64 ",\n", st.bg_dedup_last_scanned_blocks);
-    printf("  \"bg_dedup_last_direct_candidates\": %" PRIu64 ",\n",
-           st.bg_dedup_last_direct_candidates);
-    printf("  \"bg_dedup_last_replacements\": %" PRIu64 ",\n", st.bg_dedup_last_replacements);
-    printf("  \"bg_dedup_idle_skip_streak\": %" PRIu64 ",\n", st.bg_dedup_idle_skip_streak);
-    printf("  \"bg_dedup_cold_start_due_ms\": %" PRIu64 ",\n", st.bg_dedup_cold_start_due_ms);
-    printf("  \"pending_queue_depth\": %" PRIu64 ",\n", st.pending_queue_depth);
-    printf("  \"pending_queue_capacity\": %" PRIu64 ",\n", st.pending_queue_capacity);
-    printf("  \"pending_queue_head\": %" PRIu64 ",\n", st.pending_queue_head);
-    printf("  \"pending_queue_tail\": %" PRIu64 ",\n", st.pending_queue_tail);
-    printf("  \"pending_worker_start_calls\": %" PRIu64 ",\n", st.pending_worker_start_calls);
-    printf("  \"pending_worker_start_failures\": %" PRIu64 ",\n", st.pending_worker_start_failures);
-    printf("  \"pending_worker_start_fail_rate\": %.6f,\n", pending_worker_start_fail_rate);
-    printf("  \"pending_worker_start_last_error\": %" PRId32 ",\n",
-           st.pending_worker_start_last_error);
-    printf("  \"pending_worker_lwp_tid\": %" PRId32 ",\n", st.pending_worker_lwp_tid);
-    printf("  \"pending_worker_running\": %" PRId32 ",\n", st.pending_worker_running);
-    printf("  \"pending_worker_stop_flag\": %" PRId32 ",\n", st.pending_worker_stop_flag);
-    printf("  \"pending_worker_main_entries\": %" PRIu64 ",\n", st.pending_worker_main_entries);
-    printf("  \"pending_worker_main_exits\": %" PRIu64 ",\n", st.pending_worker_main_exits);
-    printf("  \"pending_resolved\": %" PRIu64 ",\n", st.pending_resolved);
-    printf("  \"pending_old_block_freed\": %" PRIu64 ",\n", st.pending_old_block_freed);
-    printf("  \"bg_dedup_retry_rate\": %.6f,\n", bg_dedup_retry_rate);
-    printf("  \"copy_share_hit_rate\": %.6f,\n", copy_share_hit_rate);
-    printf("  \"pwrite_iblk_read_ms\": %.3f,\n", pwrite_iblk_read_ms);
-    printf("  \"pwrite_iblk_write_ms\": %.3f,\n", pwrite_iblk_write_ms);
-    printf("  \"pwrite_iblk_write_p50_ms\": %.3f,\n", pwrite_iblk_write_p50_ms);
-    printf("  \"pwrite_iblk_write_p95_ms\": %.3f,\n", pwrite_iblk_write_p95_ms);
-    printf("  \"pwrite_iblk_write_p99_ms\": %.3f,\n", pwrite_iblk_write_p99_ms);
-    printf("  \"iblk_write_hrl_put_ms\": %.3f,\n", iblk_write_hrl_put_ms);
-    printf("  \"iblk_write_legacy_blk_write_ms\": %.3f,\n", iblk_write_legacy_blk_write_ms);
-    printf("  \"iblk_write_dec_ref_ms\": %.3f,\n", iblk_write_dec_ref_ms);
-    printf("  \"blk_alloc_scan_ms\": %.3f,\n", blk_alloc_scan_ms);
-    printf("  \"blk_alloc_claim_ms\": %.3f,\n", blk_alloc_claim_ms);
-    printf("  \"blk_alloc_set_usage_ms\": %.3f,\n", blk_alloc_set_usage_ms);
-    printf("  \"blk_alloc_retry_rate\": %.6f,\n", blk_alloc_retry_rate);
-    printf("  \"blk_set_usage_bit_ms\": %.3f,\n", blk_set_usage_bit_ms);
-    printf("  \"blk_set_usage_freecnt_ms\": %.3f,\n", blk_set_usage_freecnt_ms);
-    printf("  \"blk_set_usage_wtime_ms\": %.3f\n", blk_set_usage_wtime_ms);
-    printf("}\n");
-    return 0;
-  }
-
-  printf("kafs fsstat v%" PRIu32 "\n", st.version);
-  printf("  mode: %s\n", have_verbose_scan ? "verbose" : "lightweight");
-  if (!have_verbose_scan)
-    printf("  note: tombstone/HRL full scans are skipped by default; rerun with -v for them.\n");
-  printf("  summary.capacity:\n");
-  printf("    fs_blocks: used=");
-  print_bytes(fs_blocks_used * (uint64_t)st.blksize, unit);
-  printf(" / total=");
-  print_bytes(st.fs_blocks_total * (uint64_t)st.blksize, unit);
-  printf(" (%.2f%%)\n", fs_blocks_used_pct);
-  printf("    fs_inodes: used=%" PRIu64 " / total=%" PRIu64 " (%.2f%%)\n", fs_inodes_used,
-         st.fs_inodes_total, fs_inodes_used_pct);
-  if (have_verbose_scan)
-  {
-    printf("    hrl_entries: used=%" PRIu64 " / total=%" PRIu64 " (%.2f%%)\n", st.hrl_entries_used,
-           st.hrl_entries_total, hrl_entries_used_pct);
-  }
-  else
-  {
-    printf("    hrl_entries: total=%" PRIu64 " (used count requires -v)\n", st.hrl_entries_total);
-  }
-
-  printf("  summary.ratios:\n");
-  if (have_verbose_scan)
-    printf("    dedup_ratio: %.3f (logical/unique)\n", dedup_ratio);
-  else
-    printf("    dedup_ratio: unavailable without -v\n");
-  printf("    write_path: hrl=%.2f%% legacy_direct=%.2f%% (hrl_calls=%" PRIu64
-         " fallback_legacy=%" PRIu64 ")\n",
-         hrl_path_rate, legacy_path_rate, st.hrl_put_calls, st.hrl_put_fallback_legacy);
-  printf("    direct_to_hrl: %.6f (legacy_direct/hrl_calls)\n", direct_to_hrl_ratio);
-  printf("    hrl_hit_miss: hit=%.2f%% miss=%.2f%%\n", hrl_hit_rate_pct, hrl_miss_rate_pct);
-  printf("    copy_share_hit: %.2f%% (done/attempt)\n", copy_share_hit_rate * 100.0);
-
-  printf("  blksize: ");
-  print_bytes(st.blksize, unit);
-  printf("\n");
-
-  printf("  fs: blocks total=%" PRIu64 " (", st.fs_blocks_total);
-  print_bytes(st.fs_blocks_total * (uint64_t)st.blksize, unit);
-  printf(") free=%" PRIu64 " (", st.fs_blocks_free);
-  print_bytes(st.fs_blocks_free * (uint64_t)st.blksize, unit);
-  printf(")\n");
-  printf("      inodes total=%" PRIu64 " free=%" PRIu64 "\n", st.fs_inodes_total,
-         st.fs_inodes_free);
-  if (!have_verbose_scan)
-  {
-    printf("      tombstones: omitted without -v\n");
-  }
-  else if (st.tombstone_inodes > 0)
-  {
-    printf("      tombstones count=%" PRIu64 " oldest_dtime=%s (%" PRIu64 ".%09" PRIu64 ")\n",
-           st.tombstone_inodes, tombstone_oldest_buf, st.tombstone_oldest_dtime_sec,
-           st.tombstone_oldest_dtime_nsec);
-  }
-  else
-  {
-    printf("      tombstones count=0 oldest_dtime=none\n");
-  }
-
-  if (have_verbose_scan)
-  {
-    printf("  hrl: entries used=%" PRIu64 "/%" PRIu64 " duplicated=%" PRIu64 " refsum=%" PRIu64
-           "\n",
-           st.hrl_entries_used, st.hrl_entries_total, st.hrl_entries_duplicated, st.hrl_refcnt_sum);
-
-    printf("  dedup: logical=");
-    print_bytes(logical_bytes, unit);
-    printf(" unique=");
-    print_bytes(unique_bytes, unit);
-    printf(" saved=");
-    print_bytes(saved_bytes, unit);
-    printf(" ratio=%.3f\n", dedup_ratio);
-  }
-  else
-  {
-    printf("  hrl: total entries=%" PRIu64 " (used/dup/refsum require -v)\n", st.hrl_entries_total);
-    printf("  dedup: unavailable without -v\n");
-  }
-
-  printf("  hrl_put: calls=%" PRIu64 " hits=%" PRIu64 " misses=%" PRIu64 " fallback_legacy=%" PRIu64
-         " hit_rate=%.3f\n",
-         st.hrl_put_calls, st.hrl_put_hits, st.hrl_put_misses, st.hrl_put_fallback_legacy,
-         hit_rate);
-  printf("  hrl_rescue: attempts=%" PRIu64 " hits=%" PRIu64 " evicts=%" PRIu64 " hit_rate=%.3f\n",
-         st.hrl_rescue_attempts, st.hrl_rescue_hits, st.hrl_rescue_evicts, hrl_rescue_hit_rate);
-  printf("  hrl_put_decomp: hash_ms=%.3f find_ms=%.3f cmp_ms=%.3f slot_alloc_ms=%.3f "
-         "blk_alloc_ms=%.3f blk_write_ms=%.3f avg_chain_steps=%.3f avg_cmp_calls=%.3f\n",
-         hrl_put_hash_ms, hrl_put_find_ms, hrl_put_cmp_ms, hrl_put_slot_alloc_ms,
-         hrl_put_blk_alloc_ms, hrl_put_blk_write_ms, hrl_put_avg_chain_steps,
-         hrl_put_avg_cmp_calls);
-  printf("  lock[inode]: acquire=%" PRIu64 " contended=%" PRIu64 " rate=%.3f wait_ms=%.3f\n",
-         st.lock_inode_acquire, st.lock_inode_contended, lock_inode_cont_rate, lock_inode_wait_ms);
-  printf("  lock[inode_alloc]: acquire=%" PRIu64 " contended=%" PRIu64 " rate=%.3f wait_ms=%.3f\n",
-         st.lock_inode_alloc_acquire, st.lock_inode_alloc_contended, lock_inode_alloc_cont_rate,
-         lock_inode_alloc_wait_ms);
-  printf("  lock[bitmap]: acquire=%" PRIu64 " contended=%" PRIu64 " rate=%.3f wait_ms=%.3f\n",
-         st.lock_bitmap_acquire, st.lock_bitmap_contended, lock_bitmap_cont_rate,
-         lock_bitmap_wait_ms);
-  printf("  lock[hrl_bucket]: acquire=%" PRIu64 " contended=%" PRIu64 " rate=%.3f wait_ms=%.3f\n",
-         st.lock_hrl_bucket_acquire, st.lock_hrl_bucket_contended, lock_hrl_bucket_cont_rate,
-         lock_hrl_bucket_wait_ms);
-  printf("  lock[hrl_global]: acquire=%" PRIu64 " contended=%" PRIu64 " rate=%.3f wait_ms=%.3f\n",
-         st.lock_hrl_global_acquire, st.lock_hrl_global_contended, lock_hrl_global_cont_rate,
-         lock_hrl_global_wait_ms);
-  printf("  metadata_lookup: access_calls=%" PRIu64 " path_walk_calls=%" PRIu64
-         " fh_fastpath_hits=%" PRIu64 " fh_fastpath_rate=%.3f avg_components=%.3f\n",
-         st.access_calls, st.access_path_walk_calls, st.access_fh_fastpath_hits,
-         access_fh_fastpath_rate, access_avg_components);
-  printf("                   dir_snapshot_calls=%" PRIu64 " snapshot_bytes=%" PRIu64
-         " avg_snapshot_bytes=%.3f meta_load_calls=%" PRIu64 " view_next_calls=%" PRIu64 "\n",
-         st.dir_snapshot_calls, st.dir_snapshot_bytes, dir_snapshot_avg_bytes,
-         st.dir_snapshot_meta_load_calls, st.dirent_view_next_calls);
-  printf("  pwrite: calls=%" PRIu64 " bytes=%" PRIu64 " iblk_read_ms=%.3f iblk_write_ms=%.3f\n",
-         st.pwrite_calls, st.pwrite_bytes, pwrite_iblk_read_ms, pwrite_iblk_write_ms);
-  printf("          iblk_write_lat: samples=%" PRIu64 "/%" PRIu64
-         " p50_ms=%.3f p95_ms=%.3f p99_ms=%.3f\n",
-         st.pwrite_iblk_write_sample_count, st.pwrite_iblk_write_sample_cap,
-         pwrite_iblk_write_p50_ms, pwrite_iblk_write_p95_ms, pwrite_iblk_write_p99_ms);
-  printf("  iblk_write: hrl_put_ms=%.3f legacy_blk_write_ms=%.3f dec_ref_ms=%.3f\n",
-         iblk_write_hrl_put_ms, iblk_write_legacy_blk_write_ms, iblk_write_dec_ref_ms);
-  printf("  blk_alloc: calls=%" PRIu64 " retries=%" PRIu64 " retry_rate=%.3f scan_ms=%.3f "
-         "claim_ms=%.3f set_usage_ms=%.3f\n",
-         st.blk_alloc_calls, st.blk_alloc_claim_retries, blk_alloc_retry_rate, blk_alloc_scan_ms,
-         blk_alloc_claim_ms, blk_alloc_set_usage_ms);
-  printf("  blk_set_usage: calls=%" PRIu64 " alloc_calls=%" PRIu64 " free_calls=%" PRIu64
-         " bit_ms=%.3f freecnt_ms=%.3f wtime_ms=%.3f\n",
-         st.blk_set_usage_calls, st.blk_set_usage_alloc_calls, st.blk_set_usage_free_calls,
-         blk_set_usage_bit_ms, blk_set_usage_freecnt_ms, blk_set_usage_wtime_ms);
-  printf("  copy_share: attempt_blocks=%" PRIu64 " done_blocks=%" PRIu64 " fallback_blocks=%" PRIu64
-         " skip_unaligned=%" PRIu64 " skip_dst_inline=%" PRIu64 " hit_rate=%.3f\n",
-         st.copy_share_attempt_blocks, st.copy_share_done_blocks, st.copy_share_fallback_blocks,
-         st.copy_share_skip_unaligned, st.copy_share_skip_dst_inline, copy_share_hit_rate);
-  printf("  bg_dedup: replacements=%" PRIu64 " evicts=%" PRIu64 " retries=%" PRIu64
-         " retry_rate=%.3f\n",
-         st.bg_dedup_replacements, st.bg_dedup_evicts, st.bg_dedup_retries, bg_dedup_retry_rate);
-  printf("            steps=%" PRIu64 " scanned_blocks=%" PRIu64 " direct_candidates=%" PRIu64
-         " direct_hits=%" PRIu64 " direct_hit_rate=%.3f index_evicts=%" PRIu64 " cooldowns=%" PRIu64
-         "\n",
-         st.bg_dedup_steps, st.bg_dedup_scanned_blocks, st.bg_dedup_direct_candidates,
-         st.bg_dedup_direct_hits, bg_dedup_direct_hit_rate, st.bg_dedup_index_evicts,
-         st.bg_dedup_cooldowns);
-  printf("            mode=%" PRIu32 " (%s) telemetry_valid=%" PRIu32 " last_scanned=%" PRIu64
-         " last_direct_candidates=%" PRIu64 " last_replacements=%" PRIu64
-         " idle_skip_streak=%" PRIu64 " cold_due_ms=%" PRIu64 "\n",
-         st.bg_dedup_mode, bg_dedup_mode_str(st.bg_dedup_mode), st.bg_dedup_telemetry_valid,
-         st.bg_dedup_last_scanned_blocks, st.bg_dedup_last_direct_candidates,
-         st.bg_dedup_last_replacements, st.bg_dedup_idle_skip_streak,
-         st.bg_dedup_cold_start_due_ms);
-  printf("  pending: depth=%" PRIu64 "/%" PRIu64 " head=%" PRIu64 " tail=%" PRIu64 "\n",
-         st.pending_queue_depth, st.pending_queue_capacity, st.pending_queue_head,
-         st.pending_queue_tail);
-  printf("           worker running=%" PRId32 " stop=%" PRId32 " start_calls=%" PRIu64
-         " start_failures=%" PRIu64 " fail_rate=%.3f last_error=%" PRId32 " lwp_tid=%" PRId32 "\n",
-         st.pending_worker_running, st.pending_worker_stop_flag, st.pending_worker_start_calls,
-         st.pending_worker_start_failures, pending_worker_start_fail_rate,
-         st.pending_worker_start_last_error, st.pending_worker_lwp_tid);
-  printf("           worker_main entries=%" PRIu64 " exits=%" PRIu64 "\n",
-         st.pending_worker_main_entries, st.pending_worker_main_exits);
-  printf("           pending_resolved=%" PRIu64 " old_block_freed=%" PRIu64 "\n",
-         st.pending_resolved, st.pending_old_block_freed);
-  return 0;
+    return kafsctl_stats_print_json(&report);
+  return kafsctl_stats_print_text(&report, unit);
 }
 
 static void fmt_time(char out[64], const struct timespec *ts)
