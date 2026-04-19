@@ -11059,6 +11059,257 @@ static int kafs_main_validate_options(const kafs_main_options_t *opts)
   return 0;
 }
 
+static void kafs_main_set_mountpoint(kafs_context_t *ctx, const char *mount_arg, char *mnt_abs,
+                                     size_t mnt_abs_size)
+{
+  if (mount_arg && mount_arg[0] == '/')
+  {
+    snprintf(mnt_abs, mnt_abs_size, "%s", mount_arg);
+    ctx->c_mountpoint = mnt_abs;
+    return;
+  }
+
+  char cwd[PATH_MAX];
+  if (getcwd(cwd, sizeof(cwd)) != NULL && mount_arg && mount_arg[0] != '\0')
+  {
+    if ((size_t)snprintf(mnt_abs, mnt_abs_size, "%s/%s", cwd, mount_arg) < mnt_abs_size)
+    {
+      ctx->c_mountpoint = mnt_abs;
+      return;
+    }
+  }
+
+  ctx->c_mountpoint = mount_arg;
+}
+
+static void kafs_main_init_context(kafs_context_t *ctx, const kafs_main_options_t *opts,
+                                   const char *mount_arg, char *mnt_abs, size_t mnt_abs_size)
+{
+  memset(ctx, 0, sizeof(*ctx));
+  kafs_main_set_mountpoint(ctx, mount_arg, mnt_abs, mnt_abs_size);
+
+  ctx->c_hotplug_fd = -1;
+  ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_DISABLED;
+  ctx->c_hotplug_wait_queue_limit = KAFS_HOTPLUG_WAIT_QUEUE_LIMIT_DEFAULT;
+  ctx->c_hotplug_wait_timeout_ms = KAFS_HOTPLUG_WAIT_TIMEOUT_MS_DEFAULT;
+  ctx->c_hotplug_data_mode = KAFS_RPC_DATA_INLINE;
+  ctx->c_hotplug_front_major = KAFS_RPC_HELLO_MAJOR;
+  ctx->c_hotplug_front_minor = KAFS_RPC_HELLO_MINOR;
+  ctx->c_hotplug_front_features = KAFS_RPC_HELLO_FEATURES;
+  ctx->c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_UNKNOWN;
+
+  ctx->c_pending_worker_prio_mode = opts->pending_worker_prio_mode;
+  ctx->c_pending_worker_nice = opts->pending_worker_nice;
+  ctx->c_pending_worker_prio_base_mode = opts->pending_worker_prio_mode;
+  ctx->c_pending_worker_nice_base = opts->pending_worker_nice;
+  ctx->c_pending_worker_prio_dirty = 1;
+  ctx->c_pending_ttl_soft_ms = opts->pending_ttl_soft_ms;
+  ctx->c_pending_ttl_hard_ms = opts->pending_ttl_hard_ms;
+  ctx->c_pendinglog_capacity = opts->pending_cap_initial;
+  ctx->c_pendinglog_capacity_min = opts->pending_cap_min;
+  ctx->c_pendinglog_capacity_max = opts->pending_cap_max;
+  ctx->c_tombstone_gc_cursor = KAFS_INO_ROOTDIR + 1u;
+
+  ctx->c_bg_dedup_enabled = opts->bg_dedup_scan_enabled;
+  ctx->c_bg_dedup_interval_ms = opts->bg_dedup_interval_ms;
+  ctx->c_bg_dedup_quiet_interval_ms = opts->bg_dedup_quiet_interval_ms;
+  ctx->c_bg_dedup_pressure_interval_ms = opts->bg_dedup_pressure_interval_ms;
+  ctx->c_bg_dedup_start_used_pct = opts->bg_dedup_start_used_pct;
+  ctx->c_bg_dedup_pressure_used_pct = opts->bg_dedup_pressure_used_pct;
+  ctx->c_bg_dedup_worker_prio_mode = opts->bg_dedup_worker_prio_mode;
+  ctx->c_bg_dedup_worker_nice = opts->bg_dedup_worker_nice;
+  ctx->c_bg_dedup_worker_prio_base_mode = opts->bg_dedup_worker_prio_mode;
+  ctx->c_bg_dedup_worker_nice_base = opts->bg_dedup_worker_nice;
+  ctx->c_bg_dedup_worker_prio_dirty = 1;
+  ctx->c_bg_dedup_mode = KAFS_BG_DEDUP_MODE_COLD;
+
+  ctx->c_fsync_policy = opts->fsync_policy;
+}
+
+static void kafs_main_apply_hotplug_env(kafs_context_t *ctx)
+{
+  const char *data_mode = getenv("KAFS_HOTPLUG_DATA_MODE");
+  if (data_mode)
+  {
+    if (strcmp(data_mode, "inline") == 0)
+      ctx->c_hotplug_data_mode = KAFS_RPC_DATA_INLINE;
+    else if (strcmp(data_mode, "plan_only") == 0)
+      ctx->c_hotplug_data_mode = KAFS_RPC_DATA_PLAN_ONLY;
+    else if (strcmp(data_mode, "shm") == 0)
+      ctx->c_hotplug_data_mode = KAFS_RPC_DATA_SHM;
+  }
+
+  const char *wait_timeout_env = getenv("KAFS_HOTPLUG_WAIT_TIMEOUT_MS");
+  if (wait_timeout_env && *wait_timeout_env)
+  {
+    char *endp = NULL;
+    unsigned long v = strtoul(wait_timeout_env, &endp, 10);
+    if (endp && *endp == '\0')
+      ctx->c_hotplug_wait_timeout_ms = (uint32_t)v;
+  }
+
+  const char *wait_limit_env = getenv("KAFS_HOTPLUG_WAIT_QUEUE_LIMIT");
+  if (wait_limit_env && *wait_limit_env)
+  {
+    char *endp = NULL;
+    unsigned long v = strtoul(wait_limit_env, &endp, 10);
+    if (endp && *endp == '\0')
+      ctx->c_hotplug_wait_queue_limit = (uint32_t)v;
+  }
+}
+
+static int kafs_main_start_hotplug(kafs_context_t *ctx, const char *image_path,
+                                   const char *hotplug_uds, const char *hotplug_back_bin,
+                                   char *hotplug_uds_path, size_t hotplug_uds_path_size)
+{
+  if (!hotplug_uds)
+    return 0;
+
+  ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_WAITING;
+  snprintf(ctx->c_hotplug_uds_path, sizeof(ctx->c_hotplug_uds_path), "%s", hotplug_uds);
+  (void)kafs_hotplug_env_set(ctx, "KAFS_HOTPLUG_UDS", hotplug_uds);
+  if (image_path && *image_path)
+    (void)kafs_hotplug_env_set(ctx, "KAFS_IMAGE", image_path);
+  if (hotplug_back_bin && *hotplug_back_bin)
+    (void)kafs_hotplug_env_set(ctx, "KAFS_HOTPLUG_BACK_BIN", hotplug_back_bin);
+
+  if (!ctx->c_hotplug_wait_lock_init)
+  {
+    if (pthread_mutex_init(&ctx->c_hotplug_wait_lock, NULL) == 0 &&
+        pthread_cond_init(&ctx->c_hotplug_wait_cond, NULL) == 0)
+      ctx->c_hotplug_wait_lock_init = 1;
+  }
+
+  if (snprintf(hotplug_uds_path, hotplug_uds_path_size, "%s", hotplug_uds) >=
+      (int)hotplug_uds_path_size)
+  {
+    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
+    ctx->c_hotplug_last_error = -ENAMETOOLONG;
+    fprintf(stderr, "hotplug: uds path too long\n");
+    return 2;
+  }
+
+  int rc_hp = kafs_hotplug_wait_for_back(ctx, hotplug_uds_path, -1);
+  if (rc_hp != 0)
+  {
+    ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
+    ctx->c_hotplug_last_error = rc_hp;
+    fprintf(stderr, "hotplug: failed to accept back rc=%d\n", rc_hp);
+    return 2;
+  }
+  return 0;
+}
+
+static void kafs_main_build_fuse_argv(char **argv_clean, int argc_clean, kafs_bool_t *enable_mt,
+                                      int saw_max_threads, unsigned mt_cnt_override,
+                                      int mt_cnt_override_set, char **argv_fuse, int *argc_fuse,
+                                      char *mt_opt_buf, size_t mt_opt_buf_size)
+{
+  int saw_single = 0;
+  for (int i = 0; i < argc_clean; ++i)
+  {
+    if (strcmp(argv_clean[i], "-s") == 0)
+    {
+      saw_single = 1;
+      break;
+    }
+    argv_fuse[i] = argv_clean[i];
+  }
+
+  *argc_fuse = argc_clean;
+  if (!*enable_mt && !saw_single)
+    argv_fuse[(*argc_fuse)++] = "-s";
+  if (*enable_mt && saw_single)
+    *enable_mt = KAFS_FALSE;
+  if (kafs_debug_level() >= 3)
+    argv_fuse[(*argc_fuse)++] = "-d";
+
+  if (*enable_mt && !saw_max_threads)
+  {
+    unsigned mt_cnt = 8;
+    if (mt_cnt_override_set)
+    {
+      mt_cnt = mt_cnt_override;
+    }
+    else
+    {
+      const char *mt_env = getenv("KAFS_MAX_THREADS");
+      if (mt_env && *mt_env)
+      {
+        char *endp = NULL;
+        unsigned long v = strtoul(mt_env, &endp, 10);
+        if (endp && *endp == '\0')
+          mt_cnt = (unsigned)v;
+      }
+      if (mt_cnt < 1)
+        mt_cnt = 1;
+      if (mt_cnt > 100000)
+        mt_cnt = 100000;
+    }
+
+    snprintf(mt_opt_buf, mt_opt_buf_size, "max_threads=%u", mt_cnt);
+    argv_fuse[(*argc_fuse)++] = "-o";
+    argv_fuse[(*argc_fuse)++] = mt_opt_buf;
+    kafs_log(KAFS_LOG_INFO, "kafs: enabling multithread with -o %s\n", mt_opt_buf);
+  }
+
+  argv_fuse[*argc_fuse] = NULL;
+}
+
+static void kafs_main_log_runtime_options(kafs_context_t *ctx, kafs_bool_t writeback_cache_enabled,
+                                          kafs_bool_t writeback_cache_explicit,
+                                          kafs_bool_t trim_on_free_enabled,
+                                          kafs_bool_t trim_on_free_explicit, int argc_fuse,
+                                          char **argv_fuse)
+{
+  g_kafs_writeback_cache_enabled = writeback_cache_enabled ? 1 : 0;
+  ctx->c_trim_on_free = trim_on_free_enabled ? 1u : 0u;
+
+  kafs_log(KAFS_LOG_INFO, "kafs: writeback_cache %s (%s)\n",
+           writeback_cache_enabled ? "enabled" : "disabled",
+           writeback_cache_explicit ? "explicit" : "default");
+  kafs_log(KAFS_LOG_INFO, "kafs: trim_on_free %s (%s)\n",
+           trim_on_free_enabled ? "enabled" : "disabled",
+           trim_on_free_explicit ? "explicit" : "default");
+
+  if (kafs_debug_level() >= 1)
+  {
+    kafs_log(KAFS_LOG_INFO, "kafs: fuse argv (%d):\n", argc_fuse);
+    for (int i = 0; i < argc_fuse; ++i)
+      kafs_log(KAFS_LOG_INFO, "  argv[%d]=%s\n", i, argv_fuse[i]);
+  }
+}
+
+static int kafs_main_cleanup(kafs_context_t *ctx, char *hotplug_uds_path, int rc)
+{
+  kafs_bg_dedup_worker_stop(ctx);
+  kafs_pending_worker_stop(ctx);
+  kafs_journal_shutdown(ctx);
+  if (ctx->c_hotplug_fd >= 0)
+    close(ctx->c_hotplug_fd);
+  ctx->c_hotplug_active = 0;
+  if (hotplug_uds_path[0] != '\0')
+    unlink(hotplug_uds_path);
+  if (ctx->c_hotplug_lock_init)
+    pthread_mutex_destroy(&ctx->c_hotplug_lock);
+  if (ctx->c_hotplug_wait_lock_init)
+  {
+    pthread_cond_destroy(&ctx->c_hotplug_wait_cond);
+    pthread_mutex_destroy(&ctx->c_hotplug_wait_lock);
+  }
+  free(ctx->c_meta_bitmap_words);
+  free(ctx->c_meta_bitmap_dirty);
+  free(ctx->c_ino_epoch);
+  free(ctx->c_diag_create_seq);
+  free(ctx->c_diag_create_mode);
+  free(ctx->c_diag_create_first_write_seen);
+  free(ctx->c_diag_create_paths);
+  kafs_diag_log_close(ctx);
+  if (ctx->c_img_base && ctx->c_img_base != MAP_FAILED)
+    munmap(ctx->c_img_base, ctx->c_img_size);
+  return rc;
+}
+
 #ifndef KAFS_NO_MAIN
 int main(int argc, char **argv)
 {
@@ -11108,22 +11359,6 @@ int main(int argc, char **argv)
   unsigned mt_cnt_override = opts.mt_cnt_override;
   int mt_cnt_override_set = opts.mt_cnt_override_set;
   int saw_max_threads = opts.saw_max_threads;
-  uint32_t pending_worker_prio_mode = opts.pending_worker_prio_mode;
-  int pending_worker_nice = opts.pending_worker_nice;
-  uint32_t pending_ttl_soft_ms = opts.pending_ttl_soft_ms;
-  uint32_t pending_ttl_hard_ms = opts.pending_ttl_hard_ms;
-  uint32_t pending_cap_initial = opts.pending_cap_initial;
-  uint32_t pending_cap_min = opts.pending_cap_min;
-  uint32_t pending_cap_max = opts.pending_cap_max;
-  uint32_t bg_dedup_scan_enabled = opts.bg_dedup_scan_enabled;
-  uint32_t bg_dedup_interval_ms = opts.bg_dedup_interval_ms;
-  uint32_t bg_dedup_quiet_interval_ms = opts.bg_dedup_quiet_interval_ms;
-  uint32_t bg_dedup_pressure_interval_ms = opts.bg_dedup_pressure_interval_ms;
-  uint32_t bg_dedup_start_used_pct = opts.bg_dedup_start_used_pct;
-  uint32_t bg_dedup_pressure_used_pct = opts.bg_dedup_pressure_used_pct;
-  uint32_t bg_dedup_worker_prio_mode = opts.bg_dedup_worker_prio_mode;
-  int bg_dedup_worker_nice = opts.bg_dedup_worker_nice;
-  uint32_t fsync_policy = opts.fsync_policy;
   char *hotplug_uds_opt = opts.hotplug_uds_opt;
   char *hotplug_back_bin_opt = opts.hotplug_back_bin_opt;
 
@@ -11131,156 +11366,16 @@ int main(int argc, char **argv)
   static char mnt_abs[PATH_MAX];
   char hotplug_uds_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
   hotplug_uds_path[0] = '\0';
-  // Store mountpoint as an absolute path for /proc fd resolution (FICLONE).
-  if (argv_clean[1] && argv_clean[1][0] == '/')
-  {
-    snprintf(mnt_abs, sizeof(mnt_abs), "%s", argv_clean[1]);
-    ctx.c_mountpoint = mnt_abs;
-  }
-  else
-  {
-    char cwd[PATH_MAX];
-    if (getcwd(cwd, sizeof(cwd)) != NULL && argv_clean[1] && argv_clean[1][0] != '\0')
-    {
-      if ((size_t)snprintf(mnt_abs, sizeof(mnt_abs), "%s/%s", cwd, argv_clean[1]) < sizeof(mnt_abs))
-        ctx.c_mountpoint = mnt_abs;
-      else
-        ctx.c_mountpoint = argv_clean[1];
-    }
-    else
-    {
-      ctx.c_mountpoint = argv_clean[1];
-    }
-  }
-
-  ctx.c_hotplug_fd = -1;
-  ctx.c_hotplug_active = 0;
-  ctx.c_hotplug_lock_init = 0;
-  ctx.c_hotplug_session_id = 0;
-  ctx.c_hotplug_epoch = 0;
-  ctx.c_hotplug_data_mode = KAFS_RPC_DATA_INLINE;
-  ctx.c_hotplug_state = KAFS_HOTPLUG_STATE_DISABLED;
-  ctx.c_hotplug_last_error = 0;
-  ctx.c_hotplug_wait_queue_len = 0;
-  ctx.c_hotplug_wait_queue_limit = KAFS_HOTPLUG_WAIT_QUEUE_LIMIT_DEFAULT;
-  ctx.c_hotplug_wait_timeout_ms = KAFS_HOTPLUG_WAIT_TIMEOUT_MS_DEFAULT;
-  ctx.c_hotplug_wait_lock_init = 0;
-  ctx.c_hotplug_connecting = 0;
-  ctx.c_hotplug_uds_path[0] = '\0';
-  ctx.c_hotplug_front_major = KAFS_RPC_HELLO_MAJOR;
-  ctx.c_hotplug_front_minor = KAFS_RPC_HELLO_MINOR;
-  ctx.c_hotplug_front_features = KAFS_RPC_HELLO_FEATURES;
-  ctx.c_hotplug_back_major = 0;
-  ctx.c_hotplug_back_minor = 0;
-  ctx.c_hotplug_back_features = 0;
-  ctx.c_hotplug_compat_result = KAFS_HOTPLUG_COMPAT_UNKNOWN;
-  ctx.c_hotplug_compat_reason = 0;
-  ctx.c_pending_worker_prio_mode = pending_worker_prio_mode;
-  ctx.c_pending_worker_nice = pending_worker_nice;
-  ctx.c_pending_worker_prio_base_mode = pending_worker_prio_mode;
-  ctx.c_pending_worker_nice_base = pending_worker_nice;
-  ctx.c_pending_worker_auto_boosted = 0;
-  ctx.c_pending_ttl_soft_ms = pending_ttl_soft_ms;
-  ctx.c_pending_ttl_hard_ms = pending_ttl_hard_ms;
-  ctx.c_pending_oldest_age_ms = 0;
-  ctx.c_pending_ttl_over_soft = 0;
-  ctx.c_pending_ttl_over_hard = 0;
-  ctx.c_pending_worker_prio_apply_error = 0;
-  ctx.c_pending_worker_prio_dirty = 1;
-  ctx.c_pendinglog_capacity = pending_cap_initial;
-  ctx.c_pendinglog_capacity_min = pending_cap_min;
-  ctx.c_pendinglog_capacity_max = pending_cap_max;
-  ctx.c_tombstone_gc_cursor = KAFS_INO_ROOTDIR + 1u;
-  ctx.c_bg_dedup_enabled = bg_dedup_scan_enabled;
-  ctx.c_bg_dedup_interval_ms = bg_dedup_interval_ms;
-  ctx.c_bg_dedup_quiet_interval_ms = bg_dedup_quiet_interval_ms;
-  ctx.c_bg_dedup_pressure_interval_ms = bg_dedup_pressure_interval_ms;
-  ctx.c_bg_dedup_start_used_pct = bg_dedup_start_used_pct;
-  ctx.c_bg_dedup_pressure_used_pct = bg_dedup_pressure_used_pct;
-  ctx.c_bg_dedup_worker_prio_mode = bg_dedup_worker_prio_mode;
-  ctx.c_bg_dedup_worker_nice = bg_dedup_worker_nice;
-  ctx.c_bg_dedup_worker_prio_base_mode = bg_dedup_worker_prio_mode;
-  ctx.c_bg_dedup_worker_nice_base = bg_dedup_worker_nice;
-  ctx.c_bg_dedup_worker_auto_boosted = 0;
-  ctx.c_bg_dedup_worker_prio_apply_error = 0;
-  ctx.c_bg_dedup_worker_prio_dirty = 1;
-  ctx.c_bg_dedup_mode = KAFS_BG_DEDUP_MODE_COLD;
-  ctx.c_bg_dedup_telemetry_valid = 0;
-  ctx.c_bg_dedup_last_scanned_blocks = 0;
-  ctx.c_bg_dedup_last_direct_candidates = 0;
-  ctx.c_bg_dedup_last_replacements = 0;
-  ctx.c_bg_dedup_idle_skip_streak = 0;
-  ctx.c_bg_dedup_cold_start_due_ns = 0;
-  ctx.c_fsync_policy = fsync_policy;
-
-  const char *data_mode = getenv("KAFS_HOTPLUG_DATA_MODE");
-  if (data_mode)
-  {
-    if (strcmp(data_mode, "inline") == 0)
-      ctx.c_hotplug_data_mode = KAFS_RPC_DATA_INLINE;
-    else if (strcmp(data_mode, "plan_only") == 0)
-      ctx.c_hotplug_data_mode = KAFS_RPC_DATA_PLAN_ONLY;
-    else if (strcmp(data_mode, "shm") == 0)
-      ctx.c_hotplug_data_mode = KAFS_RPC_DATA_SHM;
-  }
-
-  const char *wait_timeout_env = getenv("KAFS_HOTPLUG_WAIT_TIMEOUT_MS");
-  if (wait_timeout_env && *wait_timeout_env)
-  {
-    char *endp = NULL;
-    unsigned long v = strtoul(wait_timeout_env, &endp, 10);
-    if (endp && *endp == '\0')
-      ctx.c_hotplug_wait_timeout_ms = (uint32_t)v;
-  }
-
-  const char *wait_limit_env = getenv("KAFS_HOTPLUG_WAIT_QUEUE_LIMIT");
-  if (wait_limit_env && *wait_limit_env)
-  {
-    char *endp = NULL;
-    unsigned long v = strtoul(wait_limit_env, &endp, 10);
-    if (endp && *endp == '\0')
-      ctx.c_hotplug_wait_queue_limit = (uint32_t)v;
-  }
+  kafs_main_init_context(&ctx, &opts, argv_clean[1], mnt_abs, sizeof(mnt_abs));
+  kafs_main_apply_hotplug_env(&ctx);
 
   const char *hotplug_uds =
       hotplug_uds_opt[0] != '\0' ? hotplug_uds_opt : getenv("KAFS_HOTPLUG_UDS");
   const char *hotplug_back_bin =
       hotplug_back_bin_opt[0] != '\0' ? hotplug_back_bin_opt : getenv("KAFS_HOTPLUG_BACK_BIN");
-  if (hotplug_uds)
-  {
-    ctx.c_hotplug_state = KAFS_HOTPLUG_STATE_WAITING;
-    snprintf(ctx.c_hotplug_uds_path, sizeof(ctx.c_hotplug_uds_path), "%s", hotplug_uds);
-    (void)kafs_hotplug_env_set(&ctx, "KAFS_HOTPLUG_UDS", hotplug_uds);
-    if (image_path && *image_path)
-      (void)kafs_hotplug_env_set(&ctx, "KAFS_IMAGE", image_path);
-    if (hotplug_back_bin && *hotplug_back_bin)
-      (void)kafs_hotplug_env_set(&ctx, "KAFS_HOTPLUG_BACK_BIN", hotplug_back_bin);
-    if (!ctx.c_hotplug_wait_lock_init)
-    {
-      if (pthread_mutex_init(&ctx.c_hotplug_wait_lock, NULL) == 0 &&
-          pthread_cond_init(&ctx.c_hotplug_wait_cond, NULL) == 0)
-        ctx.c_hotplug_wait_lock_init = 1;
-    }
-    if (snprintf(hotplug_uds_path, sizeof(hotplug_uds_path), "%s", hotplug_uds) <
-        (int)sizeof(hotplug_uds_path))
-    {
-      int rc_hp = kafs_hotplug_wait_for_back(&ctx, hotplug_uds_path, -1);
-      if (rc_hp != 0)
-      {
-        ctx.c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
-        ctx.c_hotplug_last_error = rc_hp;
-        fprintf(stderr, "hotplug: failed to accept back rc=%d\n", rc_hp);
-        return 2;
-      }
-    }
-    else
-    {
-      ctx.c_hotplug_state = KAFS_HOTPLUG_STATE_ERROR;
-      ctx.c_hotplug_last_error = -ENAMETOOLONG;
-      fprintf(stderr, "hotplug: uds path too long\n");
-      return 2;
-    }
-  }
+  if (kafs_main_start_hotplug(&ctx, image_path, hotplug_uds, hotplug_back_bin, hotplug_uds_path,
+                              sizeof(hotplug_uds_path)) != 0)
+    return 2;
 
   ctx.c_fd = open(image_path, O_RDWR, 0666);
   if (ctx.c_fd < 0)
@@ -11499,124 +11594,17 @@ int main(int argc, char **argv)
     exit(2);
   }
 
-  int saw_single = 0;
-  for (int i = 0; i < argc_clean; ++i)
-  {
-    if (strcmp(argv_clean[i], "-s") == 0)
-    {
-      saw_single = 1;
-      break;
-    }
-  }
-  // 余裕を持って追加オプション(-s, -o max_threads=)用のスロットを確保
   char *argv_fuse[argc_clean + 10];
-  for (int i = 0; i < argc_clean; ++i)
-    argv_fuse[i] = argv_clean[i];
-  int argc_fuse = argc_clean;
-  // default single-threaded: always add -s unless MT explicitly enabled.
-  if (!enable_mt && !saw_single)
-  {
-    argv_fuse[argc_fuse++] = "-s";
-  }
-  if (enable_mt && saw_single)
-  {
-    // -s takes precedence for predictable CLI behavior.
-    enable_mt = KAFS_FALSE;
-  }
-  if (kafs_debug_level() >= 3)
-  {
-    argv_fuse[argc_fuse++] = "-d"; // libfuse debug
-  }
-  // MT有効時は max_threads を明示（libfuseの既定/奇妙な値を避ける）
   char mt_opt_buf[64];
-  if (enable_mt && !saw_max_threads)
-  {
-    unsigned mt_cnt = 8; // Raspi向けデフォルト
-    if (mt_cnt_override_set)
-    {
-      mt_cnt = mt_cnt_override;
-    }
-    else
-    {
-      const char *mt_env = getenv("KAFS_MAX_THREADS");
-      if (mt_env && *mt_env)
-      {
-        char *endp = NULL;
-        unsigned long v = strtoul(mt_env, &endp, 10);
-        if (endp && *endp == '\0')
-          mt_cnt = (unsigned)v;
-      }
-      if (mt_cnt < 1)
-        mt_cnt = 1;
-      if (mt_cnt > 100000)
-        mt_cnt = 100000;
-    }
-    // 安全のため -o と値を分けて渡す（-omax_threads= 形式のパース差異を回避）
-    snprintf(mt_opt_buf, sizeof(mt_opt_buf), "max_threads=%u", mt_cnt);
-    argv_fuse[argc_fuse++] = "-o";
-    argv_fuse[argc_fuse++] = mt_opt_buf;
-    kafs_log(KAFS_LOG_INFO, "kafs: enabling multithread with -o %s\n", mt_opt_buf);
-  }
-  g_kafs_writeback_cache_enabled = writeback_cache_enabled ? 1 : 0;
-  ctx.c_trim_on_free = trim_on_free_enabled ? 1u : 0u;
-  if (writeback_cache_explicit)
-  {
-    kafs_log(KAFS_LOG_INFO, "kafs: writeback_cache %s (explicit)\n",
-             writeback_cache_enabled ? "enabled" : "disabled");
-  }
-  else
-  {
-    kafs_log(KAFS_LOG_INFO, "kafs: writeback_cache %s (default)\n",
-             writeback_cache_enabled ? "enabled" : "disabled");
-  }
-  if (trim_on_free_explicit)
-  {
-    kafs_log(KAFS_LOG_INFO, "kafs: trim_on_free %s (explicit)\n",
-             trim_on_free_enabled ? "enabled" : "disabled");
-  }
-  else
-  {
-    kafs_log(KAFS_LOG_INFO, "kafs: trim_on_free %s (default)\n",
-             trim_on_free_enabled ? "enabled" : "disabled");
-  }
-  // 起動引数を一度だけ情報ログに出力（デバッグ用途）
-  if (kafs_debug_level() >= 1)
-  {
-    kafs_log(KAFS_LOG_INFO, "kafs: fuse argv (%d):\n", argc_fuse);
-    for (int i = 0; i < argc_fuse; ++i)
-    {
-      kafs_log(KAFS_LOG_INFO, "  argv[%d]=%s\n", i, argv_fuse[i]);
-    }
-  }
-  argv_fuse[argc_fuse] = NULL; // ensure NULL-terminated argv for libfuse safety
+  int argc_fuse = 0;
+  kafs_main_build_fuse_argv(argv_clean, argc_clean, &enable_mt, saw_max_threads, mt_cnt_override,
+                            mt_cnt_override_set, argv_fuse, &argc_fuse, mt_opt_buf,
+                            sizeof(mt_opt_buf));
+  kafs_main_log_runtime_options(&ctx, writeback_cache_enabled, writeback_cache_explicit,
+                                trim_on_free_enabled, trim_on_free_explicit, argc_fuse, argv_fuse);
   fuse_set_log_func(kafs_fuse_log_func);
   int rc = fuse_main(argc_fuse, argv_fuse, &kafs_operations, &ctx);
   fuse_set_log_func(NULL);
-  kafs_bg_dedup_worker_stop(&ctx);
-  kafs_pending_worker_stop(&ctx);
-  kafs_journal_shutdown(&ctx);
-  if (ctx.c_hotplug_fd >= 0)
-    close(ctx.c_hotplug_fd);
-  ctx.c_hotplug_active = 0;
-  if (hotplug_uds_path[0] != '\0')
-    unlink(hotplug_uds_path);
-  if (ctx.c_hotplug_lock_init)
-    pthread_mutex_destroy(&ctx.c_hotplug_lock);
-  if (ctx.c_hotplug_wait_lock_init)
-  {
-    pthread_cond_destroy(&ctx.c_hotplug_wait_cond);
-    pthread_mutex_destroy(&ctx.c_hotplug_wait_lock);
-  }
-  free(ctx.c_meta_bitmap_words);
-  free(ctx.c_meta_bitmap_dirty);
-  free(ctx.c_ino_epoch);
-  free(ctx.c_diag_create_seq);
-  free(ctx.c_diag_create_mode);
-  free(ctx.c_diag_create_first_write_seen);
-  free(ctx.c_diag_create_paths);
-  kafs_diag_log_close(&ctx);
-  if (ctx.c_img_base && ctx.c_img_base != MAP_FAILED)
-    munmap(ctx.c_img_base, ctx.c_img_size);
-  return rc;
+  return kafs_main_cleanup(&ctx, hotplug_uds_path, rc);
 }
 #endif
