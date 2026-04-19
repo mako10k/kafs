@@ -10206,154 +10206,148 @@ static void kafs_main_apply_optional_bool_env(const char *value, kafs_bool_t *ou
     *out = KAFS_TRUE;
 }
 
-static int kafs_main_apply_env_overrides(kafs_main_options_t *opts)
+static const char *kafs_main_getenv_fallback(const char *primary, const char *fallback)
 {
-  const char *wbc_env = getenv("KAFS_WRITEBACK_CACHE");
-  const char *trim_env = getenv("KAFS_TRIM_ON_FREE");
+  const char *value = getenv(primary);
+  if (value && *value)
+    return value;
+  return getenv(fallback);
+}
+
+static int kafs_main_parse_nice_env(const char *name, const char *value, int *out)
+{
+  if (!value || !*value)
+    return 0;
+
+  char *endp = NULL;
+  long v = strtol(value, &endp, 10);
+  if (!endp || *endp != '\0' || v < 0 || v > 19)
+  {
+    fprintf(stderr, "invalid %s: '%s'\n", name, value);
+    return 2;
+  }
+  *out = (int)v;
+  return 0;
+}
+
+static int kafs_main_parse_u32_env(const char *name, const char *value, uint32_t min_value,
+                                   uint32_t max_value, uint32_t *out)
+{
+  if (!value || !*value)
+    return 0;
+  if (kafs_parse_u32_range(value, min_value, max_value, out) != 0)
+  {
+    fprintf(stderr, "invalid %s: '%s'\n", name, value);
+    return 2;
+  }
+  return 0;
+}
+
+static int kafs_main_apply_pending_env_overrides(kafs_main_options_t *opts)
+{
   const char *pprio = getenv("KAFS_PENDING_WORKER_PRIO");
-  const char *pnice = getenv("KAFS_PENDING_WORKER_NICE");
-  const char *pttl_soft = getenv("KAFS_PENDING_TTL_SOFT_MS");
-  const char *pttl_hard = getenv("KAFS_PENDING_TTL_HARD_MS");
-  const char *pcap_initial = getenv("KAFS_PENDINGLOG_CAP_INITIAL");
-  const char *pcap_min = getenv("KAFS_PENDINGLOG_CAP_MIN");
-  const char *pcap_max = getenv("KAFS_PENDINGLOG_CAP_MAX");
-  const char *bg_scan = getenv("KAFS_BG_DEDUP_SCAN");
-  const char *bg_interval = getenv("KAFS_BG_DEDUP_INTERVAL_MS");
-  const char *bg_quiet_interval = getenv("KAFS_BG_DEDUP_QUIET_INTERVAL_MS");
-  const char *bg_pressure_interval = getenv("KAFS_BG_DEDUP_PRESSURE_INTERVAL_MS");
-  const char *bg_start_pct = getenv("KAFS_BG_DEDUP_START_USED_PCT");
-  const char *bg_pressure_pct = getenv("KAFS_BG_DEDUP_PRESSURE_USED_PCT");
-  const char *bg_prio = getenv("KAFS_BG_DEDUP_WORKER_PRIO");
-  const char *bg_nice = getenv("KAFS_BG_DEDUP_WORKER_NICE");
-  const char *fsp = getenv("KAFS_FSYNC_POLICY");
-  const char *mt = getenv("KAFS_MT");
-
-  kafs_main_apply_optional_bool_env(wbc_env, &opts->writeback_cache_enabled);
-  kafs_main_apply_optional_bool_env(trim_env, &opts->trim_on_free_enabled);
-  opts->enable_mt = (mt && strcmp(mt, "1") == 0) ? KAFS_TRUE : KAFS_FALSE;
-
   if (pprio && *pprio &&
       kafs_pending_worker_prio_mode_parse(pprio, &opts->pending_worker_prio_mode) != 0)
   {
     fprintf(stderr, "invalid KAFS_PENDING_WORKER_PRIO: '%s'\n", pprio);
     return 2;
   }
-
-  if (pnice && *pnice)
-  {
-    char *endp = NULL;
-    long v = strtol(pnice, &endp, 10);
-    if (!endp || *endp != '\0' || v < 0 || v > 19)
-    {
-      fprintf(stderr, "invalid KAFS_PENDING_WORKER_NICE: '%s'\n", pnice);
-      return 2;
-    }
-    opts->pending_worker_nice = (int)v;
-  }
-
-  if (pttl_soft && *pttl_soft &&
-      kafs_parse_u32_range(pttl_soft, 0, 3600000u, &opts->pending_ttl_soft_ms) != 0)
-  {
-    fprintf(stderr, "invalid KAFS_PENDING_TTL_SOFT_MS: '%s'\n", pttl_soft);
+  if (kafs_main_parse_nice_env("KAFS_PENDING_WORKER_NICE", getenv("KAFS_PENDING_WORKER_NICE"),
+                               &opts->pending_worker_nice) != 0)
     return 2;
-  }
-  if (pttl_hard && *pttl_hard &&
-      kafs_parse_u32_range(pttl_hard, 0, 3600000u, &opts->pending_ttl_hard_ms) != 0)
-  {
-    fprintf(stderr, "invalid KAFS_PENDING_TTL_HARD_MS: '%s'\n", pttl_hard);
+  if (kafs_main_parse_u32_env("KAFS_PENDING_TTL_SOFT_MS", getenv("KAFS_PENDING_TTL_SOFT_MS"), 0,
+                              3600000u, &opts->pending_ttl_soft_ms) != 0)
     return 2;
-  }
+  return kafs_main_parse_u32_env("KAFS_PENDING_TTL_HARD_MS", getenv("KAFS_PENDING_TTL_HARD_MS"), 0,
+                                 3600000u, &opts->pending_ttl_hard_ms);
+}
 
-  if ((!pcap_initial || !*pcap_initial) && getenv("KAFS_PENDING_CAP_INITIAL"))
-    pcap_initial = getenv("KAFS_PENDING_CAP_INITIAL");
-  if (pcap_initial && *pcap_initial &&
-      kafs_parse_u32_range(pcap_initial, 0, 1000000000u, &opts->pending_cap_initial) != 0)
-  {
-    fprintf(stderr, "invalid KAFS_PENDINGLOG_CAP_INITIAL: '%s'\n", pcap_initial);
+static int kafs_main_apply_pending_cap_env_overrides(kafs_main_options_t *opts)
+{
+  if (kafs_main_parse_u32_env(
+          "KAFS_PENDINGLOG_CAP_INITIAL",
+          kafs_main_getenv_fallback("KAFS_PENDINGLOG_CAP_INITIAL", "KAFS_PENDING_CAP_INITIAL"), 0,
+          1000000000u, &opts->pending_cap_initial) != 0)
     return 2;
-  }
-
-  if ((!pcap_min || !*pcap_min) && getenv("KAFS_PENDING_CAP_MIN"))
-    pcap_min = getenv("KAFS_PENDING_CAP_MIN");
-  if (pcap_min && *pcap_min &&
-      kafs_parse_u32_range(pcap_min, 0, 1000000000u, &opts->pending_cap_min) != 0)
-  {
-    fprintf(stderr, "invalid KAFS_PENDINGLOG_CAP_MIN: '%s'\n", pcap_min);
+  if (kafs_main_parse_u32_env(
+          "KAFS_PENDINGLOG_CAP_MIN",
+          kafs_main_getenv_fallback("KAFS_PENDINGLOG_CAP_MIN", "KAFS_PENDING_CAP_MIN"), 0,
+          1000000000u, &opts->pending_cap_min) != 0)
     return 2;
-  }
+  return kafs_main_parse_u32_env(
+      "KAFS_PENDINGLOG_CAP_MAX",
+      kafs_main_getenv_fallback("KAFS_PENDINGLOG_CAP_MAX", "KAFS_PENDING_CAP_MAX"), 0, 1000000000u,
+      &opts->pending_cap_max);
+}
 
-  if ((!pcap_max || !*pcap_max) && getenv("KAFS_PENDING_CAP_MAX"))
-    pcap_max = getenv("KAFS_PENDING_CAP_MAX");
-  if (pcap_max && *pcap_max &&
-      kafs_parse_u32_range(pcap_max, 0, 1000000000u, &opts->pending_cap_max) != 0)
-  {
-    fprintf(stderr, "invalid KAFS_PENDINGLOG_CAP_MAX: '%s'\n", pcap_max);
-    return 2;
-  }
-
+static int kafs_main_apply_bg_dedup_env_overrides(kafs_main_options_t *opts)
+{
+  const char *bg_scan = getenv("KAFS_BG_DEDUP_SCAN");
   if (bg_scan && *bg_scan && kafs_parse_onoff(bg_scan, &opts->bg_dedup_scan_enabled) != 0)
   {
     fprintf(stderr, "invalid KAFS_BG_DEDUP_SCAN: '%s'\n", bg_scan);
     return 2;
   }
-  if (bg_interval && *bg_interval &&
-      kafs_parse_u32_range(bg_interval, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
-                           KAFS_BG_DEDUP_INTERVAL_MS_MAX, &opts->bg_dedup_interval_ms) != 0)
-  {
-    fprintf(stderr, "invalid KAFS_BG_DEDUP_INTERVAL_MS: '%s'\n", bg_interval);
+  if (kafs_main_parse_u32_env("KAFS_BG_DEDUP_INTERVAL_MS", getenv("KAFS_BG_DEDUP_INTERVAL_MS"),
+                              KAFS_BG_DEDUP_INTERVAL_MS_MIN, KAFS_BG_DEDUP_INTERVAL_MS_MAX,
+                              &opts->bg_dedup_interval_ms) != 0)
     return 2;
-  }
-  if (bg_quiet_interval && *bg_quiet_interval &&
-      kafs_parse_u32_range(bg_quiet_interval, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
-                           KAFS_BG_DEDUP_INTERVAL_MS_MAX, &opts->bg_dedup_quiet_interval_ms) != 0)
-  {
-    fprintf(stderr, "invalid KAFS_BG_DEDUP_QUIET_INTERVAL_MS: '%s'\n", bg_quiet_interval);
+  if (kafs_main_parse_u32_env("KAFS_BG_DEDUP_QUIET_INTERVAL_MS",
+                              getenv("KAFS_BG_DEDUP_QUIET_INTERVAL_MS"),
+                              KAFS_BG_DEDUP_INTERVAL_MS_MIN, KAFS_BG_DEDUP_INTERVAL_MS_MAX,
+                              &opts->bg_dedup_quiet_interval_ms) != 0)
     return 2;
-  }
-  if (bg_pressure_interval && *bg_pressure_interval &&
-      kafs_parse_u32_range(bg_pressure_interval, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
-                           KAFS_BG_DEDUP_INTERVAL_MS_MAX,
-                           &opts->bg_dedup_pressure_interval_ms) != 0)
-  {
-    fprintf(stderr, "invalid KAFS_BG_DEDUP_PRESSURE_INTERVAL_MS: '%s'\n", bg_pressure_interval);
+  if (kafs_main_parse_u32_env("KAFS_BG_DEDUP_PRESSURE_INTERVAL_MS",
+                              getenv("KAFS_BG_DEDUP_PRESSURE_INTERVAL_MS"),
+                              KAFS_BG_DEDUP_INTERVAL_MS_MIN, KAFS_BG_DEDUP_INTERVAL_MS_MAX,
+                              &opts->bg_dedup_pressure_interval_ms) != 0)
     return 2;
-  }
-  if (bg_start_pct && *bg_start_pct &&
-      kafs_parse_u32_range(bg_start_pct, 0, 100u, &opts->bg_dedup_start_used_pct) != 0)
-  {
-    fprintf(stderr, "invalid KAFS_BG_DEDUP_START_USED_PCT: '%s'\n", bg_start_pct);
+  if (kafs_main_parse_u32_env("KAFS_BG_DEDUP_START_USED_PCT",
+                              getenv("KAFS_BG_DEDUP_START_USED_PCT"), 0, 100u,
+                              &opts->bg_dedup_start_used_pct) != 0)
     return 2;
-  }
-  if (bg_pressure_pct && *bg_pressure_pct &&
-      kafs_parse_u32_range(bg_pressure_pct, 0, 100u, &opts->bg_dedup_pressure_used_pct) != 0)
-  {
-    fprintf(stderr, "invalid KAFS_BG_DEDUP_PRESSURE_USED_PCT: '%s'\n", bg_pressure_pct);
+  if (kafs_main_parse_u32_env("KAFS_BG_DEDUP_PRESSURE_USED_PCT",
+                              getenv("KAFS_BG_DEDUP_PRESSURE_USED_PCT"), 0, 100u,
+                              &opts->bg_dedup_pressure_used_pct) != 0)
     return 2;
-  }
+
+  const char *bg_prio = getenv("KAFS_BG_DEDUP_WORKER_PRIO");
   if (bg_prio && *bg_prio &&
       kafs_pending_worker_prio_mode_parse(bg_prio, &opts->bg_dedup_worker_prio_mode) != 0)
   {
     fprintf(stderr, "invalid KAFS_BG_DEDUP_WORKER_PRIO: '%s'\n", bg_prio);
     return 2;
   }
-  if (bg_nice && *bg_nice)
-  {
-    char *endp = NULL;
-    long v = strtol(bg_nice, &endp, 10);
-    if (!endp || *endp != '\0' || v < 0 || v > 19)
-    {
-      fprintf(stderr, "invalid KAFS_BG_DEDUP_WORKER_NICE: '%s'\n", bg_nice);
-      return 2;
-    }
-    opts->bg_dedup_worker_nice = (int)v;
-  }
+  return kafs_main_parse_nice_env("KAFS_BG_DEDUP_WORKER_NICE", getenv("KAFS_BG_DEDUP_WORKER_NICE"),
+                                  &opts->bg_dedup_worker_nice);
+}
+
+static int kafs_main_apply_misc_env_overrides(kafs_main_options_t *opts)
+{
+  const char *fsp = getenv("KAFS_FSYNC_POLICY");
   if (fsp && *fsp && kafs_fsync_policy_parse(fsp, &opts->fsync_policy) != 0)
   {
     fprintf(stderr, "invalid KAFS_FSYNC_POLICY: '%s'\n", fsp);
     return 2;
   }
 
+  const char *mt = getenv("KAFS_MT");
+  opts->enable_mt = (mt && strcmp(mt, "1") == 0) ? KAFS_TRUE : KAFS_FALSE;
   return 0;
+}
+
+static int kafs_main_apply_env_overrides(kafs_main_options_t *opts)
+{
+  kafs_main_apply_optional_bool_env(getenv("KAFS_WRITEBACK_CACHE"), &opts->writeback_cache_enabled);
+  kafs_main_apply_optional_bool_env(getenv("KAFS_TRIM_ON_FREE"), &opts->trim_on_free_enabled);
+
+  if (kafs_main_apply_pending_env_overrides(opts) != 0)
+    return 2;
+  if (kafs_main_apply_pending_cap_env_overrides(opts) != 0)
+    return 2;
+  if (kafs_main_apply_bg_dedup_env_overrides(opts) != 0)
+    return 2;
+  return kafs_main_apply_misc_env_overrides(opts);
 }
 
 static int kafs_main_collect_args(int argc, char **argv, const char *prog,
