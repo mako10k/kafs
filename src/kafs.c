@@ -5669,6 +5669,30 @@ static int kafs_dirent_remove(struct kafs_context *ctx, kafs_sinode_t *inoent_di
   return rc;
 }
 
+static kafs_bool_t kafs_access_group_match(gid_t file_gid, gid_t gid, size_t ngroups,
+                                           const gid_t groups[])
+{
+  if (gid == file_gid)
+    return KAFS_TRUE;
+  for (size_t i = 0; i < ngroups; ++i)
+    if (file_gid == groups[i])
+      return KAFS_TRUE;
+  return KAFS_FALSE;
+}
+
+static kafs_bool_t kafs_access_allowed(mode_t mode, mode_t other_bit, mode_t user_bit,
+                                       mode_t group_bit, uid_t uid, uid_t file_uid, gid_t gid,
+                                       gid_t file_gid, size_t ngroups, const gid_t groups[])
+{
+  if (mode & other_bit)
+    return KAFS_TRUE;
+  if ((mode & user_bit) && uid == file_uid)
+    return KAFS_TRUE;
+  if ((mode & group_bit) && kafs_access_group_match(file_gid, gid, ngroups, groups))
+    return KAFS_TRUE;
+  return KAFS_FALSE;
+}
+
 // cppcheck-suppress constParameterCallback
 static int kafs_access_check(int ok, kafs_sinode_t *inoent, kafs_bool_t is_dir, uid_t uid,
                              gid_t gid, size_t ngroups,
@@ -5703,71 +5727,17 @@ static int kafs_access_check(int ok, kafs_sinode_t *inoent, kafs_bool_t is_dir, 
   }
 
   if (ok & R_OK)
-  {
-    kafs_bool_t result = KAFS_FALSE;
-    if (mode & S_IROTH)
-      result = KAFS_TRUE;
-    else if (mode & S_IRUSR && uid == fuid)
-      result = KAFS_TRUE;
-    else if (mode & S_IRGRP)
-    {
-      if (gid == fgid)
-        result = KAFS_TRUE;
-      else
-        for (size_t i = 0; i < ngroups; i++)
-          if (fgid == groups[i])
-          {
-            result = KAFS_TRUE;
-            break;
-          }
-    }
-    if (!result)
+    if (!kafs_access_allowed(mode, S_IROTH, S_IRUSR, S_IRGRP, uid, fuid, gid, fgid, ngroups,
+                             groups))
       return -EACCES;
-  }
   if (ok & W_OK)
-  {
-    kafs_bool_t result = KAFS_FALSE;
-    if (mode & S_IWOTH)
-      result = KAFS_TRUE;
-    else if (mode & S_IWUSR && uid == fuid)
-      result = KAFS_TRUE;
-    else if (mode & S_IWGRP)
-    {
-      if (gid == fgid)
-        result = KAFS_TRUE;
-      else
-        for (size_t i = 0; i < ngroups; i++)
-          if (fgid == groups[i])
-          {
-            result = KAFS_TRUE;
-            break;
-          }
-    }
-    if (!result)
+    if (!kafs_access_allowed(mode, S_IWOTH, S_IWUSR, S_IWGRP, uid, fuid, gid, fgid, ngroups,
+                             groups))
       return -EACCES;
-  }
   if (ok & X_OK)
-  {
-    kafs_bool_t result = KAFS_FALSE;
-    if (mode & S_IXOTH)
-      result = KAFS_TRUE;
-    else if (mode & S_IXUSR && uid == fuid)
-      result = KAFS_TRUE;
-    else if (mode & S_IXGRP)
-    {
-      if (gid == fgid)
-        result = KAFS_TRUE;
-      else
-        for (size_t i = 0; i < ngroups; i++)
-          if (fgid == groups[i])
-          {
-            result = KAFS_TRUE;
-            break;
-          }
-    }
-    if (!result)
+    if (!kafs_access_allowed(mode, S_IXOTH, S_IXUSR, S_IXGRP, uid, fuid, gid, fgid, ngroups,
+                             groups))
       return -EACCES;
-  }
   return KAFS_SUCCESS;
 }
 
