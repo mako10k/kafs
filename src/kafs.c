@@ -10518,20 +10518,64 @@ static void kafs_op_destroy(void *private_data)
   kafs_pending_worker_stop(ctx);
 }
 
+static int kafs_release_handle_ctl_path(const char *path, struct fuse_file_info *fi)
+{
+  if (!kafs_is_ctl_path(path))
+    return 0;
+
+  kafs_ctl_session_t *sess = (kafs_ctl_session_t *)(uintptr_t)fi->fh;
+  free(sess);
+  fi->fh = 0;
+  kafs_dlog(2, "%s: exit rc=0 ctl path=%s\n", __func__, path ? path : "(null)");
+  return 1;
+}
+
+static void kafs_release_finalize_last_open(struct kafs_context *ctx, kafs_inocnt_t ino,
+                                            int *reclaimed)
+{
+  int reclaim_now = kafs_tombstone_pressure(ctx);
+  kafs_inode_lock(ctx, (uint32_t)ino);
+  if (kafs_inode_is_tombstone(kafs_ctx_inode(ctx, ino)))
+  {
+    if (!reclaim_now)
+    {
+      int trc = kafs_tailmeta_try_reclaim_tombstone_payload_locked(ctx, ino);
+      if (trc < 0)
+      {
+        kafs_log(KAFS_LOG_WARNING, "%s: early tail reclaim failed ino=%" PRIuFAST32 " rc=%d\n",
+                 __func__, (uint32_t)ino, trc);
+      }
+    }
+    if (reclaim_now)
+      (void)kafs_try_reclaim_unlinked_inode_locked(ctx, ino, reclaimed);
+  }
+  else
+  {
+    int nrc = kafs_tailmeta_normalize_block_layout(ctx, kafs_ctx_inode(ctx, ino));
+    if (nrc < 0)
+      kafs_log(KAFS_LOG_WARNING, "%s: mixed tail normalize failed ino=%" PRIuFAST32 " rc=%d\n",
+               __func__, (uint32_t)ino, nrc);
+  }
+  kafs_inode_unlock(ctx, (uint32_t)ino);
+}
+
+static void kafs_release_record_reclaimed_inode(struct kafs_context *ctx)
+{
+  kafs_inode_alloc_lock(ctx);
+  (void)kafs_sb_inocnt_free_incr(ctx->c_superblock);
+  kafs_sb_wtime_set(ctx->c_superblock, kafs_now());
+  kafs_inode_alloc_unlock(ctx);
+}
+
 static int kafs_op_release(const char *path, struct fuse_file_info *fi)
 {
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx ? fctx->private_data : NULL;
   kafs_dlog(2, "%s: enter path=%s ino=%" PRIuFAST32 "\n", __func__, path ? path : "(null)",
             fi ? (uint32_t)fi->fh : (uint32_t)KAFS_INO_NONE);
-  if (kafs_is_ctl_path(path))
-  {
-    kafs_ctl_session_t *sess = (kafs_ctl_session_t *)(uintptr_t)fi->fh;
-    free(sess);
-    fi->fh = 0;
-    kafs_dlog(2, "%s: exit rc=0 ctl path=%s\n", __func__, path ? path : "(null)");
+  if (kafs_release_handle_ctl_path(path, fi))
     return 0;
-  }
+
   kafs_inocnt_t ino = fi->fh;
   int reclaimed = 0;
   if (ctx && ctx->c_open_cnt)
@@ -10541,38 +10585,10 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
               (uint32_t)ino, after);
     if (after == 0)
     {
-      int reclaim_now = kafs_tombstone_pressure(ctx);
-      kafs_inode_lock(ctx, (uint32_t)ino);
-      if (kafs_inode_is_tombstone(kafs_ctx_inode(ctx, ino)))
-      {
-        if (!reclaim_now)
-        {
-          int trc = kafs_tailmeta_try_reclaim_tombstone_payload_locked(ctx, ino);
-          if (trc < 0)
-          {
-            kafs_log(KAFS_LOG_WARNING, "%s: early tail reclaim failed ino=%" PRIuFAST32 " rc=%d\n",
-                     __func__, (uint32_t)ino, trc);
-          }
-        }
-        if (reclaim_now)
-          (void)kafs_try_reclaim_unlinked_inode_locked(ctx, ino, &reclaimed);
-      }
-      else
-      {
-        int nrc = kafs_tailmeta_normalize_block_layout(ctx, kafs_ctx_inode(ctx, ino));
-        if (nrc < 0)
-          kafs_log(KAFS_LOG_WARNING, "%s: mixed tail normalize failed ino=%" PRIuFAST32 " rc=%d\n",
-                   __func__, (uint32_t)ino, nrc);
-      }
-      kafs_inode_unlock(ctx, (uint32_t)ino);
+      kafs_release_finalize_last_open(ctx, ino, &reclaimed);
 
       if (reclaimed)
-      {
-        kafs_inode_alloc_lock(ctx);
-        (void)kafs_sb_inocnt_free_incr(ctx->c_superblock);
-        kafs_sb_wtime_set(ctx->c_superblock, kafs_now());
-        kafs_inode_alloc_unlock(ctx);
-      }
+        kafs_release_record_reclaimed_inode(ctx);
     }
   }
   int rc = kafs_op_flush(path, fi);
