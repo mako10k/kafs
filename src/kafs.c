@@ -8021,6 +8021,43 @@ static ssize_t kafs_copy_regular_range(kafs_context_t *ctx, kafs_sinode_t *ino_i
 
 // Copy one full block by sharing HRL reference instead of read+hash+write.
 // Caller must hold src/dst inode locks.
+static void kafs_copy_share_append_release(kafs_blkcnt_t *release_list, size_t *release_cnt,
+                                           kafs_blkcnt_t blo)
+{
+  if (blo != KAFS_BLO_NONE)
+    release_list[(*release_cnt)++] = blo;
+}
+
+static int kafs_copy_share_collect_pruned_refs(kafs_context_t *ctx, kafs_sinode_t *dst,
+                                               kafs_iblkcnt_t dst_iblo, kafs_blkcnt_t *release_list,
+                                               size_t *release_cnt)
+{
+  kafs_blkcnt_t f1 = KAFS_BLO_NONE;
+  kafs_blkcnt_t f2 = KAFS_BLO_NONE;
+  kafs_blkcnt_t f3 = KAFS_BLO_NONE;
+  int rc = kafs_ino_prune_empty_indirects(ctx, dst, dst_iblo, &f1, &f2, &f3);
+  if (rc < 0)
+    return rc;
+
+  kafs_copy_share_append_release(release_list, release_cnt, f1);
+  kafs_copy_share_append_release(release_list, release_cnt, f2);
+  kafs_copy_share_append_release(release_list, release_cnt, f3);
+  return 0;
+}
+
+static void kafs_copy_share_release_refs(kafs_context_t *ctx, uint32_t ino_dst,
+                                         const kafs_blkcnt_t *release_list, size_t release_cnt)
+{
+  if (release_cnt == 0)
+    return;
+
+  // Keep existing lock ordering: dec_ref runs outside inode lock.
+  kafs_inode_unlock(ctx, ino_dst);
+  for (size_t i = 0; i < release_cnt; ++i)
+    (void)kafs_inode_release_hrl_ref(ctx, release_list[i]);
+  kafs_inode_lock(ctx, ino_dst);
+}
+
 static int kafs_copy_share_one_iblk_locked(kafs_context_t *ctx, kafs_sinode_t *src,
                                            kafs_sinode_t *dst, kafs_iblkcnt_t src_iblo,
                                            kafs_iblkcnt_t dst_iblo, uint32_t ino_dst)
@@ -8066,31 +8103,13 @@ static int kafs_copy_share_one_iblk_locked(kafs_context_t *ctx, kafs_sinode_t *s
 
   if (src_blo == KAFS_BLO_NONE)
   {
-    kafs_blkcnt_t f1 = KAFS_BLO_NONE;
-    kafs_blkcnt_t f2 = KAFS_BLO_NONE;
-    kafs_blkcnt_t f3 = KAFS_BLO_NONE;
-    rc = kafs_ino_prune_empty_indirects(ctx, dst, dst_iblo, &f1, &f2, &f3);
+    rc = kafs_copy_share_collect_pruned_refs(ctx, dst, dst_iblo, release_list, &release_cnt);
     if (rc < 0)
       return rc;
-    if (f1 != KAFS_BLO_NONE)
-      release_list[release_cnt++] = f1;
-    if (f2 != KAFS_BLO_NONE)
-      release_list[release_cnt++] = f2;
-    if (f3 != KAFS_BLO_NONE)
-      release_list[release_cnt++] = f3;
   }
 
-  if (old_blo != KAFS_BLO_NONE)
-    release_list[release_cnt++] = old_blo;
-
-  if (release_cnt != 0)
-  {
-    // Keep existing lock ordering: dec_ref runs outside inode lock.
-    kafs_inode_unlock(ctx, ino_dst);
-    for (size_t i = 0; i < release_cnt; ++i)
-      (void)kafs_inode_release_hrl_ref(ctx, release_list[i]);
-    kafs_inode_lock(ctx, ino_dst);
-  }
+  kafs_copy_share_append_release(release_list, &release_cnt, old_blo);
+  kafs_copy_share_release_refs(ctx, ino_dst, release_list, release_cnt);
   __atomic_add_fetch(&ctx->c_stat_copy_share_done_blocks, 1u, __ATOMIC_RELAXED);
   return 0;
 }
