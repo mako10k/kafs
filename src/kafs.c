@@ -9082,30 +9082,82 @@ static int kafs_fallocate_zero_right_edge(struct kafs_context *ctx, kafs_sinode_
   return kafs_ino_iblk_write(ctx, inoent, iblo, wbuf);
 }
 
-static int kafs_op_fallocate(const char *path, int mode, off_t offset, off_t length,
-                             struct fuse_file_info *fi)
+static int kafs_fallocate_validate_request(const char *path, off_t offset, off_t length,
+                                           kafs_off_t *end_req)
 {
-  struct fuse_context *fctx = fuse_get_context();
-  struct kafs_context *ctx = fctx->private_data;
   if (kafs_is_ctl_path(path))
     return -EACCES;
   if (offset < 0 || length < 0)
     return -EINVAL;
   if (length == 0)
-    return 0;
+    return 1;
 
-  kafs_off_t end_req = (kafs_off_t)offset + (kafs_off_t)length;
-  if (end_req < (kafs_off_t)offset)
+  *end_req = (kafs_off_t)offset + (kafs_off_t)length;
+  if (*end_req < (kafs_off_t)offset)
     return -EOVERFLOW;
 
+  return 0;
+}
+
+static int kafs_fallocate_validate_mode(int mode)
+{
 #ifdef FALLOC_FL_PUNCH_HOLE
   const int supported = FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE;
   if ((mode & ~supported) != 0)
     return -EOPNOTSUPP;
+  return 0;
 #else
   (void)mode;
   return -EOPNOTSUPP;
 #endif
+}
+
+static int kafs_fallocate_punch_locked(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                       uint32_t ino, kafs_off_t offset, kafs_off_t end_req)
+{
+  int rc = 0;
+  kafs_inode_lock(ctx, ino);
+
+  kafs_off_t filesize = kafs_ino_size_get(inoent);
+  if (offset >= filesize)
+    goto fallocate_unlock;
+
+  kafs_off_t end = end_req;
+  if (end > filesize)
+    end = filesize;
+
+  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
+  rc = kafs_fallocate_zero_left_edge(ctx, inoent, offset, end, blksize, log_blksize);
+  if (rc < 0)
+    goto fallocate_unlock;
+
+  kafs_iblkcnt_t first_full = (kafs_iblkcnt_t)((offset + blksize - 1) >> log_blksize);
+  kafs_iblkcnt_t last_full_excl = (kafs_iblkcnt_t)(end >> log_blksize);
+  rc = kafs_fallocate_release_full_blocks(ctx, inoent, filesize, first_full, last_full_excl);
+  if (rc < 0)
+    goto fallocate_unlock;
+
+  rc = kafs_fallocate_zero_right_edge(ctx, inoent, offset, end, filesize, blksize, log_blksize);
+
+fallocate_unlock:
+  kafs_inode_unlock(ctx, ino);
+  return rc;
+}
+
+static int kafs_op_fallocate(const char *path, int mode, off_t offset, off_t length,
+                             struct fuse_file_info *fi)
+{
+  struct fuse_context *fctx = fuse_get_context();
+  struct kafs_context *ctx = fctx->private_data;
+  kafs_off_t end_req;
+  int rc = kafs_fallocate_validate_request(path, offset, length, &end_req);
+  if (rc != 0)
+    return rc > 0 ? 0 : rc;
+
+  rc = kafs_fallocate_validate_mode(mode);
+  if (rc != 0)
+    return rc;
 
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
@@ -9125,37 +9177,7 @@ static int kafs_op_fallocate(const char *path, int mode, off_t offset, off_t len
     return -EOPNOTSUPP;
 #endif
 
-  kafs_inode_lock(ctx, ino);
-  int rc = 0;
-  kafs_off_t filesize = kafs_ino_size_get(inoent);
-  if ((kafs_off_t)offset >= filesize)
-  {
-    kafs_inode_unlock(ctx, ino);
-    return 0;
-  }
-
-  kafs_off_t end = end_req;
-  if (end > filesize)
-    end = filesize;
-
-  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
-  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
-  rc = kafs_fallocate_zero_left_edge(ctx, inoent, (kafs_off_t)offset, end, blksize, log_blksize);
-  if (rc < 0)
-    goto fallocate_unlock;
-
-  kafs_iblkcnt_t first_full = (kafs_iblkcnt_t)(((kafs_off_t)offset + blksize - 1) >> log_blksize);
-  kafs_iblkcnt_t last_full_excl = (kafs_iblkcnt_t)(end >> log_blksize);
-  rc = kafs_fallocate_release_full_blocks(ctx, inoent, filesize, first_full, last_full_excl);
-  if (rc < 0)
-    goto fallocate_unlock;
-
-  rc = kafs_fallocate_zero_right_edge(ctx, inoent, (kafs_off_t)offset, end, filesize, blksize,
-                                      log_blksize);
-
-fallocate_unlock:
-  kafs_inode_unlock(ctx, ino);
-  return rc;
+  return kafs_fallocate_punch_locked(ctx, inoent, ino, (kafs_off_t)offset, end_req);
 }
 
 static off_t kafs_lseek_find_data_locked(kafs_context_t *ctx, kafs_sinode_t *inoent, uint32_t ino,
