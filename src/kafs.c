@@ -9697,6 +9697,81 @@ static int kafs_op_flush(const char *path, struct fuse_file_info *fi)
   return 0;
 }
 
+static uint32_t kafs_fsync_resolve_inode(struct fuse_context *fctx, struct kafs_context *ctx,
+                                         const char *path, struct fuse_file_info *fi)
+{
+  if (fi)
+    return (uint32_t)fi->fh;
+  if (!path || path[0] == '\0')
+    return KAFS_INO_NONE;
+
+  kafs_sinode_t *inoent = NULL;
+  int arc = kafs_access(fctx, ctx, path, fi, F_OK, &inoent);
+  if (arc == 0 && inoent)
+    return (uint32_t)kafs_ctx_ino_no(ctx, inoent);
+  return KAFS_INO_NONE;
+}
+
+static int kafs_fsync_prepare_inode(struct kafs_context *ctx, const char *path, uint32_t ino)
+{
+  kafs_inode_lock(ctx, ino);
+  int nrc = kafs_tailmeta_normalize_block_layout(ctx, kafs_ctx_inode(ctx, ino));
+  kafs_inode_unlock(ctx, ino);
+  if (nrc < 0)
+  {
+    kafs_dlog(2, "%s: exit rc=%d normalize_failed path=%s ino=%" PRIuFAST32 "\n", __func__, nrc,
+              path ? path : "(null)", ino);
+    return nrc;
+  }
+
+  uint32_t saved_mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
+  int saved_nice = 0;
+  int boosted = 0;
+  kafs_pending_worker_begin_boost(ctx, &saved_mode, &saved_nice, &boosted);
+
+  int drc = kafs_pendinglog_drain_inode(ctx, ino);
+  kafs_pending_worker_end_boost(ctx, saved_mode, saved_nice, boosted);
+  if (drc < 0 && drc != -ETIMEDOUT)
+  {
+    kafs_dlog(2, "%s: exit rc=%d drain_failed path=%s ino=%" PRIuFAST32 "\n", __func__, drc,
+              path ? path : "(null)", ino);
+    return drc;
+  }
+  if (drc == -ETIMEDOUT)
+  {
+    kafs_log(KAFS_LOG_WARNING, "%s: pending drain timeout path=%s ino=%" PRIuFAST32 " (continue)\n",
+             __func__, path ? path : "(null)", ino);
+  }
+  return 0;
+}
+
+static int kafs_fsync_use_journal_only(struct kafs_context *ctx, int isdatasync)
+{
+  if (!kafs_journal_is_enabled(ctx))
+    return 0;
+  if (ctx->c_fsync_policy == KAFS_FSYNC_POLICY_JOURNAL_ONLY)
+    return 1;
+  if (ctx->c_fsync_policy != KAFS_FSYNC_POLICY_ADAPTIVE)
+    return 0;
+  return isdatasync || ctx->c_pending_ttl_over_soft || ctx->c_pending_ttl_over_hard;
+}
+
+static int kafs_fsync_backing_sync(struct kafs_context *ctx, const char *path, uint32_t ino,
+                                   int isdatasync)
+{
+  int src = isdatasync ? fdatasync(ctx->c_fd) : fsync(ctx->c_fd);
+  if (src != 0)
+  {
+    int e = errno;
+    kafs_log(KAFS_LOG_WARNING, "%s: %s failed path=%s ino=%" PRIuFAST32 " errno=%d\n", __func__,
+             isdatasync ? "fdatasync" : "fsync", path ? path : "(null)", ino, e);
+    kafs_dlog(2, "%s: exit rc=%d path=%s ino=%" PRIuFAST32 "\n", __func__, -e,
+              path ? path : "(null)", ino);
+    return -e;
+  }
+  return 0;
+}
+
 static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info *fi)
 {
   struct fuse_context *fctx = fuse_get_context();
@@ -9708,73 +9783,16 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
     return 0;
   }
 
-  uint32_t ino = KAFS_INO_NONE;
-  if (fi)
-    ino = (uint32_t)fi->fh;
-  else if (path && path[0] != '\0')
-  {
-    kafs_sinode_t *inoent = NULL;
-    int arc = kafs_access(fctx, ctx, path, fi, F_OK, &inoent);
-    if (arc == 0 && inoent)
-      ino = (uint32_t)kafs_ctx_ino_no(ctx, inoent);
-  }
+  uint32_t ino = kafs_fsync_resolve_inode(fctx, ctx, path, fi);
   if (ino != KAFS_INO_NONE)
   {
-    kafs_inode_lock(ctx, ino);
-    int nrc = kafs_tailmeta_normalize_block_layout(ctx, kafs_ctx_inode(ctx, ino));
-    kafs_inode_unlock(ctx, ino);
-    if (nrc < 0)
-    {
-      kafs_dlog(2, "%s: exit rc=%d normalize_failed path=%s ino=%" PRIuFAST32 "\n", __func__, nrc,
-                path ? path : "(null)", ino);
-      return nrc;
-    }
-
-    uint32_t saved_mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
-    int saved_nice = 0;
-    int boosted = 0;
-    // If caller is about to block for pending-drain, temporarily boost worker priority.
-    kafs_pending_worker_begin_boost(ctx, &saved_mode, &saved_nice, &boosted);
-
-    int drc = kafs_pendinglog_drain_inode(ctx, ino);
-    kafs_pending_worker_end_boost(ctx, saved_mode, saved_nice, boosted);
-    if (drc < 0)
-    {
-      if (drc == -ETIMEDOUT)
-      {
-        // Keep fsync path robust under temporary pending-worker congestion.
-        kafs_log(KAFS_LOG_WARNING,
-                 "%s: pending drain timeout path=%s ino=%" PRIuFAST32 " (continue)\n", __func__,
-                 path ? path : "(null)", ino);
-      }
-      else
-      {
-        kafs_dlog(2, "%s: exit rc=%d drain_failed path=%s ino=%" PRIuFAST32 "\n", __func__, drc,
-                  path ? path : "(null)", ino);
-        return drc;
-      }
-    }
+    int prc = kafs_fsync_prepare_inode(ctx, path, ino);
+    if (prc < 0)
+      return prc;
   }
 
-  // Runtime fsync policy:
-  // - full: always issue backing fsync/fdatasync
-  // - journal_only: journal durability barrier only
-  // - adaptive: journal_only for fdatasync and during pending-TTL pressure, else full
   uint32_t policy = ctx->c_fsync_policy;
-  int journal_enabled = kafs_journal_is_enabled(ctx) ? 1 : 0;
-  int journal_only_mode = 0;
-  if (journal_enabled)
-  {
-    if (policy == KAFS_FSYNC_POLICY_JOURNAL_ONLY)
-      journal_only_mode = 1;
-    else if (policy == KAFS_FSYNC_POLICY_ADAPTIVE)
-    {
-      if (isdatasync || ctx->c_pending_ttl_over_soft || ctx->c_pending_ttl_over_hard)
-        journal_only_mode = 1;
-    }
-  }
-
-  if (journal_only_mode)
+  if (kafs_fsync_use_journal_only(ctx, isdatasync))
   {
     kafs_journal_force_flush(ctx);
     kafs_dlog(2,
@@ -9785,16 +9803,9 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
   }
 
   kafs_journal_force_flush(ctx);
-  int src = isdatasync ? fdatasync(ctx->c_fd) : fsync(ctx->c_fd);
+  int src = kafs_fsync_backing_sync(ctx, path, ino, isdatasync);
   if (src != 0)
-  {
-    int e = errno;
-    kafs_log(KAFS_LOG_WARNING, "%s: %s failed path=%s ino=%" PRIuFAST32 " errno=%d\n", __func__,
-             isdatasync ? "fdatasync" : "fsync", path ? path : "(null)", ino, e);
-    kafs_dlog(2, "%s: exit rc=%d path=%s ino=%" PRIuFAST32 "\n", __func__, -e,
-              path ? path : "(null)", ino);
-    return -e;
-  }
+    return src;
   kafs_dlog(2, "%s: exit rc=0 path=%s ino=%" PRIuFAST32 "\n", __func__, path ? path : "(null)",
             ino);
   return 0;
