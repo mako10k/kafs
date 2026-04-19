@@ -255,7 +255,7 @@ static void usage_chmod_cmd(const char *prog)
   usage_cmd(prog, "chmod <octal_mode> <path>\n       chmod <mountpoint> <octal_mode> <path>", NULL);
 }
 
-static void usage_primary_cmd(const char *prog, const char *cmd)
+static int usage_primary_direct_cmd(const char *prog, const char *cmd)
 {
   if (strcmp(cmd, "migrate") == 0)
     usage_migrate_cmd(prog);
@@ -263,35 +263,43 @@ static void usage_primary_cmd(const char *prog, const char *cmd)
     usage_fsstat_cmd(prog);
   else if (strcmp(cmd, "hotplug") == 0)
     usage_hotplug_cmd(prog);
-  else if (strcmp(cmd, "stat") == 0)
-    usage_single_path_cmd(prog, "stat");
-  else if (strcmp(cmd, "cat") == 0)
-    usage_single_path_cmd(prog, "cat");
-  else if (strcmp(cmd, "write") == 0)
-    usage_single_path_cmd(prog, "write");
   else if (strcmp(cmd, "cp") == 0)
     usage_cp_cmd(prog);
   else if (strcmp(cmd, "mv") == 0)
     usage_mv_cmd(prog);
-  else if (strcmp(cmd, "rm") == 0)
-    usage_single_path_cmd(prog, "rm");
-  else if (strcmp(cmd, "mkdir") == 0)
-    usage_single_path_cmd(prog, "mkdir");
-  else if (strcmp(cmd, "rmdir") == 0)
-    usage_single_path_cmd(prog, "rmdir");
   else if (strcmp(cmd, "ln") == 0)
     usage_ln_cmd(prog);
   else if (strcmp(cmd, "symlink") == 0)
     usage_symlink_cmd(prog);
   else if (strcmp(cmd, "rsync") == 0)
     usage_rsync_cmd(prog);
-  else if (strcmp(cmd, "readlink") == 0)
-    usage_single_path_cmd(prog, "readlink");
   else if (strcmp(cmd, "chmod") == 0)
     usage_chmod_cmd(prog);
-  else if (strcmp(cmd, "touch") == 0)
-    usage_single_path_cmd(prog, "touch");
   else
+    return 0;
+
+  return 1;
+}
+
+static int usage_primary_single_path(const char *prog, const char *cmd)
+{
+  static const char *const names[] = {"stat",  "cat",   "write",    "rm",
+                                      "mkdir", "rmdir", "readlink", "touch"};
+  for (size_t index = 0; index < sizeof(names) / sizeof(names[0]); ++index)
+  {
+    if (strcmp(cmd, names[index]) == 0)
+    {
+      usage_single_path_cmd(prog, names[index]);
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
+static void usage_primary_cmd(const char *prog, const char *cmd)
+{
+  if (!usage_primary_direct_cmd(prog, cmd) && !usage_primary_single_path(prog, cmd))
     usage(prog);
 }
 
