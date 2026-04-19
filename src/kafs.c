@@ -10137,98 +10137,282 @@ int kafs_core_migrate_image(const char *image_path, int assume_yes)
   return rc;
 }
 
-#ifndef KAFS_NO_MAIN
-int main(int argc, char **argv)
+typedef struct kafs_main_options
 {
-  kafs_crash_diag_install("kafs");
-  // 画像ファイル指定を受け取る: --image <path> または --image=<path>、環境変数 KAFS_IMAGE
-  const char *image_path = getenv("KAFS_IMAGE");
-  kafs_bool_t auto_migrate = KAFS_FALSE;
-  kafs_bool_t migrate_yes = KAFS_FALSE;
-  kafs_bool_t writeback_cache_enabled = KAFS_TRUE;
-  kafs_bool_t writeback_cache_explicit = KAFS_FALSE;
-  kafs_bool_t trim_on_free_enabled = KAFS_FALSE;
-  kafs_bool_t trim_on_free_explicit = KAFS_FALSE;
+  const char *image_path;
+  kafs_bool_t auto_migrate;
+  kafs_bool_t migrate_yes;
+  kafs_bool_t writeback_cache_enabled;
+  kafs_bool_t writeback_cache_explicit;
+  kafs_bool_t trim_on_free_enabled;
+  kafs_bool_t trim_on_free_explicit;
+  kafs_bool_t show_help;
+  kafs_bool_t enable_mt;
   char hotplug_uds_opt[sizeof(((struct sockaddr_un *)0)->sun_path)];
-  hotplug_uds_opt[0] = '\0';
   char hotplug_back_bin_opt[PATH_MAX];
-  hotplug_back_bin_opt[0] = '\0';
+  unsigned mt_cnt_override;
+  int mt_cnt_override_set;
+  int saw_max_threads;
+  uint32_t pending_worker_prio_mode;
+  int pending_worker_nice;
+  uint32_t pending_ttl_soft_ms;
+  uint32_t pending_ttl_hard_ms;
+  uint32_t pending_cap_initial;
+  uint32_t pending_cap_min;
+  uint32_t pending_cap_max;
+  uint32_t bg_dedup_scan_enabled;
+  uint32_t bg_dedup_interval_ms;
+  uint32_t bg_dedup_quiet_interval_ms;
+  uint32_t bg_dedup_pressure_interval_ms;
+  uint32_t bg_dedup_start_used_pct;
+  uint32_t bg_dedup_pressure_used_pct;
+  uint32_t bg_dedup_worker_prio_mode;
+  int bg_dedup_worker_nice;
+  uint32_t fsync_policy;
+} kafs_main_options_t;
+
+static void kafs_main_options_init(kafs_main_options_t *opts)
+{
+  memset(opts, 0, sizeof(*opts));
+  opts->image_path = getenv("KAFS_IMAGE");
+  opts->writeback_cache_enabled = KAFS_TRUE;
+  opts->trim_on_free_enabled = KAFS_FALSE;
+  opts->hotplug_uds_opt[0] = '\0';
+  opts->hotplug_back_bin_opt[0] = '\0';
+  opts->pending_worker_prio_mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
+  opts->pending_worker_nice = 0;
+  opts->pending_ttl_soft_ms = 5000;
+  opts->pending_ttl_hard_ms = 30000;
+  opts->bg_dedup_scan_enabled = 1u;
+  opts->bg_dedup_interval_ms = KAFS_BG_DEDUP_INTERVAL_MS_DEFAULT;
+  opts->bg_dedup_quiet_interval_ms = KAFS_BG_DEDUP_QUIET_INTERVAL_MS_DEFAULT;
+  opts->bg_dedup_pressure_interval_ms = KAFS_BG_DEDUP_PRESSURE_INTERVAL_MS_DEFAULT;
+  opts->bg_dedup_start_used_pct = KAFS_BG_DEDUP_START_USED_PCT_DEFAULT;
+  opts->bg_dedup_pressure_used_pct = KAFS_BG_DEDUP_PRESSURE_USED_PCT_DEFAULT;
+  opts->bg_dedup_worker_prio_mode = KAFS_PENDING_WORKER_PRIO_IDLE;
+  opts->bg_dedup_worker_nice = 19;
+  opts->fsync_policy = KAFS_FSYNC_POLICY_JOURNAL_ONLY;
+}
+
+static void kafs_main_apply_optional_bool_env(const char *value, kafs_bool_t *out)
+{
+  if (!value || !*value || !out)
+    return;
+  if (strcmp(value, "0") == 0 || strcasecmp(value, "false") == 0 || strcasecmp(value, "off") == 0 ||
+      strcasecmp(value, "no") == 0)
+    *out = KAFS_FALSE;
+  else if (strcmp(value, "1") == 0 || strcasecmp(value, "true") == 0 ||
+           strcasecmp(value, "on") == 0 || strcasecmp(value, "yes") == 0)
+    *out = KAFS_TRUE;
+}
+
+static int kafs_main_apply_env_overrides(kafs_main_options_t *opts)
+{
   const char *wbc_env = getenv("KAFS_WRITEBACK_CACHE");
-  if (wbc_env && *wbc_env)
-  {
-    if (strcmp(wbc_env, "0") == 0 || strcasecmp(wbc_env, "false") == 0 ||
-        strcasecmp(wbc_env, "off") == 0 || strcasecmp(wbc_env, "no") == 0)
-      writeback_cache_enabled = KAFS_FALSE;
-    else if (strcmp(wbc_env, "1") == 0 || strcasecmp(wbc_env, "true") == 0 ||
-             strcasecmp(wbc_env, "on") == 0 || strcasecmp(wbc_env, "yes") == 0)
-      writeback_cache_enabled = KAFS_TRUE;
-  }
   const char *trim_env = getenv("KAFS_TRIM_ON_FREE");
-  if (trim_env && *trim_env)
+  const char *pprio = getenv("KAFS_PENDING_WORKER_PRIO");
+  const char *pnice = getenv("KAFS_PENDING_WORKER_NICE");
+  const char *pttl_soft = getenv("KAFS_PENDING_TTL_SOFT_MS");
+  const char *pttl_hard = getenv("KAFS_PENDING_TTL_HARD_MS");
+  const char *pcap_initial = getenv("KAFS_PENDINGLOG_CAP_INITIAL");
+  const char *pcap_min = getenv("KAFS_PENDINGLOG_CAP_MIN");
+  const char *pcap_max = getenv("KAFS_PENDINGLOG_CAP_MAX");
+  const char *bg_scan = getenv("KAFS_BG_DEDUP_SCAN");
+  const char *bg_interval = getenv("KAFS_BG_DEDUP_INTERVAL_MS");
+  const char *bg_quiet_interval = getenv("KAFS_BG_DEDUP_QUIET_INTERVAL_MS");
+  const char *bg_pressure_interval = getenv("KAFS_BG_DEDUP_PRESSURE_INTERVAL_MS");
+  const char *bg_start_pct = getenv("KAFS_BG_DEDUP_START_USED_PCT");
+  const char *bg_pressure_pct = getenv("KAFS_BG_DEDUP_PRESSURE_USED_PCT");
+  const char *bg_prio = getenv("KAFS_BG_DEDUP_WORKER_PRIO");
+  const char *bg_nice = getenv("KAFS_BG_DEDUP_WORKER_NICE");
+  const char *fsp = getenv("KAFS_FSYNC_POLICY");
+  const char *mt = getenv("KAFS_MT");
+
+  kafs_main_apply_optional_bool_env(wbc_env, &opts->writeback_cache_enabled);
+  kafs_main_apply_optional_bool_env(trim_env, &opts->trim_on_free_enabled);
+  opts->enable_mt = (mt && strcmp(mt, "1") == 0) ? KAFS_TRUE : KAFS_FALSE;
+
+  if (pprio && *pprio &&
+      kafs_pending_worker_prio_mode_parse(pprio, &opts->pending_worker_prio_mode) != 0)
   {
-    if (strcmp(trim_env, "0") == 0 || strcasecmp(trim_env, "false") == 0 ||
-        strcasecmp(trim_env, "off") == 0 || strcasecmp(trim_env, "no") == 0)
-      trim_on_free_enabled = KAFS_FALSE;
-    else if (strcmp(trim_env, "1") == 0 || strcasecmp(trim_env, "true") == 0 ||
-             strcasecmp(trim_env, "on") == 0 || strcasecmp(trim_env, "yes") == 0)
-      trim_on_free_enabled = KAFS_TRUE;
+    fprintf(stderr, "invalid KAFS_PENDING_WORKER_PRIO: '%s'\n", pprio);
+    return 2;
   }
-  // argv から --image と --help を取り除き fuse_main へは渡さない
-  char *argv_clean[argc];
-  int argc_clean = 0;
-  kafs_bool_t show_help = KAFS_FALSE;
+
+  if (pnice && *pnice)
+  {
+    char *endp = NULL;
+    long v = strtol(pnice, &endp, 10);
+    if (!endp || *endp != '\0' || v < 0 || v > 19)
+    {
+      fprintf(stderr, "invalid KAFS_PENDING_WORKER_NICE: '%s'\n", pnice);
+      return 2;
+    }
+    opts->pending_worker_nice = (int)v;
+  }
+
+  if (pttl_soft && *pttl_soft &&
+      kafs_parse_u32_range(pttl_soft, 0, 3600000u, &opts->pending_ttl_soft_ms) != 0)
+  {
+    fprintf(stderr, "invalid KAFS_PENDING_TTL_SOFT_MS: '%s'\n", pttl_soft);
+    return 2;
+  }
+  if (pttl_hard && *pttl_hard &&
+      kafs_parse_u32_range(pttl_hard, 0, 3600000u, &opts->pending_ttl_hard_ms) != 0)
+  {
+    fprintf(stderr, "invalid KAFS_PENDING_TTL_HARD_MS: '%s'\n", pttl_hard);
+    return 2;
+  }
+
+  if ((!pcap_initial || !*pcap_initial) && getenv("KAFS_PENDING_CAP_INITIAL"))
+    pcap_initial = getenv("KAFS_PENDING_CAP_INITIAL");
+  if (pcap_initial && *pcap_initial &&
+      kafs_parse_u32_range(pcap_initial, 0, 1000000000u, &opts->pending_cap_initial) != 0)
+  {
+    fprintf(stderr, "invalid KAFS_PENDINGLOG_CAP_INITIAL: '%s'\n", pcap_initial);
+    return 2;
+  }
+
+  if ((!pcap_min || !*pcap_min) && getenv("KAFS_PENDING_CAP_MIN"))
+    pcap_min = getenv("KAFS_PENDING_CAP_MIN");
+  if (pcap_min && *pcap_min &&
+      kafs_parse_u32_range(pcap_min, 0, 1000000000u, &opts->pending_cap_min) != 0)
+  {
+    fprintf(stderr, "invalid KAFS_PENDINGLOG_CAP_MIN: '%s'\n", pcap_min);
+    return 2;
+  }
+
+  if ((!pcap_max || !*pcap_max) && getenv("KAFS_PENDING_CAP_MAX"))
+    pcap_max = getenv("KAFS_PENDING_CAP_MAX");
+  if (pcap_max && *pcap_max &&
+      kafs_parse_u32_range(pcap_max, 0, 1000000000u, &opts->pending_cap_max) != 0)
+  {
+    fprintf(stderr, "invalid KAFS_PENDINGLOG_CAP_MAX: '%s'\n", pcap_max);
+    return 2;
+  }
+
+  if (bg_scan && *bg_scan && kafs_parse_onoff(bg_scan, &opts->bg_dedup_scan_enabled) != 0)
+  {
+    fprintf(stderr, "invalid KAFS_BG_DEDUP_SCAN: '%s'\n", bg_scan);
+    return 2;
+  }
+  if (bg_interval && *bg_interval &&
+      kafs_parse_u32_range(bg_interval, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
+                           KAFS_BG_DEDUP_INTERVAL_MS_MAX, &opts->bg_dedup_interval_ms) != 0)
+  {
+    fprintf(stderr, "invalid KAFS_BG_DEDUP_INTERVAL_MS: '%s'\n", bg_interval);
+    return 2;
+  }
+  if (bg_quiet_interval && *bg_quiet_interval &&
+      kafs_parse_u32_range(bg_quiet_interval, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
+                           KAFS_BG_DEDUP_INTERVAL_MS_MAX, &opts->bg_dedup_quiet_interval_ms) != 0)
+  {
+    fprintf(stderr, "invalid KAFS_BG_DEDUP_QUIET_INTERVAL_MS: '%s'\n", bg_quiet_interval);
+    return 2;
+  }
+  if (bg_pressure_interval && *bg_pressure_interval &&
+      kafs_parse_u32_range(bg_pressure_interval, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
+                           KAFS_BG_DEDUP_INTERVAL_MS_MAX,
+                           &opts->bg_dedup_pressure_interval_ms) != 0)
+  {
+    fprintf(stderr, "invalid KAFS_BG_DEDUP_PRESSURE_INTERVAL_MS: '%s'\n", bg_pressure_interval);
+    return 2;
+  }
+  if (bg_start_pct && *bg_start_pct &&
+      kafs_parse_u32_range(bg_start_pct, 0, 100u, &opts->bg_dedup_start_used_pct) != 0)
+  {
+    fprintf(stderr, "invalid KAFS_BG_DEDUP_START_USED_PCT: '%s'\n", bg_start_pct);
+    return 2;
+  }
+  if (bg_pressure_pct && *bg_pressure_pct &&
+      kafs_parse_u32_range(bg_pressure_pct, 0, 100u, &opts->bg_dedup_pressure_used_pct) != 0)
+  {
+    fprintf(stderr, "invalid KAFS_BG_DEDUP_PRESSURE_USED_PCT: '%s'\n", bg_pressure_pct);
+    return 2;
+  }
+  if (bg_prio && *bg_prio &&
+      kafs_pending_worker_prio_mode_parse(bg_prio, &opts->bg_dedup_worker_prio_mode) != 0)
+  {
+    fprintf(stderr, "invalid KAFS_BG_DEDUP_WORKER_PRIO: '%s'\n", bg_prio);
+    return 2;
+  }
+  if (bg_nice && *bg_nice)
+  {
+    char *endp = NULL;
+    long v = strtol(bg_nice, &endp, 10);
+    if (!endp || *endp != '\0' || v < 0 || v > 19)
+    {
+      fprintf(stderr, "invalid KAFS_BG_DEDUP_WORKER_NICE: '%s'\n", bg_nice);
+      return 2;
+    }
+    opts->bg_dedup_worker_nice = (int)v;
+  }
+  if (fsp && *fsp && kafs_fsync_policy_parse(fsp, &opts->fsync_policy) != 0)
+  {
+    fprintf(stderr, "invalid KAFS_FSYNC_POLICY: '%s'\n", fsp);
+    return 2;
+  }
+
+  return 0;
+}
+
+static int kafs_main_collect_args(int argc, char **argv, const char *prog,
+                                  kafs_main_options_t *opts, char **argv_clean, int *argc_clean)
+{
+  *argc_clean = 0;
   for (int i = 0; i < argc; ++i)
   {
     const char *a = argv[i];
     if (kafs_cli_is_help_arg(a))
     {
-      show_help = KAFS_TRUE;
+      opts->show_help = KAFS_TRUE;
       continue;
     }
     if (strcmp(a, "--migrate") == 0 || strcmp(a, "--migrate-v2") == 0)
     {
-      auto_migrate = KAFS_TRUE;
+      opts->auto_migrate = KAFS_TRUE;
       continue;
     }
     if (strcmp(a, "--yes") == 0)
     {
-      migrate_yes = KAFS_TRUE;
+      opts->migrate_yes = KAFS_TRUE;
       continue;
     }
     if (strcmp(a, "--no-writeback-cache") == 0)
     {
-      writeback_cache_enabled = KAFS_FALSE;
-      writeback_cache_explicit = KAFS_TRUE;
+      opts->writeback_cache_enabled = KAFS_FALSE;
+      opts->writeback_cache_explicit = KAFS_TRUE;
       continue;
     }
     if (strcmp(a, "--writeback-cache") == 0)
     {
-      writeback_cache_enabled = KAFS_TRUE;
-      writeback_cache_explicit = KAFS_TRUE;
+      opts->writeback_cache_enabled = KAFS_TRUE;
+      opts->writeback_cache_explicit = KAFS_TRUE;
       continue;
     }
     if (strcmp(a, "--trim-on-free") == 0)
     {
-      trim_on_free_enabled = KAFS_TRUE;
-      trim_on_free_explicit = KAFS_TRUE;
+      opts->trim_on_free_enabled = KAFS_TRUE;
+      opts->trim_on_free_explicit = KAFS_TRUE;
       continue;
     }
     if (strcmp(a, "--no-trim-on-free") == 0)
     {
-      trim_on_free_enabled = KAFS_FALSE;
-      trim_on_free_explicit = KAFS_TRUE;
+      opts->trim_on_free_enabled = KAFS_FALSE;
+      opts->trim_on_free_explicit = KAFS_TRUE;
       continue;
     }
     if (strcmp(a, "--hotplug") == 0)
     {
-      snprintf(hotplug_uds_opt, sizeof(hotplug_uds_opt), "%s", KAFS_HOTPLUG_UDS_DEFAULT);
+      snprintf(opts->hotplug_uds_opt, sizeof(opts->hotplug_uds_opt), "%s",
+               KAFS_HOTPLUG_UDS_DEFAULT);
       continue;
     }
     if (strncmp(a, "--hotplug=", 10) == 0)
     {
       const char *v = a + 10;
-      if (!*v || snprintf(hotplug_uds_opt, sizeof(hotplug_uds_opt), "%s", v) >=
-                     (int)sizeof(hotplug_uds_opt))
+      if (!*v || snprintf(opts->hotplug_uds_opt, sizeof(opts->hotplug_uds_opt), "%s", v) >=
+                     (int)sizeof(opts->hotplug_uds_opt))
       {
         fprintf(stderr, "invalid --hotplug value\n");
         return 2;
@@ -10240,8 +10424,8 @@ int main(int argc, char **argv)
       if (i + 1 < argc)
       {
         const char *v = argv[++i];
-        if (!*v || snprintf(hotplug_uds_opt, sizeof(hotplug_uds_opt), "%s", v) >=
-                       (int)sizeof(hotplug_uds_opt))
+        if (!*v || snprintf(opts->hotplug_uds_opt, sizeof(opts->hotplug_uds_opt), "%s", v) >=
+                       (int)sizeof(opts->hotplug_uds_opt))
         {
           fprintf(stderr, "invalid --hotplug-uds value\n");
           return 2;
@@ -10249,14 +10433,14 @@ int main(int argc, char **argv)
         continue;
       }
       fprintf(stderr, "--hotplug-uds requires a path argument.\n");
-      usage(argv[0]);
+      usage(prog);
       return 2;
     }
     if (strncmp(a, "--hotplug-uds=", 14) == 0)
     {
       const char *v = a + 14;
-      if (!*v || snprintf(hotplug_uds_opt, sizeof(hotplug_uds_opt), "%s", v) >=
-                     (int)sizeof(hotplug_uds_opt))
+      if (!*v || snprintf(opts->hotplug_uds_opt, sizeof(opts->hotplug_uds_opt), "%s", v) >=
+                     (int)sizeof(opts->hotplug_uds_opt))
       {
         fprintf(stderr, "invalid --hotplug-uds value\n");
         return 2;
@@ -10268,8 +10452,8 @@ int main(int argc, char **argv)
       if (i + 1 < argc)
       {
         const char *v = argv[++i];
-        if (!*v || snprintf(hotplug_back_bin_opt, sizeof(hotplug_back_bin_opt), "%s", v) >=
-                       (int)sizeof(hotplug_back_bin_opt))
+        if (!*v || snprintf(opts->hotplug_back_bin_opt, sizeof(opts->hotplug_back_bin_opt), "%s",
+                            v) >= (int)sizeof(opts->hotplug_back_bin_opt))
         {
           fprintf(stderr, "invalid --hotplug-back-bin value\n");
           return 2;
@@ -10277,14 +10461,14 @@ int main(int argc, char **argv)
         continue;
       }
       fprintf(stderr, "--hotplug-back-bin requires a path argument.\n");
-      usage(argv[0]);
+      usage(prog);
       return 2;
     }
     if (strncmp(a, "--hotplug-back-bin=", 19) == 0)
     {
       const char *v = a + 19;
-      if (!*v || snprintf(hotplug_back_bin_opt, sizeof(hotplug_back_bin_opt), "%s", v) >=
-                     (int)sizeof(hotplug_back_bin_opt))
+      if (!*v || snprintf(opts->hotplug_back_bin_opt, sizeof(opts->hotplug_back_bin_opt), "%s",
+                          v) >= (int)sizeof(opts->hotplug_back_bin_opt))
       {
         fprintf(stderr, "invalid --hotplug-back-bin value\n");
         return 2;
@@ -10295,783 +10479,624 @@ int main(int argc, char **argv)
     {
       if (i + 1 < argc)
       {
-        argv_clean[argc_clean++] = "-o";
-        argv_clean[argc_clean++] = argv[++i];
+        argv_clean[(*argc_clean)++] = "-o";
+        argv_clean[(*argc_clean)++] = argv[++i];
         continue;
       }
       fprintf(stderr, "--option requires an argument.\n");
-      usage(argv[0]);
+      usage(prog);
       return 2;
     }
     if (strncmp(a, "--option=", 9) == 0)
     {
-      argv_clean[argc_clean++] = "-o";
-      argv_clean[argc_clean++] = (char *)(a + 9);
+      argv_clean[(*argc_clean)++] = "-o";
+      argv_clean[(*argc_clean)++] = (char *)(a + 9);
       continue;
     }
     if (strcmp(a, "--image") == 0)
     {
       if (i + 1 < argc)
       {
-        image_path = argv[++i];
+        opts->image_path = argv[++i];
         continue;
       }
-      else
-      {
-        fprintf(stderr, "--image requires a path argument.\n");
-        usage(argv[0]);
-        return 2;
-      }
+      fprintf(stderr, "--image requires a path argument.\n");
+      usage(prog);
+      return 2;
     }
     if (strncmp(a, "--image=", 8) == 0)
     {
-      image_path = a + 8;
+      opts->image_path = a + 8;
       continue;
     }
-    // pass other args through to FUSE
-    argv_clean[argc_clean++] = argv[i];
+    argv_clean[(*argc_clean)++] = argv[i];
   }
-  // mount(8) helper compatibility: allow "kafs <image> <mountpoint> [FUSE options...]"
-  // When invoked via mount -t fuse.kafs, the image path is typically passed as the first argument.
-  if (image_path == NULL && argc_clean >= 3 && argv_clean[1][0] != '-')
-  {
-    image_path = argv_clean[1];
-    for (int i = 1; i + 1 < argc_clean; ++i)
-      argv_clean[i] = argv_clean[i + 1];
-    argc_clean--;
-  }
-  if (show_help)
-  {
-    usage(argv[0]);
-    return 0;
-  }
-  if (image_path == NULL || argc_clean < 2)
-  {
-    usage(argv[0]);
-    return 2;
-  }
+  return 0;
+}
 
-  // Raspi/低リソース前提: 既定は単一スレッド。MT は -o multi_thread[=N] か KAFS_MT=1 で有効化。
-  const char *mt = getenv("KAFS_MT");
-  kafs_bool_t enable_mt = (mt && strcmp(mt, "1") == 0) ? KAFS_TRUE : KAFS_FALSE;
-  unsigned mt_cnt_override = 0;
-  int mt_cnt_override_set = 0;
-  int saw_max_threads = 0;
-  uint32_t pending_worker_prio_mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
-  int pending_worker_nice = 0;
-  uint32_t pending_ttl_soft_ms = 5000;
-  uint32_t pending_ttl_hard_ms = 30000;
-  uint32_t pending_cap_initial = 0;
-  uint32_t pending_cap_min = 0;
-  uint32_t pending_cap_max = 0;
-  uint32_t bg_dedup_scan_enabled = 1u;
-  uint32_t bg_dedup_interval_ms = KAFS_BG_DEDUP_INTERVAL_MS_DEFAULT;
-  uint32_t bg_dedup_quiet_interval_ms = KAFS_BG_DEDUP_QUIET_INTERVAL_MS_DEFAULT;
-  uint32_t bg_dedup_pressure_interval_ms = KAFS_BG_DEDUP_PRESSURE_INTERVAL_MS_DEFAULT;
-  uint32_t bg_dedup_start_used_pct = KAFS_BG_DEDUP_START_USED_PCT_DEFAULT;
-  uint32_t bg_dedup_pressure_used_pct = KAFS_BG_DEDUP_PRESSURE_USED_PCT_DEFAULT;
-  uint32_t bg_dedup_worker_prio_mode = KAFS_PENDING_WORKER_PRIO_IDLE;
-  int bg_dedup_worker_nice = 19;
-  uint32_t fsync_policy = KAFS_FSYNC_POLICY_JOURNAL_ONLY;
+static int kafs_main_filter_mount_options(kafs_main_options_t *opts, char **argv_clean,
+                                          int *argc_clean)
+{
+  char *argv_user[*argc_clean];
+  int argc_user = 0;
+  char *o_owned[*argc_clean];
+  int o_owned_cnt = 0;
 
-  const char *pprio = getenv("KAFS_PENDING_WORKER_PRIO");
-  if (pprio && *pprio)
+  for (int i = 0; i < *argc_clean; ++i)
   {
-    if (kafs_pending_worker_prio_mode_parse(pprio, &pending_worker_prio_mode) != 0)
+    const char *a = argv_clean[i];
+    const char *oval = NULL;
+    int is_compact = 0;
+    if (strcmp(a, "-o") == 0)
     {
-      fprintf(stderr, "invalid KAFS_PENDING_WORKER_PRIO: '%s'\n", pprio);
-      return 2;
-    }
-  }
-  const char *pnice = getenv("KAFS_PENDING_WORKER_NICE");
-  if (pnice && *pnice)
-  {
-    char *endp = NULL;
-    long v = strtol(pnice, &endp, 10);
-    if (!endp || *endp != '\0' || v < 0 || v > 19)
-    {
-      fprintf(stderr, "invalid KAFS_PENDING_WORKER_NICE: '%s'\n", pnice);
-      return 2;
-    }
-    pending_worker_nice = (int)v;
-  }
-
-  const char *pttl_soft = getenv("KAFS_PENDING_TTL_SOFT_MS");
-  if (pttl_soft && *pttl_soft)
-  {
-    if (kafs_parse_u32_range(pttl_soft, 0, 3600000u, &pending_ttl_soft_ms) != 0)
-    {
-      fprintf(stderr, "invalid KAFS_PENDING_TTL_SOFT_MS: '%s'\n", pttl_soft);
-      return 2;
-    }
-  }
-
-  const char *pttl_hard = getenv("KAFS_PENDING_TTL_HARD_MS");
-  if (pttl_hard && *pttl_hard)
-  {
-    if (kafs_parse_u32_range(pttl_hard, 0, 3600000u, &pending_ttl_hard_ms) != 0)
-    {
-      fprintf(stderr, "invalid KAFS_PENDING_TTL_HARD_MS: '%s'\n", pttl_hard);
-      return 2;
-    }
-  }
-
-  const char *pcap_initial = getenv("KAFS_PENDINGLOG_CAP_INITIAL");
-  if (!pcap_initial || !*pcap_initial)
-    pcap_initial = getenv("KAFS_PENDING_CAP_INITIAL");
-  if (pcap_initial && *pcap_initial)
-  {
-    if (kafs_parse_u32_range(pcap_initial, 0, 1000000000u, &pending_cap_initial) != 0)
-    {
-      fprintf(stderr, "invalid KAFS_PENDINGLOG_CAP_INITIAL: '%s'\n", pcap_initial);
-      return 2;
-    }
-  }
-
-  const char *pcap_min = getenv("KAFS_PENDINGLOG_CAP_MIN");
-  if (!pcap_min || !*pcap_min)
-    pcap_min = getenv("KAFS_PENDING_CAP_MIN");
-  if (pcap_min && *pcap_min)
-  {
-    if (kafs_parse_u32_range(pcap_min, 0, 1000000000u, &pending_cap_min) != 0)
-    {
-      fprintf(stderr, "invalid KAFS_PENDINGLOG_CAP_MIN: '%s'\n", pcap_min);
-      return 2;
-    }
-  }
-
-  const char *pcap_max = getenv("KAFS_PENDINGLOG_CAP_MAX");
-  if (!pcap_max || !*pcap_max)
-    pcap_max = getenv("KAFS_PENDING_CAP_MAX");
-  if (pcap_max && *pcap_max)
-  {
-    if (kafs_parse_u32_range(pcap_max, 0, 1000000000u, &pending_cap_max) != 0)
-    {
-      fprintf(stderr, "invalid KAFS_PENDINGLOG_CAP_MAX: '%s'\n", pcap_max);
-      return 2;
-    }
-  }
-
-  const char *bg_scan = getenv("KAFS_BG_DEDUP_SCAN");
-  if (bg_scan && *bg_scan)
-  {
-    if (kafs_parse_onoff(bg_scan, &bg_dedup_scan_enabled) != 0)
-    {
-      fprintf(stderr, "invalid KAFS_BG_DEDUP_SCAN: '%s'\n", bg_scan);
-      return 2;
-    }
-  }
-
-  const char *bg_interval = getenv("KAFS_BG_DEDUP_INTERVAL_MS");
-  if (bg_interval && *bg_interval)
-  {
-    if (kafs_parse_u32_range(bg_interval, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
-                             KAFS_BG_DEDUP_INTERVAL_MS_MAX, &bg_dedup_interval_ms) != 0)
-    {
-      fprintf(stderr, "invalid KAFS_BG_DEDUP_INTERVAL_MS: '%s'\n", bg_interval);
-      return 2;
-    }
-  }
-
-  const char *bg_quiet_interval = getenv("KAFS_BG_DEDUP_QUIET_INTERVAL_MS");
-  if (bg_quiet_interval && *bg_quiet_interval)
-  {
-    if (kafs_parse_u32_range(bg_quiet_interval, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
-                             KAFS_BG_DEDUP_INTERVAL_MS_MAX, &bg_dedup_quiet_interval_ms) != 0)
-    {
-      fprintf(stderr, "invalid KAFS_BG_DEDUP_QUIET_INTERVAL_MS: '%s'\n", bg_quiet_interval);
-      return 2;
-    }
-  }
-
-  const char *bg_pressure_interval = getenv("KAFS_BG_DEDUP_PRESSURE_INTERVAL_MS");
-  if (bg_pressure_interval && *bg_pressure_interval)
-  {
-    if (kafs_parse_u32_range(bg_pressure_interval, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
-                             KAFS_BG_DEDUP_INTERVAL_MS_MAX, &bg_dedup_pressure_interval_ms) != 0)
-    {
-      fprintf(stderr, "invalid KAFS_BG_DEDUP_PRESSURE_INTERVAL_MS: '%s'\n", bg_pressure_interval);
-      return 2;
-    }
-  }
-
-  const char *bg_start_pct = getenv("KAFS_BG_DEDUP_START_USED_PCT");
-  if (bg_start_pct && *bg_start_pct)
-  {
-    if (kafs_parse_u32_range(bg_start_pct, 0, 100u, &bg_dedup_start_used_pct) != 0)
-    {
-      fprintf(stderr, "invalid KAFS_BG_DEDUP_START_USED_PCT: '%s'\n", bg_start_pct);
-      return 2;
-    }
-  }
-
-  const char *bg_pressure_pct = getenv("KAFS_BG_DEDUP_PRESSURE_USED_PCT");
-  if (bg_pressure_pct && *bg_pressure_pct)
-  {
-    if (kafs_parse_u32_range(bg_pressure_pct, 0, 100u, &bg_dedup_pressure_used_pct) != 0)
-    {
-      fprintf(stderr, "invalid KAFS_BG_DEDUP_PRESSURE_USED_PCT: '%s'\n", bg_pressure_pct);
-      return 2;
-    }
-  }
-
-  const char *bg_prio = getenv("KAFS_BG_DEDUP_WORKER_PRIO");
-  if (bg_prio && *bg_prio)
-  {
-    if (kafs_pending_worker_prio_mode_parse(bg_prio, &bg_dedup_worker_prio_mode) != 0)
-    {
-      fprintf(stderr, "invalid KAFS_BG_DEDUP_WORKER_PRIO: '%s'\n", bg_prio);
-      return 2;
-    }
-  }
-
-  const char *bg_nice = getenv("KAFS_BG_DEDUP_WORKER_NICE");
-  if (bg_nice && *bg_nice)
-  {
-    char *endp = NULL;
-    long v = strtol(bg_nice, &endp, 10);
-    if (!endp || *endp != '\0' || v < 0 || v > 19)
-    {
-      fprintf(stderr, "invalid KAFS_BG_DEDUP_WORKER_NICE: '%s'\n", bg_nice);
-      return 2;
-    }
-    bg_dedup_worker_nice = (int)v;
-  }
-
-  if (pending_ttl_soft_ms > 0 && pending_ttl_hard_ms > 0 &&
-      pending_ttl_hard_ms < pending_ttl_soft_ms)
-  {
-    fprintf(stderr, "invalid pending TTL env: hard must be >= soft\n");
-    return 2;
-  }
-
-  const char *fsp = getenv("KAFS_FSYNC_POLICY");
-  if (fsp && *fsp)
-  {
-    if (kafs_fsync_policy_parse(fsp, &fsync_policy) != 0)
-    {
-      fprintf(stderr, "invalid KAFS_FSYNC_POLICY: '%s'\n", fsp);
-      return 2;
-    }
-  }
-
-  // Custom -o option: multi_thread[=N] (alias: multi-thread, multithread).
-  // Strip it from argv before passing to libfuse, and translate to max_threads=.
-  {
-    char *argv_user[argc_clean];
-    int argc_user = 0;
-    char *o_owned[argc_clean];
-    int o_owned_cnt = 0;
-
-    for (int i = 0; i < argc_clean; ++i)
-    {
-      const char *a = argv_clean[i];
-      const char *oval = NULL;
-      int is_compact = 0;
-      if (strcmp(a, "-o") == 0)
+      if (i + 1 < *argc_clean)
+        oval = argv_clean[++i];
+      else
       {
-        if (i + 1 < argc_clean)
-          oval = argv_clean[++i];
-        else
+        argv_user[argc_user++] = argv_clean[i];
+        continue;
+      }
+    }
+    else if (strncmp(a, "-o", 2) == 0 && a[2] != '\0')
+    {
+      oval = a + 2;
+      is_compact = 1;
+    }
+
+    if (!oval)
+    {
+      argv_user[argc_user++] = argv_clean[i];
+      continue;
+    }
+
+    char *dup = strdup(oval);
+    if (!dup)
+    {
+      perror("strdup");
+      return 2;
+    }
+    char filtered[strlen(oval) + 1];
+    filtered[0] = '\0';
+    size_t used = 0;
+    int want_mt = 0;
+
+    char *saveptr = NULL;
+    for (char *tok = strtok_r(dup, ",", &saveptr); tok; tok = strtok_r(NULL, ",", &saveptr))
+    {
+      if (strncmp(tok, "max_threads=", 12) == 0 || strcmp(tok, "max_threads") == 0)
+        opts->saw_max_threads = 1;
+
+      if (strcmp(tok, "writeback_cache") == 0)
+      {
+        opts->writeback_cache_enabled = KAFS_TRUE;
+        opts->writeback_cache_explicit = KAFS_TRUE;
+        continue;
+      }
+      if (strcmp(tok, "no_writeback_cache") == 0)
+      {
+        opts->writeback_cache_enabled = KAFS_FALSE;
+        opts->writeback_cache_explicit = KAFS_TRUE;
+        continue;
+      }
+      if (strcmp(tok, "trim_on_free") == 0 || strcmp(tok, "trim-on-free") == 0)
+      {
+        opts->trim_on_free_enabled = KAFS_TRUE;
+        opts->trim_on_free_explicit = KAFS_TRUE;
+        continue;
+      }
+      if (strcmp(tok, "no_trim_on_free") == 0 || strcmp(tok, "no-trim-on-free") == 0)
+      {
+        opts->trim_on_free_enabled = KAFS_FALSE;
+        opts->trim_on_free_explicit = KAFS_TRUE;
+        continue;
+      }
+      if (strcmp(tok, "hotplug") == 0)
+      {
+        snprintf(opts->hotplug_uds_opt, sizeof(opts->hotplug_uds_opt), "%s",
+                 KAFS_HOTPLUG_UDS_DEFAULT);
+        continue;
+      }
+
+      const char *hotplug_uds_v = NULL;
+      if (strncmp(tok, "hotplug=", 8) == 0)
+        hotplug_uds_v = tok + 8;
+      else if (strncmp(tok, "hotplug_uds=", 12) == 0)
+        hotplug_uds_v = tok + 12;
+      else if (strncmp(tok, "hotplug-uds=", 12) == 0)
+        hotplug_uds_v = tok + 12;
+      if (hotplug_uds_v)
+      {
+        if (!*hotplug_uds_v || snprintf(opts->hotplug_uds_opt, sizeof(opts->hotplug_uds_opt), "%s",
+                                        hotplug_uds_v) >= (int)sizeof(opts->hotplug_uds_opt))
         {
-          argv_user[argc_user++] = argv_clean[i];
-          continue;
+          fprintf(stderr, "invalid -o hotplug uds path: '%s'\n", hotplug_uds_v);
+          free(dup);
+          return 2;
         }
-      }
-      else if (strncmp(a, "-o", 2) == 0 && a[2] != '\0')
-      {
-        oval = a + 2;
-        is_compact = 1;
+        continue;
       }
 
-      if (oval)
+      const char *hotplug_back_bin_v = NULL;
+      if (strncmp(tok, "hotplug_back_bin=", 17) == 0)
+        hotplug_back_bin_v = tok + 17;
+      else if (strncmp(tok, "hotplug-back-bin=", 17) == 0)
+        hotplug_back_bin_v = tok + 17;
+      if (hotplug_back_bin_v)
       {
-        char *dup = strdup(oval);
-        if (!dup)
+        if (!*hotplug_back_bin_v ||
+            snprintf(opts->hotplug_back_bin_opt, sizeof(opts->hotplug_back_bin_opt), "%s",
+                     hotplug_back_bin_v) >= (int)sizeof(opts->hotplug_back_bin_opt))
+        {
+          fprintf(stderr, "invalid -o hotplug_back_bin path: '%s'\n", hotplug_back_bin_v);
+          free(dup);
+          return 2;
+        }
+        continue;
+      }
+
+      if (strcmp(tok, "multi_thread") == 0 || strcmp(tok, "multi-thread") == 0 ||
+          strcmp(tok, "multithread") == 0)
+      {
+        want_mt = 1;
+        continue;
+      }
+
+      const char *vstr = NULL;
+      if (strncmp(tok, "multi_thread=", 13) == 0)
+        vstr = tok + 13;
+      else if (strncmp(tok, "multi-thread=", 13) == 0)
+        vstr = tok + 13;
+      else if (strncmp(tok, "multithread=", 12) == 0)
+        vstr = tok + 12;
+      if (vstr)
+      {
+        char *endp = NULL;
+        unsigned long v = strtoul(vstr, &endp, 10);
+        if (!endp || *endp != '\0')
+        {
+          fprintf(stderr, "invalid -o multi_thread=N: '%s'\n", vstr);
+          free(dup);
+          return 2;
+        }
+        if (v < 1)
+          v = 1;
+        if (v > 100000)
+          v = 100000;
+        opts->mt_cnt_override = (unsigned)v;
+        opts->mt_cnt_override_set = 1;
+        want_mt = 1;
+        continue;
+      }
+
+      const char *prio_str = NULL;
+      if (strncmp(tok, "pending_worker_prio=", 20) == 0)
+        prio_str = tok + 20;
+      else if (strncmp(tok, "dedup_worker_prio=", 18) == 0)
+        prio_str = tok + 18;
+      if (prio_str)
+      {
+        if (kafs_pending_worker_prio_mode_parse(prio_str, &opts->pending_worker_prio_mode) != 0)
+        {
+          fprintf(stderr, "invalid -o pending_worker_prio: '%s'\n", prio_str);
+          free(dup);
+          return 2;
+        }
+        continue;
+      }
+
+      const char *nice_str = NULL;
+      if (strncmp(tok, "pending_worker_nice=", 20) == 0)
+        nice_str = tok + 20;
+      else if (strncmp(tok, "dedup_worker_nice=", 18) == 0)
+        nice_str = tok + 18;
+      if (nice_str)
+      {
+        char *endp = NULL;
+        long v = strtol(nice_str, &endp, 10);
+        if (!endp || *endp != '\0' || v < 0 || v > 19)
+        {
+          fprintf(stderr, "invalid -o pending_worker_nice: '%s'\n", nice_str);
+          free(dup);
+          return 2;
+        }
+        opts->pending_worker_nice = (int)v;
+        continue;
+      }
+
+      const char *ttl_soft_str = NULL;
+      if (strncmp(tok, "pending_ttl_soft_ms=", 20) == 0)
+        ttl_soft_str = tok + 20;
+      if (ttl_soft_str)
+      {
+        if (kafs_parse_u32_range(ttl_soft_str, 0, 3600000u, &opts->pending_ttl_soft_ms) != 0)
+        {
+          fprintf(stderr, "invalid -o pending_ttl_soft_ms: '%s'\n", ttl_soft_str);
+          free(dup);
+          return 2;
+        }
+        continue;
+      }
+
+      const char *ttl_hard_str = NULL;
+      if (strncmp(tok, "pending_ttl_hard_ms=", 20) == 0)
+        ttl_hard_str = tok + 20;
+      if (ttl_hard_str)
+      {
+        if (kafs_parse_u32_range(ttl_hard_str, 0, 3600000u, &opts->pending_ttl_hard_ms) != 0)
+        {
+          fprintf(stderr, "invalid -o pending_ttl_hard_ms: '%s'\n", ttl_hard_str);
+          free(dup);
+          return 2;
+        }
+        continue;
+      }
+
+      const char *pcap_initial_str = NULL;
+      if (strncmp(tok, "pendinglog_cap_initial=", 23) == 0)
+        pcap_initial_str = tok + 23;
+      else if (strncmp(tok, "pending_cap_initial=", 20) == 0)
+        pcap_initial_str = tok + 20;
+      if (pcap_initial_str)
+      {
+        if (kafs_parse_u32_range(pcap_initial_str, 0, 1000000000u, &opts->pending_cap_initial) != 0)
+        {
+          fprintf(stderr, "invalid -o pendinglog_cap_initial: '%s'\n", pcap_initial_str);
+          free(dup);
+          return 2;
+        }
+        continue;
+      }
+
+      const char *pcap_min_str = NULL;
+      if (strncmp(tok, "pendinglog_cap_min=", 19) == 0)
+        pcap_min_str = tok + 19;
+      else if (strncmp(tok, "pending_cap_min=", 16) == 0)
+        pcap_min_str = tok + 16;
+      if (pcap_min_str)
+      {
+        if (kafs_parse_u32_range(pcap_min_str, 0, 1000000000u, &opts->pending_cap_min) != 0)
+        {
+          fprintf(stderr, "invalid -o pendinglog_cap_min: '%s'\n", pcap_min_str);
+          free(dup);
+          return 2;
+        }
+        continue;
+      }
+
+      const char *pcap_max_str = NULL;
+      if (strncmp(tok, "pendinglog_cap_max=", 19) == 0)
+        pcap_max_str = tok + 19;
+      else if (strncmp(tok, "pending_cap_max=", 16) == 0)
+        pcap_max_str = tok + 16;
+      if (pcap_max_str)
+      {
+        if (kafs_parse_u32_range(pcap_max_str, 0, 1000000000u, &opts->pending_cap_max) != 0)
+        {
+          fprintf(stderr, "invalid -o pendinglog_cap_max: '%s'\n", pcap_max_str);
+          free(dup);
+          return 2;
+        }
+        continue;
+      }
+
+      const char *fsp_str = NULL;
+      if (strncmp(tok, "fsync_policy=", 13) == 0)
+        fsp_str = tok + 13;
+      if (fsp_str)
+      {
+        if (kafs_fsync_policy_parse(fsp_str, &opts->fsync_policy) != 0)
+        {
+          fprintf(stderr, "invalid -o fsync_policy: '%s'\n", fsp_str);
+          free(dup);
+          return 2;
+        }
+        continue;
+      }
+
+      if (strcmp(tok, "bg_dedup_scan") == 0 || strcmp(tok, "bg_dedup_scan=on") == 0 ||
+          strcmp(tok, "dedup_scan") == 0 || strcmp(tok, "dedup_scan=on") == 0)
+      {
+        opts->bg_dedup_scan_enabled = 1u;
+        continue;
+      }
+      if (strcmp(tok, "no_bg_dedup_scan") == 0 || strcmp(tok, "bg_dedup_scan=off") == 0 ||
+          strcmp(tok, "no_dedup_scan") == 0 || strcmp(tok, "dedup_scan=off") == 0)
+      {
+        opts->bg_dedup_scan_enabled = 0u;
+        continue;
+      }
+
+      const char *bg_scan_str = NULL;
+      if (strncmp(tok, "bg_dedup_scan=", 14) == 0)
+        bg_scan_str = tok + 14;
+      else if (strncmp(tok, "dedup_scan=", 11) == 0)
+        bg_scan_str = tok + 11;
+      if (bg_scan_str)
+      {
+        if (kafs_parse_onoff(bg_scan_str, &opts->bg_dedup_scan_enabled) != 0)
+        {
+          fprintf(stderr, "invalid -o dedup_scan/bg_dedup_scan: '%s'\n", bg_scan_str);
+          free(dup);
+          return 2;
+        }
+        continue;
+      }
+
+      const char *bg_interval_str = NULL;
+      if (strncmp(tok, "bg_dedup_interval_ms=", 21) == 0)
+        bg_interval_str = tok + 21;
+      else if (strncmp(tok, "dedup_interval_ms=", 18) == 0)
+        bg_interval_str = tok + 18;
+      if (bg_interval_str)
+      {
+        if (kafs_parse_u32_range(bg_interval_str, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
+                                 KAFS_BG_DEDUP_INTERVAL_MS_MAX, &opts->bg_dedup_interval_ms) != 0)
+        {
+          fprintf(stderr, "invalid -o dedup_interval_ms/bg_dedup_interval_ms: '%s'\n",
+                  bg_interval_str);
+          free(dup);
+          return 2;
+        }
+        continue;
+      }
+
+      const char *bg_quiet_interval_str = NULL;
+      if (strncmp(tok, "bg_dedup_quiet_interval_ms=", 27) == 0)
+        bg_quiet_interval_str = tok + 27;
+      else if (strncmp(tok, "dedup_quiet_interval_ms=", 24) == 0)
+        bg_quiet_interval_str = tok + 24;
+      if (bg_quiet_interval_str)
+      {
+        if (kafs_parse_u32_range(bg_quiet_interval_str, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
+                                 KAFS_BG_DEDUP_INTERVAL_MS_MAX,
+                                 &opts->bg_dedup_quiet_interval_ms) != 0)
+        {
+          fprintf(stderr, "invalid -o dedup_quiet_interval_ms/bg_dedup_quiet_interval_ms: '%s'\n",
+                  bg_quiet_interval_str);
+          free(dup);
+          return 2;
+        }
+        continue;
+      }
+
+      const char *bg_pressure_interval_str = NULL;
+      if (strncmp(tok, "bg_dedup_pressure_interval_ms=", 30) == 0)
+        bg_pressure_interval_str = tok + 30;
+      else if (strncmp(tok, "dedup_pressure_interval_ms=", 27) == 0)
+        bg_pressure_interval_str = tok + 27;
+      if (bg_pressure_interval_str)
+      {
+        if (kafs_parse_u32_range(bg_pressure_interval_str, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
+                                 KAFS_BG_DEDUP_INTERVAL_MS_MAX,
+                                 &opts->bg_dedup_pressure_interval_ms) != 0)
+        {
+          fprintf(stderr,
+                  "invalid -o dedup_pressure_interval_ms/bg_dedup_pressure_interval_ms: '%s'\n",
+                  bg_pressure_interval_str);
+          free(dup);
+          return 2;
+        }
+        continue;
+      }
+
+      const char *bg_start_pct_str = NULL;
+      if (strncmp(tok, "bg_dedup_start_used_pct=", 24) == 0)
+        bg_start_pct_str = tok + 24;
+      else if (strncmp(tok, "dedup_start_used_pct=", 21) == 0)
+        bg_start_pct_str = tok + 21;
+      if (bg_start_pct_str)
+      {
+        if (kafs_parse_u32_range(bg_start_pct_str, 0, 100u, &opts->bg_dedup_start_used_pct) != 0)
+        {
+          fprintf(stderr, "invalid -o dedup_start_used_pct/bg_dedup_start_used_pct: '%s'\n",
+                  bg_start_pct_str);
+          free(dup);
+          return 2;
+        }
+        continue;
+      }
+
+      const char *bg_pressure_pct_str = NULL;
+      if (strncmp(tok, "bg_dedup_pressure_used_pct=", 27) == 0)
+        bg_pressure_pct_str = tok + 27;
+      else if (strncmp(tok, "dedup_pressure_used_pct=", 24) == 0)
+        bg_pressure_pct_str = tok + 24;
+      if (bg_pressure_pct_str)
+      {
+        if (kafs_parse_u32_range(bg_pressure_pct_str, 0, 100u, &opts->bg_dedup_pressure_used_pct) !=
+            0)
+        {
+          fprintf(stderr, "invalid -o dedup_pressure_used_pct/bg_dedup_pressure_used_pct: '%s'\n",
+                  bg_pressure_pct_str);
+          free(dup);
+          return 2;
+        }
+        continue;
+      }
+
+      const char *bg_prio_str = NULL;
+      if (strncmp(tok, "bg_dedup_worker_prio=", 21) == 0)
+        bg_prio_str = tok + 21;
+      else if (strncmp(tok, "dedup_scan_worker_prio=", 23) == 0)
+        bg_prio_str = tok + 23;
+      if (bg_prio_str)
+      {
+        if (kafs_pending_worker_prio_mode_parse(bg_prio_str, &opts->bg_dedup_worker_prio_mode) != 0)
+        {
+          fprintf(stderr, "invalid -o bg_dedup_worker_prio/dedup_scan_worker_prio: '%s'\n",
+                  bg_prio_str);
+          free(dup);
+          return 2;
+        }
+        continue;
+      }
+
+      const char *bg_nice_str = NULL;
+      if (strncmp(tok, "bg_dedup_worker_nice=", 21) == 0)
+        bg_nice_str = tok + 21;
+      else if (strncmp(tok, "dedup_scan_worker_nice=", 23) == 0)
+        bg_nice_str = tok + 23;
+      if (bg_nice_str)
+      {
+        char *endp = NULL;
+        long v = strtol(bg_nice_str, &endp, 10);
+        if (!endp || *endp != '\0' || v < 0 || v > 19)
+        {
+          fprintf(stderr, "invalid -o bg_dedup_worker_nice/dedup_scan_worker_nice: '%s'\n",
+                  bg_nice_str);
+          free(dup);
+          return 2;
+        }
+        opts->bg_dedup_worker_nice = (int)v;
+        continue;
+      }
+
+      size_t tlen = strlen(tok);
+      size_t need = tlen + (used ? 1 : 0);
+      if (need)
+      {
+        if (used)
+          filtered[used++] = ',';
+        memcpy(filtered + used, tok, tlen);
+        used += tlen;
+        filtered[used] = '\0';
+      }
+    }
+
+    free(dup);
+    if (want_mt)
+      opts->enable_mt = KAFS_TRUE;
+
+    if (filtered[0] != '\0')
+    {
+      char *kept = NULL;
+      if (is_compact)
+      {
+        kept = (char *)malloc(strlen(filtered) + 3);
+        if (!kept)
+        {
+          perror("malloc");
+          return 2;
+        }
+        kept[0] = '-';
+        kept[1] = 'o';
+        strcpy(kept + 2, filtered);
+        argv_user[argc_user++] = kept;
+      }
+      else
+      {
+        kept = strdup(filtered);
+        if (!kept)
         {
           perror("strdup");
           return 2;
         }
-        char filtered[strlen(oval) + 1];
-        filtered[0] = '\0';
-        size_t used = 0;
-        int want_mt = 0;
-
-        char *saveptr = NULL;
-        for (char *tok = strtok_r(dup, ",", &saveptr); tok; tok = strtok_r(NULL, ",", &saveptr))
-        {
-          if (strncmp(tok, "max_threads=", 12) == 0 || strcmp(tok, "max_threads") == 0)
-            saw_max_threads = 1;
-
-          if (strcmp(tok, "writeback_cache") == 0)
-          {
-            writeback_cache_enabled = KAFS_TRUE;
-            writeback_cache_explicit = KAFS_TRUE;
-            continue;
-          }
-          if (strcmp(tok, "no_writeback_cache") == 0)
-          {
-            writeback_cache_enabled = KAFS_FALSE;
-            writeback_cache_explicit = KAFS_TRUE;
-            continue;
-          }
-          if (strcmp(tok, "trim_on_free") == 0 || strcmp(tok, "trim-on-free") == 0)
-          {
-            trim_on_free_enabled = KAFS_TRUE;
-            trim_on_free_explicit = KAFS_TRUE;
-            continue;
-          }
-          if (strcmp(tok, "no_trim_on_free") == 0 || strcmp(tok, "no-trim-on-free") == 0)
-          {
-            trim_on_free_enabled = KAFS_FALSE;
-            trim_on_free_explicit = KAFS_TRUE;
-            continue;
-          }
-
-          if (strcmp(tok, "hotplug") == 0)
-          {
-            snprintf(hotplug_uds_opt, sizeof(hotplug_uds_opt), "%s", KAFS_HOTPLUG_UDS_DEFAULT);
-            continue;
-          }
-
-          const char *hotplug_uds_v = NULL;
-          if (strncmp(tok, "hotplug=", 8) == 0)
-            hotplug_uds_v = tok + 8;
-          else if (strncmp(tok, "hotplug_uds=", 12) == 0)
-            hotplug_uds_v = tok + 12;
-          else if (strncmp(tok, "hotplug-uds=", 12) == 0)
-            hotplug_uds_v = tok + 12;
-          if (hotplug_uds_v)
-          {
-            if (!*hotplug_uds_v || snprintf(hotplug_uds_opt, sizeof(hotplug_uds_opt), "%s",
-                                            hotplug_uds_v) >= (int)sizeof(hotplug_uds_opt))
-            {
-              fprintf(stderr, "invalid -o hotplug uds path: '%s'\n", hotplug_uds_v);
-              free(dup);
-              return 2;
-            }
-            continue;
-          }
-
-          const char *hotplug_back_bin_v = NULL;
-          if (strncmp(tok, "hotplug_back_bin=", 17) == 0)
-            hotplug_back_bin_v = tok + 17;
-          else if (strncmp(tok, "hotplug-back-bin=", 17) == 0)
-            hotplug_back_bin_v = tok + 17;
-          if (hotplug_back_bin_v)
-          {
-            if (!*hotplug_back_bin_v ||
-                snprintf(hotplug_back_bin_opt, sizeof(hotplug_back_bin_opt), "%s",
-                         hotplug_back_bin_v) >= (int)sizeof(hotplug_back_bin_opt))
-            {
-              fprintf(stderr, "invalid -o hotplug_back_bin path: '%s'\n", hotplug_back_bin_v);
-              free(dup);
-              return 2;
-            }
-            continue;
-          }
-
-          if (strcmp(tok, "multi_thread") == 0 || strcmp(tok, "multi-thread") == 0 ||
-              strcmp(tok, "multithread") == 0)
-          {
-            want_mt = 1;
-            continue;
-          }
-
-          const char *vstr = NULL;
-          if (strncmp(tok, "multi_thread=", 13) == 0)
-            vstr = tok + 13;
-          else if (strncmp(tok, "multi-thread=", 13) == 0)
-            vstr = tok + 13;
-          else if (strncmp(tok, "multithread=", 12) == 0)
-            vstr = tok + 12;
-
-          if (vstr)
-          {
-            char *endp = NULL;
-            unsigned long v = strtoul(vstr, &endp, 10);
-            if (!endp || *endp != '\0')
-            {
-              fprintf(stderr, "invalid -o multi_thread=N: '%s'\n", vstr);
-              free(dup);
-              return 2;
-            }
-            if (v < 1)
-              v = 1;
-            if (v > 100000)
-              v = 100000;
-            mt_cnt_override = (unsigned)v;
-            mt_cnt_override_set = 1;
-            want_mt = 1;
-            continue;
-          }
-
-          const char *prio_str = NULL;
-          if (strncmp(tok, "pending_worker_prio=", 20) == 0)
-            prio_str = tok + 20;
-          else if (strncmp(tok, "dedup_worker_prio=", 18) == 0)
-            prio_str = tok + 18;
-          if (prio_str)
-          {
-            if (kafs_pending_worker_prio_mode_parse(prio_str, &pending_worker_prio_mode) != 0)
-            {
-              fprintf(stderr, "invalid -o pending_worker_prio: '%s'\n", prio_str);
-              free(dup);
-              return 2;
-            }
-            continue;
-          }
-
-          const char *nice_str = NULL;
-          if (strncmp(tok, "pending_worker_nice=", 20) == 0)
-            nice_str = tok + 20;
-          else if (strncmp(tok, "dedup_worker_nice=", 18) == 0)
-            nice_str = tok + 18;
-          if (nice_str)
-          {
-            char *endp = NULL;
-            long v = strtol(nice_str, &endp, 10);
-            if (!endp || *endp != '\0' || v < 0 || v > 19)
-            {
-              fprintf(stderr, "invalid -o pending_worker_nice: '%s'\n", nice_str);
-              free(dup);
-              return 2;
-            }
-            pending_worker_nice = (int)v;
-            continue;
-          }
-
-          const char *ttl_soft_str = NULL;
-          if (strncmp(tok, "pending_ttl_soft_ms=", 20) == 0)
-            ttl_soft_str = tok + 20;
-          if (ttl_soft_str)
-          {
-            if (kafs_parse_u32_range(ttl_soft_str, 0, 3600000u, &pending_ttl_soft_ms) != 0)
-            {
-              fprintf(stderr, "invalid -o pending_ttl_soft_ms: '%s'\n", ttl_soft_str);
-              free(dup);
-              return 2;
-            }
-            continue;
-          }
-
-          const char *ttl_hard_str = NULL;
-          if (strncmp(tok, "pending_ttl_hard_ms=", 20) == 0)
-            ttl_hard_str = tok + 20;
-          if (ttl_hard_str)
-          {
-            if (kafs_parse_u32_range(ttl_hard_str, 0, 3600000u, &pending_ttl_hard_ms) != 0)
-            {
-              fprintf(stderr, "invalid -o pending_ttl_hard_ms: '%s'\n", ttl_hard_str);
-              free(dup);
-              return 2;
-            }
-            continue;
-          }
-
-          const char *pcap_initial_str = NULL;
-          if (strncmp(tok, "pendinglog_cap_initial=", 23) == 0)
-            pcap_initial_str = tok + 23;
-          else if (strncmp(tok, "pending_cap_initial=", 20) == 0)
-            pcap_initial_str = tok + 20;
-          if (pcap_initial_str)
-          {
-            if (kafs_parse_u32_range(pcap_initial_str, 0, 1000000000u, &pending_cap_initial) != 0)
-            {
-              fprintf(stderr, "invalid -o pendinglog_cap_initial: '%s'\n", pcap_initial_str);
-              free(dup);
-              return 2;
-            }
-            continue;
-          }
-
-          const char *pcap_min_str = NULL;
-          if (strncmp(tok, "pendinglog_cap_min=", 19) == 0)
-            pcap_min_str = tok + 19;
-          else if (strncmp(tok, "pending_cap_min=", 16) == 0)
-            pcap_min_str = tok + 16;
-          if (pcap_min_str)
-          {
-            if (kafs_parse_u32_range(pcap_min_str, 0, 1000000000u, &pending_cap_min) != 0)
-            {
-              fprintf(stderr, "invalid -o pendinglog_cap_min: '%s'\n", pcap_min_str);
-              free(dup);
-              return 2;
-            }
-            continue;
-          }
-
-          const char *pcap_max_str = NULL;
-          if (strncmp(tok, "pendinglog_cap_max=", 19) == 0)
-            pcap_max_str = tok + 19;
-          else if (strncmp(tok, "pending_cap_max=", 16) == 0)
-            pcap_max_str = tok + 16;
-          if (pcap_max_str)
-          {
-            if (kafs_parse_u32_range(pcap_max_str, 0, 1000000000u, &pending_cap_max) != 0)
-            {
-              fprintf(stderr, "invalid -o pendinglog_cap_max: '%s'\n", pcap_max_str);
-              free(dup);
-              return 2;
-            }
-            continue;
-          }
-
-          const char *fsp_str = NULL;
-          if (strncmp(tok, "fsync_policy=", 13) == 0)
-            fsp_str = tok + 13;
-          if (fsp_str)
-          {
-            if (kafs_fsync_policy_parse(fsp_str, &fsync_policy) != 0)
-            {
-              fprintf(stderr, "invalid -o fsync_policy: '%s'\n", fsp_str);
-              free(dup);
-              return 2;
-            }
-            continue;
-          }
-
-          if (strcmp(tok, "bg_dedup_scan") == 0 || strcmp(tok, "bg_dedup_scan=on") == 0 ||
-              strcmp(tok, "dedup_scan") == 0 || strcmp(tok, "dedup_scan=on") == 0)
-          {
-            bg_dedup_scan_enabled = 1u;
-            continue;
-          }
-          if (strcmp(tok, "no_bg_dedup_scan") == 0 || strcmp(tok, "bg_dedup_scan=off") == 0 ||
-              strcmp(tok, "no_dedup_scan") == 0 || strcmp(tok, "dedup_scan=off") == 0)
-          {
-            bg_dedup_scan_enabled = 0u;
-            continue;
-          }
-
-          const char *bg_scan_str = NULL;
-          if (strncmp(tok, "bg_dedup_scan=", 14) == 0)
-            bg_scan_str = tok + 14;
-          else if (strncmp(tok, "dedup_scan=", 11) == 0)
-            bg_scan_str = tok + 11;
-          if (bg_scan_str)
-          {
-            if (kafs_parse_onoff(bg_scan_str, &bg_dedup_scan_enabled) != 0)
-            {
-              fprintf(stderr, "invalid -o dedup_scan/bg_dedup_scan: '%s'\n", bg_scan_str);
-              free(dup);
-              return 2;
-            }
-            continue;
-          }
-
-          const char *bg_interval_str = NULL;
-          if (strncmp(tok, "bg_dedup_interval_ms=", 21) == 0)
-            bg_interval_str = tok + 21;
-          else if (strncmp(tok, "dedup_interval_ms=", 18) == 0)
-            bg_interval_str = tok + 18;
-          if (bg_interval_str)
-          {
-            if (kafs_parse_u32_range(bg_interval_str, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
-                                     KAFS_BG_DEDUP_INTERVAL_MS_MAX, &bg_dedup_interval_ms) != 0)
-            {
-              fprintf(stderr, "invalid -o dedup_interval_ms/bg_dedup_interval_ms: '%s'\n",
-                      bg_interval_str);
-              free(dup);
-              return 2;
-            }
-            continue;
-          }
-
-          const char *bg_quiet_interval_str = NULL;
-          if (strncmp(tok, "bg_dedup_quiet_interval_ms=", 27) == 0)
-            bg_quiet_interval_str = tok + 27;
-          else if (strncmp(tok, "dedup_quiet_interval_ms=", 24) == 0)
-            bg_quiet_interval_str = tok + 24;
-          if (bg_quiet_interval_str)
-          {
-            if (kafs_parse_u32_range(bg_quiet_interval_str, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
-                                     KAFS_BG_DEDUP_INTERVAL_MS_MAX,
-                                     &bg_dedup_quiet_interval_ms) != 0)
-            {
-              fprintf(stderr,
-                      "invalid -o dedup_quiet_interval_ms/bg_dedup_quiet_interval_ms: '%s'\n",
-                      bg_quiet_interval_str);
-              free(dup);
-              return 2;
-            }
-            continue;
-          }
-
-          const char *bg_pressure_interval_str = NULL;
-          if (strncmp(tok, "bg_dedup_pressure_interval_ms=", 30) == 0)
-            bg_pressure_interval_str = tok + 30;
-          else if (strncmp(tok, "dedup_pressure_interval_ms=", 27) == 0)
-            bg_pressure_interval_str = tok + 27;
-          if (bg_pressure_interval_str)
-          {
-            if (kafs_parse_u32_range(bg_pressure_interval_str, KAFS_BG_DEDUP_INTERVAL_MS_MIN,
-                                     KAFS_BG_DEDUP_INTERVAL_MS_MAX,
-                                     &bg_dedup_pressure_interval_ms) != 0)
-            {
-              fprintf(stderr,
-                      "invalid -o dedup_pressure_interval_ms/bg_dedup_pressure_interval_ms: '%s'\n",
-                      bg_pressure_interval_str);
-              free(dup);
-              return 2;
-            }
-            continue;
-          }
-
-          const char *bg_start_pct_str = NULL;
-          if (strncmp(tok, "bg_dedup_start_used_pct=", 24) == 0)
-            bg_start_pct_str = tok + 24;
-          else if (strncmp(tok, "dedup_start_used_pct=", 21) == 0)
-            bg_start_pct_str = tok + 21;
-          if (bg_start_pct_str)
-          {
-            if (kafs_parse_u32_range(bg_start_pct_str, 0, 100u, &bg_dedup_start_used_pct) != 0)
-            {
-              fprintf(stderr, "invalid -o dedup_start_used_pct/bg_dedup_start_used_pct: '%s'\n",
-                      bg_start_pct_str);
-              free(dup);
-              return 2;
-            }
-            continue;
-          }
-
-          const char *bg_pressure_pct_str = NULL;
-          if (strncmp(tok, "bg_dedup_pressure_used_pct=", 27) == 0)
-            bg_pressure_pct_str = tok + 27;
-          else if (strncmp(tok, "dedup_pressure_used_pct=", 24) == 0)
-            bg_pressure_pct_str = tok + 24;
-          if (bg_pressure_pct_str)
-          {
-            if (kafs_parse_u32_range(bg_pressure_pct_str, 0, 100u, &bg_dedup_pressure_used_pct) !=
-                0)
-            {
-              fprintf(stderr,
-                      "invalid -o dedup_pressure_used_pct/bg_dedup_pressure_used_pct: '%s'\n",
-                      bg_pressure_pct_str);
-              free(dup);
-              return 2;
-            }
-            continue;
-          }
-
-          const char *bg_prio_str = NULL;
-          if (strncmp(tok, "bg_dedup_worker_prio=", 21) == 0)
-            bg_prio_str = tok + 21;
-          else if (strncmp(tok, "dedup_scan_worker_prio=", 23) == 0)
-            bg_prio_str = tok + 23;
-          if (bg_prio_str)
-          {
-            if (kafs_pending_worker_prio_mode_parse(bg_prio_str, &bg_dedup_worker_prio_mode) != 0)
-            {
-              fprintf(stderr, "invalid -o bg_dedup_worker_prio/dedup_scan_worker_prio: '%s'\n",
-                      bg_prio_str);
-              free(dup);
-              return 2;
-            }
-            continue;
-          }
-
-          const char *bg_nice_str = NULL;
-          if (strncmp(tok, "bg_dedup_worker_nice=", 21) == 0)
-            bg_nice_str = tok + 21;
-          else if (strncmp(tok, "dedup_scan_worker_nice=", 23) == 0)
-            bg_nice_str = tok + 23;
-          if (bg_nice_str)
-          {
-            char *endp = NULL;
-            long v = strtol(bg_nice_str, &endp, 10);
-            if (!endp || *endp != '\0' || v < 0 || v > 19)
-            {
-              fprintf(stderr, "invalid -o bg_dedup_worker_nice/dedup_scan_worker_nice: '%s'\n",
-                      bg_nice_str);
-              free(dup);
-              return 2;
-            }
-            bg_dedup_worker_nice = (int)v;
-            continue;
-          }
-
-          // keep other options
-          size_t tlen = strlen(tok);
-          size_t need = tlen + (used ? 1 : 0);
-          if (need)
-          {
-            if (used)
-              filtered[used++] = ',';
-            memcpy(filtered + used, tok, tlen);
-            used += tlen;
-            filtered[used] = '\0';
-          }
-        }
-
-        free(dup);
-        if (want_mt)
-          enable_mt = KAFS_TRUE;
-
-        if (filtered[0] != '\0')
-        {
-          char *kept = NULL;
-          if (is_compact)
-          {
-            kept = (char *)malloc(strlen(filtered) + 3);
-            if (!kept)
-            {
-              perror("malloc");
-              return 2;
-            }
-            kept[0] = '-';
-            kept[1] = 'o';
-            strcpy(kept + 2, filtered);
-            argv_user[argc_user++] = kept;
-          }
-          else
-          {
-            kept = strdup(filtered);
-            if (!kept)
-            {
-              perror("strdup");
-              return 2;
-            }
-            argv_user[argc_user++] = "-o";
-            argv_user[argc_user++] = kept;
-          }
-          o_owned[o_owned_cnt++] = kept;
-        }
-        continue;
+        argv_user[argc_user++] = "-o";
+        argv_user[argc_user++] = kept;
       }
-
-      argv_user[argc_user++] = argv_clean[i];
+      o_owned[o_owned_cnt++] = kept;
     }
-
-    // Copy back filtered argv
-    argc_clean = argc_user;
-    for (int i = 0; i < argc_clean; ++i)
-      argv_clean[i] = argv_user[i];
-
-    // Note: o_owned is intentionally not freed here; argv_clean references it.
-    (void)o_owned;
-    (void)o_owned_cnt;
   }
 
-  if (pending_ttl_soft_ms > 0 && pending_ttl_hard_ms > 0 &&
-      pending_ttl_hard_ms < pending_ttl_soft_ms)
+  *argc_clean = argc_user;
+  for (int i = 0; i < *argc_clean; ++i)
+    argv_clean[i] = argv_user[i];
+
+  (void)o_owned;
+  (void)o_owned_cnt;
+  return 0;
+}
+
+static int kafs_main_validate_options(const kafs_main_options_t *opts)
+{
+  if (opts->pending_ttl_soft_ms > 0 && opts->pending_ttl_hard_ms > 0 &&
+      opts->pending_ttl_hard_ms < opts->pending_ttl_soft_ms)
   {
     fprintf(stderr, "invalid pending TTL: hard must be >= soft\n");
     return 2;
   }
-
-  if (pending_cap_min > 0 && pending_cap_max > 0 && pending_cap_max < pending_cap_min)
+  if (opts->pending_cap_min > 0 && opts->pending_cap_max > 0 &&
+      opts->pending_cap_max < opts->pending_cap_min)
   {
     fprintf(stderr, "invalid pendinglog capacity: max must be >= min\n");
     return 2;
   }
-
-  if (bg_dedup_pressure_used_pct > 0 && bg_dedup_start_used_pct > 0 &&
-      bg_dedup_pressure_used_pct < bg_dedup_start_used_pct)
+  if (opts->bg_dedup_pressure_used_pct > 0 && opts->bg_dedup_start_used_pct > 0 &&
+      opts->bg_dedup_pressure_used_pct < opts->bg_dedup_start_used_pct)
   {
     fprintf(stderr, "invalid bg dedup thresholds: pressure_used_pct must be >= start_used_pct\n");
     return 2;
   }
+  return 0;
+}
+
+#ifndef KAFS_NO_MAIN
+int main(int argc, char **argv)
+{
+  kafs_crash_diag_install("kafs");
+  kafs_main_options_t opts;
+  char *argv_clean[argc];
+  int argc_clean = 0;
+
+  kafs_main_options_init(&opts);
+  if (kafs_main_apply_env_overrides(&opts) != 0 ||
+      kafs_main_collect_args(argc, argv, argv[0], &opts, argv_clean, &argc_clean) != 0)
+    return 2;
+
+  // mount(8) helper compatibility: allow "kafs <image> <mountpoint> [FUSE options...]"
+  // When invoked via mount -t fuse.kafs, the image path is typically passed as the first argument.
+  if (opts.image_path == NULL && argc_clean >= 3 && argv_clean[1][0] != '-')
+  {
+    opts.image_path = argv_clean[1];
+    for (int i = 1; i + 1 < argc_clean; ++i)
+      argv_clean[i] = argv_clean[i + 1];
+    argc_clean--;
+  }
+
+  if (opts.show_help)
+  {
+    usage(argv[0]);
+    return 0;
+  }
+  if (opts.image_path == NULL || argc_clean < 2)
+  {
+    usage(argv[0]);
+    return 2;
+  }
+
+  if (kafs_main_filter_mount_options(&opts, argv_clean, &argc_clean) != 0 ||
+      kafs_main_validate_options(&opts) != 0)
+    return 2;
+
+  const char *image_path = opts.image_path;
+  kafs_bool_t auto_migrate = opts.auto_migrate;
+  kafs_bool_t migrate_yes = opts.migrate_yes;
+  kafs_bool_t writeback_cache_enabled = opts.writeback_cache_enabled;
+  kafs_bool_t writeback_cache_explicit = opts.writeback_cache_explicit;
+  kafs_bool_t trim_on_free_enabled = opts.trim_on_free_enabled;
+  kafs_bool_t trim_on_free_explicit = opts.trim_on_free_explicit;
+  kafs_bool_t enable_mt = opts.enable_mt;
+  unsigned mt_cnt_override = opts.mt_cnt_override;
+  int mt_cnt_override_set = opts.mt_cnt_override_set;
+  int saw_max_threads = opts.saw_max_threads;
+  uint32_t pending_worker_prio_mode = opts.pending_worker_prio_mode;
+  int pending_worker_nice = opts.pending_worker_nice;
+  uint32_t pending_ttl_soft_ms = opts.pending_ttl_soft_ms;
+  uint32_t pending_ttl_hard_ms = opts.pending_ttl_hard_ms;
+  uint32_t pending_cap_initial = opts.pending_cap_initial;
+  uint32_t pending_cap_min = opts.pending_cap_min;
+  uint32_t pending_cap_max = opts.pending_cap_max;
+  uint32_t bg_dedup_scan_enabled = opts.bg_dedup_scan_enabled;
+  uint32_t bg_dedup_interval_ms = opts.bg_dedup_interval_ms;
+  uint32_t bg_dedup_quiet_interval_ms = opts.bg_dedup_quiet_interval_ms;
+  uint32_t bg_dedup_pressure_interval_ms = opts.bg_dedup_pressure_interval_ms;
+  uint32_t bg_dedup_start_used_pct = opts.bg_dedup_start_used_pct;
+  uint32_t bg_dedup_pressure_used_pct = opts.bg_dedup_pressure_used_pct;
+  uint32_t bg_dedup_worker_prio_mode = opts.bg_dedup_worker_prio_mode;
+  int bg_dedup_worker_nice = opts.bg_dedup_worker_nice;
+  uint32_t fsync_policy = opts.fsync_policy;
+  char *hotplug_uds_opt = opts.hotplug_uds_opt;
+  char *hotplug_back_bin_opt = opts.hotplug_back_bin_opt;
 
   static kafs_context_t ctx;
   static char mnt_abs[PATH_MAX];
