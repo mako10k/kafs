@@ -7943,6 +7943,110 @@ static int kafs_ctl_handle_request(kafs_context_t *ctx, kafs_ctl_session_t *sess
   return (int)size;
 }
 
+#ifdef __linux__
+static int kafs_ioctl_handle_ficlone(struct fuse_context *fctx, kafs_context_t *ctx,
+                                     const char *path, int cmd, void *arg,
+                                     struct fuse_file_info *fi, void *data)
+{
+  int srcfd = -1;
+  if (data)
+  {
+    if (_IOC_SIZE((unsigned int)cmd) < sizeof(int))
+      return -EINVAL;
+    srcfd = *(int *)data;
+  }
+  else
+  {
+    srcfd = (int)(uintptr_t)arg;
+  }
+
+  char sp[PATH_MAX];
+  int prc = kafs_procfd_to_kafs_path(ctx, fctx->pid, srcfd, sp);
+  if (prc != 0)
+    return prc;
+
+  kafs_sinode_t *ino_src;
+  kafs_sinode_t *ino_dst;
+  KAFS_CALL(kafs_access, fctx, ctx, sp, NULL, R_OK, &ino_src);
+  KAFS_CALL(kafs_access, fctx, ctx, path, fi, W_OK, &ino_dst);
+  return kafs_reflink_clone(ctx, ino_src, ino_dst);
+}
+#endif
+
+static int kafs_ioctl_lookup_copy_dst(struct fuse_context *fctx, kafs_context_t *ctx,
+                                      const char *dst, kafs_sinode_t **ino_dst)
+{
+  int drc = kafs_access(fctx, ctx, dst, NULL, F_OK, ino_dst);
+  if (drc == -ENOENT)
+  {
+    kafs_inocnt_t ino_new;
+    KAFS_CALL(kafs_create, dst, 0644 | S_IFREG, 0, NULL, &ino_new);
+    *ino_dst = kafs_ctx_inode(ctx, ino_new);
+    return 0;
+  }
+  if (drc < 0)
+    return drc;
+
+  KAFS_CALL(kafs_access, fctx, ctx, dst, NULL, W_OK, ino_dst);
+  return 0;
+}
+
+static int kafs_ioctl_handle_copy(struct fuse_context *fctx, kafs_context_t *ctx, void *arg,
+                                  void *data)
+{
+  void *buf = data ? data : arg;
+  if (!buf)
+    return -EINVAL;
+  if (_IOC_SIZE((unsigned int)KAFS_IOCTL_COPY) < sizeof(kafs_ioctl_copy_t))
+    return -EINVAL;
+
+  kafs_ioctl_copy_t req;
+  memcpy(&req, buf, sizeof(req));
+  if (req.struct_size < sizeof(req))
+    return -EINVAL;
+  if (req.src[0] != '/' || req.dst[0] != '/' || req.src[1] == '\0' || req.dst[1] == '\0')
+    return -EINVAL;
+
+  kafs_sinode_t *ino_src;
+  kafs_sinode_t *ino_dst;
+  KAFS_CALL(kafs_access, fctx, ctx, req.src, NULL, R_OK, &ino_src);
+  int rc = kafs_ioctl_lookup_copy_dst(fctx, ctx, req.dst, &ino_dst);
+  if (rc < 0)
+    return rc;
+
+  if ((req.flags & KAFS_IOCTL_COPY_F_REFLINK) != 0)
+    return kafs_reflink_clone(ctx, ino_src, ino_dst);
+
+  uint32_t ino_dst_no = (uint32_t)kafs_ctx_ino_no(ctx, ino_dst);
+  kafs_inode_lock(ctx, ino_dst_no);
+  int trc = kafs_truncate(ctx, ino_dst, 0);
+  kafs_inode_unlock(ctx, ino_dst_no);
+  if (trc < 0)
+    return trc;
+
+  kafs_off_t src_size = kafs_ino_size_get(ino_src);
+  ssize_t copied = kafs_copy_regular_range(ctx, ino_src, ino_dst, 0, 0, (size_t)src_size);
+  return copied < 0 ? (int)copied : 0;
+}
+
+static int kafs_ioctl_handle_get_stats(kafs_context_t *ctx, int cmd, void *arg, void *data)
+{
+  void *buf = data ? data : arg;
+  if (!buf)
+    return -EINVAL;
+  if (_IOC_SIZE((unsigned int)cmd) < sizeof(kafs_stats_t))
+    return -EINVAL;
+
+  kafs_stats_t req;
+  memset(&req, 0, sizeof(req));
+  memcpy(&req, buf, sizeof(req));
+
+  kafs_stats_t out;
+  kafs_stats_snapshot(ctx, &out, req.request_flags);
+  memcpy(buf, &out, sizeof(out));
+  return 0;
+}
+
 static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_info *fi,
                          unsigned int flags, void *data)
 {
@@ -7953,99 +8057,16 @@ static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_
 
 #ifdef __linux__
   if ((unsigned int)cmd == (unsigned int)FICLONE)
-  {
-    int srcfd = -1;
-    if (data)
-    {
-      if (_IOC_SIZE((unsigned int)cmd) < sizeof(int))
-        return -EINVAL;
-      srcfd = *(int *)data;
-    }
-    else
-    {
-      // FICLONE takes an int fd argument (passed as ioctl arg value, not as pointer).
-      srcfd = (int)(uintptr_t)arg;
-    }
-
-    char sp[PATH_MAX];
-    int prc = kafs_procfd_to_kafs_path(ctx, fctx->pid, srcfd, sp);
-    if (prc != 0)
-      return prc;
-
-    kafs_sinode_t *ino_src;
-    kafs_sinode_t *ino_dst;
-    KAFS_CALL(kafs_access, fctx, ctx, sp, NULL, R_OK, &ino_src);
-    KAFS_CALL(kafs_access, fctx, ctx, path, fi, W_OK, &ino_dst);
-    return kafs_reflink_clone(ctx, ino_src, ino_dst);
-  }
+    return kafs_ioctl_handle_ficlone(fctx, ctx, path, cmd, arg, fi, data);
   if ((unsigned int)cmd == (unsigned int)FICLONERANGE)
     return -EOPNOTSUPP;
 #endif
 
   if ((unsigned int)cmd == (unsigned int)KAFS_IOCTL_COPY)
-  {
-    void *buf = data ? data : arg;
-    if (!buf)
-      return -EINVAL;
-    if (_IOC_SIZE((unsigned int)cmd) < sizeof(kafs_ioctl_copy_t))
-      return -EINVAL;
-    kafs_ioctl_copy_t req;
-    memcpy(&req, buf, sizeof(req));
-    if (req.struct_size < sizeof(req))
-      return -EINVAL;
-    if (req.src[0] != '/' || req.dst[0] != '/' || req.src[1] == '\0' || req.dst[1] == '\0')
-      return -EINVAL;
-
-    kafs_sinode_t *ino_src;
-    kafs_sinode_t *ino_dst;
-    KAFS_CALL(kafs_access, fctx, ctx, req.src, NULL, R_OK, &ino_src);
-
-    int drc = kafs_access(fctx, ctx, req.dst, NULL, F_OK, &ino_dst);
-    if (drc == -ENOENT)
-    {
-      kafs_inocnt_t ino_new;
-      KAFS_CALL(kafs_create, req.dst, 0644 | S_IFREG, 0, NULL, &ino_new);
-      ino_dst = kafs_ctx_inode(ctx, ino_new);
-    }
-    else
-    {
-      if (drc < 0)
-        return drc;
-      KAFS_CALL(kafs_access, fctx, ctx, req.dst, NULL, W_OK, &ino_dst);
-    }
-
-    if ((req.flags & KAFS_IOCTL_COPY_F_REFLINK) != 0)
-      return kafs_reflink_clone(ctx, ino_src, ino_dst);
-
-    uint32_t ino_dst_no = (uint32_t)kafs_ctx_ino_no(ctx, ino_dst);
-    kafs_inode_lock(ctx, ino_dst_no);
-    int trc = kafs_truncate(ctx, ino_dst, 0);
-    kafs_inode_unlock(ctx, ino_dst_no);
-    if (trc < 0)
-      return trc;
-
-    kafs_off_t src_size = kafs_ino_size_get(ino_src);
-    ssize_t copied = kafs_copy_regular_range(ctx, ino_src, ino_dst, 0, 0, (size_t)src_size);
-    return copied < 0 ? (int)copied : 0;
-  }
+    return kafs_ioctl_handle_copy(fctx, ctx, arg, data);
 
   if ((unsigned int)cmd == (unsigned int)KAFS_IOCTL_GET_STATS)
-  {
-    void *buf = data ? data : arg;
-    if (!buf)
-      return -EINVAL;
-    if (_IOC_SIZE((unsigned int)cmd) < sizeof(kafs_stats_t))
-      return -EINVAL;
-    kafs_stats_t req;
-    memset(&req, 0, sizeof(req));
-    memcpy(&req, buf, sizeof(req));
-    uint32_t request_flags = req.request_flags;
-
-    kafs_stats_t out;
-    kafs_stats_snapshot(ctx, &out, request_flags);
-    memcpy(buf, &out, sizeof(out));
-    return 0;
-  }
+    return kafs_ioctl_handle_get_stats(ctx, cmd, arg, data);
   return -ENOTTY;
 }
 
