@@ -8493,25 +8493,21 @@ static int kafs_op_readdir(const char *path, void *buf, fuse_fill_dir_t filler, 
   return 0;
 }
 
-static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_inocnt_t *pino_dir,
-                       kafs_inocnt_t *pino_new)
+static void kafs_create_split_path(char *path_copy, const char **dirpath_out, char **basepath_out)
 {
-  assert(path != NULL);
-  assert(path[0] == '/');
-  assert(path[1] != '\0');
-  struct fuse_context *fctx = fuse_get_context();
-  struct kafs_context *ctx = fctx->private_data;
-  char path_copy[strlen(path) + 1];
-  strcpy(path_copy, path);
   const char *dirpath = path_copy;
   char *basepath = strrchr(path_copy, '/');
   if (dirpath == basepath)
     dirpath = "/";
   *basepath = '\0';
-  basepath++;
+  ++basepath;
+  *dirpath_out = dirpath;
+  *basepath_out = basepath;
+}
 
-  uint64_t jseq = kafs_journal_begin(ctx, "CREATE", "path=%s mode=%o", path, (unsigned)mode);
-  kafs_dlog(2, "%s: dirpath='%s' base='%s'\n", __func__, dirpath, basepath);
+static int kafs_create_ensure_absent(struct fuse_context *fctx, struct kafs_context *ctx,
+                                     const char *path, uint64_t jseq)
+{
   int ret = kafs_access(fctx, ctx, path, NULL, F_OK, NULL);
   kafs_dlog(2, "%s: access(path) rc=%d\n", __func__, ret);
   if (ret == KAFS_SUCCESS)
@@ -8524,9 +8520,15 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
     kafs_journal_abort(ctx, jseq, "access=%d", ret);
     return ret;
   }
+  return 0;
+}
 
-  kafs_sinode_t *inoent_dir;
-  ret = kafs_access(fctx, ctx, dirpath, NULL, W_OK, &inoent_dir);
+static int kafs_create_resolve_parent(struct fuse_context *fctx, struct kafs_context *ctx,
+                                      const char *dirpath, uint64_t jseq,
+                                      kafs_sinode_t **inoent_dir_out)
+{
+  kafs_sinode_t *inoent_dir = NULL;
+  int ret = kafs_access(fctx, ctx, dirpath, NULL, W_OK, &inoent_dir);
   kafs_dlog(2, "%s: access(dirpath='%s') rc=%d ino_dir=%u\n", __func__, dirpath, ret,
             (unsigned)(inoent_dir ? kafs_ctx_ino_no(ctx, inoent_dir) : 0));
   if (ret < 0)
@@ -8534,16 +8536,24 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
     kafs_journal_abort(ctx, jseq, "parent access=%d", ret);
     return ret;
   }
-  kafs_mode_t mode_dir = kafs_ino_mode_get(inoent_dir);
-  if (!S_ISDIR(mode_dir))
+  if (!S_ISDIR(kafs_ino_mode_get(inoent_dir)))
   {
     kafs_journal_abort(ctx, jseq, "ENOTDIR");
     return -ENOTDIR;
   }
+  *inoent_dir_out = inoent_dir;
+  return 0;
+}
+
+static int kafs_create_allocate_inode(struct fuse_context *fctx, struct kafs_context *ctx,
+                                      kafs_mode_t mode, kafs_dev_t dev, uint64_t jseq,
+                                      kafs_inocnt_t *ino_new_out,
+                                      struct kafs_sinode **inoent_new_out)
+{
   kafs_inocnt_t ino_new;
   kafs_inode_alloc_lock(ctx);
-  ret = kafs_ino_find_free(ctx->c_inotbl, kafs_ctx_inode_format(ctx), &ino_new, &ctx->c_ino_search,
-                           kafs_sb_inocnt_get(ctx->c_superblock));
+  int ret = kafs_ino_find_free(ctx->c_inotbl, kafs_ctx_inode_format(ctx), &ino_new,
+                               &ctx->c_ino_search, kafs_sb_inocnt_get(ctx->c_superblock));
   if (ret < 0)
   {
     kafs_inode_alloc_unlock(ctx);
@@ -8554,7 +8564,6 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   kafs_dlog(2, "%s: alloc ino=%u\n", __func__, (unsigned)ino_new);
   struct kafs_sinode *inoent_new = kafs_ctx_inode(ctx, ino_new);
 
-  // Reserve/initialize the inode while holding alloc lock so no other thread can allocate it.
   kafs_ctx_inode_zero(ctx, inoent_new);
   kafs_ino_mode_set(inoent_new, mode);
   kafs_ino_uid_set(inoent_new, fctx->uid);
@@ -8579,21 +8588,75 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   }
 
   kafs_inode_alloc_unlock(ctx);
+  *ino_new_out = ino_new;
+  *inoent_new_out = inoent_new;
+  return 0;
+}
 
-  uint32_t ino_dir_u32 = (uint32_t)kafs_ctx_ino_no(ctx, inoent_dir);
-  uint32_t ino_new_u32 = (uint32_t)ino_new;
-  // lock ordering: always by inode number to avoid deadlock with other ops
+static void kafs_create_lock_inodes(struct kafs_context *ctx, uint32_t ino_dir_u32,
+                                    uint32_t ino_new_u32)
+{
   if (ino_dir_u32 < ino_new_u32)
   {
     kafs_inode_lock(ctx, ino_dir_u32);
     kafs_inode_lock(ctx, ino_new_u32);
+    return;
   }
-  else
+
+  kafs_inode_lock(ctx, ino_new_u32);
+  if (ino_dir_u32 != ino_new_u32)
+    kafs_inode_lock(ctx, ino_dir_u32);
+}
+
+static void kafs_create_unlock_inodes(struct kafs_context *ctx, uint32_t ino_dir_u32,
+                                      uint32_t ino_new_u32)
+{
+  if (ino_dir_u32 < ino_new_u32)
   {
-    kafs_inode_lock(ctx, ino_new_u32);
-    if (ino_dir_u32 != ino_new_u32)
-      kafs_inode_lock(ctx, ino_dir_u32);
+    kafs_inode_unlock(ctx, ino_new_u32);
+    kafs_inode_unlock(ctx, ino_dir_u32);
+    return;
   }
+
+  if (ino_dir_u32 != ino_new_u32)
+    kafs_inode_unlock(ctx, ino_dir_u32);
+  kafs_inode_unlock(ctx, ino_new_u32);
+}
+
+static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_inocnt_t *pino_dir,
+                       kafs_inocnt_t *pino_new)
+{
+  assert(path != NULL);
+  assert(path[0] == '/');
+  assert(path[1] != '\0');
+  struct fuse_context *fctx = fuse_get_context();
+  struct kafs_context *ctx = fctx->private_data;
+  char path_copy[strlen(path) + 1];
+  strcpy(path_copy, path);
+  const char *dirpath = NULL;
+  char *basepath = NULL;
+  kafs_create_split_path(path_copy, &dirpath, &basepath);
+
+  uint64_t jseq = kafs_journal_begin(ctx, "CREATE", "path=%s mode=%o", path, (unsigned)mode);
+  kafs_dlog(2, "%s: dirpath='%s' base='%s'\n", __func__, dirpath, basepath);
+  int ret = kafs_create_ensure_absent(fctx, ctx, path, jseq);
+  if (ret < 0)
+    return ret;
+
+  kafs_sinode_t *inoent_dir = NULL;
+  ret = kafs_create_resolve_parent(fctx, ctx, dirpath, jseq, &inoent_dir);
+  if (ret < 0)
+    return ret;
+
+  kafs_inocnt_t ino_new;
+  struct kafs_sinode *inoent_new = NULL;
+  ret = kafs_create_allocate_inode(fctx, ctx, mode, dev, jseq, &ino_new, &inoent_new);
+  if (ret < 0)
+    return ret;
+
+  uint32_t ino_dir_u32 = (uint32_t)kafs_ctx_ino_no(ctx, inoent_dir);
+  uint32_t ino_new_u32 = (uint32_t)ino_new;
+  kafs_create_lock_inodes(ctx, ino_dir_u32, ino_new_u32);
 
   kafs_dlog(2, "%s: dirent_add start dir=%u name='%s'\n", __func__, (unsigned)ino_dir_u32,
             basepath);
@@ -8602,17 +8665,7 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   if (ret < 0)
   {
     kafs_ctx_inode_zero(ctx, inoent_new);
-    if (ino_dir_u32 < ino_new_u32)
-    {
-      kafs_inode_unlock(ctx, ino_new_u32);
-      kafs_inode_unlock(ctx, ino_dir_u32);
-    }
-    else
-    {
-      if (ino_dir_u32 != ino_new_u32)
-        kafs_inode_unlock(ctx, ino_dir_u32);
-      kafs_inode_unlock(ctx, ino_new_u32);
-    }
+    kafs_create_unlock_inodes(ctx, ino_dir_u32, ino_new_u32);
     kafs_journal_abort(ctx, jseq, "dirent_add=%d", ret);
     return ret;
   }
@@ -8622,20 +8675,8 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   if (pino_new != NULL)
     *pino_new = ino_new;
 
-  // unlock in reverse order
-  if (ino_dir_u32 < ino_new_u32)
-  {
-    kafs_inode_unlock(ctx, ino_new_u32);
-    kafs_inode_unlock(ctx, ino_dir_u32);
-  }
-  else
-  {
-    if (ino_dir_u32 != ino_new_u32)
-      kafs_inode_unlock(ctx, ino_dir_u32);
-    kafs_inode_unlock(ctx, ino_new_u32);
-  }
+  kafs_create_unlock_inodes(ctx, ino_dir_u32, ino_new_u32);
 
-  // Update free inode accounting after allocation (no inode locks held).
   kafs_inode_alloc_lock(ctx);
   (void)kafs_sb_inocnt_free_decr(ctx->c_superblock);
   kafs_sb_wtime_set(ctx->c_superblock, kafs_now());
