@@ -7362,6 +7362,81 @@ static int kafs_copy_share_one_iblk_locked(kafs_context_t *ctx, kafs_sinode_t *s
                                            kafs_sinode_t *dst, kafs_iblkcnt_t src_iblo,
                                            kafs_iblkcnt_t dst_iblo, uint32_t ino_dst);
 
+static int kafs_copy_regular_try_share_locked(kafs_context_t *ctx, kafs_sinode_t *ino_in,
+                                              kafs_sinode_t *ino_out, uint32_t ino_dst,
+                                              off_t offset_in, off_t offset_out,
+                                              kafs_off_t dst_size, int *dst_is_block_backed,
+                                              int *dst_empty_converted,
+                                              kafs_logblksize_t log_blksize, kafs_blksize_t blksize,
+                                              kafs_off_t max, kafs_off_t *done)
+{
+  kafs_off_t src_off = (kafs_off_t)offset_in + *done;
+  kafs_off_t dst_off = (kafs_off_t)offset_out + *done;
+  kafs_off_t remain = max - *done;
+
+  if (ctx->c_hrl_bucket_cnt == 0 || remain < (kafs_off_t)blksize ||
+      (src_off & ((kafs_off_t)blksize - 1)) != 0 || (dst_off & ((kafs_off_t)blksize - 1)) != 0)
+  {
+    __atomic_add_fetch(&ctx->c_stat_copy_share_skip_unaligned, 1u, __ATOMIC_RELAXED);
+    return 0;
+  }
+
+  if (!*dst_is_block_backed)
+  {
+    if (dst_size == 0 && (kafs_off_t)offset_out == 0)
+    {
+      memset(ino_out->i_blkreftbl, 0, sizeof(ino_out->i_blkreftbl));
+      *dst_is_block_backed = 1;
+      *dst_empty_converted = 1;
+    }
+    else
+    {
+      __atomic_add_fetch(&ctx->c_stat_copy_share_skip_dst_inline, 1u, __ATOMIC_RELAXED);
+      return 0;
+    }
+  }
+
+  size_t blocks = (size_t)(remain >> log_blksize);
+  __atomic_add_fetch(&ctx->c_stat_copy_share_attempt_blocks, (uint64_t)blocks, __ATOMIC_RELAXED);
+  size_t copied_blocks = 0;
+  for (size_t i = 0; i < blocks; ++i)
+  {
+    kafs_iblkcnt_t src_iblo = (kafs_iblkcnt_t)(src_off >> log_blksize) + (kafs_iblkcnt_t)i;
+    kafs_iblkcnt_t dst_iblo = (kafs_iblkcnt_t)(dst_off >> log_blksize) + (kafs_iblkcnt_t)i;
+    int frc = kafs_copy_share_one_iblk_locked(ctx, ino_in, ino_out, src_iblo, dst_iblo, ino_dst);
+    if (frc == -EAGAIN)
+      break;
+    if (frc < 0)
+      return frc;
+    copied_blocks++;
+    *done += (kafs_off_t)blksize;
+  }
+
+  if (copied_blocks > 0)
+  {
+    kafs_off_t end = (kafs_off_t)offset_out + *done;
+    if (kafs_ino_size_get(ino_out) < end)
+      kafs_ino_size_set(ino_out, end);
+    return 1;
+  }
+
+  if (*dst_empty_converted)
+    memset(ino_out->i_blkreftbl, 0, sizeof(ino_out->i_blkreftbl));
+  return 0;
+}
+
+static ssize_t kafs_copy_regular_buffered_step(kafs_context_t *ctx, kafs_sinode_t *ino_in,
+                                               kafs_sinode_t *ino_out, char *buf, size_t bufsz,
+                                               off_t offset_in, off_t offset_out, kafs_off_t max,
+                                               kafs_off_t done)
+{
+  size_t want = (size_t)((max - done) < (kafs_off_t)bufsz ? (max - done) : (kafs_off_t)bufsz);
+  ssize_t r = kafs_pread(ctx, ino_in, buf, (kafs_off_t)want, (kafs_off_t)offset_in + done);
+  if (r <= 0)
+    return r;
+  return kafs_pwrite(ctx, ino_out, buf, (kafs_off_t)r, (kafs_off_t)offset_out + done);
+}
+
 static ssize_t kafs_copy_regular_range(kafs_context_t *ctx, kafs_sinode_t *ino_in,
                                        kafs_sinode_t *ino_out, off_t offset_in, off_t offset_out,
                                        size_t size)
@@ -7412,82 +7487,21 @@ static ssize_t kafs_copy_regular_range(kafs_context_t *ctx, kafs_sinode_t *ino_i
   kafs_off_t done = 0;
   while (done < max)
   {
-    kafs_off_t src_off = (kafs_off_t)offset_in + done;
-    kafs_off_t dst_off = (kafs_off_t)offset_out + done;
-    kafs_off_t remain = max - done;
-
-    if (ctx->c_hrl_bucket_cnt != 0 && remain >= (kafs_off_t)blksize &&
-        ((src_off & ((kafs_off_t)blksize - 1)) == 0) &&
-        ((dst_off & ((kafs_off_t)blksize - 1)) == 0))
-    {
-      if (!dst_is_block_backed)
-      {
-        if (dst_size == 0 && (kafs_off_t)offset_out == 0)
-        {
-          memset(ino_out->i_blkreftbl, 0, sizeof(ino_out->i_blkreftbl));
-          dst_is_block_backed = 1;
-          dst_empty_converted = 1;
-        }
-        else
-        {
-          __atomic_add_fetch(&ctx->c_stat_copy_share_skip_dst_inline, 1u, __ATOMIC_RELAXED);
-        }
-      }
-
-      if (dst_is_block_backed)
-      {
-        size_t blocks = (size_t)(remain >> log_blksize);
-        __atomic_add_fetch(&ctx->c_stat_copy_share_attempt_blocks, (uint64_t)blocks,
-                           __ATOMIC_RELAXED);
-        size_t copied_blocks = 0;
-        for (size_t i = 0; i < blocks; ++i)
-        {
-          kafs_iblkcnt_t src_iblo = (kafs_iblkcnt_t)(src_off >> log_blksize) + (kafs_iblkcnt_t)i;
-          kafs_iblkcnt_t dst_iblo = (kafs_iblkcnt_t)(dst_off >> log_blksize) + (kafs_iblkcnt_t)i;
-          int frc =
-              kafs_copy_share_one_iblk_locked(ctx, ino_in, ino_out, src_iblo, dst_iblo, ino_dst);
-          if (frc == -EAGAIN)
-            break;
-          if (frc < 0)
-          {
-            free(buf);
-            kafs_inode_unlock(ctx, ino_src);
-            kafs_inode_unlock(ctx, ino_dst);
-            return frc;
-          }
-          copied_blocks++;
-          done += (kafs_off_t)blksize;
-        }
-
-        if (copied_blocks > 0)
-        {
-          kafs_off_t end = (kafs_off_t)offset_out + done;
-          if (kafs_ino_size_get(ino_out) < end)
-            kafs_ino_size_set(ino_out, end);
-          continue;
-        }
-
-        if (dst_empty_converted)
-          memset(ino_out->i_blkreftbl, 0, sizeof(ino_out->i_blkreftbl));
-      }
-    }
-    else
-    {
-      __atomic_add_fetch(&ctx->c_stat_copy_share_skip_unaligned, 1u, __ATOMIC_RELAXED);
-    }
-
-    size_t want = (size_t)((max - done) < (kafs_off_t)bufsz ? (max - done) : (kafs_off_t)bufsz);
-    ssize_t r = kafs_pread(ctx, ino_in, buf, (kafs_off_t)want, (kafs_off_t)offset_in + done);
-    if (r < 0)
+    int src = kafs_copy_regular_try_share_locked(
+        ctx, ino_in, ino_out, ino_dst, offset_in, offset_out, dst_size, &dst_is_block_backed,
+        &dst_empty_converted, log_blksize, blksize, max, &done);
+    if (src < 0)
     {
       free(buf);
       kafs_inode_unlock(ctx, ino_src);
       kafs_inode_unlock(ctx, ino_dst);
-      return r;
+      return src;
     }
-    if (r == 0)
-      break;
-    ssize_t w = kafs_pwrite(ctx, ino_out, buf, (kafs_off_t)r, (kafs_off_t)offset_out + done);
+    if (src > 0)
+      continue;
+
+    ssize_t w = kafs_copy_regular_buffered_step(ctx, ino_in, ino_out, buf, bufsz, offset_in,
+                                                offset_out, max, done);
     if (w < 0)
     {
       free(buf);
@@ -7495,6 +7509,8 @@ static ssize_t kafs_copy_regular_range(kafs_context_t *ctx, kafs_sinode_t *ino_i
       kafs_inode_unlock(ctx, ino_dst);
       return w;
     }
+    if (w == 0)
+      break;
     done += w;
   }
 
