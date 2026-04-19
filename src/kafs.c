@@ -4093,6 +4093,38 @@ static int kafs_tailmeta_resolve_slot_shape(const kafs_sinode_taildesc_v5_t *tai
   return 0;
 }
 
+static int kafs_tailmeta_lookup_container(struct kafs_context *ctx,
+                                          const kafs_sinode_taildesc_v5_t *taildesc,
+                                          struct kafs_tailmeta_region_view *view,
+                                          uint32_t *out_container_index)
+{
+  int rc = kafs_tailmeta_region_view_get(ctx, view);
+  if (rc != 0)
+    return rc;
+
+  return kafs_tailmeta_find_container_index_by_blo(
+      view, kafs_ino_taildesc_v5_container_blo_get(taildesc), out_container_index);
+}
+
+static int kafs_tailmeta_validate_slot_for_inode(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                                 const kafs_sinode_taildesc_v5_t *taildesc,
+                                                 const struct kafs_tailmeta_region_view *view,
+                                                 uint32_t container_index, uint16_t class_bytes,
+                                                 uint16_t slot_index)
+{
+  kafs_tailmeta_slot_desc_t *slot = kafs_tailmeta_slot_desc_ptr(view, container_index, slot_index);
+  if (!slot)
+    return -ERANGE;
+
+  kafs_tailmeta_inode_desc_t desc;
+  kafs_inocnt_t ino = (kafs_inocnt_t)kafs_ctx_ino_no(ctx, inoent);
+  kafs_off_t inode_size = kafs_ino_size_get(inoent);
+  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+  kafs_tailmeta_inode_desc_from_inode_taildesc(&desc, taildesc);
+  return kafs_tailmeta_inode_desc_matches_slot_for_inode(&desc, slot, class_bytes, ino, inode_size,
+                                                         blksize);
+}
+
 static int kafs_tailmeta_lookup_tail_slot(struct kafs_context *ctx, kafs_sinode_t *inoent,
                                           const kafs_sinode_taildesc_v5_t *taildesc,
                                           struct kafs_tailmeta_region_view *view,
@@ -4100,13 +4132,7 @@ static int kafs_tailmeta_lookup_tail_slot(struct kafs_context *ctx, kafs_sinode_
                                           uint16_t *out_class_bytes, uint16_t *out_len,
                                           char **out_payload)
 {
-  kafs_tailmeta_slot_desc_t *slot;
-  kafs_tailmeta_inode_desc_t desc;
-  kafs_inocnt_t ino;
-  kafs_off_t inode_size;
-  kafs_blksize_t blksize;
   uint32_t container_index;
-  char *payload;
   int rc;
 
   if (!ctx || !inoent || !taildesc || !view || !out_container_index || !out_slot_index ||
@@ -4115,11 +4141,7 @@ static int kafs_tailmeta_lookup_tail_slot(struct kafs_context *ctx, kafs_sinode_
   if (!kafs_tail_layout_uses_tail_storage(kafs_ino_taildesc_v5_layout_kind_get(taildesc)))
     return -EINVAL;
 
-  rc = kafs_tailmeta_region_view_get(ctx, view);
-  if (rc != 0)
-    return rc;
-  rc = kafs_tailmeta_find_container_index_by_blo(
-      view, kafs_ino_taildesc_v5_container_blo_get(taildesc), &container_index);
+  rc = kafs_tailmeta_lookup_container(ctx, taildesc, view, &container_index);
   if (rc != 0)
     return rc;
 
@@ -4128,25 +4150,16 @@ static int kafs_tailmeta_lookup_tail_slot(struct kafs_context *ctx, kafs_sinode_
   if (rc != 0)
     return rc;
 
-  slot = kafs_tailmeta_slot_desc_ptr(view, container_index, *out_slot_index);
-  if (!slot)
-    return -ERANGE;
-
-  ino = (kafs_inocnt_t)kafs_ctx_ino_no(ctx, inoent);
-  inode_size = kafs_ino_size_get(inoent);
-  blksize = kafs_sb_blksize_get(ctx->c_superblock);
-  kafs_tailmeta_inode_desc_from_inode_taildesc(&desc, taildesc);
-  rc = kafs_tailmeta_inode_desc_matches_slot_for_inode(&desc, slot, *out_class_bytes, ino,
-                                                       inode_size, blksize);
+  rc = kafs_tailmeta_validate_slot_for_inode(ctx, inoent, taildesc, view, container_index,
+                                             *out_class_bytes, *out_slot_index);
   if (rc != 0)
     return rc;
 
-  payload = kafs_tailmeta_slot_payload_ptr(view, container_index, *out_slot_index);
-  if (!payload)
+  *out_payload = kafs_tailmeta_slot_payload_ptr(view, container_index, *out_slot_index);
+  if (!*out_payload)
     return -ERANGE;
 
   *out_container_index = container_index;
-  *out_payload = payload;
   return 0;
 }
 
