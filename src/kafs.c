@@ -9023,6 +9023,57 @@ static int kafs_op_read(const char *path, char *buf, size_t size, off_t offset,
   return rr;
 }
 
+static int kafs_op_write_ctl(struct kafs_context *ctx, struct fuse_file_info *fi, const char *buf,
+                             size_t size, off_t offset)
+{
+  kafs_ctl_session_t *sess = (kafs_ctl_session_t *)(uintptr_t)fi->fh;
+  if (!sess)
+    return -EIO;
+  if (offset != 0)
+    return -EINVAL;
+  if (size > KAFS_CTL_MAX_REQ)
+    return -EMSGSIZE;
+
+  int rc = kafs_ctl_handle_request(ctx, sess, (const unsigned char *)buf, size);
+  return (rc < 0) ? rc : (int)size;
+}
+
+static int kafs_op_write_fallback(struct kafs_context *ctx, const char *path, const char *buf,
+                                  size_t size, off_t offset, kafs_inocnt_t ino)
+{
+  kafs_inode_lock(ctx, (uint32_t)ino);
+  kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
+  kafs_mode_t mode = kafs_ino_mode_get(inoent);
+  if (S_ISDIR(mode))
+  {
+    kafs_inode_unlock(ctx, (uint32_t)ino);
+    kafs_log(KAFS_LOG_ERR,
+             "%s: rejecting write to directory path=%s ino=%" PRIuFAST32
+             " size=%zu off=%" PRIuFAST64 " mode=%o\n",
+             __func__, path ? path : "(null)", (uint32_t)ino, size, (uint64_t)offset,
+             (unsigned)mode);
+    return -EISDIR;
+  }
+
+  kafs_diag_write_scope_t write_scope =
+      kafs_diag_write_scope_enter(path ? path : "(null)", (uint32_t)ino);
+  int rc_write = kafs_pwrite(ctx, inoent, buf, size, offset);
+  kafs_diag_write_scope_leave(write_scope);
+  kafs_inode_unlock(ctx, (uint32_t)ino);
+
+  if (rc_write < 0)
+  {
+    kafs_log(KAFS_LOG_WARNING,
+             "%s: pwrite failed path=%s ino=%" PRIuFAST32 " size=%zu off=%" PRIuFAST64 " rc=%d\n",
+             __func__, path ? path : "(null)", (uint32_t)ino, size, (uint64_t)offset, rc_write);
+  }
+  kafs_dlog(2,
+            "%s: exit rc=%d path=%s ino=%" PRIuFAST32 " size=%zu off=%" PRIuFAST64
+            " hotplug=fallback\n",
+            __func__, rc_write, path ? path : "(null)", (uint32_t)ino, size, (uint64_t)offset);
+  return rc_write;
+}
+
 static int kafs_op_write(const char *path, const char *buf, size_t size, off_t offset,
                          struct fuse_file_info *fi)
 {
@@ -9031,17 +9082,7 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
   if (kafs_is_ctl_path(path))
-  {
-    kafs_ctl_session_t *sess = (kafs_ctl_session_t *)(uintptr_t)fi->fh;
-    if (!sess)
-      return -EIO;
-    if (offset != 0)
-      return -EINVAL;
-    if (size > KAFS_CTL_MAX_REQ)
-      return -EMSGSIZE;
-    int rc = kafs_ctl_handle_request(ctx, sess, (const unsigned char *)buf, size);
-    return (rc < 0) ? rc : (int)size;
-  }
+    return kafs_op_write_ctl(ctx, fi, buf, size, offset);
   kafs_inocnt_t ino = fi->fh;
   if ((fi->flags & O_ACCMODE) == O_RDONLY)
   {
@@ -9069,35 +9110,7 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
         __func__, rc_hp, path ? path : "(null)", ino, size, (uint64_t)offset);
     return (int)rc_hp;
   }
-  kafs_inode_lock(ctx, (uint32_t)ino);
-  kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
-  kafs_mode_t mode = kafs_ino_mode_get(inoent);
-  if (S_ISDIR(mode))
-  {
-    kafs_inode_unlock(ctx, (uint32_t)ino);
-    kafs_log(KAFS_LOG_ERR,
-             "%s: rejecting write to directory path=%s ino=%" PRIuFAST32
-             " size=%zu off=%" PRIuFAST64 " mode=%o\n",
-             __func__, path ? path : "(null)", (uint32_t)ino, size, (uint64_t)offset,
-             (unsigned)mode);
-    return -EISDIR;
-  }
-  kafs_diag_write_scope_t write_scope =
-      kafs_diag_write_scope_enter(path ? path : "(null)", (uint32_t)ino);
-  int rc_write = kafs_pwrite(ctx, inoent, buf, size, offset);
-  kafs_diag_write_scope_leave(write_scope);
-  kafs_inode_unlock(ctx, (uint32_t)ino);
-  if (rc_write < 0)
-  {
-    kafs_log(KAFS_LOG_WARNING,
-             "%s: pwrite failed path=%s ino=%" PRIuFAST32 " size=%zu off=%" PRIuFAST64 " rc=%d\n",
-             __func__, path ? path : "(null)", (uint32_t)ino, size, (uint64_t)offset, rc_write);
-  }
-  kafs_dlog(2,
-            "%s: exit rc=%d path=%s ino=%" PRIuFAST32 " size=%zu off=%" PRIuFAST64
-            " hotplug=fallback\n",
-            __func__, rc_write, path ? path : "(null)", (uint32_t)ino, size, (uint64_t)offset);
-  return rc_write;
+  return kafs_op_write_fallback(ctx, path, buf, size, offset, ino);
 }
 
 static int kafs_op_utimens(const char *path, const struct timespec tv[2], struct fuse_file_info *fi)
