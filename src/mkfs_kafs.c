@@ -775,7 +775,10 @@ int main(int argc, char **argv)
 
   off_t mapsize = layout.mapsize;
   if (mkfs_map_metadata(&ctx, mapsize, blkcnt, format_version, inocnt, &layout) != 0)
+  {
+    close(ctx.c_fd);
     return 1;
+  }
 
   mkfs_init_superblock(&ctx, format_version, log_blksize, inocnt, blkcnt, mapsize, journal_bytes,
                        &layout);

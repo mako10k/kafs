@@ -720,9 +720,10 @@ static int hrl_try_dec_ref_in_bucket(kafs_context_t *ctx, uint32_t bucket, uint6
   uint32_t *index = hrl_index_tbl(ctx);
   kafs_hrl_entry_t *ents = hrl_entries_tbl(ctx);
   uint32_t cap = hrl_capacity(ctx);
-  uint32_t head = index[bucket];
+  uint32_t head = 0;
 
   kafs_hrl_bucket_lock(ctx, bucket);
+  head = index[bucket];
   for (uint32_t steps = 0; head != 0 && steps < cap; ++steps)
   {
     uint32_t idx = head - 1u;
