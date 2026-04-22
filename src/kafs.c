@@ -11124,7 +11124,7 @@ int kafs_core_migrate_image(const char *image_path, int assume_yes)
     return -EINVAL;
 
   kafs_ssuperblock_t sb;
-  uint32_t fmt;
+  uint32_t fmt = 0;
   int rc = kafs_migrate_read_superblock(image_path, &sb, &fmt);
   if (rc != 0)
     return rc;
