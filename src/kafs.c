@@ -4081,6 +4081,28 @@ static int kafs_tailmeta_alloc_slot(struct kafs_context *ctx,
   return -ENOSPC;
 }
 
+static uint16_t kafs_tailmeta_max_tail_only_len(struct kafs_context *ctx)
+{
+  struct kafs_tailmeta_region_view view;
+  uint16_t max_len = 0;
+
+  if (ctx && kafs_tailmeta_region_view_get(ctx, &view) == 0)
+  {
+    uint32_t container_count = kafs_tailmeta_region_hdr_container_count_get(view.hdr);
+    for (uint32_t container_index = 0; container_index < container_count; ++container_index)
+    {
+      uint16_t class_bytes =
+          kafs_tailmeta_container_hdr_class_bytes_get(&view.containers[container_index]);
+      if (class_bytes > max_len)
+        max_len = class_bytes;
+    }
+  }
+
+  if (max_len == 0u)
+    max_len = kafs_tailmeta_default_class_bytes(KAFS_TAILMETA_DEFAULT_CLASS_COUNT - 1u);
+  return max_len;
+}
+
 static int kafs_tailmeta_release_slot(struct kafs_tailmeta_region_view *view,
                                       uint32_t container_index, uint16_t slot_index)
 {
@@ -4783,7 +4805,7 @@ static int kafs_pwrite_prepare_tail_layout(struct kafs_context *ctx, kafs_sinode
                                            kafs_off_t filesize, kafs_off_t filesize_new,
                                            int *completed_out)
 {
-  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+  uint16_t tail_only_max_len = kafs_tailmeta_max_tail_only_len(ctx);
   const kafs_sinode_taildesc_v5_t *taildesc = kafs_ctx_inode_taildesc_v5_const(ctx, inoent);
 
   *completed_out = 0;
@@ -4798,9 +4820,16 @@ static int kafs_pwrite_prepare_tail_layout(struct kafs_context *ctx, kafs_sinode
 
   if (taildesc && kafs_ino_taildesc_v5_layout_kind_get(taildesc) == KAFS_TAIL_LAYOUT_TAIL_ONLY)
   {
-    if (filesize_new < (kafs_off_t)blksize)
+    if (filesize_new <= (kafs_off_t)tail_only_max_len)
     {
       int rc = kafs_pwrite_try_tail_only_store(ctx, inoent, buf, size, offset, filesize_new);
+      if (rc == -ENOSPC)
+      {
+        rc = kafs_tailmeta_promote_tail_only_to_full_block(ctx, inoent);
+        if (rc < 0)
+          return rc;
+        return 0;
+      }
       if (rc < 0)
         return rc;
       *completed_out = 1;
@@ -4813,10 +4842,13 @@ static int kafs_pwrite_prepare_tail_layout(struct kafs_context *ctx, kafs_sinode
   }
 
   if (kafs_tailmeta_inode_is_regular_v5(ctx, inoent) &&
-      filesize_new > (kafs_off_t)KAFS_INODE_DIRECT_BYTES && filesize_new < (kafs_off_t)blksize &&
+      filesize_new > (kafs_off_t)KAFS_INODE_DIRECT_BYTES &&
+      filesize_new <= (kafs_off_t)tail_only_max_len &&
       filesize <= (kafs_off_t)KAFS_INODE_DIRECT_BYTES)
   {
     int rc = kafs_pwrite_try_tail_only_store(ctx, inoent, buf, size, offset, filesize_new);
+    if (rc == -ENOSPC)
+      return 0;
     if (rc < 0)
       return rc;
     *completed_out = 1;

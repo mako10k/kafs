@@ -297,6 +297,13 @@ static const kafs_test_mount_options_t k_mount_options = {
 
 int main(void)
 {
+  enum
+  {
+    k_oversized_small_size = 3073,
+    k_tail_class_fill_size = 544,
+    k_tail_class_fill_count = 4,
+  };
+
   if (kafs_test_enter_tmpdir("v5_tail_smallfile") != 0)
     return 77;
   if (access("/dev/fuse", R_OK | W_OK) != 0)
@@ -356,6 +363,105 @@ int main(void)
     return 1;
   }
   close(fd);
+
+  snprintf(path, sizeof(path), "%s/nearblk", mnt);
+  fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+  if (fd < 0)
+  {
+    tlogf("create nearblk failed: %s", strerror(errno));
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  char near_payload[k_oversized_small_size];
+  for (size_t i = 0; i < sizeof(near_payload); ++i)
+    near_payload[i] = (char)('A' + (i % 26));
+  if (write(fd, near_payload, sizeof(near_payload)) != (ssize_t)sizeof(near_payload))
+  {
+    tlogf("write nearblk failed: %s", strerror(errno));
+    close(fd);
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  close(fd);
+
+  fd = open(path, O_RDONLY);
+  if (fd < 0)
+  {
+    tlogf("open nearblk for read failed: %s", strerror(errno));
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  char near_verify[k_oversized_small_size];
+  if (read(fd, near_verify, sizeof(near_verify)) != (ssize_t)sizeof(near_verify) ||
+      memcmp(near_verify, near_payload, sizeof(near_payload)) != 0)
+  {
+    tlogf("readback mismatch on nearblk");
+    close(fd);
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  close(fd);
+  if (unlink(path) != 0)
+  {
+    tlogf("unlink nearblk failed: %s", strerror(errno));
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+
+  char fill_payload[k_tail_class_fill_size];
+  for (size_t i = 0; i < sizeof(fill_payload); ++i)
+    fill_payload[i] = (char)('0' + (i % 10));
+  for (int index = 0; index < k_tail_class_fill_count; ++index)
+  {
+    snprintf(path, sizeof(path), "%s/fill-%d", mnt, index);
+    fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd < 0)
+    {
+      tlogf("create fill-%d failed: %s", index, strerror(errno));
+      kafs_test_stop_kafs(mnt, srv);
+      return 1;
+    }
+    if (write(fd, fill_payload, sizeof(fill_payload)) != (ssize_t)sizeof(fill_payload))
+    {
+      tlogf("write fill-%d failed: %s", index, strerror(errno));
+      close(fd);
+      kafs_test_stop_kafs(mnt, srv);
+      return 1;
+    }
+    close(fd);
+  }
+  for (int index = 0; index < k_tail_class_fill_count; ++index)
+  {
+    char fill_verify[k_tail_class_fill_size];
+
+    snprintf(path, sizeof(path), "%s/fill-%d", mnt, index);
+    fd = open(path, O_RDONLY);
+    if (fd < 0)
+    {
+      tlogf("open fill-%d for read failed: %s", index, strerror(errno));
+      kafs_test_stop_kafs(mnt, srv);
+      return 1;
+    }
+    if (read(fd, fill_verify, sizeof(fill_verify)) != (ssize_t)sizeof(fill_verify) ||
+        memcmp(fill_verify, fill_payload, sizeof(fill_payload)) != 0)
+    {
+      tlogf("readback mismatch on fill-%d", index);
+      close(fd);
+      kafs_test_stop_kafs(mnt, srv);
+      return 1;
+    }
+    close(fd);
+  }
+  for (int index = 0; index < k_tail_class_fill_count; ++index)
+  {
+    snprintf(path, sizeof(path), "%s/fill-%d", mnt, index);
+    if (unlink(path) != 0)
+    {
+      tlogf("unlink fill-%d failed: %s", index, strerror(errno));
+      kafs_test_stop_kafs(mnt, srv);
+      return 1;
+    }
+  }
 
   if (unlink(path) != 0)
   {
