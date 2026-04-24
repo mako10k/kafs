@@ -433,6 +433,9 @@ int main(void)
   for (int index = 0; index < k_tail_class_fill_count; ++index)
   {
     char fill_verify[k_tail_class_fill_size];
+    ssize_t nread;
+    struct stat st_fill;
+    int saved_errno = 0;
 
     snprintf(path, sizeof(path), "%s/fill-%d", mnt, index);
     fd = open(path, O_RDONLY);
@@ -442,11 +445,18 @@ int main(void)
       kafs_test_stop_kafs(mnt, srv);
       return 1;
     }
-    if (read(fd, fill_verify, sizeof(fill_verify)) != (ssize_t)sizeof(fill_verify) ||
+    errno = 0;
+    nread = read(fd, fill_verify, sizeof(fill_verify));
+    saved_errno = errno;
+    if (fstat(fd, &st_fill) != 0)
+      memset(&st_fill, 0, sizeof(st_fill));
+    if (nread != (ssize_t)sizeof(fill_verify) ||
         memcmp(fill_verify, fill_payload, sizeof(fill_payload)) != 0)
     {
-      tlogf("readback mismatch on fill-%d", index);
+      tlogf("readback mismatch on fill-%d nread=%zd st_size=%lld errno=%d(%s)", index, nread,
+        (long long)st_fill.st_size, saved_errno, strerror(saved_errno));
       close(fd);
+      kafs_test_dump_log(k_mount_options.log_path, "fill readback mismatch");
       kafs_test_stop_kafs(mnt, srv);
       return 1;
     }
@@ -463,6 +473,7 @@ int main(void)
     }
   }
 
+  snprintf(path, sizeof(path), "%s/keep", mnt);
   if (unlink(path) != 0)
   {
     tlogf("unlink keep failed: %s", strerror(errno));

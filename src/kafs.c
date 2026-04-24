@@ -4184,8 +4184,8 @@ static int kafs_tailmeta_validate_slot_for_inode(struct kafs_context *ctx, kafs_
   kafs_off_t inode_size = kafs_ino_size_get(inoent);
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
   kafs_tailmeta_inode_desc_from_inode_taildesc(&desc, taildesc);
-  return kafs_tailmeta_inode_desc_matches_slot_for_inode(&desc, slot, class_bytes, ino, inode_size,
-                                                         blksize);
+  return kafs_tailmeta_inode_desc_matches_slot_for_inode(&desc, slot, class_bytes, ino,
+                                                         inode_size, blksize);
 }
 
 static int kafs_tailmeta_lookup_tail_slot(struct kafs_context *ctx, kafs_sinode_t *inoent,

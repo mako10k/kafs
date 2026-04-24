@@ -654,7 +654,7 @@ static inline int kafs_tailmeta_inode_desc_validate(const kafs_tailmeta_inode_de
     return -EPROTO;
   if (container_blo == (kafs_blkcnt_t)0)
     return -EPROTO;
-  if ((uint32_t)off + (uint32_t)len > (uint32_t)class_bytes)
+  if (off % class_bytes != 0u)
     return -EPROTO;
   return 0;
 }
