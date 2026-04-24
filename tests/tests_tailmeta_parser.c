@@ -140,7 +140,7 @@ int main(void)
   kafs_tailmeta_inode_desc_flags_set(&desc, KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE);
   kafs_tailmeta_inode_desc_fragment_len_set(&desc, 64);
   kafs_tailmeta_inode_desc_container_blo_set(&desc, 9);
-  kafs_tailmeta_inode_desc_fragment_off_set(&desc, 32);
+        kafs_tailmeta_inode_desc_fragment_off_set(&desc, 128);
   kafs_tailmeta_inode_desc_generation_set(&desc, 11);
   assert(kafs_tailmeta_inode_desc_validate(&desc, 128) == 0);
   assert(kafs_tailmeta_inode_desc_uses_tail_storage(&desc));
@@ -155,20 +155,20 @@ int main(void)
                 kafs_ino_taildesc_v5_flags_set(&inode_taildesc, KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE);
                 kafs_ino_taildesc_v5_fragment_len_set(&inode_taildesc, 64);
                 kafs_ino_taildesc_v5_container_blo_set(&inode_taildesc, 9);
-                kafs_ino_taildesc_v5_fragment_off_set(&inode_taildesc, 32);
+                kafs_ino_taildesc_v5_fragment_off_set(&inode_taildesc, 128);
                 kafs_ino_taildesc_v5_generation_set(&inode_taildesc, 11);
                 assert(kafs_ino_taildesc_v5_uses_tail_storage(&inode_taildesc));
                 assert_inode_taildesc_fields(&inode_taildesc, KAFS_TAIL_LAYOUT_TAIL_ONLY,
-                                                                                                                                 KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE, 64, 9, 32, 11);
+                                                                                                                                 KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE, 64, 9, 128, 11);
 
                 kafs_tailmeta_inode_desc_from_inode_taildesc(&desc_from_inode, &inode_taildesc);
                 assert_tailmeta_inode_desc_fields(&desc_from_inode, KAFS_TAIL_LAYOUT_TAIL_ONLY,
-                                                                                                                                                        KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE, 64, 9, 32, 11);
+                                                                                                                                                        KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE, 64, 9, 128, 11);
 
                 kafs_ino_taildesc_v5_init(&inode_taildesc_roundtrip);
                 kafs_tailmeta_inode_desc_to_inode_taildesc(&inode_taildesc_roundtrip, &desc_from_inode);
                 assert_inode_taildesc_fields(&inode_taildesc_roundtrip, KAFS_TAIL_LAYOUT_TAIL_ONLY,
-                                                                                                                                 KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE, 64, 9, 32, 11);
+                                                                                                                                 KAFS_TAILDESC_FLAG_PACKED_SMALL_FILE, 64, 9, 128, 11);
         }
 
   memset(&slot, 0, sizeof(slot));
@@ -209,9 +209,9 @@ int main(void)
           KAFS_TAILCHECK_OWNER_MISMATCH) != 0);
   kafs_tailmeta_slot_owner_ino_set(&slot, 7);
 
-  kafs_tailmeta_inode_desc_fragment_off_set(&desc, 96);
+        kafs_tailmeta_inode_desc_fragment_off_set(&desc, 96);
   assert(kafs_tailmeta_inode_desc_validate(&desc, 128) != 0);
-  kafs_tailmeta_inode_desc_fragment_off_set(&desc, 32);
+        kafs_tailmeta_inode_desc_fragment_off_set(&desc, 128);
 
   kafs_tailmeta_inode_desc_layout_kind_set(&desc, KAFS_TAIL_LAYOUT_MIXED_FULL_TAIL);
   kafs_tailmeta_inode_desc_flags_set(&desc, KAFS_TAILDESC_FLAG_FINAL_TAIL);
