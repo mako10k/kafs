@@ -442,6 +442,20 @@ Block bitmap shards:
 - Allocation/free must route a data block to exactly one bitmap shard.
 - `fsck.kafs` detects duplicate logical coverage, missing coverage, and bitmap physical range
   overlap for the selected descriptor.
+- As of `49cd632 feat: route bitmap updates through descriptor mapper`, the runtime block bitmap
+  helpers are routed through a bitmap word mapper. v5 still resolves to the contiguous bitmap table
+  or meta-delta overlay. v6 resolves through the selected descriptor only when mount/open code has
+  populated `c_v6_layout_desc`, `c_v6_layout_desc_bytes`, and `c_v6_bitmap_mapping_enabled`.
+- That v6 runtime path is intentionally dormant: current mount admission still rejects v6 images.
+  Before enabling write mount, mount initialization must retain the selected descriptor for the
+  lifetime of the context and must run the same shard coverage/overlap checks that `fsck.kafs`
+  reports.
+- The current mapper updates `kafs_blkmask_t` words. Descriptor-backed bitmap word offsets must be
+  aligned to `sizeof(kafs_blkmask_t)`. If Phase 4 chooses arbitrary bit-aligned logical shard
+  starts, allocation scan/update must move to byte-granular logic; otherwise validation must require
+  bitmap shard logical ranges and physical offsets to be word-aligned.
+- `v6_descriptor_validation` covers the dormant mapper by mmaping a v6 image and verifying
+  descriptor-backed bit set/clear without allowing a v6 mount.
 
 Inode table shards:
 

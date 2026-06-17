@@ -222,8 +222,28 @@
   - v6 selected descriptor から block bitmap shard coverage を検証する共通 helper を追加。
   - 現行 mkfs v6 scaffold の bitmap shard は root block namespace `[0, s_r_blkcnt)` を 1 shard
     で覆う。`fsck.kafs` / `kafsdump` は gap、logical overlap、physical overlap を報告する。
-  - data block lookup を descriptor 経由で bitmap byte/bit に解決する helper を追加。runtime
-    allocation/free path への接続は未実装。
+  - data block lookup を descriptor 経由で bitmap byte/bit に解決する helper を追加。
+  - `49cd632 feat: route bitmap updates through descriptor mapper` で runtime の
+    `kafs_blk_get_usage` / set/free / claim / legacy allocation scan を bitmap word mapper 経由に
+    再構成した。v5 は従来の contiguous bitmap または meta-delta overlay を使い続け、v6 は
+    `c_v6_bitmap_mapping_enabled` と selected descriptor が設定された場合だけ descriptor-backed
+    word を解決する dormant path を持つ。
+  - `v6_descriptor_validation` に `bitmap_runtime_descriptor_mapping` を追加し、v6 image を
+    `MAP_PRIVATE` で mmap して mount admission なしに descriptor-backed set/clear が対象 bitmap byte
+    に反映されることを検証した。
+- 引き継ぎメモ:
+  - v6 runtime mount はまだ有効化しない。mount init が selected descriptor を
+    `kafs_context` に保持し、fsck 相当の coverage / overlap validation を通した後にだけ
+    `c_v6_bitmap_mapping_enabled` を立てる設計が未実装。
+  - 現在の runtime mapper は `kafs_blkmask_t` word 単位で読むため、descriptor-backed write path は
+    bitmap word の物理 offset が `sizeof(kafs_blkmask_t)` に揃うことを要求する。将来の split shard
+    で logical start を任意 bit 境界にするなら byte-granular scan/update を追加する。そうしない場合は
+    v6 bitmap shard logical ranges を word 境界に揃える validation rule を追加する。
+  - allocator v3 summary は `kafs_alloc_v3_summary_enabled()` が現状 v5 のみを許可するため、v6 では
+    legacy scan path が mapper 経由になる。v6 summary shard は SDW-P4-T3 で別途設計・実装する。
+  - SDW-P4-T1 を閉じる前に、mount admission 前提の descriptor lifetime、coverage validation hook、
+    multi-shard positive/negative tests を追加する。P4-T2 に進む clone はこの制約を残したまま inode
+    table shard mapping の設計に入ってよい。
 
 ### SDW-P4-T2 Inode table shards
 
