@@ -116,6 +116,10 @@ format v6 では metadata groups、各 range、shard mapping を表す layout de
 descriptor は複数箇所に複製し、局所劣化や torn write で image が発見不能にならないようにする。
 root descriptor の v1 field layout と discovery / rejection rules は
 [sd-card-wear-format-v6-descriptor.md](sd-card-wear-format-v6-descriptor.md) で固定する。
+descriptor replica は primary、tail backup、可能なら midpoint backup の deterministic
+候補を持つ。reader は各 candidate を CRC / bounds / generation で独立検証し、highest-generation
+valid descriptor を選ぶ。stale/corrupt/divergent replica は `fsck.kafs` / `kafsdump`
+で報告する。
 
 想定範囲:
 
@@ -166,5 +170,4 @@ format v6 の group layout を実装する。
 - Phase 1 を v5-compatible feature flag にできるか、format-gated extension にするか。
 - journal header slot の個数と配置。
 - metadata group のサイズ方針と default group count。
-- v6 descriptor replica を固定 anchor のみに置くか、metadata group 内にも置くか。
 - heatmap data をどこまで永続化し、どこまで runtime-only にするか。

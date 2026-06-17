@@ -2,7 +2,7 @@
 
 最終更新: 2026-06-17
 
-対象: `SDW-P3-T1 Format v6 descriptor spec`
+対象: `SDW-P3-T1 Format v6 descriptor spec`, `SDW-P3-T2 Descriptor replica policy`
 
 ## Status
 
@@ -18,13 +18,14 @@ scaffold と read-only parser / `fsck.kafs` / `kafsdump` support を次段で実
 - descriptor bounds、group bounds、shard bounds を overflow なしに検証できるようにする。
 - unsupported descriptor version / incompatible feature を明示的に拒否する。
 - `fsck.kafs` が v6 image を read-only discovery できる順序を固定する。
+- primary descriptor が壊れた場合でも backup descriptor 候補を deterministic に発見できる。
 
 ## Non-Goals
 
-- descriptor replica の最終配置 policy は `SDW-P3-T2` で決める。
 - v6 image の runtime mount admission は `SDW-P4` まで有効化しない。
 - v5 image の in-place metadata relocation は扱わない。
 - shard 内部フォーマットの全実装詳細は `SDW-P4` の各 shard ticket で固定する。
+- stale/corrupt descriptor replica の repair write は `SDW-P3-T3` 以降で実装する。
 
 ## Byte Order And Units
 
@@ -52,7 +53,7 @@ struct kafs_sv6_superblock_anchor {
   uint16_t va_flags;                 /* +6  0 for v1 */
   kafs_su64_t va_primary_desc_off;   /* +8  primary descriptor offset */
   kafs_su32_t va_primary_desc_bytes; /* +16 primary descriptor byte length */
-  kafs_su32_t va_candidate_count;    /* +20 valid candidates known to this anchor */
+  kafs_su32_t va_candidate_count;    /* +20 deterministic descriptor candidates */
   kafs_su32_t va_anchor_crc32;       /* +24 CRC32 over this struct with this field zeroed */
   kafs_su32_t va_reserved0;          /* +28 must be zero */
 } __attribute__((packed));
@@ -61,12 +62,15 @@ struct kafs_sv6_superblock_anchor {
 Anchor rules:
 
 - `va_primary_desc_off` must be block-aligned and greater than or equal to one filesystem block.
-- `va_primary_desc_bytes` must be non-zero, 8-byte aligned, and no larger than
+- `va_primary_desc_bytes` must be non-zero, block-aligned, and no larger than
   `KAFS_V6_LAYOUT_MAX_BYTES` (16 MiB).
 - `va_primary_desc_off + va_primary_desc_bytes` must be within the detected image size.
-- `va_candidate_count` must be at least 1. Until `SDW-P3-T2`, only candidate 0 is required and it
-  is the primary descriptor.
+- `va_candidate_count` must be 2 or 3.
 - Unknown non-zero `va_flags` are incompatible and must be rejected.
+
+The superblock anchor deliberately stores only the primary offset and candidate count. Backup
+locations are computed from image geometry so discovery does not depend on a readable primary
+descriptor.
 
 ## Layout Descriptor Header
 
@@ -77,6 +81,9 @@ The primary descriptor starts at `va_primary_desc_off`.
 #define KAFS_V6_LAYOUT_VERSION 1u
 #define KAFS_V6_LAYOUT_HEADER_BYTES 128u
 #define KAFS_V6_LAYOUT_MAX_BYTES (16u * 1024u * 1024u)
+#define KAFS_V6_REPLICA_DESC_BYTES 32u
+#define KAFS_V6_LAYOUT_REPLICA_MIN_COUNT 2u
+#define KAFS_V6_LAYOUT_REPLICA_MAX_COUNT 3u
 
 struct kafs_sv6_layout_desc_header {
   kafs_su32_t ld_magic;             /* +0   'K6LD' */
@@ -95,9 +102,9 @@ struct kafs_sv6_layout_desc_header {
   kafs_su32_t ld_shard_desc_off;    /* +52  shard descriptor table offset */
   uint16_t ld_shard_desc_bytes;     /* +56  96 for v1 */
   uint16_t ld_reserved0;            /* +58  must be zero */
-  kafs_su32_t ld_replica_count;     /* +60  reserved for SDW-P3-T2 */
-  kafs_su32_t ld_replica_desc_off;  /* +64  reserved for SDW-P3-T2 */
-  uint16_t ld_replica_desc_bytes;   /* +68  reserved for SDW-P3-T2 */
+  kafs_su32_t ld_replica_count;     /* +60  descriptor replica count */
+  kafs_su32_t ld_replica_desc_off;  /* +64  replica descriptor table offset */
+  uint16_t ld_replica_desc_bytes;   /* +68  32 for v1 */
   uint16_t ld_reserved1;            /* +70  must be zero */
   kafs_su64_t ld_feature_flags;     /* +72  advisory feature flags */
   kafs_su64_t ld_incompat_flags;    /* +80  unknown bits are fatal */
@@ -117,14 +124,18 @@ Header validation:
 - `ld_header_bytes == KAFS_V6_LAYOUT_HEADER_BYTES`.
 - `ld_descriptor_bytes == va_primary_desc_bytes`.
 - `ld_descriptor_bytes <= KAFS_V6_LAYOUT_MAX_BYTES`.
+- `ld_descriptor_bytes` must be block-aligned.
 - `ld_image_size_bytes` must equal the detected logical image size for regular files. For block
   devices, it must be less than or equal to the detected device size.
 - `ld_block_size` must equal `1 << (10 + s_log_blksize)` and must divide all required block-aligned
   ranges.
 - `ld_group_count > 0`.
 - `ld_shard_count > 0`.
-- `ld_replica_count == 0`, `ld_replica_desc_off == 0`, and `ld_replica_desc_bytes == 0` until
-  `SDW-P3-T2` defines replica policy.
+- `ld_replica_count == va_candidate_count`.
+- `ld_replica_count` must be between `KAFS_V6_LAYOUT_REPLICA_MIN_COUNT` and
+  `KAFS_V6_LAYOUT_REPLICA_MAX_COUNT`.
+- `ld_replica_desc_bytes == KAFS_V6_REPLICA_DESC_BYTES`.
+- The replica descriptor table must be fully inside `ld_descriptor_bytes`.
 - Unknown non-zero `ld_flags` or `ld_incompat_flags` are fatal for mount, fsck, and dump.
 - Unknown `ld_ro_compat_flags` allow `fsck.kafs` / `kafsdump` read-only reporting but prohibit
   repair and runtime mount.
@@ -138,6 +149,97 @@ Header validation:
 | 0 | `group_local_range` | logical ranges are assigned to explicit shard descriptors; each shard belongs to one metadata group |
 
 Unknown mapping policy values are incompatible.
+
+## Descriptor Replica Policy
+
+Descriptor replicas are full byte-for-byte copies of the layout descriptor. Each replica carries
+the same `ld_generation`, tables, shard descriptors, replica descriptors, and
+`ld_descriptor_crc32`.
+
+The candidate set is deterministic:
+
+| candidate | role | offset rule |
+| ---: | --- | --- |
+| 0 | `primary` | `va_primary_desc_off`; `SDW-P3-T3` scaffold must use exactly one block after the primary superblock |
+| 1 | `tail_backup` | `align_down(detected_image_size - va_primary_desc_bytes, block_size)` |
+| 2 | `mid_backup` | `align_down(detected_image_size / 2, block_size)`, present only when it does not overlap candidates 0 or 1 |
+
+Candidate validation:
+
+- `va_candidate_count == ld_replica_count`.
+- Candidate 0 and 1 are mandatory.
+- Candidate 2 is the default for images large enough to place it without overlap.
+- Candidate physical ranges are `[candidate_off, candidate_off + ld_descriptor_bytes)`.
+- Candidate ranges must not overlap each other.
+- Candidate 0 must match `va_primary_desc_off`.
+- Candidate 1 must match the tail formula.
+- Candidate 2, when present, must match the midpoint formula.
+- Once a candidate header is decoded, `ld_image_size_bytes`, `ld_descriptor_bytes`, and
+  `ld_block_size` must match the values used to compute the deterministic candidate set.
+- If candidate 1 would overlap candidate 0, the image is too small for v6.
+
+Replica descriptor table:
+
+```c
+#define KAFS_V6_REPLICA_ROLE_PRIMARY 0u
+#define KAFS_V6_REPLICA_ROLE_TAIL_BACKUP 1u
+#define KAFS_V6_REPLICA_ROLE_MID_BACKUP 2u
+
+struct kafs_sv6_replica_desc {
+  kafs_su32_t rd_replica_id;       /* +0  candidate ordinal */
+  uint16_t rd_role;                /* +4  KAFS_V6_REPLICA_ROLE_* */
+  uint16_t rd_flags;               /* +6  0 for v1 */
+  kafs_su64_t rd_physical_off;     /* +8  image byte offset */
+  kafs_su32_t rd_descriptor_bytes; /* +16 descriptor bytes at this candidate */
+  kafs_su32_t rd_reserved0;        /* +20 must be zero */
+  kafs_su64_t rd_reserved1;        /* +24 must be zero */
+} __attribute__((packed));
+```
+
+Replica descriptor validation:
+
+- `rd_replica_id` must equal the table index.
+- `rd_role` must match the deterministic role for that candidate.
+- Unknown non-zero `rd_flags` are incompatible.
+- `rd_physical_off` must match the deterministic candidate offset.
+- `rd_descriptor_bytes == ld_descriptor_bytes`.
+- Reserved fields must be zero.
+
+Latest-valid selection:
+
+1. Read every deterministic candidate from the superblock anchor.
+2. A candidate is valid only if the descriptor header, descriptor CRC, table bounds, group
+   descriptors, shard descriptors, and replica descriptors all validate.
+3. Select the valid candidate with the highest `ld_generation`.
+4. If multiple valid candidates have the same highest generation and the same
+   `ld_descriptor_crc32`, select the lowest `rd_replica_id`.
+5. If multiple valid candidates have the same highest generation but different
+   `ld_descriptor_crc32`, report same-generation divergence and reject runtime mount / repair.
+6. If no valid candidate remains, discovery fails.
+
+Replica status terms:
+
+| status | meaning |
+| --- | --- |
+| `selected` | valid candidate chosen by latest-valid selection |
+| `valid` | valid candidate with the selected generation and matching CRC, but not selected |
+| `stale` | valid candidate whose generation is lower than the selected generation |
+| `corrupt` | candidate was readable but failed magic, CRC, table, group, or shard validation |
+| `unsupported` | candidate has unsupported descriptor version or incompat flags |
+| `missing` | candidate range is out of bounds or could not be read |
+| `divergent` | valid candidate shares selected generation but has a different descriptor CRC |
+
+Descriptor write ordering for future writers:
+
+1. Build a complete new descriptor with `ld_generation = previous_generation + 1`.
+2. Write backup candidates first, from highest candidate id down to 1.
+3. Write candidate 0 primary last.
+4. Update the superblock anchor only when descriptor size or candidate count changes; such updates
+   are offline-only and must be followed by rewriting all descriptor replicas.
+
+This order lets interrupted updates leave either an older primary plus newer backup or a newer
+primary plus older backup. Readers always choose by generation and CRC instead of assuming primary
+is newest.
 
 ## Group Descriptor
 
@@ -222,10 +324,9 @@ struct kafs_sv6_shard_desc {
 | 7 | `journal_data` | journal segment id range |
 | 8 | `pending_log` | pending-log slot id range |
 | 9 | `tail_metadata` | tail metadata container id range |
-| 11 | `layout_descriptor` | descriptor replica ordinal range, reserved for `SDW-P3-T2` |
+| 11 | `layout_descriptor` | descriptor replica ordinal range |
 
 `10` (`unknown`) is a counter bucket only and is not a valid v6 shard type.
-Type `11` must not appear until `SDW-P3-T2` enables descriptor replica reporting.
 
 Shard validation:
 
@@ -234,7 +335,7 @@ Shard validation:
 - `sd_group_id < ld_group_count`.
 - Unknown `sd_type` values are incompatible.
 - Unknown non-zero `sd_flags` are incompatible until the type-specific spec defines them.
-- A T1-valid descriptor must include at least one shard for each type from
+- A T2-valid descriptor must include at least one shard for each type from
   `superblock_checkpoint` through `pending_log`.
 - `sd_physical_bytes > 0`.
 - `sd_physical_off + sd_physical_bytes <= image_size`.
@@ -242,7 +343,7 @@ Shard validation:
   - `superblock_checkpoint` may include the 256-byte primary superblock at offset 0.
   - `layout_descriptor` may use `ld_descriptor_bytes` alignment rules from the anchor.
 - A shard physical range must be contained in the owning group's metadata block range, except
-  primary superblock checkpoint and future descriptor replicas explicitly allowed by `SDW-P3-T2`.
+  primary superblock checkpoint and `layout_descriptor` replicas.
 - Writable metadata shard physical ranges must not overlap.
 - `sd_logical_count > 0` for every required shard type.
 - For fixed-record shard types, `sd_record_bytes` must match the format-specific record size.
@@ -260,6 +361,8 @@ Logical coverage requirements:
 - `pending_log` shards must cover all configured pending-log slot ids.
 - `tail_metadata` shards are required when the v6 feature set includes tail packing; otherwise
   they may be absent.
+- `layout_descriptor` shards must exactly cover replica ordinals `[0, ld_replica_count)` with one
+  physical shard per replica candidate.
 
 ## Discovery And Rejection Rules
 
@@ -271,9 +374,22 @@ prefix layout.
 
 ### `kafsdump`
 
-`kafsdump --json` should be able to report the v6 descriptor in read-only mode once the parser is
-implemented. If the descriptor version is unsupported, it should report the superblock format and
-an unsupported descriptor status, then exit non-zero.
+`kafsdump --json` should report the v6 descriptor in read-only mode once the parser is implemented.
+It must list every deterministic replica candidate with:
+
+- `replica_id`
+- `role`
+- `offset`
+- `bytes`
+- `status`
+- `generation` when the header could be decoded
+- `crc_ok`
+- `selected`
+
+If the selected descriptor is found, `kafsdump` should print group, shard, and replica summaries
+from that descriptor. Stale or corrupt non-selected candidates are reported in the replica list. If
+all candidates fail, or if the selected generation has divergent valid CRCs, `kafsdump` must report
+the superblock format plus descriptor replica statuses and exit non-zero.
 
 ### `fsck.kafs`
 
@@ -282,24 +398,29 @@ an unsupported descriptor status, then exit non-zero.
 1. Read the 256-byte superblock at offset 0.
 2. Verify `s_magic == KAFS_MAGIC` and `s_format_version == 6`.
 3. Parse `kafs_sv6_superblock_anchor` from `s_reserved[0..31]`.
-4. Validate anchor magic, version, flags, primary offset, primary length, and anchor CRC.
-5. Read the primary descriptor.
-6. Validate descriptor header, table bounds, CRC, generation, group descriptors, and shard
-   descriptors.
-7. Only after descriptor validation succeeds, run type-specific shard checks.
+4. Validate anchor magic, version, flags, candidate count, primary offset, primary length, and
+   anchor CRC.
+5. Compute deterministic replica candidate offsets.
+6. Read and validate every candidate independently.
+7. Select the latest valid descriptor by generation and CRC.
+8. Only after descriptor selection succeeds, run type-specific shard checks.
 
-If step 3 through 6 fails, `fsck.kafs` must not fall back to v5 prefix offsets. It should report
+If step 3 through 7 fails, `fsck.kafs` must not fall back to v5 prefix offsets. It should report
 `v6 descriptor discovery failed` and exit non-zero without repair.
 
-If `ld_version` is unsupported or unknown `ld_incompat_flags` are set, `fsck.kafs` must report
-`unsupported v6 layout descriptor` and exit non-zero without repair. Unknown `ld_ro_compat_flags`
-allow read-only reporting but disable repair.
+If every readable candidate has unsupported `ld_version` or unknown `ld_incompat_flags`,
+`fsck.kafs` must report `unsupported v6 layout descriptor` and exit non-zero without repair.
+Unknown `ld_ro_compat_flags` allow read-only reporting but disable repair.
+
+`fsck.kafs` must report per-replica status using the status terms above. Stale valid replicas and
+corrupt non-selected replicas are warnings when a latest valid descriptor can be selected and shard
+validation passes. Same-generation divergent replicas are errors because the newest logical layout
+is ambiguous.
 
 ## Phase 3 Follow-Ups
 
-- `SDW-P3-T2` decides replica candidate locations and stale replica reporting. It may populate
-  `ld_replica_*` fields and define `layout_descriptor` shard ranges, but it must not change the
-  v1 header validation rules above.
+- `SDW-P3-T2` is complete in this document: candidate locations, latest-valid selection,
+  replica descriptor table, and stale/corrupt reporting are fixed.
 - `SDW-P3-T3` adds `mkfs.kafs --format-version 6` scaffold output, parser constants/accessors, and
   explicit runtime mount rejection.
 - `SDW-P4` fills shard-internal formats and enables runtime mount only after fsck can validate shard

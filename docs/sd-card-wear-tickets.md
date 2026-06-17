@@ -173,6 +173,10 @@
   - primary / backup descriptor locations が決まっている。
   - generation/CRC による latest-valid selection が決まっている。
   - kafsdump/fsck の stale replica reporting が決まっている。
+- 完了メモ:
+  - descriptor replica は candidate 0 primary、candidate 1 tail backup、candidate 2 optional midpoint backup として deterministic に配置する。
+  - reader は全 candidate を独立に CRC / bounds / generation 検証し、highest-generation valid descriptor を選択する。
+  - `kafsdump` / `fsck.kafs` は `selected` / `valid` / `stale` / `corrupt` / `unsupported` / `missing` / `divergent` を replica status として報告する。
 
 ### SDW-P3-T3 mkfs v6 skeleton
 
