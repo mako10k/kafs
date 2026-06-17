@@ -142,6 +142,10 @@
   - build/test PASS。
   - `kafsctl stats` と `kafsdump --json` に期待 fields が出る。
   - write-heavy workload で metadata heatmap report を生成できる。
+- 完了メモ:
+  - `scripts/metadata-heatmap-report.sh` を追加し、write-heavy workload から runtime counter と offline layout span を結合した heatmap report を生成可能にした。
+  - 2026-06-17 の conservative profile baseline は `report/perf/metadata-heatmap-20260617-164454` に生成。
+  - 検証結果は [sd-card-wear-phase2-validation-20260617.md](sd-card-wear-phase2-validation-20260617.md) に記録。
 
 ---
 
