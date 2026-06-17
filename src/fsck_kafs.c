@@ -373,6 +373,15 @@ static int fsck_validate_regions(const struct fsck_image_info *info)
   return 0;
 }
 
+static const char *fsck_rc_to_text(int rc)
+{
+  if (rc == 0)
+    return "ok";
+  if (rc < 0)
+    return strerror(-rc);
+  return "error";
+}
+
 static void fsck_report_v6_descriptor(const kafs_v6_layout_report_t *report)
 {
   fprintf(stderr,
@@ -391,10 +400,32 @@ static void fsck_report_v6_descriptor(const kafs_v6_layout_report_t *report)
   }
 }
 
+static void fsck_report_v6_bitmap(const kafs_v6_bitmap_coverage_report_t *report, int rc)
+{
+  fprintf(stderr,
+          "v6 bitmap shards: status=%s available=%s shards=%" PRIu32 " expected_start=%" PRIu64
+          " expected_blocks=%" PRIu64 " covered_blocks=%" PRIu64
+          " has_gap=%s has_overlap=%s has_physical_overlap=%s missing_coverage=%s"
+          " first_gap_start=%" PRIu64 " first_gap_count=%" PRIu64 " first_overlap_start=%" PRIu64
+          " first_overlap_count=%" PRIu64 " first_physical_overlap_off=%" PRIu64
+          " first_physical_overlap_bytes=%" PRIu64 " lookup_available=%s lookup_blo=%" PRIu64
+          " lookup_shard=%" PRIu32 " bitmap_byte=%" PRIu64 " bitmap_bit=%" PRIu8 "\n",
+          fsck_rc_to_text(rc), report->available ? "true" : "false", report->shard_count,
+          report->expected_start, report->expected_count, report->covered_blocks,
+          report->has_gap ? "true" : "false", report->has_overlap ? "true" : "false",
+          report->has_physical_overlap ? "true" : "false",
+          report->missing_coverage ? "true" : "false", report->first_gap_start,
+          report->first_gap_count, report->first_overlap_start, report->first_overlap_count,
+          report->first_physical_overlap_off, report->first_physical_overlap_bytes,
+          report->lookup_available ? "true" : "false", report->lookup.blo,
+          report->lookup.shard_index, report->lookup.bitmap_byte_off, report->lookup.bitmap_bit);
+}
+
 static int fsck_handle_v6_image(const struct fsck_options *opts, const struct fsck_image_info *info,
                                 int want_write)
 {
   kafs_v6_layout_report_t report;
+  kafs_v6_bitmap_coverage_report_t bitmap_report;
   int rc;
 
   if (want_write)
@@ -411,6 +442,21 @@ static int fsck_handle_v6_image(const struct fsck_options *opts, const struct fs
       fprintf(stderr, "unsupported v6 layout descriptor\n");
     else
       fprintf(stderr, "v6 descriptor discovery failed\n");
+    return FSCK_EXIT_V6_DESCRIPTOR_FAILED;
+  }
+
+  memset(&bitmap_report, 0, sizeof(bitmap_report));
+  void *desc = NULL;
+  uint32_t desc_bytes = 0;
+  rc = kafs_v6_read_selected_descriptor(info->fd, &report, &desc, &desc_bytes);
+  if (rc == 0)
+    rc = kafs_v6_bitmap_validate_coverage(desc, desc_bytes, &info->sb, info->file_size,
+                                          &bitmap_report);
+  free(desc);
+  fsck_report_v6_bitmap(&bitmap_report, rc);
+  if (rc != 0)
+  {
+    fprintf(stderr, "v6 bitmap shard validation failed\n");
     return FSCK_EXIT_V6_DESCRIPTOR_FAILED;
   }
 

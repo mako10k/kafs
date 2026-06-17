@@ -156,6 +156,32 @@ static int discover_v6_image(const char *img, kafs_v6_layout_report_t *report)
   return rc;
 }
 
+static int read_selected_descriptor_for_image(const char *img, void **out_desc,
+                                              uint32_t *out_bytes,
+                                              kafs_ssuperblock_t *out_sb,
+                                              uint64_t *out_file_size,
+                                              kafs_v6_layout_report_t *out_report)
+{
+  v6_image_info_t info;
+  int rc = open_v6_image(img, 0, &info);
+  if (rc != 0)
+    return rc;
+
+  kafs_v6_layout_report_t report;
+  rc = kafs_v6_discover_layout(info.fd, &info.sb, info.file_size, &report);
+  if (rc == 0)
+    rc = kafs_v6_read_selected_descriptor(info.fd, &report, out_desc, out_bytes);
+  if (rc == 0 && out_sb)
+    *out_sb = info.sb;
+  if (rc == 0 && out_file_size)
+    *out_file_size = info.file_size;
+  if (rc == 0 && out_report)
+    *out_report = report;
+
+  close_v6_image(&info);
+  return rc;
+}
+
 static int read_descriptor(const v6_image_info_t *info, uint32_t candidate, void **out)
 {
   if (candidate >= info->candidate_count)
@@ -269,6 +295,84 @@ static void mutate_ro_compat_flag(void *buf, uint32_t desc_bytes)
   (void)desc_bytes;
   kafs_sv6_layout_desc_header_t *hdr = (kafs_sv6_layout_desc_header_t *)buf;
   hdr->ld_ro_compat_flags = kafs_u64_htos(1u);
+}
+
+static kafs_sv6_shard_desc_t *mutable_shard_table(void *buf, uint32_t desc_bytes,
+                                                  uint32_t *out_count)
+{
+  kafs_sv6_layout_desc_header_t *hdr = (kafs_sv6_layout_desc_header_t *)buf;
+  uint32_t shard_count = kafs_u32_stoh(hdr->ld_shard_count);
+  uint32_t shard_off = kafs_u32_stoh(hdr->ld_shard_desc_off);
+
+  if (le16toh(hdr->ld_shard_desc_bytes) != KAFS_V6_SHARD_DESC_BYTES)
+    return NULL;
+  if (kafs_v6_table_bounds(shard_off, shard_count, KAFS_V6_SHARD_DESC_BYTES, desc_bytes) != 0)
+    return NULL;
+  if (out_count)
+    *out_count = shard_count;
+  return (kafs_sv6_shard_desc_t *)((char *)buf + shard_off);
+}
+
+static void mutate_bitmap_gap(void *buf, uint32_t desc_bytes)
+{
+  uint32_t shard_count = 0;
+  kafs_sv6_shard_desc_t *shards = mutable_shard_table(buf, desc_bytes, &shard_count);
+  if (!shards)
+    return;
+
+  for (uint32_t i = 0; i < shard_count; ++i)
+  {
+    if (le16toh(shards[i].sd_type) != KAFS_META_REGION_BLOCK_BITMAP)
+      continue;
+    uint64_t logical_count = kafs_u64_stoh(shards[i].sd_logical_count);
+    if (logical_count > 1u)
+      shards[i].sd_logical_count = kafs_u64_htos(logical_count - 1u);
+    return;
+  }
+}
+
+static void mutate_bitmap_duplicate_shard(void *buf, uint32_t desc_bytes)
+{
+  kafs_sv6_layout_desc_header_t *hdr = (kafs_sv6_layout_desc_header_t *)buf;
+  uint32_t old_shard_count = kafs_u32_stoh(hdr->ld_shard_count);
+  uint32_t replica_count = kafs_u32_stoh(hdr->ld_replica_count);
+  uint32_t group_count = kafs_u32_stoh(hdr->ld_group_count);
+  uint32_t group_off = kafs_u32_stoh(hdr->ld_group_desc_off);
+  uint32_t shard_off = kafs_u32_stoh(hdr->ld_shard_desc_off);
+  uint32_t old_replica_off = kafs_u32_stoh(hdr->ld_replica_desc_off);
+  uint32_t new_shard_count = old_shard_count + 1u;
+  uint32_t new_replica_off = shard_off + new_shard_count * KAFS_V6_SHARD_DESC_BYTES;
+  uint64_t replica_bytes = (uint64_t)replica_count * KAFS_V6_REPLICA_DESC_BYTES;
+
+  if (new_shard_count == 0u || group_count == 0u)
+    return;
+  if (kafs_v6_table_bounds(group_off, group_count, KAFS_V6_GROUP_DESC_BYTES, desc_bytes) != 0 ||
+      kafs_v6_table_bounds(shard_off, new_shard_count, KAFS_V6_SHARD_DESC_BYTES, desc_bytes) != 0 ||
+      kafs_v6_table_bounds(new_replica_off, replica_count, KAFS_V6_REPLICA_DESC_BYTES,
+                           desc_bytes) != 0 ||
+      old_replica_off > desc_bytes || replica_bytes > (uint64_t)desc_bytes - old_replica_off)
+    return;
+
+  kafs_sv6_shard_desc_t *shards = (kafs_sv6_shard_desc_t *)((char *)buf + shard_off);
+  uint32_t bitmap_index = UINT32_MAX;
+  for (uint32_t i = 0; i < old_shard_count; ++i)
+  {
+    if (le16toh(shards[i].sd_type) == KAFS_META_REGION_BLOCK_BITMAP)
+    {
+      bitmap_index = i;
+      break;
+    }
+  }
+  if (bitmap_index == UINT32_MAX)
+    return;
+
+  memmove((char *)buf + new_replica_off, (char *)buf + old_replica_off, (size_t)replica_bytes);
+  shards[old_shard_count] = shards[bitmap_index];
+  hdr->ld_shard_count = kafs_u32_htos(new_shard_count);
+  hdr->ld_replica_desc_off = kafs_u32_htos(new_replica_off);
+
+  kafs_sv6_group_desc_t *groups = (kafs_sv6_group_desc_t *)((char *)buf + group_off);
+  groups[0].gd_shard_count = kafs_u32_htos(kafs_u32_stoh(groups[0].gd_shard_count) + 1u);
 }
 
 static int test_anchor_crc_bad(void)
@@ -445,6 +549,115 @@ static int test_divergent_same_generation_rejected(void)
   return 0;
 }
 
+static int test_bitmap_coverage_valid_and_lookup(void)
+{
+  const char *img = "bitmap-valid.img";
+  if (make_v6_image(img) != 0)
+    return -1;
+
+  void *desc = NULL;
+  uint32_t desc_bytes = 0;
+  kafs_ssuperblock_t sb;
+  uint64_t file_size = 0;
+  if (read_selected_descriptor_for_image(img, &desc, &desc_bytes, &sb, &file_size, NULL) != 0)
+    return -1;
+
+  kafs_v6_bitmap_coverage_report_t report;
+  int rc = kafs_v6_bitmap_validate_coverage(desc, desc_bytes, &sb, file_size, &report);
+  if (rc != 0 || !report.available || report.shard_count != 1u ||
+      report.expected_count != (uint64_t)kafs_sb_r_blkcnt_get(&sb) ||
+      report.covered_blocks != report.expected_count || report.missing_coverage ||
+      report.has_gap || report.has_overlap || report.has_physical_overlap ||
+      !report.lookup_available)
+  {
+    free(desc);
+    return -1;
+  }
+
+  kafs_v6_bitmap_lookup_t lookup;
+  if (kafs_v6_bitmap_lookup(desc, desc_bytes, 0, &lookup) != 0 || lookup.shard_index != 1u ||
+      lookup.bitmap_bit != 0u)
+  {
+    free(desc);
+    return -1;
+  }
+
+  uint64_t first_data = kafs_sb_first_data_block_get(&sb);
+  if (first_data < (uint64_t)kafs_sb_r_blkcnt_get(&sb) &&
+      kafs_v6_bitmap_lookup(desc, desc_bytes, first_data, &lookup) != 0)
+  {
+    free(desc);
+    return -1;
+  }
+
+  free(desc);
+  return 0;
+}
+
+static int test_bitmap_gap_rejected(void)
+{
+  const char *img = "bitmap-gap.img";
+  if (make_v6_image(img) != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_bitmap_gap, 1) != 0)
+    return -1;
+
+  void *desc = NULL;
+  uint32_t desc_bytes = 0;
+  kafs_ssuperblock_t sb;
+  uint64_t file_size = 0;
+  if (read_selected_descriptor_for_image(img, &desc, &desc_bytes, &sb, &file_size, NULL) != 0)
+    return -1;
+
+  kafs_v6_bitmap_coverage_report_t report;
+  int rc = kafs_v6_bitmap_validate_coverage(desc, desc_bytes, &sb, file_size, &report);
+  free(desc);
+  if (rc == 0 || !report.available || !report.has_gap || !report.missing_coverage)
+    return -1;
+
+  char out[8192];
+  char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)img, NULL};
+  if (run_cmd_capture(fsck_argv, 13, out, sizeof(out)) != 0 ||
+      !strstr(out, "v6 bitmap shards:") || !strstr(out, "has_gap=true"))
+    return -1;
+
+  char *dump_argv[] = {(char *)kafs_test_kafsdump_bin(), (char *)"--json", (char *)img, NULL};
+  if (run_cmd_capture(dump_argv, 1, out, sizeof(out)) != 0 ||
+      !strstr(out, "\"missing_coverage\": true"))
+    return -1;
+  return 0;
+}
+
+static int test_bitmap_overlap_rejected(void)
+{
+  const char *img = "bitmap-overlap.img";
+  if (make_v6_image(img) != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_bitmap_duplicate_shard, 1) != 0)
+    return -1;
+
+  void *desc = NULL;
+  uint32_t desc_bytes = 0;
+  kafs_ssuperblock_t sb;
+  uint64_t file_size = 0;
+  if (read_selected_descriptor_for_image(img, &desc, &desc_bytes, &sb, &file_size, NULL) != 0)
+    return -1;
+
+  kafs_v6_bitmap_coverage_report_t report;
+  int rc = kafs_v6_bitmap_validate_coverage(desc, desc_bytes, &sb, file_size, &report);
+  free(desc);
+  if (rc == 0 || !report.available || !report.has_overlap || !report.has_physical_overlap)
+    return -1;
+
+  char out[8192];
+  char *dump_argv[] = {(char *)kafs_test_kafsdump_bin(), (char *)"--json", (char *)img, NULL};
+  if (run_cmd_capture(dump_argv, 1, out, sizeof(out)) != 0 ||
+      !strstr(out, "\"has_overlap\": true") ||
+      !strstr(out, "\"has_physical_overlap\": true"))
+    return -1;
+  return 0;
+}
+
 typedef int (*test_fn_t)(void);
 
 typedef struct validation_case
@@ -467,6 +680,9 @@ int main(void)
       {"primary_corrupt_backup_selected", test_primary_corrupt_backup_selected},
       {"stale_generation_reported", test_stale_generation_reported},
       {"divergent_same_generation_rejected", test_divergent_same_generation_rejected},
+      {"bitmap_coverage_valid_and_lookup", test_bitmap_coverage_valid_and_lookup},
+      {"bitmap_gap_rejected", test_bitmap_gap_rejected},
+      {"bitmap_overlap_rejected", test_bitmap_overlap_rejected},
   };
 
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)

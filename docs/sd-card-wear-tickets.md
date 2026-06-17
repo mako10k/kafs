@@ -218,6 +218,12 @@
   - allocation/free path が正しい shard を更新する。
   - fsck が shard coverage と overlaps/gaps を検出する。
   - v5 bitmap behavior は変更しない。
+- 進捗メモ:
+  - v6 selected descriptor から block bitmap shard coverage を検証する共通 helper を追加。
+  - 現行 mkfs v6 scaffold の bitmap shard は root block namespace `[0, s_r_blkcnt)` を 1 shard
+    で覆う。`fsck.kafs` / `kafsdump` は gap、logical overlap、physical overlap を報告する。
+  - data block lookup を descriptor 経由で bitmap byte/bit に解決する helper を追加。runtime
+    allocation/free path への接続は未実装。
 
 ### SDW-P4-T2 Inode table shards
 

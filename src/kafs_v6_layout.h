@@ -173,6 +173,7 @@ typedef struct kafs_v6_layout_report
   uint32_t selected_replica;
   uint64_t selected_generation;
   uint32_t selected_crc32;
+  uint64_t selected_offset;
   uint32_t descriptor_bytes;
   uint32_t group_count;
   uint32_t shard_count;
@@ -181,6 +182,37 @@ typedef struct kafs_v6_layout_report
   uint64_t ro_compat_flags;
   kafs_v6_replica_report_t replicas[KAFS_V6_LAYOUT_REPLICA_MAX_COUNT];
 } kafs_v6_layout_report_t;
+
+typedef struct kafs_v6_bitmap_lookup
+{
+  uint32_t shard_index;
+  uint64_t blo;
+  uint64_t logical_start;
+  uint64_t logical_count;
+  uint64_t bitmap_byte_off;
+  uint8_t bitmap_bit;
+} kafs_v6_bitmap_lookup_t;
+
+typedef struct kafs_v6_bitmap_coverage_report
+{
+  int available;
+  int has_gap;
+  int has_overlap;
+  int has_physical_overlap;
+  int missing_coverage;
+  uint32_t shard_count;
+  uint64_t expected_start;
+  uint64_t expected_count;
+  uint64_t covered_blocks;
+  uint64_t first_gap_start;
+  uint64_t first_gap_count;
+  uint64_t first_overlap_start;
+  uint64_t first_overlap_count;
+  uint64_t first_physical_overlap_off;
+  uint64_t first_physical_overlap_bytes;
+  int lookup_available;
+  kafs_v6_bitmap_lookup_t lookup;
+} kafs_v6_bitmap_coverage_report_t;
 
 static inline const char *kafs_v6_replica_status_name(kafs_v6_replica_status_t status)
 {
@@ -335,6 +367,329 @@ static inline int kafs_v6_table_bounds(uint32_t off, uint64_t count, uint32_t en
 static inline int kafs_v6_shard_type_known(uint16_t type)
 {
   return type <= KAFS_META_REGION_TAIL_METADATA || type == KAFS_V6_SHARD_TYPE_LAYOUT_DESCRIPTOR;
+}
+
+static inline const kafs_sv6_shard_desc_t *
+kafs_v6_shard_table(const void *desc, uint32_t desc_bytes, uint32_t *out_count)
+{
+  if (!desc || desc_bytes < sizeof(kafs_sv6_layout_desc_header_t))
+    return NULL;
+
+  const kafs_sv6_layout_desc_header_t *hdr = (const kafs_sv6_layout_desc_header_t *)desc;
+  uint32_t shard_count = kafs_u32_stoh(hdr->ld_shard_count);
+  uint32_t shard_off = kafs_u32_stoh(hdr->ld_shard_desc_off);
+
+  if (le16toh(hdr->ld_shard_desc_bytes) != KAFS_V6_SHARD_DESC_BYTES)
+    return NULL;
+  if (kafs_v6_table_bounds(shard_off, shard_count, KAFS_V6_SHARD_DESC_BYTES, desc_bytes) != 0)
+    return NULL;
+  if (out_count)
+    *out_count = shard_count;
+  return (const kafs_sv6_shard_desc_t *)((const char *)desc + shard_off);
+}
+
+static inline int kafs_v6_read_selected_descriptor(int fd, const kafs_v6_layout_report_t *report,
+                                                   void **out_desc, uint32_t *out_bytes)
+{
+  if (!report || !out_desc || !out_bytes || !report->selected_found ||
+      report->descriptor_bytes == 0u)
+    return -EINVAL;
+
+  void *buf = malloc(report->descriptor_bytes);
+  if (!buf)
+    return -ENOMEM;
+
+  int rc = kafs_pread_all(fd, buf, report->descriptor_bytes, (off_t)report->selected_offset);
+  if (rc != 0)
+  {
+    free(buf);
+    return rc;
+  }
+
+  *out_desc = buf;
+  *out_bytes = report->descriptor_bytes;
+  return 0;
+}
+
+typedef struct kafs_v6_bitmap_shard_view
+{
+  uint32_t index;
+  uint64_t logical_start;
+  uint64_t logical_count;
+  uint64_t logical_end;
+  uint64_t physical_off;
+  uint64_t physical_bytes;
+  uint64_t physical_end;
+  uint64_t required_bytes;
+} kafs_v6_bitmap_shard_view_t;
+
+static inline int kafs_v6_bitmap_decode_shard(const kafs_sv6_shard_desc_t *shards, uint32_t index,
+                                              kafs_v6_bitmap_shard_view_t *view)
+{
+  if (!shards || !view)
+    return -EINVAL;
+  if (le16toh(shards[index].sd_type) != KAFS_META_REGION_BLOCK_BITMAP)
+    return 1;
+
+  memset(view, 0, sizeof(*view));
+  view->index = index;
+  view->logical_start = kafs_u64_stoh(shards[index].sd_logical_start);
+  view->logical_count = kafs_u64_stoh(shards[index].sd_logical_count);
+  view->logical_end = view->logical_start + view->logical_count;
+  view->physical_off = kafs_u64_stoh(shards[index].sd_physical_off);
+  view->physical_bytes = kafs_u64_stoh(shards[index].sd_physical_bytes);
+  view->physical_end = view->physical_off + view->physical_bytes;
+
+  if (view->logical_count == 0u || view->logical_end < view->logical_start)
+    return -EINVAL;
+  if (view->physical_bytes == 0u || view->physical_end < view->physical_off ||
+      view->logical_count > UINT64_MAX - 7u)
+    return -ERANGE;
+
+  view->required_bytes = (view->logical_count + 7u) >> 3;
+  return (view->required_bytes == 0u || view->required_bytes > view->physical_bytes) ? -ERANGE : 0;
+}
+
+static inline int kafs_v6_bitmap_next_shard(const kafs_sv6_shard_desc_t *shards,
+                                            uint32_t shard_count, uint32_t *index,
+                                            kafs_v6_bitmap_shard_view_t *view)
+{
+  if (!index)
+    return -EINVAL;
+
+  for (; *index < shard_count; ++(*index))
+  {
+    int rc = kafs_v6_bitmap_decode_shard(shards, *index, view);
+    if (rc > 0)
+      continue;
+    if (rc < 0)
+      return rc;
+    ++(*index);
+    return 0;
+  }
+  return -ENOENT;
+}
+
+static inline int kafs_v6_bitmap_lookup(const void *desc, uint32_t desc_bytes, uint64_t blo,
+                                        kafs_v6_bitmap_lookup_t *out)
+{
+  if (!out)
+    return -EINVAL;
+  memset(out, 0, sizeof(*out));
+
+  uint32_t shard_count = 0;
+  const kafs_sv6_shard_desc_t *shards = kafs_v6_shard_table(desc, desc_bytes, &shard_count);
+  if (!shards)
+    return -EINVAL;
+
+  uint32_t index = 0;
+  for (;;)
+  {
+    kafs_v6_bitmap_shard_view_t shard;
+    int rc = kafs_v6_bitmap_next_shard(shards, shard_count, &index, &shard);
+    if (rc == -ENOENT)
+      return -ENOENT;
+    if (rc < 0)
+      return rc;
+    if (blo < shard.logical_start || blo >= shard.logical_end)
+      continue;
+
+    uint64_t bit = blo - shard.logical_start;
+    uint64_t byte_delta = bit >> 3;
+    if (byte_delta >= shard.physical_bytes || shard.physical_off > UINT64_MAX - byte_delta)
+      return -ERANGE;
+
+    out->shard_index = shard.index;
+    out->blo = blo;
+    out->logical_start = shard.logical_start;
+    out->logical_count = shard.logical_count;
+    out->bitmap_byte_off = shard.physical_off + byte_delta;
+    out->bitmap_bit = (uint8_t)(bit & 7u);
+    return 0;
+  }
+
+  return -ENOENT;
+}
+
+static inline void kafs_v6_bitmap_note_gap(kafs_v6_bitmap_coverage_report_t *report,
+                                           uint64_t gap_start, uint64_t gap_count)
+{
+  if (!report->has_gap)
+  {
+    report->first_gap_start = gap_start;
+    report->first_gap_count = gap_count;
+  }
+  report->has_gap = 1;
+  report->missing_coverage = 1;
+}
+
+static inline void kafs_v6_bitmap_note_logical_overlap(kafs_v6_bitmap_coverage_report_t *report,
+                                                       uint64_t start, uint64_t end)
+{
+  if (!report->has_overlap)
+  {
+    report->first_overlap_start = start;
+    report->first_overlap_count = end - start;
+  }
+  report->has_overlap = 1;
+}
+
+static inline void kafs_v6_bitmap_note_physical_overlap(kafs_v6_bitmap_coverage_report_t *report,
+                                                        uint64_t off, uint64_t end)
+{
+  if (!report->has_physical_overlap)
+  {
+    report->first_physical_overlap_off = off;
+    report->first_physical_overlap_bytes = end - off;
+  }
+  report->has_physical_overlap = 1;
+}
+
+static inline int kafs_v6_bitmap_check_bounds(const kafs_v6_bitmap_shard_view_t *shard,
+                                              const kafs_v6_bitmap_coverage_report_t *report,
+                                              uint64_t expected_end, uint64_t file_size)
+{
+  if (kafs_offline_check_bounds(shard->physical_off, shard->physical_bytes, file_size) != 0)
+    return -ERANGE;
+  if (shard->logical_start < report->expected_start || shard->logical_end > expected_end)
+    return -ERANGE;
+  return 0;
+}
+
+static inline void kafs_v6_bitmap_check_pair(kafs_v6_bitmap_coverage_report_t *report,
+                                             const kafs_v6_bitmap_shard_view_t *a,
+                                             const kafs_v6_bitmap_shard_view_t *b)
+{
+  if (a->logical_start < b->logical_end && b->logical_start < a->logical_end)
+  {
+    uint64_t start = a->logical_start > b->logical_start ? a->logical_start : b->logical_start;
+    uint64_t end = a->logical_end < b->logical_end ? a->logical_end : b->logical_end;
+    kafs_v6_bitmap_note_logical_overlap(report, start, end);
+  }
+  if (a->physical_off < b->physical_end && b->physical_off < a->physical_end)
+  {
+    uint64_t off = a->physical_off > b->physical_off ? a->physical_off : b->physical_off;
+    uint64_t end = a->physical_end < b->physical_end ? a->physical_end : b->physical_end;
+    kafs_v6_bitmap_note_physical_overlap(report, off, end);
+  }
+}
+
+static inline int kafs_v6_bitmap_finish_coverage(kafs_v6_bitmap_coverage_report_t *report,
+                                                 uint64_t min_start, uint64_t max_end,
+                                                 uint64_t expected_end)
+{
+  if (report->shard_count == 0u)
+  {
+    report->missing_coverage = 1;
+    return -ENOENT;
+  }
+
+  if (min_start > report->expected_start)
+    kafs_v6_bitmap_note_gap(report, report->expected_start, min_start - report->expected_start);
+  if (max_end < expected_end)
+    kafs_v6_bitmap_note_gap(report, max_end, expected_end - max_end);
+  if (!report->has_overlap && report->covered_blocks != report->expected_count)
+  {
+    uint64_t gap_start = (max_end < expected_end) ? max_end : report->expected_start;
+    uint64_t gap_count = (report->covered_blocks < report->expected_count)
+                             ? report->expected_count - report->covered_blocks
+                             : 0u;
+    kafs_v6_bitmap_note_gap(report, gap_start, gap_count);
+  }
+
+  return (report->has_overlap || report->has_physical_overlap || report->missing_coverage) ? -EINVAL
+                                                                                           : 0;
+}
+
+static inline int kafs_v6_bitmap_scan_pairs(const kafs_sv6_shard_desc_t *shards,
+                                            uint32_t shard_count, uint32_t pair_index,
+                                            const kafs_v6_bitmap_shard_view_t *shard,
+                                            kafs_v6_bitmap_coverage_report_t *report,
+                                            uint64_t expected_end, uint64_t file_size)
+{
+  for (;;)
+  {
+    kafs_v6_bitmap_shard_view_t other;
+    int rc = kafs_v6_bitmap_next_shard(shards, shard_count, &pair_index, &other);
+    if (rc == -ENOENT)
+      return 0;
+    if (rc < 0)
+      return rc;
+    rc = kafs_v6_bitmap_check_bounds(&other, report, expected_end, file_size);
+    if (rc != 0)
+      return rc;
+    kafs_v6_bitmap_check_pair(report, shard, &other);
+  }
+}
+
+static inline int kafs_v6_bitmap_collect_coverage(const kafs_sv6_shard_desc_t *shards,
+                                                  uint32_t shard_count, uint64_t expected_end,
+                                                  uint64_t file_size,
+                                                  kafs_v6_bitmap_coverage_report_t *report,
+                                                  uint64_t *min_start, uint64_t *max_end)
+{
+  uint32_t index = 0;
+
+  for (;;)
+  {
+    kafs_v6_bitmap_shard_view_t shard;
+    int rc = kafs_v6_bitmap_next_shard(shards, shard_count, &index, &shard);
+    if (rc == -ENOENT)
+      return 0;
+    if (rc < 0)
+      return rc;
+    rc = kafs_v6_bitmap_check_bounds(&shard, report, expected_end, file_size);
+    if (rc != 0)
+      return rc;
+
+    report->shard_count++;
+    if (report->covered_blocks > UINT64_MAX - shard.logical_count)
+      return -ERANGE;
+    report->covered_blocks += shard.logical_count;
+    if (shard.logical_start < *min_start)
+      *min_start = shard.logical_start;
+    if (shard.logical_end > *max_end)
+      *max_end = shard.logical_end;
+
+    rc = kafs_v6_bitmap_scan_pairs(shards, shard_count, index, &shard, report, expected_end,
+                                   file_size);
+    if (rc != 0)
+      return rc;
+  }
+}
+
+static inline int kafs_v6_bitmap_validate_coverage(const void *desc, uint32_t desc_bytes,
+                                                   const kafs_ssuperblock_t *sb, uint64_t file_size,
+                                                   kafs_v6_bitmap_coverage_report_t *report)
+{
+  if (!report)
+    return -EINVAL;
+  memset(report, 0, sizeof(*report));
+  if (!desc || !sb)
+    return -EINVAL;
+
+  uint32_t shard_count = 0;
+  const kafs_sv6_shard_desc_t *shards = kafs_v6_shard_table(desc, desc_bytes, &shard_count);
+  if (!shards)
+    return -EINVAL;
+
+  report->available = 1;
+  report->expected_start = 0;
+  report->expected_count = (uint64_t)kafs_sb_r_blkcnt_get(sb);
+  uint64_t expected_end = report->expected_count;
+  uint64_t min_start = UINT64_MAX;
+  uint64_t max_end = 0;
+
+  int rc = kafs_v6_bitmap_collect_coverage(shards, shard_count, expected_end, file_size, report,
+                                           &min_start, &max_end);
+  if (rc != 0)
+    return rc;
+
+  if (report->expected_count > 0u &&
+      kafs_v6_bitmap_lookup(desc, desc_bytes, report->expected_start, &report->lookup) == 0)
+    report->lookup_available = 1;
+
+  return kafs_v6_bitmap_finish_coverage(report, min_start, max_end, expected_end);
 }
 
 static inline int kafs_v6_validate_one_descriptor(const void *desc, uint32_t desc_bytes,
@@ -628,6 +983,7 @@ static inline int kafs_v6_discover_layout(int fd, const kafs_ssuperblock_t *sb, 
   report->selected_replica = selected;
   report->selected_generation = valid[selected].generation;
   report->selected_crc32 = valid[selected].crc;
+  report->selected_offset = candidates[selected];
   report->replicas[selected].selected = 1;
   report->replicas[selected].status = KAFS_V6_REPLICA_STATUS_SELECTED;
   return 0;

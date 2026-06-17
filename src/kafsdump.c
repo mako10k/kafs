@@ -93,6 +93,16 @@ static int load_superblock(int fd, kafs_ssuperblock_t *sb)
   return 0;
 }
 
+static const char *v6_bitmap_status(const kafs_ssuperblock_t *sb, const kafs_v6_layout_report_t *v6,
+                                    int rc_v6_bitmap)
+{
+  if (kafs_sb_format_version_get(sb) != KAFS_FORMAT_VERSION_V6)
+    return "not_applicable";
+  if (!v6->selected_found)
+    return "descriptor_unavailable";
+  return rc_to_text(rc_v6_bitmap);
+}
+
 static int collect_hrl_summary(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
                                struct hrl_summary *out)
 {
@@ -253,12 +263,30 @@ static void collect_metadata_regions(const kafs_ssuperblock_t *sb, uint64_t file
                            file_size);
 }
 
-static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary *ino,
-                       const struct hrl_summary *hrl, const struct journal_summary *jr,
-                       const struct tailmeta_summary *tm, const kafs_v6_layout_report_t *v6,
-                       const struct metadata_region_summary regions[KAFS_META_REGION_COUNT],
-                       int rc_inode, int rc_hrl, int rc_journal, int rc_tailmeta, int rc_v6)
+struct dump_report
 {
+  const kafs_ssuperblock_t *sb;
+  const struct inode_summary *ino;
+  const struct hrl_summary *hrl;
+  const struct journal_summary *jr;
+  const struct tailmeta_summary *tm;
+  const kafs_v6_layout_report_t *v6;
+  const kafs_v6_bitmap_coverage_report_t *v6_bitmap;
+  const struct metadata_region_summary *regions;
+  int rc_inode;
+  int rc_hrl;
+  int rc_journal;
+  int rc_tailmeta;
+  int rc_v6;
+  int rc_v6_bitmap;
+};
+
+static void print_text(const struct dump_report *dump)
+{
+  const kafs_ssuperblock_t *sb = dump->sb;
+  const kafs_v6_layout_report_t *v6 = dump->v6;
+  const kafs_v6_bitmap_coverage_report_t *v6_bitmap = dump->v6_bitmap;
+  const struct metadata_region_summary *regions = dump->regions;
   struct sb_geometry g = kafs_offline_superblock_geometry(sb);
 
   printf("superblock:\n");
@@ -279,7 +307,7 @@ static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary 
 
   printf("v6_layout_descriptor:\n");
   printf("  status: %s\n", (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6)
-                               ? rc_to_text(rc_v6)
+                               ? rc_to_text(dump->rc_v6)
                                : "not_applicable");
   printf("  available: %s\n",
          (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6 && v6->selected_found)
@@ -303,6 +331,36 @@ static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary 
     }
   }
 
+  printf("v6_bitmap_shards:\n");
+  printf("  status: %s\n", v6_bitmap_status(sb, v6, dump->rc_v6_bitmap));
+  printf("  available: %s\n", (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6 &&
+                               v6->selected_found && v6_bitmap->available)
+                                  ? "true"
+                                  : "false");
+  if (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6 && v6->selected_found)
+  {
+    printf("  shard_count: %" PRIu32 "\n", v6_bitmap->shard_count);
+    printf("  expected_start: %" PRIu64 "\n", v6_bitmap->expected_start);
+    printf("  expected_blocks: %" PRIu64 "\n", v6_bitmap->expected_count);
+    printf("  covered_blocks: %" PRIu64 "\n", v6_bitmap->covered_blocks);
+    printf("  has_gap: %s\n", v6_bitmap->has_gap ? "true" : "false");
+    printf("  has_overlap: %s\n", v6_bitmap->has_overlap ? "true" : "false");
+    printf("  has_physical_overlap: %s\n", v6_bitmap->has_physical_overlap ? "true" : "false");
+    printf("  missing_coverage: %s\n", v6_bitmap->missing_coverage ? "true" : "false");
+    printf("  first_gap_start: %" PRIu64 "\n", v6_bitmap->first_gap_start);
+    printf("  first_gap_count: %" PRIu64 "\n", v6_bitmap->first_gap_count);
+    printf("  first_overlap_start: %" PRIu64 "\n", v6_bitmap->first_overlap_start);
+    printf("  first_overlap_count: %" PRIu64 "\n", v6_bitmap->first_overlap_count);
+    printf("  first_physical_overlap_off: %" PRIu64 "\n", v6_bitmap->first_physical_overlap_off);
+    printf("  first_physical_overlap_bytes: %" PRIu64 "\n",
+           v6_bitmap->first_physical_overlap_bytes);
+    printf("  lookup_available: %s\n", v6_bitmap->lookup_available ? "true" : "false");
+    printf("  lookup_blo: %" PRIu64 "\n", v6_bitmap->lookup.blo);
+    printf("  lookup_shard: %" PRIu32 "\n", v6_bitmap->lookup.shard_index);
+    printf("  lookup_bitmap_byte: %" PRIu64 "\n", v6_bitmap->lookup.bitmap_byte_off);
+    printf("  lookup_bitmap_bit: %" PRIu8 "\n", v6_bitmap->lookup.bitmap_bit);
+  }
+
   printf("metadata_regions:\n");
   for (uint32_t i = 0; i < KAFS_META_REGION_COUNT; ++i)
   {
@@ -316,24 +374,25 @@ static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary 
   }
 
   printf("tail_metadata:\n");
-  printf("  status: %s\n", rc_to_text(rc_tailmeta));
-  printf("  available: %s\n", tm->available ? "true" : "false");
-  if (tm->available)
+  printf("  status: %s\n", rc_to_text(dump->rc_tailmeta));
+  printf("  available: %s\n", dump->tm->available ? "true" : "false");
+  if (dump->tm->available)
   {
-    printf("  magic: 0x%08" PRIx32 "\n", kafs_u32_stoh(tm->header.tr_magic));
-    printf("  version: %" PRIu16 "\n", kafs_tailmeta_region_hdr_version_get(&tm->header));
+    printf("  magic: 0x%08" PRIx32 "\n", kafs_u32_stoh(dump->tm->header.tr_magic));
+    printf("  version: %" PRIu16 "\n", kafs_tailmeta_region_hdr_version_get(&dump->tm->header));
     printf("  container_count: %" PRIu32 "\n",
-           kafs_tailmeta_region_hdr_container_count_get(&tm->header));
-    printf("  class_count: %" PRIu16 "\n", kafs_tailmeta_region_hdr_class_count_get(&tm->header));
-    printf("  valid_containers: %" PRIu64 "\n", tm->valid_containers);
-    printf("  invalid_containers: %" PRIu64 "\n", tm->invalid_containers);
-    printf("  live_slots: %" PRIu64 "\n", tm->live_slots);
-    printf("  invalid_slots: %" PRIu64 "\n", tm->invalid_slots);
-    printf("  live_bytes: %" PRIu64 "\n", tm->live_bytes);
-    printf("  free_bytes: %" PRIu64 "\n", tm->free_bytes);
-    for (uint16_t index = 0; index < tm->class_summary_count; ++index)
+           kafs_tailmeta_region_hdr_container_count_get(&dump->tm->header));
+    printf("  class_count: %" PRIu16 "\n",
+           kafs_tailmeta_region_hdr_class_count_get(&dump->tm->header));
+    printf("  valid_containers: %" PRIu64 "\n", dump->tm->valid_containers);
+    printf("  invalid_containers: %" PRIu64 "\n", dump->tm->invalid_containers);
+    printf("  live_slots: %" PRIu64 "\n", dump->tm->live_slots);
+    printf("  invalid_slots: %" PRIu64 "\n", dump->tm->invalid_slots);
+    printf("  live_bytes: %" PRIu64 "\n", dump->tm->live_bytes);
+    printf("  free_bytes: %" PRIu64 "\n", dump->tm->free_bytes);
+    for (uint16_t index = 0; index < dump->tm->class_summary_count; ++index)
     {
-      const struct tailmeta_class_summary *class_summary = &tm->classes[index];
+      const struct tailmeta_class_summary *class_summary = &dump->tm->classes[index];
 
       printf("  class[%u]: bytes=%u valid=%" PRIu64 " invalid=%" PRIu64 " slots=%" PRIu64
              " live_slots=%" PRIu64 " live_bytes=%" PRIu64 " free_bytes=%" PRIu64 "\n",
@@ -344,47 +403,47 @@ static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary 
   }
 
   printf("inode_summary:\n");
-  printf("  status: %s\n", rc_to_text(rc_inode));
-  printf("  total: %" PRIu64 "\n", ino->total);
-  printf("  used: %" PRIu64 "\n", ino->used);
-  printf("  free: %" PRIu64 "\n", ino->free);
-  printf("  linkcnt_zero_used: %" PRIu64 "\n", ino->linkcnt_zero_used);
-  printf("  regular_files: %" PRIu64 "\n", ino->regular_files);
-  printf("  tail_only_regular: %" PRIu64 "\n", ino->tail_only_regular);
-  printf("  mixed_full_tail_regular: %" PRIu64 "\n", ino->mixed_full_tail_regular);
+  printf("  status: %s\n", rc_to_text(dump->rc_inode));
+  printf("  total: %" PRIu64 "\n", dump->ino->total);
+  printf("  used: %" PRIu64 "\n", dump->ino->used);
+  printf("  free: %" PRIu64 "\n", dump->ino->free);
+  printf("  linkcnt_zero_used: %" PRIu64 "\n", dump->ino->linkcnt_zero_used);
+  printf("  regular_files: %" PRIu64 "\n", dump->ino->regular_files);
+  printf("  tail_only_regular: %" PRIu64 "\n", dump->ino->tail_only_regular);
+  printf("  mixed_full_tail_regular: %" PRIu64 "\n", dump->ino->mixed_full_tail_regular);
 
   printf("hrl_summary:\n");
-  printf("  status: %s\n", rc_to_text(rc_hrl));
-  printf("  entries: %" PRIu64 "\n", hrl->entry_count);
-  printf("  live_entries: %" PRIu64 "\n", hrl->live_entries);
-  printf("  total_refcnt: %" PRIu64 "\n", hrl->total_refcnt);
+  printf("  status: %s\n", rc_to_text(dump->rc_hrl));
+  printf("  entries: %" PRIu64 "\n", dump->hrl->entry_count);
+  printf("  live_entries: %" PRIu64 "\n", dump->hrl->live_entries);
+  printf("  total_refcnt: %" PRIu64 "\n", dump->hrl->total_refcnt);
 
   printf("journal_header:\n");
-  printf("  status: %s\n", rc_to_text(rc_journal));
-  printf("  available: %s\n", jr->available ? "true" : "false");
-  if (jr->available)
+  printf("  status: %s\n", rc_to_text(dump->rc_journal));
+  printf("  available: %s\n", dump->jr->available ? "true" : "false");
+  if (dump->jr->available)
   {
-    printf("  magic: 0x%08" PRIx32 "\n", jr->header.magic);
-    printf("  version: %" PRIu16 "\n", jr->header.version);
-    printf("  flags: %" PRIu16 "\n", jr->header.flags);
-    printf("  slot_count: %" PRIu32 "\n", jr->slot_count);
-    printf("  active_slot: %" PRIu32 "\n", jr->active_slot);
-    printf("  valid_slots: %" PRIu32 "\n", jr->valid_slots);
-    printf("  generation: %" PRIu64 "\n", jr->header.reserved0);
-    printf("  area_size: %" PRIu64 "\n", jr->header.area_size);
-    printf("  write_off: %" PRIu64 "\n", jr->header.write_off);
-    printf("  seq: %" PRIu64 "\n", jr->header.seq);
-    printf("  header_crc: 0x%08" PRIx32 "\n", jr->header.header_crc);
-    printf("  header_crc_ok: %s\n", jr->crc_ok ? "true" : "false");
+    printf("  magic: 0x%08" PRIx32 "\n", dump->jr->header.magic);
+    printf("  version: %" PRIu16 "\n", dump->jr->header.version);
+    printf("  flags: %" PRIu16 "\n", dump->jr->header.flags);
+    printf("  slot_count: %" PRIu32 "\n", dump->jr->slot_count);
+    printf("  active_slot: %" PRIu32 "\n", dump->jr->active_slot);
+    printf("  valid_slots: %" PRIu32 "\n", dump->jr->valid_slots);
+    printf("  generation: %" PRIu64 "\n", dump->jr->header.reserved0);
+    printf("  area_size: %" PRIu64 "\n", dump->jr->header.area_size);
+    printf("  write_off: %" PRIu64 "\n", dump->jr->header.write_off);
+    printf("  seq: %" PRIu64 "\n", dump->jr->header.seq);
+    printf("  header_crc: 0x%08" PRIx32 "\n", dump->jr->header.header_crc);
+    printf("  header_crc_ok: %s\n", dump->jr->crc_ok ? "true" : "false");
   }
 }
 
-static void print_json(const kafs_ssuperblock_t *sb, const struct inode_summary *ino,
-                       const struct hrl_summary *hrl, const struct journal_summary *jr,
-                       const struct tailmeta_summary *tm, const kafs_v6_layout_report_t *v6,
-                       const struct metadata_region_summary regions[KAFS_META_REGION_COUNT],
-                       int rc_inode, int rc_hrl, int rc_journal, int rc_tailmeta, int rc_v6)
+static void print_json(const struct dump_report *dump)
 {
+  const kafs_ssuperblock_t *sb = dump->sb;
+  const kafs_v6_layout_report_t *v6 = dump->v6;
+  const kafs_v6_bitmap_coverage_report_t *v6_bitmap = dump->v6_bitmap;
+  const struct metadata_region_summary *regions = dump->regions;
   const struct sb_geometry g = kafs_offline_superblock_geometry(sb);
 
   printf("{\n");
@@ -407,7 +466,7 @@ static void print_json(const kafs_ssuperblock_t *sb, const struct inode_summary 
 
   printf("  \"v6_layout_descriptor\": {\n");
   printf("    \"status\": \"%s\",\n", (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6)
-                                          ? rc_to_text(rc_v6)
+                                          ? rc_to_text(dump->rc_v6)
                                           : "not_applicable");
   printf("    \"available\": %s,\n",
          (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6 && v6->selected_found)
@@ -435,6 +494,35 @@ static void print_json(const kafs_ssuperblock_t *sb, const struct inode_summary 
   printf("]\n");
   printf("  },\n");
 
+  printf("  \"v6_bitmap_shards\": {\n");
+  printf("    \"status\": \"%s\",\n", v6_bitmap_status(sb, v6, dump->rc_v6_bitmap));
+  printf("    \"available\": %s,\n", (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6 &&
+                                      v6->selected_found && v6_bitmap->available)
+                                         ? "true"
+                                         : "false");
+  printf("    \"shard_count\": %" PRIu32 ",\n", v6_bitmap->shard_count);
+  printf("    \"expected_start\": %" PRIu64 ",\n", v6_bitmap->expected_start);
+  printf("    \"expected_blocks\": %" PRIu64 ",\n", v6_bitmap->expected_count);
+  printf("    \"covered_blocks\": %" PRIu64 ",\n", v6_bitmap->covered_blocks);
+  printf("    \"has_gap\": %s,\n", v6_bitmap->has_gap ? "true" : "false");
+  printf("    \"has_overlap\": %s,\n", v6_bitmap->has_overlap ? "true" : "false");
+  printf("    \"has_physical_overlap\": %s,\n", v6_bitmap->has_physical_overlap ? "true" : "false");
+  printf("    \"missing_coverage\": %s,\n", v6_bitmap->missing_coverage ? "true" : "false");
+  printf("    \"first_gap_start\": %" PRIu64 ",\n", v6_bitmap->first_gap_start);
+  printf("    \"first_gap_count\": %" PRIu64 ",\n", v6_bitmap->first_gap_count);
+  printf("    \"first_overlap_start\": %" PRIu64 ",\n", v6_bitmap->first_overlap_start);
+  printf("    \"first_overlap_count\": %" PRIu64 ",\n", v6_bitmap->first_overlap_count);
+  printf("    \"first_physical_overlap_off\": %" PRIu64 ",\n",
+         v6_bitmap->first_physical_overlap_off);
+  printf("    \"first_physical_overlap_bytes\": %" PRIu64 ",\n",
+         v6_bitmap->first_physical_overlap_bytes);
+  printf("    \"lookup_available\": %s,\n", v6_bitmap->lookup_available ? "true" : "false");
+  printf("    \"lookup\": {\"blo\": %" PRIu64 ", \"shard\": %" PRIu32 ", \"bitmap_byte\": %" PRIu64
+         ", \"bitmap_bit\": %" PRIu8 "}\n",
+         v6_bitmap->lookup.blo, v6_bitmap->lookup.shard_index, v6_bitmap->lookup.bitmap_byte_off,
+         v6_bitmap->lookup.bitmap_bit);
+  printf("  },\n");
+
   printf("  \"metadata_regions\": [\n");
   for (uint32_t i = 0; i < KAFS_META_REGION_COUNT; ++i)
   {
@@ -451,26 +539,26 @@ static void print_json(const kafs_ssuperblock_t *sb, const struct inode_summary 
   printf("  ],\n");
 
   printf("  \"tail_metadata\": {\n");
-  printf("    \"status\": \"%s\",\n", rc_to_text(rc_tailmeta));
-  printf("    \"available\": %s", tm->available ? "true" : "false");
-  if (tm->available)
+  printf("    \"status\": \"%s\",\n", rc_to_text(dump->rc_tailmeta));
+  printf("    \"available\": %s", dump->tm->available ? "true" : "false");
+  if (dump->tm->available)
   {
-    printf(",\n    \"magic\": %" PRIu32, kafs_u32_stoh(tm->header.tr_magic));
-    printf(",\n    \"version\": %" PRIu16, kafs_tailmeta_region_hdr_version_get(&tm->header));
+    printf(",\n    \"magic\": %" PRIu32, kafs_u32_stoh(dump->tm->header.tr_magic));
+    printf(",\n    \"version\": %" PRIu16, kafs_tailmeta_region_hdr_version_get(&dump->tm->header));
     printf(",\n    \"container_count\": %" PRIu32,
-           kafs_tailmeta_region_hdr_container_count_get(&tm->header));
+           kafs_tailmeta_region_hdr_container_count_get(&dump->tm->header));
     printf(",\n    \"class_count\": %" PRIu16,
-           kafs_tailmeta_region_hdr_class_count_get(&tm->header));
-    printf(",\n    \"valid_containers\": %" PRIu64, tm->valid_containers);
-    printf(",\n    \"invalid_containers\": %" PRIu64, tm->invalid_containers);
-    printf(",\n    \"live_slots\": %" PRIu64, tm->live_slots);
-    printf(",\n    \"invalid_slots\": %" PRIu64, tm->invalid_slots);
-    printf(",\n    \"live_bytes\": %" PRIu64, tm->live_bytes);
-    printf(",\n    \"free_bytes\": %" PRIu64, tm->free_bytes);
+           kafs_tailmeta_region_hdr_class_count_get(&dump->tm->header));
+    printf(",\n    \"valid_containers\": %" PRIu64, dump->tm->valid_containers);
+    printf(",\n    \"invalid_containers\": %" PRIu64, dump->tm->invalid_containers);
+    printf(",\n    \"live_slots\": %" PRIu64, dump->tm->live_slots);
+    printf(",\n    \"invalid_slots\": %" PRIu64, dump->tm->invalid_slots);
+    printf(",\n    \"live_bytes\": %" PRIu64, dump->tm->live_bytes);
+    printf(",\n    \"free_bytes\": %" PRIu64, dump->tm->free_bytes);
     printf(",\n    \"classes\": [");
-    for (uint16_t index = 0; index < tm->class_summary_count; ++index)
+    for (uint16_t index = 0; index < dump->tm->class_summary_count; ++index)
     {
-      const struct tailmeta_class_summary *class_summary = &tm->classes[index];
+      const struct tailmeta_class_summary *class_summary = &dump->tm->classes[index];
 
       printf(
           "%s{\"class_bytes\": %u, \"valid_containers\": %" PRIu64
@@ -485,40 +573,40 @@ static void print_json(const kafs_ssuperblock_t *sb, const struct inode_summary 
   printf("\n  },\n");
 
   printf("  \"inode_summary\": {\n");
-  printf("    \"status\": \"%s\",\n", rc_to_text(rc_inode));
-  printf("    \"total\": %" PRIu64 ",\n", ino->total);
-  printf("    \"used\": %" PRIu64 ",\n", ino->used);
-  printf("    \"free\": %" PRIu64 ",\n", ino->free);
-  printf("    \"linkcnt_zero_used\": %" PRIu64 ",\n", ino->linkcnt_zero_used);
-  printf("    \"regular_files\": %" PRIu64 ",\n", ino->regular_files);
-  printf("    \"tail_only_regular\": %" PRIu64 ",\n", ino->tail_only_regular);
-  printf("    \"mixed_full_tail_regular\": %" PRIu64 "\n", ino->mixed_full_tail_regular);
+  printf("    \"status\": \"%s\",\n", rc_to_text(dump->rc_inode));
+  printf("    \"total\": %" PRIu64 ",\n", dump->ino->total);
+  printf("    \"used\": %" PRIu64 ",\n", dump->ino->used);
+  printf("    \"free\": %" PRIu64 ",\n", dump->ino->free);
+  printf("    \"linkcnt_zero_used\": %" PRIu64 ",\n", dump->ino->linkcnt_zero_used);
+  printf("    \"regular_files\": %" PRIu64 ",\n", dump->ino->regular_files);
+  printf("    \"tail_only_regular\": %" PRIu64 ",\n", dump->ino->tail_only_regular);
+  printf("    \"mixed_full_tail_regular\": %" PRIu64 "\n", dump->ino->mixed_full_tail_regular);
   printf("  },\n");
 
   printf("  \"hrl_summary\": {\n");
-  printf("    \"status\": \"%s\",\n", rc_to_text(rc_hrl));
-  printf("    \"entries\": %" PRIu64 ",\n", hrl->entry_count);
-  printf("    \"live_entries\": %" PRIu64 ",\n", hrl->live_entries);
-  printf("    \"total_refcnt\": %" PRIu64 "\n", hrl->total_refcnt);
+  printf("    \"status\": \"%s\",\n", rc_to_text(dump->rc_hrl));
+  printf("    \"entries\": %" PRIu64 ",\n", dump->hrl->entry_count);
+  printf("    \"live_entries\": %" PRIu64 ",\n", dump->hrl->live_entries);
+  printf("    \"total_refcnt\": %" PRIu64 "\n", dump->hrl->total_refcnt);
   printf("  },\n");
 
   printf("  \"journal_header\": {\n");
-  printf("    \"status\": \"%s\",\n", rc_to_text(rc_journal));
-  printf("    \"available\": %s", jr->available ? "true" : "false");
-  if (jr->available)
+  printf("    \"status\": \"%s\",\n", rc_to_text(dump->rc_journal));
+  printf("    \"available\": %s", dump->jr->available ? "true" : "false");
+  if (dump->jr->available)
   {
-    printf(",\n    \"magic\": %" PRIu32, jr->header.magic);
-    printf(",\n    \"version\": %" PRIu16, jr->header.version);
-    printf(",\n    \"flags\": %" PRIu16, jr->header.flags);
-    printf(",\n    \"slot_count\": %" PRIu32, jr->slot_count);
-    printf(",\n    \"active_slot\": %" PRIu32, jr->active_slot);
-    printf(",\n    \"valid_slots\": %" PRIu32, jr->valid_slots);
-    printf(",\n    \"generation\": %" PRIu64, jr->header.reserved0);
-    printf(",\n    \"area_size\": %" PRIu64, jr->header.area_size);
-    printf(",\n    \"write_off\": %" PRIu64, jr->header.write_off);
-    printf(",\n    \"seq\": %" PRIu64, jr->header.seq);
-    printf(",\n    \"header_crc\": %" PRIu32, jr->header.header_crc);
-    printf(",\n    \"header_crc_ok\": %s", jr->crc_ok ? "true" : "false");
+    printf(",\n    \"magic\": %" PRIu32, dump->jr->header.magic);
+    printf(",\n    \"version\": %" PRIu16, dump->jr->header.version);
+    printf(",\n    \"flags\": %" PRIu16, dump->jr->header.flags);
+    printf(",\n    \"slot_count\": %" PRIu32, dump->jr->slot_count);
+    printf(",\n    \"active_slot\": %" PRIu32, dump->jr->active_slot);
+    printf(",\n    \"valid_slots\": %" PRIu32, dump->jr->valid_slots);
+    printf(",\n    \"generation\": %" PRIu64, dump->jr->header.reserved0);
+    printf(",\n    \"area_size\": %" PRIu64, dump->jr->header.area_size);
+    printf(",\n    \"write_off\": %" PRIu64, dump->jr->header.write_off);
+    printf(",\n    \"seq\": %" PRIu64, dump->jr->header.seq);
+    printf(",\n    \"header_crc\": %" PRIu32, dump->jr->header.header_crc);
+    printf(",\n    \"header_crc_ok\": %s", dump->jr->crc_ok ? "true" : "false");
   }
   printf("\n  }\n");
   printf("}\n");
@@ -585,15 +673,30 @@ int main(int argc, char **argv)
   struct journal_summary jr;
   struct tailmeta_summary tm;
   kafs_v6_layout_report_t v6;
+  kafs_v6_bitmap_coverage_report_t v6_bitmap;
   struct metadata_region_summary regions[KAFS_META_REGION_COUNT];
   int rc_inode = collect_inode_summary(fd, &sb, file_size, &ino);
   int rc_hrl = collect_hrl_summary(fd, &sb, file_size, &hrl);
   int rc_journal = collect_journal_summary(fd, &sb, file_size, &jr);
   int rc_tailmeta = collect_tailmeta_summary(fd, &sb, file_size, &tm);
   int rc_v6 = 0;
+  int rc_v6_bitmap = 0;
   memset(&v6, 0, sizeof(v6));
+  memset(&v6_bitmap, 0, sizeof(v6_bitmap));
   if (kafs_sb_format_version_get(&sb) == KAFS_FORMAT_VERSION_V6)
+  {
     rc_v6 = kafs_v6_discover_layout(fd, &sb, file_size, &v6);
+    if (rc_v6 == 0)
+    {
+      void *desc = NULL;
+      uint32_t desc_bytes = 0;
+      rc_v6_bitmap = kafs_v6_read_selected_descriptor(fd, &v6, &desc, &desc_bytes);
+      if (rc_v6_bitmap == 0)
+        rc_v6_bitmap =
+            kafs_v6_bitmap_validate_coverage(desc, desc_bytes, &sb, file_size, &v6_bitmap);
+      free(desc);
+    }
+  }
   collect_metadata_regions(&sb, file_size, regions);
 
   if (rc_inode != 0)
@@ -606,15 +709,33 @@ int main(int argc, char **argv)
     fprintf(stderr, "warning: tail metadata unavailable: %s\n", rc_to_text(rc_tailmeta));
   if (kafs_sb_format_version_get(&sb) == KAFS_FORMAT_VERSION_V6 && rc_v6 != 0)
     fprintf(stderr, "warning: v6 descriptor discovery failed: %s\n", rc_to_text(rc_v6));
+  if (kafs_sb_format_version_get(&sb) == KAFS_FORMAT_VERSION_V6 && rc_v6 == 0 && rc_v6_bitmap != 0)
+    fprintf(stderr, "warning: v6 bitmap shard validation failed: %s\n", rc_to_text(rc_v6_bitmap));
 
+  const struct dump_report dump = {
+      .sb = &sb,
+      .ino = &ino,
+      .hrl = &hrl,
+      .jr = &jr,
+      .tm = &tm,
+      .v6 = &v6,
+      .v6_bitmap = &v6_bitmap,
+      .regions = regions,
+      .rc_inode = rc_inode,
+      .rc_hrl = rc_hrl,
+      .rc_journal = rc_journal,
+      .rc_tailmeta = rc_tailmeta,
+      .rc_v6 = rc_v6,
+      .rc_v6_bitmap = rc_v6_bitmap,
+  };
   if (json)
-    print_json(&sb, &ino, &hrl, &jr, &tm, &v6, regions, rc_inode, rc_hrl, rc_journal, rc_tailmeta,
-               rc_v6);
+    print_json(&dump);
   else
-    print_text(&sb, &ino, &hrl, &jr, &tm, &v6, regions, rc_inode, rc_hrl, rc_journal, rc_tailmeta,
-               rc_v6);
+    print_text(&dump);
 
   close(fd);
-  return (rc_inode == 0 && rc_hrl == 0 && rc_journal == 0 && rc_tailmeta == 0 && rc_v6 == 0) ? 0
-                                                                                             : 1;
+  return (rc_inode == 0 && rc_hrl == 0 && rc_journal == 0 && rc_tailmeta == 0 && rc_v6 == 0 &&
+          rc_v6_bitmap == 0)
+             ? 0
+             : 1;
 }

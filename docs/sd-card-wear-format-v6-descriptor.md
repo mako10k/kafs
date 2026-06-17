@@ -435,9 +435,13 @@ Common requirements:
 
 Block bitmap shards:
 
-- `KAFS_META_REGION_BLOCK_BITMAP` shard logical ranges map data block numbers to bitmap storage.
+- Current mkfs v6 scaffold maps the root block namespace `[0, s_r_blkcnt)` to bitmap storage so
+  existing bitmap semantics remain checkable before runtime v6 mount is enabled.
+- Runtime allocation/free work may narrow operational lookup to data blocks, but it must continue
+  to reject descriptor gaps and overlaps against the authoritative bitmap namespace.
 - Allocation/free must route a data block to exactly one bitmap shard.
-- `fsck.kafs` must detect duplicate coverage, missing coverage, and bitmap physical range overlap.
+- `fsck.kafs` detects duplicate logical coverage, missing coverage, and bitmap physical range
+  overlap for the selected descriptor.
 
 Inode table shards:
 
