@@ -215,6 +215,7 @@ static inline size_t kafs_inode_bytes_for_format(uint32_t format_version)
   case KAFS_FORMAT_VERSION:
     return sizeof(kafs_sinode_t);
   case KAFS_FORMAT_VERSION_V5:
+  case KAFS_FORMAT_VERSION_V6:
     return sizeof(kafs_sinode_v5_t);
   default:
     return 0;
@@ -282,7 +283,7 @@ static inline void kafs_inode_zero_for_format(void *inoent, uint32_t format_vers
     return;
 
   memset(inoent, 0, inode_bytes);
-  if (format_version == KAFS_FORMAT_VERSION_V5)
+  if (format_version == KAFS_FORMAT_VERSION_V5 || format_version == KAFS_FORMAT_VERSION_V6)
   {
     kafs_sinode_taildesc_v5_t taildesc;
 

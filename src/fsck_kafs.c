@@ -6,6 +6,7 @@
 #include "kafs_block.h"
 #include "kafs_cli_opts.h"
 #include "kafs_tool_util.h"
+#include "kafs_v6_layout.h"
 /* jscpd:ignore-start */
 #include <errno.h>
 #include <fcntl.h>
@@ -37,6 +38,7 @@
 #define FSCK_EXIT_INODE_BLOCKS_INCONSISTENT 10
 #define FSCK_EXIT_DIRENT_FORMAT_INCONSISTENT 11
 #define FSCK_EXIT_TAILMETA_INCONSISTENT 12
+#define FSCK_EXIT_V6_DESCRIPTOR_FAILED 13
 
 #define KAFS_PENDING_REF_FLAG 0x80000000u
 
@@ -368,6 +370,52 @@ static int fsck_validate_regions(const struct fsck_image_info *info)
 
   if (check_tailmeta_region(info->fd, &info->sb, info->file_size) != 0)
     return FSCK_EXIT_TAILMETA_INCONSISTENT;
+  return 0;
+}
+
+static void fsck_report_v6_descriptor(const kafs_v6_layout_report_t *report)
+{
+  fprintf(stderr,
+          "v6 descriptor: anchor_valid=%s selected=%s selected_replica=%" PRIu32
+          " generation=%" PRIu64 " descriptor_bytes=%" PRIu32 " groups=%" PRIu32 " shards=%" PRIu32
+          " replicas=%" PRIu32 "\n",
+          report->anchor_valid ? "true" : "false", report->selected_found ? "true" : "false",
+          report->selected_replica, report->selected_generation, report->descriptor_bytes,
+          report->group_count, report->shard_count, report->replica_count);
+  for (uint32_t i = 0; i < report->replica_count; ++i)
+  {
+    const kafs_v6_replica_report_t *replica = &report->replicas[i];
+    char summary[256];
+    kafs_v6_replica_summary(summary, sizeof(summary), replica);
+    fprintf(stderr, "v6 descriptor replica[%" PRIu32 "]: %s\n", replica->replica_id, summary);
+  }
+}
+
+static int fsck_handle_v6_image(const struct fsck_options *opts, const struct fsck_image_info *info,
+                                int want_write)
+{
+  kafs_v6_layout_report_t report;
+  int rc;
+
+  if (want_write)
+  {
+    fprintf(stderr, "format v6 repair/write modes are not supported yet.\n");
+    return FSCK_EXIT_USAGE;
+  }
+
+  rc = kafs_v6_discover_layout(info->fd, &info->sb, info->file_size, &report);
+  fsck_report_v6_descriptor(&report);
+  if (rc != 0)
+  {
+    if (rc == -ENOTSUP)
+      fprintf(stderr, "unsupported v6 layout descriptor\n");
+    else
+      fprintf(stderr, "v6 descriptor discovery failed\n");
+    return FSCK_EXIT_V6_DESCRIPTOR_FAILED;
+  }
+
+  if (opts->do_check_journal)
+    fprintf(stderr, "Journal check: skipped for offline-only format v6 descriptor scaffold.\n");
   return 0;
 }
 
@@ -2299,6 +2347,13 @@ int main(int argc, char **argv)
   int want_write = fsck_want_write(&opts);
   if (fsck_open_image(&opts, want_write, &info) != 0)
     return 1;
+
+  if (kafs_sb_format_version_get(&info.sb) == KAFS_FORMAT_VERSION_V6)
+  {
+    int v6_rc = fsck_handle_v6_image(&opts, &info, want_write);
+    close(info.fd);
+    return v6_rc;
+  }
 
   int rc = fsck_validate_regions(&info);
   if (rc != 0)

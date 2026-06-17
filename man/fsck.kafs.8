@@ -33,6 +33,11 @@ By default it runs
 (equivalent to
 .BR --balanced-check )
 (journal validation + dirent->ino orphan scan).
+For format version 6 scaffold images,
+.B fsck.kafs
+performs read-only layout descriptor discovery and bounds validation, reports
+all descriptor replicas, and skips legacy journal and shard checks until
+distributed metadata support is implemented.
 .SH OPTIONS
 .SS Preset Modes
 .TP
@@ -134,6 +139,9 @@ Journal replay operation failed.
 .TP
 .B 9
 Punch-hole completed with partial failures.
+.TP
+.B 13
+Format version 6 descriptor discovery or bounds validation failed.
 .SH SEE ALSO
 .BR mkfs.kafs (8),
 .BR kafs (1),

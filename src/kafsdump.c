@@ -6,6 +6,7 @@
 #include "kafs_meta_region.h"
 #include "kafs_offline_summary.h"
 #include "kafs_tailmeta.h"
+#include "kafs_v6_layout.h"
 #include "kafs_cli_opts.h"
 #include "kafs_superblock.h"
 #include "kafs_tool_util.h"
@@ -254,9 +255,9 @@ static void collect_metadata_regions(const kafs_ssuperblock_t *sb, uint64_t file
 
 static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary *ino,
                        const struct hrl_summary *hrl, const struct journal_summary *jr,
-                       const struct tailmeta_summary *tm,
+                       const struct tailmeta_summary *tm, const kafs_v6_layout_report_t *v6,
                        const struct metadata_region_summary regions[KAFS_META_REGION_COUNT],
-                       int rc_inode, int rc_hrl, int rc_journal, int rc_tailmeta)
+                       int rc_inode, int rc_hrl, int rc_journal, int rc_tailmeta, int rc_v6)
 {
   struct sb_geometry g = kafs_offline_superblock_geometry(sb);
 
@@ -275,6 +276,32 @@ static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary 
          (kafs_sb_feature_flags_get(sb) & KAFS_FEATURE_TAIL_META_REGION) ? "true" : "false");
   printf("  tailmeta_offset: %" PRIu64 "\n", kafs_sb_tailmeta_offset_get(sb));
   printf("  tailmeta_size: %" PRIu64 "\n", kafs_sb_tailmeta_size_get(sb));
+
+  printf("v6_layout_descriptor:\n");
+  printf("  status: %s\n", (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6)
+                               ? rc_to_text(rc_v6)
+                               : "not_applicable");
+  printf("  available: %s\n",
+         (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6 && v6->selected_found)
+             ? "true"
+             : "false");
+  if (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6)
+  {
+    printf("  anchor_valid: %s\n", v6->anchor_valid ? "true" : "false");
+    printf("  selected_replica: %" PRIu32 "\n", v6->selected_replica);
+    printf("  generation: %" PRIu64 "\n", v6->selected_generation);
+    printf("  descriptor_bytes: %" PRIu32 "\n", v6->descriptor_bytes);
+    printf("  group_count: %" PRIu32 "\n", v6->group_count);
+    printf("  shard_count: %" PRIu32 "\n", v6->shard_count);
+    printf("  replica_count: %" PRIu32 "\n", v6->replica_count);
+    for (uint32_t i = 0; i < v6->replica_count; ++i)
+    {
+      const kafs_v6_replica_report_t *replica = &v6->replicas[i];
+      char summary[256];
+      kafs_v6_replica_summary(summary, sizeof(summary), replica);
+      printf("  replica[%" PRIu32 "]: %s\n", replica->replica_id, summary);
+    }
+  }
 
   printf("metadata_regions:\n");
   for (uint32_t i = 0; i < KAFS_META_REGION_COUNT; ++i)
@@ -354,9 +381,9 @@ static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary 
 
 static void print_json(const kafs_ssuperblock_t *sb, const struct inode_summary *ino,
                        const struct hrl_summary *hrl, const struct journal_summary *jr,
-                       const struct tailmeta_summary *tm,
+                       const struct tailmeta_summary *tm, const kafs_v6_layout_report_t *v6,
                        const struct metadata_region_summary regions[KAFS_META_REGION_COUNT],
-                       int rc_inode, int rc_hrl, int rc_journal, int rc_tailmeta)
+                       int rc_inode, int rc_hrl, int rc_journal, int rc_tailmeta, int rc_v6)
 {
   const struct sb_geometry g = kafs_offline_superblock_geometry(sb);
 
@@ -376,6 +403,36 @@ static void print_json(const kafs_ssuperblock_t *sb, const struct inode_summary 
          (kafs_sb_feature_flags_get(sb) & KAFS_FEATURE_TAIL_META_REGION) ? "true" : "false");
   printf("    \"tailmeta_offset\": %" PRIu64 ",\n", kafs_sb_tailmeta_offset_get(sb));
   printf("    \"tailmeta_size\": %" PRIu64 "\n", kafs_sb_tailmeta_size_get(sb));
+  printf("  },\n");
+
+  printf("  \"v6_layout_descriptor\": {\n");
+  printf("    \"status\": \"%s\",\n", (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6)
+                                          ? rc_to_text(rc_v6)
+                                          : "not_applicable");
+  printf("    \"available\": %s,\n",
+         (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6 && v6->selected_found)
+             ? "true"
+             : "false");
+  printf("    \"anchor_valid\": %s,\n", v6->anchor_valid ? "true" : "false");
+  printf("    \"selected_replica\": %" PRIu32 ",\n", v6->selected_replica);
+  printf("    \"generation\": %" PRIu64 ",\n", v6->selected_generation);
+  printf("    \"descriptor_bytes\": %" PRIu32 ",\n", v6->descriptor_bytes);
+  printf("    \"group_count\": %" PRIu32 ",\n", v6->group_count);
+  printf("    \"shard_count\": %" PRIu32 ",\n", v6->shard_count);
+  printf("    \"replica_count\": %" PRIu32 ",\n", v6->replica_count);
+  printf("    \"replicas\": [");
+  for (uint32_t i = 0; i < v6->replica_count; ++i)
+  {
+    const kafs_v6_replica_report_t *replica = &v6->replicas[i];
+    printf("%s{\"replica_id\": %" PRIu32 ", \"role\": \"%s\", \"offset\": %" PRIu64
+           ", \"bytes\": %" PRIu32 ", \"status\": \"%s\", \"generation\": %" PRIu64
+           ", \"crc_ok\": %s, \"selected\": %s}",
+           (i == 0u) ? "" : ", ", replica->replica_id, kafs_v6_replica_role_name(replica->role),
+           replica->offset, replica->bytes, kafs_v6_replica_status_name(replica->status),
+           replica->generation, replica->crc_ok ? "true" : "false",
+           replica->selected ? "true" : "false");
+  }
+  printf("]\n");
   printf("  },\n");
 
   printf("  \"metadata_regions\": [\n");
@@ -527,11 +584,16 @@ int main(int argc, char **argv)
   struct hrl_summary hrl;
   struct journal_summary jr;
   struct tailmeta_summary tm;
+  kafs_v6_layout_report_t v6;
   struct metadata_region_summary regions[KAFS_META_REGION_COUNT];
   int rc_inode = collect_inode_summary(fd, &sb, file_size, &ino);
   int rc_hrl = collect_hrl_summary(fd, &sb, file_size, &hrl);
   int rc_journal = collect_journal_summary(fd, &sb, file_size, &jr);
   int rc_tailmeta = collect_tailmeta_summary(fd, &sb, file_size, &tm);
+  int rc_v6 = 0;
+  memset(&v6, 0, sizeof(v6));
+  if (kafs_sb_format_version_get(&sb) == KAFS_FORMAT_VERSION_V6)
+    rc_v6 = kafs_v6_discover_layout(fd, &sb, file_size, &v6);
   collect_metadata_regions(&sb, file_size, regions);
 
   if (rc_inode != 0)
@@ -542,12 +604,17 @@ int main(int argc, char **argv)
     fprintf(stderr, "warning: journal header unavailable: %s\n", rc_to_text(rc_journal));
   if (rc_tailmeta != 0)
     fprintf(stderr, "warning: tail metadata unavailable: %s\n", rc_to_text(rc_tailmeta));
+  if (kafs_sb_format_version_get(&sb) == KAFS_FORMAT_VERSION_V6 && rc_v6 != 0)
+    fprintf(stderr, "warning: v6 descriptor discovery failed: %s\n", rc_to_text(rc_v6));
 
   if (json)
-    print_json(&sb, &ino, &hrl, &jr, &tm, regions, rc_inode, rc_hrl, rc_journal, rc_tailmeta);
+    print_json(&sb, &ino, &hrl, &jr, &tm, &v6, regions, rc_inode, rc_hrl, rc_journal, rc_tailmeta,
+               rc_v6);
   else
-    print_text(&sb, &ino, &hrl, &jr, &tm, regions, rc_inode, rc_hrl, rc_journal, rc_tailmeta);
+    print_text(&sb, &ino, &hrl, &jr, &tm, &v6, regions, rc_inode, rc_hrl, rc_journal, rc_tailmeta,
+               rc_v6);
 
   close(fd);
-  return (rc_inode == 0 && rc_hrl == 0 && rc_journal == 0 && rc_tailmeta == 0) ? 0 : 1;
+  return (rc_inode == 0 && rc_hrl == 0 && rc_journal == 0 && rc_tailmeta == 0 && rc_v6 == 0) ? 0
+                                                                                             : 1;
 }

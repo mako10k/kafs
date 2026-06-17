@@ -42,6 +42,10 @@ Block size as log2 value (default: 12 => 4096 bytes).
 .BR --format-version " " version
 On-disk format version to emit (default: 5).
 Version 5 enables an empty dedicated tail metadata region scaffold during mkfs.
+Version 6 creates an offline-only metadata layout descriptor scaffold with
+primary, tail backup, and midpoint backup descriptor replicas. Runtime mount
+support for version 6 is intentionally disabled until distributed metadata
+shards are implemented.
 Use
 .BR --format-version " " 4
 to create a legacy v4 image.

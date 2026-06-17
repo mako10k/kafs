@@ -7,8 +7,9 @@
 ## Status
 
 この文書は format v6 の root metadata layout descriptor を固定するための仕様である。
-この時点では runtime mountable な v6 を定義しない。`mkfs.kafs --format-version 6` の
-scaffold と read-only parser / `fsck.kafs` / `kafsdump` support を次段で実装するための入力とする。
+この時点では runtime mountable な v6 を定義しない。`mkfs.kafs --format-version 6` は
+offline-only scaffold image を作成し、read-only parser / `fsck.kafs` / `kafsdump` が
+descriptor discovery と replica reporting を行う。
 
 現行 v4/v5 image の mount / fsck / dump behavior は変更しない。
 

@@ -30,6 +30,13 @@ HRL entry totals, live entry count, and refcount sum.
 .TP
 .B journal_header
 In-image journal header fields and header CRC validation result.
+.TP
+.B metadata_regions
+Offline metadata span summary used for SD-card wear diagnostics.
+.TP
+.B v6_layout_descriptor
+For format version 6 images, descriptor anchor status, selected replica,
+generation, descriptor geometry, and per-replica status.
 .SH OPTIONS
 .TP
 .B --json

@@ -189,6 +189,11 @@
   - mkfs が valid descriptor replicas を書く。
   - Phase 4 support が入るまで、未対応 mount path は明確に失敗する。
   - fsck が descriptor bounds を検証する。
+- 完了メモ:
+  - `mkfs.kafs --format-version 6` が superblock anchor と primary / tail / midpoint descriptor replicas を書く。
+  - runtime mount は v6 image を offline-only scaffold として exit 2 で明示拒否する。
+  - `kafsdump` text / JSON と `fsck.kafs` が v6 descriptor discovery、bounds、replica status を報告する。
+  - `v6_descriptor_smoketest` が mkfs / direct parser / kafsdump JSON / fsck / mount rejection を検証する。
 
 ### SDW-P3-T4 Phase 3 validation
 

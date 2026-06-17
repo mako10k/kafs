@@ -12640,6 +12640,12 @@ static void kafs_main_validate_image_format(const char *image_path, uint32_t fmt
 {
   if (fmt_ver == KAFS_FORMAT_VERSION)
     return;
+  if (fmt_ver == KAFS_FORMAT_VERSION_V6)
+  {
+    fprintf(stderr, "unsupported format version: v6 descriptor scaffold is offline-only until "
+                    "distributed metadata support lands.\n");
+    exit(2);
+  }
   if (fmt_ver == KAFS_FORMAT_VERSION_V2 || fmt_ver == KAFS_FORMAT_VERSION_V3)
   {
     if (auto_migrate)
