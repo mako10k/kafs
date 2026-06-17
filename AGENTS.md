@@ -85,6 +85,11 @@
   - `progress-manager`: read-only milestone/docs/progress consistency checks.
   - `github-rules`: GitHub workflow and policy documentation maintenance.
   - `agent-coordinator`: Codex/GitHub agent definition maintenance.
+  - `consistency-reviewer`: read-only consistency, symmetry, completeness, and counterpart-case review.
+  - `plain-reviewer`: read-only non-expert clarity and operational-usability review.
+  - `domain-expert-reviewer`: read-only filesystem/storage expert review.
+- Parallel review trigger: when the user asks for multi-perspective or parallel review, or explicitly approves it for a broad/risky pre-commit or PR review, use the `kafs-parallel-review` skill and run `consistency-reviewer`, `plain-reviewer`, and `domain-expert-reviewer` in parallel.
+- Manual or hook-style entrypoint: `./scripts/codex-parallel-review.sh --target working-tree` writes ignored reports under `report/codex-review/`. Use `--dry-run` first when wiring it into local hooks or automation.
 
 ## Coding Conventions
 

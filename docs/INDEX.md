@@ -20,6 +20,7 @@ historical investigations and deep design notes.
 
 ## Design And Planning
 
+- [codex-review-orchestration.md](codex-review-orchestration.md)
 - [hotplug-plan.md](hotplug-plan.md)
 - [hotplug-requirements.md](hotplug-requirements.md)
 - [hotplug-design.md](hotplug-design.md)

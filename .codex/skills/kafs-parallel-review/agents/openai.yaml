@@ -1,0 +1,4 @@
+interface:
+  display_name: "KAFS Parallel Review"
+  short_description: "Run three complementary KAFS reviews"
+  default_prompt: "Use $kafs-parallel-review to run consistency, plain-language, and domain-expert reviews, then synthesize the findings."
