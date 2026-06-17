@@ -161,6 +161,10 @@
   - descriptor bounds が曖昧でない。
   - unsupported version を明示拒否する。
   - fsck discovery behavior が仕様化されている。
+- 完了メモ:
+  - [sd-card-wear-format-v6-descriptor.md](sd-card-wear-format-v6-descriptor.md) を追加。
+  - superblock anchor、layout descriptor header、group descriptor、shard descriptor の v1 field layout を固定。
+  - descriptor / table / group / shard bounds、unsupported version / incompat flags の拒否条件、`fsck.kafs` discovery order を仕様化。
 
 ### SDW-P3-T2 Descriptor replica policy
 

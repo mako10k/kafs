@@ -114,6 +114,8 @@ SD-card profile は明示 opt-in とし、選択されない限り default behav
 
 format v6 では metadata groups、各 range、shard mapping を表す layout descriptor を導入する。
 descriptor は複数箇所に複製し、局所劣化や torn write で image が発見不能にならないようにする。
+root descriptor の v1 field layout と discovery / rejection rules は
+[sd-card-wear-format-v6-descriptor.md](sd-card-wear-format-v6-descriptor.md) で固定する。
 
 想定範囲:
 
