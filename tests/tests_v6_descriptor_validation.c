@@ -1,5 +1,6 @@
 #include "test_utils.h"
 
+#include "kafs_block.h"
 #include "kafs_offline_summary.h"
 #include "kafs_superblock.h"
 #include "kafs_v6_layout.h"
@@ -10,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -594,6 +596,88 @@ static int test_bitmap_coverage_valid_and_lookup(void)
   return 0;
 }
 
+static int test_bitmap_runtime_descriptor_mapping(void)
+{
+  const char *img = "bitmap-runtime-mapping.img";
+  if (make_v6_image(img) != 0)
+    return -1;
+
+  v6_image_info_t info;
+  if (open_v6_image(img, 1, &info) != 0)
+    return -1;
+
+  int failed = 0;
+  void *desc = NULL;
+  uint32_t desc_bytes = 0;
+  void *map = MAP_FAILED;
+  kafs_v6_layout_report_t layout;
+  int rc = kafs_v6_discover_layout(info.fd, &info.sb, info.file_size, &layout);
+  if (rc == 0)
+    rc = kafs_v6_read_selected_descriptor(info.fd, &layout, &desc, &desc_bytes);
+  if (rc != 0)
+    failed = 1;
+
+  if (!failed)
+  {
+    map = mmap(NULL, (size_t)info.file_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, info.fd, 0);
+    if (map == MAP_FAILED)
+      failed = 1;
+  }
+
+  if (!failed)
+  {
+    kafs_context_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.c_img_base = map;
+    ctx.c_img_size = (size_t)info.file_size;
+    ctx.c_superblock = (kafs_ssuperblock_t *)map;
+    ctx.c_fd = info.fd;
+    ctx.c_v6_bitmap_mapping_enabled = 1u;
+    ctx.c_v6_layout_desc = desc;
+    ctx.c_v6_layout_desc_bytes = desc_bytes;
+
+    kafs_blkcnt_t blo = kafs_sb_first_data_block_get(ctx.c_superblock);
+    if (blo >= kafs_sb_blkcnt_get(ctx.c_superblock))
+      failed = 1;
+
+    kafs_v6_bitmap_lookup_t lookup;
+    if (!failed && kafs_v6_bitmap_lookup(desc, desc_bytes, (uint64_t)blo, &lookup) != 0)
+      failed = 1;
+    if (!failed && lookup.bitmap_byte_off >= info.file_size)
+      failed = 1;
+
+    if (!failed)
+    {
+      uint8_t *bitmap_byte = (uint8_t *)map + lookup.bitmap_byte_off;
+      uint8_t bitmap_mask = (uint8_t)(1u << lookup.bitmap_bit);
+      *bitmap_byte &= (uint8_t)~bitmap_mask;
+
+      uint64_t writes_before = ctx.c_meta_region_writes[KAFS_META_REGION_BLOCK_BITMAP];
+      uint64_t bytes_before = ctx.c_meta_region_bytes[KAFS_META_REGION_BLOCK_BITMAP];
+      if (kafs_blk_get_usage(&ctx, blo) != 0)
+        failed = 1;
+      if (!failed && kafs_blk_set_usage_nolock(&ctx, blo, KAFS_TRUE) != 0)
+        failed = 1;
+      if (!failed && ((*bitmap_byte & bitmap_mask) == 0u || !kafs_blk_get_usage(&ctx, blo)))
+        failed = 1;
+      if (!failed &&
+          (ctx.c_meta_region_writes[KAFS_META_REGION_BLOCK_BITMAP] <= writes_before ||
+           ctx.c_meta_region_bytes[KAFS_META_REGION_BLOCK_BITMAP] <= bytes_before))
+        failed = 1;
+      if (!failed && kafs_blk_set_usage_nolock(&ctx, blo, KAFS_FALSE) != 0)
+        failed = 1;
+      if (!failed && ((*bitmap_byte & bitmap_mask) != 0u || kafs_blk_get_usage(&ctx, blo) != 0))
+        failed = 1;
+    }
+  }
+
+  if (map != MAP_FAILED)
+    munmap(map, (size_t)info.file_size);
+  free(desc);
+  close_v6_image(&info);
+  return failed ? -1 : 0;
+}
+
 static int test_bitmap_gap_rejected(void)
 {
   const char *img = "bitmap-gap.img";
@@ -681,6 +765,7 @@ int main(void)
       {"stale_generation_reported", test_stale_generation_reported},
       {"divergent_same_generation_rejected", test_divergent_same_generation_rejected},
       {"bitmap_coverage_valid_and_lookup", test_bitmap_coverage_valid_and_lookup},
+      {"bitmap_runtime_descriptor_mapping", test_bitmap_runtime_descriptor_mapping},
       {"bitmap_gap_rejected", test_bitmap_gap_rejected},
       {"bitmap_overlap_rejected", test_bitmap_overlap_rejected},
   };

@@ -165,6 +165,11 @@ struct kafs_context
   size_t c_meta_bitmap_wordcnt;
   size_t c_meta_bitmap_dirty_count;
 
+  // --- Format v6 descriptor bitmap mapping (dormant until v6 runtime admission) ---
+  uint32_t c_v6_bitmap_mapping_enabled;
+  const void *c_v6_layout_desc;
+  uint32_t c_v6_layout_desc_bytes;
+
   // --- Phase3 pending log runtime state ---
   uint32_t c_pendinglog_enabled;
   void *c_pendinglog_base;

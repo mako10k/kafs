@@ -4,6 +4,7 @@
 #include "kafs_context.h"
 #include "kafs_superblock.h"
 #include "kafs_locks.h"
+#include "kafs_v6_layout.h"
 #include <assert.h>
 #include <stdio.h>
 #include <errno.h>
@@ -81,6 +82,109 @@ static void kafs_meta_bitmap_mark_dirty(struct kafs_context *ctx, kafs_blkcnt_t 
   }
 }
 
+typedef struct kafs_bitmap_word_ref
+{
+  kafs_ssuperblock_t *sb;
+  kafs_blkcnt_t dirty_word_index;
+  kafs_blkcnt_t word_logical_start;
+  kafs_blkmask_t bit;
+  kafs_blkmask_t *word_ptr;
+  kafs_blkmask_t word;
+  int meta_overlay;
+  int count_block_bitmap_write;
+} kafs_bitmap_word_ref_t;
+
+static int kafs_bitmap_descriptor_mapping_enabled(const struct kafs_context *ctx)
+{
+  if (!ctx || !ctx->c_superblock)
+    return KAFS_FALSE;
+  if (kafs_sb_format_version_get(ctx->c_superblock) != KAFS_FORMAT_VERSION_V6)
+    return KAFS_FALSE;
+  if (!ctx->c_v6_bitmap_mapping_enabled || !ctx->c_v6_layout_desc ||
+      ctx->c_v6_layout_desc_bytes == 0u)
+    return KAFS_FALSE;
+  if (!ctx->c_img_base || ctx->c_img_size == 0u)
+    return KAFS_FALSE;
+  return KAFS_TRUE;
+}
+
+static int kafs_bitmap_word_ref_from_contiguous(struct kafs_context *ctx, kafs_blkcnt_t blo,
+                                                kafs_bitmap_word_ref_t *ref)
+{
+  if (!ctx || !ctx->c_superblock || !ref)
+    return -EINVAL;
+
+  kafs_ssuperblock_t *sb = ctx->c_superblock;
+  assert(blo < kafs_sb_blkcnt_get(sb));
+
+  kafs_blkcnt_t blod = blo >> KAFS_BLKMASK_LOG_BITS;
+  kafs_blkcnt_t blor = blo & KAFS_BLKMASK_MASK_BITS;
+  kafs_blkmask_t *blkmasktbl = kafs_meta_bitmap_tbl_mut(ctx);
+  if (!blkmasktbl)
+    return -EINVAL;
+
+  memset(ref, 0, sizeof(*ref));
+  ref->sb = sb;
+  ref->dirty_word_index = blod;
+  ref->word_logical_start = blod << KAFS_BLKMASK_LOG_BITS;
+  ref->bit = (kafs_blkmask_t)1 << blor;
+  ref->word_ptr = &blkmasktbl[blod];
+  ref->word = *ref->word_ptr;
+  ref->meta_overlay = (blkmasktbl != ctx->c_blkmasktbl);
+  ref->count_block_bitmap_write = (blkmasktbl == ctx->c_blkmasktbl);
+  return 0;
+}
+
+static int kafs_bitmap_word_ref_from_v6_descriptor(struct kafs_context *ctx, kafs_blkcnt_t blo,
+                                                   kafs_bitmap_word_ref_t *ref)
+{
+  if (!ctx || !ctx->c_superblock || !ref)
+    return -EINVAL;
+
+  kafs_v6_bitmap_lookup_t lookup;
+  int rc = kafs_v6_bitmap_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes, (uint64_t)blo,
+                                 &lookup);
+  if (rc != 0)
+    return rc;
+
+  uint64_t bit_delta = (uint64_t)blo - lookup.logical_start;
+  uint64_t byte_delta = bit_delta >> 3;
+  uint64_t word_back = byte_delta & (uint64_t)(sizeof(kafs_blkmask_t) - 1u);
+  if (lookup.bitmap_byte_off < word_back)
+    return -ERANGE;
+
+  uint64_t word_off = lookup.bitmap_byte_off - word_back;
+  if (word_off > (uint64_t)ctx->c_img_size ||
+      (uint64_t)sizeof(kafs_blkmask_t) > (uint64_t)ctx->c_img_size - word_off)
+    return -ERANGE;
+  if ((word_off & (uint64_t)(sizeof(kafs_blkmask_t) - 1u)) != 0u)
+    return -ERANGE;
+
+  memset(ref, 0, sizeof(*ref));
+  ref->sb = ctx->c_superblock;
+  ref->dirty_word_index = (kafs_blkcnt_t)(bit_delta >> KAFS_BLKMASK_LOG_BITS);
+  ref->word_logical_start =
+      (kafs_blkcnt_t)(lookup.logical_start + (bit_delta & ~(uint64_t)KAFS_BLKMASK_MASK_BITS));
+  ref->bit = (kafs_blkmask_t)1 << (bit_delta & KAFS_BLKMASK_MASK_BITS);
+  ref->word_ptr = (kafs_blkmask_t *)((uint8_t *)ctx->c_img_base + word_off);
+  ref->word = *ref->word_ptr;
+  ref->meta_overlay = KAFS_FALSE;
+  ref->count_block_bitmap_write = KAFS_TRUE;
+  return 0;
+}
+
+static int kafs_bitmap_word_ref_init(struct kafs_context *ctx, kafs_blkcnt_t blo,
+                                     kafs_bitmap_word_ref_t *ref)
+{
+  if (!ctx || !ctx->c_superblock || !ref)
+    return -EINVAL;
+  assert(blo < kafs_sb_blkcnt_get(ctx->c_superblock));
+
+  if (kafs_bitmap_descriptor_mapping_enabled(ctx))
+    return kafs_bitmap_word_ref_from_v6_descriptor(ctx, blo, ref);
+  return kafs_bitmap_word_ref_from_contiguous(ctx, blo, ref);
+}
+
 /// @brief 指定されたブロック番号の利用状況を取得する
 /// @param ctx コンテキスト
 /// @param blo ブロック番号
@@ -89,10 +193,12 @@ static int kafs_blk_get_usage(const struct kafs_context *ctx, kafs_blkcnt_t blo)
 {
   assert(ctx != NULL);
   assert(blo < kafs_sb_blkcnt_get(ctx->c_superblock));
-  kafs_blkcnt_t blod = blo >> KAFS_BLKMASK_LOG_BITS;
-  kafs_blkcnt_t blor = blo & KAFS_BLKMASK_MASK_BITS;
-  const kafs_blkmask_t *blkmasktbl = kafs_meta_bitmap_tbl_const(ctx);
-  int ret = (blkmasktbl[blod] & ((kafs_blkmask_t)1 << blor)) != 0;
+  kafs_bitmap_word_ref_t ref;
+  int rc = kafs_bitmap_word_ref_init((struct kafs_context *)ctx, blo, &ref);
+  assert(rc == 0);
+  if (rc != 0)
+    return KAFS_FALSE;
+  int ret = (ref.word & ref.bit) != 0;
   kafs_log(KAFS_LOG_DEBUG, "%s(blo=%" PRIuFAST32 ") returns %s\n", __func__, blo,
            ret ? "true" : "false");
   return ret;
@@ -175,14 +281,15 @@ static int kafs_alloc_v3_summary_sync_one(struct kafs_context *ctx, kafs_blkcnt_
   return 0;
 }
 
-static void kafs_blk_account_bit_update(struct kafs_context *ctx, kafs_blkmask_t *blkmasktbl,
-                                        kafs_blkcnt_t blod, kafs_blkmask_t word)
+static void kafs_blk_account_bit_update(struct kafs_context *ctx, const kafs_bitmap_word_ref_t *ref,
+                                        kafs_blkmask_t word)
 {
   uint64_t t_bit0 = kafs_blk_now_ns();
-  blkmasktbl[blod] = word;
-  kafs_meta_bitmap_mark_dirty(ctx, blod);
-  if (blkmasktbl == ctx->c_blkmasktbl)
-    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_BLOCK_BITMAP, sizeof(*blkmasktbl));
+  *ref->word_ptr = word;
+  if (ref->meta_overlay)
+    kafs_meta_bitmap_mark_dirty(ctx, ref->dirty_word_index);
+  if (ref->count_block_bitmap_write)
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_BLOCK_BITMAP, sizeof(*ref->word_ptr));
   uint64_t t_bit1 = kafs_blk_now_ns();
   __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_bit_update, t_bit1 - t_bit0, __ATOMIC_RELAXED);
 }
@@ -232,30 +339,10 @@ static void kafs_blk_account_meta_update(struct kafs_context *ctx, kafs_ssuperbl
     ctx->c_alloc_v3_summary_dirty = 1u;
 }
 
-static void kafs_blk_load_word(struct kafs_context *ctx, kafs_blkcnt_t blo,
-                               kafs_ssuperblock_t **out_sb, kafs_blkcnt_t *out_blod,
-                               kafs_blkmask_t *out_bit, kafs_blkmask_t **out_tbl,
-                               kafs_blkmask_t *out_word)
+static int kafs_blk_load_word(struct kafs_context *ctx, kafs_blkcnt_t blo,
+                              kafs_bitmap_word_ref_t *out_ref)
 {
-  assert(ctx != NULL);
-  kafs_ssuperblock_t *sb = ctx->c_superblock;
-  assert(blo < kafs_sb_blkcnt_get(sb));
-
-  kafs_blkcnt_t blod = blo >> KAFS_BLKMASK_LOG_BITS;
-  kafs_blkcnt_t blor = blo & KAFS_BLKMASK_MASK_BITS;
-  kafs_blkmask_t bit = (kafs_blkmask_t)1 << blor;
-  kafs_blkmask_t *blkmasktbl = kafs_meta_bitmap_tbl_mut(ctx);
-
-  if (out_sb)
-    *out_sb = sb;
-  if (out_blod)
-    *out_blod = blod;
-  if (out_bit)
-    *out_bit = bit;
-  if (out_tbl)
-    *out_tbl = blkmasktbl;
-  if (out_word)
-    *out_word = blkmasktbl[blod];
+  return kafs_bitmap_word_ref_init(ctx, blo, out_ref);
 }
 
 /// @brief 指定されたブロックの利用状況をセットする
@@ -268,22 +355,22 @@ static int kafs_blk_set_usage_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo
 {
   kafs_log(KAFS_LOG_DEBUG, "%s(blo=%" PRIuFAST32 ", usage=%s)\n", __func__, blo,
            usage ? "true" : "false");
-  kafs_ssuperblock_t *sb = NULL;
-  kafs_blkcnt_t blod = 0;
-  kafs_blkmask_t bit = 0;
-  kafs_blkmask_t *blkmasktbl = NULL;
-  kafs_blkmask_t word = 0;
-  kafs_blk_load_word(ctx, blo, &sb, &blod, &bit, &blkmasktbl, &word);
-  int was_used = (word & bit) != 0;
+  kafs_bitmap_word_ref_t ref;
+  int rc = kafs_blk_load_word(ctx, blo, &ref);
+  if (rc != 0)
+    return rc;
+
+  kafs_blkmask_t word = ref.word;
+  int was_used = (word & ref.bit) != 0;
   __atomic_add_fetch(&ctx->c_stat_blk_set_usage_calls, 1u, __ATOMIC_RELAXED);
   if (usage == KAFS_TRUE)
   {
     __atomic_add_fetch(&ctx->c_stat_blk_set_usage_alloc_calls, 1u, __ATOMIC_RELAXED);
     if (!was_used)
     {
-      word |= bit;
-      kafs_blk_account_bit_update(ctx, blkmasktbl, blod, word);
-      kafs_blk_account_meta_update(ctx, sb, blo, -1);
+      word |= ref.bit;
+      kafs_blk_account_bit_update(ctx, &ref, word);
+      kafs_blk_account_meta_update(ctx, ref.sb, blo, -1);
     }
   }
   else
@@ -291,19 +378,19 @@ static int kafs_blk_set_usage_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo
     __atomic_add_fetch(&ctx->c_stat_blk_set_usage_free_calls, 1u, __ATOMIC_RELAXED);
     if (was_used)
     {
-      word &= (kafs_blkmask_t)~bit;
-      kafs_blk_account_bit_update(ctx, blkmasktbl, blod, word);
-      kafs_blk_account_meta_update(ctx, sb, blo, +1);
+      word &= (kafs_blkmask_t)~ref.bit;
+      kafs_blk_account_bit_update(ctx, &ref, word);
+      kafs_blk_account_meta_update(ctx, ref.sb, blo, +1);
 
       if (ctx->c_trim_on_free)
       {
-        kafs_blkcnt_t fdb = kafs_sb_first_data_block_get(sb);
+        kafs_blkcnt_t fdb = kafs_sb_first_data_block_get(ref.sb);
         if (blo >= fdb)
         {
 #ifdef __linux__
 #ifdef SYS_fallocate
-          off_t off = (off_t)blo << kafs_sb_log_blksize_get(sb);
-          off_t len = (off_t)kafs_sb_blksize_get(sb);
+          off_t off = (off_t)blo << kafs_sb_log_blksize_get(ref.sb);
+          off_t len = (off_t)kafs_sb_blksize_get(ref.sb);
           if (syscall(SYS_fallocate, ctx->c_fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, off,
                       len) == 0)
           {
@@ -334,21 +421,21 @@ static int kafs_blk_set_usage_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo
 // Returns 1 when claimed, 0 when already used.
 static int kafs_blk_try_claim_nolock(struct kafs_context *ctx, kafs_blkcnt_t blo)
 {
-  kafs_ssuperblock_t *sb = NULL;
-  kafs_blkcnt_t blod = 0;
-  kafs_blkmask_t bit = 0;
-  kafs_blkmask_t *blkmasktbl = NULL;
-  kafs_blkmask_t word = 0;
-  kafs_blk_load_word(ctx, blo, &sb, &blod, &bit, &blkmasktbl, &word);
-  if ((word & bit) != 0)
+  kafs_bitmap_word_ref_t ref;
+  int rc = kafs_blk_load_word(ctx, blo, &ref);
+  if (rc != 0)
+    return rc;
+
+  kafs_blkmask_t word = ref.word;
+  if ((word & ref.bit) != 0)
     return 0;
 
   __atomic_add_fetch(&ctx->c_stat_blk_set_usage_calls, 1u, __ATOMIC_RELAXED);
   __atomic_add_fetch(&ctx->c_stat_blk_set_usage_alloc_calls, 1u, __ATOMIC_RELAXED);
 
-  word |= bit;
-  kafs_blk_account_bit_update(ctx, blkmasktbl, blod, word);
-  kafs_blk_account_meta_update(ctx, sb, blo, -1);
+  word |= ref.bit;
+  kafs_blk_account_bit_update(ctx, &ref, word);
+  kafs_blk_account_meta_update(ctx, ref.sb, blo, -1);
 
   return 1;
 }
@@ -362,7 +449,14 @@ static int kafs_blk_claim_candidate(struct kafs_context *ctx, kafs_blkcnt_t cand
   int claimed = kafs_blk_try_claim_nolock(ctx, candidate);
   uint64_t t_set1 = kafs_blk_now_ns();
   __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_set_usage, t_set1 - t_set0, __ATOMIC_RELAXED);
-  if (claimed)
+  if (claimed < 0)
+  {
+    kafs_bitmap_unlock(ctx);
+    uint64_t t_claim1 = kafs_blk_now_ns();
+    __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_claim, t_claim1 - t_claim0, __ATOMIC_RELAXED);
+    return claimed;
+  }
+  if (claimed > 0)
   {
     ctx->c_blo_search = candidate;
     *pblo = candidate;
@@ -396,11 +490,8 @@ static int kafs_blk_alloc_backend_is_v3(const struct kafs_context *ctx)
   return kafs_alloc_v3_summary_enabled(ctx);
 }
 
-/// @brief 未使用のブロック番号を取得し、使用中フラグをつける（legacy）
-/// @param ctx コンテキスト
-/// @param pblo ブロック番号
-/// @return 0: 成功, < 0: 失敗 (-errno)
-static int kafs_blk_alloc_legacy(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
+static int kafs_blk_alloc_prepare(struct kafs_context *ctx, kafs_blkcnt_t *pblo,
+                                  kafs_blkcnt_t *out_blocnt, kafs_blkcnt_t *out_fdb)
 {
   assert(ctx != NULL);
   assert(pblo != NULL);
@@ -408,12 +499,24 @@ static int kafs_blk_alloc_legacy(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
 
   __atomic_add_fetch(&ctx->c_stat_blk_alloc_calls, 1u, __ATOMIC_RELAXED);
 
-  const kafs_blkmask_t *blkmasktbl = kafs_meta_bitmap_tbl_const(ctx);
-
-  kafs_blkcnt_t blocnt = kafs_sb_blkcnt_get(ctx->c_superblock);
-  kafs_blkcnt_t fdb = kafs_sb_first_data_block_get(ctx->c_superblock);
-  if (fdb >= blocnt)
+  *out_blocnt = kafs_sb_blkcnt_get(ctx->c_superblock);
+  *out_fdb = kafs_sb_first_data_block_get(ctx->c_superblock);
+  if (*out_fdb >= *out_blocnt)
     return -ENOSPC;
+  return 0;
+}
+
+/// @brief 未使用のブロック番号を取得し、使用中フラグをつける（legacy）
+/// @param ctx コンテキスト
+/// @param pblo ブロック番号
+/// @return 0: 成功, < 0: 失敗 (-errno)
+static int kafs_blk_alloc_legacy(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
+{
+  kafs_blkcnt_t blocnt = 0;
+  kafs_blkcnt_t fdb = 0;
+  int prepare_rc = kafs_blk_alloc_prepare(ctx, pblo, &blocnt, &fdb);
+  if (prepare_rc != 0)
+    return prepare_rc;
 
   kafs_blkcnt_t blo_search = ctx->c_blo_search;
   if (blo_search < fdb)
@@ -429,26 +532,33 @@ static int kafs_blk_alloc_legacy(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
     if (blo >= blocnt)
       blo = fdb;
 
-    kafs_blkcnt_t blod = blo >> KAFS_BLKMASK_LOG_BITS;
-    kafs_blkcnt_t blor = blo & KAFS_BLKMASK_MASK_BITS;
-    kafs_blkmask_t blkmask = ~blkmasktbl[blod];
+    kafs_bitmap_word_ref_t scan_ref;
+    int rc = kafs_blk_load_word(ctx, blo, &scan_ref);
+    if (rc != 0)
+      return rc;
+    kafs_blkcnt_t blor = blo - scan_ref.word_logical_start;
+    kafs_blkmask_t blkmask = ~scan_ref.word;
 
-    kafs_blkcnt_t fdb_d = fdb >> KAFS_BLKMASK_LOG_BITS;
-    kafs_blkcnt_t fdb_r = fdb & KAFS_BLKMASK_MASK_BITS;
-    if (blod == fdb_d && fdb_r != 0)
+    if (fdb > scan_ref.word_logical_start && fdb < scan_ref.word_logical_start + KAFS_BLKMASK_BITS)
+    {
+      kafs_blkcnt_t fdb_r = fdb - scan_ref.word_logical_start;
       blkmask &= (kafs_blkmask_t)(~(((kafs_blkmask_t)1u << fdb_r) - 1u));
+    }
 
     if (blkmask != 0)
     {
       kafs_blkcnt_t blor_found = kafs_get_free_blkmask(blkmask);
-      kafs_blkcnt_t blo_found = (blod << KAFS_BLKMASK_LOG_BITS) + blor_found;
+      kafs_blkcnt_t blo_found = scan_ref.word_logical_start + blor_found;
       if (blo_found >= fdb && blo_found < blocnt)
       {
         uint64_t t_scan_stop = kafs_blk_now_ns();
         __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_scan, t_scan_stop - t_scan_start,
                            __ATOMIC_RELAXED);
 
-        if (kafs_blk_claim_candidate(ctx, blo_found, pblo))
+        int claim_rc = kafs_blk_claim_candidate(ctx, blo_found, pblo);
+        if (claim_rc < 0)
+          return claim_rc;
+        if (claim_rc > 0)
           return KAFS_SUCCESS;
         t_scan_start = kafs_blk_now_ns();
       }
@@ -601,16 +711,11 @@ static int kafs_alloc_v3_find_in_range(struct kafs_context *ctx, kafs_blkcnt_t s
 
 static int kafs_blk_alloc_v3(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
 {
-  assert(ctx != NULL);
-  assert(pblo != NULL);
-  assert(*pblo == KAFS_BLO_NONE);
-
-  __atomic_add_fetch(&ctx->c_stat_blk_alloc_calls, 1u, __ATOMIC_RELAXED);
-
-  kafs_blkcnt_t blocnt = kafs_sb_blkcnt_get(ctx->c_superblock);
-  kafs_blkcnt_t fdb = kafs_sb_first_data_block_get(ctx->c_superblock);
-  if (fdb >= blocnt)
-    return -ENOSPC;
+  kafs_blkcnt_t blocnt = 0;
+  kafs_blkcnt_t fdb = 0;
+  int prepare_rc = kafs_blk_alloc_prepare(ctx, pblo, &blocnt, &fdb);
+  if (prepare_rc != 0)
+    return prepare_rc;
 
   kafs_blkcnt_t search_start = ctx->c_blo_search + 1;
   if (search_start < fdb || search_start >= blocnt)
@@ -638,7 +743,10 @@ static int kafs_blk_alloc_v3(struct kafs_context *ctx, kafs_blkcnt_t *pblo)
     __atomic_add_fetch(&ctx->c_stat_blk_alloc_ns_scan, t_scan_stop - t_scan_start,
                        __ATOMIC_RELAXED);
 
-    if (kafs_blk_claim_candidate(ctx, candidate, pblo))
+    int claim_rc = kafs_blk_claim_candidate(ctx, candidate, pblo);
+    if (claim_rc < 0)
+      return claim_rc;
+    if (claim_rc > 0)
       return KAFS_SUCCESS;
 
     search_start = candidate + 1;
