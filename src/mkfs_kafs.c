@@ -42,6 +42,8 @@ static void usage(const char *prog)
       "    -i, --inodes <I>                  Inode count (default: 1 inode per 16KiB, min: 256)\n");
   fprintf(stderr,
           "    -J, --journal-size-bytes <J>      Journal size (default: 1MiB, min: 4KiB)\n");
+  fprintf(stderr, "    --journal-header-rotation         Rotate journal header slots inside the "
+                  "journal area\n");
   fprintf(stderr, "    --hrl-entry-ratio <R>             HRL entries/data-block ratio (default: "
                   "0.75, range: (0,1])\n");
   fprintf(stderr, "    --yes                             Skip overwrite confirmation prompt\n");
@@ -302,6 +304,7 @@ typedef struct mkfs_options
   int size_arg_provided;
   int inocnt_arg_provided;
   int trim_data_area;
+  int journal_header_rotation;
   int assume_yes;
 } mkfs_options_t;
 
@@ -388,6 +391,11 @@ static int mkfs_handle_arg(int argc, char **argv, int *index, mkfs_options_t *op
   {
     *index += 1;
     return mkfs_parse_journal_size_option(argv[*index], &opts->journal_bytes);
+  }
+  if (strcmp(arg, "--journal-header-rotation") == 0)
+  {
+    opts->journal_header_rotation = 1;
+    return 0;
   }
   if (strcmp(arg, "--hrl-entry-ratio") == 0 && *index + 1 < argc)
   {
@@ -593,7 +601,7 @@ static int mkfs_map_metadata(kafs_context_t *ctx, off_t mapsize, kafs_blkcnt_t b
 static void mkfs_init_superblock(kafs_context_t *ctx, uint32_t format_version,
                                  kafs_logblksize_t log_blksize, kafs_inocnt_t inocnt,
                                  kafs_blkcnt_t blkcnt, off_t mapsize, size_t journal_bytes,
-                                 const struct mkfs_layout *layout)
+                                 uint32_t journal_flags, const struct mkfs_layout *layout)
 {
   kafs_sb_log_blksize_set(ctx->c_superblock, log_blksize);
   kafs_sb_magic_set(ctx->c_superblock, KAFS_MAGIC);
@@ -606,7 +614,7 @@ static void mkfs_init_superblock(kafs_context_t *ctx, uint32_t format_version,
   kafs_sb_hrl_entry_cnt_set(ctx->c_superblock, (uint32_t)layout->hrl_entry_cnt);
   kafs_sb_journal_offset_set(ctx->c_superblock, (uint64_t)layout->journal_off);
   kafs_sb_journal_size_set(ctx->c_superblock, (uint64_t)journal_bytes);
-  kafs_sb_journal_flags_set(ctx->c_superblock, 0);
+  kafs_sb_journal_flags_set(ctx->c_superblock, journal_flags);
   kafs_sb_allocator_version_set(ctx->c_superblock, 2);
   kafs_sb_allocator_offset_set(ctx->c_superblock, (uint64_t)layout->allocator_off);
   kafs_sb_allocator_size_set(ctx->c_superblock, (uint64_t)layout->allocator_size);
@@ -669,7 +677,8 @@ static void mkfs_init_root_inode(kafs_context_t *ctx, uint32_t format_version, o
 }
 
 static void mkfs_init_runtime_regions(kafs_context_t *ctx, const struct mkfs_layout *layout,
-                                      size_t journal_bytes, kafs_blksize_t blksize, off_t mapsize)
+                                      size_t journal_bytes, uint32_t journal_flags,
+                                      kafs_blksize_t blksize, off_t mapsize)
 {
   ctx->c_hrl_index = (void *)((char *)ctx->c_superblock + layout->hrl_index_off);
   ctx->c_hrl_bucket_cnt = layout->hrl_bucket_cnt;
@@ -677,6 +686,8 @@ static void mkfs_init_runtime_regions(kafs_context_t *ctx, const struct mkfs_lay
 
   if (journal_bytes > kj_header_size())
   {
+    uint32_t slot_count = kj_header_slot_count(journal_flags, (uint64_t)journal_bytes);
+    uint64_t area_size = kj_journal_area_size((uint64_t)journal_bytes, journal_flags);
     kj_header_t jh;
     char *jhdr_ptr = (char *)ctx->c_superblock + layout->journal_off;
     char *base = (char *)ctx->c_superblock;
@@ -685,13 +696,13 @@ static void mkfs_init_runtime_regions(kafs_context_t *ctx, const struct mkfs_lay
     memset(&jh, 0, sizeof(jh));
     jh.magic = KJ_MAGIC;
     jh.version = KJ_VER;
-    jh.flags = 0;
-    jh.area_size = (uint64_t)journal_bytes - (uint64_t)kj_header_size();
+    jh.flags = (slot_count > 1u) ? KJ_HEADER_FLAG_ROTATED : 0u;
+    jh.area_size = area_size;
     jh.write_off = 0;
     jh.seq = 0;
-    jh.reserved0 = 0;
+    jh.reserved0 = 1;
     jh.header_crc = 0;
-    jh.header_crc = kj_crc32(&jh, sizeof(jh));
+    jh.header_crc = kj_header_crc_calc(&jh);
 
     assert(jhdr_ptr >= base && jhdr_ptr + sizeof(jh) <= end);
     memcpy(jhdr_ptr, &jh, sizeof(jh));
@@ -760,6 +771,7 @@ int main(int argc, char **argv)
   int size_arg_provided = opts.size_arg_provided;
   int inocnt_arg_provided = opts.inocnt_arg_provided;
   int trim_data_area = opts.trim_data_area;
+  uint32_t journal_flags = opts.journal_header_rotation ? KAFS_JOURNAL_FLAG_ROTATING_HEADERS : 0u;
   int assume_yes = opts.assume_yes;
 
   struct stat st;
@@ -781,9 +793,9 @@ int main(int argc, char **argv)
   }
 
   mkfs_init_superblock(&ctx, format_version, log_blksize, inocnt, blkcnt, mapsize, journal_bytes,
-                       &layout);
+                       journal_flags, &layout);
   mkfs_init_root_inode(&ctx, format_version, mapsize);
-  mkfs_init_runtime_regions(&ctx, &layout, journal_bytes, blksize, mapsize);
+  mkfs_init_runtime_regions(&ctx, &layout, journal_bytes, journal_flags, blksize, mapsize);
 
   if (trim_data_area)
   {

@@ -15,6 +15,7 @@ mkfs.kafs \- create a KAFS filesystem image
 .IR inodes ]
 .RB [ -J
 .IR journalsz ]
+.RB [ --journal-header-rotation ]
 .RB [ --hrl-entry-ratio
 .IR ratio ]
 .RB [ --yes ]
@@ -54,6 +55,10 @@ For the default 1GiB image size this yields 65536 inodes.
 .TP
 .BR -J ", " --journal-size-bytes "=" bytes
 Journal region size (default: 1MiB, minimum 4KiB). K/M/G suffixes are accepted.
+.TP
+.B --journal-header-rotation
+Enable rotated journal header slots inside the journal region. This reduces
+repeated writes to a single journal header location. The default is disabled.
 .TP
 .BR --hrl-entry-ratio "=" ratio
 HRL entry count ratio against data block count.

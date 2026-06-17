@@ -31,8 +31,27 @@ struct journal_summary
 {
   int available;
   int crc_ok;
+  uint32_t slot_count;
+  uint32_t active_slot;
+  uint32_t valid_slots;
   kj_header_t header;
 };
+
+struct dump_journal_header_read_ctx
+{
+  int fd;
+  uint64_t joff;
+  uint64_t area_size;
+};
+
+static int dump_read_journal_header_slot(void *user, uint32_t slot, kj_header_t *hdr)
+{
+  const struct dump_journal_header_read_ctx *ctx =
+      (const struct dump_journal_header_read_ctx *)user;
+  uint64_t off = kj_header_slot_offset(ctx->joff, ctx->area_size, slot);
+
+  return kafs_pread_all(ctx->fd, hdr, sizeof(*hdr), (off_t)off);
+}
 
 static void usage(const char *prog) { fprintf(stderr, "Usage: %s [--json] <image>\n", prog); }
 
@@ -102,23 +121,34 @@ static int collect_journal_summary(int fd, const kafs_ssuperblock_t *sb, uint64_
 
   const uint64_t j_off = kafs_sb_journal_offset_get(sb);
   const uint64_t j_size = kafs_sb_journal_size_get(sb);
+  const uint32_t j_flags = kafs_sb_journal_flags_get(sb);
 
   if (j_off == 0 || j_size < sizeof(kj_header_t))
     return 0;
 
-  if (kafs_offline_check_bounds(j_off, sizeof(kj_header_t), file_size) != 0)
+  if (kafs_offline_check_bounds(j_off, j_size, file_size) != 0)
     return -ERANGE;
 
-  int rc = kafs_pread_all(fd, &out->header, sizeof(out->header), (off_t)j_off);
-  if (rc != 0)
-    return rc;
-
   out->available = 1;
+  out->slot_count = kj_header_slot_count(j_flags, j_size);
+  uint64_t area_size = kj_journal_area_size(j_size, j_flags);
+  struct dump_journal_header_read_ctx read_ctx = {
+      .fd = fd,
+      .joff = j_off,
+      .area_size = area_size,
+  };
 
-  kj_header_t tmp = out->header;
-  uint32_t saved_crc = tmp.header_crc;
-  tmp.header_crc = 0;
-  out->crc_ok = (kj_crc32(&tmp, sizeof(tmp)) == saved_crc) ? 1 : 0;
+  int found =
+      (kj_header_select_best(out->slot_count, area_size, dump_read_journal_header_slot, &read_ctx,
+                             &out->header, &out->active_slot, &out->valid_slots) == 0);
+  if (!found)
+  {
+    int rc = kafs_pread_all(fd, &out->header, sizeof(out->header), (off_t)j_off);
+    if (rc != 0)
+      return rc;
+  }
+
+  out->crc_ok = found ? 1 : (kj_header_crc_ok(&out->header) ? 1 : 0);
   return 0;
 }
 
@@ -197,6 +227,10 @@ static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary 
     printf("  magic: 0x%08" PRIx32 "\n", jr->header.magic);
     printf("  version: %" PRIu16 "\n", jr->header.version);
     printf("  flags: %" PRIu16 "\n", jr->header.flags);
+    printf("  slot_count: %" PRIu32 "\n", jr->slot_count);
+    printf("  active_slot: %" PRIu32 "\n", jr->active_slot);
+    printf("  valid_slots: %" PRIu32 "\n", jr->valid_slots);
+    printf("  generation: %" PRIu64 "\n", jr->header.reserved0);
     printf("  area_size: %" PRIu64 "\n", jr->header.area_size);
     printf("  write_off: %" PRIu64 "\n", jr->header.write_off);
     printf("  seq: %" PRIu64 "\n", jr->header.seq);
@@ -290,6 +324,10 @@ static void print_json(const kafs_ssuperblock_t *sb, const struct inode_summary 
     printf(",\n    \"magic\": %" PRIu32, jr->header.magic);
     printf(",\n    \"version\": %" PRIu16, jr->header.version);
     printf(",\n    \"flags\": %" PRIu16, jr->header.flags);
+    printf(",\n    \"slot_count\": %" PRIu32, jr->slot_count);
+    printf(",\n    \"active_slot\": %" PRIu32, jr->active_slot);
+    printf(",\n    \"valid_slots\": %" PRIu32, jr->valid_slots);
+    printf(",\n    \"generation\": %" PRIu64, jr->header.reserved0);
     printf(",\n    \"area_size\": %" PRIu64, jr->header.area_size);
     printf(",\n    \"write_off\": %" PRIu64, jr->header.write_off);
     printf(",\n    \"seq\": %" PRIu64, jr->header.seq);

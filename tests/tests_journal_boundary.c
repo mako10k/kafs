@@ -32,8 +32,51 @@ static int read_header(int fd, uint64_t off, kj_header_t *hdr)
 static int write_header(int fd, uint64_t off, const kj_header_t *in)
 {
   kj_header_t hdr = *in;
-  hdr.header_crc = 0;
-  hdr.header_crc = kj_crc32(&hdr, sizeof(hdr));
+  hdr.header_crc = kj_header_crc_calc(&hdr);
+  ssize_t w = pwrite(fd, &hdr, sizeof(hdr), (off_t)off);
+  if (w != (ssize_t)sizeof(hdr))
+    return -EIO;
+  fsync(fd);
+  return 0;
+}
+
+struct test_journal_header_read_ctx
+{
+  int fd;
+  uint64_t joff;
+  uint64_t area_size;
+};
+
+static int read_header_slot_cb(void *user, uint32_t slot, kj_header_t *hdr)
+{
+  const struct test_journal_header_read_ctx *ctx =
+      (const struct test_journal_header_read_ctx *)user;
+  uint64_t off = kj_header_slot_offset(ctx->joff, ctx->area_size, slot);
+
+  return read_header(ctx->fd, off, hdr);
+}
+
+static int find_best_header(int fd, uint64_t joff, uint64_t area_size, uint32_t slot_count,
+                            kj_header_t *out, uint32_t *out_slot, uint32_t *out_valid_count)
+{
+  struct test_journal_header_read_ctx read_ctx = {
+      .fd = fd,
+      .joff = joff,
+      .area_size = area_size,
+  };
+
+  return (kj_header_select_best(slot_count, area_size, read_header_slot_cb, &read_ctx, out, out_slot,
+                                out_valid_count) == 0)
+             ? 0
+             : -ENOENT;
+}
+
+static int corrupt_header_crc(int fd, uint64_t off)
+{
+  kj_header_t hdr;
+  if (read_header(fd, off, &hdr) != 0)
+    return -EIO;
+  hdr.header_crc ^= 0x5a5a5a5au;
   ssize_t w = pwrite(fd, &hdr, sizeof(hdr), (off_t)off);
   if (w != (ssize_t)sizeof(hdr))
     return -EIO;
@@ -322,6 +365,141 @@ int main(void)
   }
 
   kafs_journal_shutdown(&ctx);
+
+  // --- Baseline: single-header mode can only keep one valid header location ---
+  const uint32_t single_slots = kj_header_slot_count(0, jsize);
+  const uint64_t single_area = kj_journal_area_size(jsize, 0);
+  if (single_slots != 1u || single_area == 0)
+  {
+    tlogf("single journal header configuration unavailable");
+    munmap(ctx.c_superblock, mapsize);
+    close(ctx.c_fd);
+    return 77;
+  }
+
+  kj_header_t single_best;
+  uint32_t single_best_slot = 0;
+  uint32_t single_valid_count = 0;
+  if (find_best_header(ctx.c_fd, joff, single_area, single_slots, &single_best, &single_best_slot,
+                       &single_valid_count) != 0)
+  {
+    tlogf("no valid single journal header found");
+    munmap(ctx.c_superblock, mapsize);
+    close(ctx.c_fd);
+    return 1;
+  }
+  if (single_valid_count != 1u || single_best_slot != 0)
+  {
+    tlogf("unexpected single header spread: valid=%" PRIu32 " slot=%" PRIu32,
+          single_valid_count, single_best_slot);
+    munmap(ctx.c_superblock, mapsize);
+    close(ctx.c_fd);
+    return 1;
+  }
+
+  // --- Case 4: rotated header slots survive latest-slot corruption ---
+  kafs_sb_journal_flags_set(ctx.c_superblock, KAFS_JOURNAL_FLAG_ROTATING_HEADERS);
+  if (msync(ctx.c_superblock, sizeof(*ctx.c_superblock), MS_SYNC) != 0)
+  {
+    tlogf("msync superblock failed for rotated header case");
+    munmap(ctx.c_superblock, mapsize);
+    close(ctx.c_fd);
+    return 1;
+  }
+
+  const uint32_t rot_slots =
+      kj_header_slot_count(kafs_sb_journal_flags_get(ctx.c_superblock), jsize);
+  const uint64_t rot_area =
+      kj_journal_area_size(jsize, kafs_sb_journal_flags_get(ctx.c_superblock));
+  if (rot_slots < 2 || rot_area == 0)
+  {
+    tlogf("rotated journal header configuration unavailable");
+    munmap(ctx.c_superblock, mapsize);
+    close(ctx.c_fd);
+    return 77;
+  }
+
+  if (kafs_journal_init(&ctx, img) != 0)
+  {
+    tlogf("journal init failed (rotated)");
+    munmap(ctx.c_superblock, mapsize);
+    close(ctx.c_fd);
+    return 1;
+  }
+  for (uint32_t i = 0; i < rot_slots + 2u; ++i)
+  {
+    kafs_journal_note(&ctx, "R", "i=%u", i);
+    kafs_journal_force_flush(&ctx);
+  }
+  kafs_journal_shutdown(&ctx);
+
+  kj_header_t best;
+  uint32_t best_slot = 0;
+  uint32_t valid_count = 0;
+  if (find_best_header(ctx.c_fd, joff, rot_area, rot_slots, &best, &best_slot, &valid_count) != 0)
+  {
+    tlogf("no valid rotated journal header found");
+    munmap(ctx.c_superblock, mapsize);
+    close(ctx.c_fd);
+    return 1;
+  }
+  if (valid_count < 2)
+  {
+    tlogf("expected multiple valid rotated header slots, got %" PRIu32, valid_count);
+    munmap(ctx.c_superblock, mapsize);
+    close(ctx.c_fd);
+    return 1;
+  }
+  if (valid_count <= single_valid_count || best_slot == single_best_slot)
+  {
+    tlogf("rotated headers did not spread: single_valid=%" PRIu32
+          " rotated_valid=%" PRIu32 " single_slot=%" PRIu32 " rotated_slot=%" PRIu32,
+          single_valid_count, valid_count, single_best_slot, best_slot);
+    munmap(ctx.c_superblock, mapsize);
+    close(ctx.c_fd);
+    return 1;
+  }
+  tlogf("journal header spread: single_valid=%" PRIu32 " rotated_valid=%" PRIu32
+        " rotated_active=%" PRIu32 " generation=%" PRIu64,
+        single_valid_count, valid_count, best_slot, best.reserved0);
+
+  const uint64_t corrupt_generation = best.reserved0;
+  const uint64_t corrupt_off = kj_header_slot_offset(joff, rot_area, best_slot);
+  if (corrupt_header_crc(ctx.c_fd, corrupt_off) != 0)
+  {
+    tlogf("failed to corrupt latest rotated header slot");
+    munmap(ctx.c_superblock, mapsize);
+    close(ctx.c_fd);
+    return 1;
+  }
+
+  if (kafs_journal_init(&ctx, img) != 0)
+  {
+    tlogf("journal init failed after rotated latest-slot corruption");
+    munmap(ctx.c_superblock, mapsize);
+    close(ctx.c_fd);
+    return 1;
+  }
+  kafs_journal_note(&ctx, "R", "after_corrupt=1");
+  kafs_journal_force_flush(&ctx);
+  kafs_journal_shutdown(&ctx);
+
+  if (find_best_header(ctx.c_fd, joff, rot_area, rot_slots, &best, &best_slot, &valid_count) != 0)
+  {
+    tlogf("no valid rotated journal header found after corruption recovery");
+    munmap(ctx.c_superblock, mapsize);
+    close(ctx.c_fd);
+    return 1;
+  }
+  if (best.reserved0 <= corrupt_generation)
+  {
+    tlogf("rotated header generation did not advance after recovery: got=%" PRIu64 " old=%" PRIu64,
+          best.reserved0, corrupt_generation);
+    munmap(ctx.c_superblock, mapsize);
+    close(ctx.c_fd);
+    return 1;
+  }
+
   munmap(ctx.c_superblock, mapsize);
   close(ctx.c_fd);
   tlogf("journal_boundary OK");

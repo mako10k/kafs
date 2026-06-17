@@ -633,8 +633,40 @@ static int fsck_handle_offline_ops(int fd, int want_write, const struct fsck_opt
   return fsck_run_mapped_ops(fd, want_write, opts, exit_code, sb);
 }
 
+struct fsck_journal_header_read_ctx
+{
+  int fd;
+  uint64_t joff;
+  uint64_t area_size;
+};
+
+static int fsck_read_journal_header_slot(void *user, uint32_t slot, kj_header_t *hdr)
+{
+  const struct fsck_journal_header_read_ctx *ctx =
+      (const struct fsck_journal_header_read_ctx *)user;
+  uint64_t off = kj_header_slot_offset(ctx->joff, ctx->area_size, slot);
+
+  return pread_all(ctx->fd, hdr, sizeof(*hdr), (off_t)off);
+}
+
+static int fsck_load_best_journal_header(int fd, uint64_t joff, uint64_t area_size,
+                                         uint32_t slot_count, kj_header_t *out, uint32_t *out_slot)
+{
+  struct fsck_journal_header_read_ctx read_ctx = {
+      .fd = fd,
+      .joff = joff,
+      .area_size = area_size,
+  };
+
+  return (kj_header_select_best(slot_count, area_size, fsck_read_journal_header_slot, &read_ctx,
+                                out, out_slot, NULL) == 0)
+             ? 0
+             : -1;
+}
+
 static int fsck_reset_journal_ring(int fd, uint64_t joff, uint64_t data_off, uint64_t area_size,
-                                   const kj_header_t *hdr, int header_ok, int exit_code)
+                                   uint32_t slot_count, const kj_header_t *hdr, int header_ok,
+                                   int exit_code)
 {
   const size_t chunk = 4096;
   char z[chunk];
@@ -652,17 +684,27 @@ static int fsck_reset_journal_ring(int fd, uint64_t joff, uint64_t data_off, uin
     rem -= n;
   }
 
+  for (uint32_t slot = 0; slot < slot_count; ++slot)
+  {
+    uint64_t off = kj_header_slot_offset(joff, area_size, slot);
+    if (pwrite_all(fd, z, sizeof(kj_header_t), (off_t)off) != 0)
+    {
+      perror("pwrite zero header");
+      return FSCK_EXIT_JOURNAL_RESET_FAILED;
+    }
+  }
+
   kj_header_t nh = {
       .magic = KJ_MAGIC,
       .version = KJ_VER,
-      .flags = 0,
+      .flags = (slot_count > 1u) ? KJ_HEADER_FLAG_ROTATED : 0u,
       .area_size = area_size,
       .write_off = 0,
       .seq = (header_ok ? hdr->seq : 0),
-      .reserved0 = 0,
+      .reserved0 = (header_ok ? (hdr->reserved0 + 1u) : 1u),
       .header_crc = 0,
   };
-  nh.header_crc = kj_crc32(&nh, sizeof(nh));
+  nh.header_crc = kj_header_crc_calc(&nh);
   if (pwrite_all(fd, &nh, sizeof(nh), (off_t)joff) != 0)
   {
     perror("pwrite header");
@@ -749,9 +791,10 @@ static int fsck_validate_or_reset_journal(const struct fsck_options *opts,
     return exit_code;
   }
 
-  size_t hsz = kj_header_size();
-  uint64_t data_off = joff + hsz;
-  uint64_t area_size = (jsize > hsz) ? (jsize - hsz) : 0;
+  uint32_t jflags = kafs_sb_journal_flags_get(&info->sb);
+  uint32_t slot_count = kj_header_slot_count(jflags, jsize);
+  uint64_t data_off = kj_journal_data_offset(joff);
+  uint64_t area_size = kj_journal_area_size(jsize, jflags);
   if (area_size == 0)
   {
     fprintf(stderr, "Invalid journal area size 0\n");
@@ -759,10 +802,15 @@ static int fsck_validate_or_reset_journal(const struct fsck_options *opts,
   }
 
   kj_header_t hdr;
-  if (pread_all(info->fd, &hdr, sizeof(hdr), (off_t)joff) != 0)
+  uint32_t active_slot = 0;
+  if (fsck_load_best_journal_header(info->fd, joff, area_size, slot_count, &hdr, &active_slot) != 0)
   {
-    perror("pread journal header");
-    return 1;
+    memset(&hdr, 0, sizeof(hdr));
+    fprintf(stderr, "Journal: no valid header slot\n");
+    if (!opts->do_journal_reset)
+      return FSCK_EXIT_JOURNAL_CHECK_FAILED;
+    return fsck_reset_journal_ring(info->fd, joff, data_off, area_size, slot_count, &hdr, 0,
+                                   exit_code);
   }
 
   int header_ok = 1;
@@ -782,9 +830,7 @@ static int fsck_validate_or_reset_journal(const struct fsck_options *opts,
             (uint64_t)hdr.area_size);
     header_ok = 0;
   }
-  kj_header_t tmp = hdr;
-  tmp.header_crc = 0;
-  if (kj_crc32(&tmp, sizeof(tmp)) != hdr.header_crc)
+  if (!kj_header_crc_ok(&hdr))
   {
     fprintf(stderr, "Journal: header CRC mismatch\n");
     header_ok = 0;
@@ -796,9 +842,11 @@ static int fsck_validate_or_reset_journal(const struct fsck_options *opts,
   if (!ok && !opts->do_journal_reset)
     return FSCK_EXIT_JOURNAL_CHECK_FAILED;
   if (!ok)
-    return fsck_reset_journal_ring(info->fd, joff, data_off, area_size, &hdr, header_ok, exit_code);
+    return fsck_reset_journal_ring(info->fd, joff, data_off, area_size, slot_count, &hdr, header_ok,
+                                   exit_code);
 
-  fprintf(stderr, "Journal check: OK\n");
+  fprintf(stderr, "Journal check: OK (active_slot=%" PRIu32 " slot_count=%" PRIu32 ")\n",
+          active_slot, slot_count);
   return exit_code;
 }
 

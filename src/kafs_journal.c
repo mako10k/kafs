@@ -409,17 +409,81 @@ static int kj_pwrite_nosync(int fd, const void *buf, size_t sz, off_t off)
   return (w == (ssize_t)sz) ? 0 : -EIO;
 }
 
-static int kj_header_load(kafs_journal_t *j, kj_header_t *hdr)
+static uint64_t kj_header_slot_file_off(const kafs_journal_t *j, uint32_t slot)
 {
-  if (!j->use_inimage)
-    return -EINVAL;
-  return kj_pread(j->fd, hdr, sizeof(*hdr), (off_t)j->base_off);
+  return kj_header_slot_offset(j->base_off, j->area_size, slot);
 }
-static int kj_header_store(kafs_journal_t *j, const kj_header_t *hdr)
+
+static int kj_header_load_slot(kafs_journal_t *j, uint32_t slot, kj_header_t *hdr)
 {
-  if (!j->use_inimage)
+  if (!j->use_inimage || slot >= j->header_slot_count)
     return -EINVAL;
-  return kj_pwrite_fsync(j->fd, hdr, sizeof(*hdr), (off_t)j->base_off);
+  return kj_pread(j->fd, hdr, sizeof(*hdr), (off_t)kj_header_slot_file_off(j, slot));
+}
+
+static int kj_header_store_slot(kafs_journal_t *j, uint32_t slot, const kj_header_t *hdr,
+                                int do_fsync)
+{
+  if (!j->use_inimage || slot >= j->header_slot_count)
+    return -EINVAL;
+  return (do_fsync ? kj_pwrite_fsync : kj_pwrite_nosync)(j->fd, hdr, sizeof(*hdr),
+                                                         (off_t)kj_header_slot_file_off(j, slot));
+}
+
+static int kj_header_read_slot_cb(void *user, uint32_t slot, kj_header_t *hdr)
+{
+  return kj_header_load_slot((kafs_journal_t *)user, slot, hdr);
+}
+
+static int kj_header_load_best(kafs_journal_t *j, kj_header_t *out)
+{
+  kj_header_t best = {0};
+  uint32_t best_slot = 0;
+
+  if (!j->use_inimage || j->header_slot_count == 0)
+    return -EINVAL;
+
+  if (kj_header_select_best(j->header_slot_count, j->area_size, kj_header_read_slot_cb, j, &best,
+                            &best_slot, NULL) != 0)
+    return -ENOENT;
+
+  j->active_header_slot = best_slot;
+  j->header_generation = best.reserved0;
+  if (out)
+    *out = best;
+  return 0;
+}
+
+static void kj_header_build(const kafs_journal_t *j, kj_header_t *hdr, uint64_t generation)
+{
+  *hdr = (kj_header_t){
+      .magic = KJ_MAGIC,
+      .version = KJ_VER,
+      .flags = (j->header_slot_count > 1u) ? KJ_HEADER_FLAG_ROTATED : 0u,
+      .area_size = j->area_size,
+      .write_off = j->write_off,
+      .seq = j->seq,
+      .reserved0 = generation,
+      .header_crc = 0,
+  };
+  hdr->header_crc = kj_header_crc_calc(hdr);
+}
+
+static int kj_header_store_next(kafs_journal_t *j, int do_fsync)
+{
+  uint32_t slot =
+      (j->header_slot_count > 1u) ? ((j->active_header_slot + 1u) % j->header_slot_count) : 0u;
+  uint64_t generation = j->header_generation + 1u;
+  kj_header_t hdr;
+
+  kj_header_build(j, &hdr, generation);
+  int rc = kj_header_store_slot(j, slot, &hdr, do_fsync);
+  if (rc == 0)
+  {
+    j->active_header_slot = slot;
+    j->header_generation = generation;
+  }
+  return rc;
 }
 
 static void kj_reset_area(kafs_journal_t *j)
@@ -442,53 +506,26 @@ static void kj_reset_area(kafs_journal_t *j)
 static int kj_init_or_load(kafs_journal_t *j)
 {
   kj_header_t hdr;
-  if (kj_header_load(j, &hdr) == 0 && hdr.magic == KJ_MAGIC && hdr.area_size == j->area_size)
+  if (kj_header_load_best(j, &hdr) == 0)
   {
-    if (hdr.version == KJ_VER)
-    {
-      kj_header_t tmp = hdr;
-      tmp.header_crc = 0;
-      uint32_t c = kj_crc32(&tmp, sizeof(tmp));
-      if (c == hdr.header_crc)
-      {
-        j->write_off = hdr.write_off <= j->area_size ? hdr.write_off : 0;
-        j->seq = hdr.seq;
-        return 0;
-      }
-    }
+    j->write_off = hdr.write_off;
+    j->seq = hdr.seq;
+    return 0;
   }
   // initialize fresh header
   j->write_off = 0;
   j->seq = 0;
+  j->active_header_slot = (j->header_slot_count > 1u) ? (j->header_slot_count - 1u) : 0u;
+  j->header_generation = 0;
   kj_reset_area(j);
-  kj_header_t nh = {
-      .magic = KJ_MAGIC,
-      .version = KJ_VER,
-      .flags = 0,
-      .area_size = j->area_size,
-      .write_off = 0,
-      .seq = 0,
-      .reserved0 = 0,
-      .header_crc = 0,
-  };
-  nh.header_crc = kj_crc32(&nh, sizeof(nh));
-  return kj_header_store(j, &nh);
+  return kj_header_store_next(j, 1);
 }
 
 static void kj_persist_header(kafs_journal_t *j, int do_fsync)
 {
-  kj_header_t hdr;
-  if (kj_header_load(j, &hdr) == 0)
-  {
-    hdr.write_off = j->write_off;
-    hdr.seq = j->seq;
-    hdr.header_crc = 0;
-    hdr.header_crc = kj_crc32(&hdr, sizeof(hdr));
-    if (do_fsync)
-      (void)kj_header_store(j, &hdr);
-    else
-      (void)kj_pwrite_nosync(j->fd, &hdr, sizeof(hdr), (off_t)j->base_off);
-  }
+  if (!j || !j->use_inimage)
+    return;
+  (void)kj_header_store_next(j, do_fsync);
 }
 
 static int kj_ring_write(kafs_journal_t *j, const void *data, size_t len, int do_fsync)
@@ -575,6 +612,9 @@ static void kj_state_disable(struct kafs_context *ctx)
   g_state.j.data_off = 0;
   g_state.j.base_ptr = NULL;
   g_state.j.area_size = 0;
+  g_state.j.header_slot_count = 0;
+  g_state.j.active_header_slot = 0;
+  g_state.j.header_generation = 0;
   g_state.j.gc_delay_ns = 0;
   g_state.j.gc_last_ns = 0;
   g_state.j.gc_pending = 0;
@@ -591,6 +631,7 @@ int kafs_journal_init(struct kafs_context *ctx, const char *image_path)
   // Prefer in-image journal if present in superblock and env != explicit path
   uint64_t joff = kafs_sb_journal_offset_get(ctx->c_superblock);
   uint64_t jsize = kafs_sb_journal_size_get(ctx->c_superblock);
+  uint32_t jflags = kafs_sb_journal_flags_get(ctx->c_superblock);
   // Enable by default when in-image is available (env unset or "1").
   int use_inimg = (joff != 0 && jsize >= 4096);
   // prepare mutex
@@ -610,9 +651,11 @@ int kafs_journal_init(struct kafs_context *ctx, const char *image_path)
     g_state.j.mtx = mtx_ptr;
     g_state.j.use_inimage = 1;
     g_state.j.base_off = joff;
-    size_t hsz = kj_header_size();
-    g_state.j.data_off = joff + hsz;
-    g_state.j.area_size = jsize > hsz ? (jsize - hsz) : 0;
+    g_state.j.header_slot_count = kj_header_slot_count(jflags, jsize);
+    g_state.j.active_header_slot = 0;
+    g_state.j.header_generation = 0;
+    g_state.j.data_off = kj_journal_data_offset(joff);
+    g_state.j.area_size = kj_journal_area_size(jsize, jflags);
     g_state.j.base_ptr = (char *)ctx->c_superblock + joff;
     // group commit window (ns) from env KAFS_JOURNAL_GC_NS; default 10000000ns (10ms)
     const char *gc = getenv("KAFS_JOURNAL_GC_NS");
@@ -860,9 +903,12 @@ int kafs_journal_replay(struct kafs_context *ctx, kafs_journal_replay_cb cb, voi
   j.fd = ctx->c_fd;
   j.use_inimage = 1;
   j.base_off = joff;
-  size_t hsz = kj_header_size();
-  j.data_off = joff + hsz;
-  j.area_size = jsize > hsz ? (jsize - hsz) : 0;
+  uint32_t jflags = kafs_sb_journal_flags_get(ctx->c_superblock);
+  j.header_slot_count = kj_header_slot_count(jflags, jsize);
+  j.active_header_slot = 0;
+  j.header_generation = 0;
+  j.data_off = kj_journal_data_offset(joff);
+  j.area_size = kj_journal_area_size(jsize, jflags);
   if (j.area_size == 0)
     return 0;
   if (kj_init_or_load(&j) != 0)
@@ -1023,14 +1069,7 @@ int kafs_journal_replay(struct kafs_context *ctx, kafs_journal_replay_cb cb, voi
   j.write_off = 0;
   j.seq = j.seq; // keep seq as loaded
   kj_reset_area(&j);
-  kj_header_t hdr;
-  if (kj_header_load(&j, &hdr) == 0)
-  {
-    hdr.write_off = 0;
-    hdr.header_crc = 0;
-    hdr.header_crc = kj_crc32(&hdr, sizeof(hdr));
-    kj_header_store(&j, &hdr);
-  }
+  (void)kj_header_store_next(&j, 1);
   if (g_state.ctx == ctx && g_state.j.enabled && g_state.j.use_inimage &&
       g_state.j.base_off == j.base_off)
     g_state.j.write_off = 0;

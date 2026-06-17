@@ -34,6 +34,8 @@ historical investigations and deep design notes.
 - [duplicate-policy.md](duplicate-policy.md)
 - [concurrency-plan.md](concurrency-plan.md)
 - [journal-plan.md](journal-plan.md)
+- [sd-card-wear-plan.md](sd-card-wear-plan.md)
+- [sd-card-wear-tickets.md](sd-card-wear-tickets.md)
 - [write-performance-ideas.md](write-performance-ideas.md)
 - [bottleneck-measurement-plan.md](bottleneck-measurement-plan.md)
 - [perf-evaluation-20260228.md](perf-evaluation-20260228.md)

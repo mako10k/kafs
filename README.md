@@ -87,6 +87,7 @@ Key options:
 - `--format-version`: on-disk format version to emit (default 5; use `--format-version 4` for a legacy v4 image)
 - `-i, --inodes`: inode count
 - `-J, --journal-size-bytes`: journal size (accepts K/M/G suffixes)
+- `--journal-header-rotation`: opt in to rotated journal header slots to reduce a journal-header write hot spot
 - `--hrl-entry-ratio`: HRL entries/data-block ratio (default 0.75, range 0<R<=1)
 
 ### kafs
