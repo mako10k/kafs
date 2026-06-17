@@ -202,6 +202,10 @@
   - descriptor parser tests PASS。
   - corrupt/stale descriptor replica tests PASS。
   - Phase 4 に残る layout dependencies が docs に列挙されている。
+- 完了メモ:
+  - `v6_descriptor_validation` が anchor CRC、descriptor CRC、table bounds、unsupported version、incompat flags を検証する。
+  - 同 test が primary corrupt 時の backup selection、stale generation reporting、same-generation divergence rejection を検証する。
+  - [sd-card-wear-format-v6-descriptor.md](sd-card-wear-format-v6-descriptor.md) に Phase 4 の shard coverage / mapping dependency を列挙した。
 
 ---
 

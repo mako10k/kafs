@@ -418,11 +418,61 @@ corrupt non-selected replicas are warnings when a latest valid descriptor can be
 validation passes. Same-generation divergent replicas are errors because the newest logical layout
 is ambiguous.
 
+## Phase 4 Layout Dependencies
+
+Phase 4 must keep the v6 descriptor as the single source of truth for metadata placement. Runtime
+mount admission remains disabled until the following dependencies are implemented and covered by
+`fsck.kafs`.
+
+Common requirements:
+
+- Descriptor discovery must succeed before any v5 prefix offset fallback is considered.
+- Candidate replicas must not have same-generation divergence.
+- Every shard descriptor range must be inside the image, block-aligned where required, and owned by
+  an existing group.
+- For each shard type that can be split, logical ranges must have no gaps or overlaps.
+- `fsck.kafs` must validate descriptor coverage before mount enables v6 write paths.
+
+Block bitmap shards:
+
+- `KAFS_META_REGION_BLOCK_BITMAP` shard logical ranges map data block numbers to bitmap storage.
+- Allocation/free must route a data block to exactly one bitmap shard.
+- `fsck.kafs` must detect duplicate coverage, missing coverage, and bitmap physical range overlap.
+
+Inode table shards:
+
+- `KAFS_META_REGION_INODE_TABLE` shard logical ranges map inode numbers to physical inode records.
+- `sd_record_bytes` must match `kafs_inode_bytes_for_format(6)`.
+- The root inode number must be covered by exactly one inode shard.
+- `fsck.kafs` must validate inode count coverage and reject overlapping inode ranges.
+
+Allocator summary shards:
+
+- `KAFS_META_REGION_ALLOCATOR_SUMMARY` shards must correspond to bitmap/data-block groups.
+- Summary rebuild must be possible from the authoritative bitmap shards.
+- Allocation scan diagnostics must identify the shard that owns each summary record.
+
+HRL shards:
+
+- `KAFS_META_REGION_HRL_INDEX` and `KAFS_META_REGION_HRL_ENTRIES` shards must define a deterministic
+  hash-bucket or group-local mapping.
+- Lookup/put/inc/dec paths must route through descriptor mapping before touching HRL storage.
+- `fsck.kafs` must validate chain bounds within the owning HRL entry shard.
+
+Journal distribution:
+
+- `KAFS_META_REGION_JOURNAL_HEADER` and `KAFS_META_REGION_JOURNAL_DATA` may appear as multiple
+  segment shards in Phase 4.
+- Replay must scan segment generations in deterministic order across metadata groups.
+- Torn segment/header writes must leave at least one valid replay path or fail closed.
+
 ## Phase 3 Follow-Ups
 
 - `SDW-P3-T2` is complete in this document: candidate locations, latest-valid selection,
   replica descriptor table, and stale/corrupt reporting are fixed.
 - `SDW-P3-T3` adds `mkfs.kafs --format-version 6` scaffold output, parser constants/accessors, and
   explicit runtime mount rejection.
-- `SDW-P4` fills shard-internal formats and enables runtime mount only after fsck can validate shard
-  boundaries and logical coverage.
+- `SDW-P3-T4` fixes parser/replica-selection tests for corrupt, stale, unsupported, and divergent
+  descriptor cases.
+- `SDW-P4` fills shard-internal formats and enables runtime mount only after fsck can validate the
+  shard boundaries, logical coverage, and routing dependencies above.
