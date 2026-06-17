@@ -2375,6 +2375,18 @@ static uint32_t kafs_tombstone_gc_step(struct kafs_context *ctx, int pressure_mo
   return reclaimed;
 }
 
+static void kafs_timespec_after_ms(struct timespec *wake, uint32_t wait_ms)
+{
+  clock_gettime(CLOCK_REALTIME, wake);
+  wake->tv_nsec += (long)(wait_ms % 1000u) * 1000000l;
+  wake->tv_sec += (time_t)(wait_ms / 1000u);
+  if (wake->tv_nsec >= 1000000000l)
+  {
+    wake->tv_sec += 1;
+    wake->tv_nsec -= 1000000000l;
+  }
+}
+
 static void *kafs_tombstone_gc_worker_main(void *arg)
 {
   kafs_context_t *ctx = (kafs_context_t *)arg;
@@ -2406,14 +2418,7 @@ static void *kafs_tombstone_gc_worker_main(void *arg)
     }
 
     struct timespec wake;
-    clock_gettime(CLOCK_REALTIME, &wake);
-    wake.tv_nsec += (long)(wait_ms % 1000u) * 1000000l;
-    wake.tv_sec += (time_t)(wait_ms / 1000u);
-    if (wake.tv_nsec >= 1000000000l)
-    {
-      wake.tv_sec += 1;
-      wake.tv_nsec -= 1000000000l;
-    }
+    kafs_timespec_after_ms(&wake, wait_ms);
     (void)pthread_cond_timedwait(&ctx->c_tombstone_gc_worker_cond, &ctx->c_tombstone_gc_worker_lock,
                                  &wake);
     pthread_mutex_unlock(&ctx->c_tombstone_gc_worker_lock);
@@ -2618,14 +2623,7 @@ static int kafs_bg_dedup_worker_wait(kafs_context_t *ctx, int pressure_mode, uin
   }
 
   struct timespec wake;
-  clock_gettime(CLOCK_REALTIME, &wake);
-  wake.tv_nsec += (long)(wait_ms % 1000u) * 1000000l;
-  wake.tv_sec += (time_t)(wait_ms / 1000u);
-  if (wake.tv_nsec >= 1000000000l)
-  {
-    wake.tv_sec += 1;
-    wake.tv_nsec -= 1000000000l;
-  }
+  kafs_timespec_after_ms(&wake, wait_ms);
 
   (void)pthread_cond_timedwait(&ctx->c_bg_dedup_worker_cond, &ctx->c_bg_dedup_worker_lock, &wake);
   pthread_mutex_unlock(&ctx->c_bg_dedup_worker_lock);
@@ -6969,6 +6967,86 @@ static int kafs_ctx_validate_runtime_mount_state(kafs_context_t *ctx)
   return kafs_tailmeta_region_view_get(ctx, &view);
 }
 
+static void kafs_ctx_setup_meta_delta(kafs_context_t *ctx, kafs_blkcnt_t r_blkcnt)
+{
+  ctx->c_meta_delta_enabled = (uint32_t)kafs_journal_is_enabled(ctx);
+  if (!ctx->c_meta_delta_enabled)
+    return;
+
+  size_t bits = sizeof(kafs_blkmask_t) * 8u;
+  size_t words = ((size_t)r_blkcnt + bits - 1u) / bits;
+  ctx->c_meta_bitmap_words = calloc(words, sizeof(kafs_blkmask_t));
+  ctx->c_meta_bitmap_dirty = calloc(words, sizeof(uint8_t));
+  if (!ctx->c_meta_bitmap_words || !ctx->c_meta_bitmap_dirty)
+  {
+    free(ctx->c_meta_bitmap_words);
+    free(ctx->c_meta_bitmap_dirty);
+    ctx->c_meta_bitmap_words = NULL;
+    ctx->c_meta_bitmap_dirty = NULL;
+    ctx->c_meta_bitmap_wordcnt = 0;
+    ctx->c_meta_bitmap_dirty_count = 0;
+    ctx->c_meta_bitmap_words_enabled = 0;
+    ctx->c_meta_delta_enabled = 0;
+    return;
+  }
+
+  memcpy(ctx->c_meta_bitmap_words, ctx->c_blkmasktbl, words * sizeof(kafs_blkmask_t));
+  ctx->c_meta_bitmap_wordcnt = words;
+  ctx->c_meta_bitmap_dirty_count = 0;
+  ctx->c_meta_bitmap_words_enabled = 1u;
+}
+
+static void kafs_ctx_init_runtime_journal(kafs_context_t *ctx, const char *image_path,
+                                          kafs_blkcnt_t r_blkcnt, int start_pending_worker)
+{
+  (void)kafs_hrl_open(ctx);
+  (void)kafs_journal_init(ctx, image_path);
+  kafs_ctx_setup_meta_delta(ctx, r_blkcnt);
+  (void)kafs_journal_replay(ctx, NULL, NULL);
+  (void)kafs_pendinglog_init_or_load(ctx);
+  if (ctx->c_pendinglog_enabled)
+  {
+    (void)kafs_pendinglog_replay_mount(ctx);
+    if (start_pending_worker)
+      (void)kafs_pending_worker_start(ctx);
+    kafs_journal_note(ctx, "PENDINGLOG", "loaded entries=%u cap=%u", kafs_pendinglog_count(ctx),
+                      ctx->c_pendinglog_capacity);
+  }
+}
+
+static void kafs_ctx_init_diag_state(kafs_context_t *ctx, const char *image_path,
+                                     kafs_inocnt_t inocnt)
+{
+  ctx->c_diag_log_fd = -1;
+  ctx->c_ino_epoch = calloc((size_t)inocnt, sizeof(uint32_t));
+  if (ctx->c_ino_epoch)
+  {
+    for (kafs_inocnt_t i = 0; i < inocnt; ++i)
+      ctx->c_ino_epoch[i] = 1u;
+  }
+  if (kafs_extra_diag_enabled())
+  {
+    ctx->c_diag_create_seq = calloc((size_t)inocnt, sizeof(uint64_t));
+    ctx->c_diag_create_mode = calloc((size_t)inocnt, sizeof(uint16_t));
+    ctx->c_diag_create_first_write_seen = calloc((size_t)inocnt, sizeof(uint8_t));
+    ctx->c_diag_create_paths = calloc((size_t)inocnt, KAFS_DIAG_CREATE_PATH_MAX);
+    if (!ctx->c_diag_create_seq || !ctx->c_diag_create_mode ||
+        !ctx->c_diag_create_first_write_seen || !ctx->c_diag_create_paths)
+    {
+      free(ctx->c_diag_create_seq);
+      free(ctx->c_diag_create_mode);
+      free(ctx->c_diag_create_first_write_seen);
+      free(ctx->c_diag_create_paths);
+      ctx->c_diag_create_seq = NULL;
+      ctx->c_diag_create_mode = NULL;
+      ctx->c_diag_create_first_write_seen = NULL;
+      ctx->c_diag_create_paths = NULL;
+    }
+    ctx->c_diag_create_seq_next = 0;
+  }
+  kafs_diag_log_open(ctx, image_path);
+}
+
 int kafs_core_open_image(const char *image_path, kafs_context_t *ctx)
 {
   if (!image_path || !ctx)
@@ -7013,43 +7091,7 @@ int kafs_core_open_image(const char *image_path, kafs_context_t *ctx)
   }
   ctx->c_alloc_v3_summary_dirty = 1;
 
-  (void)kafs_hrl_open(ctx);
-  (void)kafs_journal_init(ctx, image_path);
-  ctx->c_meta_delta_enabled = (uint32_t)kafs_journal_is_enabled(ctx);
-  if (ctx->c_meta_delta_enabled)
-  {
-    size_t bits = sizeof(kafs_blkmask_t) * 8u;
-    size_t words = ((size_t)r_blkcnt + bits - 1u) / bits;
-    ctx->c_meta_bitmap_words = calloc(words, sizeof(kafs_blkmask_t));
-    ctx->c_meta_bitmap_dirty = calloc(words, sizeof(uint8_t));
-    if (!ctx->c_meta_bitmap_words || !ctx->c_meta_bitmap_dirty)
-    {
-      free(ctx->c_meta_bitmap_words);
-      free(ctx->c_meta_bitmap_dirty);
-      ctx->c_meta_bitmap_words = NULL;
-      ctx->c_meta_bitmap_dirty = NULL;
-      ctx->c_meta_bitmap_wordcnt = 0;
-      ctx->c_meta_bitmap_dirty_count = 0;
-      ctx->c_meta_bitmap_words_enabled = 0;
-      ctx->c_meta_delta_enabled = 0;
-    }
-    else
-    {
-      memcpy(ctx->c_meta_bitmap_words, ctx->c_blkmasktbl, words * sizeof(kafs_blkmask_t));
-      ctx->c_meta_bitmap_wordcnt = words;
-      ctx->c_meta_bitmap_dirty_count = 0;
-      ctx->c_meta_bitmap_words_enabled = 1u;
-    }
-  }
-  (void)kafs_journal_replay(ctx, NULL, NULL);
-  (void)kafs_pendinglog_init_or_load(ctx);
-  if (ctx->c_pendinglog_enabled)
-  {
-    (void)kafs_pendinglog_replay_mount(ctx);
-    (void)kafs_pending_worker_start(ctx);
-    kafs_journal_note(ctx, "PENDINGLOG", "loaded entries=%u cap=%u", kafs_pendinglog_count(ctx),
-                      ctx->c_pendinglog_capacity);
-  }
+  kafs_ctx_init_runtime_journal(ctx, image_path, r_blkcnt, 1);
   return 0;
 }
 
@@ -11047,34 +11089,7 @@ static int kafs_migrate_ctx_open(const char *image_path, kafs_context_t *ctx,
   if (rc != 0)
     return rc;
   ctx->c_alloc_v3_summary_dirty = 1;
-  ctx->c_diag_log_fd = -1;
-  ctx->c_ino_epoch = calloc((size_t)inocnt, sizeof(uint32_t));
-  if (ctx->c_ino_epoch)
-  {
-    for (kafs_inocnt_t i = 0; i < inocnt; ++i)
-      ctx->c_ino_epoch[i] = 1u;
-  }
-  if (kafs_extra_diag_enabled())
-  {
-    ctx->c_diag_create_seq = calloc((size_t)inocnt, sizeof(uint64_t));
-    ctx->c_diag_create_mode = calloc((size_t)inocnt, sizeof(uint16_t));
-    ctx->c_diag_create_first_write_seen = calloc((size_t)inocnt, sizeof(uint8_t));
-    ctx->c_diag_create_paths = calloc((size_t)inocnt, KAFS_DIAG_CREATE_PATH_MAX);
-    if (!ctx->c_diag_create_seq || !ctx->c_diag_create_mode ||
-        !ctx->c_diag_create_first_write_seen || !ctx->c_diag_create_paths)
-    {
-      free(ctx->c_diag_create_seq);
-      free(ctx->c_diag_create_mode);
-      free(ctx->c_diag_create_first_write_seen);
-      free(ctx->c_diag_create_paths);
-      ctx->c_diag_create_seq = NULL;
-      ctx->c_diag_create_mode = NULL;
-      ctx->c_diag_create_first_write_seen = NULL;
-      ctx->c_diag_create_paths = NULL;
-    }
-    ctx->c_diag_create_seq_next = 0;
-  }
-  kafs_diag_log_open(ctx, image_path);
+  kafs_ctx_init_diag_state(ctx, image_path, inocnt);
 
   return kafs_hrl_open(ctx);
 }
@@ -12444,57 +12459,6 @@ static void kafs_main_validate_image_format(const char *image_path, uint32_t fmt
   }
 }
 
-static void kafs_main_calc_runtime_layout(const kafs_ssuperblock_t *sbdisk,
-                                          kafs_blksize_t blksizemask, kafs_inocnt_t inocnt,
-                                          kafs_blkcnt_t r_blkcnt, off_t *mapsize_out,
-                                          intptr_t *blkmask_off_out, intptr_t *inotbl_off_out)
-{
-  off_t mapsize = 0;
-
-  mapsize += sizeof(kafs_ssuperblock_t);
-  mapsize = (mapsize + blksizemask) & ~blksizemask;
-  *blkmask_off_out = (intptr_t)mapsize;
-  assert(sizeof(kafs_blkmask_t) <= 8);
-  mapsize += (r_blkcnt + 7) >> 3;
-  mapsize = (mapsize + 7) & ~7;
-  mapsize = (mapsize + blksizemask) & ~blksizemask;
-  *inotbl_off_out = (intptr_t)mapsize;
-  mapsize += (off_t)kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(sbdisk), inocnt);
-  mapsize = (mapsize + blksizemask) & ~blksizemask;
-  *mapsize_out = mapsize;
-}
-
-static off_t kafs_main_runtime_imgsize(const kafs_ssuperblock_t *sbdisk,
-                                       kafs_logblksize_t log_blksize, kafs_blksize_t blksizemask,
-                                       kafs_blkcnt_t r_blkcnt)
-{
-  off_t imgsize = (off_t)r_blkcnt << log_blksize;
-  uint64_t idx_off = kafs_sb_hrl_index_offset_get(sbdisk);
-  uint64_t idx_size = kafs_sb_hrl_index_size_get(sbdisk);
-  uint64_t ent_off = kafs_sb_hrl_entry_offset_get(sbdisk);
-  uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sbdisk);
-  uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
-  uint64_t j_off = kafs_sb_journal_offset_get(sbdisk);
-  uint64_t j_size = kafs_sb_journal_size_get(sbdisk);
-  uint64_t p_off = kafs_sb_pendinglog_offset_get(sbdisk);
-  uint64_t p_size = kafs_sb_pendinglog_size_get(sbdisk);
-  uint64_t end1 = (idx_off && idx_size) ? (idx_off + idx_size) : 0;
-  uint64_t end2 = (ent_off && ent_size) ? (ent_off + ent_size) : 0;
-  uint64_t end3 = (j_off && j_size) ? (j_off + j_size) : 0;
-  uint64_t end4 = (p_off && p_size) ? (p_off + p_size) : 0;
-  uint64_t max_end = end1;
-
-  if (end2 > max_end)
-    max_end = end2;
-  if (end3 > max_end)
-    max_end = end3;
-  if (end4 > max_end)
-    max_end = end4;
-  if ((off_t)max_end > imgsize)
-    imgsize = (off_t)max_end;
-  return (imgsize + blksizemask) & ~blksizemask;
-}
-
 static void kafs_main_map_runtime_memory(kafs_context_t *ctx, uint32_t fmt_ver, off_t imgsize,
                                          off_t mapsize, intptr_t blkmask_off, intptr_t inotbl_off)
 {
@@ -12526,19 +12490,14 @@ static void kafs_main_map_runtime_image(kafs_context_t *ctx, const kafs_ssuperbl
                                         uint32_t fmt_ver, kafs_inocnt_t *inocnt_out,
                                         kafs_blkcnt_t *r_blkcnt_out)
 {
-  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(sbdisk);
-  kafs_blksize_t blksize = 1u << log_blksize;
-  kafs_blksize_t blksizemask = blksize - 1u;
   kafs_inocnt_t inocnt = kafs_inocnt_stoh(sbdisk->s_inocnt);
   kafs_blkcnt_t r_blkcnt = kafs_blkcnt_stoh(sbdisk->s_r_blkcnt);
-
   off_t mapsize = 0;
+  off_t imgsize = 0;
   intptr_t blkmask_off = 0;
   intptr_t inotbl_off = 0;
-  kafs_main_calc_runtime_layout(sbdisk, blksizemask, inocnt, r_blkcnt, &mapsize, &blkmask_off,
-                                &inotbl_off);
 
-  off_t imgsize = kafs_main_runtime_imgsize(sbdisk, log_blksize, blksizemask, r_blkcnt);
+  kafs_ctx_compute_map_layout(sbdisk, &mapsize, &imgsize, &blkmask_off, &inotbl_off);
   kafs_main_map_runtime_memory(ctx, fmt_ver, imgsize, mapsize, blkmask_off, inotbl_off);
 
   *inocnt_out = inocnt;
@@ -12548,77 +12507,14 @@ static void kafs_main_map_runtime_image(kafs_context_t *ctx, const kafs_ssuperbl
 static void kafs_main_init_runtime_diag(kafs_context_t *ctx, const char *image_path,
                                         kafs_inocnt_t inocnt)
 {
-  ctx->c_diag_log_fd = -1;
-  ctx->c_ino_epoch = calloc((size_t)inocnt, sizeof(uint32_t));
-  if (ctx->c_ino_epoch)
-  {
-    for (kafs_inocnt_t i = 0; i < inocnt; ++i)
-      ctx->c_ino_epoch[i] = 1u;
-  }
-  if (kafs_extra_diag_enabled())
-  {
-    ctx->c_diag_create_seq = calloc((size_t)inocnt, sizeof(uint64_t));
-    ctx->c_diag_create_mode = calloc((size_t)inocnt, sizeof(uint16_t));
-    ctx->c_diag_create_first_write_seen = calloc((size_t)inocnt, sizeof(uint8_t));
-    ctx->c_diag_create_paths = calloc((size_t)inocnt, KAFS_DIAG_CREATE_PATH_MAX);
-    if (!ctx->c_diag_create_seq || !ctx->c_diag_create_mode ||
-        !ctx->c_diag_create_first_write_seen || !ctx->c_diag_create_paths)
-    {
-      free(ctx->c_diag_create_seq);
-      free(ctx->c_diag_create_mode);
-      free(ctx->c_diag_create_first_write_seen);
-      free(ctx->c_diag_create_paths);
-      ctx->c_diag_create_seq = NULL;
-      ctx->c_diag_create_mode = NULL;
-      ctx->c_diag_create_first_write_seen = NULL;
-      ctx->c_diag_create_paths = NULL;
-    }
-    ctx->c_diag_create_seq_next = 0;
-  }
-  kafs_diag_log_open(ctx, image_path);
+  kafs_ctx_init_diag_state(ctx, image_path, inocnt);
   ctx->c_alloc_v3_summary_dirty = 1;
 }
 
 static void kafs_main_init_runtime_journal(kafs_context_t *ctx, const char *image_path,
                                            kafs_blkcnt_t r_blkcnt)
 {
-  (void)kafs_hrl_open(ctx);
-  (void)kafs_journal_init(ctx, image_path);
-  ctx->c_meta_delta_enabled = (uint32_t)kafs_journal_is_enabled(ctx);
-  if (ctx->c_meta_delta_enabled)
-  {
-    size_t bits = sizeof(kafs_blkmask_t) * 8u;
-    size_t words = ((size_t)r_blkcnt + bits - 1u) / bits;
-    ctx->c_meta_bitmap_words = calloc(words, sizeof(kafs_blkmask_t));
-    ctx->c_meta_bitmap_dirty = calloc(words, sizeof(uint8_t));
-    if (!ctx->c_meta_bitmap_words || !ctx->c_meta_bitmap_dirty)
-    {
-      free(ctx->c_meta_bitmap_words);
-      free(ctx->c_meta_bitmap_dirty);
-      ctx->c_meta_bitmap_words = NULL;
-      ctx->c_meta_bitmap_dirty = NULL;
-      ctx->c_meta_bitmap_wordcnt = 0;
-      ctx->c_meta_bitmap_dirty_count = 0;
-      ctx->c_meta_bitmap_words_enabled = 0;
-      ctx->c_meta_delta_enabled = 0;
-    }
-    else
-    {
-      memcpy(ctx->c_meta_bitmap_words, ctx->c_blkmasktbl, words * sizeof(kafs_blkmask_t));
-      ctx->c_meta_bitmap_wordcnt = words;
-      ctx->c_meta_bitmap_dirty_count = 0;
-      ctx->c_meta_bitmap_words_enabled = 1u;
-    }
-  }
-
-  (void)kafs_journal_replay(ctx, NULL, NULL);
-  (void)kafs_pendinglog_init_or_load(ctx);
-  if (ctx->c_pendinglog_enabled)
-  {
-    (void)kafs_pendinglog_replay_mount(ctx);
-    kafs_journal_note(ctx, "PENDINGLOG", "loaded entries=%u cap=%u", kafs_pendinglog_count(ctx),
-                      ctx->c_pendinglog_capacity);
-  }
+  kafs_ctx_init_runtime_journal(ctx, image_path, r_blkcnt, 0);
 }
 
 static void kafs_main_lock_runtime_image(kafs_context_t *ctx, const char *image_path)

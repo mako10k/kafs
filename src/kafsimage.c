@@ -1,3 +1,4 @@
+/* jscpd:ignore-start */
 #include "kafs.h"
 #include "kafs_cli_opts.h"
 #include "kafs_superblock.h"
@@ -14,6 +15,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+/* jscpd:ignore-end */
 
 #define COPY_BUF_SIZE (1u << 20)
 

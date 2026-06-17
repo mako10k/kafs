@@ -23,8 +23,6 @@
 #include <unistd.h>
 #ifdef __linux__
 #include <linux/fs.h>
-#include <sys/syscall.h>
-#include <linux/falloc.h>
 #endif
 
 static void usage(const char *prog)
@@ -85,25 +83,7 @@ static int mkfs_confirm_overwrite_stdin(void)
 
 static int mkfs_trim_range(int fd, off_t off, off_t len)
 {
-  if (len <= 0)
-    return 0;
-#ifdef __linux__
-#ifdef SYS_fallocate
-  if (syscall(SYS_fallocate, fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, off, len) == 0)
-    return 0;
-  return -errno;
-#else
-  (void)fd;
-  (void)off;
-  (void)len;
-  return -ENOSYS;
-#endif
-#else
-  (void)fd;
-  (void)off;
-  (void)len;
-  return -ENOTSUP;
-#endif
+  return kafs_punch_hole_keep_size(fd, off, len);
 }
 
 struct mkfs_layout

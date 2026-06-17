@@ -2838,28 +2838,50 @@ static int cmd_cp(const char *mnt, const char *src, const char *dst, int reflink
   return 0;
 }
 
+typedef struct kafs_path_ref_pair
+{
+  kafs_path_ref_t src;
+  kafs_path_ref_t dst;
+  int same_mount;
+} kafs_path_ref_pair_t;
+
+static void init_path_ref_pair(kafs_path_ref_pair_t *pair)
+{
+  init_path_ref(&pair->src);
+  init_path_ref(&pair->dst);
+  pair->same_mount = 0;
+}
+
+static void close_path_ref_pair(kafs_path_ref_pair_t *pair)
+{
+  close_path_ref(&pair->src);
+  close_path_ref(&pair->dst);
+  pair->same_mount = 0;
+}
+
+static void resolve_auto_path_ref_pair(const char *src, const char *dst, kafs_path_ref_pair_t *pair)
+{
+  init_path_ref_pair(pair);
+
+  int src_rc = try_resolve_auto_path_ref(src, &pair->src);
+  int dst_rc = try_resolve_auto_path_ref(dst, &pair->dst);
+  pair->same_mount =
+      (src_rc == 0 && dst_rc == 0 && strcmp(pair->src.mount, pair->dst.mount) == 0) ? 1 : 0;
+}
+
 static int cmd_cp_auto(const char *src, const char *dst, int reflink)
 {
-  kafs_path_ref_t src_ref;
-  kafs_path_ref_t dst_ref;
-  init_path_ref(&src_ref);
-  init_path_ref(&dst_ref);
+  kafs_path_ref_pair_t pair;
+  resolve_auto_path_ref_pair(src, dst, &pair);
 
-  int src_rc = try_resolve_auto_path_ref(src, &src_ref);
-  int dst_rc = try_resolve_auto_path_ref(dst, &dst_ref);
-  int same_mount =
-      (src_rc == 0 && dst_rc == 0 && strcmp(src_ref.mount, dst_ref.mount) == 0) ? 1 : 0;
-
-  if (same_mount)
+  if (pair.same_mount)
   {
-    int rc = cmd_cp(src_ref.mount, src_ref.abs_path, dst_ref.abs_path, reflink);
-    close_path_ref(&src_ref);
-    close_path_ref(&dst_ref);
+    int rc = cmd_cp(pair.src.mount, pair.src.abs_path, pair.dst.abs_path, reflink);
+    close_path_ref_pair(&pair);
     return rc;
   }
 
-  close_path_ref(&src_ref);
-  close_path_ref(&dst_ref);
+  close_path_ref_pair(&pair);
 
   if (reflink)
   {
@@ -2922,19 +2944,38 @@ static int cmd_mkdir(const char *mnt, const char *path)
   return 0;
 }
 
-static int cmd_mv(const char *mnt, const char *src, const char *dst)
+typedef int (*kafsctl_mount_pair_op_t)(int dfd, const char *src_rel, const char *dst_rel);
+
+static int kafsctl_rename_pair(int dfd, const char *src_rel, const char *dst_rel)
 {
-  char mabs[KAFS_IOCTL_PATH_MAX];
-  const char *mnt_abs = mnt;
+  return renameat(dfd, src_rel, dfd, dst_rel);
+}
+
+static int kafsctl_link_pair(int dfd, const char *src_rel, const char *dst_rel)
+{
+  return linkat(dfd, src_rel, dfd, dst_rel, 0);
+}
+
+static int open_mount_dir_abs(const char *mnt, char mabs[KAFS_IOCTL_PATH_MAX], const char **mnt_abs)
+{
+  *mnt_abs = mnt;
   if (realpath(mnt, mabs) != NULL)
-    mnt_abs = mabs;
+    *mnt_abs = mabs;
 
   int dfd = open(mnt, O_RDONLY | O_DIRECTORY);
   if (dfd < 0)
-  {
     perror("open");
+  return dfd;
+}
+
+static int cmd_mount_pair_op(const char *mnt, const char *src, const char *dst,
+                             kafsctl_mount_pair_op_t op, const char *op_name)
+{
+  char mabs[KAFS_IOCTL_PATH_MAX];
+  const char *mnt_abs = NULL;
+  int dfd = open_mount_dir_abs(mnt, mabs, &mnt_abs);
+  if (dfd < 0)
     return 1;
-  }
 
   char srel[KAFS_IOCTL_PATH_MAX];
   char drel[KAFS_IOCTL_PATH_MAX];
@@ -2947,9 +2988,9 @@ static int cmd_mv(const char *mnt, const char *src, const char *dst)
     return 2;
   }
 
-  if (renameat(dfd, s, dfd, d) != 0)
+  if (op(dfd, s, d) != 0)
   {
-    perror("renameat");
+    perror(op_name);
     close(dfd);
     return 1;
   }
@@ -2958,28 +2999,24 @@ static int cmd_mv(const char *mnt, const char *src, const char *dst)
   return 0;
 }
 
+static int cmd_mv(const char *mnt, const char *src, const char *dst)
+{
+  return cmd_mount_pair_op(mnt, src, dst, kafsctl_rename_pair, "renameat");
+}
+
 static int cmd_mv_auto(const char *src, const char *dst)
 {
-  kafs_path_ref_t src_ref;
-  kafs_path_ref_t dst_ref;
-  init_path_ref(&src_ref);
-  init_path_ref(&dst_ref);
+  kafs_path_ref_pair_t pair;
+  resolve_auto_path_ref_pair(src, dst, &pair);
 
-  int src_rc = try_resolve_auto_path_ref(src, &src_ref);
-  int dst_rc = try_resolve_auto_path_ref(dst, &dst_ref);
-  int same_mount =
-      (src_rc == 0 && dst_rc == 0 && strcmp(src_ref.mount, dst_ref.mount) == 0) ? 1 : 0;
-
-  if (same_mount)
+  if (pair.same_mount)
   {
-    int rc = cmd_mv(src_ref.mount, src_ref.abs_path, dst_ref.abs_path);
-    close_path_ref(&src_ref);
-    close_path_ref(&dst_ref);
+    int rc = cmd_mv(pair.src.mount, pair.src.abs_path, pair.dst.abs_path);
+    close_path_ref_pair(&pair);
     return rc;
   }
 
-  close_path_ref(&src_ref);
-  close_path_ref(&dst_ref);
+  close_path_ref_pair(&pair);
 
   char *const argv[] = {"mv", (char *)src, (char *)dst, NULL};
   return run_external_command(argv);
@@ -2987,64 +3024,24 @@ static int cmd_mv_auto(const char *src, const char *dst)
 
 static int cmd_ln(const char *mnt, const char *src, const char *dst)
 {
-  char mabs[KAFS_IOCTL_PATH_MAX];
-  const char *mnt_abs = mnt;
-  if (realpath(mnt, mabs) != NULL)
-    mnt_abs = mabs;
-
-  int dfd = open(mnt, O_RDONLY | O_DIRECTORY);
-  if (dfd < 0)
-  {
-    perror("open");
-    return 1;
-  }
-
-  char srel[KAFS_IOCTL_PATH_MAX];
-  char drel[KAFS_IOCTL_PATH_MAX];
-  const char *s = to_mount_rel_path(mnt_abs, src, srel);
-  const char *d = to_mount_rel_path(mnt_abs, dst, drel);
-  if (!s || !d)
-  {
-    fprintf(stderr, "invalid path\n");
-    close(dfd);
-    return 2;
-  }
-
-  if (linkat(dfd, s, dfd, d, 0) != 0)
-  {
-    perror("linkat");
-    close(dfd);
-    return 1;
-  }
-
-  close(dfd);
-  return 0;
+  return cmd_mount_pair_op(mnt, src, dst, kafsctl_link_pair, "linkat");
 }
 
 static int cmd_ln_auto(const char *src, const char *dst)
 {
-  kafs_path_ref_t src_ref;
-  kafs_path_ref_t dst_ref;
-  init_path_ref(&src_ref);
-  init_path_ref(&dst_ref);
+  kafs_path_ref_pair_t pair;
+  resolve_auto_path_ref_pair(src, dst, &pair);
 
-  int src_rc = try_resolve_auto_path_ref(src, &src_ref);
-  int dst_rc = try_resolve_auto_path_ref(dst, &dst_ref);
-  int same_mount =
-      (src_rc == 0 && dst_rc == 0 && strcmp(src_ref.mount, dst_ref.mount) == 0) ? 1 : 0;
-
-  if (!same_mount)
+  if (!pair.same_mount)
   {
-    close_path_ref(&src_ref);
-    close_path_ref(&dst_ref);
+    close_path_ref_pair(&pair);
     errno = EXDEV;
     perror("linkat");
     return 1;
   }
 
-  int rc = cmd_ln(src_ref.mount, src_ref.abs_path, dst_ref.abs_path);
-  close_path_ref(&src_ref);
-  close_path_ref(&dst_ref);
+  int rc = cmd_ln(pair.src.mount, pair.src.abs_path, pair.dst.abs_path);
+  close_path_ref_pair(&pair);
   return rc;
 }
 
@@ -3145,16 +3142,10 @@ static int remove_existing_link_destination(const char *mnt, const char *path)
 static int check_same_link_file_on_mount(const char *mnt, const char *src, const char *dst)
 {
   char mabs[KAFS_IOCTL_PATH_MAX];
-  const char *mnt_abs = mnt;
-  if (realpath(mnt, mabs) != NULL)
-    mnt_abs = mabs;
-
-  int dfd = open(mnt, O_RDONLY | O_DIRECTORY);
+  const char *mnt_abs = NULL;
+  int dfd = open_mount_dir_abs(mnt, mabs, &mnt_abs);
   if (dfd < 0)
-  {
-    perror("open");
     return -1;
-  }
 
   char src_rel[KAFS_IOCTL_PATH_MAX];
   char dst_rel[KAFS_IOCTL_PATH_MAX];
@@ -3202,25 +3193,17 @@ static int reject_same_link_file_on_mount(const char *mnt, const char *src, cons
 
 static int reject_same_link_file_auto(const char *src, const char *dst)
 {
-  kafs_path_ref_t src_ref;
-  kafs_path_ref_t dst_ref;
-  init_path_ref(&src_ref);
-  init_path_ref(&dst_ref);
+  kafs_path_ref_pair_t pair;
+  resolve_auto_path_ref_pair(src, dst, &pair);
 
-  int src_rc = try_resolve_auto_path_ref(src, &src_ref);
-  int dst_rc = try_resolve_auto_path_ref(dst, &dst_ref);
-  int same_mount =
-      (src_rc == 0 && dst_rc == 0 && strcmp(src_ref.mount, dst_ref.mount) == 0) ? 1 : 0;
-  if (!same_mount)
+  if (!pair.same_mount)
   {
-    close_path_ref(&src_ref);
-    close_path_ref(&dst_ref);
+    close_path_ref_pair(&pair);
     return 0;
   }
 
-  int rc = reject_same_link_file_on_mount(src_ref.mount, src_ref.abs_path, dst_ref.abs_path);
-  close_path_ref(&src_ref);
-  close_path_ref(&dst_ref);
+  int rc = reject_same_link_file_on_mount(pair.src.mount, pair.src.abs_path, pair.dst.abs_path);
+  close_path_ref_pair(&pair);
   return rc;
 }
 
@@ -3271,16 +3254,10 @@ static int cmd_ln_auto_with_opts(const char *src, const char *dst, const kafs_ln
 static int cmd_symlink(const char *mnt, const char *target, const char *linkpath)
 {
   char mabs[KAFS_IOCTL_PATH_MAX];
-  const char *mnt_abs = mnt;
-  if (realpath(mnt, mabs) != NULL)
-    mnt_abs = mabs;
-
-  int dfd = open(mnt, O_RDONLY | O_DIRECTORY);
+  const char *mnt_abs = NULL;
+  int dfd = open_mount_dir_abs(mnt, mabs, &mnt_abs);
   if (dfd < 0)
-  {
-    perror("open");
     return 1;
-  }
 
   char lrel[KAFS_IOCTL_PATH_MAX];
   const char *l = to_mount_rel_path(mnt_abs, linkpath, lrel);

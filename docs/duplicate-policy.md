@@ -7,3 +7,4 @@
 - A separate informational report scans `tests/**/*.{c,h}` with the same minimum match size and a non-gating threshold.
 - Because the scans are separated, duplication between `src/` and `tests/` is intentionally ignored.
 - If the remaining clones only appear in generated or non-critical boilerplate, add targeted `--ignore` patterns with justification in this file.
+- `kafsdump.c` and `kafsimage.c` wrap their include preambles in `jscpd:ignore` comments because the duplicated fragment is non-critical CLI boilerplate and both tools intentionally share the same portability headers.

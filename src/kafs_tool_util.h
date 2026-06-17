@@ -7,6 +7,10 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <linux/falloc.h>
+#include <sys/syscall.h>
+#endif
 
 static inline int kafs_parse_size_bytes_u64(const char *arg, uint64_t *out)
 {
@@ -98,4 +102,27 @@ static inline int kafs_pwrite_all(int fd, const void *buf, size_t sz, off_t off)
     done += (size_t)w;
   }
   return 0;
+}
+
+static inline int kafs_punch_hole_keep_size(int fd, off_t off, off_t len)
+{
+  if (len <= 0)
+    return 0;
+#ifdef __linux__
+#ifdef SYS_fallocate
+  if (syscall(SYS_fallocate, fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, off, len) == 0)
+    return 0;
+  return -errno;
+#else
+  (void)fd;
+  (void)off;
+  (void)len;
+  return -ENOSYS;
+#endif
+#else
+  (void)fd;
+  (void)off;
+  (void)len;
+  return -ENOTSUP;
+#endif
 }

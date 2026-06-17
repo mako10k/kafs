@@ -5,6 +5,7 @@
 #include "kafs_tailmeta.h"
 #include "kafs_block.h"
 #include "kafs_cli_opts.h"
+#include "kafs_tool_util.h"
 /* jscpd:ignore-start */
 #include <errno.h>
 #include <fcntl.h>
@@ -15,12 +16,10 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/syscall.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 #ifdef __linux__
-#include <linux/falloc.h>
 #include <linux/fs.h>
 #endif
 /* jscpd:ignore-end */
@@ -873,23 +872,7 @@ static int fsck_decode_data_ref(kafs_blkcnt_t raw, kafs_blkcnt_t *out_blo, int *
 
 static int fsck_punch_hole(int fd, off_t off, off_t len)
 {
-#ifdef __linux__
-#ifdef SYS_fallocate
-  if (syscall(SYS_fallocate, fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, off, len) == 0)
-    return 0;
-  return -errno;
-#else
-  (void)fd;
-  (void)off;
-  (void)len;
-  return -ENOSYS;
-#endif
-#else
-  (void)fd;
-  (void)off;
-  (void)len;
-  return -ENOTSUP;
-#endif
+  return kafs_punch_hole_keep_size(fd, off, len);
 }
 
 static int fsck_hrl_dec_ref_counted(kafs_context_t *ctx, kafs_blkcnt_t raw,
@@ -937,6 +920,13 @@ static void *img_ptr(void *base, size_t img_size, off_t off, size_t len)
   return (void *)((uint8_t *)base + off);
 }
 
+static const kafs_sblkcnt_t *fsck_ref_table_ptr(kafs_context_t *ctx, kafs_blkcnt_t tbl_blo,
+                                                kafs_blksize_t blksize)
+{
+  return img_ptr(ctx->c_img_base, ctx->c_img_size,
+                 (off_t)tbl_blo << kafs_sb_log_blksize_get(ctx->c_superblock), blksize);
+}
+
 static int fsck_inode_get_data_blo(kafs_context_t *ctx, const kafs_sinode_t *inoent,
                                    kafs_iblkcnt_t iblo, kafs_blkcnt_t *out_blo)
 {
@@ -964,9 +954,7 @@ static int fsck_inode_get_data_blo(kafs_context_t *ctx, const kafs_sinode_t *ino
       *out_blo = KAFS_BLO_NONE;
       return 0;
     }
-    const kafs_sblkcnt_t *tbl =
-        img_ptr(ctx->c_img_base, ctx->c_img_size,
-                (off_t)tbl_blo << kafs_sb_log_blksize_get(ctx->c_superblock), blksize);
+    const kafs_sblkcnt_t *tbl = fsck_ref_table_ptr(ctx, tbl_blo, blksize);
     if (!tbl)
       return -EIO;
     raw = kafs_blkcnt_stoh(tbl[iblo]);
@@ -983,9 +971,7 @@ static int fsck_inode_get_data_blo(kafs_context_t *ctx, const kafs_sinode_t *ino
       *out_blo = KAFS_BLO_NONE;
       return 0;
     }
-    const kafs_sblkcnt_t *tbl1 =
-        img_ptr(ctx->c_img_base, ctx->c_img_size,
-                (off_t)tbl1_blo << kafs_sb_log_blksize_get(ctx->c_superblock), blksize);
+    const kafs_sblkcnt_t *tbl1 = fsck_ref_table_ptr(ctx, tbl1_blo, blksize);
     if (!tbl1)
       return -EIO;
     uint32_t idx1 = iblo / refs_pb;
@@ -996,9 +982,7 @@ static int fsck_inode_get_data_blo(kafs_context_t *ctx, const kafs_sinode_t *ino
       *out_blo = KAFS_BLO_NONE;
       return 0;
     }
-    const kafs_sblkcnt_t *tbl2 =
-        img_ptr(ctx->c_img_base, ctx->c_img_size,
-                (off_t)tbl2_blo << kafs_sb_log_blksize_get(ctx->c_superblock), blksize);
+    const kafs_sblkcnt_t *tbl2 = fsck_ref_table_ptr(ctx, tbl2_blo, blksize);
     if (!tbl2)
       return -EIO;
     raw = kafs_blkcnt_stoh(tbl2[idx2]);
@@ -1013,9 +997,7 @@ static int fsck_inode_get_data_blo(kafs_context_t *ctx, const kafs_sinode_t *ino
     *out_blo = KAFS_BLO_NONE;
     return 0;
   }
-  const kafs_sblkcnt_t *tbl1 =
-      img_ptr(ctx->c_img_base, ctx->c_img_size,
-              (off_t)tbl1_blo << kafs_sb_log_blksize_get(ctx->c_superblock), blksize);
+  const kafs_sblkcnt_t *tbl1 = fsck_ref_table_ptr(ctx, tbl1_blo, blksize);
   if (!tbl1)
     return -EIO;
   uint32_t idx1 = iblo / (refs_pb * refs_pb);
@@ -1028,9 +1010,7 @@ static int fsck_inode_get_data_blo(kafs_context_t *ctx, const kafs_sinode_t *ino
     *out_blo = KAFS_BLO_NONE;
     return 0;
   }
-  const kafs_sblkcnt_t *tbl2 =
-      img_ptr(ctx->c_img_base, ctx->c_img_size,
-              (off_t)tbl2_blo << kafs_sb_log_blksize_get(ctx->c_superblock), blksize);
+  const kafs_sblkcnt_t *tbl2 = fsck_ref_table_ptr(ctx, tbl2_blo, blksize);
   if (!tbl2)
     return -EIO;
   kafs_blkcnt_t tbl3_blo = kafs_blkcnt_stoh(tbl2[idx2]);
@@ -1039,9 +1019,7 @@ static int fsck_inode_get_data_blo(kafs_context_t *ctx, const kafs_sinode_t *ino
     *out_blo = KAFS_BLO_NONE;
     return 0;
   }
-  const kafs_sblkcnt_t *tbl3 =
-      img_ptr(ctx->c_img_base, ctx->c_img_size,
-              (off_t)tbl3_blo << kafs_sb_log_blksize_get(ctx->c_superblock), blksize);
+  const kafs_sblkcnt_t *tbl3 = fsck_ref_table_ptr(ctx, tbl3_blo, blksize);
   if (!tbl3)
     return -EIO;
   raw = kafs_blkcnt_stoh(tbl3[idx3]);
@@ -1740,7 +1718,29 @@ static void hrl_scan_expected_inode_refs(struct hrl_scan_ctx *sctx, kafs_inocnt_
   }
 }
 
-static int check_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_refcheck_stats *stats)
+struct hrl_ref_arrays
+{
+  kafs_context_t *ctx;
+  kafs_blkcnt_t r_blkcnt;
+  kafs_logblksize_t l2;
+  kafs_blksize_t blksize;
+  uint64_t ent_cnt;
+  kafs_hrl_entry_t *ents;
+  uint32_t *expected;
+  uint32_t *actual;
+};
+
+static void hrl_ref_arrays_clear(struct hrl_ref_arrays *refs)
+{
+  if (!refs)
+    return;
+  free(refs->expected);
+  free(refs->actual);
+  memset(refs, 0, sizeof(*refs));
+}
+
+static int hrl_ref_arrays_prepare(kafs_context_t *ctx, struct hrl_refcheck_stats *scan_stats,
+                                  struct hrl_ref_arrays *refs)
 {
   const kafs_ssuperblock_t *sb = ctx->c_superblock;
   kafs_blkcnt_t r_blkcnt = kafs_sb_blkcnt_get(sb);
@@ -1749,44 +1749,58 @@ static int check_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_refcheck_stat
   kafs_logblksize_t l2 = kafs_sb_log_blksize_get(sb);
   uint32_t refs_pb = (uint32_t)(blksize / sizeof(kafs_sblkcnt_t));
 
+  memset(refs, 0, sizeof(*refs));
   if ((size_t)r_blkcnt > SIZE_MAX / sizeof(uint32_t))
     return -ENOMEM;
-  uint32_t *expected = (uint32_t *)calloc((size_t)r_blkcnt, sizeof(uint32_t));
-  uint32_t *actual = (uint32_t *)calloc((size_t)r_blkcnt, sizeof(uint32_t));
-  if (!expected || !actual)
+
+  refs->expected = (uint32_t *)calloc((size_t)r_blkcnt, sizeof(uint32_t));
+  refs->actual = (uint32_t *)calloc((size_t)r_blkcnt, sizeof(uint32_t));
+  if (!refs->expected || !refs->actual)
   {
-    free(expected);
-    free(actual);
+    hrl_ref_arrays_clear(refs);
     return -ENOMEM;
   }
 
-  struct hrl_scan_ctx sctx = {ctx, r_blkcnt, l2, blksize, refs_pb, expected, stats};
+  struct hrl_scan_ctx sctx = {ctx, r_blkcnt, l2, blksize, refs_pb, refs->expected, scan_stats};
   hrl_scan_expected_inode_refs(&sctx, inocnt);
 
   uint64_t ent_off = kafs_sb_hrl_entry_offset_get(sb);
   uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sb);
   uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
-  kafs_hrl_entry_t *ents = (kafs_hrl_entry_t *)img_ptr(ctx->c_img_base, ctx->c_img_size,
-                                                       (off_t)ent_off, (size_t)ent_size);
-  if (!ents)
+  refs->ents = (kafs_hrl_entry_t *)img_ptr(ctx->c_img_base, ctx->c_img_size, (off_t)ent_off,
+                                           (size_t)ent_size);
+  if (!refs->ents)
   {
-    free(expected);
-    free(actual);
+    hrl_ref_arrays_clear(refs);
     return -EIO;
   }
 
+  refs->ctx = ctx;
+  refs->r_blkcnt = r_blkcnt;
+  refs->l2 = l2;
+  refs->blksize = blksize;
+  refs->ent_cnt = ent_cnt;
+  return 0;
+}
+
+static void hrl_ref_arrays_count_actual(struct hrl_ref_arrays *refs,
+                                        struct hrl_refcheck_stats *stats, int report_invalid)
+{
   uint64_t shown_invalid = 0;
-  for (uint64_t i = 0; i < ent_cnt; ++i)
+
+  for (uint64_t i = 0; i < refs->ent_cnt; ++i)
   {
-    const kafs_hrl_entry_t *ent = &ents[i];
+    const kafs_hrl_entry_t *ent = &refs->ents[i];
     if (ent->refcnt == 0)
       continue;
-    stats->live_entries++;
+    if (stats)
+      stats->live_entries++;
 
-    if (ent->blo >= r_blkcnt)
+    if (ent->blo >= refs->r_blkcnt)
     {
-      stats->hrl_invalid_entries++;
-      if (shown_invalid < 20)
+      if (stats)
+        stats->hrl_invalid_entries++;
+      if (report_invalid && shown_invalid < 20)
       {
         fprintf(stderr, "HRL mismatch: entry=%" PRIu64 " invalid blo=%u refcnt=%u\n", i, ent->blo,
                 ent->refcnt);
@@ -1795,14 +1809,24 @@ static int check_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_refcheck_stat
       continue;
     }
 
-    actual[ent->blo] += ent->refcnt;
+    refs->actual[ent->blo] += ent->refcnt;
   }
+}
+
+static int check_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_refcheck_stats *stats)
+{
+  struct hrl_ref_arrays refs;
+  int rc = hrl_ref_arrays_prepare(ctx, stats, &refs);
+  if (rc != 0)
+    return rc;
+
+  hrl_ref_arrays_count_actual(&refs, stats, 1);
 
   uint64_t shown = 0;
-  for (kafs_blkcnt_t blo = 0; blo < r_blkcnt; ++blo)
+  for (kafs_blkcnt_t blo = 0; blo < refs.r_blkcnt; ++blo)
   {
-    uint32_t exp = expected[blo];
-    uint32_t act = actual[blo];
+    uint32_t exp = refs.expected[blo];
+    uint32_t act = refs.actual[blo];
     if (exp != act)
     {
       stats->mismatch_entries++;
@@ -1814,63 +1838,25 @@ static int check_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_refcheck_stat
     }
   }
 
-  free(expected);
-  free(actual);
+  hrl_ref_arrays_clear(&refs);
   return 0;
 }
 
 static int repair_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_repair_stats *stats)
 {
-  const kafs_ssuperblock_t *sb = ctx->c_superblock;
-  kafs_blkcnt_t r_blkcnt = kafs_sb_blkcnt_get(sb);
-  kafs_inocnt_t inocnt = kafs_sb_inocnt_get(sb);
-  kafs_blksize_t blksize = kafs_sb_blksize_get(sb);
-  kafs_logblksize_t l2 = kafs_sb_log_blksize_get(sb);
-  uint32_t refs_pb = (uint32_t)(blksize / sizeof(kafs_sblkcnt_t));
-
-  if ((size_t)r_blkcnt > SIZE_MAX / sizeof(uint32_t))
-    return -ENOMEM;
-
-  uint32_t *expected = (uint32_t *)calloc((size_t)r_blkcnt, sizeof(uint32_t));
-  uint32_t *actual = (uint32_t *)calloc((size_t)r_blkcnt, sizeof(uint32_t));
-  if (!expected || !actual)
-  {
-    free(expected);
-    free(actual);
-    return -ENOMEM;
-  }
-
   struct hrl_refcheck_stats hst;
   memset(&hst, 0, sizeof(hst));
-  struct hrl_scan_ctx sctx = {ctx, r_blkcnt, l2, blksize, refs_pb, expected, &hst};
-  hrl_scan_expected_inode_refs(&sctx, inocnt);
+  struct hrl_ref_arrays refs;
+  int rc = hrl_ref_arrays_prepare(ctx, &hst, &refs);
+  if (rc != 0)
+    return rc;
 
-  uint64_t ent_off = kafs_sb_hrl_entry_offset_get(sb);
-  uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sb);
-  uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
-  kafs_hrl_entry_t *ents = (kafs_hrl_entry_t *)img_ptr(ctx->c_img_base, ctx->c_img_size,
-                                                       (off_t)ent_off, (size_t)ent_size);
-  if (!ents)
-  {
-    free(expected);
-    free(actual);
-    return -EIO;
-  }
+  hrl_ref_arrays_count_actual(&refs, NULL, 0);
 
-  for (uint64_t i = 0; i < ent_cnt; ++i)
+  for (kafs_blkcnt_t blo = 0; blo < refs.r_blkcnt; ++blo)
   {
-    const kafs_hrl_entry_t *ent = &ents[i];
-    if (ent->refcnt == 0)
-      continue;
-    if (ent->blo >= r_blkcnt)
-      continue;
-    actual[ent->blo] += ent->refcnt;
-  }
-
-  for (kafs_blkcnt_t blo = 0; blo < r_blkcnt; ++blo)
-  {
-    uint32_t exp = expected[blo];
-    uint32_t act = actual[blo];
+    uint32_t exp = refs.expected[blo];
+    uint32_t act = refs.actual[blo];
 
     if (exp > act)
     {
@@ -1896,63 +1882,25 @@ static int repair_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_repair_stats
     }
   }
 
-  free(expected);
-  free(actual);
+  hrl_ref_arrays_clear(&refs);
   return 0;
 }
 
 static int punch_unreferenced_data_blocks(kafs_context_t *ctx, int fd, struct punch_stats *stats)
 {
-  const kafs_ssuperblock_t *sb = ctx->c_superblock;
-  kafs_blkcnt_t r_blkcnt = kafs_sb_blkcnt_get(sb);
-  kafs_blkcnt_t first_data_block = kafs_sb_first_data_block_get(sb);
-  kafs_inocnt_t inocnt = kafs_sb_inocnt_get(sb);
-  kafs_blksize_t blksize = kafs_sb_blksize_get(sb);
-  kafs_logblksize_t l2 = kafs_sb_log_blksize_get(sb);
-  uint32_t refs_pb = (uint32_t)(blksize / sizeof(kafs_sblkcnt_t));
-
-  if ((size_t)r_blkcnt > SIZE_MAX / sizeof(uint32_t))
-    return -ENOMEM;
-
-  uint32_t *expected = (uint32_t *)calloc((size_t)r_blkcnt, sizeof(uint32_t));
-  uint32_t *actual = (uint32_t *)calloc((size_t)r_blkcnt, sizeof(uint32_t));
-  if (!expected || !actual)
-  {
-    free(expected);
-    free(actual);
-    return -ENOMEM;
-  }
-
   struct hrl_refcheck_stats hst;
   memset(&hst, 0, sizeof(hst));
-  struct hrl_scan_ctx sctx = {ctx, r_blkcnt, l2, blksize, refs_pb, expected, &hst};
-  hrl_scan_expected_inode_refs(&sctx, inocnt);
+  struct hrl_ref_arrays refs;
+  int rc = hrl_ref_arrays_prepare(ctx, &hst, &refs);
+  if (rc != 0)
+    return rc;
 
-  uint64_t ent_off = kafs_sb_hrl_entry_offset_get(sb);
-  uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sb);
-  uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
-  kafs_hrl_entry_t *ents = (kafs_hrl_entry_t *)img_ptr(ctx->c_img_base, ctx->c_img_size,
-                                                       (off_t)ent_off, (size_t)ent_size);
-  if (!ents)
-  {
-    free(expected);
-    free(actual);
-    return -EIO;
-  }
+  hrl_ref_arrays_count_actual(&refs, NULL, 0);
 
-  for (uint64_t i = 0; i < ent_cnt; ++i)
+  kafs_blkcnt_t first_data_block = kafs_sb_first_data_block_get(ctx->c_superblock);
+  for (kafs_blkcnt_t blo = first_data_block; blo < refs.r_blkcnt; ++blo)
   {
-    const kafs_hrl_entry_t *ent = &ents[i];
-    if (ent->refcnt == 0)
-      continue;
-    if (ent->blo >= r_blkcnt)
-      continue;
-    actual[ent->blo] += ent->refcnt;
-  }
-
-  for (kafs_blkcnt_t blo = first_data_block; blo < r_blkcnt; ++blo)
-  {
-    if (expected[blo] != 0 || actual[blo] != 0)
+    if (refs.expected[blo] != 0 || refs.actual[blo] != 0)
       continue;
 
     stats->candidates++;
@@ -1962,7 +1910,7 @@ static int punch_unreferenced_data_blocks(kafs_context_t *ctx, int fd, struct pu
       continue;
     }
 
-    int prc = fsck_punch_hole(fd, ((off_t)blo << l2), (off_t)blksize);
+    int prc = fsck_punch_hole(fd, ((off_t)blo << refs.l2), (off_t)refs.blksize);
     if (prc != 0)
     {
       stats->punch_failed++;
@@ -1973,8 +1921,7 @@ static int punch_unreferenced_data_blocks(kafs_context_t *ctx, int fd, struct pu
     stats->punched++;
   }
 
-  free(expected);
-  free(actual);
+  hrl_ref_arrays_clear(&refs);
   return 0;
 }
 

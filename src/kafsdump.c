@@ -1,3 +1,4 @@
+/* jscpd:ignore-start */
 #include "kafs.h"
 #include "kafs_hash.h"
 #include "kafs_inode.h"
@@ -19,6 +20,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+/* jscpd:ignore-end */
 
 struct hrl_summary
 {
