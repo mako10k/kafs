@@ -100,6 +100,7 @@ static int json_get_u64(const char *json, const char *key, uint64_t *out)
 static const kafs_test_mount_options_t k_mount_options = {
     .debug = "1",
     .log_path = "minisrv.log",
+    .extra_options = "sd_card_profile=conservative",
     .timeout_ms = 5000,
 };
 
@@ -236,6 +237,20 @@ int main(void)
       !strstr(stats_json, "\"name\": \"unknown\", \"writes\": 0"))
   {
     tlogf("metadata write region fields missing or unknown writes nonzero");
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  uint64_t profile = 0;
+  uint64_t trim_on_free = 1;
+  uint64_t bg_dedup_enabled = 1;
+  if (json_get_u64(stats_json, "\"sd_card_profile\"", &profile) != 0 ||
+      profile != KAFS_SD_CARD_PROFILE_CONSERVATIVE ||
+      !strstr(stats_json, "\"sd_card_profile_str\": \"conservative\"") ||
+      json_get_u64(stats_json, "\"trim_on_free\"", &trim_on_free) != 0 || trim_on_free != 0 ||
+      json_get_u64(stats_json, "\"bg_dedup_enabled\"", &bg_dedup_enabled) != 0 ||
+      bg_dedup_enabled != 0 || !strstr(stats_json, "\"atime_policy_str\": \"no_runtime_updates\""))
+  {
+    tlogf("sd_card_profile runtime settings missing or incorrect");
     kafs_test_stop_kafs(mnt, srv);
     return 1;
   }

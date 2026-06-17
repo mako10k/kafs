@@ -102,6 +102,12 @@ Metadata region ID は観測用 ABI として固定する。
 | 9 | `tail_metadata` | v5 tail metadata descriptors/payload |
 | 10 | `unknown` | classified-failed or out-of-range metadata write |
 
+SD-card profile は明示 opt-in とし、選択されない限り default behavior は変えない。
+`conservative` profile は format v6 なしで避けられる metadata churn を下げるため、runtime TRIM
+を off、idle background dedup scan を off、pending/bg worker を idle nice=19、fsync policy を
+`journal_only` に揃える。KAFS runtime は read path で atime を更新しないため、profile diagnostics
+では `atime_policy=no_runtime_updates` として報告する。
+
 ### Phase 3: Format v6 Metadata Layout Descriptor
 
 分散配置の実装前に、format v6 の root descriptor を設計する。

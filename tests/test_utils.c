@@ -456,7 +456,17 @@ pid_t kafs_test_start_kafs(const char *img, const char *mnt,
     }
 
     const char *kafs = kafs_test_kafs_bin();
-    char *args[] = {(char *)kafs, (char *)mp, "-f", NULL};
+    char *args[6];
+    int argc = 0;
+    args[argc++] = (char *)kafs;
+    args[argc++] = (char *)mp;
+    args[argc++] = "-f";
+    if (options && options->extra_options && *options->extra_options)
+    {
+      args[argc++] = "-o";
+      args[argc++] = (char *)options->extra_options;
+    }
+    args[argc] = NULL;
     execvp(args[0], args);
     perror("execvp kafs");
     _exit(127);

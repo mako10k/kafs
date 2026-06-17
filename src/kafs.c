@@ -1313,6 +1313,21 @@ static int kafs_fsync_policy_parse(const char *s, uint32_t *policy)
   return -EINVAL;
 }
 
+static const char *kafs_fsync_policy_name(uint32_t policy)
+{
+  switch (policy)
+  {
+  case KAFS_FSYNC_POLICY_FULL:
+    return "full";
+  case KAFS_FSYNC_POLICY_JOURNAL_ONLY:
+    return "journal_only";
+  case KAFS_FSYNC_POLICY_ADAPTIVE:
+    return "adaptive";
+  default:
+    return "unknown";
+  }
+}
+
 static int kafs_parse_u32_range(const char *s, uint32_t minv, uint32_t maxv, uint32_t *out)
 {
   if (!s || !out)
@@ -1361,6 +1376,19 @@ static int kafs_pending_worker_prio_mode_parse(const char *s, uint32_t *mode)
     return 0;
   }
   return -EINVAL;
+}
+
+static const char *kafs_worker_prio_mode_name(uint32_t mode)
+{
+  switch (mode)
+  {
+  case KAFS_PENDING_WORKER_PRIO_NORMAL:
+    return "normal";
+  case KAFS_PENDING_WORKER_PRIO_IDLE:
+    return "idle";
+  default:
+    return "unknown";
+  }
 }
 
 static int kafs_apply_worker_priority_self(uint32_t prio_mode, int nice_value)
@@ -7533,7 +7561,7 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
   return 0;
 }
 
-#define KAFS_STATS_VERSION 17u
+#define KAFS_STATS_VERSION 18u
 
 static int kafs_u64_cmp(const void *a, const void *b)
 {
@@ -7826,6 +7854,24 @@ static void kafs_stats_snapshot_metadata_regions(kafs_context_t *ctx, kafs_stats
   }
 }
 
+static void kafs_stats_snapshot_runtime_config(kafs_context_t *ctx, kafs_stats_t *out)
+{
+  out->sd_card_profile = ctx->c_sd_card_profile;
+  out->atime_policy = ctx->c_atime_policy;
+  out->trim_on_free = ctx->c_trim_on_free;
+  out->bg_dedup_enabled = ctx->c_bg_dedup_enabled;
+  out->bg_dedup_interval_ms = ctx->c_bg_dedup_interval_ms;
+  out->bg_dedup_quiet_interval_ms = ctx->c_bg_dedup_quiet_interval_ms;
+  out->bg_dedup_pressure_interval_ms = ctx->c_bg_dedup_pressure_interval_ms;
+  out->bg_dedup_start_used_pct = ctx->c_bg_dedup_start_used_pct;
+  out->bg_dedup_pressure_used_pct = ctx->c_bg_dedup_pressure_used_pct;
+  out->fsync_policy = ctx->c_fsync_policy;
+  out->pending_worker_prio_mode = ctx->c_pending_worker_prio_mode;
+  out->pending_worker_nice = ctx->c_pending_worker_nice;
+  out->bg_dedup_worker_prio_mode = ctx->c_bg_dedup_worker_prio_mode;
+  out->bg_dedup_worker_nice = ctx->c_bg_dedup_worker_nice;
+}
+
 static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out, uint32_t request_flags)
 {
   memset(out, 0, sizeof(*out));
@@ -7839,6 +7885,7 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out, uint32_t
   kafs_stats_snapshot_bg_dedup(ctx, out);
   kafs_stats_snapshot_pending_worker(ctx, out);
   kafs_stats_snapshot_metadata_regions(ctx, out);
+  kafs_stats_snapshot_runtime_config(ctx, out);
 }
 
 #ifdef __linux__
@@ -10881,11 +10928,14 @@ static void usage(const char *prog)
           "    --no-writeback-cache              Disable writeback cache\n"
           "    --trim-on-free                    Enable TRIM on freed data blocks\n"
           "    --no-trim-on-free                 Disable TRIM on freed data blocks\n"
+          "    --sd-card-profile[=conservative]  Enable low metadata-churn profile\n"
           "    -o writeback_cache                Enable writeback cache (FUSE -o)\n"
           "    -o no_writeback_cache             Disable writeback cache (FUSE -o)\n"
           "    -o trim_on_free | trim-on-free    Enable TRIM (FUSE -o)\n"
           "    -o no_trim_on_free | no-trim-on-free\n"
           "                                      Disable TRIM (FUSE -o)\n"
+          "    -o sd_card_profile=<none|conservative>\n"
+          "                                      Apply SD-card profile settings (opt-in)\n"
           "\n"
           "  [Threading]\n"
           "    -o multi_thread[=N]               Enable MT mode (alias: multi-thread, "
@@ -11294,16 +11344,13 @@ typedef struct kafs_main_options
   uint32_t bg_dedup_worker_prio_mode;
   int bg_dedup_worker_nice;
   uint32_t fsync_policy;
+  uint32_t sd_card_profile;
 } kafs_main_options_t;
 
-static void kafs_main_options_init(kafs_main_options_t *opts)
+static void kafs_main_options_init_profile_tuning(kafs_main_options_t *opts)
 {
-  memset(opts, 0, sizeof(*opts));
-  opts->image_path = getenv("KAFS_IMAGE");
-  opts->writeback_cache_enabled = KAFS_TRUE;
   opts->trim_on_free_enabled = KAFS_FALSE;
-  opts->hotplug_uds_opt[0] = '\0';
-  opts->hotplug_back_bin_opt[0] = '\0';
+  opts->trim_on_free_explicit = KAFS_FALSE;
   opts->pending_worker_prio_mode = KAFS_PENDING_WORKER_PRIO_NORMAL;
   opts->pending_worker_nice = 0;
   opts->pending_ttl_soft_ms = 5000;
@@ -11317,6 +11364,60 @@ static void kafs_main_options_init(kafs_main_options_t *opts)
   opts->bg_dedup_worker_prio_mode = KAFS_PENDING_WORKER_PRIO_IDLE;
   opts->bg_dedup_worker_nice = 19;
   opts->fsync_policy = KAFS_FSYNC_POLICY_JOURNAL_ONLY;
+  opts->sd_card_profile = KAFS_SD_CARD_PROFILE_NONE;
+}
+
+static void kafs_main_options_init(kafs_main_options_t *opts)
+{
+  memset(opts, 0, sizeof(*opts));
+  opts->image_path = getenv("KAFS_IMAGE");
+  opts->writeback_cache_enabled = KAFS_TRUE;
+  opts->hotplug_uds_opt[0] = '\0';
+  opts->hotplug_back_bin_opt[0] = '\0';
+  kafs_main_options_init_profile_tuning(opts);
+}
+
+static void kafs_main_apply_sd_card_profile(kafs_main_options_t *opts, uint32_t profile)
+{
+  if (profile == KAFS_SD_CARD_PROFILE_NONE)
+  {
+    kafs_main_options_init_profile_tuning(opts);
+    return;
+  }
+
+  opts->sd_card_profile = profile;
+  opts->trim_on_free_enabled = KAFS_FALSE;
+  opts->trim_on_free_explicit = KAFS_TRUE;
+  opts->pending_worker_prio_mode = KAFS_PENDING_WORKER_PRIO_IDLE;
+  opts->pending_worker_nice = 19;
+  opts->bg_dedup_scan_enabled = 0u;
+  opts->bg_dedup_interval_ms = KAFS_BG_DEDUP_INTERVAL_MS_MAX;
+  opts->bg_dedup_quiet_interval_ms = KAFS_BG_DEDUP_INTERVAL_MS_MAX;
+  opts->bg_dedup_pressure_interval_ms = KAFS_BG_DEDUP_INTERVAL_MS_MAX;
+  opts->bg_dedup_start_used_pct = 100u;
+  opts->bg_dedup_pressure_used_pct = 100u;
+  opts->bg_dedup_worker_prio_mode = KAFS_PENDING_WORKER_PRIO_IDLE;
+  opts->bg_dedup_worker_nice = 19;
+  opts->fsync_policy = KAFS_FSYNC_POLICY_JOURNAL_ONLY;
+}
+
+static int kafs_sd_card_profile_parse(const char *s, uint32_t *profile)
+{
+  if (!s || !*s || !profile)
+    return -EINVAL;
+  if (strcmp(s, "0") == 0 || strcasecmp(s, "none") == 0 || strcasecmp(s, "off") == 0 ||
+      strcasecmp(s, "default") == 0)
+  {
+    *profile = KAFS_SD_CARD_PROFILE_NONE;
+    return 0;
+  }
+  if (strcmp(s, "1") == 0 || strcasecmp(s, "on") == 0 || strcasecmp(s, "conservative") == 0 ||
+      strcasecmp(s, "sd_card") == 0 || strcasecmp(s, "sd-card") == 0)
+  {
+    *profile = KAFS_SD_CARD_PROFILE_CONSERVATIVE;
+    return 0;
+  }
+  return -EINVAL;
 }
 
 static void kafs_main_apply_optional_bool_env(const char *value, kafs_bool_t *out)
@@ -11532,6 +11633,22 @@ static int kafs_main_handle_flag_arg(kafs_main_options_t *opts, const char *arg)
     snprintf(opts->hotplug_uds_opt, sizeof(opts->hotplug_uds_opt), "%s", KAFS_HOTPLUG_UDS_DEFAULT);
     return 1;
   }
+  if (strcmp(arg, "--sd-card-profile") == 0)
+  {
+    kafs_main_apply_sd_card_profile(opts, KAFS_SD_CARD_PROFILE_CONSERVATIVE);
+    return 1;
+  }
+  if (strncmp(arg, "--sd-card-profile=", 18) == 0)
+  {
+    uint32_t profile = KAFS_SD_CARD_PROFILE_NONE;
+    if (kafs_sd_card_profile_parse(arg + 18, &profile) != 0)
+    {
+      fprintf(stderr, "invalid --sd-card-profile value: '%s'\n", arg + 18);
+      return 2;
+    }
+    kafs_main_apply_sd_card_profile(opts, profile);
+    return 1;
+  }
   return 0;
 }
 
@@ -11633,10 +11750,13 @@ static int kafs_main_collect_args(int argc, char **argv, const char *prog,
   for (int i = 0; i < argc; ++i)
   {
     const char *a = argv[i];
-    if (kafs_main_handle_flag_arg(opts, a) != 0)
+    int rc = kafs_main_handle_flag_arg(opts, a);
+    if (rc == 2)
+      return 2;
+    if (rc != 0)
       continue;
 
-    int rc = kafs_main_handle_hotplug_arg(argc, argv, prog, &i, opts, a);
+    rc = kafs_main_handle_hotplug_arg(argc, argv, prog, &i, opts, a);
     if (rc == 2)
       return 2;
     if (rc == 1)
@@ -11802,6 +11922,28 @@ static const char *kafs_main_token_value_alias2(const char *tok, const char *pre
     return tok + prefix_b_len;
 
   return NULL;
+}
+
+static int kafs_main_handle_sd_card_profile_token(kafs_main_options_t *opts, const char *tok)
+{
+  if (strcmp(tok, "sd_card_profile") == 0 || strcmp(tok, "sd-card-profile") == 0)
+  {
+    kafs_main_apply_sd_card_profile(opts, KAFS_SD_CARD_PROFILE_CONSERVATIVE);
+    return 1;
+  }
+
+  const char *value = kafs_main_token_value_alias2(tok, "sd_card_profile=", "sd-card-profile=");
+  if (!value)
+    return 0;
+
+  uint32_t profile = KAFS_SD_CARD_PROFILE_NONE;
+  if (kafs_sd_card_profile_parse(value, &profile) != 0)
+  {
+    fprintf(stderr, "invalid -o sd_card_profile: '%s'\n", value);
+    return 2;
+  }
+  kafs_main_apply_sd_card_profile(opts, profile);
+  return 1;
 }
 
 static int kafs_main_parse_token_prio_alias2(const char *tok, const char *prefix_a,
@@ -12039,7 +12181,11 @@ static void kafs_main_append_filtered_token(char *filtered, size_t *used, const 
 
 static int kafs_main_handle_mount_token(kafs_main_options_t *opts, const char *tok, int *want_mt)
 {
-  int rc = kafs_main_handle_cache_hotplug_token(opts, tok);
+  int rc = kafs_main_handle_sd_card_profile_token(opts, tok);
+  if (rc != 0)
+    return rc;
+
+  rc = kafs_main_handle_cache_hotplug_token(opts, tok);
   if (rc != 0)
     return rc;
 
@@ -12286,6 +12432,8 @@ static void kafs_main_init_context(kafs_context_t *ctx, const kafs_main_options_
   ctx->c_bg_dedup_mode = KAFS_BG_DEDUP_MODE_COLD;
 
   ctx->c_fsync_policy = opts->fsync_policy;
+  ctx->c_sd_card_profile = opts->sd_card_profile;
+  ctx->c_atime_policy = KAFS_ATIME_POLICY_NO_RUNTIME_UPDATES;
 }
 
 static void kafs_main_apply_hotplug_env(kafs_context_t *ctx)
@@ -12464,6 +12612,20 @@ static void kafs_main_log_runtime_options(kafs_context_t *ctx, kafs_bool_t write
   kafs_log(KAFS_LOG_INFO, "kafs: trim_on_free %s (%s)\n",
            trim_on_free_enabled ? "enabled" : "disabled",
            trim_on_free_explicit ? "explicit" : "default");
+  kafs_log(KAFS_LOG_INFO, "kafs: sd_card_profile %s\n",
+           kafs_sd_card_profile_name(ctx->c_sd_card_profile));
+  kafs_log(KAFS_LOG_INFO, "kafs: atime_policy %s\n", kafs_atime_policy_name(ctx->c_atime_policy));
+  kafs_log(KAFS_LOG_INFO,
+           "kafs: bg_dedup_scan %s interval_ms=%u quiet_ms=%u pressure_ms=%u "
+           "start_used_pct=%u pressure_used_pct=%u worker=%s nice=%d\n",
+           ctx->c_bg_dedup_enabled ? "enabled" : "disabled", ctx->c_bg_dedup_interval_ms,
+           ctx->c_bg_dedup_quiet_interval_ms, ctx->c_bg_dedup_pressure_interval_ms,
+           ctx->c_bg_dedup_start_used_pct, ctx->c_bg_dedup_pressure_used_pct,
+           kafs_worker_prio_mode_name(ctx->c_bg_dedup_worker_prio_mode),
+           ctx->c_bg_dedup_worker_nice);
+  kafs_log(KAFS_LOG_INFO, "kafs: pending_worker_prio %s nice=%d\n",
+           kafs_worker_prio_mode_name(ctx->c_pending_worker_prio_mode), ctx->c_pending_worker_nice);
+  kafs_log(KAFS_LOG_INFO, "kafs: fsync_policy %s\n", kafs_fsync_policy_name(ctx->c_fsync_policy));
 
   if (kafs_debug_level() >= 1)
   {

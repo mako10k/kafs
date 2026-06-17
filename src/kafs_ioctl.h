@@ -4,6 +4,7 @@
 #include <sys/ioctl.h>
 #include "kafs_hotplug.h"
 #include "kafs_meta_region.h"
+#include "kafs_profile.h"
 
 // Userspace -> KAFS (FUSE ioctl)
 // Note: FUSE may truncate the ioctl request to 32 bits.
@@ -145,6 +146,21 @@ struct kafs_stats
 
   uint64_t metadata_region_writes[KAFS_META_REGION_COUNT];
   uint64_t metadata_region_bytes[KAFS_META_REGION_COUNT];
+
+  uint32_t sd_card_profile;
+  uint32_t atime_policy;
+  uint32_t trim_on_free;
+  uint32_t bg_dedup_enabled;
+  uint32_t bg_dedup_interval_ms;
+  uint32_t bg_dedup_quiet_interval_ms;
+  uint32_t bg_dedup_pressure_interval_ms;
+  uint32_t bg_dedup_start_used_pct;
+  uint32_t bg_dedup_pressure_used_pct;
+  uint32_t fsync_policy;
+  uint32_t pending_worker_prio_mode;
+  int32_t pending_worker_nice;
+  uint32_t bg_dedup_worker_prio_mode;
+  int32_t bg_dedup_worker_nice;
 };
 
 typedef struct kafs_stats kafs_stats_t;

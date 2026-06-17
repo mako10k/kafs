@@ -2246,6 +2246,27 @@ static int kafsctl_stats_print_json(const kafs_stats_report_t *report)
   printf("  \"request_flags\": %" PRIu32 ",\n", st->request_flags);
   printf("  \"result_flags\": %" PRIu32 ",\n", st->result_flags);
   printf("  \"verbose_scan\": %s,\n", report->have_verbose_scan ? "true" : "false");
+  printf("  \"sd_card_profile\": %" PRIu32 ",\n", st->sd_card_profile);
+  printf("  \"sd_card_profile_str\": \"%s\",\n", kafs_sd_card_profile_name(st->sd_card_profile));
+  printf("  \"trim_on_free\": %" PRIu32 ",\n", st->trim_on_free);
+  printf("  \"atime_policy\": %" PRIu32 ",\n", st->atime_policy);
+  printf("  \"atime_policy_str\": \"%s\",\n", kafs_atime_policy_name(st->atime_policy));
+  printf("  \"fsync_policy\": %" PRIu32 ",\n", st->fsync_policy);
+  printf("  \"fsync_policy_str\": \"%s\",\n", fsync_policy_str(st->fsync_policy));
+  printf("  \"pending_worker_prio_mode\": %" PRIu32 ",\n", st->pending_worker_prio_mode);
+  printf("  \"pending_worker_prio_mode_str\": \"%s\",\n",
+         pending_worker_prio_mode_str(st->pending_worker_prio_mode));
+  printf("  \"pending_worker_nice\": %" PRId32 ",\n", st->pending_worker_nice);
+  printf("  \"bg_dedup_enabled\": %" PRIu32 ",\n", st->bg_dedup_enabled);
+  printf("  \"bg_dedup_interval_ms\": %" PRIu32 ",\n", st->bg_dedup_interval_ms);
+  printf("  \"bg_dedup_quiet_interval_ms\": %" PRIu32 ",\n", st->bg_dedup_quiet_interval_ms);
+  printf("  \"bg_dedup_pressure_interval_ms\": %" PRIu32 ",\n", st->bg_dedup_pressure_interval_ms);
+  printf("  \"bg_dedup_start_used_pct\": %" PRIu32 ",\n", st->bg_dedup_start_used_pct);
+  printf("  \"bg_dedup_pressure_used_pct\": %" PRIu32 ",\n", st->bg_dedup_pressure_used_pct);
+  printf("  \"bg_dedup_worker_prio_mode\": %" PRIu32 ",\n", st->bg_dedup_worker_prio_mode);
+  printf("  \"bg_dedup_worker_prio_mode_str\": \"%s\",\n",
+         pending_worker_prio_mode_str(st->bg_dedup_worker_prio_mode));
+  printf("  \"bg_dedup_worker_nice\": %" PRId32 ",\n", st->bg_dedup_worker_nice);
   printf("  \"blksize\": %" PRIu32 ",\n", st->blksize);
   printf("  \"fs_blocks_total\": %" PRIu64 ",\n", st->fs_blocks_total);
   printf("  \"fs_blocks_free\": %" PRIu64 ",\n", st->fs_blocks_free);
@@ -2426,6 +2447,20 @@ static int kafsctl_stats_print_text(const kafs_stats_report_t *report, kafs_unit
   const kafs_stats_t *st = &report->st;
   printf("kafs fsstat v%" PRIu32 "\n", st->version);
   printf("  mode: %s\n", report->have_verbose_scan ? "verbose" : "lightweight");
+  printf("  sd_card_profile: %" PRIu32 " (%s)\n", st->sd_card_profile,
+         kafs_sd_card_profile_name(st->sd_card_profile));
+  printf("  runtime_config: trim_on_free=%s atime_policy=%s fsync_policy=%s\n",
+         st->trim_on_free ? "on" : "off", kafs_atime_policy_name(st->atime_policy),
+         fsync_policy_str(st->fsync_policy));
+  printf("  pending_worker: prio=%s nice=%" PRId32 "\n",
+         pending_worker_prio_mode_str(st->pending_worker_prio_mode), st->pending_worker_nice);
+  printf("  bg_dedup_config: enabled=%s interval_ms=%" PRIu32 " quiet_ms=%" PRIu32
+         " pressure_ms=%" PRIu32 " start_used_pct=%" PRIu32 " pressure_used_pct=%" PRIu32
+         " worker_prio=%s worker_nice=%" PRId32 "\n",
+         st->bg_dedup_enabled ? "on" : "off", st->bg_dedup_interval_ms,
+         st->bg_dedup_quiet_interval_ms, st->bg_dedup_pressure_interval_ms,
+         st->bg_dedup_start_used_pct, st->bg_dedup_pressure_used_pct,
+         pending_worker_prio_mode_str(st->bg_dedup_worker_prio_mode), st->bg_dedup_worker_nice);
   if (!report->have_verbose_scan)
     printf("  note: tombstone/HRL full scans are skipped by default; rerun with -v for them.\n");
   printf("  summary.capacity:\n");

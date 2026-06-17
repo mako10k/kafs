@@ -121,6 +121,24 @@ Enable runtime TRIM via FUSE
 .BR -o " " no_trim_on_free " | " no-trim-on-free
 Disable runtime TRIM via FUSE
 .BR -o .
+.TP
+.B --sd-card-profile
+Enable the conservative SD-card profile.
+.TP
+.BR --sd-card-profile= "<none|conservative>"
+Select an SD-card wear-reduction profile.
+.TP
+.BR -o " " sd_card_profile= "<none|conservative>"
+Apply the same profile through mount options.  The conservative profile keeps
+runtime TRIM disabled, disables idle background dedup scanning, keeps worker
+priority idle, keeps the journal-only fsync policy, and reports the effective
+settings through
+.BR kafsctl " " stats .
+Defaults are unchanged unless this profile is explicitly selected.
+.TP
+.BR -o " " sd-card-profile= "<none|conservative>"
+Alias for
+.BR sd_card_profile .
 .SS Threading And Worker Tuning
 .TP
 .BR "-o multi_thread" "[=N]"

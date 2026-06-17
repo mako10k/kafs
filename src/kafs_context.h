@@ -5,6 +5,7 @@
 #include "kafs_inode.h"
 #include "kafs_hotplug.h"
 #include "kafs_meta_region.h"
+#include "kafs_profile.h"
 #include <pthread.h>
 #include <stdlib.h>
 #include <sys/un.h>
@@ -145,6 +146,10 @@ struct kafs_context
 
   // --- Optional runtime TRIM behavior ---
   uint32_t c_trim_on_free;
+
+  // --- Runtime profile and metadata-churn policy ---
+  uint32_t c_sd_card_profile;
+  uint32_t c_atime_policy;
 
   // --- Allocator v3 runtime state ---
   uint32_t c_alloc_v3_summary_dirty;

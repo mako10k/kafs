@@ -53,6 +53,10 @@ This operation is irreversible.
 .TP
 .B fsstat mountpoint [-v|--verbose] [--json] [--bytes|--mib|--gib]
 Print filesystem and runtime statistics.
+The output includes effective runtime profile settings such as
+.BR sd_card_profile ,
+.BR trim_on_free ,
+background dedup scan tuning, worker priority, atime policy, and fsync policy.
 By default this uses a lightweight snapshot and skips full tombstone and HRL scans.
 Use
 .B -v

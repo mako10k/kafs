@@ -130,6 +130,10 @@
   - options が明示的に文書化されている。
   - profile を選ばない限り default behavior は変えない。
   - diagnostics に profile settings が出る。
+- 完了メモ:
+  - `--sd-card-profile[=conservative]` と `-o sd_card_profile=<none|conservative>` を追加。
+  - conservative profile は runtime TRIM off、idle background dedup scan off、pending/bg worker idle nice=19、journal-only fsync policy を適用する。
+  - `kafsctl stats` text / JSON と起動ログに profile と実効設定を出力する。
 
 ### SDW-P2-T5 Phase 2 validation
 

@@ -20,6 +20,7 @@ typedef struct kafs_test_mount_options
 {
   const char *debug;
   const char *log_path;
+  const char *extra_options;
   int multithread;
   int timeout_ms;
 } kafs_test_mount_options_t;
