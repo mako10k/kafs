@@ -3,6 +3,7 @@
 #include "kafs_hash.h"
 #include "kafs_inode.h"
 #include "kafs_journal.h"
+#include "kafs_meta_region.h"
 #include "kafs_offline_summary.h"
 #include "kafs_tailmeta.h"
 #include "kafs_cli_opts.h"
@@ -37,6 +38,23 @@ struct journal_summary
   uint32_t active_slot;
   uint32_t valid_slots;
   kj_header_t header;
+};
+
+#define KAFSDUMP_META_REGION_MAX_SPANS 2u
+
+struct metadata_region_span
+{
+  uint64_t offset;
+  uint64_t size;
+};
+
+struct metadata_region_summary
+{
+  uint32_t id;
+  int available;
+  uint32_t span_count;
+  uint64_t total_size;
+  struct metadata_region_span spans[KAFSDUMP_META_REGION_MAX_SPANS];
 };
 
 struct dump_journal_header_read_ctx
@@ -154,10 +172,91 @@ static int collect_journal_summary(int fd, const kafs_ssuperblock_t *sb, uint64_
   return 0;
 }
 
+static void metadata_region_add_span(struct metadata_region_summary *region, uint64_t off,
+                                     uint64_t size, uint64_t file_size)
+{
+  if (!region || size == 0)
+    return;
+  if (kafs_offline_check_bounds(off, size, file_size) != 0)
+    return;
+  if (region->span_count >= KAFSDUMP_META_REGION_MAX_SPANS)
+    return;
+
+  region->spans[region->span_count].offset = off;
+  region->spans[region->span_count].size = size;
+  region->span_count++;
+  region->total_size += size;
+  region->available = 1;
+}
+
+static void collect_metadata_regions(const kafs_ssuperblock_t *sb, uint64_t file_size,
+                                     struct metadata_region_summary regions[KAFS_META_REGION_COUNT])
+{
+  for (uint32_t i = 0; i < KAFS_META_REGION_COUNT; ++i)
+  {
+    memset(&regions[i], 0, sizeof(regions[i]));
+    regions[i].id = i;
+  }
+
+  const uint64_t blksize = (uint64_t)kafs_sb_blksize_get(sb);
+  const uint64_t r_blkcnt = (uint64_t)kafs_sb_r_blkcnt_get(sb);
+  const uint64_t inocnt = (uint64_t)kafs_sb_inocnt_get(sb);
+  uint64_t layout = sizeof(kafs_ssuperblock_t);
+
+  metadata_region_add_span(&regions[KAFS_META_REGION_SUPERBLOCK_CHECKPOINT], 0,
+                           sizeof(kafs_ssuperblock_t), file_size);
+
+  layout = kafs_offline_align_up_u64(layout, blksize);
+  uint64_t bitmap_off = layout;
+  uint64_t bitmap_size = (r_blkcnt + 7u) >> 3;
+  metadata_region_add_span(&regions[KAFS_META_REGION_BLOCK_BITMAP], bitmap_off, bitmap_size,
+                           file_size);
+
+  layout += bitmap_size;
+  layout = kafs_offline_align_up_u64(layout, 8u);
+  layout = kafs_offline_align_up_u64(layout, blksize);
+  uint64_t inotbl_off = layout;
+  uint64_t inotbl_size = kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(sb), inocnt);
+  metadata_region_add_span(&regions[KAFS_META_REGION_INODE_TABLE], inotbl_off, inotbl_size,
+                           file_size);
+
+  metadata_region_add_span(&regions[KAFS_META_REGION_ALLOCATOR_SUMMARY],
+                           kafs_sb_allocator_offset_get(sb), kafs_sb_allocator_size_get(sb),
+                           file_size);
+  metadata_region_add_span(&regions[KAFS_META_REGION_HRL_INDEX], kafs_sb_hrl_index_offset_get(sb),
+                           kafs_sb_hrl_index_size_get(sb), file_size);
+  metadata_region_add_span(
+      &regions[KAFS_META_REGION_HRL_ENTRIES], kafs_sb_hrl_entry_offset_get(sb),
+      (uint64_t)kafs_sb_hrl_entry_cnt_get(sb) * (uint64_t)sizeof(kafs_hrl_entry_t), file_size);
+
+  const uint64_t joff = kafs_sb_journal_offset_get(sb);
+  const uint64_t jsize = kafs_sb_journal_size_get(sb);
+  if (joff != 0 && jsize >= sizeof(kj_header_t))
+  {
+    uint32_t slots = kj_header_slot_count(kafs_sb_journal_flags_get(sb), jsize);
+    uint64_t hsz = (uint64_t)kj_header_size();
+    uint64_t area_size = kj_journal_area_size(jsize, kafs_sb_journal_flags_get(sb));
+    metadata_region_add_span(&regions[KAFS_META_REGION_JOURNAL_HEADER], joff, hsz, file_size);
+    if (slots > 1u)
+      metadata_region_add_span(&regions[KAFS_META_REGION_JOURNAL_HEADER], joff + hsz + area_size,
+                               hsz * (uint64_t)(slots - 1u), file_size);
+    metadata_region_add_span(&regions[KAFS_META_REGION_JOURNAL_DATA], joff + hsz, area_size,
+                             file_size);
+  }
+
+  metadata_region_add_span(&regions[KAFS_META_REGION_PENDING_LOG],
+                           kafs_sb_pendinglog_offset_get(sb), kafs_sb_pendinglog_size_get(sb),
+                           file_size);
+  metadata_region_add_span(&regions[KAFS_META_REGION_TAIL_METADATA],
+                           kafs_sb_tailmeta_offset_get(sb), kafs_sb_tailmeta_size_get(sb),
+                           file_size);
+}
+
 static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary *ino,
                        const struct hrl_summary *hrl, const struct journal_summary *jr,
-                       const struct tailmeta_summary *tm, int rc_inode, int rc_hrl, int rc_journal,
-                       int rc_tailmeta)
+                       const struct tailmeta_summary *tm,
+                       const struct metadata_region_summary regions[KAFS_META_REGION_COUNT],
+                       int rc_inode, int rc_hrl, int rc_journal, int rc_tailmeta)
 {
   struct sb_geometry g = kafs_offline_superblock_geometry(sb);
 
@@ -176,6 +275,18 @@ static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary 
          (kafs_sb_feature_flags_get(sb) & KAFS_FEATURE_TAIL_META_REGION) ? "true" : "false");
   printf("  tailmeta_offset: %" PRIu64 "\n", kafs_sb_tailmeta_offset_get(sb));
   printf("  tailmeta_size: %" PRIu64 "\n", kafs_sb_tailmeta_size_get(sb));
+
+  printf("metadata_regions:\n");
+  for (uint32_t i = 0; i < KAFS_META_REGION_COUNT; ++i)
+  {
+    const struct metadata_region_summary *region = &regions[i];
+    printf("  region[%" PRIu32 "] %s: available=%s total_size=%" PRIu64 " spans=%" PRIu32 "\n",
+           region->id, kafs_meta_region_name(region->id), region->available ? "true" : "false",
+           region->total_size, region->span_count);
+    for (uint32_t s = 0; s < region->span_count; ++s)
+      printf("    span[%" PRIu32 "]: offset=%" PRIu64 " size=%" PRIu64 "\n", s,
+             region->spans[s].offset, region->spans[s].size);
+  }
 
   printf("tail_metadata:\n");
   printf("  status: %s\n", rc_to_text(rc_tailmeta));
@@ -243,8 +354,9 @@ static void print_text(const kafs_ssuperblock_t *sb, const struct inode_summary 
 
 static void print_json(const kafs_ssuperblock_t *sb, const struct inode_summary *ino,
                        const struct hrl_summary *hrl, const struct journal_summary *jr,
-                       const struct tailmeta_summary *tm, int rc_inode, int rc_hrl, int rc_journal,
-                       int rc_tailmeta)
+                       const struct tailmeta_summary *tm,
+                       const struct metadata_region_summary regions[KAFS_META_REGION_COUNT],
+                       int rc_inode, int rc_hrl, int rc_journal, int rc_tailmeta)
 {
   const struct sb_geometry g = kafs_offline_superblock_geometry(sb);
 
@@ -265,6 +377,21 @@ static void print_json(const kafs_ssuperblock_t *sb, const struct inode_summary 
   printf("    \"tailmeta_offset\": %" PRIu64 ",\n", kafs_sb_tailmeta_offset_get(sb));
   printf("    \"tailmeta_size\": %" PRIu64 "\n", kafs_sb_tailmeta_size_get(sb));
   printf("  },\n");
+
+  printf("  \"metadata_regions\": [\n");
+  for (uint32_t i = 0; i < KAFS_META_REGION_COUNT; ++i)
+  {
+    const struct metadata_region_summary *region = &regions[i];
+    printf("    {\"id\": %" PRIu32 ", \"name\": \"%s\", \"available\": %s, "
+           "\"total_size\": %" PRIu64 ", \"spans\": [",
+           region->id, kafs_meta_region_name(region->id), region->available ? "true" : "false",
+           region->total_size);
+    for (uint32_t s = 0; s < region->span_count; ++s)
+      printf("%s{\"offset\": %" PRIu64 ", \"size\": %" PRIu64 "}", (s == 0) ? "" : ", ",
+             region->spans[s].offset, region->spans[s].size);
+    printf("]}%s\n", (i + 1u == KAFS_META_REGION_COUNT) ? "" : ",");
+  }
+  printf("  ],\n");
 
   printf("  \"tail_metadata\": {\n");
   printf("    \"status\": \"%s\",\n", rc_to_text(rc_tailmeta));
@@ -400,10 +527,12 @@ int main(int argc, char **argv)
   struct hrl_summary hrl;
   struct journal_summary jr;
   struct tailmeta_summary tm;
+  struct metadata_region_summary regions[KAFS_META_REGION_COUNT];
   int rc_inode = collect_inode_summary(fd, &sb, file_size, &ino);
   int rc_hrl = collect_hrl_summary(fd, &sb, file_size, &hrl);
   int rc_journal = collect_journal_summary(fd, &sb, file_size, &jr);
   int rc_tailmeta = collect_tailmeta_summary(fd, &sb, file_size, &tm);
+  collect_metadata_regions(&sb, file_size, regions);
 
   if (rc_inode != 0)
     fprintf(stderr, "warning: inode summary unavailable: %s\n", rc_to_text(rc_inode));
@@ -415,9 +544,9 @@ int main(int argc, char **argv)
     fprintf(stderr, "warning: tail metadata unavailable: %s\n", rc_to_text(rc_tailmeta));
 
   if (json)
-    print_json(&sb, &ino, &hrl, &jr, &tm, rc_inode, rc_hrl, rc_journal, rc_tailmeta);
+    print_json(&sb, &ino, &hrl, &jr, &tm, regions, rc_inode, rc_hrl, rc_journal, rc_tailmeta);
   else
-    print_text(&sb, &ino, &hrl, &jr, &tm, rc_inode, rc_hrl, rc_journal, rc_tailmeta);
+    print_text(&sb, &ino, &hrl, &jr, &tm, regions, rc_inode, rc_hrl, rc_journal, rc_tailmeta);
 
   close(fd);
   return (rc_inode == 0 && rc_hrl == 0 && rc_journal == 0 && rc_tailmeta == 0) ? 0 : 1;

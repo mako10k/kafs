@@ -171,6 +171,7 @@ static int kafs_alloc_v3_summary_sync_one(struct kafs_context *ctx, kafs_blkcnt_
   else
     l2[l2_idx] |= l2_mask;
 
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_ALLOCATOR_SUMMARY, 2u);
   return 0;
 }
 
@@ -180,6 +181,8 @@ static void kafs_blk_account_bit_update(struct kafs_context *ctx, kafs_blkmask_t
   uint64_t t_bit0 = kafs_blk_now_ns();
   blkmasktbl[blod] = word;
   kafs_meta_bitmap_mark_dirty(ctx, blod);
+  if (blkmasktbl == ctx->c_blkmasktbl)
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_BLOCK_BITMAP, sizeof(*blkmasktbl));
   uint64_t t_bit1 = kafs_blk_now_ns();
   __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_bit_update, t_bit1 - t_bit0, __ATOMIC_RELAXED);
 }
@@ -204,6 +207,8 @@ static void kafs_blk_account_meta_update(struct kafs_context *ctx, kafs_ssuperbl
     {
       kafs_sb_blkcnt_free_set(sb, blkcnt_free + 1);
     }
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_SUPERBLOCK_CHECKPOINT,
+                              sizeof(sb->s_blkcnt_free));
   }
   uint64_t t_free1 = kafs_blk_now_ns();
   __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_freecnt_update, t_free1 - t_free0,
@@ -217,6 +222,7 @@ static void kafs_blk_account_meta_update(struct kafs_context *ctx, kafs_ssuperbl
   else
   {
     kafs_sb_wtime_set(sb, kafs_now());
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_SUPERBLOCK_CHECKPOINT, sizeof(sb->s_wtime));
   }
   uint64_t t_wtime1 = kafs_blk_now_ns();
   __atomic_add_fetch(&ctx->c_stat_blk_set_usage_ns_wtime_update, t_wtime1 - t_wtime0,

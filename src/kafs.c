@@ -115,6 +115,13 @@ static inline void kafs_stat_record_pwrite_iblk_write_latency(kafs_context_t *ct
   ctx->c_stat_pwrite_iblk_write_sample_cap = cap;
 }
 
+static void kafs_count_superblock_inode_free_wtime_write(struct kafs_context *ctx)
+{
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_SUPERBLOCK_CHECKPOINT,
+                            sizeof(ctx->c_superblock->s_inocnt_free) +
+                                sizeof(ctx->c_superblock->s_wtime));
+}
+
 #define KAFS_DIAG_CREATE_PATH_MAX 160u
 
 #if KAFS_ENABLE_EXTRA_DIAG
@@ -715,6 +722,7 @@ static int kafs_pendinglog_init_or_load(struct kafs_context *ctx)
   if (!valid)
   {
     memset(ctx->c_pendinglog_base, 0, ctx->c_pendinglog_size);
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_PENDING_LOG, ctx->c_pendinglog_size);
     hdr->magic = KAFS_PENDINGLOG_MAGIC;
     hdr->version = KAFS_PENDINGLOG_VERSION;
     hdr->flags = 0;
@@ -757,6 +765,7 @@ static int kafs_pendinglog_enqueue(struct kafs_context *ctx, const kafs_pendingl
   *slot = *ent;
   slot->pending_id = hdr->next_pending_id++;
   hdr->tail = next;
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_PENDING_LOG, sizeof(*slot) + sizeof(*hdr));
   if (pending_id)
     *pending_id = slot->pending_id;
   return 0;
@@ -1192,14 +1201,20 @@ static int kafs_pendinglog_replay_scan_entries(struct kafs_context *ctx, kafs_pe
       return -EIO;
 
     if (slot->state == KAFS_PENDING_HASHED)
+    {
       kafs_pendinglog_requeue_entry(slot, now_rt_ns, replay_requeued);
+      kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_PENDING_LOG, sizeof(*slot));
+    }
     else if (slot->state == KAFS_PENDING_RESOLVED)
     {
       int still_pending = 0;
       (void)kafs_pendinglog_inode_has_pending_id(ctx, slot->ino, slot->iblk, slot->pending_id,
                                                  &still_pending);
       if (still_pending)
+      {
         kafs_pendinglog_requeue_entry(slot, now_rt_ns, replay_requeued);
+        kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_PENDING_LOG, sizeof(*slot));
+      }
     }
 
     idx = kafs_pendinglog_next_idx(hdr, idx);
@@ -1220,6 +1235,7 @@ static int kafs_pendinglog_replay_trim_head(struct kafs_context *ctx, kafs_pendi
     if (slot->state == KAFS_PENDING_FAILED)
     {
       hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
+      kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_PENDING_LOG, sizeof(*hdr));
       (*replay_dropped)++;
       continue;
     }
@@ -1232,11 +1248,13 @@ static int kafs_pendinglog_replay_trim_head(struct kafs_context *ctx, kafs_pendi
       if (!still_pending)
       {
         hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
+        kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_PENDING_LOG, sizeof(*hdr));
         (*replay_dropped)++;
         continue;
       }
 
       kafs_pendinglog_requeue_entry(slot, now_rt_ns, replay_requeued);
+      kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_PENDING_LOG, sizeof(*slot));
     }
 
     break;
@@ -2079,7 +2097,10 @@ static void kafs_pending_worker_skip_terminal_entry(kafs_context_t *ctx, uint32_
   pthread_mutex_lock(&ctx->c_pending_worker_lock);
   kafs_pendinglog_hdr_t *hdr = kafs_pendinglog_hdr_ptr(ctx);
   if (hdr && hdr->capacity > 0 && hdr->head == idx)
+  {
     hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_PENDING_LOG, sizeof(*hdr));
+  }
   kafs_pending_worker_adjust_priority_locked(ctx);
   pthread_mutex_unlock(&ctx->c_pending_worker_lock);
 }
@@ -2112,6 +2133,7 @@ static int kafs_pending_worker_try_install_block(kafs_context_t *ctx,
               kafs_ino_ibrk_run(ctx, inoent, ent->iblk, &final_blo, KAFS_IBLKREF_FUNC_SET) == 0)
           {
             installed = 1;
+            kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_INODE_TABLE, kafs_ctx_inode_bytes(ctx));
           }
         }
       }
@@ -2154,6 +2176,7 @@ static void kafs_pending_worker_finalize_success(kafs_context_t *ctx, uint32_t i
     slot->reserved0 = 0;
     if (hdr->head == idx)
       hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_PENDING_LOG, sizeof(*slot) + sizeof(*hdr));
   }
   kafs_pending_worker_adjust_priority_locked(ctx);
   pthread_cond_broadcast(&ctx->c_pending_worker_cond);
@@ -2178,6 +2201,8 @@ static uint32_t kafs_pending_worker_note_retry(kafs_context_t *ctx, uint32_t idx
       if (hdr && hdr->head == idx)
         hdr->head = kafs_pendinglog_next_idx(hdr, hdr->head);
     }
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_PENDING_LOG,
+                              sizeof(*slot) + (hdr ? sizeof(*hdr) : 0u));
   }
   kafs_pending_worker_adjust_priority_locked(ctx);
   pthread_cond_broadcast(&ctx->c_pending_worker_cond);
@@ -2366,6 +2391,7 @@ static uint32_t kafs_tombstone_gc_step(struct kafs_context *ctx, int pressure_mo
       kafs_inode_alloc_lock(ctx);
       (void)kafs_sb_inocnt_free_incr(ctx->c_superblock);
       kafs_sb_wtime_set(ctx->c_superblock, kafs_now());
+      kafs_count_superblock_inode_free_wtime_write(ctx);
       kafs_inode_alloc_unlock(ctx);
       reclaimed++;
     }
@@ -4070,6 +4096,8 @@ static int kafs_tailmeta_alloc_slot(struct kafs_context *ctx,
       kafs_tailmeta_container_hdr_free_bytes_set(
           container,
           (uint16_t)(kafs_tailmeta_container_hdr_free_bytes_get(container) - class_bytes));
+      kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_TAIL_METADATA,
+                                sizeof(*slot) + sizeof(*container));
       *out_container_index = container_index;
       *out_slot_index = slot_index;
       return 0;
@@ -4101,7 +4129,8 @@ static uint16_t kafs_tailmeta_max_tail_only_len(struct kafs_context *ctx)
   return max_len;
 }
 
-static int kafs_tailmeta_release_slot(struct kafs_tailmeta_region_view *view,
+static int kafs_tailmeta_release_slot(struct kafs_context *ctx,
+                                      struct kafs_tailmeta_region_view *view,
                                       uint32_t container_index, uint16_t slot_index)
 {
   kafs_tailmeta_container_hdr_t *container;
@@ -4127,6 +4156,8 @@ static int kafs_tailmeta_release_slot(struct kafs_tailmeta_region_view *view,
         container, (uint16_t)(kafs_tailmeta_container_hdr_live_count_get(container) - 1u));
   kafs_tailmeta_container_hdr_free_bytes_set(
       container, (uint16_t)(kafs_tailmeta_container_hdr_free_bytes_get(container) + class_bytes));
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_TAIL_METADATA,
+                            sizeof(*slot) + sizeof(*container));
   return 0;
 }
 
@@ -4247,7 +4278,7 @@ static int kafs_tailmeta_release_desc_slot(struct kafs_context *ctx, kafs_sinode
   (void)class_bytes;
   (void)len;
   (void)payload;
-  return kafs_tailmeta_release_slot(&view, container_index, slot_index);
+  return kafs_tailmeta_release_slot(ctx, &view, container_index, slot_index);
 }
 
 static int kafs_tailmeta_fragment_load(struct kafs_context *ctx, kafs_sinode_t *inoent, void *buf,
@@ -4345,7 +4376,7 @@ static int kafs_tailmeta_store_mixed_final_tail(struct kafs_context *ctx, kafs_s
   payload = kafs_tailmeta_slot_payload_ptr(&view, container_index, slot_index);
   if (!payload)
   {
-    (void)kafs_tailmeta_release_slot(&view, container_index, slot_index);
+    (void)kafs_tailmeta_release_slot(ctx, &view, container_index, slot_index);
     return -ERANGE;
   }
 
@@ -4357,16 +4388,17 @@ static int kafs_tailmeta_store_mixed_final_tail(struct kafs_context *ctx, kafs_s
     rc = kafs_ino_iblk_read_or_zero(ctx, inoent, tail_iblo, block);
     if (rc != 0)
     {
-      (void)kafs_tailmeta_release_slot(&view, container_index, slot_index);
+      (void)kafs_tailmeta_release_slot(ctx, &view, container_index, slot_index);
       return rc;
     }
     memset(payload, 0, class_bytes);
     memcpy(payload, block, (size_t)fragment_len_off);
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_TAIL_METADATA, class_bytes);
 
     rc = kafs_ino_iblk_release(ctx, inoent, tail_iblo);
     if (rc != 0)
     {
-      (void)kafs_tailmeta_release_slot(&view, container_index, slot_index);
+      (void)kafs_tailmeta_release_slot(ctx, &view, container_index, slot_index);
       return rc;
     }
   }
@@ -4432,7 +4464,7 @@ static int kafs_tailmeta_materialize_mixed_to_full_block(struct kafs_context *ct
   }
 
   kafs_tailmeta_inode_taildesc_set_full_block(ctx, inoent);
-  return kafs_tailmeta_release_slot(&view, container_index, slot_index);
+  return kafs_tailmeta_release_slot(ctx, &view, container_index, slot_index);
 }
 
 static int kafs_tailmeta_normalize_block_layout(struct kafs_context *ctx, kafs_sinode_t *inoent)
@@ -4501,11 +4533,12 @@ static int kafs_tailmeta_store_tail_only(struct kafs_context *ctx, kafs_sinode_t
   payload = kafs_tailmeta_slot_payload_ptr(&view, container_index, slot_index);
   if (!payload)
   {
-    (void)kafs_tailmeta_release_slot(&view, container_index, slot_index);
+    (void)kafs_tailmeta_release_slot(ctx, &view, container_index, slot_index);
     return -ERANGE;
   }
   memset(payload, 0, class_bytes);
   memcpy(payload, data, (size_t)size);
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_TAIL_METADATA, class_bytes);
 
   memset(inoent->i_blkreftbl, 0, sizeof(inoent->i_blkreftbl));
   kafs_ino_blocks_set(inoent, 0);
@@ -4532,7 +4565,7 @@ static int kafs_tailmeta_store_tail_only(struct kafs_context *ctx, kafs_sinode_t
       {
         old_slot_index =
             (uint16_t)(kafs_ino_taildesc_v5_fragment_off_get(&old_taildesc) / old_class_bytes);
-        (void)kafs_tailmeta_release_slot(&view, old_container_index, old_slot_index);
+        (void)kafs_tailmeta_release_slot(ctx, &view, old_container_index, old_slot_index);
       }
     }
   }
@@ -4587,7 +4620,7 @@ static int kafs_tailmeta_promote_tail_only_to_full_block(struct kafs_context *ct
     return rc;
 
   kafs_tailmeta_inode_taildesc_set_full_block(ctx, inoent);
-  return kafs_tailmeta_release_slot(&view, container_index, slot_index);
+  return kafs_tailmeta_release_slot(ctx, &view, container_index, slot_index);
 }
 
 static int kafs_tailmeta_load_small_file_bytes(struct kafs_context *ctx, kafs_sinode_t *inoent,
@@ -4966,7 +4999,10 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
   KAFS_PWRITE_TRY(kafs_pwrite_prepare_tail_layout(ctx, inoent, buf, size, offset, filesize,
                                                   filesize_new, &completed));
   if (completed)
+  {
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_INODE_TABLE, kafs_ctx_inode_bytes(ctx));
     return size;
+  }
 
   KAFS_PWRITE_TRY(kafs_pwrite_extend_inode_size(ctx, inoent, &filesize, filesize_new));
   kafs_pwrite_sync_regular_taildesc(ctx, inoent, filesize);
@@ -4976,6 +5012,7 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
   if (kafs_inode_size_is_inline((kafs_off_t)filesize))
   {
     memcpy((void *)inoent->i_blkreftbl + offset, buf, size);
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_INODE_TABLE, kafs_ctx_inode_bytes(ctx));
     return size;
   }
 
@@ -5000,6 +5037,7 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
   }
 out_success:
 #undef KAFS_PWRITE_TRY
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_INODE_TABLE, kafs_ctx_inode_bytes(ctx));
   return size;
 }
 
@@ -5094,7 +5132,7 @@ static int kafs_truncate_release_tail_only_slot(struct kafs_context *ctx,
     return -EPROTO;
 
   slot_index = (uint16_t)(kafs_ino_taildesc_v5_fragment_off_get(taildesc) / class_bytes);
-  return kafs_tailmeta_release_slot(&view, container_index, slot_index);
+  return kafs_tailmeta_release_slot(ctx, &view, container_index, slot_index);
 }
 
 static int kafs_truncate_handle_tail_only(struct kafs_context *ctx, kafs_sinode_t *inoent,
@@ -5386,9 +5424,11 @@ __attribute_maybe_unused__ static int kafs_release(struct kafs_context *ctx, kaf
     KAFS_CALL(kafs_truncate, ctx, inoent, 0);
     kafs_diag_clear_create_event(ctx, kafs_ctx_ino_no(ctx, inoent));
     kafs_ctx_inode_zero(ctx, inoent);
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_INODE_TABLE, kafs_ctx_inode_bytes(ctx));
     // Best-effort accounting (avoid taking inode_alloc_lock here to prevent lock inversion).
     kafs_sb_inocnt_free_incr(ctx->c_superblock);
     kafs_sb_wtime_set(ctx->c_superblock, kafs_now());
+    kafs_count_superblock_inode_free_wtime_write(ctx);
   }
   return KAFS_SUCCESS;
 }
@@ -5433,6 +5473,7 @@ static int kafs_try_reclaim_unlinked_inode_locked(struct kafs_context *ctx, kafs
   }
   kafs_diag_clear_create_event(ctx, ino);
   kafs_ctx_inode_zero(ctx, inoent);
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_INODE_TABLE, kafs_ctx_inode_bytes(ctx));
   *reclaimed = 1;
   return KAFS_SUCCESS;
 }
@@ -7492,7 +7533,7 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
   return 0;
 }
 
-#define KAFS_STATS_VERSION 16u
+#define KAFS_STATS_VERSION 17u
 
 static int kafs_u64_cmp(const void *a, const void *b)
 {
@@ -7775,6 +7816,16 @@ static void kafs_stats_snapshot_pending_worker(kafs_context_t *ctx, kafs_stats_t
   pthread_mutex_unlock(&ctx->c_pending_worker_lock);
 }
 
+static void kafs_stats_snapshot_metadata_regions(kafs_context_t *ctx, kafs_stats_t *out)
+{
+  for (uint32_t i = 0; i < KAFS_META_REGION_COUNT; ++i)
+  {
+    out->metadata_region_writes[i] =
+        __atomic_load_n(&ctx->c_meta_region_writes[i], __ATOMIC_RELAXED);
+    out->metadata_region_bytes[i] = __atomic_load_n(&ctx->c_meta_region_bytes[i], __ATOMIC_RELAXED);
+  }
+}
+
 static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out, uint32_t request_flags)
 {
   memset(out, 0, sizeof(*out));
@@ -7787,6 +7838,7 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out, uint32_t
   kafs_stats_snapshot_alloc(ctx, out);
   kafs_stats_snapshot_bg_dedup(ctx, out);
   kafs_stats_snapshot_pending_worker(ctx, out);
+  kafs_stats_snapshot_metadata_regions(ctx, out);
 }
 
 #ifdef __linux__
@@ -8979,6 +9031,7 @@ static int kafs_create_allocate_inode(struct fuse_context *fctx, struct kafs_con
     memcpy(inoent_new->i_blkreftbl, &dir_hdr, sizeof(dir_hdr));
     kafs_ino_size_set(inoent_new, (kafs_off_t)sizeof(dir_hdr));
   }
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_INODE_TABLE, kafs_ctx_inode_bytes(ctx));
 
   kafs_inode_alloc_unlock(ctx);
   *ino_new_out = ino_new;
@@ -9073,6 +9126,7 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
   kafs_inode_alloc_lock(ctx);
   (void)kafs_sb_inocnt_free_decr(ctx->c_superblock);
   kafs_sb_wtime_set(ctx->c_superblock, kafs_now());
+  kafs_count_superblock_inode_free_wtime_write(ctx);
   kafs_inode_alloc_unlock(ctx);
 
   kafs_dlog(2, "%s: success ino=%u added to dir ino=%u\n", __func__, (unsigned)ino_new,
@@ -9913,6 +9967,7 @@ static int kafs_op_unlink(const char *path)
     kafs_inode_alloc_lock(ctx);
     (void)kafs_sb_inocnt_free_incr(ctx->c_superblock);
     kafs_sb_wtime_set(ctx->c_superblock, kafs_now());
+    kafs_count_superblock_inode_free_wtime_write(ctx);
     kafs_inode_alloc_unlock(ctx);
   }
 
@@ -10224,6 +10279,7 @@ static void kafs_rename_finalize_replaced_inode(struct kafs_context *ctx,
     kafs_inode_alloc_lock(ctx);
     (void)kafs_sb_inocnt_free_incr(ctx->c_superblock);
     kafs_sb_wtime_set(ctx->c_superblock, kafs_now());
+    kafs_count_superblock_inode_free_wtime_write(ctx);
     kafs_inode_alloc_unlock(ctx);
   }
 }
@@ -10733,6 +10789,7 @@ static void kafs_release_record_reclaimed_inode(struct kafs_context *ctx)
   kafs_inode_alloc_lock(ctx);
   (void)kafs_sb_inocnt_free_incr(ctx->c_superblock);
   kafs_sb_wtime_set(ctx->c_superblock, kafs_now());
+  kafs_count_superblock_inode_free_wtime_write(ctx);
   kafs_inode_alloc_unlock(ctx);
 }
 

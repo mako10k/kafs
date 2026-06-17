@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <sys/ioctl.h>
 #include "kafs_hotplug.h"
+#include "kafs_meta_region.h"
 
 // Userspace -> KAFS (FUSE ioctl)
 // Note: FUSE may truncate the ioctl request to 32 bits.
@@ -141,6 +142,9 @@ struct kafs_stats
   uint64_t pending_worker_main_exits;
   uint64_t pending_resolved;
   uint64_t pending_old_block_freed;
+
+  uint64_t metadata_region_writes[KAFS_META_REGION_COUNT];
+  uint64_t metadata_region_bytes[KAFS_META_REGION_COUNT];
 };
 
 typedef struct kafs_stats kafs_stats_t;

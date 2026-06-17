@@ -83,6 +83,10 @@
 - 完了条件:
   - region ID が文書化されている。
   - unknown/out-of-range write を別枠で count できる。
+- 完了メモ:
+  - `src/kafs_meta_region.h` に 0..10 の stable region ID を定義。
+  - `docs/sd-card-wear-plan.md` に region ID/name/対象を文書化。
+  - `unknown` region を runtime counter 配列の末尾に確保。
 
 ### SDW-P2-T2 Runtime metadata write counters
 
@@ -95,6 +99,10 @@
   - counters が `kafsctl stats` で見える。
   - write-heavy smoke test で期待 region の counters が増える。
   - data write を metadata write と誤分類しない。
+- 完了メモ:
+  - `kafsctl stats --json` / text に `metadata_write_regions` を追加。
+  - journal header/data、bitmap/superblock、inode table、allocator summary、HRL index/entries、pending log、tail metadata の runtime counter を追加。
+  - `fs_semantics` smoke で metadata counter 増加と `unknown` counter 0 を確認する。
 
 ### SDW-P2-T3 Offline metadata heatmap summary
 
@@ -106,6 +114,9 @@
   - `kafsdump` text / JSON に metadata region offsets/sizes が出る。
   - JSON output が parseable のまま。
   - runtime counters がある場合、report が 2 run または 2 image を比較できる。
+- 完了メモ:
+  - `kafsdump` text / JSON に `metadata_regions` span summary を追加。
+  - rotating journal header は slot0 と tail slots を separate spans として出力する。
 
 ### SDW-P2-T4 SD-card profile options
 

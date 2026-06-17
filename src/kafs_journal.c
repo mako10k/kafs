@@ -199,11 +199,15 @@ static void kj_replay_apply_meta_delta(struct kafs_context *ctx, const char *pay
   if (free_abs > (uint64_t)blkcnt)
     free_abs = (uint64_t)blkcnt;
   kafs_sb_blkcnt_free_set(ctx->c_superblock, (kafs_blkcnt_t)free_abs);
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_SUPERBLOCK_CHECKPOINT,
+                            sizeof(ctx->c_superblock->s_blkcnt_free));
 
   if (wtime_dirty)
   {
     kafs_time_t wt = {.tv_sec = (time_t)wtime_sec, .tv_nsec = wtime_nsec};
     kafs_sb_wtime_set(ctx->c_superblock, wt);
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_SUPERBLOCK_CHECKPOINT,
+                              sizeof(ctx->c_superblock->s_wtime));
   }
 
   const char *w = strstr(payload, "words=");
@@ -228,6 +232,7 @@ static void kj_replay_apply_meta_delta(struct kafs_context *ctx, const char *pay
     if ((size_t)idx >= wordcnt)
       continue;
     ctx->c_blkmasktbl[idx] = (kafs_blkmask_t)val;
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_BLOCK_BITMAP, sizeof(ctx->c_blkmasktbl[idx]));
   }
   free(copy);
 }
@@ -251,6 +256,7 @@ static void kj_apply_meta_delta(struct kafs_context *ctx)
       if (!ctx->c_meta_bitmap_dirty[i])
         continue;
       ctx->c_blkmasktbl[i] = ctx->c_meta_bitmap_words[i];
+      kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_BLOCK_BITMAP, sizeof(ctx->c_blkmasktbl[i]));
       ctx->c_meta_bitmap_dirty[i] = 0;
     }
     ctx->c_meta_bitmap_dirty_count = 0;
@@ -266,6 +272,8 @@ static void kj_apply_meta_delta(struct kafs_context *ctx)
     if ((uint64_t)merged > (uint64_t)blkcnt)
       merged = (int64_t)blkcnt;
     kafs_sb_blkcnt_free_set(ctx->c_superblock, (kafs_blkcnt_t)merged);
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_SUPERBLOCK_CHECKPOINT,
+                              sizeof(ctx->c_superblock->s_blkcnt_free));
     ctx->c_meta_delta_free_blocks = 0;
   }
 
@@ -274,6 +282,8 @@ static void kj_apply_meta_delta(struct kafs_context *ctx)
     if (wtime.tv_sec == 0 && wtime.tv_nsec == 0)
       clock_gettime(CLOCK_REALTIME, &wtime);
     kafs_sb_wtime_set(ctx->c_superblock, wtime);
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_SUPERBLOCK_CHECKPOINT,
+                              sizeof(ctx->c_superblock->s_wtime));
     ctx->c_meta_delta_wtime_dirty = 0;
     ctx->c_meta_delta_last_wtime = (kafs_time_t){0};
   }
@@ -409,6 +419,11 @@ static int kj_pwrite_nosync(int fd, const void *buf, size_t sz, off_t off)
   return (w == (ssize_t)sz) ? 0 : -EIO;
 }
 
+static void kj_count_meta_write(uint32_t region, uint64_t bytes)
+{
+  kafs_ctx_meta_write_count(g_state.ctx, region, bytes);
+}
+
 static uint64_t kj_header_slot_file_off(const kafs_journal_t *j, uint32_t slot)
 {
   return kj_header_slot_offset(j->base_off, j->area_size, slot);
@@ -426,8 +441,11 @@ static int kj_header_store_slot(kafs_journal_t *j, uint32_t slot, const kj_heade
 {
   if (!j->use_inimage || slot >= j->header_slot_count)
     return -EINVAL;
-  return (do_fsync ? kj_pwrite_fsync : kj_pwrite_nosync)(j->fd, hdr, sizeof(*hdr),
-                                                         (off_t)kj_header_slot_file_off(j, slot));
+  int rc = (do_fsync ? kj_pwrite_fsync : kj_pwrite_nosync)(j->fd, hdr, sizeof(*hdr),
+                                                           (off_t)kj_header_slot_file_off(j, slot));
+  if (rc == 0)
+    kj_count_meta_write(KAFS_META_REGION_JOURNAL_HEADER, sizeof(*hdr));
+  return rc;
 }
 
 static int kj_header_read_slot_cb(void *user, uint32_t slot, kj_header_t *hdr)
@@ -497,7 +515,8 @@ static void kj_reset_area(kafs_journal_t *j)
   while (remaining)
   {
     size_t n = remaining > chunk ? chunk : (size_t)remaining;
-    (void)kj_pwrite_fsync(j->fd, z, n, (off_t)(j->data_off + off));
+    if (kj_pwrite_fsync(j->fd, z, n, (off_t)(j->data_off + off)) == 0)
+      kj_count_meta_write(KAFS_META_REGION_JOURNAL_DATA, n);
     off += n;
     remaining -= n;
   }
@@ -541,12 +560,14 @@ static int kj_ring_write(kafs_journal_t *j, const void *data, size_t len, int do
     {
       if (kj_pwrite_nosync(j->fd, &wrap, sizeof(wrap), (off_t)(j->data_off + j->write_off)) != 0)
         return -EIO;
+      kj_count_meta_write(KAFS_META_REGION_JOURNAL_DATA, sizeof(wrap));
     }
     j->write_off = 0;
   }
   if ((do_fsync ? kj_pwrite_fsync : kj_pwrite_nosync)(j->fd, data, len,
                                                       (off_t)(j->data_off + j->write_off)) != 0)
     return -EIO;
+  kj_count_meta_write(KAFS_META_REGION_JOURNAL_DATA, len);
   j->write_off += len;
   // persist header with updated write offset and seq
   kj_persist_header(j, do_fsync);

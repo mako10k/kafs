@@ -53,6 +53,8 @@ kafs_back_SOURCES = kafs_back.c kafs_rpc.c kafs.c kafs_hrl.c kafs_locks.c kafs_j
 kafs_back_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -DKAFS_NO_MAIN
 kafs_back_LDADD = $(KAFS_LIBS)
 
-noinst_HEADERS = kafs_block.h kafs_config.h kafs_context.h kafs_dirent.h kafs_inode.h kafs_superblock.h kafs.h kafs_ioctl.h kafs_journal.h kafs_rpc.h kafs_core.h
+noinst_HEADERS = kafs_block.h kafs_config.h kafs_context.h kafs_dirent.h kafs_inode.h \
+	kafs_meta_region.h kafs_superblock.h kafs.h kafs_ioctl.h kafs_journal.h kafs_rpc.h \
+	kafs_core.h
 
 CFLAGS = @CFLAGS@ -Wall -Werror -Wno-unused-function -Wno-unused-parameter

@@ -4,6 +4,7 @@
 #include "kafs_superblock.h"
 #include "kafs_inode.h"
 #include "kafs_hotplug.h"
+#include "kafs_meta_region.h"
 #include <pthread.h>
 #include <stdlib.h>
 #include <sys/un.h>
@@ -137,6 +138,10 @@ struct kafs_context
   uint64_t c_stat_pending_old_block_freed;
   uint64_t c_stat_trim_issued;
   uint64_t c_stat_trim_failed;
+
+  // --- Runtime metadata write counters (best-effort) ---
+  uint64_t c_meta_region_writes[KAFS_META_REGION_COUNT];
+  uint64_t c_meta_region_bytes[KAFS_META_REGION_COUNT];
 
   // --- Optional runtime TRIM behavior ---
   uint32_t c_trim_on_free;
@@ -296,6 +301,16 @@ int kafs_ctx_locks_init(struct kafs_context *ctx);
 void kafs_ctx_locks_destroy(struct kafs_context *ctx);
 
 typedef struct kafs_context kafs_context_t;
+
+static inline void kafs_ctx_meta_write_count(kafs_context_t *ctx, uint32_t region, uint64_t bytes)
+{
+  if (!ctx)
+    return;
+  if (region >= KAFS_META_REGION_COUNT)
+    region = KAFS_META_REGION_UNKNOWN;
+  __atomic_add_fetch(&ctx->c_meta_region_writes[region], 1u, __ATOMIC_RELAXED);
+  __atomic_add_fetch(&ctx->c_meta_region_bytes[region], bytes, __ATOMIC_RELAXED);
+}
 
 static inline uint32_t kafs_ctx_inode_format(const kafs_context_t *ctx)
 {

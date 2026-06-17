@@ -2014,6 +2014,8 @@ typedef struct kafs_stats_report
   uint64_t fs_inodes_used;
   uint64_t bg_dedup_ops;
   uint64_t hrl_or_legacy_total;
+  uint64_t metadata_write_total;
+  uint64_t metadata_write_bytes_total;
   double dedup_ratio;
   double hit_rate;
   double hrl_put_hash_ms;
@@ -2109,6 +2111,11 @@ static void kafsctl_stats_compute_capacity(kafs_stats_report_t *report)
           : 0.0;
   report->hrl_hit_rate_pct = pct_u64(report->st.hrl_put_hits, report->st.hrl_put_calls);
   report->hrl_miss_rate_pct = pct_u64(report->st.hrl_put_misses, report->st.hrl_put_calls);
+  for (uint32_t i = 0; i < KAFS_META_REGION_COUNT; ++i)
+  {
+    report->metadata_write_total += report->st.metadata_region_writes[i];
+    report->metadata_write_bytes_total += report->st.metadata_region_bytes[i];
+  }
 }
 
 static void kafsctl_stats_compute_lock_metrics(kafs_stats_report_t *report)
@@ -2342,6 +2349,17 @@ static int kafsctl_stats_print_json(const kafs_stats_report_t *report)
   printf("  \"blk_set_usage_ns_freecnt_update\": %" PRIu64 ",\n",
          st->blk_set_usage_ns_freecnt_update);
   printf("  \"blk_set_usage_ns_wtime_update\": %" PRIu64 ",\n", st->blk_set_usage_ns_wtime_update);
+  printf("  \"metadata_write_total\": %" PRIu64 ",\n", report->metadata_write_total);
+  printf("  \"metadata_write_bytes_total\": %" PRIu64 ",\n", report->metadata_write_bytes_total);
+  printf("  \"metadata_write_regions\": [");
+  for (uint32_t i = 0; i < KAFS_META_REGION_COUNT; ++i)
+  {
+    printf("%s{\"id\": %" PRIu32 ", \"name\": \"%s\", \"writes\": %" PRIu64 ", \"bytes\": %" PRIu64
+           "}",
+           (i == 0) ? "" : ", ", i, kafs_meta_region_name(i), st->metadata_region_writes[i],
+           st->metadata_region_bytes[i]);
+  }
+  printf("],\n");
   printf("  \"copy_share_attempt_blocks\": %" PRIu64 ",\n", st->copy_share_attempt_blocks);
   printf("  \"copy_share_done_blocks\": %" PRIu64 ",\n", st->copy_share_done_blocks);
   printf("  \"copy_share_fallback_blocks\": %" PRIu64 ",\n", st->copy_share_fallback_blocks);
@@ -2534,6 +2552,16 @@ static int kafsctl_stats_print_text(const kafs_stats_report_t *report, kafs_unit
          st->blk_set_usage_calls, st->blk_set_usage_alloc_calls, st->blk_set_usage_free_calls,
          report->blk_set_usage_bit_ms, report->blk_set_usage_freecnt_ms,
          report->blk_set_usage_wtime_ms);
+  printf("  metadata_writes: total=%" PRIu64 " bytes=", report->metadata_write_total);
+  print_bytes(report->metadata_write_bytes_total, unit);
+  printf("\n");
+  for (uint32_t i = 0; i < KAFS_META_REGION_COUNT; ++i)
+  {
+    printf("    region[%" PRIu32 "] %s: writes=%" PRIu64 " bytes=", i, kafs_meta_region_name(i),
+           st->metadata_region_writes[i]);
+    print_bytes(st->metadata_region_bytes[i], unit);
+    printf("\n");
+  }
   printf("  copy_share: attempt_blocks=%" PRIu64 " done_blocks=%" PRIu64 " fallback_blocks=%" PRIu64
          " skip_unaligned=%" PRIu64 " skip_dst_inline=%" PRIu64 " hit_rate=%.3f\n",
          st->copy_share_attempt_blocks, st->copy_share_done_blocks, st->copy_share_fallback_blocks,

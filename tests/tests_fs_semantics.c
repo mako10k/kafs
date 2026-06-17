@@ -26,6 +26,77 @@ static void tlogf(const char *fmt, ...)
   va_end(ap);
 }
 
+static int run_cmd_capture_stdout(char *const argv[], char *stdout_buf, size_t stdout_buf_sz)
+{
+  int pipefd[2];
+  if (pipe(pipefd) != 0)
+    return -errno;
+
+  pid_t pid = fork();
+  if (pid < 0)
+  {
+    int saved = errno;
+    close(pipefd[0]);
+    close(pipefd[1]);
+    return -saved;
+  }
+  if (pid == 0)
+  {
+    close(pipefd[0]);
+    if (dup2(pipefd[1], STDOUT_FILENO) < 0)
+      _exit(127);
+    close(pipefd[1]);
+    execvp(argv[0], argv);
+    _exit(127);
+  }
+
+  close(pipefd[1]);
+  size_t used = 0;
+  while (stdout_buf && used + 1u < stdout_buf_sz)
+  {
+    ssize_t n = read(pipefd[0], stdout_buf + used, stdout_buf_sz - used - 1u);
+    if (n < 0)
+    {
+      int saved = errno;
+      close(pipefd[0]);
+      (void)waitpid(pid, NULL, 0);
+      return -saved;
+    }
+    if (n == 0)
+      break;
+    used += (size_t)n;
+  }
+  close(pipefd[0]);
+  if (stdout_buf && stdout_buf_sz > 0)
+    stdout_buf[used] = '\0';
+
+  int status = 0;
+  if (waitpid(pid, &status, 0) < 0)
+    return -errno;
+  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+    return -EIO;
+  return 0;
+}
+
+static int json_get_u64(const char *json, const char *key, uint64_t *out)
+{
+  const char *p = strstr(json, key);
+  if (!p || !out)
+    return -ENOENT;
+  p = strchr(p, ':');
+  if (!p)
+    return -EINVAL;
+  p++;
+  while (*p == ' ' || *p == '\t')
+    p++;
+  char *end = NULL;
+  unsigned long long value = strtoull(p, &end, 10);
+  if (end == p)
+    return -EINVAL;
+  *out = (uint64_t)value;
+  return 0;
+}
+
 static const kafs_test_mount_options_t k_mount_options = {
     .debug = "1",
     .log_path = "minisrv.log",
@@ -137,6 +208,34 @@ int main(void)
   if (errno != EACCES && errno != EPERM)
   {
     tlogf("expected EACCES/EPERM, got %d", errno);
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+
+  char stats_json[65536];
+  const char *kafsctl = kafs_test_kafsctl_bin();
+  char *stats_argv[] = {(char *)kafsctl, (char *)"stats", (char *)mnt, (char *)"--json", NULL};
+  if (run_cmd_capture_stdout(stats_argv, stats_json, sizeof(stats_json)) != 0)
+  {
+    tlogf("kafsctl stats --json failed");
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+
+  uint64_t metadata_total = 0;
+  if (json_get_u64(stats_json, "\"metadata_write_total\"", &metadata_total) != 0 ||
+      metadata_total == 0)
+  {
+    tlogf("metadata_write_total did not increase");
+    kafs_test_stop_kafs(mnt, srv);
+    return 1;
+  }
+  if (!strstr(stats_json, "\"metadata_write_regions\": [") ||
+      !strstr(stats_json, "\"name\": \"inode_table\"") ||
+      !strstr(stats_json, "\"name\": \"journal_header\"") ||
+      !strstr(stats_json, "\"name\": \"unknown\", \"writes\": 0"))
+  {
+    tlogf("metadata write region fields missing or unknown writes nonzero");
     kafs_test_stop_kafs(mnt, srv);
     return 1;
   }

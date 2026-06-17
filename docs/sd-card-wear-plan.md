@@ -86,6 +86,22 @@ SD-card mode の効果測定と format v6 の受け入れ判定に使う。
 - mounted filesystem では `kafsctl stats` に runtime counters を追加。
 - before/after 比較に使える report 出力。
 
+Metadata region ID は観測用 ABI として固定する。
+
+| ID | name | 対象 |
+| --- | --- | --- |
+| 0 | `superblock_checkpoint` | superblock counters/checkpoint fields |
+| 1 | `block_bitmap` | block allocation bitmap |
+| 2 | `inode_table` | inode table entries and inline inode payload metadata |
+| 3 | `allocator_summary` | allocator summary region |
+| 4 | `hrl_index` | HRL bucket index |
+| 5 | `hrl_entries` | HRL entry table |
+| 6 | `journal_header` | journal header slot(s) |
+| 7 | `journal_data` | journal ring records |
+| 8 | `pending_log` | pending write log header/entries |
+| 9 | `tail_metadata` | v5 tail metadata descriptors/payload |
+| 10 | `unknown` | classified-failed or out-of-range metadata write |
+
 ### Phase 3: Format v6 Metadata Layout Descriptor
 
 分散配置の実装前に、format v6 の root descriptor を設計する。

@@ -403,7 +403,10 @@ static int inspect_offline_tool_output(const char *img)
   if (!strstr(dump_json_stdout, "\"live_bytes\": 200") ||
       !strstr(dump_json_stdout, "\"tail_only_regular\": 0") ||
       !strstr(dump_json_stdout, "\"mixed_full_tail_regular\": 1") ||
-      !strstr(dump_json_stdout, "\"classes\": ["))
+      !strstr(dump_json_stdout, "\"classes\": [") ||
+      !strstr(dump_json_stdout, "\"metadata_regions\": [") ||
+      !strstr(dump_json_stdout, "\"name\": \"tail_metadata\"") ||
+      !strstr(dump_json_stdout, "\"name\": \"journal_header\""))
     return -EPROTO;
 
   return 0;

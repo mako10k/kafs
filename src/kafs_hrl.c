@@ -58,6 +58,7 @@ static inline void hrl_free_list_push_raw(kafs_context_t *ctx, uint32_t idx)
   kafs_hrl_entry_t *ents = hrl_entries_tbl(ctx);
 
   ents[idx].next_plus1 = ctx->c_hrl_free_head_plus1;
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(ents[idx]));
   ctx->c_hrl_free_head_plus1 = idx + 1u;
   __atomic_add_fetch(&ctx->c_hrl_free_slot_count, 1u, __ATOMIC_RELAXED);
 }
@@ -81,6 +82,7 @@ static int hrl_free_list_pop_locked(kafs_context_t *ctx, uint32_t *out_index)
   ctx->c_hrl_free_head_plus1 = e->next_plus1;
   e->next_plus1 = 0;
   e->refcnt = 1u;
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(*e));
   __atomic_sub_fetch(&ctx->c_hrl_free_slot_count, 1u, __ATOMIC_RELAXED);
   *out_index = idx;
   return 0;
@@ -382,6 +384,8 @@ static void hrl_chain_insert_head(kafs_context_t *ctx, uint32_t idx, uint64_t fa
   kafs_hrl_entry_t *ents = hrl_entries_tbl(ctx);
   ents[idx].next_plus1 = index[b];
   index[b] = idx + 1u;
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(ents[idx]));
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_INDEX, sizeof(index[b]));
 }
 
 static int hrl_chain_remove(kafs_context_t *ctx, uint32_t idx, uint64_t fast)
@@ -402,9 +406,15 @@ static int hrl_chain_remove(kafs_context_t *ctx, uint32_t idx, uint64_t fast)
     {
       uint32_t next = ents[i].next_plus1;
       if (prev == 0)
+      {
         index[b] = next;
+        kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_INDEX, sizeof(index[b]));
+      }
       else
+      {
         ents[prev - 1u].next_plus1 = next;
+        kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(ents[prev - 1u]));
+      }
       return 0;
     }
     prev = head;
@@ -460,9 +470,16 @@ int kafs_hrl_format(kafs_context_t *ctx)
   uint64_t entry_off = kafs_sb_hrl_entry_offset_get(ctx->c_superblock);
   uint32_t entry_cnt = kafs_sb_hrl_entry_cnt_get(ctx->c_superblock);
   if (index_off && index_size)
+  {
     memset((void *)(base + index_off), 0, (size_t)index_size);
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_INDEX, index_size);
+  }
   if (entry_off && entry_cnt)
+  {
     memset((void *)(base + entry_off), 0, (size_t)entry_cnt * sizeof(kafs_hrl_entry_t));
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES,
+                              (uint64_t)entry_cnt * (uint64_t)sizeof(kafs_hrl_entry_t));
+  }
   if (ctx)
   {
     ctx->c_hrl_free_head_plus1 = 0;
@@ -473,13 +490,14 @@ int kafs_hrl_format(kafs_context_t *ctx)
   return 0;
 }
 
-static int hrl_publish_existing_hit(kafs_hrl_entry_t *e, uint32_t idx, kafs_hrid_t *out_hrid,
-                                    int *out_is_new, kafs_blkcnt_t *out_blo)
+static int hrl_publish_existing_hit(kafs_context_t *ctx, kafs_hrl_entry_t *e, uint32_t idx,
+                                    kafs_hrid_t *out_hrid, int *out_is_new, kafs_blkcnt_t *out_blo)
 {
   if (e->refcnt == 0xFFFFFFFFu)
     return -EOVERFLOW;
 
   e->refcnt += 1u;
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(*e));
   *out_hrid = idx;
   *out_is_new = 0;
   *out_blo = e->blo;
@@ -498,7 +516,8 @@ static int hrl_find_existing_locked(kafs_context_t *ctx, uint64_t fast, const vo
   if (find_rc != 0)
     return find_rc;
 
-  return hrl_publish_existing_hit(hrl_entries_tbl(ctx) + idx, idx, out_hrid, out_is_new, out_blo);
+  return hrl_publish_existing_hit(ctx, hrl_entries_tbl(ctx) + idx, idx, out_hrid, out_is_new,
+                                  out_blo);
 }
 
 static int hrl_populate_new_entry_locked(kafs_context_t *ctx, uint32_t idx, uint64_t fast,
@@ -529,6 +548,7 @@ static int hrl_populate_new_entry_locked(kafs_context_t *ctx, uint32_t idx, uint
   e->blo = blo;
   e->fast = fast;
   e->next_plus1 = 0;
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(*e));
   hrl_chain_insert_head(ctx, idx, fast);
   *out_blo = blo;
   return 0;
@@ -610,6 +630,7 @@ int kafs_hrl_inc_ref(kafs_context_t *ctx, kafs_hrid_t hrid)
     return -EOVERFLOW;
   }
   e->refcnt += 1u;
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(*e));
   kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
   return 0;
 }
@@ -625,6 +646,7 @@ int kafs_hrl_dec_ref(kafs_context_t *ctx, kafs_hrid_t hrid)
     return -EINVAL;
   }
   e->refcnt -= 1u;
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(*e));
   if (e->refcnt == 0)
   {
     // free physical block and remove from index chain
@@ -638,6 +660,7 @@ int kafs_hrl_dec_ref(kafs_context_t *ctx, kafs_hrid_t hrid)
     }
     (void)hrl_chain_remove(ctx, hrid, fast);
     hrl_slot_reset(e);
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(*e));
     kafs_hrl_bucket_unlock(ctx, (uint32_t)b);
     hrl_publish_free_slot(ctx, hrid);
     return 0;
@@ -685,6 +708,7 @@ int kafs_hrl_inc_ref_by_blo(kafs_context_t *ctx, kafs_blkcnt_t blo)
     return -EOVERFLOW;
   }
   e->refcnt += 1u;
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(*e));
   kafs_hrl_bucket_unlock(ctx, bucket);
   return 0;
 }
@@ -693,6 +717,7 @@ static int hrl_dec_ref_matched_locked(kafs_context_t *ctx, uint32_t bucket, uint
                                       kafs_hrl_entry_t *e)
 {
   e->refcnt -= 1u;
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(*e));
   if (e->refcnt != 0)
   {
     kafs_hrl_bucket_unlock(ctx, bucket);
@@ -709,6 +734,7 @@ static int hrl_dec_ref_matched_locked(kafs_context_t *ctx, uint32_t bucket, uint
 
   (void)hrl_chain_remove(ctx, idx, e->fast);
   hrl_slot_reset(e);
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(*e));
   kafs_hrl_bucket_unlock(ctx, bucket);
   hrl_publish_free_slot(ctx, idx);
   return 0;
