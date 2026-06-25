@@ -1,8 +1,9 @@
 # KAFS format v6 metadata layout descriptor spec
 
-最終更新: 2026-06-17
+最終更新: 2026-06-25
 
-対象: `SDW-P3-T1 Format v6 descriptor spec`, `SDW-P3-T2 Descriptor replica policy`
+対象: `SDW-P3-T1 Format v6 descriptor spec`, `SDW-P3-T2 Descriptor replica policy`,
+`SDW-P4-T5 Journal segment distribution`
 
 ## Status
 
@@ -359,6 +360,9 @@ Logical coverage requirements:
 - `hrl_index` shards must exactly cover all HRL buckets.
 - `hrl_entries` shards must exactly cover all HRL entry ids.
 - `journal_header` and `journal_data` shards must cover the same journal segment id set.
+  `journal_header` is a fixed-record shard with `sd_record_bytes == sizeof(kj_header_t)`;
+  `journal_data` is a byte-span shard with `sd_record_bytes == 0`, where each logical segment maps
+  to an equal byte range inside its data shard.
 - `pending_log` shards must cover all configured pending-log slot ids.
 - `tail_metadata` shards are required when the v6 feature set includes tail packing; otherwise
   they may be absent.
@@ -521,8 +525,24 @@ Journal distribution:
 
 - `KAFS_META_REGION_JOURNAL_HEADER` and `KAFS_META_REGION_JOURNAL_DATA` may appear as multiple
   segment shards in Phase 4.
-- Replay must scan segment generations in deterministic order across metadata groups.
-- Torn segment/header writes must leave at least one valid replay path or fail closed.
+- A journal segment id must resolve to exactly one header shard and one data shard. The selected
+  header/data pair must belong to the same metadata group.
+- `journal_header` shards are fixed-record mappings with `sd_record_bytes == sizeof(kj_header_t)`.
+  `journal_data` shards are byte-span mappings with `sd_record_bytes == 0`; each shard's physical
+  bytes are divided evenly across its `sd_logical_count` segment ids.
+- `mkfs.kafs --format-version 6` initializes the v6 scaffold journal header with `area_size` equal
+  to the descriptor-backed journal data segment size. This differs from the v4/v5 legacy prefix
+  geometry, where journal data begins after `kj_header_size()`.
+- `fsck.kafs` validates journal header coverage, journal data coverage, header/data pair group
+  matching, header CRC/area bounds, and record CRCs in the descriptor-backed data span.
+- `kafsdump` text and JSON report `v6_journal_segments`, including segment count, selected segment,
+  selected generation, selected seq/write offset, health flags, and the first bad segment.
+- Offline health selection chooses the highest generation among valid segments, breaking ties by the
+  lowest segment id. A torn newer header or data segment is recoverable when an older valid segment
+  remains; if no valid segment remains, `fsck.kafs` and runtime admission fail closed.
+- Runtime v6 mount is still disabled. The live journal write/replay path must use the descriptor
+  journal segment lookup before v6 write mount is enabled; until then, the implemented checks are
+  offline scaffold validation and dormant admission validation only.
 
 ## Phase 3 Follow-Ups
 

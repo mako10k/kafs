@@ -787,6 +787,83 @@ static void mutate_hrl_entries_split_two_shards(void *buf, uint32_t desc_bytes)
   mutate_fixed_record_split_two_shards(buf, desc_bytes, KAFS_META_REGION_HRL_ENTRIES);
 }
 
+static void mutate_journal_header_gap(void *buf, uint32_t desc_bytes)
+{
+  uint32_t shard_count = 0;
+  kafs_sv6_shard_desc_t *shards = mutable_shard_table(buf, desc_bytes, &shard_count);
+  if (!shards)
+    return;
+
+  uint32_t index = UINT32_MAX;
+  if (find_mutable_shard_index(shards, shard_count, KAFS_META_REGION_JOURNAL_HEADER, &index) != 0)
+    return;
+  shards[index].sd_logical_start = kafs_u64_htos(1);
+}
+
+static void mutate_journal_split_two_segments(void *buf, uint32_t desc_bytes)
+{
+  uint32_t old_shard_count = 0;
+  kafs_sv6_shard_desc_t *shards = mutable_shard_table(buf, desc_bytes, &old_shard_count);
+  if (!shards)
+    return;
+
+  uint32_t header_index = UINT32_MAX;
+  uint32_t data_index = UINT32_MAX;
+  if (find_mutable_shard_index(shards, old_shard_count, KAFS_META_REGION_JOURNAL_HEADER,
+                               &header_index) != 0 ||
+      find_mutable_shard_index(shards, old_shard_count, KAFS_META_REGION_JOURNAL_DATA, &data_index) !=
+          0)
+    return;
+
+  uint32_t block_size = kafs_u32_stoh(((kafs_sv6_layout_desc_header_t *)buf)->ld_block_size);
+  if (block_size == 0u)
+    return;
+
+  kafs_sv6_shard_desc_t header0 = shards[header_index];
+  kafs_sv6_shard_desc_t data0 = shards[data_index];
+  uint64_t data_off = kafs_u64_stoh(data0.sd_physical_off);
+  uint64_t data_bytes = kafs_u64_stoh(data0.sd_physical_bytes);
+  if (data_bytes <= (uint64_t)block_size * 3u || data_off > UINT64_MAX - block_size)
+    return;
+
+  uint64_t remaining_data = data_bytes - block_size;
+  uint64_t first_data_bytes = (remaining_data / 2u / block_size) * block_size;
+  if (first_data_bytes == 0u || first_data_bytes >= remaining_data)
+    return;
+  uint64_t second_data_bytes = remaining_data - first_data_bytes;
+  if ((second_data_bytes % block_size) != 0u)
+    return;
+
+  uint32_t appended_old_shard_count = 0;
+  shards = append_mutable_shard_slot(buf, desc_bytes, &appended_old_shard_count);
+  if (!shards || appended_old_shard_count != old_shard_count)
+    return;
+  shards = append_mutable_shard_slot(buf, desc_bytes, &appended_old_shard_count);
+  if (!shards || appended_old_shard_count != old_shard_count + 1u)
+    return;
+
+  shards[header_index].sd_logical_start = kafs_u64_htos(0);
+  shards[header_index].sd_logical_count = kafs_u64_htos(1);
+  shards[header_index].sd_physical_bytes = kafs_u64_htos(block_size);
+
+  shards[data_index].sd_logical_start = kafs_u64_htos(0);
+  shards[data_index].sd_logical_count = kafs_u64_htos(1);
+  shards[data_index].sd_physical_off = kafs_u64_htos(data_off + block_size);
+  shards[data_index].sd_physical_bytes = kafs_u64_htos(first_data_bytes);
+
+  shards[old_shard_count] = header0;
+  shards[old_shard_count].sd_logical_start = kafs_u64_htos(1);
+  shards[old_shard_count].sd_logical_count = kafs_u64_htos(1);
+  shards[old_shard_count].sd_physical_off = kafs_u64_htos(data_off);
+  shards[old_shard_count].sd_physical_bytes = kafs_u64_htos(block_size);
+
+  shards[old_shard_count + 1u] = data0;
+  shards[old_shard_count + 1u].sd_logical_start = kafs_u64_htos(1);
+  shards[old_shard_count + 1u].sd_logical_count = kafs_u64_htos(1);
+  shards[old_shard_count + 1u].sd_physical_off = kafs_u64_htos(data_off + block_size + first_data_bytes);
+  shards[old_shard_count + 1u].sd_physical_bytes = kafs_u64_htos(second_data_bytes);
+}
+
 static uint64_t test_hrl_hash64(const void *buf, size_t len)
 {
   const unsigned char *p = (const unsigned char *)buf;
@@ -1252,6 +1329,27 @@ static int choose_block_for_bucket_range(unsigned char *block, size_t block_size
     }
   }
   return -1;
+}
+
+static int write_journal_segment_header(const v6_image_info_t *info, const void *desc,
+                                        uint64_t segment_id, uint64_t generation)
+{
+  kafs_v6_journal_segment_lookup_t lookup;
+  if (kafs_v6_journal_segment_lookup(desc, info->desc_bytes, segment_id, &lookup) != 0)
+    return -1;
+
+  kj_header_t hdr;
+  memset(&hdr, 0, sizeof(hdr));
+  hdr.magic = KJ_MAGIC;
+  hdr.version = KJ_VER;
+  hdr.flags = 0;
+  hdr.area_size = lookup.data.data_bytes;
+  hdr.write_off = 0;
+  hdr.seq = generation;
+  hdr.reserved0 = generation;
+  hdr.header_crc = kj_header_crc_calc(&hdr);
+  return (kafs_pwrite_all(info->fd, &hdr, sizeof(hdr), (off_t)lookup.header.header_off) == 0) ? 0
+                                                                                              : -1;
 }
 
 static int test_hrl_runtime_shard_mapping(void)
@@ -1837,6 +1935,178 @@ static int test_hrl_chain_out_of_range_rejected(void)
   return 0;
 }
 
+static int test_journal_coverage_valid_lookup_and_segments(void)
+{
+  const char *img = "journal-valid.img";
+  if (make_v6_image(img) != 0)
+    return -1;
+
+  v6_image_info_t info;
+  if (open_v6_image(img, 0, &info) != 0)
+    return -1;
+
+  void *desc = NULL;
+  int failed = 0;
+  if (read_descriptor(&info, 0, &desc) != 0)
+    failed = 1;
+
+  kafs_v6_journal_header_coverage_report_t header_report;
+  kafs_v6_journal_data_coverage_report_t data_report;
+  kafs_v6_journal_segment_report_t segment_report;
+  int rc = 0;
+  if (!failed)
+    rc = kafs_v6_journal_header_validate_coverage(desc, info.desc_bytes, &info.sb,
+                                                  info.file_size, &header_report);
+  if (!failed &&
+      (rc != 0 || !header_report.available || header_report.shard_count != 1u ||
+       header_report.expected_count != 1u || header_report.covered_segments != 1u ||
+       !header_report.lookup_available))
+    failed = 1;
+
+  if (!failed)
+    rc = kafs_v6_journal_data_validate_coverage(desc, info.desc_bytes, &info.sb, info.file_size,
+                                                &data_report);
+  if (!failed &&
+      (rc != 0 || !data_report.available || data_report.shard_count != 1u ||
+       data_report.expected_count != 1u || data_report.covered_segments != 1u ||
+       !data_report.lookup_available || data_report.lookup.data_bytes == 0u))
+    failed = 1;
+
+  if (!failed)
+    rc = kafs_v6_journal_validate_segments_fd(info.fd, desc, info.desc_bytes, &info.sb,
+                                              info.file_size, &segment_report);
+  if (!failed &&
+      (rc != 0 || !segment_report.available || segment_report.segment_count != 1u ||
+       segment_report.valid_segments != 1u || segment_report.selected_segment_id != 0u ||
+       segment_report.selected_generation != 1u || segment_report.has_invalid_header ||
+       segment_report.has_torn_data || segment_report.has_read_error))
+    failed = 1;
+
+  free(desc);
+  close_v6_image(&info);
+  if (failed)
+    return -1;
+
+  char out[8192];
+  char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)img, NULL};
+  if (run_cmd_capture(fsck_argv, 0, out, sizeof(out)) != 0 ||
+      !strstr(out, "v6 journal segments:") || !strstr(out, "selected_generation=1"))
+    return -1;
+
+  char *dump_argv[] = {(char *)kafs_test_kafsdump_bin(), (char *)"--json", (char *)img, NULL};
+  if (run_cmd_capture(dump_argv, 0, out, sizeof(out)) != 0 ||
+      !strstr(out, "\"v6_journal_segments\"") || !strstr(out, "\"selected_generation\": 1"))
+    return -1;
+  return 0;
+}
+
+static int test_journal_header_gap_rejected(void)
+{
+  const char *img = "journal-header-gap.img";
+  if (make_v6_image(img) != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_journal_header_gap, 1) != 0)
+    return -1;
+
+  void *desc = NULL;
+  uint32_t desc_bytes = 0;
+  kafs_ssuperblock_t sb;
+  uint64_t file_size = 0;
+  if (read_selected_descriptor_for_image(img, &desc, &desc_bytes, &sb, &file_size, NULL) != 0)
+    return -1;
+
+  kafs_v6_journal_header_coverage_report_t report;
+  int rc = kafs_v6_journal_header_validate_coverage(desc, desc_bytes, &sb, file_size, &report);
+  free(desc);
+  if (rc == 0 || !report.available || !report.has_gap || !report.missing_coverage)
+    return -1;
+
+  char out[8192];
+  char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)img, NULL};
+  if (run_cmd_capture(fsck_argv, 13, out, sizeof(out)) != 0 ||
+      !strstr(out, "v6 journal header shards:") || !strstr(out, "has_gap=true"))
+    return -1;
+  return 0;
+}
+
+static int test_journal_torn_latest_segment_recovers(void)
+{
+  const char *img = "journal-torn-latest.img";
+  if (make_v6_image(img) != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_journal_split_two_segments, 1) != 0)
+    return -1;
+
+  v6_image_info_t info;
+  if (open_v6_image(img, 1, &info) != 0)
+    return -1;
+
+  void *desc = NULL;
+  int failed = 0;
+  if (read_descriptor(&info, 0, &desc) != 0)
+    failed = 1;
+
+  if (!failed &&
+      (write_journal_segment_header(&info, desc, 0, 1) != 0 ||
+       write_journal_segment_header(&info, desc, 1, 2) != 0))
+    failed = 1;
+
+  kafs_v6_journal_segment_lookup_t lookup;
+  if (!failed && kafs_v6_journal_segment_lookup(desc, info.desc_bytes, 1, &lookup) != 0)
+    failed = 1;
+  if (!failed)
+  {
+    kj_header_t hdr;
+    if (kafs_pread_all(info.fd, &hdr, sizeof(hdr), (off_t)lookup.header.header_off) != 0)
+      failed = 1;
+    else
+    {
+      hdr.header_crc ^= 1u;
+      if (kafs_pwrite_all(info.fd, &hdr, sizeof(hdr), (off_t)lookup.header.header_off) != 0)
+        failed = 1;
+    }
+  }
+
+  if (!failed)
+  {
+    kafs_v6_journal_header_coverage_report_t header_report;
+    kafs_v6_journal_data_coverage_report_t data_report;
+    kafs_v6_journal_segment_report_t segment_report;
+    int rc = kafs_v6_journal_header_validate_coverage(desc, info.desc_bytes, &info.sb,
+                                                      info.file_size, &header_report);
+    if (rc != 0 || header_report.expected_count != 2u)
+      failed = 1;
+    rc = kafs_v6_journal_data_validate_coverage(desc, info.desc_bytes, &info.sb, info.file_size,
+                                                &data_report);
+    if (!failed && (rc != 0 || data_report.expected_count != 2u))
+      failed = 1;
+    rc = kafs_v6_journal_validate_segments_fd(info.fd, desc, info.desc_bytes, &info.sb,
+                                              info.file_size, &segment_report);
+    if (!failed &&
+        (rc != 0 || !segment_report.has_invalid_header || segment_report.valid_segments != 1u ||
+         segment_report.selected_segment_id != 0u || segment_report.selected_generation != 1u))
+      failed = 1;
+  }
+
+  free(desc);
+  close_v6_image(&info);
+  if (failed)
+    return -1;
+
+  char out[8192];
+  char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)img, NULL};
+  if (run_cmd_capture(fsck_argv, 0, out, sizeof(out)) != 0 ||
+      !strstr(out, "v6 journal segments:") || !strstr(out, "has_invalid_header=true") ||
+      !strstr(out, "selected_segment=0"))
+    return -1;
+
+  char *dump_argv[] = {(char *)kafs_test_kafsdump_bin(), (char *)"--json", (char *)img, NULL};
+  if (run_cmd_capture(dump_argv, 0, out, sizeof(out)) != 0 ||
+      !strstr(out, "\"has_invalid_header\": true") || !strstr(out, "\"selected_segment\": 0"))
+    return -1;
+  return 0;
+}
+
 static int test_bitmap_overlap_rejected(void)
 {
   const char *img = "bitmap-overlap.img";
@@ -2081,6 +2351,9 @@ int main(void)
       {"hrl_index_gap_rejected", test_hrl_index_gap_rejected},
       {"hrl_entries_gap_rejected", test_hrl_entries_gap_rejected},
       {"hrl_chain_out_of_range_rejected", test_hrl_chain_out_of_range_rejected},
+      {"journal_coverage_valid_lookup_and_segments", test_journal_coverage_valid_lookup_and_segments},
+      {"journal_header_gap_rejected", test_journal_header_gap_rejected},
+      {"journal_torn_latest_segment_recovers", test_journal_torn_latest_segment_recovers},
       {"bitmap_overlap_rejected", test_bitmap_overlap_rejected},
       {"allocator_summary_admission_rejects_gap", test_allocator_summary_admission_rejects_gap},
       {"hrl_admission_rejects_gap", test_hrl_admission_rejects_gap},

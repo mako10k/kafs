@@ -1,6 +1,6 @@
 # KAFS SDカード劣化対策 バックログ
 
-最終更新: 2026-06-17
+最終更新: 2026-06-25
 
 計画: [sd-card-wear-plan.md](sd-card-wear-plan.md)
 
@@ -341,6 +341,23 @@
   - replay が generation order で segments を scan する。
   - torn segment/header write から復旧できる。
   - kafsdump が segment health を表示する。
+- 進捗メモ:
+  - `journal_header` fixed-record shard lookup と `journal_data` byte-span shard lookup を追加し、
+    segment id から descriptor-backed header offset / data span を解決できるようにした。
+  - `fsck.kafs` は v6 selected descriptor について journal header coverage、journal data coverage、
+    header/data pair group matching、header CRC / area bounds、data record CRC を検証する。
+  - `kafsdump` text / JSON に `v6_journal_segments` を追加し、segment count、selected segment、
+    selected generation、selected seq/write offset、health flags、first bad segment を表示する。
+  - torn newer segment/header があっても older valid segment が残る場合は highest valid generation を
+    選択して offline health OK とし、valid segment が残らない場合は fail closed する。
+  - `v6_descriptor_validation` に journal coverage valid lookup、journal header gap rejection、
+    torn latest segment recovery の regression を追加した。
+- 引き継ぎメモ:
+  - v6 runtime mount は引き続き disabled。今回の実装は offline scaffold validation と dormant
+    admission coverage validation までで、live journal write/replay の descriptor-backed routing は
+    v6 write mount を有効化する直前に接続する。
+  - v6 scaffold の journal header `area_size` は descriptor-backed journal data segment size に合わせる。
+    v4/v5 の legacy journal geometry は変更しない。
 
 ### SDW-P4-T6 Phase 4 validation
 

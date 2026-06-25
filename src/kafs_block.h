@@ -384,6 +384,18 @@ static int kafs_v6_descriptor_mapping_admit_desc(
   if (rc != 0)
     return rc;
 
+  kafs_v6_journal_header_coverage_report_t journal_header_report;
+  rc = kafs_v6_journal_header_validate_coverage(desc, desc_bytes, ctx->c_superblock, file_size,
+                                                &journal_header_report);
+  if (rc != 0)
+    return rc;
+
+  kafs_v6_journal_data_coverage_report_t journal_data_report;
+  rc = kafs_v6_journal_data_validate_coverage(desc, desc_bytes, ctx->c_superblock, file_size,
+                                              &journal_data_report);
+  if (rc != 0)
+    return rc;
+
   kafs_v6_inode_runtime_shard_t *inode_shards =
       calloc(inode_report.shard_count, sizeof(*inode_shards));
   if (!inode_shards)

@@ -272,6 +272,9 @@ struct dump_report
   const struct tailmeta_summary *tm;
   const kafs_v6_layout_report_t *v6;
   const kafs_v6_bitmap_coverage_report_t *v6_bitmap;
+  const kafs_v6_journal_header_coverage_report_t *v6_journal_header;
+  const kafs_v6_journal_data_coverage_report_t *v6_journal_data;
+  const kafs_v6_journal_segment_report_t *v6_journal_segments;
   const struct metadata_region_summary *regions;
   int rc_inode;
   int rc_hrl;
@@ -279,6 +282,9 @@ struct dump_report
   int rc_tailmeta;
   int rc_v6;
   int rc_v6_bitmap;
+  int rc_v6_journal_header;
+  int rc_v6_journal_data;
+  int rc_v6_journal_segments;
 };
 
 static void print_text(const struct dump_report *dump)
@@ -286,6 +292,9 @@ static void print_text(const struct dump_report *dump)
   const kafs_ssuperblock_t *sb = dump->sb;
   const kafs_v6_layout_report_t *v6 = dump->v6;
   const kafs_v6_bitmap_coverage_report_t *v6_bitmap = dump->v6_bitmap;
+  const kafs_v6_journal_header_coverage_report_t *v6_journal_header = dump->v6_journal_header;
+  const kafs_v6_journal_data_coverage_report_t *v6_journal_data = dump->v6_journal_data;
+  const kafs_v6_journal_segment_report_t *v6_journal_segments = dump->v6_journal_segments;
   const struct metadata_region_summary *regions = dump->regions;
   struct sb_geometry g = kafs_offline_superblock_geometry(sb);
 
@@ -359,6 +368,40 @@ static void print_text(const struct dump_report *dump)
     printf("  lookup_shard: %" PRIu32 "\n", v6_bitmap->lookup.shard_index);
     printf("  lookup_bitmap_byte: %" PRIu64 "\n", v6_bitmap->lookup.bitmap_byte_off);
     printf("  lookup_bitmap_bit: %" PRIu8 "\n", v6_bitmap->lookup.bitmap_bit);
+  }
+
+  printf("v6_journal_segments:\n");
+  printf("  status: %s\n", (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6)
+                               ? rc_to_text(dump->rc_v6_journal_segments)
+                               : "not_applicable");
+  printf("  available: %s\n", (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6 &&
+                               v6->selected_found && v6_journal_segments->available)
+                                  ? "true"
+                                  : "false");
+  if (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6 && v6->selected_found)
+  {
+    printf("  header_status: %s\n", rc_to_text(dump->rc_v6_journal_header));
+    printf("  data_status: %s\n", rc_to_text(dump->rc_v6_journal_data));
+    printf("  header_shards: %" PRIu32 "\n", v6_journal_header->shard_count);
+    printf("  data_shards: %" PRIu32 "\n", v6_journal_data->shard_count);
+    printf("  expected_segments: %" PRIu64 "\n", v6_journal_header->expected_count);
+    printf("  segment_count: %" PRIu64 "\n", v6_journal_segments->segment_count);
+    printf("  checked: %" PRIu64 "\n", v6_journal_segments->segments_checked);
+    printf("  valid: %" PRIu64 "\n", v6_journal_segments->valid_segments);
+    printf("  records_checked: %" PRIu64 "\n", v6_journal_segments->records_checked);
+    printf("  selected_segment: %" PRIu64 "\n", v6_journal_segments->selected_segment_id);
+    printf("  selected_generation: %" PRIu64 "\n", v6_journal_segments->selected_generation);
+    printf("  selected_seq: %" PRIu64 "\n", v6_journal_segments->selected_seq);
+    printf("  selected_write_off: %" PRIu64 "\n", v6_journal_segments->selected_write_off);
+    printf("  selected_group: %" PRIu32 "\n", v6_journal_segments->selected_group_id);
+    printf("  has_missing_pair: %s\n", v6_journal_segments->has_missing_pair ? "true" : "false");
+    printf("  has_group_mismatch: %s\n",
+           v6_journal_segments->has_group_mismatch ? "true" : "false");
+    printf("  has_invalid_header: %s\n",
+           v6_journal_segments->has_invalid_header ? "true" : "false");
+    printf("  has_torn_data: %s\n", v6_journal_segments->has_torn_data ? "true" : "false");
+    printf("  has_read_error: %s\n", v6_journal_segments->has_read_error ? "true" : "false");
+    printf("  first_bad_segment: %" PRIu64 "\n", v6_journal_segments->first_bad_segment_id);
   }
 
   printf("metadata_regions:\n");
@@ -443,6 +486,9 @@ static void print_json(const struct dump_report *dump)
   const kafs_ssuperblock_t *sb = dump->sb;
   const kafs_v6_layout_report_t *v6 = dump->v6;
   const kafs_v6_bitmap_coverage_report_t *v6_bitmap = dump->v6_bitmap;
+  const kafs_v6_journal_header_coverage_report_t *v6_journal_header = dump->v6_journal_header;
+  const kafs_v6_journal_data_coverage_report_t *v6_journal_data = dump->v6_journal_data;
+  const kafs_v6_journal_segment_report_t *v6_journal_segments = dump->v6_journal_segments;
   const struct metadata_region_summary *regions = dump->regions;
   const struct sb_geometry g = kafs_offline_superblock_geometry(sb);
 
@@ -521,6 +567,39 @@ static void print_json(const struct dump_report *dump)
          ", \"bitmap_bit\": %" PRIu8 "}\n",
          v6_bitmap->lookup.blo, v6_bitmap->lookup.shard_index, v6_bitmap->lookup.bitmap_byte_off,
          v6_bitmap->lookup.bitmap_bit);
+  printf("  },\n");
+
+  printf("  \"v6_journal_segments\": {\n");
+  printf("    \"status\": \"%s\",\n", (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6)
+                                          ? rc_to_text(dump->rc_v6_journal_segments)
+                                          : "not_applicable");
+  printf("    \"available\": %s,\n", (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6 &&
+                                      v6->selected_found && v6_journal_segments->available)
+                                         ? "true"
+                                         : "false");
+  printf("    \"header_status\": \"%s\",\n", rc_to_text(dump->rc_v6_journal_header));
+  printf("    \"data_status\": \"%s\",\n", rc_to_text(dump->rc_v6_journal_data));
+  printf("    \"header_shards\": %" PRIu32 ",\n", v6_journal_header->shard_count);
+  printf("    \"data_shards\": %" PRIu32 ",\n", v6_journal_data->shard_count);
+  printf("    \"expected_segments\": %" PRIu64 ",\n", v6_journal_header->expected_count);
+  printf("    \"segment_count\": %" PRIu64 ",\n", v6_journal_segments->segment_count);
+  printf("    \"checked\": %" PRIu64 ",\n", v6_journal_segments->segments_checked);
+  printf("    \"valid\": %" PRIu64 ",\n", v6_journal_segments->valid_segments);
+  printf("    \"records_checked\": %" PRIu64 ",\n", v6_journal_segments->records_checked);
+  printf("    \"selected_segment\": %" PRIu64 ",\n", v6_journal_segments->selected_segment_id);
+  printf("    \"selected_generation\": %" PRIu64 ",\n", v6_journal_segments->selected_generation);
+  printf("    \"selected_seq\": %" PRIu64 ",\n", v6_journal_segments->selected_seq);
+  printf("    \"selected_write_off\": %" PRIu64 ",\n", v6_journal_segments->selected_write_off);
+  printf("    \"selected_group\": %" PRIu32 ",\n", v6_journal_segments->selected_group_id);
+  printf("    \"has_missing_pair\": %s,\n",
+         v6_journal_segments->has_missing_pair ? "true" : "false");
+  printf("    \"has_group_mismatch\": %s,\n",
+         v6_journal_segments->has_group_mismatch ? "true" : "false");
+  printf("    \"has_invalid_header\": %s,\n",
+         v6_journal_segments->has_invalid_header ? "true" : "false");
+  printf("    \"has_torn_data\": %s,\n", v6_journal_segments->has_torn_data ? "true" : "false");
+  printf("    \"has_read_error\": %s,\n", v6_journal_segments->has_read_error ? "true" : "false");
+  printf("    \"first_bad_segment\": %" PRIu64 "\n", v6_journal_segments->first_bad_segment_id);
   printf("  },\n");
 
   printf("  \"metadata_regions\": [\n");
@@ -674,6 +753,9 @@ int main(int argc, char **argv)
   struct tailmeta_summary tm;
   kafs_v6_layout_report_t v6;
   kafs_v6_bitmap_coverage_report_t v6_bitmap;
+  kafs_v6_journal_header_coverage_report_t v6_journal_header;
+  kafs_v6_journal_data_coverage_report_t v6_journal_data;
+  kafs_v6_journal_segment_report_t v6_journal_segments;
   struct metadata_region_summary regions[KAFS_META_REGION_COUNT];
   int rc_inode = collect_inode_summary(fd, &sb, file_size, &ino);
   int rc_hrl = collect_hrl_summary(fd, &sb, file_size, &hrl);
@@ -681,8 +763,14 @@ int main(int argc, char **argv)
   int rc_tailmeta = collect_tailmeta_summary(fd, &sb, file_size, &tm);
   int rc_v6 = 0;
   int rc_v6_bitmap = 0;
+  int rc_v6_journal_header = 0;
+  int rc_v6_journal_data = 0;
+  int rc_v6_journal_segments = 0;
   memset(&v6, 0, sizeof(v6));
   memset(&v6_bitmap, 0, sizeof(v6_bitmap));
+  memset(&v6_journal_header, 0, sizeof(v6_journal_header));
+  memset(&v6_journal_data, 0, sizeof(v6_journal_data));
+  memset(&v6_journal_segments, 0, sizeof(v6_journal_segments));
   if (kafs_sb_format_version_get(&sb) == KAFS_FORMAT_VERSION_V6)
   {
     rc_v6 = kafs_v6_discover_layout(fd, &sb, file_size, &v6);
@@ -692,8 +780,26 @@ int main(int argc, char **argv)
       uint32_t desc_bytes = 0;
       rc_v6_bitmap = kafs_v6_read_selected_descriptor(fd, &v6, &desc, &desc_bytes);
       if (rc_v6_bitmap == 0)
+      {
         rc_v6_bitmap =
             kafs_v6_bitmap_validate_coverage(desc, desc_bytes, &sb, file_size, &v6_bitmap);
+        rc_v6_journal_header = kafs_v6_journal_header_validate_coverage(
+            desc, desc_bytes, &sb, file_size, &v6_journal_header);
+        rc_v6_journal_data = kafs_v6_journal_data_validate_coverage(desc, desc_bytes, &sb,
+                                                                    file_size, &v6_journal_data);
+        if (rc_v6_journal_header == 0 && rc_v6_journal_data == 0)
+          rc_v6_journal_segments = kafs_v6_journal_validate_segments_fd(
+              fd, desc, desc_bytes, &sb, file_size, &v6_journal_segments);
+        else
+          rc_v6_journal_segments =
+              (rc_v6_journal_header != 0) ? rc_v6_journal_header : rc_v6_journal_data;
+      }
+      else
+      {
+        rc_v6_journal_header = rc_v6_bitmap;
+        rc_v6_journal_data = rc_v6_bitmap;
+        rc_v6_journal_segments = rc_v6_bitmap;
+      }
       free(desc);
     }
   }
@@ -711,6 +817,10 @@ int main(int argc, char **argv)
     fprintf(stderr, "warning: v6 descriptor discovery failed: %s\n", rc_to_text(rc_v6));
   if (kafs_sb_format_version_get(&sb) == KAFS_FORMAT_VERSION_V6 && rc_v6 == 0 && rc_v6_bitmap != 0)
     fprintf(stderr, "warning: v6 bitmap shard validation failed: %s\n", rc_to_text(rc_v6_bitmap));
+  if (kafs_sb_format_version_get(&sb) == KAFS_FORMAT_VERSION_V6 && rc_v6 == 0 &&
+      rc_v6_journal_segments != 0)
+    fprintf(stderr, "warning: v6 journal segment validation failed: %s\n",
+            rc_to_text(rc_v6_journal_segments));
 
   const struct dump_report dump = {
       .sb = &sb,
@@ -720,6 +830,9 @@ int main(int argc, char **argv)
       .tm = &tm,
       .v6 = &v6,
       .v6_bitmap = &v6_bitmap,
+      .v6_journal_header = &v6_journal_header,
+      .v6_journal_data = &v6_journal_data,
+      .v6_journal_segments = &v6_journal_segments,
       .regions = regions,
       .rc_inode = rc_inode,
       .rc_hrl = rc_hrl,
@@ -727,6 +840,9 @@ int main(int argc, char **argv)
       .rc_tailmeta = rc_tailmeta,
       .rc_v6 = rc_v6,
       .rc_v6_bitmap = rc_v6_bitmap,
+      .rc_v6_journal_header = rc_v6_journal_header,
+      .rc_v6_journal_data = rc_v6_journal_data,
+      .rc_v6_journal_segments = rc_v6_journal_segments,
   };
   if (json)
     print_json(&dump);
@@ -735,7 +851,8 @@ int main(int argc, char **argv)
 
   close(fd);
   return (rc_inode == 0 && rc_hrl == 0 && rc_journal == 0 && rc_tailmeta == 0 && rc_v6 == 0 &&
-          rc_v6_bitmap == 0)
+          rc_v6_bitmap == 0 && rc_v6_journal_header == 0 && rc_v6_journal_data == 0 &&
+          rc_v6_journal_segments == 0)
              ? 0
              : 1;
 }

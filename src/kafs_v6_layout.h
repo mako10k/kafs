@@ -37,6 +37,7 @@
 #define KAFS_V6_EXTENT_STORAGE_FIXED_RECORD 0
 #define KAFS_V6_EXTENT_STORAGE_BIT_PACKED 1
 #define KAFS_V6_EXTENT_STORAGE_ALLOCATOR_SUMMARY 2
+#define KAFS_V6_EXTENT_STORAGE_BYTE_SPAN 3
 #define KAFS_V6_MKFS_GROUP_COUNT 1u
 #define KAFS_V6_MKFS_BASE_SHARD_COUNT 9u
 #define KAFS_V6_MKFS_GENERATION 1u
@@ -385,6 +386,104 @@ typedef struct kafs_v6_hrl_chain_report
   uint32_t first_entry_group;
 } kafs_v6_hrl_chain_report_t;
 
+typedef struct kafs_v6_journal_header_lookup
+{
+  uint32_t shard_index;
+  uint32_t group_id;
+  uint64_t segment_id;
+  uint64_t logical_start;
+  uint64_t logical_count;
+  uint64_t header_off;
+  uint64_t header_bytes;
+  uint32_t record_bytes;
+} kafs_v6_journal_header_lookup_t;
+
+typedef struct kafs_v6_journal_header_coverage_report
+{
+  int available;
+  int has_gap;
+  int has_overlap;
+  int has_physical_overlap;
+  int missing_coverage;
+  uint32_t shard_count;
+  uint64_t expected_start;
+  uint64_t expected_count;
+  uint64_t covered_segments;
+  uint64_t first_gap_start;
+  uint64_t first_gap_count;
+  uint64_t first_overlap_start;
+  uint64_t first_overlap_count;
+  uint64_t first_physical_overlap_off;
+  uint64_t first_physical_overlap_bytes;
+  int lookup_available;
+  kafs_v6_journal_header_lookup_t lookup;
+} kafs_v6_journal_header_coverage_report_t;
+
+typedef struct kafs_v6_journal_data_lookup
+{
+  uint32_t shard_index;
+  uint32_t group_id;
+  uint64_t segment_id;
+  uint64_t logical_start;
+  uint64_t logical_count;
+  uint64_t data_off;
+  uint64_t data_bytes;
+} kafs_v6_journal_data_lookup_t;
+
+typedef struct kafs_v6_journal_data_coverage_report
+{
+  int available;
+  int has_gap;
+  int has_overlap;
+  int has_physical_overlap;
+  int missing_coverage;
+  uint32_t shard_count;
+  uint64_t expected_start;
+  uint64_t expected_count;
+  uint64_t covered_segments;
+  uint64_t first_gap_start;
+  uint64_t first_gap_count;
+  uint64_t first_overlap_start;
+  uint64_t first_overlap_count;
+  uint64_t first_physical_overlap_off;
+  uint64_t first_physical_overlap_bytes;
+  int lookup_available;
+  kafs_v6_journal_data_lookup_t lookup;
+} kafs_v6_journal_data_coverage_report_t;
+
+typedef struct kafs_v6_journal_segment_lookup
+{
+  uint64_t segment_id;
+  kafs_v6_journal_header_lookup_t header;
+  kafs_v6_journal_data_lookup_t data;
+} kafs_v6_journal_segment_lookup_t;
+
+typedef struct kafs_v6_journal_segment_report
+{
+  int available;
+  int has_missing_pair;
+  int has_group_mismatch;
+  int has_invalid_header;
+  int has_torn_data;
+  int has_read_error;
+  uint64_t segment_count;
+  uint64_t segments_checked;
+  uint64_t valid_segments;
+  uint64_t records_checked;
+  uint64_t selected_segment_id;
+  uint64_t selected_generation;
+  uint64_t selected_write_off;
+  uint64_t selected_seq;
+  uint32_t selected_header_shard;
+  uint32_t selected_data_shard;
+  uint32_t selected_group_id;
+  uint64_t first_bad_segment_id;
+  uint32_t first_bad_header_shard;
+  uint32_t first_bad_data_shard;
+  uint32_t first_bad_header_group;
+  uint32_t first_bad_data_group;
+} kafs_v6_journal_segment_report_t;
+
 _Static_assert(offsetof(kafs_v6_bitmap_coverage_report_t, lookup_available) ==
                    sizeof(kafs_v6_extent_coverage_t),
                "bitmap coverage prefix must match kafs_v6_extent_coverage_t");
@@ -400,6 +499,12 @@ _Static_assert(offsetof(kafs_v6_hrl_index_coverage_report_t, lookup_available) =
 _Static_assert(offsetof(kafs_v6_hrl_entries_coverage_report_t, lookup_available) ==
                    sizeof(kafs_v6_extent_coverage_t),
                "HRL entries coverage prefix must match kafs_v6_extent_coverage_t");
+_Static_assert(offsetof(kafs_v6_journal_header_coverage_report_t, lookup_available) ==
+                   sizeof(kafs_v6_extent_coverage_t),
+               "journal header coverage prefix must match kafs_v6_extent_coverage_t");
+_Static_assert(offsetof(kafs_v6_journal_data_coverage_report_t, lookup_available) ==
+                   sizeof(kafs_v6_extent_coverage_t),
+               "journal data coverage prefix must match kafs_v6_extent_coverage_t");
 
 static inline const char *kafs_v6_replica_status_name(kafs_v6_replica_status_t status)
 {
@@ -695,6 +800,12 @@ static inline int kafs_v6_extent_decode_shard(const kafs_sv6_shard_desc_t *shard
       return -ERANGE;
     view->required_bytes = view->logical_count * (uint64_t)view->record_bytes;
   }
+  else if (storage == KAFS_V6_EXTENT_STORAGE_BYTE_SPAN)
+  {
+    if (view->record_bytes != 0u)
+      return -EINVAL;
+    view->required_bytes = view->physical_bytes;
+  }
   else
   {
     return -EINVAL;
@@ -929,6 +1040,86 @@ static inline int kafs_v6_hrl_entry_lookup(const void *desc, uint32_t desc_bytes
   out->logical_count = shard.logical_count;
   out->entry_off = entry_off;
   out->record_bytes = shard.record_bytes;
+  return 0;
+}
+
+static inline int kafs_v6_journal_header_lookup(const void *desc, uint32_t desc_bytes,
+                                                uint64_t segment_id,
+                                                kafs_v6_journal_header_lookup_t *out)
+{
+  if (!out)
+    return -EINVAL;
+  memset(out, 0, sizeof(*out));
+
+  kafs_v6_extent_shard_view_t shard;
+  uint64_t header_off = 0;
+  int rc = kafs_v6_fixed_record_lookup(desc, desc_bytes, KAFS_META_REGION_JOURNAL_HEADER,
+                                       sizeof(kj_header_t), segment_id, &shard, &header_off);
+  if (rc != 0)
+    return rc;
+
+  out->shard_index = shard.index;
+  out->group_id = shard.group_id;
+  out->segment_id = segment_id;
+  out->logical_start = shard.logical_start;
+  out->logical_count = shard.logical_count;
+  out->header_off = header_off;
+  out->header_bytes = sizeof(kj_header_t);
+  out->record_bytes = shard.record_bytes;
+  return 0;
+}
+
+static inline int kafs_v6_journal_data_lookup(const void *desc, uint32_t desc_bytes,
+                                              uint64_t segment_id,
+                                              kafs_v6_journal_data_lookup_t *out)
+{
+  if (!out)
+    return -EINVAL;
+  memset(out, 0, sizeof(*out));
+
+  kafs_v6_extent_shard_view_t shard;
+  int rc = kafs_v6_extent_find(desc, desc_bytes, KAFS_META_REGION_JOURNAL_DATA, 0,
+                               KAFS_V6_EXTENT_STORAGE_BYTE_SPAN, segment_id, &shard);
+  if (rc != 0)
+    return rc;
+  if (shard.logical_count == 0u || (shard.physical_bytes % shard.logical_count) != 0u)
+    return -EINVAL;
+
+  uint64_t data_bytes = shard.physical_bytes / shard.logical_count;
+  uint64_t delta = segment_id - shard.logical_start;
+  if (data_bytes == 0u || delta > UINT64_MAX / data_bytes)
+    return -ERANGE;
+  uint64_t byte_delta = delta * data_bytes;
+  if (byte_delta >= shard.physical_bytes || shard.physical_off > UINT64_MAX - byte_delta)
+    return -ERANGE;
+
+  out->shard_index = shard.index;
+  out->group_id = shard.group_id;
+  out->segment_id = segment_id;
+  out->logical_start = shard.logical_start;
+  out->logical_count = shard.logical_count;
+  out->data_off = shard.physical_off + byte_delta;
+  out->data_bytes = data_bytes;
+  return 0;
+}
+
+static inline int kafs_v6_journal_segment_lookup(const void *desc, uint32_t desc_bytes,
+                                                 uint64_t segment_id,
+                                                 kafs_v6_journal_segment_lookup_t *out)
+{
+  if (!out)
+    return -EINVAL;
+  memset(out, 0, sizeof(*out));
+  out->segment_id = segment_id;
+
+  int rc = kafs_v6_journal_header_lookup(desc, desc_bytes, segment_id, &out->header);
+  if (rc != 0)
+    return rc;
+  rc = kafs_v6_journal_data_lookup(desc, desc_bytes, segment_id, &out->data);
+  if (rc != 0)
+    return rc;
+
+  out->segment_id = segment_id;
   return 0;
 }
 
@@ -1265,6 +1456,120 @@ kafs_v6_hrl_entries_validate_coverage(const void *desc, uint32_t desc_bytes,
   return 0;
 }
 
+static inline int kafs_v6_journal_shard_logical_end_max(const void *desc, uint32_t desc_bytes,
+                                                        uint64_t file_size, uint16_t shard_type,
+                                                        uint32_t expected_record_bytes, int storage,
+                                                        uint64_t *out_max_end,
+                                                        uint32_t *out_shard_count)
+{
+  if (!desc || !out_max_end || !out_shard_count)
+    return -EINVAL;
+  *out_max_end = 0;
+  *out_shard_count = 0;
+
+  uint32_t descriptor_shard_count = 0;
+  const kafs_sv6_shard_desc_t *shards =
+      kafs_v6_shard_table(desc, desc_bytes, &descriptor_shard_count);
+  if (!shards)
+    return -EINVAL;
+
+  uint32_t index = 0;
+  for (;;)
+  {
+    kafs_v6_extent_shard_view_t shard;
+    int rc = kafs_v6_extent_next_shard(shards, descriptor_shard_count, shard_type,
+                                       expected_record_bytes, storage, &index, &shard);
+    if (rc == -ENOENT)
+      break;
+    if (rc != 0)
+      return rc;
+    if (kafs_offline_check_bounds(shard.physical_off, shard.physical_bytes, file_size) != 0)
+      return -ERANGE;
+    if (shard.logical_end > *out_max_end)
+      *out_max_end = shard.logical_end;
+    ++(*out_shard_count);
+  }
+
+  return (*out_shard_count == 0u || *out_max_end == 0u) ? -ENOENT : 0;
+}
+
+static inline int kafs_v6_journal_segment_count(const void *desc, uint32_t desc_bytes,
+                                                uint64_t file_size, uint64_t *out_count)
+{
+  if (!out_count)
+    return -EINVAL;
+  *out_count = 0;
+
+  uint64_t header_end = 0;
+  uint64_t data_end = 0;
+  uint32_t header_shards = 0;
+  uint32_t data_shards = 0;
+  int header_rc = kafs_v6_journal_shard_logical_end_max(
+      desc, desc_bytes, file_size, KAFS_META_REGION_JOURNAL_HEADER, sizeof(kj_header_t),
+      KAFS_V6_EXTENT_STORAGE_FIXED_RECORD, &header_end, &header_shards);
+  int data_rc = kafs_v6_journal_shard_logical_end_max(
+      desc, desc_bytes, file_size, KAFS_META_REGION_JOURNAL_DATA, 0,
+      KAFS_V6_EXTENT_STORAGE_BYTE_SPAN, &data_end, &data_shards);
+  if (header_rc != 0)
+    return header_rc;
+  if (data_rc != 0)
+    return data_rc;
+
+  *out_count = (header_end > data_end) ? header_end : data_end;
+  return (*out_count == 0u) ? -ENOENT : 0;
+}
+
+static inline int kafs_v6_journal_validate_coverage_prefix(const void *desc, uint32_t desc_bytes,
+                                                           const kafs_ssuperblock_t *sb,
+                                                           uint64_t file_size, uint16_t shard_type,
+                                                           uint32_t expected_record_bytes,
+                                                           int storage, void *report,
+                                                           size_t report_bytes)
+{
+  if (!report)
+    return -EINVAL;
+  memset(report, 0, report_bytes);
+
+  uint64_t segment_count = 0;
+  int rc = kafs_v6_journal_segment_count(desc, desc_bytes, file_size, &segment_count);
+  if (rc != 0)
+    return rc;
+  return kafs_v6_validate_coverage_prefix(desc, desc_bytes, sb, file_size, shard_type,
+                                          expected_record_bytes, storage, segment_count, report);
+}
+
+static inline int
+kafs_v6_journal_header_validate_coverage(const void *desc, uint32_t desc_bytes,
+                                         const kafs_ssuperblock_t *sb, uint64_t file_size,
+                                         kafs_v6_journal_header_coverage_report_t *report)
+{
+  int rc = kafs_v6_journal_validate_coverage_prefix(
+      desc, desc_bytes, sb, file_size, KAFS_META_REGION_JOURNAL_HEADER, sizeof(kj_header_t),
+      KAFS_V6_EXTENT_STORAGE_FIXED_RECORD, report, sizeof(*report));
+  if (rc != 0)
+    return rc;
+  if (report->expected_count > 0u &&
+      kafs_v6_journal_header_lookup(desc, desc_bytes, report->expected_start, &report->lookup) == 0)
+    report->lookup_available = 1;
+  return 0;
+}
+
+static inline int
+kafs_v6_journal_data_validate_coverage(const void *desc, uint32_t desc_bytes,
+                                       const kafs_ssuperblock_t *sb, uint64_t file_size,
+                                       kafs_v6_journal_data_coverage_report_t *report)
+{
+  int rc = kafs_v6_journal_validate_coverage_prefix(
+      desc, desc_bytes, sb, file_size, KAFS_META_REGION_JOURNAL_DATA, 0,
+      KAFS_V6_EXTENT_STORAGE_BYTE_SPAN, report, sizeof(*report));
+  if (rc != 0)
+    return rc;
+  if (report->expected_count > 0u &&
+      kafs_v6_journal_data_lookup(desc, desc_bytes, report->expected_start, &report->lookup) == 0)
+    report->lookup_available = 1;
+  return 0;
+}
+
 static inline int kafs_v6_hrl_chain_note(kafs_v6_hrl_chain_report_t *report, int *flag,
                                          uint64_t bucket, uint64_t head_plus1, uint64_t entry_id,
                                          uint32_t index_shard, uint32_t entry_shard,
@@ -1369,6 +1674,156 @@ static inline int kafs_v6_hrl_validate_chain_bounds_fd(int fd, const void *desc,
 
   (void)file_size;
   return 0;
+}
+
+static inline int kafs_v6_journal_segment_note(kafs_v6_journal_segment_report_t *report, int *flag,
+                                               const kafs_v6_journal_segment_lookup_t *lookup)
+{
+  if (flag && !*flag && lookup)
+  {
+    report->first_bad_segment_id = lookup->segment_id;
+    report->first_bad_header_shard = lookup->header.shard_index;
+    report->first_bad_data_shard = lookup->data.shard_index;
+    report->first_bad_header_group = lookup->header.group_id;
+    report->first_bad_data_group = lookup->data.group_id;
+  }
+  if (flag)
+    *flag = 1;
+  return -EINVAL;
+}
+
+static inline int kafs_v6_journal_record_tag_known(uint32_t tag)
+{
+  return tag == KJ_TAG_BEG || tag == KJ_TAG_CMT || tag == KJ_TAG_ABR || tag == KJ_TAG_NOTE ||
+         tag == KJ_TAG_WRAP || tag == KJ_TAG_MDT;
+}
+
+static inline int kafs_v6_journal_scan_data_fd(int fd, const kafs_v6_journal_data_lookup_t *data,
+                                               const kj_header_t *hdr, uint64_t *records_checked)
+{
+  if (fd < 0 || !data || !hdr || !records_checked)
+    return -EINVAL;
+  if (hdr->write_off > data->data_bytes)
+    return -ERANGE;
+
+  uint64_t pos = 0;
+  while (pos < hdr->write_off)
+  {
+    if (hdr->write_off - pos < sizeof(kj_rec_hdr_t))
+      return -EINVAL;
+
+    kj_rec_hdr_t rec;
+    if (kafs_pread_all(fd, &rec, sizeof(rec), (off_t)(data->data_off + pos)) != 0)
+      return -EIO;
+    if (!kafs_v6_journal_record_tag_known(rec.tag))
+      return -EINVAL;
+    if (rec.tag == KJ_TAG_WRAP)
+    {
+      if (rec.size != 0u)
+        return -EINVAL;
+      (*records_checked)++;
+      return 0;
+    }
+
+    uint64_t payload_off = pos + sizeof(rec);
+    if ((uint64_t)rec.size > hdr->write_off - payload_off)
+      return -EINVAL;
+    uint64_t total = sizeof(rec) + (uint64_t)rec.size;
+    if (total > SIZE_MAX)
+      return -ERANGE;
+    char *buf = (char *)malloc((size_t)total);
+    if (!buf)
+      return -ENOMEM;
+
+    kj_rec_hdr_t crc_rec = rec;
+    crc_rec.crc32 = 0;
+    memcpy(buf, &crc_rec, sizeof(crc_rec));
+    int rc = 0;
+    if (rec.size != 0u)
+      rc = kafs_pread_all(fd, buf + sizeof(crc_rec), rec.size,
+                          (off_t)(data->data_off + payload_off));
+    if (rc == 0 && kj_crc32(buf, (size_t)total) != rec.crc32)
+      rc = -EINVAL;
+    free(buf);
+    if (rc != 0)
+      return rc;
+
+    pos += total;
+    (*records_checked)++;
+  }
+
+  return 0;
+}
+
+static inline int kafs_v6_journal_validate_segments_fd(int fd, const void *desc,
+                                                       uint32_t desc_bytes,
+                                                       const kafs_ssuperblock_t *sb,
+                                                       uint64_t file_size,
+                                                       kafs_v6_journal_segment_report_t *report)
+{
+  if (!report)
+    return -EINVAL;
+  memset(report, 0, sizeof(*report));
+  if (fd < 0 || !desc || !sb)
+    return -EINVAL;
+
+  uint64_t segment_count = 0;
+  int rc = kafs_v6_journal_segment_count(desc, desc_bytes, file_size, &segment_count);
+  if (rc != 0)
+    return rc;
+
+  report->available = 1;
+  report->segment_count = segment_count;
+  int selected = 0;
+  for (uint64_t segment = 0; segment < segment_count; ++segment)
+  {
+    kafs_v6_journal_segment_lookup_t lookup;
+    rc = kafs_v6_journal_segment_lookup(desc, desc_bytes, segment, &lookup);
+    if (rc != 0)
+      return kafs_v6_journal_segment_note(report, &report->has_missing_pair, &lookup);
+    if (lookup.header.group_id != lookup.data.group_id)
+      return kafs_v6_journal_segment_note(report, &report->has_group_mismatch, &lookup);
+
+    kj_header_t hdr;
+    rc = kafs_pread_all(fd, &hdr, sizeof(hdr), (off_t)lookup.header.header_off);
+    if (rc != 0)
+      return kafs_v6_journal_segment_note(report, &report->has_read_error, &lookup);
+
+    report->segments_checked++;
+    if (!kj_header_valid_for_area(&hdr, lookup.data.data_bytes))
+    {
+      kafs_v6_journal_segment_note(report, &report->has_invalid_header, &lookup);
+      continue;
+    }
+
+    uint64_t segment_records = 0;
+    rc = kafs_v6_journal_scan_data_fd(fd, &lookup.data, &hdr, &segment_records);
+    if (rc != 0)
+    {
+      if (rc == -EIO)
+        kafs_v6_journal_segment_note(report, &report->has_read_error, &lookup);
+      else
+        kafs_v6_journal_segment_note(report, &report->has_torn_data, &lookup);
+      continue;
+    }
+
+    report->records_checked += segment_records;
+    report->valid_segments++;
+    if (!selected || hdr.reserved0 > report->selected_generation ||
+        (hdr.reserved0 == report->selected_generation && segment < report->selected_segment_id))
+    {
+      selected = 1;
+      report->selected_segment_id = segment;
+      report->selected_generation = hdr.reserved0;
+      report->selected_write_off = hdr.write_off;
+      report->selected_seq = hdr.seq;
+      report->selected_header_shard = lookup.header.shard_index;
+      report->selected_data_shard = lookup.data.shard_index;
+      report->selected_group_id = lookup.header.group_id;
+    }
+  }
+
+  return selected ? 0 : -EINVAL;
 }
 
 static inline int kafs_v6_validate_one_descriptor(const void *desc, uint32_t desc_bytes,

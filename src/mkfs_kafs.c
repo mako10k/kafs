@@ -719,8 +719,13 @@ static void mkfs_init_runtime_regions(kafs_context_t *ctx, const struct mkfs_lay
 
   if (journal_bytes > kj_header_size())
   {
-    uint32_t slot_count = kj_header_slot_count(journal_flags, (uint64_t)journal_bytes);
-    uint64_t area_size = kj_journal_area_size((uint64_t)journal_bytes, journal_flags);
+    uint32_t format_version = kafs_sb_format_version_get(ctx->c_superblock);
+    uint32_t slot_count = (format_version == KAFS_FORMAT_VERSION_V6)
+                              ? 1u
+                              : kj_header_slot_count(journal_flags, (uint64_t)journal_bytes);
+    uint64_t area_size = (format_version == KAFS_FORMAT_VERSION_V6 && journal_bytes > blksize)
+                             ? ((uint64_t)journal_bytes - (uint64_t)blksize)
+                             : kj_journal_area_size((uint64_t)journal_bytes, journal_flags);
     kj_header_t jh;
     char *jhdr_ptr = (char *)ctx->c_superblock + layout->journal_off;
     char *base = (char *)ctx->c_superblock;

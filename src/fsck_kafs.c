@@ -489,6 +489,52 @@ static void fsck_report_v6_hrl_chains(const kafs_v6_hrl_chain_report_t *report, 
           report->first_entry_shard, report->first_index_group, report->first_entry_group);
 }
 
+static void fsck_report_v6_journal_header(const kafs_v6_journal_header_coverage_report_t *report,
+                                          int rc)
+{
+  fsck_report_v6_extent_prefix("v6 journal header shards", "segments", report, rc);
+  fprintf(stderr,
+          " lookup_available=%s lookup_segment=%" PRIu64 " lookup_shard=%" PRIu32
+          " lookup_group=%" PRIu32 " header_byte=%" PRIu64 "\n",
+          report->lookup_available ? "true" : "false", report->lookup.segment_id,
+          report->lookup.shard_index, report->lookup.group_id, report->lookup.header_off);
+}
+
+static void fsck_report_v6_journal_data(const kafs_v6_journal_data_coverage_report_t *report,
+                                        int rc)
+{
+  fsck_report_v6_extent_prefix("v6 journal data shards", "segments", report, rc);
+  fprintf(stderr,
+          " lookup_available=%s lookup_segment=%" PRIu64 " lookup_shard=%" PRIu32
+          " lookup_group=%" PRIu32 " data_byte=%" PRIu64 " data_bytes=%" PRIu64 "\n",
+          report->lookup_available ? "true" : "false", report->lookup.segment_id,
+          report->lookup.shard_index, report->lookup.group_id, report->lookup.data_off,
+          report->lookup.data_bytes);
+}
+
+static void fsck_report_v6_journal_segments(const kafs_v6_journal_segment_report_t *report, int rc)
+{
+  fprintf(
+      stderr,
+      "v6 journal segments: status=%s available=%s segment_count=%" PRIu64 " checked=%" PRIu64
+      " valid=%" PRIu64 " records_checked=%" PRIu64 " selected_segment=%" PRIu64
+      " selected_generation=%" PRIu64 " selected_seq=%" PRIu64 " selected_write_off=%" PRIu64
+      " selected_header_shard=%" PRIu32 " selected_data_shard=%" PRIu32 " selected_group=%" PRIu32
+      " has_missing_pair=%s has_group_mismatch=%s has_invalid_header=%s"
+      " has_torn_data=%s has_read_error=%s first_bad_segment=%" PRIu64
+      " first_bad_header_shard=%" PRIu32 " first_bad_data_shard=%" PRIu32
+      " first_bad_header_group=%" PRIu32 " first_bad_data_group=%" PRIu32 "\n",
+      fsck_rc_to_text(rc), report->available ? "true" : "false", report->segment_count,
+      report->segments_checked, report->valid_segments, report->records_checked,
+      report->selected_segment_id, report->selected_generation, report->selected_seq,
+      report->selected_write_off, report->selected_header_shard, report->selected_data_shard,
+      report->selected_group_id, report->has_missing_pair ? "true" : "false",
+      report->has_group_mismatch ? "true" : "false", report->has_invalid_header ? "true" : "false",
+      report->has_torn_data ? "true" : "false", report->has_read_error ? "true" : "false",
+      report->first_bad_segment_id, report->first_bad_header_shard, report->first_bad_data_shard,
+      report->first_bad_header_group, report->first_bad_data_group);
+}
+
 static int fsck_handle_v6_image(const struct fsck_options *opts, const struct fsck_image_info *info,
                                 int want_write)
 {
@@ -499,6 +545,9 @@ static int fsck_handle_v6_image(const struct fsck_options *opts, const struct fs
   kafs_v6_hrl_index_coverage_report_t hrl_index_report;
   kafs_v6_hrl_entries_coverage_report_t hrl_entries_report;
   kafs_v6_hrl_chain_report_t hrl_chain_report;
+  kafs_v6_journal_header_coverage_report_t journal_header_report;
+  kafs_v6_journal_data_coverage_report_t journal_data_report;
+  kafs_v6_journal_segment_report_t journal_segment_report;
   int rc;
 
   if (want_write)
@@ -524,6 +573,9 @@ static int fsck_handle_v6_image(const struct fsck_options *opts, const struct fs
   memset(&hrl_index_report, 0, sizeof(hrl_index_report));
   memset(&hrl_entries_report, 0, sizeof(hrl_entries_report));
   memset(&hrl_chain_report, 0, sizeof(hrl_chain_report));
+  memset(&journal_header_report, 0, sizeof(journal_header_report));
+  memset(&journal_data_report, 0, sizeof(journal_data_report));
+  memset(&journal_segment_report, 0, sizeof(journal_segment_report));
   void *desc = NULL;
   uint32_t desc_bytes = 0;
   rc = kafs_v6_read_selected_descriptor(info->fd, &report, &desc, &desc_bytes);
@@ -545,6 +597,15 @@ static int fsck_handle_v6_image(const struct fsck_options *opts, const struct fs
   if (rc == 0)
     rc = kafs_v6_hrl_validate_chain_bounds_fd(info->fd, desc, desc_bytes, &info->sb,
                                               info->file_size, &hrl_chain_report);
+  if (rc == 0)
+    rc = kafs_v6_journal_header_validate_coverage(desc, desc_bytes, &info->sb, info->file_size,
+                                                  &journal_header_report);
+  if (rc == 0)
+    rc = kafs_v6_journal_data_validate_coverage(desc, desc_bytes, &info->sb, info->file_size,
+                                                &journal_data_report);
+  if (rc == 0)
+    rc = kafs_v6_journal_validate_segments_fd(info->fd, desc, desc_bytes, &info->sb,
+                                              info->file_size, &journal_segment_report);
   free(desc);
   fsck_report_v6_bitmap(&bitmap_report, rc);
   fsck_report_v6_inode(&inode_report, rc);
@@ -552,6 +613,9 @@ static int fsck_handle_v6_image(const struct fsck_options *opts, const struct fs
   fsck_report_v6_hrl_index(&hrl_index_report, rc);
   fsck_report_v6_hrl_entries(&hrl_entries_report, rc);
   fsck_report_v6_hrl_chains(&hrl_chain_report, rc);
+  fsck_report_v6_journal_header(&journal_header_report, rc);
+  fsck_report_v6_journal_data(&journal_data_report, rc);
+  fsck_report_v6_journal_segments(&journal_segment_report, rc);
   if (rc != 0)
   {
     fprintf(stderr, "v6 metadata shard validation failed\n");
@@ -559,7 +623,7 @@ static int fsck_handle_v6_image(const struct fsck_options *opts, const struct fs
   }
 
   if (opts->do_check_journal)
-    fprintf(stderr, "Journal check: skipped for offline-only format v6 descriptor scaffold.\n");
+    fprintf(stderr, "Journal check: v6 descriptor-backed segment health OK.\n");
   return 0;
 }
 
