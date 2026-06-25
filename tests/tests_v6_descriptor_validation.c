@@ -2107,6 +2107,28 @@ static int test_journal_torn_latest_segment_recovers(void)
   return 0;
 }
 
+static int test_runtime_mount_preflight_rejects_descriptor_gap(void)
+{
+  const char *img = "runtime-preflight-journal-gap.img";
+  const char *mnt = "runtime-preflight-journal-gap-mnt";
+  if (make_v6_image(img) != 0)
+    return -1;
+  if (mkdir(mnt, 0755) != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_journal_header_gap, 1) != 0)
+    return -1;
+
+  char out[8192];
+  char *mount_argv[] = {(char *)kafs_test_kafs_bin(), (char *)img, (char *)mnt, NULL};
+  if (run_cmd_capture(mount_argv, 2, out, sizeof(out)) != 0 ||
+      !strstr(out, "admission preflight failed") || !strstr(out, "offline-only"))
+  {
+    tlogf("v6 runtime mount did not report failed preflight plus offline-only gate: %s", out);
+    return -1;
+  }
+  return 0;
+}
+
 static int test_bitmap_overlap_rejected(void)
 {
   const char *img = "bitmap-overlap.img";
@@ -2354,6 +2376,8 @@ int main(void)
       {"journal_coverage_valid_lookup_and_segments", test_journal_coverage_valid_lookup_and_segments},
       {"journal_header_gap_rejected", test_journal_header_gap_rejected},
       {"journal_torn_latest_segment_recovers", test_journal_torn_latest_segment_recovers},
+      {"runtime_mount_preflight_rejects_descriptor_gap",
+       test_runtime_mount_preflight_rejects_descriptor_gap},
       {"bitmap_overlap_rejected", test_bitmap_overlap_rejected},
       {"allocator_summary_admission_rejects_gap", test_allocator_summary_admission_rejects_gap},
       {"hrl_admission_rejects_gap", test_hrl_admission_rejects_gap},

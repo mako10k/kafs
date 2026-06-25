@@ -375,7 +375,9 @@ Logical coverage requirements:
 
 Until `SDW-P4` explicitly enables v6 runtime support, `kafs` must reject `s_format_version=6` with
 an unsupported-format error. It must not attempt to mount a v6 descriptor image through the v4/v5
-prefix layout.
+prefix layout. The CLI mount path runs a v6 admission preflight before that rejection: it discovers
+the selected descriptor, validates descriptor-backed bitmap/inode/allocator/HRL coverage plus journal
+segment health, reports the result, and then still exits through the offline-only gate.
 
 ### `kafsdump`
 
@@ -542,7 +544,8 @@ Journal distribution:
   remains; if no valid segment remains, `fsck.kafs` and runtime admission fail closed.
 - Runtime v6 mount is still disabled. The live journal write/replay path must use the descriptor
   journal segment lookup before v6 write mount is enabled; until then, the implemented checks are
-  offline scaffold validation and dormant admission validation only.
+  offline scaffold validation, dormant admission validation, and CLI mount preflight diagnostics
+  only.
 
 ## Phase 3 Follow-Ups
 

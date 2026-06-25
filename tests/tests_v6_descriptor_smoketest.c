@@ -171,9 +171,10 @@ int main(void)
     tlogf("v6 runtime mount did not fail as expected: %s", out);
     return 1;
   }
-  if (!strstr(out, "offline-only"))
+  if (!strstr(out, "admission preflight") || !strstr(out, "metadata checks OK") ||
+      !strstr(out, "offline-only"))
   {
-    tlogf("v6 runtime mount error missing offline-only guidance: %s", out);
+    tlogf("v6 runtime mount error missing preflight/offline-only guidance: %s", out);
     return 1;
   }
 

@@ -12687,6 +12687,61 @@ static void kafs_main_validate_image_format(const char *image_path, uint32_t fmt
   }
 }
 
+static const char *kafs_main_rc_text(int rc, char *buf, size_t buf_sz)
+{
+  if (rc == 0)
+    return "ok";
+  if (!buf || buf_sz == 0u)
+    return "error";
+
+  int err = (rc < 0) ? -rc : rc;
+  if (err != 0)
+    snprintf(buf, buf_sz, "rc=%d (%s)", rc, strerror(err));
+  else
+    snprintf(buf, buf_sz, "rc=%d", rc);
+  return buf;
+}
+
+static int kafs_main_v6_admission_preflight(int fd, const kafs_ssuperblock_t *sbdisk)
+{
+  if (fd < 0 || !sbdisk)
+    return -EINVAL;
+
+  uint64_t file_size = 0;
+  int rc = kafs_offline_detect_file_size(fd, &file_size);
+
+  kafs_context_t preflight_ctx;
+  memset(&preflight_ctx, 0, sizeof(preflight_ctx));
+  preflight_ctx.c_fd = fd;
+  preflight_ctx.c_superblock = (kafs_ssuperblock_t *)sbdisk;
+
+  if (rc == 0)
+    rc = kafs_v6_descriptor_mapping_admit_fd(&preflight_ctx, fd, file_size, NULL, NULL, NULL, NULL,
+                                             NULL);
+  if (rc == 0)
+  {
+    kafs_v6_journal_segment_report_t journal_report;
+    rc = kafs_v6_journal_validate_segments_fd(fd, preflight_ctx.c_v6_layout_desc,
+                                              preflight_ctx.c_v6_layout_desc_bytes, sbdisk,
+                                              file_size, &journal_report);
+  }
+
+  if (rc == 0)
+  {
+    fprintf(stderr, "format v6 admission preflight: descriptor-backed metadata checks OK; "
+                    "runtime mount remains offline-only.\n");
+  }
+  else
+  {
+    char errbuf[128];
+    fprintf(stderr, "format v6 admission preflight failed: %s.\n",
+            kafs_main_rc_text(rc, errbuf, sizeof(errbuf)));
+  }
+
+  kafs_bitmap_descriptor_mapping_clear(&preflight_ctx);
+  return rc;
+}
+
 static void kafs_main_map_runtime_memory(kafs_context_t *ctx, uint32_t fmt_ver, off_t imgsize,
                                          off_t mapsize, intptr_t blkmask_off, intptr_t inotbl_off)
 {
@@ -12789,6 +12844,8 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
   uint32_t fmt_ver = kafs_sb_format_version_get(&sbdisk);
   kafs_inocnt_t inocnt = 0;
   kafs_blkcnt_t r_blkcnt = 0;
+  if (fmt_ver == KAFS_FORMAT_VERSION_V6)
+    (void)kafs_main_v6_admission_preflight(ctx->c_fd, &sbdisk);
   kafs_main_validate_image_format(image_path, fmt_ver, auto_migrate, migrate_yes);
   kafs_main_map_runtime_image(ctx, &sbdisk, fmt_ver, &inocnt, &r_blkcnt);
   kafs_main_init_runtime_diag(ctx, image_path, inocnt);

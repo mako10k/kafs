@@ -362,6 +362,10 @@
 ### SDW-P4-T6 Phase 4 validation
 
 - 目的: v6 distributed metadata が mountable / checkable であることを確認する。
+- 進捗メモ:
+  - `kafs` の v6 runtime mount path は、offline-only 拒否の前に selected descriptor の admission
+    preflight を実行し、bitmap/inode/allocator/HRL coverage と journal segment health の成功/失敗を
+    診断表示する。v6 runtime mount はまだ有効化しない。
 - 完了条件:
   - build/test PASS。
   - v6 mkfs/mount/basic filesystem semantics PASS。
