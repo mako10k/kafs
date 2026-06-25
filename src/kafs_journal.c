@@ -2,6 +2,7 @@
 #include "kafs_context.h"
 #include "kafs_locks.h"
 #include "kafs_superblock.h"
+#include "kafs_v6_layout.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -424,8 +425,35 @@ static void kj_count_meta_write(uint32_t region, uint64_t bytes)
   kafs_ctx_meta_write_count(g_state.ctx, region, bytes);
 }
 
+static void *kj_mutex_alloc(void)
+{
+#if KAFS_JOURNAL_HAS_PTHREAD
+  pthread_mutex_t *mtx_ptr = malloc(sizeof(pthread_mutex_t));
+  if (mtx_ptr)
+    pthread_mutex_init(mtx_ptr, NULL);
+  return mtx_ptr;
+#else
+  return NULL;
+#endif
+}
+
+static void kj_mutex_free(void *mtx)
+{
+#if KAFS_JOURNAL_HAS_PTHREAD
+  if (mtx)
+  {
+    pthread_mutex_destroy((pthread_mutex_t *)mtx);
+    free(mtx);
+  }
+#else
+  (void)mtx;
+#endif
+}
+
 static uint64_t kj_header_slot_file_off(const kafs_journal_t *j, uint32_t slot)
 {
+  if (j->descriptor_backed)
+    return j->base_off;
   return kj_header_slot_offset(j->base_off, j->area_size, slot);
 }
 
@@ -629,16 +657,96 @@ static void kj_state_disable(struct kafs_context *ctx)
   g_state.j.seq = 0;
   g_state.j.mtx = NULL;
   g_state.j.use_inimage = 0;
+  g_state.j.descriptor_backed = 0;
   g_state.j.base_off = 0;
   g_state.j.data_off = 0;
   g_state.j.base_ptr = NULL;
   g_state.j.area_size = 0;
+  g_state.j.segment_id = 0;
   g_state.j.header_slot_count = 0;
   g_state.j.active_header_slot = 0;
   g_state.j.header_generation = 0;
   g_state.j.gc_delay_ns = 0;
   g_state.j.gc_last_ns = 0;
   g_state.j.gc_pending = 0;
+}
+
+static int kj_configure_v6_descriptor_segment(struct kafs_context *ctx, kafs_journal_t *j)
+{
+  if (!ctx || !ctx->c_superblock || !j)
+    return -EINVAL;
+  if (kafs_sb_format_version_get(ctx->c_superblock) != KAFS_FORMAT_VERSION_V6)
+    return -ENOENT;
+  if (!ctx->c_v6_layout_desc || ctx->c_v6_layout_desc_bytes == 0u)
+    return -EPROTONOSUPPORT;
+
+  uint64_t file_size = 0;
+  int rc = kafs_offline_detect_file_size(ctx->c_fd, &file_size);
+  if (rc != 0)
+    return rc;
+
+  kafs_v6_journal_segment_report_t report;
+  rc = kafs_v6_journal_validate_segments_fd(ctx->c_fd, ctx->c_v6_layout_desc,
+                                            ctx->c_v6_layout_desc_bytes, ctx->c_superblock,
+                                            file_size, &report);
+  if (rc != 0)
+    return rc;
+
+  kafs_v6_journal_segment_lookup_t lookup;
+  rc = kafs_v6_journal_segment_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes,
+                                      report.selected_segment_id, &lookup);
+  if (rc != 0)
+    return rc;
+  if (lookup.header.group_id != lookup.data.group_id || lookup.data.data_bytes == 0u)
+    return -EINVAL;
+
+  j->descriptor_backed = 1;
+  j->segment_id = lookup.segment_id;
+  j->base_off = lookup.header.header_off;
+  j->data_off = lookup.data.data_off;
+  j->area_size = lookup.data.data_bytes;
+  j->header_slot_count = 1u;
+  j->active_header_slot = 0;
+  j->header_generation = 0;
+  j->base_ptr = NULL;
+  if (ctx->c_img_base && j->base_off <= (uint64_t)ctx->c_img_size &&
+      sizeof(kj_header_t) <= (uint64_t)ctx->c_img_size - j->base_off)
+    j->base_ptr = (char *)ctx->c_img_base + j->base_off;
+  return 0;
+}
+
+static int kj_configure_legacy_region(struct kafs_context *ctx, kafs_journal_t *j)
+{
+  if (!ctx || !ctx->c_superblock || !j)
+    return -EINVAL;
+
+  uint64_t joff = kafs_sb_journal_offset_get(ctx->c_superblock);
+  uint64_t jsize = kafs_sb_journal_size_get(ctx->c_superblock);
+  uint32_t jflags = kafs_sb_journal_flags_get(ctx->c_superblock);
+  if (joff == 0 || jsize < 4096)
+    return -ENOENT;
+
+  j->descriptor_backed = 0;
+  j->segment_id = 0;
+  j->base_off = joff;
+  j->header_slot_count = kj_header_slot_count(jflags, jsize);
+  j->active_header_slot = 0;
+  j->header_generation = 0;
+  j->data_off = kj_journal_data_offset(joff);
+  j->area_size = kj_journal_area_size(jsize, jflags);
+  j->base_ptr = (char *)ctx->c_superblock + joff;
+  return (j->area_size == 0u) ? -ENOENT : 0;
+}
+
+static int kj_configure_context_journal(struct kafs_context *ctx, kafs_journal_t *j)
+{
+  if (!ctx || !j)
+    return -EINVAL;
+
+  int rc = kj_configure_v6_descriptor_segment(ctx, j);
+  if (rc != -ENOENT)
+    return rc;
+  return kj_configure_legacy_region(ctx, j);
 }
 
 int kafs_journal_init(struct kafs_context *ctx, const char *image_path)
@@ -649,46 +757,41 @@ int kafs_journal_init(struct kafs_context *ctx, const char *image_path)
     kj_state_disable(ctx);
     return 0;
   }
-  // Prefer in-image journal if present in superblock and env != explicit path
-  uint64_t joff = kafs_sb_journal_offset_get(ctx->c_superblock);
-  uint64_t jsize = kafs_sb_journal_size_get(ctx->c_superblock);
-  uint32_t jflags = kafs_sb_journal_flags_get(ctx->c_superblock);
-  // Enable by default when in-image is available (env unset or "1").
-  int use_inimg = (joff != 0 && jsize >= 4096);
-  // prepare mutex
-#if KAFS_JOURNAL_HAS_PTHREAD
-  pthread_mutex_t *mtx_ptr = malloc(sizeof(pthread_mutex_t));
-  if (mtx_ptr)
-    pthread_mutex_init(mtx_ptr, NULL);
-#else
-  void *mtx_ptr = NULL;
-#endif
-  if (use_inimg)
+
+  kafs_journal_t next;
+  memset(&next, 0, sizeof(next));
+  next.enabled = 1;
+  next.fd = ctx->c_fd; // same file descriptor
+  next.seq = 0;
+  next.use_inimage = 1;
+
+  int rc = kj_configure_context_journal(ctx, &next);
+  if (rc == -ENOENT)
   {
-    g_state.ctx = ctx;
-    g_state.j.enabled = 1;
-    g_state.j.fd = ctx->c_fd; // same file descriptor
-    g_state.j.seq = 0;
-    g_state.j.mtx = mtx_ptr;
-    g_state.j.use_inimage = 1;
-    g_state.j.base_off = joff;
-    g_state.j.header_slot_count = kj_header_slot_count(jflags, jsize);
-    g_state.j.active_header_slot = 0;
-    g_state.j.header_generation = 0;
-    g_state.j.data_off = kj_journal_data_offset(joff);
-    g_state.j.area_size = kj_journal_area_size(jsize, jflags);
-    g_state.j.base_ptr = (char *)ctx->c_superblock + joff;
-    // group commit window (ns) from env KAFS_JOURNAL_GC_NS; default 10000000ns (10ms)
-    const char *gc = getenv("KAFS_JOURNAL_GC_NS");
-    g_state.j.gc_delay_ns = gc ? strtoull(gc, NULL, 0) : 10000000ull;
-    g_state.j.gc_last_ns = 0;
-    g_state.j.gc_pending = 0;
-    // initialize or load header
-    (void)kj_init_or_load(&g_state.j);
+    kj_state_disable(ctx);
     return 0;
   }
-  // 外部サイドカーは廃止。ジャーナル無効で起動。
-  kj_state_disable(ctx);
+  if (rc != 0)
+  {
+    kj_state_disable(ctx);
+    return rc;
+  }
+
+  next.mtx = kj_mutex_alloc();
+  const char *gc = getenv("KAFS_JOURNAL_GC_NS");
+  next.gc_delay_ns = gc ? strtoull(gc, NULL, 0) : 10000000ull;
+  next.gc_last_ns = 0;
+  next.gc_pending = 0;
+
+  g_state.ctx = ctx;
+  g_state.j = next;
+  rc = kj_init_or_load(&g_state.j);
+  if (rc != 0)
+  {
+    kj_mutex_free(g_state.j.mtx);
+    kj_state_disable(ctx);
+    return rc;
+  }
   return 0;
 }
 
@@ -721,13 +824,7 @@ void kafs_journal_shutdown(struct kafs_context *ctx)
     }
     // in-image: header/state is persisted by writes; underlying fd is owned by ctx
   }
-#if KAFS_JOURNAL_HAS_PTHREAD
-  if (j->mtx)
-  {
-    pthread_mutex_destroy((pthread_mutex_t *)j->mtx);
-    free(j->mtx);
-  }
-#endif
+  kj_mutex_free(j->mtx);
   memset(&g_state, 0, sizeof(g_state));
 }
 
@@ -914,24 +1011,20 @@ void kafs_journal_note(struct kafs_context *ctx, const char *op, const char *fmt
 int kafs_journal_replay(struct kafs_context *ctx, kafs_journal_replay_cb cb, void *user)
 {
   (void)user;
-  // Only in-image journal is replayable
-  uint64_t joff = kafs_sb_journal_offset_get(ctx->c_superblock);
-  uint64_t jsize = kafs_sb_journal_size_get(ctx->c_superblock);
-  if (joff == 0 || jsize < 4096)
-    return 0;
+  if (!ctx || !ctx->c_superblock)
+    return -EINVAL;
+
   kafs_journal_t j = {0};
   j.enabled = 1;
   j.fd = ctx->c_fd;
   j.use_inimage = 1;
-  j.base_off = joff;
-  uint32_t jflags = kafs_sb_journal_flags_get(ctx->c_superblock);
-  j.header_slot_count = kj_header_slot_count(jflags, jsize);
-  j.active_header_slot = 0;
-  j.header_generation = 0;
-  j.data_off = kj_journal_data_offset(joff);
-  j.area_size = kj_journal_area_size(jsize, jflags);
-  if (j.area_size == 0)
+
+  int rc = kj_configure_context_journal(ctx, &j);
+  if (rc == -ENOENT)
     return 0;
+  if (rc != 0)
+    return rc;
+
   if (kj_init_or_load(&j) != 0)
     return -EIO;
 
@@ -1092,7 +1185,7 @@ int kafs_journal_replay(struct kafs_context *ctx, kafs_journal_replay_cb cb, voi
   kj_reset_area(&j);
   (void)kj_header_store_next(&j, 1);
   if (g_state.ctx == ctx && g_state.j.enabled && g_state.j.use_inimage &&
-      g_state.j.base_off == j.base_off)
+      g_state.j.base_off == j.base_off && g_state.j.segment_id == j.segment_id)
     g_state.j.write_off = 0;
   for (size_t i = 0; i < open_cnt; ++i)
   {

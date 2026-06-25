@@ -366,6 +366,10 @@
   - `kafs` の v6 runtime mount path は、offline-only 拒否の前に selected descriptor の admission
     preflight を実行し、bitmap/inode/allocator/HRL coverage と journal segment health の成功/失敗を
     診断表示する。v6 runtime mount はまだ有効化しない。
+  - `kafs_journal_init` / `kafs_journal_replay` は、v6 selected descriptor を所有する context では
+    descriptor-backed journal segment を選択し、header/data writes と replay reset を legacy prefix
+    offset ではなく `journal_header` / `journal_data` lookup 経由にする。v6 runtime mount はまだ有効化
+    しない。
 - 完了条件:
   - build/test PASS。
   - v6 mkfs/mount/basic filesystem semantics PASS。

@@ -175,11 +175,13 @@ typedef struct kafs_journal
   // lightweight mutex; if pthread unavailable, fall back to no-op
   void *mtx; // opaque to avoid leaking pthread headers
   // in-image journal fields
-  int use_inimage;    // 1=use image-embedded journal
-  uint64_t base_off;  // absolute file offset to journal header start
-  uint64_t data_off;  // absolute file offset to journal data start (after header)
-  uint64_t area_size; // usable area size for records (ring capacity)
-  uint64_t write_off; // current write offset within ring [0..area_size)
+  int use_inimage;       // 1=use image-embedded journal
+  int descriptor_backed; // 1=v6 descriptor-backed header/data segment
+  uint64_t base_off;     // absolute file offset to journal header start
+  uint64_t data_off;     // absolute file offset to journal data start (after header)
+  uint64_t area_size;    // usable area size for records (ring capacity)
+  uint64_t write_off;    // current write offset within ring [0..area_size)
+  uint64_t segment_id;
   uint32_t header_slot_count;
   uint32_t active_header_slot;
   uint64_t header_generation;

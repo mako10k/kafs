@@ -542,6 +542,10 @@ Journal distribution:
 - Offline health selection chooses the highest generation among valid segments, breaking ties by the
   lowest segment id. A torn newer header or data segment is recoverable when an older valid segment
   remains; if no valid segment remains, `fsck.kafs` and runtime admission fail closed.
+- The dormant runtime journal path now selects the same descriptor-backed segment before
+  initialization or replay when `kafs_context` owns a selected v6 descriptor. Header writes, ring data
+  writes, and replay/reset use that segment's `journal_header` and `journal_data` offsets instead of
+  legacy prefix geometry.
 - Runtime v6 mount is still disabled. The live journal write/replay path must use the descriptor
   journal segment lookup before v6 write mount is enabled; until then, the implemented checks are
   offline scaffold validation, dormant admission validation, and CLI mount preflight diagnostics

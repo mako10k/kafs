@@ -1,9 +1,13 @@
+#include "kafs_block.h"
 #include "kafs_context.h"
 #include "kafs_journal.h"
+#include "kafs_offline_summary.h"
 #include "kafs_superblock.h"
+#include "kafs_v6_layout.h"
 #include "test_utils.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -11,7 +15,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static void tlogf(const char *fmt, ...)
@@ -98,6 +104,179 @@ static int replay_count_cb(struct kafs_context *ctx, const char *op, const char 
   int *count = (int *)user;
   (*count)++;
   return 0;
+}
+
+static int run_cmd_capture(char *const argv[], int expected_exit, char *out, size_t out_sz)
+{
+  int pipefd[2];
+  if (pipe(pipefd) != 0)
+    return -errno;
+
+  pid_t pid = fork();
+  if (pid < 0)
+  {
+    close(pipefd[0]);
+    close(pipefd[1]);
+    return -errno;
+  }
+  if (pid == 0)
+  {
+    close(pipefd[0]);
+    dup2(pipefd[1], STDOUT_FILENO);
+    dup2(pipefd[1], STDERR_FILENO);
+    close(pipefd[1]);
+    execvp(argv[0], argv);
+    _exit(127);
+  }
+
+  close(pipefd[1]);
+  size_t used = 0;
+  for (;;)
+  {
+    char buf[512];
+    ssize_t n = read(pipefd[0], buf, sizeof(buf));
+    if (n < 0)
+    {
+      if (errno == EINTR)
+        continue;
+      break;
+    }
+    if (n == 0)
+      break;
+    if (out && out_sz > 0 && used < out_sz - 1u)
+    {
+      size_t copy = (size_t)n;
+      if (copy > out_sz - 1u - used)
+        copy = out_sz - 1u - used;
+      memcpy(out + used, buf, copy);
+      used += copy;
+    }
+  }
+  close(pipefd[0]);
+  if (out && out_sz > 0)
+    out[used] = '\0';
+
+  int st = 0;
+  if (waitpid(pid, &st, 0) != pid)
+    return -errno;
+  if (!WIFEXITED(st))
+    return -1;
+  return (WEXITSTATUS(st) == expected_exit) ? 0 : -1;
+}
+
+static int make_v6_image(const char *img)
+{
+  char out[4096];
+  char *argv[] = {(char *)kafs_test_mkfs_bin(), (char *)img, (char *)"--format-version",
+                  (char *)"6", (char *)"--size-bytes", (char *)"64M", (char *)"--yes", NULL};
+  int rc = run_cmd_capture(argv, 0, out, sizeof(out));
+  if (rc != 0)
+    tlogf("mkfs v6 failed: %s", out);
+  return rc;
+}
+
+static int test_v6_descriptor_journal_routing(void)
+{
+  const char *img = "journal-v6-routing.img";
+  if (make_v6_image(img) != 0)
+    return -1;
+
+  int fd = open(img, O_RDWR);
+  if (fd < 0)
+    return -1;
+
+  uint64_t file_size = 0;
+  int failed = 0;
+  if (kafs_offline_detect_file_size(fd, &file_size) != 0 || file_size > SIZE_MAX)
+    failed = 1;
+
+  void *map = MAP_FAILED;
+  kafs_context_t ctx;
+  memset(&ctx, 0, sizeof(ctx));
+  if (!failed)
+  {
+    map = mmap(NULL, (size_t)file_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (map == MAP_FAILED)
+      failed = 1;
+  }
+  if (!failed)
+  {
+    ctx.c_fd = fd;
+    ctx.c_img_base = map;
+    ctx.c_img_size = (size_t)file_size;
+    ctx.c_superblock = (kafs_ssuperblock_t *)map;
+    if (kafs_v6_descriptor_mapping_admit_fd(&ctx, fd, file_size, NULL, NULL, NULL, NULL, NULL) !=
+        0)
+      failed = 1;
+  }
+
+  kafs_v6_journal_segment_lookup_t lookup;
+  memset(&lookup, 0, sizeof(lookup));
+  if (!failed &&
+      kafs_v6_journal_segment_lookup(ctx.c_v6_layout_desc, ctx.c_v6_layout_desc_bytes, 0,
+                                     &lookup) != 0)
+    failed = 1;
+
+  uint64_t legacy_data_off = 0;
+  if (!failed)
+  {
+    legacy_data_off = kj_journal_data_offset(kafs_sb_journal_offset_get(ctx.c_superblock));
+    if (legacy_data_off == lookup.data.data_off || lookup.data.data_bytes == 0u)
+      failed = 1;
+  }
+
+  if (!failed && kafs_journal_init(&ctx, img) != 0)
+    failed = 1;
+  uint64_t seq = 0;
+  if (!failed)
+  {
+    seq = kafs_journal_begin(&ctx, "V6ROUTE", "path=/descriptor");
+    if (seq == 0)
+      failed = 1;
+  }
+  if (!failed)
+  {
+    kafs_journal_commit(&ctx, seq);
+    kafs_journal_force_flush(&ctx);
+  }
+  kafs_journal_shutdown(&ctx);
+
+  kj_header_t hdr;
+  if (!failed && read_header(fd, lookup.header.header_off, &hdr) != 0)
+    failed = 1;
+  if (!failed &&
+      (!kj_header_valid_for_area(&hdr, lookup.data.data_bytes) || hdr.write_off == 0u ||
+       hdr.area_size != lookup.data.data_bytes))
+    failed = 1;
+
+  kj_rec_hdr_t first;
+  if (!failed && read_rec_hdr(fd, lookup.data.data_off, 0, &first) != 0)
+    failed = 1;
+  if (!failed && first.tag != KJ_TAG_BEG)
+    failed = 1;
+
+  kj_rec_hdr_t legacy_first;
+  if (!failed && read_rec_hdr(fd, legacy_data_off, 0, &legacy_first) == 0 &&
+      (legacy_first.tag == KJ_TAG_BEG || legacy_first.tag == KJ_TAG_CMT))
+    failed = 1;
+
+  int replay_count = 0;
+  if (!failed && kafs_journal_replay(&ctx, replay_count_cb, &replay_count) != 0)
+    failed = 1;
+  if (!failed && replay_count != 1)
+    failed = 1;
+  if (!failed && read_header(fd, lookup.header.header_off, &hdr) != 0)
+    failed = 1;
+  if (!failed && (!kj_header_valid_for_area(&hdr, lookup.data.data_bytes) || hdr.write_off != 0u))
+    failed = 1;
+
+  kafs_bitmap_descriptor_mapping_clear(&ctx);
+  if (map != MAP_FAILED)
+    munmap(map, (size_t)file_size);
+  close(fd);
+  if (failed)
+    tlogf("v6 descriptor journal routing failed");
+  return failed ? -1 : 0;
 }
 
 int main(void)
@@ -502,6 +681,8 @@ int main(void)
 
   munmap(ctx.c_superblock, mapsize);
   close(ctx.c_fd);
+  if (test_v6_descriptor_journal_routing() != 0)
+    return 1;
   tlogf("journal_boundary OK");
   return 0;
 }
