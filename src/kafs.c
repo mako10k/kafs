@@ -6906,6 +6906,7 @@ static void kafs_ctx_close_fd(kafs_context_t *ctx)
 
 static void kafs_ctx_reset_mapping(kafs_context_t *ctx)
 {
+  kafs_bitmap_descriptor_mapping_clear(ctx);
   ctx->c_img_base = NULL;
   ctx->c_img_size = 0;
   ctx->c_superblock = NULL;
@@ -7171,6 +7172,7 @@ void kafs_core_close_image(kafs_context_t *ctx)
   kafs_pending_worker_stop(ctx);
   (void)kafs_journal_shutdown(ctx);
   (void)kafs_hrl_close(ctx);
+  kafs_bitmap_descriptor_mapping_clear(ctx);
   free(ctx->c_meta_bitmap_words);
   free(ctx->c_meta_bitmap_dirty);
   ctx->c_meta_bitmap_words = NULL;
@@ -9044,8 +9046,8 @@ static int kafs_create_allocate_inode(struct fuse_context *fctx, struct kafs_con
 {
   kafs_inocnt_t ino_new;
   kafs_inode_alloc_lock(ctx);
-  int ret = kafs_ino_find_free(ctx->c_inotbl, kafs_ctx_inode_format(ctx), &ino_new,
-                               &ctx->c_ino_search, kafs_sb_inocnt_get(ctx->c_superblock));
+  int ret = kafs_ctx_ino_find_free(ctx, &ino_new, &ctx->c_ino_search,
+                                   kafs_sb_inocnt_get(ctx->c_superblock));
   if (ret < 0)
   {
     kafs_inode_alloc_unlock(ctx);
@@ -11206,6 +11208,7 @@ static void kafs_migrate_ctx_close(kafs_context_t *ctx)
   if (!ctx)
     return;
   (void)kafs_hrl_close(ctx);
+  kafs_bitmap_descriptor_mapping_clear(ctx);
   free(ctx->c_ino_epoch);
   ctx->c_ino_epoch = NULL;
   free(ctx->c_diag_create_seq);
@@ -12810,6 +12813,7 @@ static int kafs_main_cleanup(kafs_context_t *ctx, char *hotplug_uds_path, int rc
     pthread_cond_destroy(&ctx->c_hotplug_wait_cond);
     pthread_mutex_destroy(&ctx->c_hotplug_wait_lock);
   }
+  kafs_bitmap_descriptor_mapping_clear(ctx);
   free(ctx->c_meta_bitmap_words);
   free(ctx->c_meta_bitmap_dirty);
   free(ctx->c_ino_epoch);

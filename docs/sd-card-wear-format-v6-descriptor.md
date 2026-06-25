@@ -456,6 +456,11 @@ Block bitmap shards:
   bitmap shard logical ranges and physical offsets to be word-aligned.
 - `v6_descriptor_validation` covers the dormant mapper by mmaping a v6 image and verifying
   descriptor-backed bit set/clear without allowing a v6 mount.
+- Runtime admission now has a dormant helper that reads the selected descriptor, validates bitmap
+  coverage/overlap with the same helper used by `fsck.kafs`, and owns the descriptor through
+  `kafs_context` until close/unmap/cleanup. Current runtime mount gates still reject v6 images.
+- `v6_descriptor_validation` covers the admission hook with a two-shard positive runtime mapping case
+  and a gap-coverage negative case that must not enable descriptor-backed bitmap mapping.
 
 Inode table shards:
 
@@ -463,12 +468,35 @@ Inode table shards:
 - `sd_record_bytes` must match `kafs_inode_bytes_for_format(6)`.
 - The root inode number must be covered by exactly one inode shard.
 - `fsck.kafs` must validate inode count coverage and reject overlapping inode ranges.
+- `kafs_v6_inode_lookup` resolves an inode number to exactly one descriptor-backed inode record offset
+  when coverage is valid.
+- `fsck.kafs` validates inode shard record size, exact `[0, s_inocnt)` coverage, logical overlap,
+  physical overlap, and root inode lookup before accepting a v6 descriptor scaffold.
+- Runtime admission now has a dormant combined helper that owns the selected descriptor, validates
+  bitmap and inode coverage, builds an inode shard map in `kafs_context`, and routes
+  `kafs_ctx_inode()` / `kafs_ctx_ino_no()` / inode free scan through descriptor-backed inode records.
+  Current runtime mount gates still reject v6 images.
+- `v6_descriptor_validation` covers descriptor-backed inode root lookup, two-shard inode allocation
+  scan, and gap-coverage admission rejection without allowing a v6 mount.
 
 Allocator summary shards:
 
 - `KAFS_META_REGION_ALLOCATOR_SUMMARY` shards must correspond to bitmap/data-block groups.
 - Summary rebuild must be possible from the authoritative bitmap shards.
 - Allocation scan diagnostics must identify the shard that owns each summary record.
+- Each allocator summary shard stores v3-style L1 bytes followed by L2 bytes for that shard's logical
+  block range. Required bytes are derived from the shard-local bitmap byte count; the physical shard
+  may include block-aligned padding.
+- `fsck.kafs` validates allocator summary shard coverage against `[0, s_r_blkcnt)`, rejects logical
+  gaps/overlap and physical overlap, and reports the lookup shard plus L1/L2 byte offsets for the first
+  covered block.
+- Dormant runtime admission now validates bitmap, inode, and allocator summary coverage together before
+  enabling descriptor-backed maps in `kafs_context`. Current runtime mount gates still reject v6 images.
+- The allocator v3 runtime path can use either the existing contiguous summary view or a v6
+  descriptor-backed summary view. Dirty rebuild and L1/L2 sync update the shard that owns the block
+  being scanned or allocated.
+- If a stale/corrupt summary yields no allocation candidate, the allocator marks the summary dirty,
+  rebuilds once from the authoritative bitmap, and retries before returning `ENOSPC`.
 
 HRL shards:
 
@@ -476,6 +504,18 @@ HRL shards:
   hash-bucket or group-local mapping.
 - Lookup/put/inc/dec paths must route through descriptor mapping before touching HRL storage.
 - `fsck.kafs` must validate chain bounds within the owning HRL entry shard.
+- `hrl_index` shard logical ranges are HRL bucket numbers. `sd_record_bytes` must be
+  `sizeof(uint32_t)`.
+- `hrl_entries` shard logical ranges are HRL entry ids. `sd_record_bytes` must be
+  `sizeof(kafs_hrl_entry_t)`.
+- Dormant runtime admission validates exact HRL bucket and entry coverage together with
+  bitmap/inode/allocator coverage, then stores descriptor-backed HRL runtime shard maps in
+  `kafs_context`.
+- Descriptor-backed HRL runtime accessors resolve bucket heads and entry records through the shard map;
+  existing v5 contiguous HRL images continue to use the superblock offsets directly.
+- `fsck.kafs` walks HRL bucket chains from descriptor-backed index records and rejects out-of-range
+  entry ids, loops, unreadable entry records, or entries whose shard group does not match the owning
+  index shard group.
 
 Journal distribution:
 

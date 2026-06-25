@@ -400,25 +400,93 @@ static void fsck_report_v6_descriptor(const kafs_v6_layout_report_t *report)
   }
 }
 
-static void fsck_report_v6_bitmap(const kafs_v6_bitmap_coverage_report_t *report, int rc)
+static void fsck_report_v6_extent_prefix(const char *label, const char *unit_label,
+                                         const void *report, int rc)
 {
+  const kafs_v6_extent_coverage_t *coverage = (const kafs_v6_extent_coverage_t *)report;
   fprintf(stderr,
-          "v6 bitmap shards: status=%s available=%s shards=%" PRIu32 " expected_start=%" PRIu64
-          " expected_blocks=%" PRIu64 " covered_blocks=%" PRIu64
+          "%s: status=%s available=%s shards=%" PRIu32 " expected_start=%" PRIu64
+          " expected_%s=%" PRIu64 " covered_%s=%" PRIu64
           " has_gap=%s has_overlap=%s has_physical_overlap=%s missing_coverage=%s"
           " first_gap_start=%" PRIu64 " first_gap_count=%" PRIu64 " first_overlap_start=%" PRIu64
           " first_overlap_count=%" PRIu64 " first_physical_overlap_off=%" PRIu64
-          " first_physical_overlap_bytes=%" PRIu64 " lookup_available=%s lookup_blo=%" PRIu64
-          " lookup_shard=%" PRIu32 " bitmap_byte=%" PRIu64 " bitmap_bit=%" PRIu8 "\n",
-          fsck_rc_to_text(rc), report->available ? "true" : "false", report->shard_count,
-          report->expected_start, report->expected_count, report->covered_blocks,
-          report->has_gap ? "true" : "false", report->has_overlap ? "true" : "false",
-          report->has_physical_overlap ? "true" : "false",
-          report->missing_coverage ? "true" : "false", report->first_gap_start,
-          report->first_gap_count, report->first_overlap_start, report->first_overlap_count,
-          report->first_physical_overlap_off, report->first_physical_overlap_bytes,
+          " first_physical_overlap_bytes=%" PRIu64,
+          label, fsck_rc_to_text(rc), coverage->available ? "true" : "false", coverage->shard_count,
+          coverage->expected_start, unit_label, coverage->expected_count, unit_label,
+          coverage->covered_units, coverage->has_gap ? "true" : "false",
+          coverage->has_overlap ? "true" : "false",
+          coverage->has_physical_overlap ? "true" : "false",
+          coverage->missing_coverage ? "true" : "false", coverage->first_gap_start,
+          coverage->first_gap_count, coverage->first_overlap_start, coverage->first_overlap_count,
+          coverage->first_physical_overlap_off, coverage->first_physical_overlap_bytes);
+}
+
+static void fsck_report_v6_bitmap(const kafs_v6_bitmap_coverage_report_t *report, int rc)
+{
+  fsck_report_v6_extent_prefix("v6 bitmap shards", "blocks", report, rc);
+  fprintf(stderr,
+          " lookup_available=%s lookup_blo=%" PRIu64 " lookup_shard=%" PRIu32
+          " bitmap_byte=%" PRIu64 " bitmap_bit=%" PRIu8 "\n",
           report->lookup_available ? "true" : "false", report->lookup.blo,
           report->lookup.shard_index, report->lookup.bitmap_byte_off, report->lookup.bitmap_bit);
+}
+
+static void fsck_report_v6_inode(const kafs_v6_inode_coverage_report_t *report, int rc)
+{
+  fsck_report_v6_extent_prefix("v6 inode shards", "inodes", report, rc);
+  fprintf(stderr,
+          " root_lookup=%s root_shard=%" PRIu32 " root_inode_off=%" PRIu64
+          " root_record_bytes=%" PRIu32 "\n",
+          report->root_lookup_available ? "true" : "false", report->root_lookup.shard_index,
+          report->root_lookup.inode_off, report->root_lookup.record_bytes);
+}
+
+static void fsck_report_v6_alloc_summary(const kafs_v6_allocator_summary_coverage_report_t *report,
+                                         int rc)
+{
+  fsck_report_v6_extent_prefix("v6 allocator summary shards", "blocks", report, rc);
+  fprintf(stderr,
+          " lookup_available=%s lookup_blo=%" PRIu64 " lookup_shard=%" PRIu32 " l1_byte=%" PRIu64
+          " l2_byte=%" PRIu64 "\n",
+          report->lookup_available ? "true" : "false", report->lookup.blo,
+          report->lookup.shard_index, report->lookup.l1_byte_off, report->lookup.l2_byte_off);
+}
+
+static void fsck_report_v6_hrl_index(const kafs_v6_hrl_index_coverage_report_t *report, int rc)
+{
+  fsck_report_v6_extent_prefix("v6 HRL index shards", "buckets", report, rc);
+  fprintf(stderr,
+          " lookup_available=%s lookup_bucket=%" PRIu64 " lookup_shard=%" PRIu32
+          " lookup_group=%" PRIu32 " index_byte=%" PRIu64 "\n",
+          report->lookup_available ? "true" : "false", report->lookup.bucket,
+          report->lookup.shard_index, report->lookup.group_id, report->lookup.index_off);
+}
+
+static void fsck_report_v6_hrl_entries(const kafs_v6_hrl_entries_coverage_report_t *report, int rc)
+{
+  fsck_report_v6_extent_prefix("v6 HRL entry shards", "entries", report, rc);
+  fprintf(stderr,
+          " lookup_available=%s lookup_entry=%" PRIu64 " lookup_shard=%" PRIu32
+          " lookup_group=%" PRIu32 " entry_byte=%" PRIu64 "\n",
+          report->lookup_available ? "true" : "false", report->lookup.entry_id,
+          report->lookup.shard_index, report->lookup.group_id, report->lookup.entry_off);
+}
+
+static void fsck_report_v6_hrl_chains(const kafs_v6_hrl_chain_report_t *report, int rc)
+{
+  fprintf(stderr,
+          "v6 HRL chains: status=%s available=%s buckets_checked=%" PRIu64
+          " entries_checked=%" PRIu64
+          " has_out_of_range=%s has_loop=%s has_wrong_entry_group=%s has_read_error=%s"
+          " first_bad_bucket=%" PRIu64 " first_bad_head_plus1=%" PRIu64 " first_bad_entry=%" PRIu64
+          " first_index_shard=%" PRIu32 " first_entry_shard=%" PRIu32 " first_index_group=%" PRIu32
+          " first_entry_group=%" PRIu32 "\n",
+          fsck_rc_to_text(rc), report->available ? "true" : "false", report->buckets_checked,
+          report->entries_checked, report->has_out_of_range ? "true" : "false",
+          report->has_loop ? "true" : "false", report->has_wrong_entry_group ? "true" : "false",
+          report->has_read_error ? "true" : "false", report->first_bad_bucket,
+          report->first_bad_head_plus1, report->first_bad_entry_id, report->first_index_shard,
+          report->first_entry_shard, report->first_index_group, report->first_entry_group);
 }
 
 static int fsck_handle_v6_image(const struct fsck_options *opts, const struct fsck_image_info *info,
@@ -426,6 +494,11 @@ static int fsck_handle_v6_image(const struct fsck_options *opts, const struct fs
 {
   kafs_v6_layout_report_t report;
   kafs_v6_bitmap_coverage_report_t bitmap_report;
+  kafs_v6_inode_coverage_report_t inode_report;
+  kafs_v6_allocator_summary_coverage_report_t alloc_summary_report;
+  kafs_v6_hrl_index_coverage_report_t hrl_index_report;
+  kafs_v6_hrl_entries_coverage_report_t hrl_entries_report;
+  kafs_v6_hrl_chain_report_t hrl_chain_report;
   int rc;
 
   if (want_write)
@@ -446,17 +519,42 @@ static int fsck_handle_v6_image(const struct fsck_options *opts, const struct fs
   }
 
   memset(&bitmap_report, 0, sizeof(bitmap_report));
+  memset(&inode_report, 0, sizeof(inode_report));
+  memset(&alloc_summary_report, 0, sizeof(alloc_summary_report));
+  memset(&hrl_index_report, 0, sizeof(hrl_index_report));
+  memset(&hrl_entries_report, 0, sizeof(hrl_entries_report));
+  memset(&hrl_chain_report, 0, sizeof(hrl_chain_report));
   void *desc = NULL;
   uint32_t desc_bytes = 0;
   rc = kafs_v6_read_selected_descriptor(info->fd, &report, &desc, &desc_bytes);
   if (rc == 0)
     rc = kafs_v6_bitmap_validate_coverage(desc, desc_bytes, &info->sb, info->file_size,
                                           &bitmap_report);
+  if (rc == 0)
+    rc = kafs_v6_inode_validate_coverage(desc, desc_bytes, &info->sb, info->file_size,
+                                         &inode_report);
+  if (rc == 0)
+    rc = kafs_v6_allocator_summary_validate_coverage(desc, desc_bytes, &info->sb, info->file_size,
+                                                     &alloc_summary_report);
+  if (rc == 0)
+    rc = kafs_v6_hrl_index_validate_coverage(desc, desc_bytes, &info->sb, info->file_size,
+                                             &hrl_index_report);
+  if (rc == 0)
+    rc = kafs_v6_hrl_entries_validate_coverage(desc, desc_bytes, &info->sb, info->file_size,
+                                               &hrl_entries_report);
+  if (rc == 0)
+    rc = kafs_v6_hrl_validate_chain_bounds_fd(info->fd, desc, desc_bytes, &info->sb,
+                                              info->file_size, &hrl_chain_report);
   free(desc);
   fsck_report_v6_bitmap(&bitmap_report, rc);
+  fsck_report_v6_inode(&inode_report, rc);
+  fsck_report_v6_alloc_summary(&alloc_summary_report, rc);
+  fsck_report_v6_hrl_index(&hrl_index_report, rc);
+  fsck_report_v6_hrl_entries(&hrl_entries_report, rc);
+  fsck_report_v6_hrl_chains(&hrl_chain_report, rc);
   if (rc != 0)
   {
-    fprintf(stderr, "v6 bitmap shard validation failed\n");
+    fprintf(stderr, "v6 metadata shard validation failed\n");
     return FSCK_EXIT_V6_DESCRIPTOR_FAILED;
   }
 

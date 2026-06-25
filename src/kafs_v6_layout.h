@@ -34,6 +34,9 @@
 #define KAFS_V6_REPLICA_ROLE_TAIL_BACKUP 1u
 #define KAFS_V6_REPLICA_ROLE_MID_BACKUP 2u
 #define KAFS_V6_SHARD_TYPE_LAYOUT_DESCRIPTOR 11u
+#define KAFS_V6_EXTENT_STORAGE_FIXED_RECORD 0
+#define KAFS_V6_EXTENT_STORAGE_BIT_PACKED 1
+#define KAFS_V6_EXTENT_STORAGE_ALLOCATOR_SUMMARY 2
 #define KAFS_V6_MKFS_GROUP_COUNT 1u
 #define KAFS_V6_MKFS_BASE_SHARD_COUNT 9u
 #define KAFS_V6_MKFS_GENERATION 1u
@@ -193,6 +196,25 @@ typedef struct kafs_v6_bitmap_lookup
   uint8_t bitmap_bit;
 } kafs_v6_bitmap_lookup_t;
 
+typedef struct kafs_v6_extent_coverage
+{
+  int available;
+  int has_gap;
+  int has_overlap;
+  int has_physical_overlap;
+  int missing_coverage;
+  uint32_t shard_count;
+  uint64_t expected_start;
+  uint64_t expected_count;
+  uint64_t covered_units;
+  uint64_t first_gap_start;
+  uint64_t first_gap_count;
+  uint64_t first_overlap_start;
+  uint64_t first_overlap_count;
+  uint64_t first_physical_overlap_off;
+  uint64_t first_physical_overlap_bytes;
+} kafs_v6_extent_coverage_t;
+
 typedef struct kafs_v6_bitmap_coverage_report
 {
   int available;
@@ -213,6 +235,171 @@ typedef struct kafs_v6_bitmap_coverage_report
   int lookup_available;
   kafs_v6_bitmap_lookup_t lookup;
 } kafs_v6_bitmap_coverage_report_t;
+
+typedef struct kafs_v6_inode_lookup
+{
+  uint32_t shard_index;
+  uint64_t ino;
+  uint64_t logical_start;
+  uint64_t logical_count;
+  uint64_t inode_off;
+  uint32_t record_bytes;
+} kafs_v6_inode_lookup_t;
+
+typedef struct kafs_v6_inode_coverage_report
+{
+  int available;
+  int has_gap;
+  int has_overlap;
+  int has_physical_overlap;
+  int missing_coverage;
+  uint32_t shard_count;
+  uint64_t expected_start;
+  uint64_t expected_count;
+  uint64_t covered_inodes;
+  uint64_t first_gap_start;
+  uint64_t first_gap_count;
+  uint64_t first_overlap_start;
+  uint64_t first_overlap_count;
+  uint64_t first_physical_overlap_off;
+  uint64_t first_physical_overlap_bytes;
+  int root_lookup_available;
+  kafs_v6_inode_lookup_t root_lookup;
+} kafs_v6_inode_coverage_report_t;
+
+typedef struct kafs_v6_allocator_summary_lookup
+{
+  uint32_t shard_index;
+  uint64_t blo;
+  uint64_t logical_start;
+  uint64_t logical_count;
+  uint64_t l0_idx;
+  uint64_t l1_idx;
+  uint64_t l2_idx;
+  uint64_t l1_byte_off;
+  uint64_t l2_byte_off;
+  uint64_t l1_bytes;
+  uint64_t l2_bytes;
+} kafs_v6_allocator_summary_lookup_t;
+
+typedef struct kafs_v6_allocator_summary_coverage_report
+{
+  int available;
+  int has_gap;
+  int has_overlap;
+  int has_physical_overlap;
+  int missing_coverage;
+  uint32_t shard_count;
+  uint64_t expected_start;
+  uint64_t expected_count;
+  uint64_t covered_blocks;
+  uint64_t first_gap_start;
+  uint64_t first_gap_count;
+  uint64_t first_overlap_start;
+  uint64_t first_overlap_count;
+  uint64_t first_physical_overlap_off;
+  uint64_t first_physical_overlap_bytes;
+  int lookup_available;
+  kafs_v6_allocator_summary_lookup_t lookup;
+} kafs_v6_allocator_summary_coverage_report_t;
+
+typedef struct kafs_v6_hrl_index_lookup
+{
+  uint32_t shard_index;
+  uint32_t group_id;
+  uint64_t bucket;
+  uint64_t logical_start;
+  uint64_t logical_count;
+  uint64_t index_off;
+  uint32_t record_bytes;
+} kafs_v6_hrl_index_lookup_t;
+
+typedef struct kafs_v6_hrl_index_coverage_report
+{
+  int available;
+  int has_gap;
+  int has_overlap;
+  int has_physical_overlap;
+  int missing_coverage;
+  uint32_t shard_count;
+  uint64_t expected_start;
+  uint64_t expected_count;
+  uint64_t covered_buckets;
+  uint64_t first_gap_start;
+  uint64_t first_gap_count;
+  uint64_t first_overlap_start;
+  uint64_t first_overlap_count;
+  uint64_t first_physical_overlap_off;
+  uint64_t first_physical_overlap_bytes;
+  int lookup_available;
+  kafs_v6_hrl_index_lookup_t lookup;
+} kafs_v6_hrl_index_coverage_report_t;
+
+typedef struct kafs_v6_hrl_entry_lookup
+{
+  uint32_t shard_index;
+  uint32_t group_id;
+  uint64_t entry_id;
+  uint64_t logical_start;
+  uint64_t logical_count;
+  uint64_t entry_off;
+  uint32_t record_bytes;
+} kafs_v6_hrl_entry_lookup_t;
+
+typedef struct kafs_v6_hrl_entries_coverage_report
+{
+  int available;
+  int has_gap;
+  int has_overlap;
+  int has_physical_overlap;
+  int missing_coverage;
+  uint32_t shard_count;
+  uint64_t expected_start;
+  uint64_t expected_count;
+  uint64_t covered_entries;
+  uint64_t first_gap_start;
+  uint64_t first_gap_count;
+  uint64_t first_overlap_start;
+  uint64_t first_overlap_count;
+  uint64_t first_physical_overlap_off;
+  uint64_t first_physical_overlap_bytes;
+  int lookup_available;
+  kafs_v6_hrl_entry_lookup_t lookup;
+} kafs_v6_hrl_entries_coverage_report_t;
+
+typedef struct kafs_v6_hrl_chain_report
+{
+  int available;
+  int has_out_of_range;
+  int has_loop;
+  int has_wrong_entry_group;
+  int has_read_error;
+  uint64_t buckets_checked;
+  uint64_t entries_checked;
+  uint64_t first_bad_bucket;
+  uint64_t first_bad_head_plus1;
+  uint64_t first_bad_entry_id;
+  uint32_t first_index_shard;
+  uint32_t first_entry_shard;
+  uint32_t first_index_group;
+  uint32_t first_entry_group;
+} kafs_v6_hrl_chain_report_t;
+
+_Static_assert(offsetof(kafs_v6_bitmap_coverage_report_t, lookup_available) ==
+                   sizeof(kafs_v6_extent_coverage_t),
+               "bitmap coverage prefix must match kafs_v6_extent_coverage_t");
+_Static_assert(offsetof(kafs_v6_inode_coverage_report_t, root_lookup_available) ==
+                   sizeof(kafs_v6_extent_coverage_t),
+               "inode coverage prefix must match kafs_v6_extent_coverage_t");
+_Static_assert(offsetof(kafs_v6_allocator_summary_coverage_report_t, lookup_available) ==
+                   sizeof(kafs_v6_extent_coverage_t),
+               "allocator coverage prefix must match kafs_v6_extent_coverage_t");
+_Static_assert(offsetof(kafs_v6_hrl_index_coverage_report_t, lookup_available) ==
+                   sizeof(kafs_v6_extent_coverage_t),
+               "HRL index coverage prefix must match kafs_v6_extent_coverage_t");
+_Static_assert(offsetof(kafs_v6_hrl_entries_coverage_report_t, lookup_available) ==
+                   sizeof(kafs_v6_extent_coverage_t),
+               "HRL entries coverage prefix must match kafs_v6_extent_coverage_t");
 
 static inline const char *kafs_v6_replica_status_name(kafs_v6_replica_status_t status)
 {
@@ -288,6 +475,31 @@ static inline uint32_t kafs_v6_descriptor_bytes_for_block(uint32_t block_size)
 
   bytes = kafs_offline_align_up_u64(bytes, block_size);
   return (bytes > UINT32_MAX) ? 0u : (uint32_t)bytes;
+}
+
+static inline int kafs_v6_allocator_summary_shape(uint64_t block_count, uint64_t *out_l0_bytes,
+                                                  uint64_t *out_l1_bytes, uint64_t *out_l2_bytes,
+                                                  uint64_t *out_total_bytes)
+{
+  if (!out_l0_bytes || !out_l1_bytes || !out_l2_bytes || !out_total_bytes)
+    return -EINVAL;
+  if (block_count > UINT64_MAX - 7u)
+    return -ERANGE;
+  uint64_t l0_bytes = (block_count + 7u) >> 3;
+  if (l0_bytes == 0u || l0_bytes > UINT64_MAX - 7u)
+    return -ERANGE;
+  uint64_t l1_bytes = (l0_bytes + 7u) >> 3;
+  if (l1_bytes == 0u || l1_bytes > UINT64_MAX - 7u)
+    return -ERANGE;
+  uint64_t l2_bytes = (l1_bytes + 7u) >> 3;
+  if (l2_bytes == 0u || l1_bytes > UINT64_MAX - l2_bytes)
+    return -ERANGE;
+
+  *out_l0_bytes = l0_bytes;
+  *out_l1_bytes = l1_bytes;
+  *out_l2_bytes = l2_bytes;
+  *out_total_bytes = l1_bytes + l2_bytes;
+  return 0;
 }
 
 static inline int kafs_v6_candidate_offsets(uint64_t image_size, uint32_t block_size,
@@ -411,9 +623,10 @@ static inline int kafs_v6_read_selected_descriptor(int fd, const kafs_v6_layout_
   return 0;
 }
 
-typedef struct kafs_v6_bitmap_shard_view
+typedef struct kafs_v6_extent_shard_view
 {
   uint32_t index;
+  uint32_t group_id;
   uint64_t logical_start;
   uint64_t logical_count;
   uint64_t logical_end;
@@ -421,45 +634,87 @@ typedef struct kafs_v6_bitmap_shard_view
   uint64_t physical_bytes;
   uint64_t physical_end;
   uint64_t required_bytes;
-} kafs_v6_bitmap_shard_view_t;
+  uint32_t record_bytes;
+} kafs_v6_extent_shard_view_t;
 
-static inline int kafs_v6_bitmap_decode_shard(const kafs_sv6_shard_desc_t *shards, uint32_t index,
-                                              kafs_v6_bitmap_shard_view_t *view)
+static inline void kafs_v6_extent_copy_report_prefix(void *report,
+                                                     const kafs_v6_extent_coverage_t *coverage)
+{
+  if (report && coverage)
+    memcpy(report, coverage, sizeof(*coverage));
+}
+
+static inline int kafs_v6_extent_decode_shard(const kafs_sv6_shard_desc_t *shards, uint32_t index,
+                                              uint16_t shard_type, uint32_t expected_record_bytes,
+                                              int storage, kafs_v6_extent_shard_view_t *view)
 {
   if (!shards || !view)
     return -EINVAL;
-  if (le16toh(shards[index].sd_type) != KAFS_META_REGION_BLOCK_BITMAP)
+  if (le16toh(shards[index].sd_type) != shard_type)
     return 1;
 
   memset(view, 0, sizeof(*view));
   view->index = index;
+  view->group_id = kafs_u32_stoh(shards[index].sd_group_id);
   view->logical_start = kafs_u64_stoh(shards[index].sd_logical_start);
   view->logical_count = kafs_u64_stoh(shards[index].sd_logical_count);
   view->logical_end = view->logical_start + view->logical_count;
   view->physical_off = kafs_u64_stoh(shards[index].sd_physical_off);
   view->physical_bytes = kafs_u64_stoh(shards[index].sd_physical_bytes);
   view->physical_end = view->physical_off + view->physical_bytes;
+  view->record_bytes = kafs_u32_stoh(shards[index].sd_record_bytes);
 
   if (view->logical_count == 0u || view->logical_end < view->logical_start)
     return -EINVAL;
-  if (view->physical_bytes == 0u || view->physical_end < view->physical_off ||
-      view->logical_count > UINT64_MAX - 7u)
+  if (view->physical_bytes == 0u || view->physical_end < view->physical_off)
     return -ERANGE;
 
-  view->required_bytes = (view->logical_count + 7u) >> 3;
+  if (storage == KAFS_V6_EXTENT_STORAGE_BIT_PACKED)
+  {
+    if (view->logical_count > UINT64_MAX - 7u)
+      return -ERANGE;
+    view->required_bytes = (view->logical_count + 7u) >> 3;
+  }
+  else if (storage == KAFS_V6_EXTENT_STORAGE_ALLOCATOR_SUMMARY)
+  {
+    uint64_t l0_bytes = 0;
+    uint64_t l1_bytes = 0;
+    uint64_t l2_bytes = 0;
+    if (view->record_bytes != 0u)
+      return -EINVAL;
+    int rc = kafs_v6_allocator_summary_shape(view->logical_count, &l0_bytes, &l1_bytes, &l2_bytes,
+                                             &view->required_bytes);
+    if (rc != 0)
+      return rc;
+  }
+  else if (storage == KAFS_V6_EXTENT_STORAGE_FIXED_RECORD)
+  {
+    if (view->record_bytes != expected_record_bytes || view->record_bytes == 0u)
+      return -EINVAL;
+    if (view->logical_count > UINT64_MAX / (uint64_t)view->record_bytes)
+      return -ERANGE;
+    view->required_bytes = view->logical_count * (uint64_t)view->record_bytes;
+  }
+  else
+  {
+    return -EINVAL;
+  }
+
   return (view->required_bytes == 0u || view->required_bytes > view->physical_bytes) ? -ERANGE : 0;
 }
 
-static inline int kafs_v6_bitmap_next_shard(const kafs_sv6_shard_desc_t *shards,
-                                            uint32_t shard_count, uint32_t *index,
-                                            kafs_v6_bitmap_shard_view_t *view)
+static inline int kafs_v6_extent_next_shard(const kafs_sv6_shard_desc_t *shards,
+                                            uint32_t shard_count, uint16_t shard_type,
+                                            uint32_t expected_record_bytes, int storage,
+                                            uint32_t *index, kafs_v6_extent_shard_view_t *view)
 {
   if (!index)
     return -EINVAL;
 
   for (; *index < shard_count; ++(*index))
   {
-    int rc = kafs_v6_bitmap_decode_shard(shards, *index, view);
+    int rc = kafs_v6_extent_decode_shard(shards, *index, shard_type, expected_record_bytes, storage,
+                                         view);
     if (rc > 0)
       continue;
     if (rc < 0)
@@ -470,8 +725,9 @@ static inline int kafs_v6_bitmap_next_shard(const kafs_sv6_shard_desc_t *shards,
   return -ENOENT;
 }
 
-static inline int kafs_v6_bitmap_lookup(const void *desc, uint32_t desc_bytes, uint64_t blo,
-                                        kafs_v6_bitmap_lookup_t *out)
+static inline int kafs_v6_extent_find(const void *desc, uint32_t desc_bytes, uint16_t shard_type,
+                                      uint32_t expected_record_bytes, int storage, uint64_t logical,
+                                      kafs_v6_extent_shard_view_t *out)
 {
   if (!out)
     return -EINVAL;
@@ -485,177 +741,401 @@ static inline int kafs_v6_bitmap_lookup(const void *desc, uint32_t desc_bytes, u
   uint32_t index = 0;
   for (;;)
   {
-    kafs_v6_bitmap_shard_view_t shard;
-    int rc = kafs_v6_bitmap_next_shard(shards, shard_count, &index, &shard);
+    kafs_v6_extent_shard_view_t shard;
+    int rc = kafs_v6_extent_next_shard(shards, shard_count, shard_type, expected_record_bytes,
+                                       storage, &index, &shard);
     if (rc == -ENOENT)
       return -ENOENT;
     if (rc < 0)
       return rc;
-    if (blo < shard.logical_start || blo >= shard.logical_end)
+    if (logical < shard.logical_start || logical >= shard.logical_end)
       continue;
 
-    uint64_t bit = blo - shard.logical_start;
-    uint64_t byte_delta = bit >> 3;
-    if (byte_delta >= shard.physical_bytes || shard.physical_off > UINT64_MAX - byte_delta)
-      return -ERANGE;
-
-    out->shard_index = shard.index;
-    out->blo = blo;
-    out->logical_start = shard.logical_start;
-    out->logical_count = shard.logical_count;
-    out->bitmap_byte_off = shard.physical_off + byte_delta;
-    out->bitmap_bit = (uint8_t)(bit & 7u);
+    *out = shard;
     return 0;
   }
-
-  return -ENOENT;
 }
 
-static inline void kafs_v6_bitmap_note_gap(kafs_v6_bitmap_coverage_report_t *report,
-                                           uint64_t gap_start, uint64_t gap_count)
+static inline int kafs_v6_bitmap_lookup(const void *desc, uint32_t desc_bytes, uint64_t blo,
+                                        kafs_v6_bitmap_lookup_t *out)
 {
-  if (!report->has_gap)
-  {
-    report->first_gap_start = gap_start;
-    report->first_gap_count = gap_count;
-  }
-  report->has_gap = 1;
-  report->missing_coverage = 1;
+  if (!out)
+    return -EINVAL;
+  memset(out, 0, sizeof(*out));
+
+  kafs_v6_extent_shard_view_t shard;
+  int rc = kafs_v6_extent_find(desc, desc_bytes, KAFS_META_REGION_BLOCK_BITMAP, 0,
+                               KAFS_V6_EXTENT_STORAGE_BIT_PACKED, blo, &shard);
+  if (rc != 0)
+    return rc;
+
+  uint64_t bit = blo - shard.logical_start;
+  uint64_t byte_delta = bit >> 3;
+  if (byte_delta >= shard.physical_bytes || shard.physical_off > UINT64_MAX - byte_delta)
+    return -ERANGE;
+
+  out->shard_index = shard.index;
+  out->blo = blo;
+  out->logical_start = shard.logical_start;
+  out->logical_count = shard.logical_count;
+  out->bitmap_byte_off = shard.physical_off + byte_delta;
+  out->bitmap_bit = (uint8_t)(bit & 7u);
+  return 0;
 }
 
-static inline void kafs_v6_bitmap_note_logical_overlap(kafs_v6_bitmap_coverage_report_t *report,
+static inline int kafs_v6_allocator_summary_lookup(const void *desc, uint32_t desc_bytes,
+                                                   uint64_t blo,
+                                                   kafs_v6_allocator_summary_lookup_t *out)
+{
+  if (!out)
+    return -EINVAL;
+  memset(out, 0, sizeof(*out));
+
+  kafs_v6_extent_shard_view_t shard;
+  int rc = kafs_v6_extent_find(desc, desc_bytes, KAFS_META_REGION_ALLOCATOR_SUMMARY, 0,
+                               KAFS_V6_EXTENT_STORAGE_ALLOCATOR_SUMMARY, blo, &shard);
+  if (rc != 0)
+    return rc;
+
+  uint64_t l0_bytes = 0;
+  uint64_t l1_bytes = 0;
+  uint64_t l2_bytes = 0;
+  uint64_t total_bytes = 0;
+  rc = kafs_v6_allocator_summary_shape(shard.logical_count, &l0_bytes, &l1_bytes, &l2_bytes,
+                                       &total_bytes);
+  if (rc != 0)
+    return rc;
+
+  uint64_t logical_delta = blo - shard.logical_start;
+  uint64_t l0_idx = logical_delta >> 3;
+  uint64_t l1_idx = l0_idx >> 3;
+  uint64_t l2_idx = l1_idx >> 3;
+  if (l0_idx >= l0_bytes || l1_idx >= l1_bytes || l2_idx >= l2_bytes)
+    return -ERANGE;
+  if (shard.physical_off > UINT64_MAX - l1_idx || shard.physical_off > UINT64_MAX - l1_bytes ||
+      shard.physical_off + l1_bytes > UINT64_MAX - l2_idx)
+    return -ERANGE;
+
+  out->shard_index = shard.index;
+  out->blo = blo;
+  out->logical_start = shard.logical_start;
+  out->logical_count = shard.logical_count;
+  out->l0_idx = l0_idx;
+  out->l1_idx = l1_idx;
+  out->l2_idx = l2_idx;
+  out->l1_byte_off = shard.physical_off + l1_idx;
+  out->l2_byte_off = shard.physical_off + l1_bytes + l2_idx;
+  out->l1_bytes = l1_bytes;
+  out->l2_bytes = l2_bytes;
+  (void)total_bytes;
+  return 0;
+}
+
+static inline int kafs_v6_fixed_record_lookup(const void *desc, uint32_t desc_bytes,
+                                              uint16_t shard_type, uint32_t record_bytes,
+                                              uint64_t logical,
+                                              kafs_v6_extent_shard_view_t *out_shard,
+                                              uint64_t *out_record_off)
+{
+  if (!out_shard || !out_record_off || record_bytes == 0u)
+    return -EINVAL;
+  memset(out_shard, 0, sizeof(*out_shard));
+  *out_record_off = 0;
+
+  kafs_v6_extent_shard_view_t shard;
+  int rc = kafs_v6_extent_find(desc, desc_bytes, shard_type, record_bytes,
+                               KAFS_V6_EXTENT_STORAGE_FIXED_RECORD, logical, &shard);
+  if (rc != 0)
+    return rc;
+
+  uint64_t record_delta = logical - shard.logical_start;
+  if (record_delta > UINT64_MAX / (uint64_t)shard.record_bytes)
+    return -ERANGE;
+  uint64_t byte_delta = record_delta * (uint64_t)shard.record_bytes;
+  if (byte_delta >= shard.physical_bytes || shard.physical_off > UINT64_MAX - byte_delta)
+    return -ERANGE;
+
+  *out_shard = shard;
+  *out_record_off = shard.physical_off + byte_delta;
+  return 0;
+}
+
+static inline int kafs_v6_inode_lookup(const void *desc, uint32_t desc_bytes, uint64_t ino,
+                                       kafs_v6_inode_lookup_t *out)
+{
+  if (!out)
+    return -EINVAL;
+  memset(out, 0, sizeof(*out));
+
+  uint32_t record_bytes = (uint32_t)kafs_inode_bytes_for_format(KAFS_FORMAT_VERSION_V6);
+  kafs_v6_extent_shard_view_t shard;
+  uint64_t inode_off = 0;
+  int rc = kafs_v6_fixed_record_lookup(desc, desc_bytes, KAFS_META_REGION_INODE_TABLE, record_bytes,
+                                       ino, &shard, &inode_off);
+  if (rc != 0)
+    return rc;
+
+  out->shard_index = shard.index;
+  out->ino = ino;
+  out->logical_start = shard.logical_start;
+  out->logical_count = shard.logical_count;
+  out->inode_off = inode_off;
+  out->record_bytes = shard.record_bytes;
+  return 0;
+}
+
+static inline int kafs_v6_hrl_index_lookup(const void *desc, uint32_t desc_bytes, uint64_t bucket,
+                                           kafs_v6_hrl_index_lookup_t *out)
+{
+  if (!out)
+    return -EINVAL;
+  memset(out, 0, sizeof(*out));
+
+  kafs_v6_extent_shard_view_t shard;
+  uint64_t index_off = 0;
+  int rc = kafs_v6_fixed_record_lookup(desc, desc_bytes, KAFS_META_REGION_HRL_INDEX,
+                                       sizeof(uint32_t), bucket, &shard, &index_off);
+  if (rc != 0)
+    return rc;
+
+  out->shard_index = shard.index;
+  out->group_id = shard.group_id;
+  out->bucket = bucket;
+  out->logical_start = shard.logical_start;
+  out->logical_count = shard.logical_count;
+  out->index_off = index_off;
+  out->record_bytes = shard.record_bytes;
+  return 0;
+}
+
+static inline int kafs_v6_hrl_entry_lookup(const void *desc, uint32_t desc_bytes, uint64_t entry_id,
+                                           kafs_v6_hrl_entry_lookup_t *out)
+{
+  if (!out)
+    return -EINVAL;
+  memset(out, 0, sizeof(*out));
+
+  kafs_v6_extent_shard_view_t shard;
+  uint64_t entry_off = 0;
+  int rc = kafs_v6_fixed_record_lookup(desc, desc_bytes, KAFS_META_REGION_HRL_ENTRIES,
+                                       sizeof(kafs_hrl_entry_t), entry_id, &shard, &entry_off);
+  if (rc != 0)
+    return rc;
+
+  out->shard_index = shard.index;
+  out->group_id = shard.group_id;
+  out->entry_id = entry_id;
+  out->logical_start = shard.logical_start;
+  out->logical_count = shard.logical_count;
+  out->entry_off = entry_off;
+  out->record_bytes = shard.record_bytes;
+  return 0;
+}
+
+static inline void kafs_v6_extent_note_gap(kafs_v6_extent_coverage_t *coverage, uint64_t gap_start,
+                                           uint64_t gap_count)
+{
+  if (!coverage->has_gap)
+  {
+    coverage->first_gap_start = gap_start;
+    coverage->first_gap_count = gap_count;
+  }
+  coverage->has_gap = 1;
+  coverage->missing_coverage = 1;
+}
+
+static inline void kafs_v6_extent_note_logical_overlap(kafs_v6_extent_coverage_t *coverage,
                                                        uint64_t start, uint64_t end)
 {
-  if (!report->has_overlap)
+  if (!coverage->has_overlap)
   {
-    report->first_overlap_start = start;
-    report->first_overlap_count = end - start;
+    coverage->first_overlap_start = start;
+    coverage->first_overlap_count = end - start;
   }
-  report->has_overlap = 1;
+  coverage->has_overlap = 1;
 }
 
-static inline void kafs_v6_bitmap_note_physical_overlap(kafs_v6_bitmap_coverage_report_t *report,
+static inline void kafs_v6_extent_note_physical_overlap(kafs_v6_extent_coverage_t *coverage,
                                                         uint64_t off, uint64_t end)
 {
-  if (!report->has_physical_overlap)
+  if (!coverage->has_physical_overlap)
   {
-    report->first_physical_overlap_off = off;
-    report->first_physical_overlap_bytes = end - off;
+    coverage->first_physical_overlap_off = off;
+    coverage->first_physical_overlap_bytes = end - off;
   }
-  report->has_physical_overlap = 1;
+  coverage->has_physical_overlap = 1;
 }
 
-static inline int kafs_v6_bitmap_check_bounds(const kafs_v6_bitmap_shard_view_t *shard,
-                                              const kafs_v6_bitmap_coverage_report_t *report,
+static inline int kafs_v6_extent_check_bounds(const kafs_v6_extent_shard_view_t *shard,
+                                              const kafs_v6_extent_coverage_t *coverage,
                                               uint64_t expected_end, uint64_t file_size)
 {
   if (kafs_offline_check_bounds(shard->physical_off, shard->physical_bytes, file_size) != 0)
     return -ERANGE;
-  if (shard->logical_start < report->expected_start || shard->logical_end > expected_end)
+  if (shard->logical_start < coverage->expected_start || shard->logical_end > expected_end)
     return -ERANGE;
   return 0;
 }
 
-static inline void kafs_v6_bitmap_check_pair(kafs_v6_bitmap_coverage_report_t *report,
-                                             const kafs_v6_bitmap_shard_view_t *a,
-                                             const kafs_v6_bitmap_shard_view_t *b)
+static inline void kafs_v6_extent_check_pair(kafs_v6_extent_coverage_t *coverage,
+                                             const kafs_v6_extent_shard_view_t *a,
+                                             const kafs_v6_extent_shard_view_t *b)
 {
   if (a->logical_start < b->logical_end && b->logical_start < a->logical_end)
   {
     uint64_t start = a->logical_start > b->logical_start ? a->logical_start : b->logical_start;
     uint64_t end = a->logical_end < b->logical_end ? a->logical_end : b->logical_end;
-    kafs_v6_bitmap_note_logical_overlap(report, start, end);
+    kafs_v6_extent_note_logical_overlap(coverage, start, end);
   }
   if (a->physical_off < b->physical_end && b->physical_off < a->physical_end)
   {
     uint64_t off = a->physical_off > b->physical_off ? a->physical_off : b->physical_off;
     uint64_t end = a->physical_end < b->physical_end ? a->physical_end : b->physical_end;
-    kafs_v6_bitmap_note_physical_overlap(report, off, end);
+    kafs_v6_extent_note_physical_overlap(coverage, off, end);
   }
 }
 
-static inline int kafs_v6_bitmap_finish_coverage(kafs_v6_bitmap_coverage_report_t *report,
+static inline int kafs_v6_extent_finish_coverage(kafs_v6_extent_coverage_t *coverage,
                                                  uint64_t min_start, uint64_t max_end,
                                                  uint64_t expected_end)
 {
-  if (report->shard_count == 0u)
+  if (coverage->shard_count == 0u)
   {
-    report->missing_coverage = 1;
+    coverage->missing_coverage = 1;
     return -ENOENT;
   }
 
-  if (min_start > report->expected_start)
-    kafs_v6_bitmap_note_gap(report, report->expected_start, min_start - report->expected_start);
+  if (min_start > coverage->expected_start)
+    kafs_v6_extent_note_gap(coverage, coverage->expected_start,
+                            min_start - coverage->expected_start);
   if (max_end < expected_end)
-    kafs_v6_bitmap_note_gap(report, max_end, expected_end - max_end);
-  if (!report->has_overlap && report->covered_blocks != report->expected_count)
+    kafs_v6_extent_note_gap(coverage, max_end, expected_end - max_end);
+  if (!coverage->has_overlap && coverage->covered_units != coverage->expected_count)
   {
-    uint64_t gap_start = (max_end < expected_end) ? max_end : report->expected_start;
-    uint64_t gap_count = (report->covered_blocks < report->expected_count)
-                             ? report->expected_count - report->covered_blocks
+    uint64_t gap_start = (max_end < expected_end) ? max_end : coverage->expected_start;
+    uint64_t gap_count = (coverage->covered_units < coverage->expected_count)
+                             ? coverage->expected_count - coverage->covered_units
                              : 0u;
-    kafs_v6_bitmap_note_gap(report, gap_start, gap_count);
+    kafs_v6_extent_note_gap(coverage, gap_start, gap_count);
   }
 
-  return (report->has_overlap || report->has_physical_overlap || report->missing_coverage) ? -EINVAL
-                                                                                           : 0;
+  return (coverage->has_overlap || coverage->has_physical_overlap || coverage->missing_coverage)
+             ? -EINVAL
+             : 0;
 }
 
-static inline int kafs_v6_bitmap_scan_pairs(const kafs_sv6_shard_desc_t *shards,
-                                            uint32_t shard_count, uint32_t pair_index,
-                                            const kafs_v6_bitmap_shard_view_t *shard,
-                                            kafs_v6_bitmap_coverage_report_t *report,
+static inline int kafs_v6_extent_scan_pairs(const kafs_sv6_shard_desc_t *shards,
+                                            uint32_t shard_count, uint16_t shard_type,
+                                            uint32_t expected_record_bytes, int storage,
+                                            uint32_t pair_index,
+                                            const kafs_v6_extent_shard_view_t *shard,
+                                            kafs_v6_extent_coverage_t *coverage,
                                             uint64_t expected_end, uint64_t file_size)
 {
   for (;;)
   {
-    kafs_v6_bitmap_shard_view_t other;
-    int rc = kafs_v6_bitmap_next_shard(shards, shard_count, &pair_index, &other);
+    kafs_v6_extent_shard_view_t other;
+    int rc = kafs_v6_extent_next_shard(shards, shard_count, shard_type, expected_record_bytes,
+                                       storage, &pair_index, &other);
     if (rc == -ENOENT)
       return 0;
     if (rc < 0)
       return rc;
-    rc = kafs_v6_bitmap_check_bounds(&other, report, expected_end, file_size);
+    rc = kafs_v6_extent_check_bounds(&other, coverage, expected_end, file_size);
     if (rc != 0)
       return rc;
-    kafs_v6_bitmap_check_pair(report, shard, &other);
+    kafs_v6_extent_check_pair(coverage, shard, &other);
   }
 }
 
-static inline int kafs_v6_bitmap_collect_coverage(const kafs_sv6_shard_desc_t *shards,
-                                                  uint32_t shard_count, uint64_t expected_end,
-                                                  uint64_t file_size,
-                                                  kafs_v6_bitmap_coverage_report_t *report,
+static inline int kafs_v6_extent_collect_coverage(const kafs_sv6_shard_desc_t *shards,
+                                                  uint32_t shard_count, uint16_t shard_type,
+                                                  uint32_t expected_record_bytes, int storage,
+                                                  uint64_t expected_end, uint64_t file_size,
+                                                  kafs_v6_extent_coverage_t *coverage,
                                                   uint64_t *min_start, uint64_t *max_end)
 {
   uint32_t index = 0;
 
   for (;;)
   {
-    kafs_v6_bitmap_shard_view_t shard;
-    int rc = kafs_v6_bitmap_next_shard(shards, shard_count, &index, &shard);
+    kafs_v6_extent_shard_view_t shard;
+    int rc = kafs_v6_extent_next_shard(shards, shard_count, shard_type, expected_record_bytes,
+                                       storage, &index, &shard);
     if (rc == -ENOENT)
       return 0;
     if (rc < 0)
       return rc;
-    rc = kafs_v6_bitmap_check_bounds(&shard, report, expected_end, file_size);
+    rc = kafs_v6_extent_check_bounds(&shard, coverage, expected_end, file_size);
     if (rc != 0)
       return rc;
 
-    report->shard_count++;
-    if (report->covered_blocks > UINT64_MAX - shard.logical_count)
+    coverage->shard_count++;
+    if (coverage->covered_units > UINT64_MAX - shard.logical_count)
       return -ERANGE;
-    report->covered_blocks += shard.logical_count;
+    coverage->covered_units += shard.logical_count;
     if (shard.logical_start < *min_start)
       *min_start = shard.logical_start;
     if (shard.logical_end > *max_end)
       *max_end = shard.logical_end;
 
-    rc = kafs_v6_bitmap_scan_pairs(shards, shard_count, index, &shard, report, expected_end,
-                                   file_size);
+    rc = kafs_v6_extent_scan_pairs(shards, shard_count, shard_type, expected_record_bytes, storage,
+                                   index, &shard, coverage, expected_end, file_size);
     if (rc != 0)
       return rc;
   }
+}
+
+static inline int kafs_v6_extent_validate_coverage(const void *desc, uint32_t desc_bytes,
+                                                   uint64_t file_size, uint16_t shard_type,
+                                                   uint32_t expected_record_bytes, int storage,
+                                                   uint64_t expected_start, uint64_t expected_count,
+                                                   kafs_v6_extent_coverage_t *coverage)
+{
+  if (!coverage)
+    return -EINVAL;
+  memset(coverage, 0, sizeof(*coverage));
+  if (!desc)
+    return -EINVAL;
+  if (expected_start > UINT64_MAX - expected_count)
+    return -ERANGE;
+
+  uint32_t shard_count = 0;
+  const kafs_sv6_shard_desc_t *shards = kafs_v6_shard_table(desc, desc_bytes, &shard_count);
+  if (!shards)
+    return -EINVAL;
+
+  coverage->available = 1;
+  coverage->expected_start = expected_start;
+  coverage->expected_count = expected_count;
+  uint64_t expected_end = expected_start + expected_count;
+  uint64_t min_start = UINT64_MAX;
+  uint64_t max_end = 0;
+
+  int rc = kafs_v6_extent_collect_coverage(shards, shard_count, shard_type, expected_record_bytes,
+                                           storage, expected_end, file_size, coverage, &min_start,
+                                           &max_end);
+  if (rc != 0)
+    return rc;
+
+  return kafs_v6_extent_finish_coverage(coverage, min_start, max_end, expected_end);
+}
+
+static inline int kafs_v6_validate_coverage_prefix(const void *desc, uint32_t desc_bytes,
+                                                   const kafs_ssuperblock_t *sb, uint64_t file_size,
+                                                   uint16_t shard_type,
+                                                   uint32_t expected_record_bytes, int storage,
+                                                   uint64_t expected_count, void *report)
+{
+  if (!desc || !sb || !report)
+    return -EINVAL;
+
+  kafs_v6_extent_coverage_t coverage;
+  int rc = kafs_v6_extent_validate_coverage(desc, desc_bytes, file_size, shard_type,
+                                            expected_record_bytes, storage, 0, expected_count,
+                                            &coverage);
+  kafs_v6_extent_copy_report_prefix(report, &coverage);
+  return rc;
 }
 
 static inline int kafs_v6_bitmap_validate_coverage(const void *desc, uint32_t desc_bytes,
@@ -665,31 +1145,230 @@ static inline int kafs_v6_bitmap_validate_coverage(const void *desc, uint32_t de
   if (!report)
     return -EINVAL;
   memset(report, 0, sizeof(*report));
-  if (!desc || !sb)
-    return -EINVAL;
 
-  uint32_t shard_count = 0;
-  const kafs_sv6_shard_desc_t *shards = kafs_v6_shard_table(desc, desc_bytes, &shard_count);
-  if (!shards)
-    return -EINVAL;
-
-  report->available = 1;
-  report->expected_start = 0;
-  report->expected_count = (uint64_t)kafs_sb_r_blkcnt_get(sb);
-  uint64_t expected_end = report->expected_count;
-  uint64_t min_start = UINT64_MAX;
-  uint64_t max_end = 0;
-
-  int rc = kafs_v6_bitmap_collect_coverage(shards, shard_count, expected_end, file_size, report,
-                                           &min_start, &max_end);
+  int rc = kafs_v6_validate_coverage_prefix(
+      desc, desc_bytes, sb, file_size, KAFS_META_REGION_BLOCK_BITMAP, 0,
+      KAFS_V6_EXTENT_STORAGE_BIT_PACKED, (uint64_t)kafs_sb_r_blkcnt_get(sb), report);
   if (rc != 0)
     return rc;
 
   if (report->expected_count > 0u &&
       kafs_v6_bitmap_lookup(desc, desc_bytes, report->expected_start, &report->lookup) == 0)
     report->lookup_available = 1;
+  return 0;
+}
 
-  return kafs_v6_bitmap_finish_coverage(report, min_start, max_end, expected_end);
+static inline int kafs_v6_inode_validate_coverage(const void *desc, uint32_t desc_bytes,
+                                                  const kafs_ssuperblock_t *sb, uint64_t file_size,
+                                                  kafs_v6_inode_coverage_report_t *report)
+{
+  if (!report)
+    return -EINVAL;
+  memset(report, 0, sizeof(*report));
+
+  uint32_t record_bytes = (uint32_t)kafs_inode_bytes_for_format(KAFS_FORMAT_VERSION_V6);
+  int rc = kafs_v6_validate_coverage_prefix(
+      desc, desc_bytes, sb, file_size, KAFS_META_REGION_INODE_TABLE, record_bytes,
+      KAFS_V6_EXTENT_STORAGE_FIXED_RECORD, (uint64_t)kafs_sb_inocnt_get(sb), report);
+  if (rc != 0)
+    return rc;
+
+  if (report->expected_count > KAFS_INO_ROOTDIR &&
+      kafs_v6_inode_lookup(desc, desc_bytes, KAFS_INO_ROOTDIR, &report->root_lookup) == 0)
+    report->root_lookup_available = 1;
+  return 0;
+}
+
+static inline int
+kafs_v6_allocator_summary_validate_coverage(const void *desc, uint32_t desc_bytes,
+                                            const kafs_ssuperblock_t *sb, uint64_t file_size,
+                                            kafs_v6_allocator_summary_coverage_report_t *report)
+{
+  if (!report)
+    return -EINVAL;
+  memset(report, 0, sizeof(*report));
+
+  int rc = kafs_v6_validate_coverage_prefix(
+      desc, desc_bytes, sb, file_size, KAFS_META_REGION_ALLOCATOR_SUMMARY, 0,
+      KAFS_V6_EXTENT_STORAGE_ALLOCATOR_SUMMARY, (uint64_t)kafs_sb_r_blkcnt_get(sb), report);
+  if (rc != 0)
+    return rc;
+
+  if (report->expected_count > 0u &&
+      kafs_v6_allocator_summary_lookup(desc, desc_bytes, report->expected_start, &report->lookup) ==
+          0)
+    report->lookup_available = 1;
+  return 0;
+}
+
+static inline int kafs_v6_hrl_bucket_count(const kafs_ssuperblock_t *sb, uint64_t *out_count)
+{
+  if (!sb || !out_count)
+    return -EINVAL;
+  uint64_t index_size = kafs_sb_hrl_index_size_get(sb);
+  if (index_size == 0u || (index_size % sizeof(uint32_t)) != 0u)
+    return -EINVAL;
+  *out_count = index_size / sizeof(uint32_t);
+  return (*out_count == 0u) ? -ENOENT : 0;
+}
+
+static inline int kafs_v6_hrl_index_validate_coverage(const void *desc, uint32_t desc_bytes,
+                                                      const kafs_ssuperblock_t *sb,
+                                                      uint64_t file_size,
+                                                      kafs_v6_hrl_index_coverage_report_t *report)
+{
+  if (!report)
+    return -EINVAL;
+  memset(report, 0, sizeof(*report));
+
+  uint64_t bucket_count = 0;
+  int rc = kafs_v6_hrl_bucket_count(sb, &bucket_count);
+  if (rc != 0)
+    return rc;
+
+  rc = kafs_v6_validate_coverage_prefix(desc, desc_bytes, sb, file_size, KAFS_META_REGION_HRL_INDEX,
+                                        sizeof(uint32_t), KAFS_V6_EXTENT_STORAGE_FIXED_RECORD,
+                                        bucket_count, report);
+  if (rc != 0)
+    return rc;
+
+  if (report->expected_count > 0u &&
+      kafs_v6_hrl_index_lookup(desc, desc_bytes, report->expected_start, &report->lookup) == 0)
+    report->lookup_available = 1;
+  return 0;
+}
+
+static inline int
+kafs_v6_hrl_entries_validate_coverage(const void *desc, uint32_t desc_bytes,
+                                      const kafs_ssuperblock_t *sb, uint64_t file_size,
+                                      kafs_v6_hrl_entries_coverage_report_t *report)
+{
+  if (!report)
+    return -EINVAL;
+  memset(report, 0, sizeof(*report));
+  if (!sb)
+    return -EINVAL;
+
+  uint64_t entry_count = (uint64_t)kafs_sb_hrl_entry_cnt_get(sb);
+  if (entry_count == 0u)
+    return -ENOENT;
+
+  int rc = kafs_v6_validate_coverage_prefix(
+      desc, desc_bytes, sb, file_size, KAFS_META_REGION_HRL_ENTRIES, sizeof(kafs_hrl_entry_t),
+      KAFS_V6_EXTENT_STORAGE_FIXED_RECORD, entry_count, report);
+  if (rc != 0)
+    return rc;
+
+  if (report->expected_count > 0u &&
+      kafs_v6_hrl_entry_lookup(desc, desc_bytes, report->expected_start, &report->lookup) == 0)
+    report->lookup_available = 1;
+  return 0;
+}
+
+static inline int kafs_v6_hrl_chain_note(kafs_v6_hrl_chain_report_t *report, int *flag,
+                                         uint64_t bucket, uint64_t head_plus1, uint64_t entry_id,
+                                         uint32_t index_shard, uint32_t entry_shard,
+                                         uint32_t index_group, uint32_t entry_group)
+{
+  if (flag && !*flag)
+  {
+    report->first_bad_bucket = bucket;
+    report->first_bad_head_plus1 = head_plus1;
+    report->first_bad_entry_id = entry_id;
+    report->first_index_shard = index_shard;
+    report->first_entry_shard = entry_shard;
+    report->first_index_group = index_group;
+    report->first_entry_group = entry_group;
+  }
+  if (flag)
+    *flag = 1;
+  return -EINVAL;
+}
+
+static inline int kafs_v6_hrl_chain_read_u32(int fd, uint64_t off, uint32_t *out)
+{
+  if (fd < 0 || !out)
+    return -EINVAL;
+  return kafs_pread_all(fd, out, sizeof(*out), (off_t)off);
+}
+
+static inline int kafs_v6_hrl_chain_read_entry(int fd, uint64_t off, kafs_hrl_entry_t *out)
+{
+  if (fd < 0 || !out)
+    return -EINVAL;
+  return kafs_pread_all(fd, out, sizeof(*out), (off_t)off);
+}
+
+static inline int kafs_v6_hrl_validate_chain_bounds_fd(int fd, const void *desc,
+                                                       uint32_t desc_bytes,
+                                                       const kafs_ssuperblock_t *sb,
+                                                       uint64_t file_size,
+                                                       kafs_v6_hrl_chain_report_t *report)
+{
+  if (!report)
+    return -EINVAL;
+  memset(report, 0, sizeof(*report));
+  if (fd < 0 || !desc || !sb)
+    return -EINVAL;
+
+  uint64_t bucket_count = 0;
+  int rc = kafs_v6_hrl_bucket_count(sb, &bucket_count);
+  if (rc != 0)
+    return rc;
+  uint64_t entry_count = (uint64_t)kafs_sb_hrl_entry_cnt_get(sb);
+  if (entry_count == 0u)
+    return -ENOENT;
+
+  report->available = 1;
+  for (uint64_t bucket = 0; bucket < bucket_count; ++bucket)
+  {
+    kafs_v6_hrl_index_lookup_t index_lookup;
+    rc = kafs_v6_hrl_index_lookup(desc, desc_bytes, bucket, &index_lookup);
+    if (rc != 0)
+      return kafs_v6_hrl_chain_note(report, &report->has_out_of_range, bucket, 0, UINT64_MAX, 0, 0,
+                                    0, 0);
+
+    uint32_t head = 0;
+    rc = kafs_v6_hrl_chain_read_u32(fd, index_lookup.index_off, &head);
+    if (rc != 0)
+      return kafs_v6_hrl_chain_note(report, &report->has_read_error, bucket, 0, UINT64_MAX,
+                                    index_lookup.shard_index, 0, index_lookup.group_id, 0);
+
+    report->buckets_checked++;
+    for (uint64_t steps = 0; head != 0u && steps < entry_count; ++steps)
+    {
+      uint64_t entry_id = (uint64_t)head - 1u;
+      if (entry_id >= entry_count)
+        return kafs_v6_hrl_chain_note(report, &report->has_out_of_range, bucket, head, entry_id,
+                                      index_lookup.shard_index, 0, index_lookup.group_id, 0);
+
+      kafs_v6_hrl_entry_lookup_t entry_lookup;
+      rc = kafs_v6_hrl_entry_lookup(desc, desc_bytes, entry_id, &entry_lookup);
+      if (rc != 0)
+        return kafs_v6_hrl_chain_note(report, &report->has_out_of_range, bucket, head, entry_id,
+                                      index_lookup.shard_index, 0, index_lookup.group_id, 0);
+      if (entry_lookup.group_id != index_lookup.group_id)
+        return kafs_v6_hrl_chain_note(report, &report->has_wrong_entry_group, bucket, head,
+                                      entry_id, index_lookup.shard_index, entry_lookup.shard_index,
+                                      index_lookup.group_id, entry_lookup.group_id);
+
+      kafs_hrl_entry_t entry;
+      rc = kafs_v6_hrl_chain_read_entry(fd, entry_lookup.entry_off, &entry);
+      if (rc != 0)
+        return kafs_v6_hrl_chain_note(report, &report->has_read_error, bucket, head, entry_id,
+                                      index_lookup.shard_index, entry_lookup.shard_index,
+                                      index_lookup.group_id, entry_lookup.group_id);
+      report->entries_checked++;
+      head = entry.next_plus1;
+    }
+
+    if (head != 0u)
+      return kafs_v6_hrl_chain_note(report, &report->has_loop, bucket, head, (uint64_t)head - 1u,
+                                    index_lookup.shard_index, 0, index_lookup.group_id, 0);
+  }
+
+  (void)file_size;
+  return 0;
 }
 
 static inline int kafs_v6_validate_one_descriptor(const void *desc, uint32_t desc_bytes,

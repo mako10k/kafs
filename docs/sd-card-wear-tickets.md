@@ -231,19 +231,22 @@
   - `v6_descriptor_validation` に `bitmap_runtime_descriptor_mapping` を追加し、v6 image を
     `MAP_PRIVATE` で mmap して mount admission なしに descriptor-backed set/clear が対象 bitmap byte
     に反映されることを検証した。
+  - `kafs_bitmap_descriptor_mapping_admit_fd` / `kafs_bitmap_descriptor_mapping_clear` を追加し、
+    selected descriptor を `kafs_context` owned lifetime として保持し、`fsck.kafs` と同じ bitmap
+    coverage / overlap validation を通った場合だけ `c_v6_bitmap_mapping_enabled` を立てる dormant
+    admission hook を追加した。close/unmap/cleanup path は owned descriptor を破棄する。
+  - `v6_descriptor_validation` に 2 shard の positive runtime mapping と、gap coverage で admission が
+    mapping を有効化しない negative test を追加した。
 - 引き継ぎメモ:
-  - v6 runtime mount はまだ有効化しない。mount init が selected descriptor を
-    `kafs_context` に保持し、fsck 相当の coverage / overlap validation を通した後にだけ
-    `c_v6_bitmap_mapping_enabled` を立てる設計が未実装。
+  - v6 runtime mount はまだ有効化しない。runtime mount gate は v6 を許可せず、CLI も v6 descriptor
+    scaffold を offline-only として拒否する。
   - 現在の runtime mapper は `kafs_blkmask_t` word 単位で読むため、descriptor-backed write path は
     bitmap word の物理 offset が `sizeof(kafs_blkmask_t)` に揃うことを要求する。将来の split shard
     で logical start を任意 bit 境界にするなら byte-granular scan/update を追加する。そうしない場合は
     v6 bitmap shard logical ranges を word 境界に揃える validation rule を追加する。
-  - allocator v3 summary は `kafs_alloc_v3_summary_enabled()` が現状 v5 のみを許可するため、v6 では
-    legacy scan path が mapper 経由になる。v6 summary shard は SDW-P4-T3 で別途設計・実装する。
-  - SDW-P4-T1 を閉じる前に、mount admission 前提の descriptor lifetime、coverage validation hook、
-    multi-shard positive/negative tests を追加する。P4-T2 に進む clone はこの制約を残したまま inode
-    table shard mapping の設計に入ってよい。
+  - allocator v3 summary は SDW-P4-T3 で descriptor-backed dormant path に対応した。v6 runtime mount は
+    まだ有効化しない。
+  - P4-T2 に進む clone は inode table shard mapping の設計に入ってよい。
 
 ### SDW-P4-T2 Inode table shards
 
@@ -252,6 +255,27 @@
   - inode lookup/allocation が descriptor mapping 経由で解決する。
   - root inode location が deterministic。
   - fsck が inode shard bounds と counts を検証する。
+- 進捗メモ:
+  - `kafs_v6_inode_lookup` / `kafs_v6_inode_validate_coverage` を追加し、inode table shard の
+    `sd_record_bytes`、logical coverage `[0, s_inocnt)`、logical/physical overlap、root inode lookup
+    を検証できるようにした。
+  - `fsck.kafs` の v6 offline path は bitmap shard に続いて inode table shard を検証し、不正な inode
+    coverage を v6 descriptor failure として fail closed する。
+  - `v6_descriptor_validation` に valid inode coverage / root lookup と inode coverage gap の fsck
+    rejection を追加した。
+  - `kafs_v6_descriptor_mapping_admit_fd` を追加し、selected descriptor を `kafs_context` owned lifetime
+    として保持し、bitmap と inode coverage validation の両方を通った場合だけ bitmap/inode runtime
+    mapping を有効化する dormant admission hook を追加した。
+  - v6 inode runtime shard map を `kafs_context` に保持し、`kafs_ctx_inode()` /
+    `kafs_ctx_inode_const()` / `kafs_ctx_ino_no()` が descriptor-backed inode table を参照できるようにした。
+  - inode allocation の free scan は `kafs_ctx_ino_find_free()` 経由に切り替え、v4/v5 は従来の contiguous
+    table scan、v6 dormant mapping 時は descriptor-backed shard scan を使う。
+  - `v6_descriptor_validation` に root inode runtime lookup、2 shard inode allocation scan、inode gap
+    coverage で admission が mapping を有効化しない negative test を追加した。
+- 引き継ぎメモ:
+  - v6 runtime mount は引き続き disabled。mount admission gate と CLI は v6 descriptor scaffold を
+    offline-only として拒否する。
+  - allocator summary shard は SDW-P4-T3 で descriptor-backed dormant path に進めた。
 
 ### SDW-P4-T3 Allocator summary shards
 
@@ -260,6 +284,28 @@
   - L1/L2 summary update が担当 shard に反映される。
   - corrupt summary の fallback/rebuild path がある。
   - allocation scan metrics が維持される。
+- 進捗メモ:
+  - `kafs_v6_allocator_summary_shape` / `kafs_v6_allocator_summary_lookup` /
+    `kafs_v6_allocator_summary_validate_coverage` を追加し、allocator summary shard の
+    `[0, s_r_blkcnt)` coverage、logical/physical overlap、summary record lookup を検証できるようにした。
+  - `fsck.kafs` の v6 offline path は bitmap/inode に続いて allocator summary shard を検証し、不正な
+    allocator coverage を v6 descriptor failure として fail closed する。
+  - `kafs_v6_descriptor_mapping_admit_fd` は bitmap/inode/allocator coverage のすべてを通った場合だけ
+    dormant runtime mapping を有効化し、`kafs_context` に allocator summary shard map を保持する。
+  - allocator v3 summary path は contiguous v4 summary と v6 descriptor-backed summary view を分け、
+    L1/L2 sync、dirty rebuild、allocation find を担当 shard に route する。
+  - corrupt/stale summary で候補が見つからない場合、allocation path は 1 回 dirty rebuild して再検索する。
+    真に空きがない場合は従来通り `ENOSPC` になる。
+  - `blk_alloc` の scan/claim/set_usage metrics は既存 path のまま維持し、descriptor-backed summary でも
+    `blk_alloc_calls` と allocator summary write counter が更新される。
+  - `v6_descriptor_validation` に allocator summary valid lookup、2 shard summary allocation、corrupt summary
+    rebuild、gap coverage fsck rejection、admission rejection を追加した。
+- 引き継ぎメモ:
+  - v6 runtime mount は引き続き disabled。mount admission gate と CLI は v6 descriptor scaffold を
+    offline-only として拒否する。
+  - descriptor-backed summary shard は block-aligned physical range を要求する。分割 shard を mkfs/migration
+    で本格生成する場合、各 shard の L1/L2 summary が block-aligned physical range に収まるよう padding を
+    明示的に確保する。
 
 ### SDW-P4-T4 HRL shard mapping
 
@@ -268,6 +314,25 @@
   - lookup/put/inc/dec が正しい shard に route される。
   - fsck が壊れた HRL shard chain を検出する。
   - 既存 v5 HRL behavior は変更しない。
+- 進捗メモ:
+  - `kafs_v6_hrl_index_lookup` / `kafs_v6_hrl_entry_lookup` と HRL index/entry coverage validation
+    を追加し、HRL bucket range と entry id range の exact coverage、logical/physical overlap、
+    record size を検証できるようにした。
+  - `fsck.kafs` の v6 offline path は allocator summary に続いて HRL index/entry coverage と
+    bucket chain bounds を検証し、entry id 範囲外、loop、read error、index shard group と entry
+    shard group の不一致を v6 descriptor failure として fail closed する。
+  - `kafs_v6_descriptor_mapping_admit_fd` は bitmap/inode/allocator/HRL coverage のすべてを通った
+    場合だけ dormant runtime mapping を有効化し、`kafs_context` に HRL index/entry runtime shard map
+    を保持する。
+  - `kafs_hrl.c` の index/entry access は contiguous v5 path と descriptor-backed v6 path を分岐し、
+    `lookup/put/inc/dec` と free-list scan が bucket/entry shard map 経由で動くようにした。
+  - `v6_descriptor_validation` に HRL valid lookup/chain scan、2 shard runtime put/inc/dec routing、
+    HRL index/entry gap rejection、chain out-of-range fsck rejection、admission rejection を追加した。
+- 引き継ぎメモ:
+  - v6 runtime mount は引き続き disabled。mount admission gate と CLI は v6 descriptor scaffold を
+    offline-only として拒否する。
+  - descriptor-backed HRL entries は fixed-record shard なので、分割 shard の physical range は
+    `sizeof(kafs_hrl_entry_t)` と block alignment の両方を満たす record count で分ける必要がある。
 
 ### SDW-P4-T5 Journal segment distribution
 

@@ -10,6 +10,36 @@
 #include <stdlib.h>
 #include <sys/un.h>
 
+typedef struct kafs_v6_inode_runtime_shard
+{
+  uint64_t logical_start;
+  uint64_t logical_count;
+  uint64_t physical_off;
+  uint64_t physical_end;
+  uint32_t record_bytes;
+} kafs_v6_inode_runtime_shard_t;
+
+typedef struct kafs_v6_alloc_summary_runtime_shard
+{
+  uint64_t logical_start;
+  uint64_t logical_count;
+  uint64_t physical_off;
+  uint64_t physical_end;
+  uint64_t l0_bytes;
+  uint64_t l1_bytes;
+  uint64_t l2_bytes;
+} kafs_v6_alloc_summary_runtime_shard_t;
+
+typedef struct kafs_v6_hrl_runtime_shard
+{
+  uint64_t logical_start;
+  uint64_t logical_count;
+  uint64_t physical_off;
+  uint64_t physical_end;
+  uint32_t record_bytes;
+  uint32_t group_id;
+} kafs_v6_hrl_runtime_shard_t;
+
 /// @brief コンテキスト
 struct kafs_context
 {
@@ -167,8 +197,20 @@ struct kafs_context
 
   // --- Format v6 descriptor bitmap mapping (dormant until v6 runtime admission) ---
   uint32_t c_v6_bitmap_mapping_enabled;
+  uint32_t c_v6_inode_mapping_enabled;
+  uint32_t c_v6_alloc_summary_mapping_enabled;
+  uint32_t c_v6_hrl_mapping_enabled;
   const void *c_v6_layout_desc;
   uint32_t c_v6_layout_desc_bytes;
+  uint32_t c_v6_layout_desc_owned;
+  kafs_v6_inode_runtime_shard_t *c_v6_inode_shards;
+  uint32_t c_v6_inode_shard_count;
+  kafs_v6_alloc_summary_runtime_shard_t *c_v6_alloc_summary_shards;
+  uint32_t c_v6_alloc_summary_shard_count;
+  kafs_v6_hrl_runtime_shard_t *c_v6_hrl_index_shards;
+  uint32_t c_v6_hrl_index_shard_count;
+  kafs_v6_hrl_runtime_shard_t *c_v6_hrl_entry_shards;
+  uint32_t c_v6_hrl_entry_shard_count;
 
   // --- Phase3 pending log runtime state ---
   uint32_t c_pendinglog_enabled;
@@ -334,9 +376,53 @@ static inline size_t kafs_ctx_inode_bytes(const kafs_context_t *ctx)
   return kafs_inode_bytes_for_format(kafs_ctx_inode_format(ctx));
 }
 
+static inline int kafs_ctx_v6_inode_mapping_enabled(const kafs_context_t *ctx)
+{
+  return ctx && ctx->c_superblock && kafs_ctx_inode_format(ctx) == KAFS_FORMAT_VERSION_V6 &&
+         ctx->c_v6_inode_mapping_enabled && ctx->c_v6_inode_shards &&
+         ctx->c_v6_inode_shard_count > 0u && ctx->c_img_base && ctx->c_img_size > 0u;
+}
+
+static inline const kafs_v6_inode_runtime_shard_t *
+kafs_ctx_v6_inode_shard_for_ino(const kafs_context_t *ctx, kafs_inocnt_t ino)
+{
+  if (!kafs_ctx_v6_inode_mapping_enabled(ctx))
+    return NULL;
+
+  uint64_t ino64 = (uint64_t)ino;
+  for (uint32_t i = 0; i < ctx->c_v6_inode_shard_count; ++i)
+  {
+    const kafs_v6_inode_runtime_shard_t *shard = &ctx->c_v6_inode_shards[i];
+    uint64_t logical_end = shard->logical_start + shard->logical_count;
+    if (ino64 >= shard->logical_start && ino64 < logical_end)
+      return shard;
+  }
+  return NULL;
+}
+
+static inline kafs_sinode_t *kafs_ctx_v6_inode(kafs_context_t *ctx, kafs_inocnt_t ino)
+{
+  const kafs_v6_inode_runtime_shard_t *shard = kafs_ctx_v6_inode_shard_for_ino(ctx, ino);
+  if (!shard || shard->record_bytes == 0u)
+    return NULL;
+
+  uint64_t record_delta = (uint64_t)ino - shard->logical_start;
+  if (record_delta > UINT64_MAX / (uint64_t)shard->record_bytes)
+    return NULL;
+  uint64_t byte_delta = record_delta * (uint64_t)shard->record_bytes;
+  if (shard->physical_off > UINT64_MAX - byte_delta)
+    return NULL;
+  uint64_t inode_off = shard->physical_off + byte_delta;
+  if (inode_off > ctx->c_img_size || shard->record_bytes > ctx->c_img_size - inode_off)
+    return NULL;
+  return (kafs_sinode_t *)((char *)ctx->c_img_base + inode_off);
+}
+
 static inline kafs_sinode_t *kafs_ctx_inode(kafs_context_t *ctx, kafs_inocnt_t ino)
 {
   assert(ctx != NULL);
+  if (kafs_ctx_v6_inode_mapping_enabled(ctx))
+    return kafs_ctx_v6_inode(ctx, ino);
   return (kafs_sinode_t *)kafs_inode_ptr_in_table(ctx->c_inotbl, kafs_ctx_inode_format(ctx), ino);
 }
 
@@ -344,6 +430,8 @@ static inline const kafs_sinode_t *kafs_ctx_inode_const(const kafs_context_t *ct
                                                         kafs_inocnt_t ino)
 {
   assert(ctx != NULL);
+  if (kafs_ctx_v6_inode_mapping_enabled(ctx))
+    return (const kafs_sinode_t *)kafs_ctx_v6_inode((kafs_context_t *)ctx, ino);
   return (const kafs_sinode_t *)kafs_inode_ptr_const_in_table(ctx->c_inotbl,
                                                               kafs_ctx_inode_format(ctx), ino);
 }
@@ -353,6 +441,31 @@ static inline kafs_inocnt_t kafs_ctx_ino_no(const kafs_context_t *ctx, const kaf
   assert(ctx != NULL);
   assert(inoent != NULL);
   assert(ctx->c_superblock != NULL);
+  if (kafs_ctx_v6_inode_mapping_enabled(ctx))
+  {
+    uintptr_t base = (uintptr_t)ctx->c_img_base;
+    uintptr_t addr = (uintptr_t)inoent;
+    if (addr < base)
+      abort();
+    uint64_t off = (uint64_t)(addr - base);
+    for (uint32_t i = 0; i < ctx->c_v6_inode_shard_count; ++i)
+    {
+      const kafs_v6_inode_runtime_shard_t *shard = &ctx->c_v6_inode_shards[i];
+      if (off < shard->physical_off || off >= shard->physical_end)
+        continue;
+      if (shard->record_bytes == 0u)
+        abort();
+      uint64_t diff = off - shard->physical_off;
+      if ((diff % (uint64_t)shard->record_bytes) != 0u)
+        abort();
+      uint64_t logical_delta = diff / (uint64_t)shard->record_bytes;
+      if (logical_delta >= shard->logical_count ||
+          shard->logical_start > UINT64_MAX - logical_delta)
+        abort();
+      return (kafs_inocnt_t)(shard->logical_start + logical_delta);
+    }
+    abort();
+  }
   assert(ctx->c_inotbl != NULL);
   size_t inode_bytes = kafs_ctx_inode_bytes(ctx);
   uint64_t table_bytes = kafs_inode_table_bytes_for_format(
@@ -372,6 +485,36 @@ static inline kafs_inocnt_t kafs_ctx_ino_no(const kafs_context_t *ctx, const kaf
   if ((diff % inode_bytes) != 0)
     abort();
   return (kafs_inocnt_t)(diff / inode_bytes);
+}
+
+static inline int kafs_ctx_ino_find_free(kafs_context_t *ctx, kafs_inocnt_t *pino,
+                                         kafs_inocnt_t *pino_search, kafs_inocnt_t inocnt)
+{
+  assert(ctx != NULL);
+  assert(pino != NULL);
+  assert(pino_search != NULL);
+
+  if (!kafs_ctx_v6_inode_mapping_enabled(ctx))
+    return kafs_ino_find_free(ctx->c_inotbl, kafs_ctx_inode_format(ctx), pino, pino_search, inocnt);
+
+  kafs_inocnt_t ino_search = *pino_search;
+  kafs_inocnt_t ino = ino_search + 1;
+  while (ino_search != ino)
+  {
+    if (ino >= inocnt)
+      ino = KAFS_INO_ROOTDIR;
+    const kafs_sinode_t *inoent = kafs_ctx_inode_const(ctx, ino);
+    if (!inoent)
+      return -EINVAL;
+    if (!kafs_ino_get_usage(inoent))
+    {
+      *pino_search = ino;
+      *pino = ino;
+      return KAFS_SUCCESS;
+    }
+    ino++;
+  }
+  return -ENOSPC;
 }
 
 static inline kafs_sinode_taildesc_v5_t *kafs_ctx_inode_taildesc_v5(kafs_context_t *ctx,
