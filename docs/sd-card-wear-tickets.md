@@ -374,6 +374,10 @@
     selected descriptor と shard maps を `kafs_context` に保持した状態で journal segment health まで
     検証してから解放し、同じ offline-only gate で拒否する。FUSE mount / v6 write admission はまだ
     有効化しない。
+  - `KAFS_V6_READONLY_SMOKE=1` を指定した CLI mount は admitted descriptor を保持した実 runtime
+    context で read-only FUSE mount だけを許可する。image は read-only mmap、journal replay と
+    background mutation worker は起動しない。root `statfs` / `getattr` / `readdir` と `EROFS` write
+    rejection を smoke test で確認する。通常の v6 mount と v6 write admission はまだ有効化しない。
 - 完了条件:
   - build/test PASS。
   - v6 mkfs/mount/basic filesystem semantics PASS。

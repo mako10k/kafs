@@ -184,6 +184,10 @@ struct kafs_context
   // --- Allocator v3 runtime state ---
   uint32_t c_alloc_v3_summary_dirty;
 
+  // --- Runtime admission mode ---
+  uint32_t c_runtime_read_only;
+  uint32_t c_v6_readonly_smoke_enabled;
+
   // --- Phase2 meta delta (runtime batching) ---
   uint32_t c_meta_delta_enabled;
   int64_t c_meta_delta_free_blocks;

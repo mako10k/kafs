@@ -7491,6 +7491,27 @@ static int kafs_hotplug_call_truncate(struct fuse_context *fctx, kafs_context_t 
 
 static int kafs_is_ctl_path(const char *path);
 
+static int kafs_runtime_write_guard(const kafs_context_t *ctx)
+{
+  return (ctx && ctx->c_runtime_read_only) ? -EROFS : 0;
+}
+
+static int kafs_mutation_path_context(const char *path, struct fuse_context **fctx_out,
+                                      struct kafs_context **ctx_out)
+{
+  struct fuse_context *fctx = fuse_get_context();
+  struct kafs_context *ctx = fctx ? fctx->private_data : NULL;
+
+  if (fctx_out)
+    *fctx_out = fctx;
+  if (ctx_out)
+    *ctx_out = ctx;
+
+  if (kafs_is_ctl_path(path))
+    return -EACCES;
+  return kafs_runtime_write_guard(ctx);
+}
+
 static int kafs_op_getattr(const char *path, struct stat *st, struct fuse_file_info *fi)
 {
   struct fuse_context *fctx = fuse_get_context();
@@ -8827,13 +8848,23 @@ static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_
 
 #ifdef __linux__
   if ((unsigned int)cmd == (unsigned int)FICLONE)
+  {
+    int gate = kafs_runtime_write_guard(ctx);
+    if (gate != 0)
+      return gate;
     return kafs_ioctl_handle_ficlone(fctx, ctx, path, cmd, arg, fi, data);
+  }
   if ((unsigned int)cmd == (unsigned int)FICLONERANGE)
     return -EOPNOTSUPP;
 #endif
 
   if ((unsigned int)cmd == (unsigned int)KAFS_IOCTL_COPY)
+  {
+    int gate = kafs_runtime_write_guard(ctx);
+    if (gate != 0)
+      return gate;
     return kafs_ioctl_handle_copy(fctx, ctx, arg, data);
+  }
 
   if ((unsigned int)cmd == (unsigned int)KAFS_IOCTL_GET_STATS)
     return kafs_ioctl_handle_get_stats(ctx, cmd, arg, data);
@@ -8847,6 +8878,9 @@ static ssize_t kafs_op_copy_file_range(const char *path_in, struct fuse_file_inf
 {
   struct fuse_context *fctx = fuse_get_context();
   kafs_context_t *ctx = (kafs_context_t *)fctx->private_data;
+  int gate = kafs_runtime_write_guard(ctx);
+  if (gate != 0)
+    return gate;
 
   kafs_sinode_t *ino_in = NULL;
   kafs_sinode_t *ino_out = NULL;
@@ -8881,9 +8915,13 @@ static int kafs_op_open(const char *path, struct fuse_file_info *fi)
 {
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
+  int accmode = fi->flags & O_ACCMODE;
+  if (ctx && ctx->c_runtime_read_only &&
+      (kafs_is_ctl_path(path) || accmode == O_WRONLY || accmode == O_RDWR ||
+       (fi->flags & O_TRUNC) != 0))
+    return -EROFS;
   if (kafs_is_ctl_path(path))
   {
-    int accmode = fi->flags & O_ACCMODE;
     if (accmode != O_RDWR)
       return -EACCES;
     kafs_ctl_session_t *sess = (kafs_ctl_session_t *)calloc(1, sizeof(*sess));
@@ -8894,7 +8932,6 @@ static int kafs_op_open(const char *path, struct fuse_file_info *fi)
     return 0;
   }
   int ok = 0;
-  int accmode = fi->flags & O_ACCMODE;
   if (accmode == O_RDONLY || accmode == O_RDWR)
     ok |= R_OK;
   if (accmode == O_WRONLY || accmode == O_RDWR)
@@ -9187,10 +9224,10 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
 
 static int kafs_op_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
-  struct fuse_context *fctx = fuse_get_context();
-  struct kafs_context *ctx = fctx ? fctx->private_data : NULL;
-  if (kafs_is_ctl_path(path))
-    return -EACCES;
+  struct kafs_context *ctx = NULL;
+  int gate = kafs_mutation_path_context(path, NULL, &ctx);
+  if (gate != 0)
+    return gate;
   kafs_inocnt_t ino_new;
   KAFS_CALL(kafs_create, path, mode | S_IFREG, 0, NULL, &ino_new);
   if (ctx)
@@ -9212,18 +9249,20 @@ static int kafs_op_create(const char *path, mode_t mode, struct fuse_file_info *
 
 static int kafs_op_mknod(const char *path, mode_t mode, dev_t dev)
 {
-  if (kafs_is_ctl_path(path))
-    return -EACCES;
+  int gate = kafs_mutation_path_context(path, NULL, NULL);
+  if (gate != 0)
+    return gate;
   KAFS_CALL(kafs_create, path, mode, dev, NULL, NULL);
   return 0;
 }
 
 static int kafs_op_truncate(const char *path, off_t size, struct fuse_file_info *fi)
 {
-  struct fuse_context *fctx = fuse_get_context();
-  struct kafs_context *ctx = fctx->private_data;
-  if (kafs_is_ctl_path(path))
-    return -EACCES;
+  struct fuse_context *fctx = NULL;
+  struct kafs_context *ctx = NULL;
+  int gate = kafs_mutation_path_context(path, &fctx, &ctx);
+  if (gate != 0)
+    return gate;
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
   uint32_t ino = (uint32_t)kafs_ctx_ino_no(ctx, inoent);
@@ -9398,8 +9437,11 @@ fallocate_unlock:
 static int kafs_op_fallocate(const char *path, int mode, off_t offset, off_t length,
                              struct fuse_file_info *fi)
 {
-  struct fuse_context *fctx = fuse_get_context();
-  struct kafs_context *ctx = fctx->private_data;
+  struct fuse_context *fctx = NULL;
+  struct kafs_context *ctx = NULL;
+  int gate = kafs_mutation_path_context(path, &fctx, &ctx);
+  if (gate != 0)
+    return gate;
   kafs_off_t end_req;
   int rc = kafs_fallocate_validate_request(path, offset, length, &end_req);
   if (rc != 0)
@@ -9533,10 +9575,11 @@ static off_t kafs_op_lseek(const char *path, off_t off, int whence, struct fuse_
 
 static int kafs_op_mkdir(const char *path, mode_t mode)
 {
-  struct fuse_context *fctx = fuse_get_context();
-  struct kafs_context *ctx = fctx->private_data;
-  if (kafs_is_ctl_path(path))
-    return -EACCES;
+  struct fuse_context *fctx = NULL;
+  struct kafs_context *ctx = NULL;
+  int gate = kafs_mutation_path_context(path, &fctx, &ctx);
+  if (gate != 0)
+    return gate;
   uint64_t jseq = kafs_journal_begin(ctx, "MKDIR", "path=%s mode=%o", path, (unsigned)mode);
   kafs_inocnt_t ino_dir;
   kafs_inocnt_t ino_new;
@@ -9603,8 +9646,11 @@ static int kafs_op_mkdir(const char *path, mode_t mode)
 
 static int kafs_op_rmdir(const char *path)
 {
-  struct fuse_context *fctx = fuse_get_context();
-  struct kafs_context *ctx = fctx->private_data;
+  struct fuse_context *fctx = NULL;
+  struct kafs_context *ctx = NULL;
+  int gate = kafs_mutation_path_context(path, &fctx, &ctx);
+  if (gate != 0)
+    return gate;
   uint64_t jseq = kafs_journal_begin(ctx, "RMDIR", "path=%s", path);
   char path_copy[strlen(path) + 1];
   strcpy(path_copy, path);
@@ -9795,6 +9841,9 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
             size, (uint64_t)offset);
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
+  int gate = kafs_runtime_write_guard(ctx);
+  if (gate != 0)
+    return gate;
   if (kafs_is_ctl_path(path))
     return kafs_op_write_ctl(ctx, fi, buf, size, offset);
   kafs_inocnt_t ino = fi->fh;
@@ -9829,10 +9878,11 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
 
 static int kafs_op_utimens(const char *path, const struct timespec tv[2], struct fuse_file_info *fi)
 {
-  struct fuse_context *fctx = fuse_get_context();
-  struct kafs_context *ctx = fctx->private_data;
-  if (kafs_is_ctl_path(path))
-    return -EACCES;
+  struct fuse_context *fctx = NULL;
+  struct kafs_context *ctx = NULL;
+  int gate = kafs_mutation_path_context(path, &fctx, &ctx);
+  if (gate != 0)
+    return gate;
   uint64_t t0_ns = kafs_now_ns();
   kafs_sinode_t *inoent = NULL;
   uint32_t ino = KAFS_INO_NONE;
@@ -9938,10 +9988,11 @@ static int kafs_op_unlink(const char *path)
   assert(path != NULL);
   assert(path[0] == '/');
   assert(path[1] != '\0');
-  if (kafs_is_ctl_path(path))
-    return -EACCES;
-  struct fuse_context *fctx = fuse_get_context();
-  struct kafs_context *ctx = fctx->private_data;
+  struct fuse_context *fctx = NULL;
+  struct kafs_context *ctx = NULL;
+  int gate = kafs_mutation_path_context(path, &fctx, &ctx);
+  if (gate != 0)
+    return gate;
   uint64_t jseq = kafs_journal_begin(ctx, "UNLINK", "path=%s", path);
   char path_copy[strlen(path) + 1];
   strcpy(path_copy, path);
@@ -10030,6 +10081,12 @@ static int kafs_op_access(const char *path, int mode)
     return 0;
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
+  if ((mode & W_OK) != 0)
+  {
+    int gate = kafs_runtime_write_guard(ctx);
+    if (gate != 0)
+      return gate;
+  }
   KAFS_CALL(kafs_access, fctx, ctx, path, NULL, mode, NULL);
   return 0;
 }
@@ -10340,6 +10397,9 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
   struct kafs_context *ctx = fctx->private_data;
   kafs_dlog(2, "%s: enter from=%s to=%s flags=%u\n", __func__, from ? from : "(null)",
             to ? to : "(null)", flags);
+  int gate = kafs_runtime_write_guard(ctx);
+  if (gate != 0)
+    return gate;
   kafs_sinode_t *inoent_src;
   int src_is_dir = 0;
   int rc = kafs_rename_validate_request(from, to, flags);
@@ -10423,10 +10483,11 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
 
 static int kafs_op_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
-  struct fuse_context *fctx = fuse_get_context();
-  struct kafs_context *ctx = fctx->private_data;
-  if (kafs_is_ctl_path(path))
-    return -EACCES;
+  struct fuse_context *fctx = NULL;
+  struct kafs_context *ctx = NULL;
+  int gate = kafs_mutation_path_context(path, &fctx, &ctx);
+  if (gate != 0)
+    return gate;
   uint64_t jseq = kafs_journal_begin(ctx, "CHMOD", "path=%s mode=%o", path, (unsigned)mode);
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
@@ -10441,10 +10502,11 @@ static int kafs_op_chmod(const char *path, mode_t mode, struct fuse_file_info *f
 
 static int kafs_op_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi)
 {
-  struct fuse_context *fctx = fuse_get_context();
-  struct kafs_context *ctx = fctx->private_data;
-  if (kafs_is_ctl_path(path))
-    return -EACCES;
+  struct fuse_context *fctx = NULL;
+  struct kafs_context *ctx = NULL;
+  int gate = kafs_mutation_path_context(path, &fctx, &ctx);
+  if (gate != 0)
+    return gate;
   uint64_t jseq =
       kafs_journal_begin(ctx, "CHOWN", "path=%s uid=%u gid=%u", path, (unsigned)uid, (unsigned)gid);
   kafs_sinode_t *inoent;
@@ -10460,10 +10522,11 @@ static int kafs_op_chown(const char *path, uid_t uid, gid_t gid, struct fuse_fil
 
 static int kafs_op_symlink(const char *target, const char *linkpath)
 {
-  struct fuse_context *fctx = fuse_get_context();
-  struct kafs_context *ctx = fctx->private_data;
-  if (kafs_is_ctl_path(linkpath))
-    return -EACCES;
+  struct fuse_context *fctx = NULL;
+  struct kafs_context *ctx = NULL;
+  int gate = kafs_mutation_path_context(linkpath, &fctx, &ctx);
+  if (gate != 0)
+    return gate;
   uint64_t jseq = kafs_journal_begin(ctx, "SYMLINK", "target=%s linkpath=%s", target, linkpath);
   kafs_inocnt_t ino;
   KAFS_CALL(kafs_create, linkpath, 0777 | S_IFLNK, 0, NULL, &ino);
@@ -10569,6 +10632,9 @@ static int kafs_op_link(const char *from, const char *to)
 
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
+  int gate = kafs_runtime_write_guard(ctx);
+  if (gate != 0)
+    return gate;
 
   kafs_sinode_t *inoent_src;
   int rc = kafs_link_validate_source(fctx, ctx, from, &inoent_src);
@@ -10704,6 +10770,8 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
     kafs_dlog(2, "%s: exit rc=0 (no backing fd) path=%s\n", __func__, path ? path : "(null)");
     return 0;
   }
+  if (ctx->c_runtime_read_only)
+    return 0;
 
   uint32_t ino = kafs_fsync_resolve_inode(fctx, ctx, path, fi);
   if (ino != KAFS_INO_NONE)
@@ -10759,6 +10827,8 @@ static void *kafs_op_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 #endif
   struct fuse_context *fctx = fuse_get_context();
   kafs_context_t *ctx = fctx ? (kafs_context_t *)fctx->private_data : NULL;
+  if (ctx && ctx->c_runtime_read_only)
+    return ctx;
   if (ctx && ctx->c_pendinglog_enabled)
   {
     int prc = kafs_pending_worker_start(ctx);
@@ -10852,6 +10922,12 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
     return 0;
 
   kafs_inocnt_t ino = fi->fh;
+  if (ctx && ctx->c_runtime_read_only)
+  {
+    if (ctx->c_open_cnt)
+      (void)__atomic_sub_fetch(&ctx->c_open_cnt[ino], 1u, __ATOMIC_RELAXED);
+    return kafs_op_flush(path, fi);
+  }
   int reclaimed = 0;
   if (ctx && ctx->c_open_cnt)
   {
@@ -12600,6 +12676,15 @@ static void kafs_main_build_fuse_argv(char **argv_clean, int argc_clean, kafs_bo
   argv_fuse[*argc_fuse] = NULL;
 }
 
+static void kafs_main_apply_fuse_readonly_arg(kafs_context_t *ctx, char **argv_fuse, int *argc_fuse)
+{
+  if (!ctx || !ctx->c_runtime_read_only)
+    return;
+  argv_fuse[(*argc_fuse)++] = "-o";
+  argv_fuse[(*argc_fuse)++] = "ro";
+  argv_fuse[*argc_fuse] = NULL;
+}
+
 static void kafs_main_log_runtime_options(kafs_context_t *ctx, kafs_bool_t writeback_cache_enabled,
                                           kafs_bool_t writeback_cache_explicit,
                                           kafs_bool_t trim_on_free_enabled,
@@ -12750,9 +12835,17 @@ static int kafs_main_v6_admission_handoff_enabled(void)
   return enabled == KAFS_TRUE;
 }
 
-static int kafs_main_map_v6_runtime_handoff_memory(kafs_context_t *ctx,
-                                                   const kafs_ssuperblock_t *sbdisk,
-                                                   uint64_t file_size)
+static int kafs_main_v6_readonly_smoke_enabled(void)
+{
+  const char *value = getenv("KAFS_V6_READONLY_SMOKE");
+  kafs_bool_t enabled = KAFS_FALSE;
+  kafs_main_apply_optional_bool_env(value, &enabled);
+  return enabled == KAFS_TRUE;
+}
+
+static int kafs_main_map_v6_runtime_admission_memory(kafs_context_t *ctx,
+                                                     const kafs_ssuperblock_t *sbdisk,
+                                                     uint64_t file_size, int prot)
 {
   if (!ctx || !sbdisk || file_size == 0u || file_size > (uint64_t)SIZE_MAX)
     return -EINVAL;
@@ -12764,7 +12857,7 @@ static int kafs_main_map_v6_runtime_handoff_memory(kafs_context_t *ctx,
   kafs_ctx_compute_map_layout(sbdisk, &mapsize, &imgsize, &blkmask_off, &inotbl_off);
 
   size_t map_size = (size_t)file_size;
-  ctx->c_img_base = mmap(NULL, map_size, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->c_fd, 0);
+  ctx->c_img_base = mmap(NULL, map_size, prot, MAP_SHARED, ctx->c_fd, 0);
   if (ctx->c_img_base == MAP_FAILED)
   {
     int err = -errno;
@@ -12782,7 +12875,8 @@ static int kafs_main_map_v6_runtime_handoff_memory(kafs_context_t *ctx,
   return 0;
 }
 
-static int kafs_main_v6_admission_handoff(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk)
+static int kafs_main_v6_runtime_admit_context(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk,
+                                              int prot)
 {
   if (!ctx || ctx->c_fd < 0 || !sbdisk)
     return -EINVAL;
@@ -12790,7 +12884,7 @@ static int kafs_main_v6_admission_handoff(kafs_context_t *ctx, const kafs_ssuper
   uint64_t file_size = 0;
   int rc = kafs_offline_detect_file_size(ctx->c_fd, &file_size);
   if (rc == 0)
-    rc = kafs_main_map_v6_runtime_handoff_memory(ctx, sbdisk, file_size);
+    rc = kafs_main_map_v6_runtime_admission_memory(ctx, sbdisk, file_size, prot);
   if (rc == 0)
     rc = kafs_v6_descriptor_mapping_admit_fd(ctx, ctx->c_fd, file_size, NULL, NULL, NULL, NULL,
                                              NULL);
@@ -12805,6 +12899,15 @@ static int kafs_main_v6_admission_handoff(kafs_context_t *ctx, const kafs_ssuper
                   !ctx->c_v6_inode_mapping_enabled || !ctx->c_v6_alloc_summary_mapping_enabled ||
                   !ctx->c_v6_hrl_mapping_enabled))
     rc = -EPROTO;
+
+  if (rc != 0)
+    kafs_ctx_unmap_image(ctx);
+  return rc;
+}
+
+static int kafs_main_v6_admission_handoff(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk)
+{
+  int rc = kafs_main_v6_runtime_admit_context(ctx, sbdisk, PROT_READ | PROT_WRITE);
 
   if (rc == 0)
   {
@@ -12823,6 +12926,30 @@ static int kafs_main_v6_admission_handoff(kafs_context_t *ctx, const kafs_ssuper
   }
 
   kafs_ctx_unmap_image(ctx);
+  return rc;
+}
+
+static int kafs_main_v6_readonly_smoke_mount(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk,
+                                             kafs_inocnt_t *inocnt_out, kafs_blkcnt_t *r_blkcnt_out)
+{
+  int rc = kafs_main_v6_runtime_admit_context(ctx, sbdisk, PROT_READ);
+  if (rc == 0)
+  {
+    ctx->c_runtime_read_only = 1u;
+    ctx->c_v6_readonly_smoke_enabled = 1u;
+    if (inocnt_out)
+      *inocnt_out = kafs_inocnt_stoh(sbdisk->s_inocnt);
+    if (r_blkcnt_out)
+      *r_blkcnt_out = kafs_blkcnt_stoh(sbdisk->s_r_blkcnt);
+    fprintf(stderr, "format v6 readonly smoke: selected descriptor retained in read-only runtime "
+                    "context; FUSE mount is read-only and write admission remains disabled.\n");
+  }
+  else
+  {
+    char errbuf[128];
+    fprintf(stderr, "format v6 readonly smoke admission failed: %s.\n",
+            kafs_main_rc_text(rc, errbuf, sizeof(errbuf)));
+  }
   return rc;
 }
 
@@ -12887,7 +13014,7 @@ static void kafs_main_init_runtime_journal(kafs_context_t *ctx, const char *imag
 static void kafs_main_lock_runtime_image(kafs_context_t *ctx, const char *image_path)
 {
   struct flock lk = {0};
-  lk.l_type = F_WRLCK;
+  lk.l_type = ctx && ctx->c_runtime_read_only ? F_RDLCK : F_WRLCK;
   lk.l_whence = SEEK_SET;
   lk.l_start = 0;
   lk.l_len = 0;
@@ -12930,6 +13057,15 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
   kafs_blkcnt_t r_blkcnt = 0;
   if (fmt_ver == KAFS_FORMAT_VERSION_V6)
   {
+    if (kafs_main_v6_readonly_smoke_enabled())
+    {
+      int rc = kafs_main_v6_readonly_smoke_mount(ctx, &sbdisk, &inocnt, &r_blkcnt);
+      if (rc != 0)
+        exit(2);
+      kafs_main_init_runtime_diag(ctx, image_path, inocnt);
+      kafs_main_lock_runtime_image(ctx, image_path);
+      return;
+    }
     if (kafs_main_v6_admission_handoff_enabled())
       (void)kafs_main_v6_admission_handoff(ctx, &sbdisk);
     else
@@ -13039,6 +13175,13 @@ int main(int argc, char **argv)
     return 2;
 
   kafs_main_open_runtime_context(&ctx, image_path, auto_migrate, migrate_yes);
+  if (ctx.c_runtime_read_only)
+  {
+    writeback_cache_enabled = KAFS_FALSE;
+    writeback_cache_explicit = KAFS_TRUE;
+    trim_on_free_enabled = KAFS_FALSE;
+    trim_on_free_explicit = KAFS_TRUE;
+  }
 
   char *argv_fuse[argc_clean + 10];
   char mt_opt_buf[64];
@@ -13046,6 +13189,7 @@ int main(int argc, char **argv)
   kafs_main_build_fuse_argv(argv_clean, argc_clean, &enable_mt, saw_max_threads, mt_cnt_override,
                             mt_cnt_override_set, argv_fuse, &argc_fuse, mt_opt_buf,
                             sizeof(mt_opt_buf));
+  kafs_main_apply_fuse_readonly_arg(&ctx, argv_fuse, &argc_fuse);
   kafs_main_log_runtime_options(&ctx, writeback_cache_enabled, writeback_cache_explicit,
                                 trim_on_free_enabled, trim_on_free_explicit, argc_fuse, argv_fuse);
   fuse_set_log_func(kafs_fuse_log_func);

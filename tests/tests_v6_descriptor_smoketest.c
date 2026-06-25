@@ -5,12 +5,15 @@
 #include "kafs_v6_layout.h"
 
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -120,6 +123,134 @@ static int check_v6_descriptor_direct(const char *img)
   return 0;
 }
 
+static int file_contains(const char *path, const char *needle)
+{
+  FILE *fp = fopen(path, "r");
+  if (!fp)
+    return 0;
+
+  char line[512];
+  int found = 0;
+  while (fgets(line, sizeof(line), fp))
+  {
+    if (strstr(line, needle))
+    {
+      found = 1;
+      break;
+    }
+  }
+  fclose(fp);
+  return found;
+}
+
+static int check_v6_readonly_mount_smoke(const char *img)
+{
+  if (access("/dev/fuse", R_OK | W_OK) != 0)
+  {
+    tlogf("skip v6 readonly mount smoke: /dev/fuse unavailable");
+    return 0;
+  }
+
+  const char *mnt = "mnt-readonly-smoke";
+  const char *log_path = "v6-readonly-smoke.log";
+  kafs_test_mount_options_t options = {
+      .debug = "1",
+      .log_path = log_path,
+      .extra_options = "ro,no_writeback_cache",
+      .timeout_ms = 10000,
+  };
+
+  setenv("KAFS_V6_READONLY_SMOKE", "1", 1);
+  pid_t srv = kafs_test_start_kafs(img, mnt, &options);
+  unsetenv("KAFS_V6_READONLY_SMOKE");
+  if (srv <= 0)
+  {
+    kafs_test_dump_log(log_path, "v6 readonly smoke mount failed");
+    return 77;
+  }
+
+  int rc = 0;
+  struct stat st = {0};
+  if (stat(mnt, &st) != 0 || !S_ISDIR(st.st_mode))
+  {
+    tlogf("v6 readonly smoke root stat failed: %s", strerror(errno));
+    rc = 1;
+    goto out_stop;
+  }
+
+  struct statvfs sv = {0};
+  if (statvfs(mnt, &sv) != 0 || sv.f_blocks == 0)
+  {
+    tlogf("v6 readonly smoke statvfs failed: %s", strerror(errno));
+    rc = 1;
+    goto out_stop;
+  }
+
+  DIR *dir = opendir(mnt);
+  if (!dir)
+  {
+    tlogf("v6 readonly smoke opendir failed: %s", strerror(errno));
+    rc = 1;
+    goto out_stop;
+  }
+  int saw_dot = 0;
+  errno = 0;
+  for (struct dirent *de = readdir(dir); de; de = readdir(dir))
+  {
+    if (strcmp(de->d_name, ".") == 0)
+      saw_dot = 1;
+  }
+  int saved_errno = errno;
+  closedir(dir);
+  if (saved_errno != 0 || !saw_dot)
+  {
+    tlogf("v6 readonly smoke readdir failed: errno=%s saw_dot=%d", strerror(saved_errno),
+          saw_dot);
+    rc = 1;
+    goto out_stop;
+  }
+
+  char path[PATH_MAX];
+  snprintf(path, sizeof(path), "%s/new.txt", mnt);
+  int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+  if (fd >= 0)
+  {
+    close(fd);
+    tlogf("v6 readonly smoke create unexpectedly succeeded");
+    rc = 1;
+    goto out_stop;
+  }
+  if (errno != EROFS)
+  {
+    tlogf("v6 readonly smoke create errno=%s (expected EROFS)", strerror(errno));
+    rc = 1;
+    goto out_stop;
+  }
+
+  snprintf(path, sizeof(path), "%s/subdir", mnt);
+  if (mkdir(path, 0755) == 0)
+  {
+    tlogf("v6 readonly smoke mkdir unexpectedly succeeded");
+    rc = 1;
+    goto out_stop;
+  }
+  if (errno != EROFS)
+  {
+    tlogf("v6 readonly smoke mkdir errno=%s (expected EROFS)", strerror(errno));
+    rc = 1;
+    goto out_stop;
+  }
+
+out_stop:
+  kafs_test_stop_kafs(mnt, srv);
+  if (rc == 0 && !file_contains(log_path, "format v6 readonly smoke"))
+  {
+    tlogf("v6 readonly smoke log missing admission message");
+    rc = 1;
+  }
+  return rc;
+}
+
 int main(void)
 {
   if (kafs_test_enter_tmpdir("v6_descriptor") != 0)
@@ -205,6 +336,12 @@ int main(void)
     tlogf("v6 runtime handoff error missing descriptor/offline-only guidance: %s", out);
     return 1;
   }
+
+  int readonly_rc = check_v6_readonly_mount_smoke(img);
+  if (readonly_rc == 77)
+    return 77;
+  if (readonly_rc != 0)
+    return 1;
 
   return 0;
 }
