@@ -12742,6 +12742,90 @@ static int kafs_main_v6_admission_preflight(int fd, const kafs_ssuperblock_t *sb
   return rc;
 }
 
+static int kafs_main_v6_admission_handoff_enabled(void)
+{
+  const char *value = getenv("KAFS_V6_ADMISSION_HANDOFF");
+  kafs_bool_t enabled = KAFS_FALSE;
+  kafs_main_apply_optional_bool_env(value, &enabled);
+  return enabled == KAFS_TRUE;
+}
+
+static int kafs_main_map_v6_runtime_handoff_memory(kafs_context_t *ctx,
+                                                   const kafs_ssuperblock_t *sbdisk,
+                                                   uint64_t file_size)
+{
+  if (!ctx || !sbdisk || file_size == 0u || file_size > (uint64_t)SIZE_MAX)
+    return -EINVAL;
+
+  off_t mapsize = 0;
+  off_t imgsize = 0;
+  intptr_t blkmask_off = 0;
+  intptr_t inotbl_off = 0;
+  kafs_ctx_compute_map_layout(sbdisk, &mapsize, &imgsize, &blkmask_off, &inotbl_off);
+
+  size_t map_size = (size_t)file_size;
+  ctx->c_img_base = mmap(NULL, map_size, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->c_fd, 0);
+  if (ctx->c_img_base == MAP_FAILED)
+  {
+    int err = -errno;
+    ctx->c_img_base = NULL;
+    return err;
+  }
+
+  ctx->c_img_size = map_size;
+  ctx->c_superblock = (kafs_ssuperblock_t *)ctx->c_img_base;
+  ctx->c_mapsize = (mapsize > 0 && (uint64_t)mapsize <= file_size) ? (size_t)mapsize : map_size;
+  if (blkmask_off >= 0 && (uint64_t)blkmask_off < file_size)
+    ctx->c_blkmasktbl = (kafs_blkmask_t *)((char *)ctx->c_superblock + blkmask_off);
+  if (inotbl_off >= 0 && (uint64_t)inotbl_off < file_size)
+    ctx->c_inotbl = (kafs_sinode_t *)((char *)ctx->c_superblock + inotbl_off);
+  return 0;
+}
+
+static int kafs_main_v6_admission_handoff(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk)
+{
+  if (!ctx || ctx->c_fd < 0 || !sbdisk)
+    return -EINVAL;
+
+  uint64_t file_size = 0;
+  int rc = kafs_offline_detect_file_size(ctx->c_fd, &file_size);
+  if (rc == 0)
+    rc = kafs_main_map_v6_runtime_handoff_memory(ctx, sbdisk, file_size);
+  if (rc == 0)
+    rc = kafs_v6_descriptor_mapping_admit_fd(ctx, ctx->c_fd, file_size, NULL, NULL, NULL, NULL,
+                                             NULL);
+  if (rc == 0)
+  {
+    kafs_v6_journal_segment_report_t journal_report;
+    rc = kafs_v6_journal_validate_segments_fd(ctx->c_fd, ctx->c_v6_layout_desc,
+                                              ctx->c_v6_layout_desc_bytes, ctx->c_superblock,
+                                              file_size, &journal_report);
+  }
+  if (rc == 0 && (!ctx->c_v6_layout_desc_owned || !ctx->c_v6_bitmap_mapping_enabled ||
+                  !ctx->c_v6_inode_mapping_enabled || !ctx->c_v6_alloc_summary_mapping_enabled ||
+                  !ctx->c_v6_hrl_mapping_enabled))
+    rc = -EPROTO;
+
+  if (rc == 0)
+  {
+    fprintf(stderr,
+            "format v6 admission handoff: selected descriptor retained in runtime context "
+            "(inode_shards=%u allocator_shards=%u hrl_index_shards=%u hrl_entry_shards=%u); "
+            "runtime mount remains offline-only.\n",
+            ctx->c_v6_inode_shard_count, ctx->c_v6_alloc_summary_shard_count,
+            ctx->c_v6_hrl_index_shard_count, ctx->c_v6_hrl_entry_shard_count);
+  }
+  else
+  {
+    char errbuf[128];
+    fprintf(stderr, "format v6 admission handoff failed: %s.\n",
+            kafs_main_rc_text(rc, errbuf, sizeof(errbuf)));
+  }
+
+  kafs_ctx_unmap_image(ctx);
+  return rc;
+}
+
 static void kafs_main_map_runtime_memory(kafs_context_t *ctx, uint32_t fmt_ver, off_t imgsize,
                                          off_t mapsize, intptr_t blkmask_off, intptr_t inotbl_off)
 {
@@ -12845,7 +12929,12 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
   kafs_inocnt_t inocnt = 0;
   kafs_blkcnt_t r_blkcnt = 0;
   if (fmt_ver == KAFS_FORMAT_VERSION_V6)
-    (void)kafs_main_v6_admission_preflight(ctx->c_fd, &sbdisk);
+  {
+    if (kafs_main_v6_admission_handoff_enabled())
+      (void)kafs_main_v6_admission_handoff(ctx, &sbdisk);
+    else
+      (void)kafs_main_v6_admission_preflight(ctx->c_fd, &sbdisk);
+  }
   kafs_main_validate_image_format(image_path, fmt_ver, auto_migrate, migrate_yes);
   kafs_main_map_runtime_image(ctx, &sbdisk, fmt_ver, &inocnt, &r_blkcnt);
   kafs_main_init_runtime_diag(ctx, image_path, inocnt);

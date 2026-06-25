@@ -370,6 +370,10 @@
     descriptor-backed journal segment を選択し、header/data writes と replay reset を legacy prefix
     offset ではなく `journal_header` / `journal_data` lookup 経由にする。v6 runtime mount はまだ有効化
     しない。
+  - `KAFS_V6_ADMISSION_HANDOFF=1` を指定した CLI mount は full image を実 runtime context に mmap し、
+    selected descriptor と shard maps を `kafs_context` に保持した状態で journal segment health まで
+    検証してから解放し、同じ offline-only gate で拒否する。FUSE mount / v6 write admission はまだ
+    有効化しない。
 - 完了条件:
   - build/test PASS。
   - v6 mkfs/mount/basic filesystem semantics PASS。

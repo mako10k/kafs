@@ -24,7 +24,8 @@ static void tlogf(const char *fmt, ...)
   va_end(ap);
 }
 
-static int run_cmd_capture(char *const argv[], int expected_exit, char *out, size_t out_sz)
+static int run_cmd_capture_env(char *const argv[], int expected_exit, const char *env_name,
+                               const char *env_value, char *out, size_t out_sz)
 {
   int pipefd[2];
   if (pipe(pipefd) != 0)
@@ -43,6 +44,8 @@ static int run_cmd_capture(char *const argv[], int expected_exit, char *out, siz
     dup2(pipefd[1], STDOUT_FILENO);
     dup2(pipefd[1], STDERR_FILENO);
     close(pipefd[1]);
+    if (env_name && env_value)
+      setenv(env_name, env_value, 1);
     execvp(argv[0], argv);
     _exit(127);
   }
@@ -80,6 +83,11 @@ static int run_cmd_capture(char *const argv[], int expected_exit, char *out, siz
   if (!WIFEXITED(st))
     return -1;
   return (WEXITSTATUS(st) == expected_exit) ? 0 : -1;
+}
+
+static int run_cmd_capture(char *const argv[], int expected_exit, char *out, size_t out_sz)
+{
+  return run_cmd_capture_env(argv, expected_exit, NULL, NULL, out, out_sz);
 }
 
 static int check_v6_descriptor_direct(const char *img)
@@ -121,6 +129,11 @@ int main(void)
   if (mkdir("mnt", 0755) != 0)
   {
     tlogf("mkdir mnt failed");
+    return 1;
+  }
+  if (mkdir("mnt-handoff", 0755) != 0)
+  {
+    tlogf("mkdir mnt-handoff failed");
     return 1;
   }
 
@@ -175,6 +188,21 @@ int main(void)
       !strstr(out, "offline-only"))
   {
     tlogf("v6 runtime mount error missing preflight/offline-only guidance: %s", out);
+    return 1;
+  }
+
+  char *handoff_argv[] = {(char *)kafs_test_kafs_bin(), (char *)img, (char *)"mnt-handoff",
+                          NULL};
+  if (run_cmd_capture_env(handoff_argv, 2, "KAFS_V6_ADMISSION_HANDOFF", "1", out, sizeof(out)) !=
+      0)
+  {
+    tlogf("v6 runtime handoff did not fail as expected: %s", out);
+    return 1;
+  }
+  if (!strstr(out, "admission handoff") || !strstr(out, "selected descriptor retained") ||
+      !strstr(out, "offline-only"))
+  {
+    tlogf("v6 runtime handoff error missing descriptor/offline-only guidance: %s", out);
     return 1;
   }
 

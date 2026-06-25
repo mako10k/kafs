@@ -378,6 +378,10 @@ an unsupported-format error. It must not attempt to mount a v6 descriptor image 
 prefix layout. The CLI mount path runs a v6 admission preflight before that rejection: it discovers
 the selected descriptor, validates descriptor-backed bitmap/inode/allocator/HRL coverage plus journal
 segment health, reports the result, and then still exits through the offline-only gate.
+For runtime handoff testing only, `KAFS_V6_ADMISSION_HANDOFF=1` maps the full image into the real
+mount context, retains the selected descriptor and shard maps in `kafs_context`, validates journal
+segment health from that context, reports the handoff, releases the mapping, and still exits through
+the same offline-only gate. This does not enable FUSE mount or v6 write admission.
 
 ### `kafsdump`
 
@@ -548,8 +552,8 @@ Journal distribution:
   legacy prefix geometry.
 - Runtime v6 mount is still disabled. The live journal write/replay path must use the descriptor
   journal segment lookup before v6 write mount is enabled; until then, the implemented checks are
-  offline scaffold validation, dormant admission validation, and CLI mount preflight diagnostics
-  only.
+  offline scaffold validation, dormant admission validation, CLI mount preflight diagnostics, and the
+  explicit `KAFS_V6_ADMISSION_HANDOFF=1` runtime-context handoff diagnostic only.
 
 ## Phase 3 Follow-Ups
 
