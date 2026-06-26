@@ -19,6 +19,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#define KAFSRESIZE_DUMP_JSON_BUF_SIZE (64u * 1024u)
+
 static int run_cmd_status(char *const argv[])
 {
   pid_t pid = fork();
@@ -137,6 +139,29 @@ static int run_cmd_capture_stdout(char *const argv[], char *stdout_buf, size_t s
   return 255;
 }
 
+static int expect_text_contains(const char *label, const char *text, const char *needle)
+{
+  if (strstr(text, needle))
+    return 0;
+  fprintf(stderr, "%s missing expected text: %s\n", label, needle);
+  return 1;
+}
+
+static int expect_json_u64_field(const char *label, const char *json, const char *field,
+                                 uint64_t value)
+{
+  char needle[128];
+  snprintf(needle, sizeof(needle), "\"%s\": %" PRIu64, field, value);
+  return expect_text_contains(label, json, needle);
+}
+
+static int expect_json_bool_field(const char *label, const char *json, const char *field, int value)
+{
+  char needle[128];
+  snprintf(needle, sizeof(needle), "\"%s\": %s", field, value ? "true" : "false");
+  return expect_text_contains(label, json, needle);
+}
+
 static int to_abs_path(const char *in, char *out, size_t out_sz)
 {
   if (!in || !*in || !out || out_sz == 0)
@@ -236,6 +261,66 @@ static int create_sized_file(const char *path, off_t size)
   }
   close(fd);
   return 0;
+}
+
+static int expect_v5_migrate_source_dump_json(const char *json)
+{
+  return expect_text_contains("v5 source kafsdump JSON", json, "\"superblock\"") ||
+         expect_json_u64_field("v5 source kafsdump JSON", json, "format_version",
+                               KAFS_FORMAT_VERSION_V5) ||
+         expect_json_u64_field("v5 source kafsdump JSON", json, "inode_count", 2048u) ||
+         expect_json_bool_field("v5 source kafsdump JSON", json, "tailmeta_enabled", 1) ||
+         expect_text_contains("v5 source kafsdump JSON", json, "\"v6_layout_descriptor\"") ||
+         expect_text_contains("v5 source kafsdump JSON", json, "\"status\": \"not_applicable\"") ||
+         expect_text_contains("v5 source kafsdump JSON", json,
+                              "\"name\": \"tail_metadata\", \"available\": true") ||
+         expect_text_contains("v5 source kafsdump JSON", json, "\"inode_summary\"") ||
+         expect_json_u64_field("v5 source kafsdump JSON", json, "used", 1u);
+}
+
+static int expect_v6_migrate_destination_dump_json(const char *json)
+{
+  return expect_text_contains("v6 destination kafsdump JSON", json, "\"superblock\"") ||
+         expect_json_u64_field("v6 destination kafsdump JSON", json, "format_version",
+                               KAFS_FORMAT_VERSION_V6) ||
+         expect_json_u64_field("v6 destination kafsdump JSON", json, "inode_count", 4096u) ||
+         expect_json_bool_field("v6 destination kafsdump JSON", json, "tailmeta_enabled", 0) ||
+         expect_text_contains("v6 destination kafsdump JSON", json, "\"v6_layout_descriptor\"") ||
+         expect_text_contains("v6 destination kafsdump JSON", json, "\"status\": \"ok\"") ||
+         expect_json_bool_field("v6 destination kafsdump JSON", json, "anchor_valid", 1) ||
+         expect_json_u64_field("v6 destination kafsdump JSON", json, "group_count", 1u) ||
+         expect_json_u64_field("v6 destination kafsdump JSON", json, "shard_count", 12u) ||
+         expect_json_u64_field("v6 destination kafsdump JSON", json, "replica_count", 3u) ||
+         expect_text_contains("v6 destination kafsdump JSON", json,
+                              "{\"group_id\": 0, \"metadata_start_block\"") ||
+         expect_text_contains("v6 destination kafsdump JSON", json,
+                              "\"type\": \"block_bitmap\"") ||
+         expect_text_contains("v6 destination kafsdump JSON", json,
+                              "\"type\": \"inode_table\"") ||
+         expect_text_contains("v6 destination kafsdump JSON", json,
+                              "\"type\": \"allocator_summary\"") ||
+         expect_text_contains("v6 destination kafsdump JSON", json,
+                              "\"type\": \"hrl_index\"") ||
+         expect_text_contains("v6 destination kafsdump JSON", json,
+                              "\"type\": \"hrl_entries\"") ||
+         expect_text_contains("v6 destination kafsdump JSON", json,
+                              "\"type\": \"journal_header\"") ||
+         expect_text_contains("v6 destination kafsdump JSON", json,
+                              "\"type\": \"journal_data\"") ||
+         expect_text_contains("v6 destination kafsdump JSON", json,
+                              "\"type\": \"pending_log\"") ||
+         expect_text_contains("v6 destination kafsdump JSON", json,
+                              "\"type\": \"layout_descriptor\"") ||
+         expect_text_contains("v6 destination kafsdump JSON", json, "\"v6_bitmap_shards\"") ||
+         expect_json_bool_field("v6 destination kafsdump JSON", json, "lookup_available", 1) ||
+         expect_text_contains("v6 destination kafsdump JSON", json, "\"v6_journal_segments\"") ||
+         expect_json_u64_field("v6 destination kafsdump JSON", json, "segment_count", 1u) ||
+         expect_json_u64_field("v6 destination kafsdump JSON", json, "selected_group", 0u) ||
+         expect_text_contains("v6 destination kafsdump JSON", json,
+                              "\"name\": \"tail_metadata\", \"available\": false") ||
+         expect_text_contains("v6 destination kafsdump JSON", json, "\"tail_metadata\": {\n"
+                                                                      "    \"status\": \"ok\",\n"
+                                                                      "    \"available\": false");
 }
 
 static int read_tailmeta_region_header(const char *img, uint64_t off,
@@ -1045,6 +1130,18 @@ int main(void)
     return 1;
   }
 
+  char migrate_v5_source_pre_json[KAFSRESIZE_DUMP_JSON_BUF_SIZE];
+  char *dump_src_v5_pre_argv[] = {(char *)dump_abs, (char *)"--json", (char *)src_v5_migrate_img,
+                                  NULL};
+  if (run_cmd_capture_stdout(dump_src_v5_pre_argv, migrate_v5_source_pre_json,
+                             sizeof(migrate_v5_source_pre_json)) != 0)
+  {
+    fprintf(stderr, "kafsdump --json for pre-migration v5 source failed\n");
+    return 1;
+  }
+  if (expect_v5_migrate_source_dump_json(migrate_v5_source_pre_json) != 0)
+    return 1;
+
   char migrate_v6_stdout[4096];
   char *migrate_create_v6_argv[] = {(char *)resize_abs,
                                     (char *)"--migrate-create",
@@ -1083,6 +1180,32 @@ int main(void)
     fprintf(stderr, "migrate-create v6 output missing format version summary\n");
     return 1;
   }
+
+  char migrate_v5_source_post_json[KAFSRESIZE_DUMP_JSON_BUF_SIZE];
+  char *dump_src_v5_post_argv[] = {(char *)dump_abs, (char *)"--json", (char *)src_v5_migrate_img,
+                                   NULL};
+  if (run_cmd_capture_stdout(dump_src_v5_post_argv, migrate_v5_source_post_json,
+                             sizeof(migrate_v5_source_post_json)) != 0)
+  {
+    fprintf(stderr, "kafsdump --json for post-migration v5 source failed\n");
+    return 1;
+  }
+  if (strcmp(migrate_v5_source_pre_json, migrate_v5_source_post_json) != 0)
+  {
+    fprintf(stderr, "v6 migrate-create changed source kafsdump JSON summary\n");
+    return 1;
+  }
+
+  char migrate_v6_dst_json[KAFSRESIZE_DUMP_JSON_BUF_SIZE];
+  char *dump_dst_v6_argv[] = {(char *)dump_abs, (char *)"--json", (char *)dst_v6_img, NULL};
+  if (run_cmd_capture_stdout(dump_dst_v6_argv, migrate_v6_dst_json,
+                             sizeof(migrate_v6_dst_json)) != 0)
+  {
+    fprintf(stderr, "kafsdump --json for migrate-create v6 destination failed\n");
+    return 1;
+  }
+  if (expect_v6_migrate_destination_dump_json(migrate_v6_dst_json) != 0)
+    return 1;
 
   const char *dst_v6_nosrc_img = "migrate-dst-v6-nosrc.img";
   if (create_sized_file(dst_v6_nosrc_img, 64 * 1024 * 1024) != 0)

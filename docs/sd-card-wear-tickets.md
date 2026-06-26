@@ -425,6 +425,8 @@
   - `--format-version 6` の通常 `--migrate-create` でも `--src-image` を必須にし、clean v5 source、
     宛先 inode/data capacity、v6 descriptor replica placement の precheck を destination overwrite 前に
     実行する。
+  - v5 source / v6 destination の `kafsdump --json` pre/post summaries を regression に追加し、source
+    summary が不変で、destination が v6 descriptor replica / group / shard scaffold を持つことを確認する。
 - 完了条件:
   - v5 source を v6 destination に migrate できる。
   - pre/post `kafsdump --json` summaries が期待する logical metadata と一致する。
