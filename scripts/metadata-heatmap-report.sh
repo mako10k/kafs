@@ -20,6 +20,7 @@ Options:
   --image-size-mib N             Test image size in MiB (default: 256)
   --files N                      Number of workload files (default: 240)
   --rounds N                     Append/rename workload rounds (default: 2)
+  --v6-kafsdump-json FILE        Build a v6 group/shard heatmap from existing kafsdump JSON
   --keep-workdir                 Keep the temporary image/workdir after exit
   -h, --help                     Show this help
 USAGEEOF
@@ -34,6 +35,7 @@ WORKLOAD_ROUNDS=2
 KEEP_WORKDIR=0
 WORKLOAD_TIMEOUT_SEC=${KAFS_HEATMAP_WORKLOAD_TIMEOUT_SEC:-120}
 MOUNT_TIMEOUT_MS=${KAFS_HEATMAP_MOUNT_TIMEOUT_MS:-15000}
+V6_KAFSDUMP_JSON=""
 
 die() {
   echo "ERROR: $*" >&2
@@ -65,6 +67,11 @@ while [[ $# -gt 0 ]]; do
     --rounds)
       [[ $# -ge 2 ]] || die "missing value for --rounds"
       WORKLOAD_ROUNDS="$2"
+      shift 2
+      ;;
+    --v6-kafsdump-json)
+      [[ $# -ge 2 ]] || die "missing value for --v6-kafsdump-json"
+      V6_KAFSDUMP_JSON="$2"
       shift 2
       ;;
     --keep-workdir)
@@ -105,24 +112,184 @@ KAFSCTL_BIN="${KAFSCTL_BIN:-$ROOT_DIR/src/kafsctl}"
 KAFSDUMP_BIN="${KAFSDUMP_BIN:-$ROOT_DIR/src/kafsdump}"
 FSCK_BIN="${FSCK_BIN:-$ROOT_DIR/src/fsck.kafs}"
 
+command -v python3 >/dev/null 2>&1 || die "python3 not found"
+
+mkdir -p "$OUT_DIR"
+OUT_DIR=$(cd "$OUT_DIR" && pwd)
+KAFSDUMP_JSON="$OUT_DIR/kafsdump.json"
+HEATMAP_JSON="$OUT_DIR/metadata-heatmap.json"
+SUMMARY_MD="$OUT_DIR/SUMMARY.md"
+
+if [[ -n "$V6_KAFSDUMP_JSON" ]]; then
+  [[ -r "$V6_KAFSDUMP_JSON" ]] || die "v6 kafsdump JSON missing: $V6_KAFSDUMP_JSON"
+  V6_KAFSDUMP_JSON_ABS=$(cd "$(dirname "$V6_KAFSDUMP_JSON")" && pwd)/$(basename "$V6_KAFSDUMP_JSON")
+  if [[ "$V6_KAFSDUMP_JSON_ABS" != "$KAFSDUMP_JSON" ]]; then
+    cp "$V6_KAFSDUMP_JSON_ABS" "$KAFSDUMP_JSON"
+  fi
+
+  echo "=== KAFS v6 metadata group heatmap ==="
+  echo "report: $OUT_DIR"
+  echo "source: $V6_KAFSDUMP_JSON_ABS"
+
+  python3 - "$KAFSDUMP_JSON" "$HEATMAP_JSON" "$SUMMARY_MD" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+dump_path, heatmap_path, summary_path = sys.argv[1:]
+dump = json.loads(Path(dump_path).read_text(encoding="utf-8"))
+
+v6 = dump.get("v6_layout_descriptor")
+if not isinstance(v6, dict):
+    raise SystemExit("kafsdump JSON missing v6_layout_descriptor")
+if not v6.get("available", False):
+    raise SystemExit("v6 layout descriptor is not available")
+
+groups = v6.get("groups")
+shards = v6.get("shards")
+if not isinstance(groups, list) or not isinstance(shards, list):
+    raise SystemExit("v6 layout descriptor missing groups/shards")
+
+write_candidate_type_order = [
+    "superblock_checkpoint",
+    "block_bitmap",
+    "inode_table",
+    "allocator_summary",
+    "hrl_index",
+    "hrl_entries",
+    "journal_header",
+    "journal_data",
+    "pending_log",
+    "tail_metadata",
+]
+write_candidate_types = set(write_candidate_type_order)
+
+group_map = {}
+for group in groups:
+    group_id = int(group.get("group_id", -1))
+    if group_id < 0:
+        raise SystemExit("v6 group is missing group_id")
+    group_map[group_id] = {
+        "group_id": group_id,
+        "metadata_start_block": int(group.get("metadata_start_block", 0)),
+        "metadata_blocks": int(group.get("metadata_blocks", 0)),
+        "data_start_block": int(group.get("data_start_block", 0)),
+        "data_blocks": int(group.get("data_blocks", 0)),
+        "first_shard": int(group.get("first_shard", 0)),
+        "declared_shard_count": int(group.get("shard_count", 0)),
+        "shard_count": 0,
+        "physical_bytes": 0,
+        "types": set(),
+        "write_candidate_shard_count": 0,
+        "write_candidate_bytes": 0,
+        "write_candidate_types": set(),
+    }
+
+for shard in shards:
+    group_id = int(shard.get("group_id", -1))
+    if group_id not in group_map:
+        raise SystemExit(f"v6 shard references unknown group: {group_id}")
+    shard_type = str(shard.get("type", "unknown"))
+    physical_bytes = int(shard.get("physical_bytes", 0))
+    group = group_map[group_id]
+    group["shard_count"] += 1
+    group["physical_bytes"] += physical_bytes
+    group["types"].add(shard_type)
+    if shard_type in write_candidate_types:
+        group["write_candidate_shard_count"] += 1
+        group["write_candidate_bytes"] += physical_bytes
+        group["write_candidate_types"].add(shard_type)
+
+group_summaries = []
+for group_id in sorted(group_map):
+    group = group_map[group_id]
+    group["types"] = sorted(group["types"])
+    group["write_candidate_types"] = [
+        name for name in write_candidate_type_order if name in group["write_candidate_types"]
+    ]
+    group_summaries.append(group)
+
+write_candidate_groups = [
+    group["group_id"] for group in group_summaries if group["write_candidate_shard_count"] > 0
+]
+journal = dump.get("v6_journal_segments", {})
+selected_journal_group = None
+if isinstance(journal, dict) and journal.get("available", False):
+    selected_journal_group = int(journal.get("selected_group", 0))
+
+heatmap = {
+    "mode": "v6_kafsdump_json",
+    "profile": "v6_descriptor",
+    "format_version": int(dump.get("superblock", {}).get("format_version", 0)),
+    "group_count": len(groups),
+    "shard_count": len(shards),
+    "write_candidate_group_count": len(write_candidate_groups),
+    "write_candidate_groups": write_candidate_groups,
+    "metadata_write_distribution": "distributed"
+    if len(write_candidate_groups) > 1
+    else "single_group",
+    "selected_journal_group": selected_journal_group,
+    "groups": group_summaries,
+    "source_files": {
+        "kafsdump_json": str(Path(dump_path).name),
+    },
+}
+Path(heatmap_path).write_text(json.dumps(heatmap, indent=2, sort_keys=True) + "\n",
+                              encoding="utf-8")
+
+lines = [
+    "# KAFS v6 metadata group heatmap",
+    "",
+    "- mode: `v6_kafsdump_json`",
+    f"- format_version: `{heatmap['format_version']}`",
+    f"- group_count: `{heatmap['group_count']}`",
+    f"- shard_count: `{heatmap['shard_count']}`",
+    f"- write_candidate_group_count: `{heatmap['write_candidate_group_count']}`",
+    f"- metadata_write_distribution: `{heatmap['metadata_write_distribution']}`",
+    f"- selected_journal_group: `{selected_journal_group}`",
+    "",
+    "> v6 write mount is still disabled; write-candidate fields summarize descriptor-backed "
+    "metadata shard spans, not runtime write counters.",
+    "",
+    "| group | metadata blocks | data blocks | shards | write-candidate shards | write-candidate bytes | write-candidate types |",
+    "| ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+]
+for group in group_summaries:
+    lines.append(
+        f"| {group['group_id']} | {group['metadata_blocks']} | {group['data_blocks']} | "
+        f"{group['shard_count']} | {group['write_candidate_shard_count']} | "
+        f"{group['write_candidate_bytes']} | `{', '.join(group['write_candidate_types'])}` |"
+    )
+lines.extend([
+    "",
+    "## Source files",
+    "",
+    "- `kafsdump.json`: raw `kafsdump --json` output",
+    "- `metadata-heatmap.json`: normalized v6 group/shard heatmap data",
+])
+Path(summary_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+
+  cat >"$OUT_DIR/COMMAND.txt" <<EOF
+scripts/metadata-heatmap-report.sh --v6-kafsdump-json $V6_KAFSDUMP_JSON_ABS --output-dir $OUT_DIR
+EOF
+
+  echo "PASS: v6 metadata group heatmap generated"
+  echo "summary: $SUMMARY_MD"
+  exit 0
+fi
+
 [[ -x "$KAFS_BIN" ]] || die "kafs binary missing: $KAFS_BIN"
 [[ -x "$MKFS_BIN" ]] || die "mkfs.kafs binary missing: $MKFS_BIN"
 [[ -x "$KAFSCTL_BIN" ]] || die "kafsctl binary missing: $KAFSCTL_BIN"
 [[ -x "$KAFSDUMP_BIN" ]] || die "kafsdump binary missing: $KAFSDUMP_BIN"
 [[ -x "$FSCK_BIN" ]] || die "fsck.kafs binary missing: $FSCK_BIN"
-command -v python3 >/dev/null 2>&1 || die "python3 not found"
-
-mkdir -p "$OUT_DIR"
-OUT_DIR=$(cd "$OUT_DIR" && pwd)
 
 WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/kafs-metadata-heatmap.XXXXXX")
 IMG="$WORKDIR/heatmap.img"
 MNT="$WORKDIR/mnt"
 LOG="$OUT_DIR/kafs.log"
 FSSTAT_JSON="$OUT_DIR/fsstat.json"
-KAFSDUMP_JSON="$OUT_DIR/kafsdump.json"
-HEATMAP_JSON="$OUT_DIR/metadata-heatmap.json"
-SUMMARY_MD="$OUT_DIR/SUMMARY.md"
 KAFS_PID=""
 
 is_mounted() {

@@ -7,6 +7,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -92,6 +93,59 @@ static int run_cmd_capture(char *const argv[], int expected_exit, char *out, siz
   if (!WIFEXITED(st))
     return -1;
   return (WEXITSTATUS(st) == expected_exit) ? 0 : -1;
+}
+
+static int write_text_file(const char *path, const char *text)
+{
+  FILE *fp = fopen(path, "w");
+  if (!fp)
+    return -errno;
+
+  int rc = 0;
+  if (fputs(text ? text : "", fp) < 0)
+    rc = -errno;
+  if (fclose(fp) != 0 && rc == 0)
+    rc = -errno;
+  return rc;
+}
+
+static int read_text_file_limited(const char *path, char *out, size_t out_sz)
+{
+  if (!out || out_sz == 0u)
+    return -EINVAL;
+  FILE *fp = fopen(path, "r");
+  if (!fp)
+    return -errno;
+
+  size_t used = fread(out, 1, out_sz - 1u, fp);
+  out[used] = '\0';
+  int rc = ferror(fp) ? -EIO : 0;
+  if (fclose(fp) != 0 && rc == 0)
+    rc = -errno;
+  return rc;
+}
+
+static int metadata_heatmap_script_path(char *out, size_t out_sz)
+{
+  if (!out || out_sz == 0u)
+    return -EINVAL;
+
+  char resolved[PATH_MAX];
+  if (!realpath(kafs_test_kafsdump_bin(), resolved))
+    return -errno;
+
+  char *slash = strrchr(resolved, '/');
+  if (!slash)
+    return -EINVAL;
+  *slash = '\0';
+  slash = strrchr(resolved, '/');
+  if (!slash)
+    return -EINVAL;
+  *slash = '\0';
+
+  if ((size_t)snprintf(out, out_sz, "%s/scripts/metadata-heatmap-report.sh", resolved) >= out_sz)
+    return -ENAMETOOLONG;
+  return (access(out, X_OK) == 0) ? 0 : -errno;
 }
 
 static int make_v6_image_size(const char *img, const char *size)
@@ -2398,6 +2452,41 @@ static int test_journal_distributed_group_selection(void)
                    "\"logical_start\": 1") ||
       !strstr(out, "\"type_id\": 7, \"type\": \"journal_data\", \"group_id\": 1, "
                    "\"logical_start\": 1"))
+    return -1;
+
+  char cwd[PATH_MAX];
+  char dump_json_path[PATH_MAX];
+  char heatmap_dir[PATH_MAX];
+  char heatmap_json_path[PATH_MAX];
+  char heatmap_script[PATH_MAX];
+  if (!getcwd(cwd, sizeof(cwd)))
+    return -1;
+  if ((size_t)snprintf(dump_json_path, sizeof(dump_json_path), "%s/journal-distributed-kafsdump.json",
+                       cwd) >= sizeof(dump_json_path) ||
+      (size_t)snprintf(heatmap_dir, sizeof(heatmap_dir), "%s/journal-distributed-heatmap", cwd) >=
+          sizeof(heatmap_dir) ||
+      (size_t)snprintf(heatmap_json_path, sizeof(heatmap_json_path), "%s/metadata-heatmap.json",
+                       heatmap_dir) >= sizeof(heatmap_json_path))
+    return -1;
+  if (write_text_file(dump_json_path, out) != 0 || metadata_heatmap_script_path(heatmap_script,
+                                                                                sizeof(heatmap_script)) != 0)
+    return -1;
+
+  char *heatmap_argv[] = {heatmap_script, (char *)"--v6-kafsdump-json", dump_json_path,
+                          (char *)"--output-dir", heatmap_dir, NULL};
+  if (run_cmd_capture(heatmap_argv, 0, out, sizeof(out)) != 0 ||
+      !strstr(out, "PASS: v6 metadata group heatmap generated"))
+  {
+    tlogf("v6 metadata heatmap failed: %s", out);
+    return -1;
+  }
+
+  if (read_text_file_limited(heatmap_json_path, out, sizeof(out)) != 0 ||
+      !strstr(out, "\"mode\": \"v6_kafsdump_json\"") ||
+      !strstr(out, "\"metadata_write_distribution\": \"distributed\"") ||
+      !strstr(out, "\"write_candidate_group_count\": 2") ||
+      !strstr(out, "\"selected_journal_group\": 1") || !strstr(out, "\"journal_header\"") ||
+      !strstr(out, "\"journal_data\""))
     return -1;
   return 0;
 }

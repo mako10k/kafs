@@ -393,6 +393,9 @@
     selected descriptor の logical boundary corruption を確認する。前者は descriptor discovery で
     corrupt replica として拒否し、後者は fsck / descriptor admission / CLI admission preflight で
     fail-closed になる。
+  - `metadata-heatmap-report.sh --v6-kafsdump-json` は `kafsdump --json` から v6 group/shard heatmap
+    を生成し、2-group fixture で descriptor-backed write-candidate metadata spans が group 0/1 に
+    分散していることを確認する。v6 write mount はまだ有効化しない。
 - 完了条件:
   - build/test PASS。
   - v6 mkfs/mount/basic filesystem semantics PASS。

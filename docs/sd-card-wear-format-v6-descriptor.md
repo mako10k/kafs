@@ -577,6 +577,10 @@ Journal distribution:
   by `fsck.kafs` / `kafsdump` as the selected group. The same fixture verifies `kafsdump` text / JSON
   group and shard summaries for the group-1 journal header/data shards without enabling v6 write
   mount.
+- `metadata-heatmap-report.sh --v6-kafsdump-json` builds a read-only group/shard heatmap from
+  `kafsdump --json`. Until v6 write mount is enabled, the report treats non-layout metadata shards as
+  descriptor-backed write-candidate spans and verifies that the distributed journal fixture spans more
+  than one metadata group.
 
 ## Phase 3 Follow-Ups
 
