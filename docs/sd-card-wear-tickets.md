@@ -660,12 +660,33 @@
 ### SDW-V6RT-T10 v6 write opt-in parser and fail-closed gate
 
 - 目的: T9 で予約した v6 write opt-in を parser に追加し、未対応条件を fail closed する。
+- 実施内容:
+  - `--v6-write-mount`、`-o v6_write_mount`、`-o v6-write-mount` を parser に追加した。
+  - `rw` 未指定、`ro` 同時指定、`v6_inspection_mount` 同時指定、`writeback_cache`、`trim_on_free`、
+    `bg_dedup_scan=on` を拒否する fail-closed gate を追加した。
+  - 推奨形 `rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off` まで満たしても、
+    現段階では `controlled write mount is not enabled yet` として拒否する。
+  - `v6_descriptor_smoketest` に parser / fail-closed regression を追加した。
 - 完了条件:
   - `--v6-write-mount`、`-o v6_write_mount`、`-o v6-write-mount` が parser で認識される。
   - `rw` 未指定、`ro` 同時指定、`v6_inspection_mount` 同時指定、`writeback_cache`、`trim_on_free`、
     `bg_dedup_scan=on` が v6 write opt-in で拒否される。
   - 通常 v6 mount と v6 inspection mount の既存挙動が変わらない regression がある。
   - 実際の write admission 成功 path を入れる場合は、T4-T9 の gate と `make check -j2` を closeout に含める。
+- 完了メモ:
+  - v6 write opt-in は parser で認識されるが、write admission 成功 path はまだ有効化しない。
+  - 次は `SDW-V6RT-T11 v6 FUSE write surface admission audit` に進む。
+
+### SDW-V6RT-T11 v6 FUSE write surface admission audit
+
+- 目的: controlled write mount の成功 path を入れる前に、user-visible FUSE write operations の対象範囲を
+  function 単位で固定する。
+- 完了条件:
+  - create/write/truncate/fallocate/unlink/rename/link/symlink/copy/reflink/fsync/release の各 path が
+    descriptor-backed metadata routing、disabled delayed/background policy、lock policy のどれに依存するか
+    表で整理されている。
+  - 初期 controlled write opt-in で許可する operation と拒否する operation が決まっている。
+  - 成功 path を実装する場合の最小 smoke workload と rollback/fsck closeout command が決まっている。
 
 ---
 

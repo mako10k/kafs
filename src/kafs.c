@@ -11016,6 +11016,7 @@ static void usage(const char *prog)
           "    --no-trim-on-free                 Disable TRIM on freed data blocks\n"
           "    --sd-card-profile[=conservative]  Enable low metadata-churn profile\n"
           "    --v6-inspection-mount             Permit explicit v6 inspection mount with -o ro\n"
+          "    --v6-write-mount                  Reserved v6 controlled write opt-in gate\n"
           "    -o writeback_cache                Enable writeback cache (FUSE -o)\n"
           "    -o no_writeback_cache             Disable writeback cache (FUSE -o)\n"
           "    -o trim_on_free | trim-on-free    Enable TRIM (FUSE -o)\n"
@@ -11024,6 +11025,7 @@ static void usage(const char *prog)
           "    -o sd_card_profile=<none|conservative>\n"
           "                                      Apply SD-card profile settings (opt-in)\n"
           "    -o v6_inspection_mount            Permit explicit v6 inspection mount with -o ro\n"
+          "    -o v6_write_mount                 Reserved v6 controlled write opt-in gate\n"
           "\n"
           "  [Threading]\n"
           "    -o multi_thread[=N]               Enable MT mode (alias: multi-thread, "
@@ -11411,7 +11413,10 @@ typedef struct kafs_main_options
   kafs_bool_t trim_on_free_enabled;
   kafs_bool_t trim_on_free_explicit;
   kafs_bool_t v6_inspection_mount;
+  kafs_bool_t v6_write_mount;
   kafs_bool_t mount_read_only_requested;
+  kafs_bool_t mount_read_only_seen;
+  kafs_bool_t mount_read_write_requested;
   kafs_bool_t show_help;
   kafs_bool_t enable_mt;
   char hotplug_uds_opt[sizeof(((struct sockaddr_un *)0)->sun_path)];
@@ -11734,6 +11739,11 @@ static int kafs_main_handle_flag_arg(kafs_main_options_t *opts, const char *arg)
     opts->v6_inspection_mount = KAFS_TRUE;
     return 1;
   }
+  if (strcmp(arg, "--v6-write-mount") == 0)
+  {
+    opts->v6_write_mount = KAFS_TRUE;
+    return 1;
+  }
   if (strncmp(arg, "--sd-card-profile=", 18) == 0)
   {
     uint32_t profile = KAFS_SD_CARD_PROFILE_NONE;
@@ -11896,9 +11906,15 @@ static void kafs_main_note_mount_mode_token(kafs_main_options_t *opts, const cha
   if (!opts || !tok)
     return;
   if (strcmp(tok, "ro") == 0)
+  {
     opts->mount_read_only_requested = KAFS_TRUE;
+    opts->mount_read_only_seen = KAFS_TRUE;
+  }
   else if (strcmp(tok, "rw") == 0)
+  {
     opts->mount_read_only_requested = KAFS_FALSE;
+    opts->mount_read_write_requested = KAFS_TRUE;
+  }
 }
 
 static int kafs_main_handle_v6_inspection_token(kafs_main_options_t *opts, const char *tok)
@@ -11906,6 +11922,16 @@ static int kafs_main_handle_v6_inspection_token(kafs_main_options_t *opts, const
   if (strcmp(tok, "v6_inspection_mount") == 0 || strcmp(tok, "v6-inspection-mount") == 0)
   {
     opts->v6_inspection_mount = KAFS_TRUE;
+    return 1;
+  }
+  return 0;
+}
+
+static int kafs_main_handle_v6_write_token(kafs_main_options_t *opts, const char *tok)
+{
+  if (strcmp(tok, "v6_write_mount") == 0 || strcmp(tok, "v6-write-mount") == 0)
+  {
+    opts->v6_write_mount = KAFS_TRUE;
     return 1;
   }
   return 0;
@@ -12301,6 +12327,10 @@ static int kafs_main_handle_mount_token(kafs_main_options_t *opts, const char *t
   if (rc != 0)
     return rc;
 
+  rc = kafs_main_handle_v6_write_token(opts, tok);
+  if (rc != 0)
+    return rc;
+
   rc = kafs_main_handle_sd_card_profile_token(opts, tok);
   if (rc != 0)
     return rc;
@@ -12465,7 +12495,50 @@ static int kafs_main_filter_mount_options(kafs_main_options_t *opts, char **argv
   return 0;
 }
 
-static int kafs_main_validate_options(const kafs_main_options_t *opts)
+static int kafs_main_validate_v6_write_options(const kafs_main_options_t *opts)
+{
+  if (!opts->v6_write_mount)
+    return 0;
+
+  if (opts->v6_inspection_mount)
+  {
+    fprintf(stderr,
+            "v6 write mount does not allow v6_inspection_mount; inspection is read-only.\n");
+    return 2;
+  }
+  if (opts->mount_read_only_seen)
+  {
+    fprintf(stderr, "v6 write mount does not allow -o ro; use explicit -o rw,v6_write_mount.\n");
+    return 2;
+  }
+  if (!opts->mount_read_write_requested)
+  {
+    fprintf(stderr, "v6 write mount requires explicit -o rw and -o v6_write_mount.\n");
+    return 2;
+  }
+  if (opts->writeback_cache_enabled)
+  {
+    fprintf(stderr,
+            "v6 write mount requires no_writeback_cache; writeback_cache is unsupported.\n");
+    return 2;
+  }
+  if (opts->trim_on_free_enabled)
+  {
+    fprintf(stderr, "v6 write mount requires no_trim_on_free; runtime TRIM is unsupported.\n");
+    return 2;
+  }
+  if (opts->bg_dedup_scan_enabled)
+  {
+    fprintf(stderr,
+            "v6 write mount requires bg_dedup_scan=off; background dedup is unsupported.\n");
+    return 2;
+  }
+  fprintf(stderr, "format v6 controlled write mount is not enabled yet; runtime mount remains "
+                  "offline-only.\n");
+  return 2;
+}
+
+static int kafs_main_validate_pending_options(const kafs_main_options_t *opts)
 {
   if (opts->pending_ttl_soft_ms > 0 && opts->pending_ttl_hard_ms > 0 &&
       opts->pending_ttl_hard_ms < opts->pending_ttl_soft_ms)
@@ -12479,12 +12552,22 @@ static int kafs_main_validate_options(const kafs_main_options_t *opts)
     fprintf(stderr, "invalid pendinglog capacity: max must be >= min\n");
     return 2;
   }
+  return 0;
+}
+
+static int kafs_main_validate_bg_dedup_options(const kafs_main_options_t *opts)
+{
   if (opts->bg_dedup_pressure_used_pct > 0 && opts->bg_dedup_start_used_pct > 0 &&
       opts->bg_dedup_pressure_used_pct < opts->bg_dedup_start_used_pct)
   {
     fprintf(stderr, "invalid bg dedup thresholds: pressure_used_pct must be >= start_used_pct\n");
     return 2;
   }
+  return 0;
+}
+
+static int kafs_main_validate_v6_inspection_options(const kafs_main_options_t *opts)
+{
   if (opts->v6_inspection_mount && !opts->mount_read_only_requested)
   {
     fprintf(stderr, "v6 inspection mount requires -o ro and -o v6_inspection_mount.\n");
@@ -12497,6 +12580,16 @@ static int kafs_main_validate_options(const kafs_main_options_t *opts)
             "writeback_cache.\n");
     return 2;
   }
+  return 0;
+}
+
+static int kafs_main_validate_options(const kafs_main_options_t *opts)
+{
+  if (kafs_main_validate_pending_options(opts) != 0 ||
+      kafs_main_validate_bg_dedup_options(opts) != 0 ||
+      kafs_main_validate_v6_write_options(opts) != 0 ||
+      kafs_main_validate_v6_inspection_options(opts) != 0)
+    return 2;
   return 0;
 }
 

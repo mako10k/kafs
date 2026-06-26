@@ -592,6 +592,118 @@ out_stop:
   return rc;
 }
 
+static int expect_v6_write_mount_rejected(const char *label, char *const argv[], const char *needle,
+                                          char *out, size_t out_sz)
+{
+  if (run_cmd_capture(argv, 2, out, out_sz) != 0)
+  {
+    tlogf("%s did not fail as expected: %s", label, out);
+    return 1;
+  }
+  if (!strstr(out, needle))
+  {
+    tlogf("%s missing guidance '%s': %s", label, needle, out);
+    return 1;
+  }
+  return 0;
+}
+
+static int check_v6_write_mount_fail_closed(const char *img, char *out, size_t out_sz)
+{
+  char *missing_rw_argv[] = {
+      (char *)kafs_test_kafs_bin(),
+      (char *)img,
+      (char *)"mnt",
+      (char *)"-o",
+      (char *)"v6-write-mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off",
+      NULL,
+  };
+  if (expect_v6_write_mount_rejected("v6 write mount without rw", missing_rw_argv,
+                                     "requires explicit -o rw", out, out_sz) != 0)
+    return 1;
+
+  char *ro_argv[] = {
+      (char *)kafs_test_kafs_bin(),
+      (char *)img,
+      (char *)"mnt",
+      (char *)"-o",
+      (char *)"ro,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off",
+      NULL,
+  };
+  if (expect_v6_write_mount_rejected("v6 write mount with ro", ro_argv, "does not allow -o ro",
+                                     out, out_sz) != 0)
+    return 1;
+
+  char *inspection_argv[] = {
+      (char *)kafs_test_kafs_bin(),
+      (char *)img,
+      (char *)"mnt",
+      (char *)"-o",
+      (char *)"rw,v6_write_mount,v6_inspection_mount,no_writeback_cache,no_trim_on_free,"
+              "bg_dedup_scan=off",
+      NULL,
+  };
+  if (expect_v6_write_mount_rejected("v6 write mount with inspection", inspection_argv,
+                                     "does not allow v6_inspection_mount", out, out_sz) != 0)
+    return 1;
+
+  char *writeback_argv[] = {
+      (char *)kafs_test_kafs_bin(),
+      (char *)img,
+      (char *)"mnt",
+      (char *)"-o",
+      (char *)"rw,v6_write_mount,writeback_cache,no_trim_on_free,bg_dedup_scan=off",
+      NULL,
+  };
+  if (expect_v6_write_mount_rejected("v6 write mount with writeback", writeback_argv,
+                                     "requires no_writeback_cache", out, out_sz) != 0)
+    return 1;
+
+  char *trim_argv[] = {
+      (char *)kafs_test_kafs_bin(),
+      (char *)img,
+      (char *)"mnt",
+      (char *)"-o",
+      (char *)"rw,v6_write_mount,no_writeback_cache,trim_on_free,bg_dedup_scan=off",
+      NULL,
+  };
+  if (expect_v6_write_mount_rejected("v6 write mount with trim", trim_argv,
+                                     "requires no_trim_on_free", out, out_sz) != 0)
+    return 1;
+
+  char *bg_argv[] = {
+      (char *)kafs_test_kafs_bin(),
+      (char *)img,
+      (char *)"mnt",
+      (char *)"-o",
+      (char *)"rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=on",
+      NULL,
+  };
+  if (expect_v6_write_mount_rejected("v6 write mount with bg dedup", bg_argv,
+                                     "requires bg_dedup_scan=off", out, out_sz) != 0)
+    return 1;
+
+  char *reserved_argv[] = {
+      (char *)kafs_test_kafs_bin(),
+      (char *)"--v6-write-mount",
+      (char *)img,
+      (char *)"mnt",
+      (char *)"-o",
+      (char *)"rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off",
+      NULL,
+  };
+  if (expect_v6_write_mount_rejected("v6 write mount reserved gate", reserved_argv,
+                                     "controlled write mount is not enabled yet", out, out_sz) !=
+      0)
+    return 1;
+  if (!strstr(out, "offline-only"))
+  {
+    tlogf("v6 write mount reserved gate missing offline-only guidance: %s", out);
+    return 1;
+  }
+  return 0;
+}
+
 int main(void)
 {
   if (kafs_test_enter_tmpdir("v6_descriptor") != 0)
@@ -703,6 +815,9 @@ int main(void)
     tlogf("v6 inspection mount with writeback_cache missing guidance: %s", out);
     return 1;
   }
+
+  if (check_v6_write_mount_fail_closed(img, out, sizeof(out)) != 0)
+    return 1;
 
   char *handoff_argv[] = {(char *)kafs_test_kafs_bin(), (char *)img, (char *)"mnt-handoff",
                           NULL};

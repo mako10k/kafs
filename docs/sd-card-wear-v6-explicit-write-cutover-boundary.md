@@ -113,3 +113,12 @@ Release note には次を明記する。
 - `rw` なし、`ro` 同時指定、inspection 同時指定、writeback cache、TRIM、background scan enabled を拒否する。
 - 通常の v6 mount は引き続き offline-only gate で拒否する。
 - mount admission 成功 path を入れる場合は、T4-T9 の regression / docs gate を closeout に含める。
+
+## T10 parser gate 結果
+
+T10 で上記 parser / fail-closed gate を追加した。`rw,v6_write_mount,no_writeback_cache,no_trim_on_free,
+bg_dedup_scan=off` まで満たした場合も、現段階では `controlled write mount is not enabled yet` として
+拒否する。
+
+次に成功 path を入れる前に、`SDW-V6RT-T11 v6 FUSE write surface admission audit` で user-visible
+FUSE write operations の許可範囲を function 単位で固定する。

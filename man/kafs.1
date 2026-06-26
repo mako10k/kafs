@@ -73,6 +73,11 @@ Permit an explicit format v6 inspection mount.  This option must be combined
 with FUSE
 .BR -o " " ro .
 The mount is for inspection only and does not enable format v6 write admission.
+.TP
+.B --v6-write-mount
+Reserved gate for a future controlled format v6 write opt-in.  The parser
+recognizes this option, but current releases fail closed and do not enable
+format v6 write admission.
 .SS Cache And TRIM
 .TP
 .BR --writeback-cache
@@ -155,6 +160,17 @@ write operations remain disabled.
 .BR -o " " v6-inspection-mount
 Alias for
 .BR v6_inspection_mount .
+.TP
+.BR -o " " v6_write_mount
+Reserved gate for a future controlled format v6 write opt-in.  The initial
+accepted shape is
+.BR -o " " rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off ,
+but current releases still fail closed until write admission wiring is
+implemented.
+.TP
+.BR -o " " v6-write-mount
+Alias for
+.BR v6_write_mount .
 .SS Threading And Worker Tuning
 .TP
 .BR "-o multi_thread" "[=N]"

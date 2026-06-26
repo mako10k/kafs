@@ -96,14 +96,14 @@ _kafs() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local opts="-h --help --image --image= --migrate --migrate-v2 --yes --writeback-cache --no-writeback-cache --trim-on-free --no-trim-on-free --sd-card-profile --sd-card-profile= --hotplug --hotplug= --hotplug-uds --hotplug-uds= --hotplug-back-bin --hotplug-back-bin="
+  local opts="-h --help --image --image= --migrate --migrate-v2 --yes --writeback-cache --no-writeback-cache --trim-on-free --no-trim-on-free --sd-card-profile --sd-card-profile= --v6-inspection-mount --v6-write-mount --hotplug --hotplug= --hotplug-uds --hotplug-uds= --hotplug-back-bin --hotplug-back-bin="
 
   if [[ "${prev}" == "--image" || "${prev}" == "--hotplug-uds" || "${prev}" == "--hotplug-back-bin" ]]; then
     _kafs__path_complete "$prev" "$cur"
     return
   fi
 
-  local oopts="writeback_cache no_writeback_cache trim_on_free trim-on-free no_trim_on_free no-trim-on-free sd_card_profile sd_card_profile= sd-card-profile sd-card-profile= multi_thread multi_thread= multi-thread multi-thread= multithread multithread= max_threads= hotplug hotplug= hotplug_uds= hotplug_back_bin= pending_worker_prio= pending_worker_nice= dedup_worker_prio= dedup_worker_nice= pending_ttl_soft_ms= pending_ttl_hard_ms= fsync_policy= allow_other allow_root auto_unmount default_permissions kernel_cache auto_cache direct_io hard_remove use_ino readdir_ino nonempty big_writes splice_read splice_write splice_move sync_read no_remote_lock no_remote_flock no_remote_posix_lock intr intr_signal= noforget remember= max_read= max_readahead= max_write= blksize= uid= gid= umask= entry_timeout= negative_timeout= attr_timeout= ac_attr_timeout= fsname= subtype= modules="
+  local oopts="writeback_cache no_writeback_cache trim_on_free trim-on-free no_trim_on_free no-trim-on-free sd_card_profile sd_card_profile= sd-card-profile sd-card-profile= v6_inspection_mount v6-inspection-mount v6_write_mount v6-write-mount multi_thread multi_thread= multi-thread multi-thread= multithread multithread= max_threads= hotplug hotplug= hotplug_uds= hotplug_back_bin= pending_worker_prio= pending_worker_nice= dedup_worker_prio= dedup_worker_nice= pending_ttl_soft_ms= pending_ttl_hard_ms= fsync_policy= allow_other allow_root auto_unmount default_permissions kernel_cache auto_cache direct_io hard_remove use_ino readdir_ino nonempty big_writes splice_read splice_write splice_move sync_read no_remote_lock no_remote_flock no_remote_posix_lock intr intr_signal= noforget remember= max_read= max_readahead= max_write= blksize= uid= gid= umask= entry_timeout= negative_timeout= attr_timeout= ac_attr_timeout= fsname= subtype= modules="
 
   if [[ "${prev}" == "-o" ]]; then
     _kafs__comma_complete "${cur}" "${oopts}"
