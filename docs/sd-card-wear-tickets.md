@@ -477,6 +477,12 @@
 ### SDW-V6RT-T1 v6 runtime mount admission design checkpoint
 
 - 目的: offline-only v6 scaffold から runtime mount 有効化へ進む前に、許可する mount mode と安全境界を固定する。
+- 進捗:
+  - [sd-card-wear-v6-runtime-mount-checkpoint.md](sd-card-wear-v6-runtime-mount-checkpoint.md) に
+    read-only admission 先行、write admission 併走、offline-only 継続の判断基準を整理した。
+  - 実装側の推奨は read-only admission 先行。write admission は journal / mutation workers /
+    repair / lock policy の条件を同時に満たす場合だけ選ぶ。
+  - mount mode はユーザー判断待ち。判断後に次チケットを切って実装する。
 - 変更:
   - v6 read-only mount と write mount を同時に進めるか、read-only admission を先に昇格するかを決める。
   - descriptor-backed journal replay/write、background mutation workers、repair/write fsck の解禁順を決める。
