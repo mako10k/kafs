@@ -175,6 +175,44 @@ mount support is enabled and a write-capable smoke mount has passed. The current
 safe endpoint is an offline-validated staged image, optionally inspected through
 `-o ro,v6_inspection_mount`.
 
+## Future Controlled v6 Write Opt-In Boundary
+
+This boundary is reserved for a future implementation. It is not available in
+the current v6 staging workflow.
+
+When v6 write admission is implemented, it must remain disabled by default and
+require an explicit controlled opt-in:
+
+```sh
+./kafs --image /var/lib/kafs/destination.img /mnt/kafs-v6 -f \
+	-o rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off
+```
+
+The future admission must fail closed when `rw,v6_write_mount` is not explicit,
+when `ro` or `v6_inspection_mount` is also present, or when unsupported
+writeback cache, runtime TRIM, delayed/background mutation, or v6 repair-write
+paths are requested.
+
+Before the first write-capable smoke session, capture an offline baseline:
+
+```sh
+./kafsdump --json /var/lib/kafs/destination.img > /var/tmp/kafs-v6-before.json
+./fsck.kafs --balanced-check /var/lib/kafs/destination.img
+```
+
+After the smoke session, unmount and validate offline again:
+
+```sh
+sync
+fusermount3 -u /mnt/kafs-v6
+./kafsdump --json /var/lib/kafs/destination.img > /var/tmp/kafs-v6-after.json
+./fsck.kafs --balanced-check /var/lib/kafs/destination.img
+```
+
+If the post-write check fails, do not repair-write the v6 image in place. Preserve
+the destination image, logs, and dump/fsck output for diagnosis, then return to
+the known-good source image when its write-freeze boundary is still valid.
+
 ## Rollback Guidance
 
 If validation fails before cutover, discard the destination image and repeat the

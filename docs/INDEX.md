@@ -42,6 +42,10 @@ historical investigations and deep design notes.
 - [sd-card-wear-format-v6-descriptor.md](sd-card-wear-format-v6-descriptor.md)
 - [sd-card-wear-v6-runtime-mount-checkpoint.md](sd-card-wear-v6-runtime-mount-checkpoint.md)
 - [sd-card-wear-v6-write-mount-dependency-audit.md](sd-card-wear-v6-write-mount-dependency-audit.md)
+- [sd-card-wear-v6-delayed-background-policy.md](sd-card-wear-v6-delayed-background-policy.md)
+- [sd-card-wear-v6-post-write-fsck-repair-policy.md](sd-card-wear-v6-post-write-fsck-repair-policy.md)
+- [sd-card-wear-v6-lock-stress-gate.md](sd-card-wear-v6-lock-stress-gate.md)
+- [sd-card-wear-v6-explicit-write-cutover-boundary.md](sd-card-wear-v6-explicit-write-cutover-boundary.md)
 - [write-performance-ideas.md](write-performance-ideas.md)
 - [bottleneck-measurement-plan.md](bottleneck-measurement-plan.md)
 - [perf-evaluation-20260228.md](perf-evaluation-20260228.md)
@@ -58,6 +62,7 @@ historical investigations and deep design notes.
 - [release-announcement-v0.2.1.md](release-announcement-v0.2.1.md)
 - [release-announcement-v0.3.0.md](release-announcement-v0.3.0.md)
 - [release-announcement-v0.3.1.md](release-announcement-v0.3.1.md)
+- [release-note-v6-explicit-write-opt-in-boundary.md](release-note-v6-explicit-write-opt-in-boundary.md)
 - [discussion-post-v0.2.1-final.md](discussion-post-v0.2.1-final.md)
 
 ## Historical Investigations And Reproductions

@@ -640,11 +640,32 @@
 ### SDW-V6RT-T9 v6 explicit write opt-in cutover boundary
 
 - 目的: v6 write を user-visible opt-in に進める前に、operator cutover と rollback の境界を固定する。
+- 実施内容:
+  - `docs/sd-card-wear-v6-explicit-write-cutover-boundary.md` に opt-in 名、fail-closed admission 条件、
+    unsupported option、required fsck、rollback を固定した。
+  - `docs/kafsresize-cutover-playbook.md` に future controlled v6 write opt-in boundary を追加した。
+  - `docs/release-note-v6-explicit-write-opt-in-boundary.md` に experimental / controlled opt-in の release
+    note draft を追加した。
 - 完了条件:
   - user-visible opt-in 名と fail-closed admission 条件が決まっている。
   - unsupported option、delayed/background mutation、v6 repair write の拒否境界が operator 向けに明記されている。
   - write 前後の required fsck command と失敗時 rollback が文書化されている。
   - release note に experimental / controlled opt-in の範囲が記載されている。
+- 完了メモ:
+  - user-visible opt-in 名は `--v6-write-mount` / `-o v6_write_mount` / `-o v6-write-mount` とする。
+  - 初期 controlled opt-in は `rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off` を
+    推奨形とし、通常 v6 mount は引き続き暗黙 write admission にしない。
+  - 次は `SDW-V6RT-T10 v6 write opt-in parser and fail-closed gate` に進む。
+
+### SDW-V6RT-T10 v6 write opt-in parser and fail-closed gate
+
+- 目的: T9 で予約した v6 write opt-in を parser に追加し、未対応条件を fail closed する。
+- 完了条件:
+  - `--v6-write-mount`、`-o v6_write_mount`、`-o v6-write-mount` が parser で認識される。
+  - `rw` 未指定、`ro` 同時指定、`v6_inspection_mount` 同時指定、`writeback_cache`、`trim_on_free`、
+    `bg_dedup_scan=on` が v6 write opt-in で拒否される。
+  - 通常 v6 mount と v6 inspection mount の既存挙動が変わらない regression がある。
+  - 実際の write admission 成功 path を入れる場合は、T4-T9 の gate と `make check -j2` を closeout に含める。
 
 ---
 
