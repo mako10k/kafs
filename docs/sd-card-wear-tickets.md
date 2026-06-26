@@ -712,6 +712,27 @@
   - 許可候補の create/write/fsync/release は v6 専用 guard により tail metadata normalization / reclaim、
     pendinglog drain、`open(O_TRUNC)` を初期範囲外として扱う。
   - `make check -j2` と T11 smoke workload 相当の regression / 手順が closeout に含まれる。
+- 実装メモ (2026-06-26):
+  - `rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off` を controlled write admission の
+    成功 path に接続した。通常 v6 mount と `-o ro` のみの v6 mount は引き続き offline-only gate で拒否する。
+  - controlled write runtime は `O_RDWR` / `PROT_READ | PROT_WRITE` / write lock を使い、descriptor-backed
+    bitmap / inode / allocator / HRL / journal segment validation 後に runtime context を保持する。
+  - v6 controlled write flag を追加し、truncate/fallocate/unlink/rename/link/symlink/mknod/mkdir/rmdir/chmod/
+    chown/utimens、copy/reflink ioctl、control-plane write、`open(O_TRUNC)`、hotplug delegated write を
+    `-EOPNOTSUPP` で拒否する。
+  - create/write/fsync/release は初期許可面として残し、fsync の tail normalize / pendinglog drain と release の
+    tail normalize / tombstone reclaim は v6 controlled write では skip する。
+  - copy_file_range syscall は kernel が FUSE high-level op に渡さず通常 read/write fallback で満たす環境がある。
+    明示 copy/reflink ioctl と FUSE copy_file_range hook は guard 済みだが、fallback 経由は通常 write と同一視する。
+
+### SDW-V6RT-T13 v6 controlled write durability and fallback hardening
+
+- 目的: T12 で入れた controlled write path を、write failure / fallback / post-write validation の観点で固める。
+- 完了条件:
+  - zero-filled block write、partial block write、ENOSPC、fsync/fdatasync failure の regression がある。
+  - copy_file_range が通常 read/write fallback になる kernel での operator wording と test expectation を文書化する。
+  - post-write `fsck.kafs --balanced-check` 失敗時の rollback log/artifact 保存手順を release note / cutover playbook に反映する。
+  - `make check -j2` と relevant static gates が PASS している。
 
 ---
 

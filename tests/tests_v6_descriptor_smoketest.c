@@ -1,6 +1,7 @@
 #include "test_utils.h"
 
 #include "kafs_dirent.h"
+#include "kafs_ioctl.h"
 #include "kafs_offline_summary.h"
 #include "kafs_superblock.h"
 #include "kafs_v6_layout.h"
@@ -18,7 +19,13 @@
 #include <sys/statvfs.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
+
+#ifdef __linux__
+#include <linux/fs.h>
+#include <sys/syscall.h>
+#endif
 
 static void tlogf(const char *fmt, ...)
 {
@@ -367,6 +374,28 @@ static int read_file_equals(const char *path, const char *expected)
   return 0;
 }
 
+static int errno_is_one_of(int err, int expected_a, int expected_b)
+{
+  return err == expected_a || (expected_b != 0 && err == expected_b);
+}
+
+static int expect_failed_errno(const char *label, int rc, int expected_a, int expected_b)
+{
+  int saved_errno = errno;
+  if (rc == 0)
+  {
+    tlogf("%s unexpectedly succeeded", label);
+    return 1;
+  }
+  if (!errno_is_one_of(saved_errno, expected_a, expected_b))
+  {
+    tlogf("%s errno=%s (expected %s%s%s)", label, strerror(saved_errno), strerror(expected_a),
+          expected_b ? " or " : "", expected_b ? strerror(expected_b) : "");
+    return 1;
+  }
+  return 0;
+}
+
 static int file_digest64(const char *path, uint64_t *digest_out, off_t *size_out)
 {
   int fd = open(path, O_RDONLY);
@@ -592,6 +621,255 @@ out_stop:
   return rc;
 }
 
+static int check_v6_controlled_write_copy_guards(int fd, const char *mnt)
+{
+  kafs_ioctl_copy_t req;
+  memset(&req, 0, sizeof(req));
+  req.struct_size = sizeof(req);
+  snprintf(req.src, sizeof(req.src), "/w.bin");
+  snprintf(req.dst, sizeof(req.dst), "/ioctl-copy.bin");
+  errno = 0;
+  if (expect_failed_errno("v6 controlled ioctl copy", ioctl(fd, KAFS_IOCTL_COPY, &req),
+                          EOPNOTSUPP, 0) != 0)
+    return 1;
+
+  memset(&req, 0, sizeof(req));
+  req.struct_size = sizeof(req);
+  req.flags = KAFS_IOCTL_COPY_F_REFLINK;
+  snprintf(req.src, sizeof(req.src), "/w.bin");
+  snprintf(req.dst, sizeof(req.dst), "/ioctl-reflink.bin");
+  errno = 0;
+  if (expect_failed_errno("v6 controlled ioctl reflink", ioctl(fd, KAFS_IOCTL_COPY, &req),
+                          EOPNOTSUPP, 0) != 0)
+    return 1;
+
+#ifdef __linux__
+#ifdef FICLONE
+  char clone_path[PATH_MAX];
+  snprintf(clone_path, sizeof(clone_path), "%s/clone.bin", mnt);
+  int cfd = open(clone_path, O_CREAT | O_EXCL | O_RDWR, 0644);
+  if (cfd < 0)
+  {
+    tlogf("v6 controlled clone target open failed: %s", strerror(errno));
+    return 1;
+  }
+  errno = 0;
+  int frc = ioctl(cfd, FICLONE, fd);
+  int frc_errno = errno;
+  close(cfd);
+  errno = frc_errno;
+  if (expect_failed_errno("v6 controlled FICLONE", frc, EOPNOTSUPP, 0) != 0)
+    return 1;
+#endif
+
+#ifdef SYS_copy_file_range
+  char cfr_path[PATH_MAX];
+  snprintf(cfr_path, sizeof(cfr_path), "%s/copy-range.bin", mnt);
+  int cfrfd = open(cfr_path, O_CREAT | O_EXCL | O_WRONLY, 0644);
+  if (cfrfd < 0)
+  {
+    tlogf("v6 controlled copy_file_range target open failed: %s", strerror(errno));
+    return 1;
+  }
+  off_t in_off = 0;
+  off_t out_off = 0;
+  errno = 0;
+  ssize_t cr = syscall(SYS_copy_file_range, fd, &in_off, cfrfd, &out_off, (size_t)4096, 0);
+  int cr_errno = errno;
+  close(cfrfd);
+  // Some kernels satisfy FUSE copy_file_range through generic read/write fallback before the
+  // high-level copy_file_range hook is reached; that path is indistinguishable from allowed write.
+  if (cr >= 0)
+    return 0;
+  errno = cr_errno;
+  if (expect_failed_errno("v6 controlled copy_file_range", -1, EOPNOTSUPP, ENOSYS) != 0)
+    return 1;
+#endif
+#endif
+
+  return 0;
+}
+
+static int check_v6_controlled_write_mount_smoke(const char *img)
+{
+  if (access("/dev/fuse", R_OK | W_OK) != 0)
+  {
+    tlogf("skip v6 controlled write mount smoke: /dev/fuse unavailable");
+    return 0;
+  }
+
+  const char *mnt = "mnt-v6-write";
+  const char *log_path = "v6-controlled-write-mount.log";
+  kafs_test_mount_options_t options = {
+      .debug = "1",
+      .log_path = log_path,
+      .extra_options = "rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off",
+      .timeout_ms = 15000,
+  };
+
+  pid_t srv = kafs_test_start_kafs(img, mnt, &options);
+  if (srv <= 0)
+  {
+    kafs_test_dump_log(log_path, "v6 controlled write mount failed");
+    return 77;
+  }
+
+  int rc = 0;
+  char path[PATH_MAX];
+  snprintf(path, sizeof(path), "%s/w.bin", mnt);
+  int fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0644);
+  if (fd < 0)
+  {
+    tlogf("v6 controlled create failed: %s", strerror(errno));
+    rc = 1;
+    goto out_stop;
+  }
+
+  unsigned char wbuf[4096];
+  for (size_t i = 0; i < sizeof(wbuf); ++i)
+    wbuf[i] = (unsigned char)(0x41u + (i % 23u));
+  if (write(fd, wbuf, sizeof(wbuf)) != (ssize_t)sizeof(wbuf))
+  {
+    tlogf("v6 controlled write failed: %s", strerror(errno));
+    rc = 1;
+    close(fd);
+    goto out_stop;
+  }
+  if (fsync(fd) != 0)
+  {
+    tlogf("v6 controlled fsync failed: %s", strerror(errno));
+    rc = 1;
+    close(fd);
+    goto out_stop;
+  }
+  if (close(fd) != 0)
+  {
+    tlogf("v6 controlled release failed: %s", strerror(errno));
+    rc = 1;
+    goto out_stop;
+  }
+
+  fd = open(path, O_RDWR);
+  if (fd < 0)
+  {
+    tlogf("v6 controlled reopen failed: %s", strerror(errno));
+    rc = 1;
+    goto out_stop;
+  }
+
+  unsigned char rbuf[sizeof(wbuf)];
+  if (pread(fd, rbuf, sizeof(rbuf), 0) != (ssize_t)sizeof(rbuf) ||
+      memcmp(rbuf, wbuf, sizeof(wbuf)) != 0)
+  {
+    tlogf("v6 controlled readback mismatch");
+    rc = 1;
+    close(fd);
+    goto out_stop;
+  }
+
+#ifdef __linux__
+#ifdef SYS_fallocate
+  errno = 0;
+  if (expect_failed_errno("v6 controlled fallocate",
+                          (int)syscall(SYS_fallocate, fd, 0, 0, (off_t)4096), EOPNOTSUPP,
+                          ENOSYS) != 0)
+  {
+    rc = 1;
+    close(fd);
+    goto out_stop;
+  }
+#endif
+#endif
+
+  if (check_v6_controlled_write_copy_guards(fd, mnt) != 0)
+  {
+    rc = 1;
+    close(fd);
+    goto out_stop;
+  }
+  close(fd);
+
+  errno = 0;
+  fd = open(path, O_WRONLY | O_TRUNC);
+  if (fd >= 0)
+    close(fd);
+  if (expect_failed_errno("v6 controlled open(O_TRUNC)", fd < 0 ? -1 : 0, EOPNOTSUPP, 0) != 0)
+  {
+    rc = 1;
+    goto out_stop;
+  }
+
+  errno = 0;
+  if (expect_failed_errno("v6 controlled truncate", truncate(path, 0), EOPNOTSUPP, 0) != 0)
+  {
+    rc = 1;
+    goto out_stop;
+  }
+
+  char renamed[PATH_MAX];
+  snprintf(renamed, sizeof(renamed), "%s/w-renamed.bin", mnt);
+  errno = 0;
+  if (expect_failed_errno("v6 controlled rename", rename(path, renamed), EOPNOTSUPP, 0) != 0)
+  {
+    rc = 1;
+    goto out_stop;
+  }
+
+  char hardlink[PATH_MAX];
+  snprintf(hardlink, sizeof(hardlink), "%s/w-hard.bin", mnt);
+  errno = 0;
+  if (expect_failed_errno("v6 controlled link", link(path, hardlink), EOPNOTSUPP, 0) != 0)
+  {
+    rc = 1;
+    goto out_stop;
+  }
+
+  char symlink_path[PATH_MAX];
+  snprintf(symlink_path, sizeof(symlink_path), "%s/w-sym.bin", mnt);
+  errno = 0;
+  if (expect_failed_errno("v6 controlled symlink", symlink("w.bin", symlink_path), EOPNOTSUPP,
+                          0) != 0)
+  {
+    rc = 1;
+    goto out_stop;
+  }
+
+  errno = 0;
+  if (expect_failed_errno("v6 controlled unlink", unlink(path), EOPNOTSUPP, 0) != 0)
+  {
+    rc = 1;
+    goto out_stop;
+  }
+
+  struct stat st = {0};
+  if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size != (off_t)sizeof(wbuf))
+  {
+    tlogf("v6 controlled file missing after rejected mutations: %s", strerror(errno));
+    rc = 1;
+    goto out_stop;
+  }
+
+out_stop:
+  kafs_test_stop_kafs(mnt, srv);
+  if (rc == 0 && !file_contains(log_path, "format v6 controlled write mount"))
+  {
+    tlogf("v6 controlled write mount log missing admission message");
+    rc = 1;
+  }
+  if (rc == 0)
+  {
+    char out[8192];
+    char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)"--balanced-check", (char *)img,
+                         NULL};
+    if (run_cmd_capture(fsck_argv, 0, out, sizeof(out)) != 0)
+    {
+      tlogf("fsck --balanced-check after v6 controlled write failed: %s", out);
+      rc = 1;
+    }
+  }
+  return rc;
+}
+
 static int expect_v6_write_mount_rejected(const char *label, char *const argv[], const char *needle,
                                           char *out, size_t out_sz)
 {
@@ -683,7 +961,7 @@ static int check_v6_write_mount_fail_closed(const char *img, char *out, size_t o
                                      "requires bg_dedup_scan=off", out, out_sz) != 0)
     return 1;
 
-  char *reserved_argv[] = {
+  char *hotplug_argv[] = {
       (char *)kafs_test_kafs_bin(),
       (char *)"--v6-write-mount",
       (char *)img,
@@ -692,13 +970,15 @@ static int check_v6_write_mount_fail_closed(const char *img, char *out, size_t o
       (char *)"rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off",
       NULL,
   };
-  if (expect_v6_write_mount_rejected("v6 write mount reserved gate", reserved_argv,
-                                     "controlled write mount is not enabled yet", out, out_sz) !=
-      0)
-    return 1;
-  if (!strstr(out, "offline-only"))
+  if (run_cmd_capture_env(hotplug_argv, 2, "KAFS_HOTPLUG_UDS",
+                          "/tmp/kafs-v6-controlled-write-hotplug.sock", out, out_sz) != 0)
   {
-    tlogf("v6 write mount reserved gate missing offline-only guidance: %s", out);
+    tlogf("v6 write mount with hotplug did not fail as expected: %s", out);
+    return 1;
+  }
+  if (!strstr(out, "does not allow hotplug delegated write path"))
+  {
+    tlogf("v6 write mount hotplug reject missing guidance: %s", out);
     return 1;
   }
   return 0;
@@ -847,6 +1127,12 @@ int main(void)
   if (readonly_rc == 77)
     return 77;
   if (readonly_rc != 0)
+    return 1;
+
+  int write_rc = check_v6_controlled_write_mount_smoke(img);
+  if (write_rc == 77)
+    return 77;
+  if (write_rc != 0)
     return 1;
 
   return 0;

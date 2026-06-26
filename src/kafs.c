@@ -571,6 +571,7 @@ static void kafs_tombstone_gc_worker_stop(struct kafs_context *ctx);
 static int kafs_bg_dedup_worker_start(struct kafs_context *ctx);
 static void kafs_bg_dedup_worker_stop(struct kafs_context *ctx);
 static int kafs_inode_is_tombstone(const kafs_sinode_t *inoent);
+static int kafs_v6_controlled_write_active(const kafs_context_t *ctx);
 static int kafs_try_reclaim_unlinked_inode_locked(struct kafs_context *ctx, kafs_inocnt_t ino,
                                                   int *reclaimed);
 
@@ -4814,7 +4815,11 @@ static int kafs_pwrite_commit_block(struct kafs_context *ctx, kafs_sinode_t *ino
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
 
   if (kafs_ino_size_get(inoent) > KAFS_INODE_DIRECT_BYTES && kafs_blk_is_zero(buf, blksize))
+  {
+    if (kafs_v6_controlled_write_active(ctx))
+      return kafs_ino_iblk_write(ctx, inoent, iblo, buf);
     return kafs_ino_iblk_release(ctx, inoent, iblo);
+  }
 
   return kafs_ino_iblk_write(ctx, inoent, iblo, buf);
 }
@@ -4868,6 +4873,9 @@ static int kafs_pwrite_prepare_tail_layout(struct kafs_context *ctx, kafs_sinode
   const kafs_sinode_taildesc_v5_t *taildesc = kafs_ctx_inode_taildesc_v5_const(ctx, inoent);
 
   *completed_out = 0;
+  if (kafs_v6_controlled_write_active(ctx))
+    return 0;
+
   if (taildesc &&
       kafs_ino_taildesc_v5_layout_kind_get(taildesc) == KAFS_TAIL_LAYOUT_MIXED_FULL_TAIL)
   {
@@ -4942,6 +4950,9 @@ static int kafs_pwrite_extend_inode_size(struct kafs_context *ctx, kafs_sinode_t
 static void kafs_pwrite_sync_regular_taildesc(struct kafs_context *ctx, kafs_sinode_t *inoent,
                                               kafs_off_t filesize)
 {
+  if (kafs_v6_controlled_write_active(ctx))
+    return;
+
   if (!kafs_tailmeta_inode_is_regular_v5(ctx, inoent))
     return;
   if (filesize <= (kafs_off_t)KAFS_INODE_DIRECT_BYTES)
@@ -7073,6 +7084,9 @@ static void kafs_ctx_init_runtime_journal(kafs_context_t *ctx, const char *image
   (void)kafs_journal_init(ctx, image_path);
   kafs_ctx_setup_meta_delta(ctx, r_blkcnt);
   (void)kafs_journal_replay(ctx, NULL, NULL);
+  if (ctx->c_v6_delayed_mutation_policy_applied)
+    return;
+
   (void)kafs_pendinglog_init_or_load(ctx);
   if (ctx->c_pendinglog_enabled)
   {
@@ -7494,6 +7508,23 @@ static int kafs_is_ctl_path(const char *path);
 static int kafs_runtime_write_guard(const kafs_context_t *ctx)
 {
   return (ctx && ctx->c_runtime_read_only) ? -EROFS : 0;
+}
+
+static int kafs_v6_controlled_write_active(const kafs_context_t *ctx)
+{
+  return ctx && ctx->c_v6_controlled_write_enabled;
+}
+
+static int kafs_v6_controlled_write_reject(const kafs_context_t *ctx, const char *op)
+{
+  if (!kafs_v6_controlled_write_active(ctx))
+    return 0;
+
+  kafs_log(KAFS_LOG_WARNING,
+           "kafs: format v6 controlled write mount rejects %s; initial surface is "
+           "regular-file create/write/fsync/release only\n",
+           op ? op : "operation");
+  return -EOPNOTSUPP;
 }
 
 static int kafs_mutation_path_context(const char *path, struct fuse_context **fctx_out,
@@ -8852,6 +8883,9 @@ static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_
     int gate = kafs_runtime_write_guard(ctx);
     if (gate != 0)
       return gate;
+    gate = kafs_v6_controlled_write_reject(ctx, "reflink");
+    if (gate != 0)
+      return gate;
     return kafs_ioctl_handle_ficlone(fctx, ctx, path, cmd, arg, fi, data);
   }
   if ((unsigned int)cmd == (unsigned int)FICLONERANGE)
@@ -8861,6 +8895,9 @@ static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_
   if ((unsigned int)cmd == (unsigned int)KAFS_IOCTL_COPY)
   {
     int gate = kafs_runtime_write_guard(ctx);
+    if (gate != 0)
+      return gate;
+    gate = kafs_v6_controlled_write_reject(ctx, "copy");
     if (gate != 0)
       return gate;
     return kafs_ioctl_handle_copy(fctx, ctx, arg, data);
@@ -8879,6 +8916,9 @@ static ssize_t kafs_op_copy_file_range(const char *path_in, struct fuse_file_inf
   struct fuse_context *fctx = fuse_get_context();
   kafs_context_t *ctx = (kafs_context_t *)fctx->private_data;
   int gate = kafs_runtime_write_guard(ctx);
+  if (gate != 0)
+    return gate;
+  gate = kafs_v6_controlled_write_reject(ctx, flags != 0 ? "reflink" : "copy_file_range");
   if (gate != 0)
     return gate;
 
@@ -8920,6 +8960,10 @@ static int kafs_op_open(const char *path, struct fuse_file_info *fi)
       (kafs_is_ctl_path(path) || accmode == O_WRONLY || accmode == O_RDWR ||
        (fi->flags & O_TRUNC) != 0))
     return -EROFS;
+  if (kafs_v6_controlled_write_active(ctx) && kafs_is_ctl_path(path))
+    return kafs_v6_controlled_write_reject(ctx, "control-plane open");
+  if (kafs_v6_controlled_write_active(ctx) && (fi->flags & O_TRUNC) != 0)
+    return kafs_v6_controlled_write_reject(ctx, "open(O_TRUNC)");
   if (kafs_is_ctl_path(path))
   {
     if (accmode != O_RDWR)
@@ -9249,7 +9293,11 @@ static int kafs_op_create(const char *path, mode_t mode, struct fuse_file_info *
 
 static int kafs_op_mknod(const char *path, mode_t mode, dev_t dev)
 {
-  int gate = kafs_mutation_path_context(path, NULL, NULL);
+  struct kafs_context *ctx = NULL;
+  int gate = kafs_mutation_path_context(path, NULL, &ctx);
+  if (gate != 0)
+    return gate;
+  gate = kafs_v6_controlled_write_reject(ctx, "mknod");
   if (gate != 0)
     return gate;
   KAFS_CALL(kafs_create, path, mode, dev, NULL, NULL);
@@ -9261,6 +9309,9 @@ static int kafs_op_truncate(const char *path, off_t size, struct fuse_file_info 
   struct fuse_context *fctx = NULL;
   struct kafs_context *ctx = NULL;
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
+  if (gate != 0)
+    return gate;
+  gate = kafs_v6_controlled_write_reject(ctx, "truncate");
   if (gate != 0)
     return gate;
   kafs_sinode_t *inoent;
@@ -9442,6 +9493,9 @@ static int kafs_op_fallocate(const char *path, int mode, off_t offset, off_t len
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
   if (gate != 0)
     return gate;
+  gate = kafs_v6_controlled_write_reject(ctx, "fallocate");
+  if (gate != 0)
+    return gate;
   kafs_off_t end_req;
   int rc = kafs_fallocate_validate_request(path, offset, length, &end_req);
   if (rc != 0)
@@ -9580,6 +9634,9 @@ static int kafs_op_mkdir(const char *path, mode_t mode)
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
   if (gate != 0)
     return gate;
+  gate = kafs_v6_controlled_write_reject(ctx, "mkdir");
+  if (gate != 0)
+    return gate;
   uint64_t jseq = kafs_journal_begin(ctx, "MKDIR", "path=%s mode=%o", path, (unsigned)mode);
   kafs_inocnt_t ino_dir;
   kafs_inocnt_t ino_new;
@@ -9649,6 +9706,9 @@ static int kafs_op_rmdir(const char *path)
   struct fuse_context *fctx = NULL;
   struct kafs_context *ctx = NULL;
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
+  if (gate != 0)
+    return gate;
+  gate = kafs_v6_controlled_write_reject(ctx, "rmdir");
   if (gate != 0)
     return gate;
   uint64_t jseq = kafs_journal_begin(ctx, "RMDIR", "path=%s", path);
@@ -9814,6 +9874,11 @@ static int kafs_op_write_fallback(struct kafs_context *ctx, const char *path, co
              (unsigned)mode);
     return -EISDIR;
   }
+  if (kafs_v6_controlled_write_active(ctx) && !S_ISREG(mode))
+  {
+    kafs_inode_unlock(ctx, (uint32_t)ino);
+    return -EOPNOTSUPP;
+  }
 
   kafs_diag_write_scope_t write_scope =
       kafs_diag_write_scope_enter(path ? path : "(null)", (uint32_t)ino);
@@ -9844,6 +9909,8 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
   int gate = kafs_runtime_write_guard(ctx);
   if (gate != 0)
     return gate;
+  if (kafs_v6_controlled_write_active(ctx) && kafs_is_ctl_path(path))
+    return kafs_v6_controlled_write_reject(ctx, "control-plane write");
   if (kafs_is_ctl_path(path))
     return kafs_op_write_ctl(ctx, fi, buf, size, offset);
   kafs_inocnt_t ino = fi->fh;
@@ -9854,6 +9921,11 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
     if (!fctx || fctx->pid != 0)
       return -EACCES;
   }
+  if (kafs_v6_controlled_write_active(ctx) && ctx->c_hotplug_active)
+    return kafs_v6_controlled_write_reject(ctx, "hotplug delegated write");
+  if (kafs_v6_controlled_write_active(ctx))
+    return kafs_op_write_fallback(ctx, path, buf, size, offset, ino);
+
   ssize_t rc_hp = kafs_hotplug_call_write(fctx, ctx, ino, buf, size, offset);
   if (rc_hp >= 0)
   {
@@ -9881,6 +9953,9 @@ static int kafs_op_utimens(const char *path, const struct timespec tv[2], struct
   struct fuse_context *fctx = NULL;
   struct kafs_context *ctx = NULL;
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
+  if (gate != 0)
+    return gate;
+  gate = kafs_v6_controlled_write_reject(ctx, "utimens");
   if (gate != 0)
     return gate;
   uint64_t t0_ns = kafs_now_ns();
@@ -9991,6 +10066,9 @@ static int kafs_op_unlink(const char *path)
   struct fuse_context *fctx = NULL;
   struct kafs_context *ctx = NULL;
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
+  if (gate != 0)
+    return gate;
+  gate = kafs_v6_controlled_write_reject(ctx, "unlink");
   if (gate != 0)
     return gate;
   uint64_t jseq = kafs_journal_begin(ctx, "UNLINK", "path=%s", path);
@@ -10400,6 +10478,9 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
   int gate = kafs_runtime_write_guard(ctx);
   if (gate != 0)
     return gate;
+  gate = kafs_v6_controlled_write_reject(ctx, "rename");
+  if (gate != 0)
+    return gate;
   kafs_sinode_t *inoent_src;
   int src_is_dir = 0;
   int rc = kafs_rename_validate_request(from, to, flags);
@@ -10488,6 +10569,9 @@ static int kafs_op_chmod(const char *path, mode_t mode, struct fuse_file_info *f
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
   if (gate != 0)
     return gate;
+  gate = kafs_v6_controlled_write_reject(ctx, "chmod");
+  if (gate != 0)
+    return gate;
   uint64_t jseq = kafs_journal_begin(ctx, "CHMOD", "path=%s mode=%o", path, (unsigned)mode);
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
@@ -10505,6 +10589,9 @@ static int kafs_op_chown(const char *path, uid_t uid, gid_t gid, struct fuse_fil
   struct fuse_context *fctx = NULL;
   struct kafs_context *ctx = NULL;
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
+  if (gate != 0)
+    return gate;
+  gate = kafs_v6_controlled_write_reject(ctx, "chown");
   if (gate != 0)
     return gate;
   uint64_t jseq =
@@ -10525,6 +10612,9 @@ static int kafs_op_symlink(const char *target, const char *linkpath)
   struct fuse_context *fctx = NULL;
   struct kafs_context *ctx = NULL;
   int gate = kafs_mutation_path_context(linkpath, &fctx, &ctx);
+  if (gate != 0)
+    return gate;
+  gate = kafs_v6_controlled_write_reject(ctx, "symlink");
   if (gate != 0)
     return gate;
   uint64_t jseq = kafs_journal_begin(ctx, "SYMLINK", "target=%s linkpath=%s", target, linkpath);
@@ -10635,6 +10725,9 @@ static int kafs_op_link(const char *from, const char *to)
   int gate = kafs_runtime_write_guard(ctx);
   if (gate != 0)
     return gate;
+  gate = kafs_v6_controlled_write_reject(ctx, "link");
+  if (gate != 0)
+    return gate;
 
   kafs_sinode_t *inoent_src;
   int rc = kafs_link_validate_source(fctx, ctx, from, &inoent_src);
@@ -10702,6 +10795,9 @@ static uint32_t kafs_fsync_resolve_inode(struct fuse_context *fctx, struct kafs_
 
 static int kafs_fsync_prepare_inode(struct kafs_context *ctx, const char *path, uint32_t ino)
 {
+  if (kafs_v6_controlled_write_active(ctx))
+    return 0;
+
   kafs_inode_lock(ctx, ino);
   int nrc = kafs_tailmeta_normalize_block_layout(ctx, kafs_ctx_inode(ctx, ino));
   kafs_inode_unlock(ctx, ino);
@@ -10803,6 +10899,11 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
 
 static int kafs_op_fsyncdir(const char *path, int isdatasync, struct fuse_file_info *fi)
 {
+  struct fuse_context *fctx = fuse_get_context();
+  struct kafs_context *ctx = fctx ? fctx->private_data : NULL;
+  int gate = kafs_v6_controlled_write_reject(ctx, "fsyncdir");
+  if (gate != 0)
+    return gate;
   return kafs_op_fsync(path, isdatasync, fi);
 }
 
@@ -10931,6 +11032,12 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
 
   kafs_inocnt_t ino = fi->fh;
   if (ctx && ctx->c_runtime_read_only)
+  {
+    if (ctx->c_open_cnt)
+      (void)__atomic_sub_fetch(&ctx->c_open_cnt[ino], 1u, __ATOMIC_RELAXED);
+    return kafs_op_flush(path, fi);
+  }
+  if (kafs_v6_controlled_write_active(ctx))
   {
     if (ctx->c_open_cnt)
       (void)__atomic_sub_fetch(&ctx->c_open_cnt[ino], 1u, __ATOMIC_RELAXED);
@@ -12533,9 +12640,7 @@ static int kafs_main_validate_v6_write_options(const kafs_main_options_t *opts)
             "v6 write mount requires bg_dedup_scan=off; background dedup is unsupported.\n");
     return 2;
   }
-  fprintf(stderr, "format v6 controlled write mount is not enabled yet; runtime mount remains "
-                  "offline-only.\n");
-  return 2;
+  return 0;
 }
 
 static int kafs_main_validate_pending_options(const kafs_main_options_t *opts)
@@ -13123,6 +13228,33 @@ static int kafs_main_v6_readonly_smoke_mount(kafs_context_t *ctx, const kafs_ssu
   return rc;
 }
 
+static int kafs_main_v6_controlled_write_mount(kafs_context_t *ctx,
+                                               const kafs_ssuperblock_t *sbdisk,
+                                               kafs_inocnt_t *inocnt_out,
+                                               kafs_blkcnt_t *r_blkcnt_out)
+{
+  int rc = kafs_main_v6_runtime_admit_context(ctx, sbdisk, PROT_READ | PROT_WRITE);
+  if (rc == 0)
+  {
+    ctx->c_v6_controlled_write_enabled = 1u;
+    if (inocnt_out)
+      *inocnt_out = kafs_inocnt_stoh(sbdisk->s_inocnt);
+    if (r_blkcnt_out)
+      *r_blkcnt_out = kafs_blkcnt_stoh(sbdisk->s_r_blkcnt);
+    fprintf(stderr,
+            "format v6 controlled write mount: selected descriptor retained in write runtime "
+            "context; delayed/background mutations are disabled; FUSE write surface is limited "
+            "to regular-file create/write/fsync/release.\n");
+  }
+  else
+  {
+    char errbuf[128];
+    fprintf(stderr, "format v6 controlled write mount admission failed: %s.\n",
+            kafs_main_rc_text(rc, errbuf, sizeof(errbuf)));
+  }
+  return rc;
+}
+
 static int kafs_main_v6_inspection_mount(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk,
                                          kafs_inocnt_t *inocnt_out, kafs_blkcnt_t *r_blkcnt_out)
 {
@@ -13223,6 +13355,7 @@ static void kafs_main_lock_runtime_image(kafs_context_t *ctx, const char *image_
 static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *image_path,
                                            kafs_bool_t auto_migrate, kafs_bool_t migrate_yes,
                                            kafs_bool_t v6_inspection_mount,
+                                           kafs_bool_t v6_write_mount,
                                            kafs_bool_t mount_read_only_requested)
 {
   int open_flags = v6_inspection_mount ? O_RDONLY : O_RDWR;
@@ -13255,11 +13388,26 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
     fprintf(stderr, "v6 inspection mount applies only to format v6 images (found v%u).\n", fmt_ver);
     exit(2);
   }
+  if (v6_write_mount && fmt_ver != KAFS_FORMAT_VERSION_V6)
+  {
+    fprintf(stderr, "v6 write mount applies only to format v6 images (found v%u).\n", fmt_ver);
+    exit(2);
+  }
 
   kafs_inocnt_t inocnt = 0;
   kafs_blkcnt_t r_blkcnt = 0;
   if (fmt_ver == KAFS_FORMAT_VERSION_V6)
   {
+    if (v6_write_mount)
+    {
+      int rc = kafs_main_v6_controlled_write_mount(ctx, &sbdisk, &inocnt, &r_blkcnt);
+      if (rc != 0)
+        exit(2);
+      kafs_main_init_runtime_diag(ctx, image_path, inocnt);
+      kafs_main_init_runtime_journal(ctx, image_path, r_blkcnt);
+      kafs_main_lock_runtime_image(ctx, image_path);
+      return;
+    }
     if (v6_inspection_mount)
     {
       int rc = kafs_main_v6_inspection_mount(ctx, &sbdisk, &inocnt, &r_blkcnt);
@@ -13385,12 +13533,18 @@ int main(int argc, char **argv)
       hotplug_uds_opt[0] != '\0' ? hotplug_uds_opt : getenv("KAFS_HOTPLUG_UDS");
   const char *hotplug_back_bin =
       hotplug_back_bin_opt[0] != '\0' ? hotplug_back_bin_opt : getenv("KAFS_HOTPLUG_BACK_BIN");
+  if (opts.v6_write_mount && hotplug_uds && *hotplug_uds)
+  {
+    fprintf(stderr, "v6 write mount does not allow hotplug delegated write path.\n");
+    return 2;
+  }
   if (kafs_main_start_hotplug(&ctx, image_path, hotplug_uds, hotplug_back_bin, hotplug_uds_path,
                               sizeof(hotplug_uds_path)) != 0)
     return 2;
 
   kafs_main_open_runtime_context(&ctx, image_path, auto_migrate, migrate_yes,
-                                 opts.v6_inspection_mount, opts.mount_read_only_requested);
+                                 opts.v6_inspection_mount, opts.v6_write_mount,
+                                 opts.mount_read_only_requested);
   if (ctx.c_runtime_read_only)
   {
     writeback_cache_enabled = KAFS_FALSE;

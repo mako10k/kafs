@@ -69,6 +69,8 @@ function 単位で監査した。
 pendinglog drain、hotplug delegated write を初期範囲外として扱う v6 専用 guard が必要である。
 truncate/fallocate/unlink/rename/link/symlink/copy/reflink は runtime guard で拒否する。
 
-次は `SDW-V6RT-T12 v6 controlled write admission skeleton and operation guard` に進む。通常の v6 write mount
-は暗黙有効化しない。成功 path を入れる場合でも `rw,v6_write_mount` の明示 opt-in、
-unsupported operation rejection、T4-T11 closeout gate を必須にする。
+T12 で `rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off` の explicit opt-in を
+controlled write admission の成功 path に接続した。通常の v6 write mount は暗黙有効化しない。T12 時点では
+regular file `create` / `write` / `fsync` / `release` だけを初期許可面とし、copy/reflink ioctl と
+allowlist 外 operation は runtime guard で拒否する。copy_file_range syscall は kernel が FUSE high-level op に
+渡さず通常 read/write fallback で満たす環境があるため、T13 で wording と fallback 検証を固める。

@@ -113,8 +113,9 @@ fusermount3 -u /mnt/kafs-v6
 - Production cutover 後の失敗は、旧 source の write-freeze boundary がまだ有効な場合だけ旧 source に戻す。
   分岐した write を自動 merge しない。
 
-## 次の実装条件
+## T12 実装結果
 
-次に code wiring へ進む場合、`SDW-V6RT-T12 v6 controlled write admission skeleton and operation guard`
-として、T10 の reserved parser gate を explicit opt-in 成功 path に接続しつつ、上記 allowlist 外 operation を
-runtime で拒否する。通常 v6 mount は引き続き暗黙 write admission にしない。
+`SDW-V6RT-T12 v6 controlled write admission skeleton and operation guard` で、T10 の reserved parser gate を
+explicit opt-in 成功 path に接続し、上記 allowlist 外 operation を runtime guard に接続した。通常 v6 mount は
+引き続き暗黙 write admission にしない。copy_file_range syscall は kernel が通常 read/write fallback で満たす
+環境があるため、明示 copy/reflink ioctl と FUSE hook を guard 対象とし、fallback wording は T13 で固める。
