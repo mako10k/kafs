@@ -746,6 +746,19 @@
   - release note / cutover playbook に、post-write fsck 失敗時に保存する image、mount log、before/after dump、
     fsck stdout/stderr、実行 workload の証跡を追加した。
 
+### SDW-V6RT-T14 v6 controlled write operator smoke script
+
+- 目的: controlled write acceptance smoke を手順書依存から再現可能な operator script にする。
+- 変更:
+  - `scripts/` 配下の smoke / artifact capture helper
+  - 必要に応じて docs の実行例を script 前提に更新
+- 完了条件:
+  - before/after `kafsdump --json`、before/after `fsck.kafs --balanced-check`、mount log、image stat/digest、
+    regular-file create/write/fsync workload を timestamped report directory に保存できる。
+  - mount、workload、unmount、post-write fsck のいずれかが失敗した場合、非 0 exit で artifact を残す。
+  - copy/reflink や `cp` を acceptance evidence とせず、明示的な regular-file create/write/fsync を使う。
+  - closeout で relevant smoke/test と script/doc 向け static gates が PASS している。
+
 ---
 
 ## 最初に着手するチケット
