@@ -17,6 +17,19 @@ kafsresize \- grow offline KAFS images and create migration target images
 .B --inodes
 .I I
 .RI [ options ]
+.br
+.B kafsresize
+.B --migrate-create
+.B --src-image
+.I source
+.B --dst-image
+.I image
+.B --format-version
+.I 6
+.B --dry-run
+.B --inodes
+.I I
+.RI [ options ]
 .SH DESCRIPTION
 .B kafsresize
 performs offline image growth within preallocated headroom and can also create
@@ -58,6 +71,22 @@ When
 is omitted, size is auto-detected from
 .B --dst-image
 (block device capacity on Linux, or regular file size).
+.TP
+.B --dry-run
+Validate migration-create inputs without writing
+.BR --dst-image .
+For
+.B --format-version 6
+this requires
+.B --src-image
+and checks that the source is a clean v5 image, that destination inode and data
+capacity can hold the currently used source counts, and that v6 descriptor
+replica placement is valid.
+.TP
+.B --src-image image
+Source image used by
+.B --dry-run
+migration precheck.
 .TP
 .B --size-bytes N
 Target logical size in bytes (supports `K/M/G` suffixes).

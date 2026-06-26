@@ -1,7 +1,11 @@
 #include "kafs.h"
 #include "kafs_cli_opts.h"
+#include "kafs_hash.h"
+#include "kafs_inode.h"
 #include "kafs_superblock.h"
+#include "kafs_tailmeta.h"
 #include "kafs_tool_util.h"
+#include "kafs_v6_layout.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -20,26 +24,62 @@
 #include <linux/fs.h>
 #endif
 
+#define KAFSRESIZE_DEFAULT_BLKSIZE_LOG 12
+#define KAFSRESIZE_DEFAULT_JOURNAL_BYTES (1u << 20)
+#define KAFSRESIZE_DEFAULT_HRL_ENTRY_RATIO 0.75
+
+typedef struct kafsresize_mkfs_layout
+{
+  uint64_t mapsize;
+  uint64_t first_data_block;
+  uint64_t block_count;
+  uint64_t data_block_capacity;
+  uint64_t v6_desc_off;
+  uint32_t v6_desc_bytes;
+  uint64_t v6_candidates[KAFS_V6_LAYOUT_REPLICA_MAX_COUNT];
+  uint32_t v6_candidate_count;
+  uint64_t hrl_entry_count;
+} kafsresize_mkfs_layout_t;
+
+typedef struct kafsresize_source_info
+{
+  uint32_t format_version;
+  uint64_t file_size;
+  uint64_t block_size;
+  uint64_t block_count;
+  uint64_t first_data_block;
+  uint64_t free_blocks;
+  uint64_t used_data_blocks;
+  uint64_t inode_count;
+  uint64_t free_inodes;
+  uint64_t used_inodes;
+  uint64_t checkpoint_seq;
+  uint64_t commit_seq;
+} kafsresize_source_info_t;
+
 static void usage(const char *prog)
 {
-  fprintf(stderr,
-          "Usage: %s --grow --size-bytes N <image>\n"
-          "       %s --migrate-create --dst-image <image> [--size-bytes N] --inodes I [options]\n"
-          "  notes:\n"
-          "    - grow-only (no shrink)\n"
-          "    - v0 grow supports only preallocated headroom (s_blkcnt < s_r_blkcnt)\n"
-          "    - migrate-create builds a new image with target size/inodes via mkfs.kafs\n"
-          "    - migrate-create without --size-bytes auto-detects size from --dst-image\n"
-          "  options for --migrate-create:\n"
-          "    --format-version V      on-disk format version passed to mkfs.kafs\n"
-          "    --journal-size-bytes N   journal size passed to mkfs.kafs\n"
-          "    --blksize-log L          block-size log2 passed to mkfs.kafs\n"
-          "    --hrl-entry-ratio R      HRL entries/data-block ratio passed to mkfs.kafs\n"
-          "    --src-mount PATH         print suggested rsync source mount\n"
-          "    --dst-mount PATH         print suggested destination mount\n"
-          "    --yes                    skip confirmation prompt\n"
-          "    --force                  overwrite existing --dst-image\n",
-          prog, prog);
+  fprintf(
+      stderr,
+      "Usage: %s --grow --size-bytes N <image>\n"
+      "       %s --migrate-create --dst-image <image> [--size-bytes N] --inodes I [options]\n"
+      "  notes:\n"
+      "    - grow-only (no shrink)\n"
+      "    - v0 grow supports only preallocated headroom (s_blkcnt < s_r_blkcnt)\n"
+      "    - migrate-create builds a new image with target size/inodes via mkfs.kafs\n"
+      "    - migrate-create without --size-bytes auto-detects size from --dst-image\n"
+      "  options for --migrate-create:\n"
+      "    --src-image IMAGE       source image used by migration precheck/dry-run\n"
+      "    --format-version V      on-disk format version passed to mkfs.kafs\n"
+      "    --journal-size-bytes N   journal size passed to mkfs.kafs\n"
+      "    --blksize-log L          block-size log2 passed to mkfs.kafs\n"
+      "    --hrl-entry-ratio R      HRL entries/data-block ratio passed to mkfs.kafs\n"
+      "    --src-mount PATH         print suggested rsync source mount\n"
+      "    --dst-mount PATH         print suggested destination mount\n"
+      "    --dry-run                validate migration-create inputs without writing dst-image\n"
+      "    --yes                    skip confirmation prompt\n"
+      "    --force                  overwrite existing --dst-image\n",
+      prog, prog);
 }
 
 static int confirm_yes_stdin(void)
@@ -208,6 +248,349 @@ static int detect_dst_size_bytes(const char *path, uint64_t *out_size)
   return -EINVAL;
 }
 
+static int resolve_migrate_create_size(const char *dst_image, uint64_t *size_bytes)
+{
+  if (!size_bytes || *size_bytes != 0)
+    return 0;
+
+  uint64_t auto_size = 0;
+  int drc = detect_dst_size_bytes(dst_image, &auto_size);
+  if (drc != 0)
+  {
+    fprintf(stderr, "failed to auto-detect size from --dst-image '%s' (use --size-bytes): %s\n",
+            dst_image, strerror(-drc));
+    return 2;
+  }
+  *size_bytes = auto_size;
+  return 0;
+}
+
+static int kafsresize_format_version_is_supported(uint32_t format_version)
+{
+  return format_version == KAFS_FORMAT_VERSION || format_version == KAFS_FORMAT_VERSION_V5 ||
+         format_version == KAFS_FORMAT_VERSION_V6;
+}
+
+static uint64_t kafsresize_align_up_u64(uint64_t value, uint64_t align_mask)
+{
+  return (value + align_mask) & ~align_mask;
+}
+
+static int kafsresize_collect_source_info(const char *src_image, kafsresize_source_info_t *out)
+{
+  if (!src_image || !*src_image || !out)
+    return -EINVAL;
+
+  int fd = open(src_image, O_RDONLY);
+  if (fd < 0)
+  {
+    fprintf(stderr, "failed to open source image '%s': %s\n", src_image, strerror(errno));
+    return 1;
+  }
+
+  struct stat st;
+  if (fstat(fd, &st) != 0)
+  {
+    fprintf(stderr, "failed to stat source image '%s': %s\n", src_image, strerror(errno));
+    close(fd);
+    return 1;
+  }
+
+  kafs_ssuperblock_t sb;
+  int rc = kafs_pread_all(fd, &sb, sizeof(sb), 0);
+  close(fd);
+  if (rc != 0)
+  {
+    fprintf(stderr, "failed to read source superblock: %s\n", strerror(-rc));
+    return 1;
+  }
+  if (kafs_sb_magic_get(&sb) != KAFS_MAGIC)
+  {
+    fprintf(stderr, "source image is not a KAFS image\n");
+    return 1;
+  }
+
+  memset(out, 0, sizeof(*out));
+  out->format_version = kafs_sb_format_version_get(&sb);
+  if (out->format_version != KAFS_FORMAT_VERSION_V5)
+  {
+    fprintf(stderr, "unsupported source format_version=%" PRIu32 " (expected v5)\n",
+            out->format_version);
+    return 1;
+  }
+
+  out->file_size = S_ISREG(st.st_mode) ? (uint64_t)st.st_size : 0u;
+  out->block_size = 1ull << kafs_sb_log_blksize_get(&sb);
+  out->block_count = kafs_sb_blkcnt_get(&sb);
+  out->first_data_block = kafs_sb_first_data_block_get(&sb);
+  out->free_blocks = kafs_sb_blkcnt_free_get(&sb);
+  out->inode_count = kafs_sb_inocnt_get(&sb);
+  out->free_inodes = kafs_sb_inocnt_free_get(&sb);
+  out->checkpoint_seq = kafs_sb_checkpoint_seq_get(&sb);
+  out->commit_seq = kafs_sb_commit_seq_get(&sb);
+
+  if (out->commit_seq != out->checkpoint_seq)
+  {
+    fprintf(stderr,
+            "dirty source image: checkpoint_seq=%" PRIu64 ", commit_seq=%" PRIu64
+            " (run fsck/replay before migration)\n",
+            out->checkpoint_seq, out->commit_seq);
+    return 1;
+  }
+  if (out->block_count == 0 || out->free_blocks > out->block_count ||
+      out->first_data_block > out->block_count)
+  {
+    fprintf(stderr, "source image has invalid block counters\n");
+    return 1;
+  }
+  if (out->inode_count == 0 || out->free_inodes > out->inode_count)
+  {
+    fprintf(stderr, "source image has invalid inode counters\n");
+    return 1;
+  }
+
+  uint64_t used_blocks = out->block_count - out->free_blocks;
+  if (used_blocks < out->first_data_block)
+  {
+    fprintf(stderr, "source image has inconsistent metadata/free block counters\n");
+    return 1;
+  }
+  out->used_data_blocks = used_blocks - out->first_data_block;
+  out->used_inodes = out->inode_count - out->free_inodes;
+  return 0;
+}
+
+static void kafsresize_compute_mkfs_layout_once(uint32_t format_version, uint64_t block_count,
+                                                uint64_t block_mask, uint64_t block_size,
+                                                uint64_t inode_count, uint64_t journal_bytes,
+                                                double hrl_entry_ratio,
+                                                kafsresize_mkfs_layout_t *out)
+{
+  memset(out, 0, sizeof(*out));
+
+  uint64_t mapsize = sizeof(kafs_ssuperblock_t);
+  mapsize = kafsresize_align_up_u64(mapsize, block_mask);
+
+  if (format_version == KAFS_FORMAT_VERSION_V6)
+  {
+    out->v6_desc_off = mapsize;
+    out->v6_desc_bytes = kafs_v6_descriptor_bytes_for_block((uint32_t)block_size);
+    mapsize += out->v6_desc_bytes;
+    mapsize = kafsresize_align_up_u64(mapsize, block_mask);
+  }
+
+  mapsize += (block_count + 7u) >> 3;
+  mapsize = kafsresize_align_up_u64(mapsize, 7u);
+  mapsize = kafsresize_align_up_u64(mapsize, block_mask);
+
+  mapsize += kafs_inode_table_bytes_for_format(format_version, inode_count);
+  mapsize = kafsresize_align_up_u64(mapsize, block_mask);
+
+  uint64_t allocator_size = 0;
+  if (kafs_v6_allocator_summary_shape(block_count, &(uint64_t){0}, &(uint64_t){0}, &(uint64_t){0},
+                                      &allocator_size) != 0 ||
+      allocator_size < 4096u)
+    allocator_size = 4096u;
+  allocator_size = kafsresize_align_up_u64(allocator_size, block_mask);
+  mapsize += allocator_size;
+  mapsize = kafsresize_align_up_u64(mapsize, block_mask);
+
+  uint32_t bucket_count = 1024u;
+  while ((bucket_count << 1u) <= (uint32_t)(block_count / 4u))
+    bucket_count <<= 1u;
+  mapsize += (uint64_t)bucket_count * sizeof(uint32_t);
+  mapsize = kafsresize_align_up_u64(mapsize, 7u);
+
+  uint64_t hrl_entry_count = (uint64_t)((double)block_count * hrl_entry_ratio);
+  if (hrl_entry_count == 0 && block_count > 0)
+    hrl_entry_count = 1;
+  if (hrl_entry_count > block_count)
+    hrl_entry_count = block_count;
+  out->hrl_entry_count = hrl_entry_count;
+  mapsize += hrl_entry_count * (uint64_t)sizeof(kafs_hrl_entry_t);
+  mapsize = kafsresize_align_up_u64(mapsize, block_mask);
+
+  mapsize += journal_bytes;
+  mapsize = kafsresize_align_up_u64(mapsize, block_mask);
+
+  mapsize += kafsresize_align_up_u64(1u << 20, block_mask);
+  mapsize = kafsresize_align_up_u64(mapsize, block_mask);
+
+  if (format_version == KAFS_FORMAT_VERSION_V5)
+    mapsize += kafs_tailmeta_default_region_bytes((kafs_blksize_t)block_size);
+  mapsize = kafsresize_align_up_u64(mapsize, block_mask);
+
+  out->mapsize = mapsize;
+  out->first_data_block = mapsize >> __builtin_ctzll(block_size);
+  out->block_count = block_count;
+  out->data_block_capacity =
+      (block_count > out->first_data_block) ? (block_count - out->first_data_block) : 0u;
+}
+
+static int kafsresize_compute_mkfs_layout(uint32_t format_version, uint64_t total_bytes,
+                                          int blksize_log, uint64_t inode_count,
+                                          uint64_t journal_bytes, double hrl_entry_ratio,
+                                          kafsresize_mkfs_layout_t *out)
+{
+  if (!out || total_bytes == 0 || inode_count == 0 || blksize_log <= 0 || blksize_log >= 63)
+    return -EINVAL;
+
+  uint64_t block_size = 1ull << blksize_log;
+  uint64_t block_mask = block_size - 1u;
+  uint64_t block_count = total_bytes >> blksize_log;
+  if (block_count == 0 || block_count > UINT32_MAX)
+    return -ERANGE;
+
+  kafsresize_mkfs_layout_t layout;
+  for (int i = 0; i < 16; ++i)
+  {
+    kafsresize_compute_mkfs_layout_once(format_version, block_count, block_mask, block_size,
+                                        inode_count, journal_bytes, hrl_entry_ratio, &layout);
+    if (total_bytes <= layout.mapsize)
+      return -ERANGE;
+    uint64_t next = (total_bytes - layout.mapsize) >> blksize_log;
+    if (next == block_count)
+      break;
+    if (next == 0 || next > UINT32_MAX)
+      return -ERANGE;
+    block_count = next;
+  }
+
+  for (;;)
+  {
+    kafsresize_compute_mkfs_layout_once(format_version, block_count, block_mask, block_size,
+                                        inode_count, journal_bytes, hrl_entry_ratio, &layout);
+    if (block_count > (UINT64_MAX >> blksize_log))
+      return -ERANGE;
+    uint64_t imgsize = layout.mapsize + (block_count << blksize_log);
+    if (imgsize <= total_bytes)
+      break;
+    if (block_count == 0)
+      return -ERANGE;
+    block_count--;
+  }
+
+  if (format_version == KAFS_FORMAT_VERSION_V6)
+  {
+    if (journal_bytes <= block_size)
+      return -EINVAL;
+    int rc = kafs_v6_candidate_offsets(total_bytes, (uint32_t)block_size, layout.v6_desc_off,
+                                       layout.v6_desc_bytes, layout.v6_candidates,
+                                       &layout.v6_candidate_count);
+    if (rc != 0)
+      return rc;
+    for (uint32_t i = 1; i < layout.v6_candidate_count; ++i)
+      if (layout.v6_candidates[i] < layout.mapsize)
+        return -ERANGE;
+  }
+
+  *out = layout;
+  return 0;
+}
+
+static int cmd_migrate_create_dry_run(const char *src_image, const char *dst_image,
+                                      uint64_t size_bytes, uint32_t inodes, uint32_t format_version,
+                                      uint64_t journal_bytes, int blksize_log,
+                                      double hrl_entry_ratio)
+{
+  uint32_t target_format = (format_version > 0) ? format_version : (uint32_t)KAFS_FORMAT_VERSION_V5;
+  if (!kafsresize_format_version_is_supported(target_format))
+  {
+    fprintf(stderr, "unsupported format version: %" PRIu32 "\n", target_format);
+    return 2;
+  }
+  if (target_format == KAFS_FORMAT_VERSION_V6 && (!src_image || !*src_image))
+  {
+    fprintf(stderr, "--dry-run --format-version 6 requires --src-image\n");
+    return 2;
+  }
+
+  int size_rc = resolve_migrate_create_size(dst_image, &size_bytes);
+  if (size_rc != 0)
+    return size_rc;
+
+  int resolved_blksize_log = (blksize_log > 0) ? blksize_log : KAFSRESIZE_DEFAULT_BLKSIZE_LOG;
+  uint64_t resolved_journal_bytes =
+      (journal_bytes > 0) ? journal_bytes : (uint64_t)KAFSRESIZE_DEFAULT_JOURNAL_BYTES;
+  if (resolved_journal_bytes < 4096u)
+    resolved_journal_bytes = 4096u;
+  double resolved_hrl_entry_ratio =
+      (hrl_entry_ratio > 0.0) ? hrl_entry_ratio : KAFSRESIZE_DEFAULT_HRL_ENTRY_RATIO;
+
+  kafsresize_source_info_t source = {0};
+  if (src_image && *src_image)
+  {
+    int src_rc = kafsresize_collect_source_info(src_image, &source);
+    if (src_rc != 0)
+      return src_rc;
+  }
+
+  kafsresize_mkfs_layout_t layout;
+  int rc =
+      kafsresize_compute_mkfs_layout(target_format, size_bytes, resolved_blksize_log, inodes,
+                                     resolved_journal_bytes, resolved_hrl_entry_ratio, &layout);
+  if (rc != 0)
+  {
+    if (target_format == KAFS_FORMAT_VERSION_V6 && rc == -EINVAL)
+      fprintf(stderr, "format v6 requires journal size greater than one filesystem block\n");
+    else if (target_format == KAFS_FORMAT_VERSION_V6)
+      fprintf(stderr, "image too small for format v6 descriptor replicas\n");
+    else
+      fprintf(stderr, "invalid total size: %" PRIu64 "\n", size_bytes);
+    return 1;
+  }
+
+  if (src_image && *src_image)
+  {
+    if ((uint64_t)inodes < source.used_inodes)
+    {
+      fprintf(stderr,
+              "destination inode count too small: inodes=%" PRIu32 ", source_used=%" PRIu64 "\n",
+              inodes, source.used_inodes);
+      return 1;
+    }
+    if (layout.data_block_capacity < source.used_data_blocks)
+    {
+      fprintf(stderr,
+              "destination data capacity too small: capacity_blocks=%" PRIu64
+              ", source_used_data_blocks=%" PRIu64 "\n",
+              layout.data_block_capacity, source.used_data_blocks);
+      return 1;
+    }
+  }
+
+  printf("kafsresize: migrate-create dry-run PASS\n");
+  if (src_image && *src_image)
+  {
+    printf("  src_image: %s\n", src_image);
+    printf("  source_format_version: %" PRIu32 "\n", source.format_version);
+    printf("  source_used_data_blocks: %" PRIu64 "\n", source.used_data_blocks);
+    printf("  source_used_inodes: %" PRIu64 "\n", source.used_inodes);
+  }
+  printf("  dst_image: %s\n", dst_image);
+  printf("  size_bytes: %" PRIu64 "\n", size_bytes);
+  printf("  inodes: %" PRIu32 "\n", inodes);
+  printf("  format_version: %" PRIu32 "\n", target_format);
+  printf("  block_size: %" PRIu64 "\n", (uint64_t)(1ull << resolved_blksize_log));
+  printf("  journal_bytes: %" PRIu64 "\n", resolved_journal_bytes);
+  printf("  hrl_entry_ratio: %.6f\n", resolved_hrl_entry_ratio);
+  printf("  metadata_bytes: %" PRIu64 "\n", layout.mapsize);
+  printf("  first_data_block: %" PRIu64 "\n", layout.first_data_block);
+  printf("  data_block_capacity: %" PRIu64 "\n", layout.data_block_capacity);
+  if (target_format == KAFS_FORMAT_VERSION_V6)
+  {
+    printf("  v6_descriptor_bytes: %" PRIu32 "\n", layout.v6_desc_bytes);
+    printf("  v6_descriptor_replicas: %" PRIu32 "\n", layout.v6_candidate_count);
+    printf("  v6_descriptor_offsets:");
+    for (uint32_t i = 0; i < layout.v6_candidate_count; ++i)
+      printf(" %" PRIu64, layout.v6_candidates[i]);
+    printf("\n");
+    printf("  v6_group_policy: descriptor-backed metadata groups\n");
+  }
+  printf("  writes_performed: no\n");
+  return 0;
+}
+
 static int cmd_grow(const char *image, uint64_t target_bytes)
 {
   int fd = open(image, O_RDWR);
@@ -363,34 +746,28 @@ static int cmd_grow(const char *image, uint64_t target_bytes)
   return 0;
 }
 
-static int cmd_migrate_create(const char *dst_image, uint64_t size_bytes, uint32_t inodes,
-                              uint32_t format_version, uint64_t journal_bytes, int blksize_log,
-                              double hrl_entry_ratio, const char *src_mount, const char *dst_mount,
-                              int assume_yes, int force)
+static int cmd_migrate_create(const char *src_image, const char *dst_image, uint64_t size_bytes,
+                              uint32_t inodes, uint32_t format_version, uint64_t journal_bytes,
+                              int blksize_log, double hrl_entry_ratio, const char *src_mount,
+                              const char *dst_mount, int assume_yes, int force, int dry_run)
 {
   if (!dst_image || !*dst_image)
   {
     fprintf(stderr, "invalid --dst-image\n");
     return 2;
   }
+  if (dry_run)
+    return cmd_migrate_create_dry_run(src_image, dst_image, size_bytes, inodes, format_version,
+                                      journal_bytes, blksize_log, hrl_entry_ratio);
 
   struct stat dst_st;
   int dst_exists = (stat(dst_image, &dst_st) == 0);
   int dst_is_reg = dst_exists && S_ISREG(dst_st.st_mode);
   int dst_is_blk = dst_exists && S_ISBLK(dst_st.st_mode);
 
-  if (size_bytes == 0)
-  {
-    uint64_t auto_size = 0;
-    int drc = detect_dst_size_bytes(dst_image, &auto_size);
-    if (drc != 0)
-    {
-      fprintf(stderr, "failed to auto-detect size from --dst-image '%s' (use --size-bytes): %s\n",
-              dst_image, strerror(-drc));
-      return 2;
-    }
-    size_bytes = auto_size;
-  }
+  int size_rc = resolve_migrate_create_size(dst_image, &size_bytes);
+  if (size_rc != 0)
+    return size_rc;
 
   if (!assume_yes && !confirm_yes_stdin())
   {
@@ -499,6 +876,7 @@ typedef struct kafsresize_options
   int do_migrate_create;
   int assume_yes;
   int force;
+  int dry_run;
   uint64_t target_bytes;
   uint32_t format_version;
   uint64_t journal_bytes;
@@ -506,6 +884,7 @@ typedef struct kafsresize_options
   double hrl_entry_ratio;
   uint32_t inodes;
   const char *image;
+  const char *src_image;
   const char *dst_image;
   const char *src_mount;
   const char *dst_mount;
@@ -543,6 +922,11 @@ static int kafsresize_parse_flag_arg(const char *arg, kafsresize_options_t *opts
   if (strcmp(arg, "--force") == 0)
   {
     opts->force = 1;
+    return 1;
+  }
+  if (strcmp(arg, "--dry-run") == 0)
+  {
+    opts->dry_run = 1;
     return 1;
   }
   return 0;
@@ -618,6 +1002,11 @@ static int kafsresize_parse_path_value_arg(int argc, char **argv, int *index,
   if (strcmp(arg, "--dst-image") == 0 && *index + 1 < argc)
   {
     opts->dst_image = argv[++(*index)];
+    return 1;
+  }
+  if (strcmp(arg, "--src-image") == 0 && *index + 1 < argc)
+  {
+    opts->src_image = argv[++(*index)];
     return 1;
   }
   if (strcmp(arg, "--src-mount") == 0 && *index + 1 < argc)
@@ -696,10 +1085,10 @@ static int kafsresize_run(const char *prog, const kafsresize_options_t *opts)
       usage(prog);
       return 2;
     }
-    return cmd_migrate_create(opts->dst_image, opts->target_bytes, opts->inodes,
+    return cmd_migrate_create(opts->src_image, opts->dst_image, opts->target_bytes, opts->inodes,
                               opts->format_version, opts->journal_bytes, opts->blksize_log,
                               opts->hrl_entry_ratio, opts->src_mount, opts->dst_mount,
-                              opts->assume_yes, opts->force);
+                              opts->assume_yes, opts->force, opts->dry_run);
   }
 
   usage(prog);

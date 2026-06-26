@@ -409,6 +409,10 @@
 ### SDW-P5-T1 v5-to-v6 migration design
 
 - 目的: safe offline rebuild semantics を定義する。
+- 進捗:
+  - `kafsresize --migrate-create --src-image <v5> --dst-image <dst> --format-version 6 --dry-run`
+    は source を変更せず、clean v5 source、宛先 inode/data capacity、v6 descriptor replica
+    placement を事前診断する。
 - 完了条件:
   - source image は変更しない。
   - destination geometry と group policy が文書化されている。

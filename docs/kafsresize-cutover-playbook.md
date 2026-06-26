@@ -15,7 +15,8 @@ in place safely.
 - The source image is healthy enough to mount and read from
 - You have capacity for a second destination image during cutover
 - You can schedule a short write freeze for the final sync and switch
-- You know whether the destination must stay on legacy v4 or can use the v5 default
+- You know whether the destination must stay on legacy v4, can use the v5 default,
+  or is being staged as a v6 descriptor destination
 
 ## Step 1: Inspect The Source Image
 
@@ -30,6 +31,22 @@ Recommended checks:
 
 - verify the image passes a normal offline check before migration work
 - record current size, inode pressure, and any tail metadata observations
+
+For v5-to-v6 planning, run the create precheck before touching the destination:
+
+```sh
+./kafsresize --migrate-create \
+	--src-image /var/lib/kafs/source.img \
+	--dst-image /var/lib/kafs/destination.img \
+	--size-bytes 128G \
+	--inodes 524288 \
+	--format-version 6 \
+	--dry-run
+```
+
+This validates that the source is a clean v5 image, computes the v6 destination
+geometry, and reports descriptor replica offsets without formatting the
+destination.
 
 ## Step 2: Create The Destination Image
 
@@ -47,6 +64,10 @@ Provision a destination image with the desired geometry:
 If the destination must stay on legacy v4, add `--format-version 4` explicitly.
 Otherwise the destination follows the current mkfs default and will be created
 as v5.
+
+For a v6 destination, add `--format-version 6` only after the dry-run precheck
+passes. Current v6 images remain offline descriptor scaffolds until v6 runtime
+mount support is explicitly enabled.
 
 ## Step 3: Mount Source And Destination
 
@@ -102,6 +123,8 @@ Recommended validation points:
 - key application data is present and readable
 - offline fsck passes on the destination image
 - expected format version and geometry match the migration plan
+- for v6 destinations, descriptor replica offsets and group policy match the
+  dry-run precheck
 
 ## Step 7: Cut Over
 

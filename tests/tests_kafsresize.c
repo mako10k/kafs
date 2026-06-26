@@ -932,6 +932,121 @@ int main(void)
     return 1;
   }
 
+  const char *src_v5_migrate_img = "migrate-src-v5.img";
+  char *mkfs_src_v5_migrate_argv[] = {(char *)mkfs_abs,
+                                      (char *)src_v5_migrate_img,
+                                      (char *)"-s",
+                                      (char *)"32M",
+                                      (char *)"--format-version",
+                                      (char *)"5",
+                                      NULL};
+  if (run_cmd_status(mkfs_src_v5_migrate_argv) != 0)
+  {
+    fprintf(stderr, "mkfs for v5->v6 dry-run source failed\n");
+    return 1;
+  }
+
+  const char *dst_v6_dry_img = "migrate-dst-v6-dry.img";
+  int dst_v6_dry_fd = open(dst_v6_dry_img, O_RDWR | O_CREAT | O_TRUNC, 0600);
+  if (dst_v6_dry_fd < 0)
+  {
+    fprintf(stderr, "failed to create v6 dry-run dst image\n");
+    return 1;
+  }
+  if (ftruncate(dst_v6_dry_fd, 64 * 1024 * 1024) != 0)
+  {
+    fprintf(stderr, "failed to size v6 dry-run dst image\n");
+    close(dst_v6_dry_fd);
+    return 1;
+  }
+  close(dst_v6_dry_fd);
+
+  char migrate_v6_dry_stdout[4096];
+  char *migrate_create_v6_dry_argv[] = {(char *)resize_abs,
+                                        (char *)"--migrate-create",
+                                        (char *)"--src-image",
+                                        (char *)src_v5_migrate_img,
+                                        (char *)"--dst-image",
+                                        (char *)dst_v6_dry_img,
+                                        (char *)"--inodes",
+                                        (char *)"4096",
+                                        (char *)"--format-version",
+                                        (char *)"6",
+                                        (char *)"--dry-run",
+                                        NULL};
+  if (run_cmd_capture_stdout(migrate_create_v6_dry_argv, migrate_v6_dry_stdout,
+                             sizeof(migrate_v6_dry_stdout)) != 0)
+  {
+    fprintf(stderr, "migrate-create v6 dry-run failed\n");
+    return 1;
+  }
+  if (!strstr(migrate_v6_dry_stdout, "migrate-create dry-run PASS") ||
+      !strstr(migrate_v6_dry_stdout, "source_format_version: 5") ||
+      !strstr(migrate_v6_dry_stdout, "format_version: 6") ||
+      !strstr(migrate_v6_dry_stdout, "v6_descriptor_replicas:") ||
+      !strstr(migrate_v6_dry_stdout, "writes_performed: no"))
+  {
+    fprintf(stderr, "migrate-create v6 dry-run output missing expected summary\n");
+    return 1;
+  }
+
+  kafs_ssuperblock_t dry_dst_sb = {0};
+  if (read_superblock(dst_v6_dry_img, &dry_dst_sb) != 0)
+  {
+    fprintf(stderr, "failed to inspect v6 dry-run dst image\n");
+    return 1;
+  }
+  if (kafs_sb_magic_get(&dry_dst_sb) == KAFS_MAGIC)
+  {
+    fprintf(stderr, "v6 dry-run unexpectedly formatted destination image\n");
+    return 1;
+  }
+
+  const char *src_v5_dirty_img = "migrate-src-v5-dirty.img";
+  char *mkfs_src_v5_dirty_argv[] = {(char *)mkfs_abs,
+                                    (char *)src_v5_dirty_img,
+                                    (char *)"-s",
+                                    (char *)"32M",
+                                    (char *)"--format-version",
+                                    (char *)"5",
+                                    NULL};
+  if (run_cmd_status(mkfs_src_v5_dirty_argv) != 0)
+  {
+    fprintf(stderr, "mkfs for dirty v5 dry-run source failed\n");
+    return 1;
+  }
+
+  kafs_ssuperblock_t dirty_src_sb = {0};
+  if (read_superblock(src_v5_dirty_img, &dirty_src_sb) != 0)
+  {
+    fprintf(stderr, "failed to read dirty source superblock\n");
+    return 1;
+  }
+  kafs_sb_commit_seq_set(&dirty_src_sb, kafs_sb_checkpoint_seq_get(&dirty_src_sb) + 1u);
+  if (write_superblock(src_v5_dirty_img, &dirty_src_sb) != 0)
+  {
+    fprintf(stderr, "failed to mark dirty source superblock\n");
+    return 1;
+  }
+
+  char *migrate_create_v6_dirty_argv[] = {(char *)resize_abs,
+                                          (char *)"--migrate-create",
+                                          (char *)"--src-image",
+                                          (char *)src_v5_dirty_img,
+                                          (char *)"--dst-image",
+                                          (char *)dst_v6_dry_img,
+                                          (char *)"--inodes",
+                                          (char *)"4096",
+                                          (char *)"--format-version",
+                                          (char *)"6",
+                                          (char *)"--dry-run",
+                                          NULL};
+  if (run_cmd_status(migrate_create_v6_dirty_argv) == 0)
+  {
+    fprintf(stderr, "migrate-create v6 dry-run accepted dirty source\n");
+    return 1;
+  }
+
   const char *info_img = "info-tombstone.img";
   char *info_mkfs_argv[] = {(char *)mkfs_abs, (char *)info_img, (char *)"-s", (char *)"32M", NULL};
   if (run_cmd_status(info_mkfs_argv) != 0)

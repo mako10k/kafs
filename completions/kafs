@@ -168,16 +168,16 @@ _kafsresize() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  if [[ "${prev}" == "--dst-image" || "${prev}" == "--src-mount" || "${prev}" == "--dst-mount" ]]; then
+  if [[ "${prev}" == "--dst-image" || "${prev}" == "--src-image" || "${prev}" == "--src-mount" || "${prev}" == "--dst-mount" ]]; then
     _kafs__path_complete "$prev" "$cur"
     return
   fi
 
-  if [[ "${prev}" == "--size-bytes" || "${prev}" == "--journal-size-bytes" || "${prev}" == "--blksize-log" || "${prev}" == "--hrl-entry-ratio" || "${prev}" == "--inodes" ]]; then
+  if [[ "${prev}" == "--size-bytes" || "${prev}" == "--journal-size-bytes" || "${prev}" == "--blksize-log" || "${prev}" == "--hrl-entry-ratio" || "${prev}" == "--inodes" || "${prev}" == "--format-version" ]]; then
     return
   fi
 
-  COMPREPLY=( $(compgen -W "-h --help --grow --migrate-create --size-bytes --dst-image --inodes --journal-size-bytes --blksize-log --hrl-entry-ratio --src-mount --dst-mount --yes --force" -- "${cur}") )
+  COMPREPLY=( $(compgen -W "-h --help --grow --migrate-create --size-bytes --src-image --dst-image --inodes --format-version --journal-size-bytes --blksize-log --hrl-entry-ratio --src-mount --dst-mount --dry-run --yes --force" -- "${cur}") )
 }
 
 _kafsctl() {
