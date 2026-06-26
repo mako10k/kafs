@@ -1308,6 +1308,48 @@ static int test_divergent_same_generation_rejected(void)
   if (run_cmd_capture(dump_argv, 1, out, sizeof(out)) != 0 ||
       !strstr(out, "\"status\": \"divergent\""))
     return -1;
+
+  char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)img, NULL};
+  if (run_cmd_capture(fsck_argv, 13, out, sizeof(out)) != 0 ||
+      !strstr(out, "v6 descriptor discovery failed") || !strstr(out, "status=divergent"))
+    return -1;
+  return 0;
+}
+
+static int test_v6_repair_modes_rejected(void)
+{
+  const char *img = "v6-repair-rejected.img";
+  if (make_v6_image(img) != 0)
+    return -1;
+
+  const char *repair_args[][2] = {
+      {"--balanced-repair", "preset repair"},
+      {"--repair-journal-reset", "journal reset"},
+      {"--replay-journal", "journal replay"},
+      {"--trim-free-data-blocks", "trim write"},
+  };
+
+  for (size_t i = 0; i < sizeof(repair_args) / sizeof(repair_args[0]); ++i)
+  {
+    char out[8192];
+    char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)repair_args[i][0], (char *)img,
+                         NULL};
+    if (run_cmd_capture(fsck_argv, 2, out, sizeof(out)) != 0 ||
+        !strstr(out, "format v6 repair/write modes are not supported yet") ||
+        !strstr(out, "detect-only"))
+    {
+      tlogf("v6 repair mode was not rejected for %s: %s", repair_args[i][1], out);
+      return -1;
+    }
+  }
+
+  char out[8192];
+  char *check_argv[] = {(char *)kafs_test_fsck_bin(), (char *)"--balanced-check", (char *)img,
+                       NULL};
+  if (run_cmd_capture(check_argv, 0, out, sizeof(out)) != 0 ||
+      !strstr(out, "format v6 fsck policy: detect-only validation") ||
+      !strstr(out, "Journal check: v6 descriptor-backed segment health OK"))
+    return -1;
   return 0;
 }
 
@@ -1591,8 +1633,9 @@ static int choose_block_for_bucket_range(unsigned char *block, size_t block_size
   return -1;
 }
 
-static int write_journal_segment_header(const v6_image_info_t *info, const void *desc,
-                                        uint64_t segment_id, uint64_t generation)
+static int write_journal_segment_header_with_write_off(const v6_image_info_t *info,
+                                                       const void *desc, uint64_t segment_id,
+                                                       uint64_t generation, uint64_t write_off)
 {
   kafs_v6_journal_segment_lookup_t lookup;
   if (kafs_v6_journal_segment_lookup(desc, info->desc_bytes, segment_id, &lookup) != 0)
@@ -1604,12 +1647,18 @@ static int write_journal_segment_header(const v6_image_info_t *info, const void 
   hdr.version = KJ_VER;
   hdr.flags = 0;
   hdr.area_size = lookup.data.data_bytes;
-  hdr.write_off = 0;
+  hdr.write_off = write_off;
   hdr.seq = generation;
   hdr.reserved0 = generation;
   hdr.header_crc = kj_header_crc_calc(&hdr);
   return (kafs_pwrite_all(info->fd, &hdr, sizeof(hdr), (off_t)lookup.header.header_off) == 0) ? 0
                                                                                               : -1;
+}
+
+static int write_journal_segment_header(const v6_image_info_t *info, const void *desc,
+                                        uint64_t segment_id, uint64_t generation)
+{
+  return write_journal_segment_header_with_write_off(info, desc, segment_id, generation, 0);
 }
 
 static int test_hrl_runtime_shard_mapping(void)
@@ -2854,6 +2903,55 @@ static int test_journal_torn_latest_segment_recovers(void)
   return 0;
 }
 
+static int test_journal_no_valid_segment_rejected(void)
+{
+  const char *img = "journal-no-valid-segment.img";
+  if (make_v6_image(img) != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_journal_split_two_segments, 1) != 0)
+    return -1;
+
+  v6_image_info_t info;
+  if (open_v6_image(img, 1, &info) != 0)
+    return -1;
+
+  void *desc = NULL;
+  int failed = 0;
+  if (read_descriptor(&info, 0, &desc) != 0)
+    failed = 1;
+
+  if (!failed &&
+      (write_journal_segment_header_with_write_off(&info, desc, 0, 1,
+                                                   sizeof(kj_rec_hdr_t)) != 0 ||
+       write_journal_segment_header_with_write_off(&info, desc, 1, 2,
+                                                   sizeof(kj_rec_hdr_t)) != 0))
+    failed = 1;
+
+  if (!failed)
+  {
+    kafs_v6_journal_segment_report_t segment_report;
+    int rc = kafs_v6_journal_validate_segments_fd(info.fd, desc, info.desc_bytes, &info.sb,
+                                                  info.file_size, &segment_report);
+    if (rc == 0 || !segment_report.available || !segment_report.has_torn_data ||
+        segment_report.valid_segments != 0u)
+      failed = 1;
+  }
+
+  free(desc);
+  close_v6_image(&info);
+  if (failed)
+    return -1;
+
+  char out[8192];
+  char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)img, NULL};
+  if (run_cmd_capture(fsck_argv, 13, out, sizeof(out)) != 0 ||
+      !strstr(out, "v6 journal segments:") || !strstr(out, "valid=0") ||
+      !strstr(out, "has_torn_data=true") ||
+      !strstr(out, "v6 metadata shard validation failed"))
+    return -1;
+  return 0;
+}
+
 static int test_journal_distributed_group_selection(void)
 {
   const char *img = "journal-distributed-groups.img";
@@ -3405,6 +3503,7 @@ int main(void)
       {"primary_corrupt_backup_selected", test_primary_corrupt_backup_selected},
       {"stale_generation_reported", test_stale_generation_reported},
       {"divergent_same_generation_rejected", test_divergent_same_generation_rejected},
+      {"v6_repair_modes_rejected", test_v6_repair_modes_rejected},
       {"bitmap_coverage_valid_and_lookup", test_bitmap_coverage_valid_and_lookup},
       {"inode_coverage_valid_and_lookup", test_inode_coverage_valid_and_lookup},
       {"allocator_summary_coverage_valid_and_lookup",
@@ -3427,6 +3526,7 @@ int main(void)
       {"journal_coverage_valid_lookup_and_segments", test_journal_coverage_valid_lookup_and_segments},
       {"journal_header_gap_rejected", test_journal_header_gap_rejected},
       {"journal_torn_latest_segment_recovers", test_journal_torn_latest_segment_recovers},
+      {"journal_no_valid_segment_rejected", test_journal_no_valid_segment_rejected},
       {"journal_distributed_group_selection", test_journal_distributed_group_selection},
       {"inode_record_shape_rejected", test_inode_record_shape_rejected},
       {"inode_physical_truncation_rejected", test_inode_physical_truncation_rejected},

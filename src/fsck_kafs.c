@@ -552,9 +552,11 @@ static int fsck_handle_v6_image(const struct fsck_options *opts, const struct fs
 
   if (want_write)
   {
-    fprintf(stderr, "format v6 repair/write modes are not supported yet.\n");
+    fprintf(stderr, "format v6 repair/write modes are not supported yet; use detect-only "
+                    "`fsck.kafs --balanced-check <image>`.\n");
     return FSCK_EXIT_USAGE;
   }
+  fprintf(stderr, "format v6 fsck policy: detect-only validation; repair/write modes disabled.\n");
 
   rc = kafs_v6_discover_layout(info->fd, &info->sb, info->file_size, &report);
   fsck_report_v6_descriptor(&report);
@@ -2369,6 +2371,9 @@ static void usage(const char *prog)
   fprintf(stderr, "Notes:\n");
   fprintf(stderr, "    Preset mode and low-level options cannot be mixed.\n");
   fprintf(stderr, "    With no options, default is equivalent to --check (--balanced-check).\n");
+  fprintf(stderr,
+          "    Format v6 images support detect-only validation only; repair/write options fail "
+          "closed.\n");
 }
 
 static int check_region_bounds(const char *name, uint64_t off, uint64_t size, uint64_t file_size)

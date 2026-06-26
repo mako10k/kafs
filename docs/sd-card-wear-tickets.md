@@ -602,10 +602,22 @@
 ### SDW-V6RT-T7 v6 post-write fsck and repair policy
 
 - 目的: v6 write mount 後に fsck が detect-only で安全に判定できる境界と repair 解禁順を決める。
+- 進捗:
+  - [sd-card-wear-v6-post-write-fsck-repair-policy.md](sd-card-wear-v6-post-write-fsck-repair-policy.md)
+    に v6 post-write fsck / repair policy を記録した。
+  - 現段階の format v6 `fsck.kafs` は detect-only validation のみを supported path とする。
+  - `fsck.kafs --balanced-check <image>` を production write cutover 前後の required check とする。
+  - v6 repair/write option は fail closed し、journal replay/reset、descriptor replica repair、
+    metadata shard repair は別チケットで順に解禁する。
+  - `v6_descriptor_validation` は repair/write option 拒否、same-generation descriptor divergence 拒否、
+    valid journal segment が 0 の torn journal 拒否を確認する。
 - 完了条件:
   - dirty journal、torn journal、descriptor divergence、metadata shard corruption の detect-only 判定がある。
   - repair write を未対応のままにする状態と、repair write が必要な状態が明確に分かれている。
   - production write cutover 前の required fsck command が文書化されている。
+- 完了メモ:
+  - write mount と v6 repair write はまだ有効化しない。
+  - 次は `SDW-V6RT-T8 v6 write mount lock/stress gate` に進む。
 
 ### SDW-V6RT-T8 v6 write mount lock/stress gate
 

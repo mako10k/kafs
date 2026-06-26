@@ -440,6 +440,11 @@ corrupt non-selected replicas are warnings when a latest valid descriptor can be
 validation passes. Same-generation divergent replicas are errors because the newest logical layout
 is ambiguous.
 
+Current v6 `fsck.kafs` support is detect-only. The required operator command is
+`fsck.kafs --balanced-check <image>`. Repair/write options fail closed until descriptor-backed
+journal reset, descriptor replica repair, and metadata shard repair have separate write ordering and
+regression coverage.
+
 ## Phase 4 Layout Dependencies
 
 Phase 4 must keep the v6 descriptor as the single source of truth for metadata placement. Runtime

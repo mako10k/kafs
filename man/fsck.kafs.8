@@ -35,9 +35,10 @@ By default it runs
 (journal validation + dirent->ino orphan scan).
 For format version 6 scaffold images,
 .B fsck.kafs
-performs read-only layout descriptor discovery and bounds validation, reports
-all descriptor replicas, validates block bitmap shard coverage, and skips legacy journal checks until
-distributed metadata support is implemented.
+supports detect-only validation only.  It performs read-only layout descriptor
+discovery and bounds validation, reports all descriptor replicas, validates
+descriptor-backed metadata shard coverage and journal segment health, and
+rejects repair/write options fail-closed.
 .SH OPTIONS
 .SS Preset Modes
 .TP
