@@ -30,8 +30,12 @@ bounded. It is not a production default.
 
 ## Initial unsupported scope
 
+The initial controlled write surface is limited to regular-file
+create/write/fsync/release after the operation guard is implemented.
+
 The initial controlled opt-in excludes:
 
+- truncate/fallocate/unlink/rename/link/symlink/copy/reflink
 - writeback cache
 - runtime TRIM
 - pending log / pending worker

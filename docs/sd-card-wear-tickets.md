@@ -681,12 +681,37 @@
 
 - 目的: controlled write mount の成功 path を入れる前に、user-visible FUSE write operations の対象範囲を
   function 単位で固定する。
+- 実施内容:
+  - `docs/sd-card-wear-v6-fuse-write-surface-audit.md` を追加し、FUSE write surface を
+    `create`、`write`、`truncate`、`fallocate`、`unlink`、`rename`、`link`、`symlink`、`copy`、
+    `reflink`、`fsync`、`release` に分解した。
+  - 初期 controlled write opt-in の許可候補を regular file `create` / `write` / `fsync` / `release`
+    に限定し、それ以外を runtime guard で拒否する方針に固定した。
+  - `fsync` / `release` / `write` / `open(O_TRUNC)` に必要な v6 専用 guard と、最小 smoke workload、
+    rollback / fsck closeout command を固定した。
 - 完了条件:
   - create/write/truncate/fallocate/unlink/rename/link/symlink/copy/reflink/fsync/release の各 path が
     descriptor-backed metadata routing、disabled delayed/background policy、lock policy のどれに依存するか
     表で整理されている。
   - 初期 controlled write opt-in で許可する operation と拒否する operation が決まっている。
   - 成功 path を実装する場合の最小 smoke workload と rollback/fsck closeout command が決まっている。
+- 完了メモ:
+  - 次は `SDW-V6RT-T12 v6 controlled write admission skeleton and operation guard` に進む。
+
+### SDW-V6RT-T12 v6 controlled write admission skeleton and operation guard
+
+- 目的: T10 の reserved parser gate を explicit opt-in 成功 path に接続しつつ、T11 allowlist 外の
+  FUSE operation を runtime で拒否する。
+- 完了条件:
+  - `rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off` だけが v6 controlled write
+    admission の成功 path に進み、通常 v6 mount は引き続き拒否される。
+  - v6 runtime context は `O_RDWR`、`PROT_READ | PROT_WRITE`、write lock、descriptor-backed bitmap / inode /
+    allocator / HRL / journal segment validation、delayed/background disabled policy を満たしている。
+  - T11 allowlist 外の truncate/fallocate/unlink/rename/link/symlink/copy/reflink と hotplug delegated write が
+    fail closed する regression がある。
+  - 許可候補の create/write/fsync/release は v6 専用 guard により tail metadata normalization / reclaim、
+    pendinglog drain、`open(O_TRUNC)` を初期範囲外として扱う。
+  - `make check -j2` と T11 smoke workload 相当の regression / 手順が closeout に含まれる。
 
 ---
 

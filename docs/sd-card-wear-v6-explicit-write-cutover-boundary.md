@@ -122,3 +122,14 @@ bg_dedup_scan=off` まで満たした場合も、現段階では `controlled wri
 
 次に成功 path を入れる前に、`SDW-V6RT-T11 v6 FUSE write surface admission audit` で user-visible
 FUSE write operations の許可範囲を function 単位で固定する。
+
+## T11 FUSE write surface 監査結果
+
+T11 で `docs/sd-card-wear-v6-fuse-write-surface-audit.md` を追加した。初期 controlled opt-in の許可候補は
+regular file `create` / `write` / `fsync` / `release` に限定し、truncate/fallocate/unlink/rename/link/
+symlink/copy/reflink は runtime guard で拒否する。成功 path を入れる場合は、`fsync` / `release` / `write` /
+`open(O_TRUNC)` に v6 専用 guard を入れ、tail metadata normalization / reclaim、pendinglog drain、
+hotplug delegated write を初期範囲外として扱う。
+
+次は `SDW-V6RT-T12 v6 controlled write admission skeleton and operation guard` で、T10 parser gate を
+explicit opt-in 成功 path に接続しつつ T11 allowlist を runtime に実装する。
