@@ -223,6 +223,21 @@ static int write_superblock(const char *img, const kafs_ssuperblock_t *sb)
   return 0;
 }
 
+static int create_sized_file(const char *path, off_t size)
+{
+  int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
+  if (fd < 0)
+    return -errno;
+  if (ftruncate(fd, size) != 0)
+  {
+    int saved = errno;
+    close(fd);
+    return -saved;
+  }
+  close(fd);
+  return 0;
+}
+
 static int read_tailmeta_region_header(const char *img, uint64_t off,
                                        kafs_tailmeta_region_hdr_t *hdr)
 {
@@ -817,19 +832,11 @@ int main(void)
   }
 
   const char *dst_img = "migrate-dst.img";
-  int dst_fd = open(dst_img, O_RDWR | O_CREAT | O_TRUNC, 0600);
-  if (dst_fd < 0)
+  if (create_sized_file(dst_img, 64 * 1024 * 1024) != 0)
   {
     fprintf(stderr, "failed to create migrate dst image\n");
     return 1;
   }
-  if (ftruncate(dst_fd, 64 * 1024 * 1024) != 0)
-  {
-    fprintf(stderr, "failed to size migrate dst image\n");
-    close(dst_fd);
-    return 1;
-  }
-  close(dst_fd);
 
   char migrate_stdout[4096];
   char *migrate_create_argv[] = {(char *)resize_abs,
@@ -879,19 +886,11 @@ int main(void)
   }
 
   const char *dst_v5_img = "migrate-dst-v5.img";
-  int dst_v5_fd = open(dst_v5_img, O_RDWR | O_CREAT | O_TRUNC, 0600);
-  if (dst_v5_fd < 0)
+  if (create_sized_file(dst_v5_img, 64 * 1024 * 1024) != 0)
   {
     fprintf(stderr, "failed to create v5 migrate dst image\n");
     return 1;
   }
-  if (ftruncate(dst_v5_fd, 64 * 1024 * 1024) != 0)
-  {
-    fprintf(stderr, "failed to size v5 migrate dst image\n");
-    close(dst_v5_fd);
-    return 1;
-  }
-  close(dst_v5_fd);
 
   char migrate_v5_stdout[4096];
   char *migrate_create_v5_argv[] = {(char *)resize_abs,
@@ -947,19 +946,11 @@ int main(void)
   }
 
   const char *dst_v6_dry_img = "migrate-dst-v6-dry.img";
-  int dst_v6_dry_fd = open(dst_v6_dry_img, O_RDWR | O_CREAT | O_TRUNC, 0600);
-  if (dst_v6_dry_fd < 0)
+  if (create_sized_file(dst_v6_dry_img, 64 * 1024 * 1024) != 0)
   {
     fprintf(stderr, "failed to create v6 dry-run dst image\n");
     return 1;
   }
-  if (ftruncate(dst_v6_dry_fd, 64 * 1024 * 1024) != 0)
-  {
-    fprintf(stderr, "failed to size v6 dry-run dst image\n");
-    close(dst_v6_dry_fd);
-    return 1;
-  }
-  close(dst_v6_dry_fd);
 
   char migrate_v6_dry_stdout[4096];
   char *migrate_create_v6_dry_argv[] = {(char *)resize_abs,
@@ -1044,6 +1035,126 @@ int main(void)
   if (run_cmd_status(migrate_create_v6_dirty_argv) == 0)
   {
     fprintf(stderr, "migrate-create v6 dry-run accepted dirty source\n");
+    return 1;
+  }
+
+  const char *dst_v6_img = "migrate-dst-v6.img";
+  if (create_sized_file(dst_v6_img, 64 * 1024 * 1024) != 0)
+  {
+    fprintf(stderr, "failed to create v6 migrate dst image\n");
+    return 1;
+  }
+
+  char migrate_v6_stdout[4096];
+  char *migrate_create_v6_argv[] = {(char *)resize_abs,
+                                    (char *)"--migrate-create",
+                                    (char *)"--src-image",
+                                    (char *)src_v5_migrate_img,
+                                    (char *)"--dst-image",
+                                    (char *)dst_v6_img,
+                                    (char *)"--force",
+                                    (char *)"--inodes",
+                                    (char *)"4096",
+                                    (char *)"--format-version",
+                                    (char *)"6",
+                                    (char *)"--yes",
+                                    NULL};
+  if (run_cmd_capture_stdout(migrate_create_v6_argv, migrate_v6_stdout,
+                             sizeof(migrate_v6_stdout)) != 0)
+  {
+    fprintf(stderr, "migrate-create v6 failed\n");
+    return 1;
+  }
+
+  kafs_ssuperblock_t migrate_v6_sb = {0};
+  if (read_superblock(dst_v6_img, &migrate_v6_sb) != 0)
+  {
+    fprintf(stderr, "failed to read migrate-create v6 superblock\n");
+    return 1;
+  }
+  if (kafs_sb_magic_get(&migrate_v6_sb) != KAFS_MAGIC ||
+      kafs_sb_format_version_get(&migrate_v6_sb) != KAFS_FORMAT_VERSION_V6)
+  {
+    fprintf(stderr, "unexpected migrate-create v6 image format\n");
+    return 1;
+  }
+  if (!strstr(migrate_v6_stdout, "format_version: 6"))
+  {
+    fprintf(stderr, "migrate-create v6 output missing format version summary\n");
+    return 1;
+  }
+
+  const char *dst_v6_nosrc_img = "migrate-dst-v6-nosrc.img";
+  if (create_sized_file(dst_v6_nosrc_img, 64 * 1024 * 1024) != 0)
+  {
+    fprintf(stderr, "failed to create v6 no-source dst image\n");
+    return 1;
+  }
+
+  char *migrate_create_v6_nosrc_argv[] = {(char *)resize_abs,
+                                          (char *)"--migrate-create",
+                                          (char *)"--dst-image",
+                                          (char *)dst_v6_nosrc_img,
+                                          (char *)"--force",
+                                          (char *)"--inodes",
+                                          (char *)"4096",
+                                          (char *)"--format-version",
+                                          (char *)"6",
+                                          (char *)"--yes",
+                                          NULL};
+  if (run_cmd_status(migrate_create_v6_nosrc_argv) == 0)
+  {
+    fprintf(stderr, "migrate-create v6 accepted missing source image\n");
+    return 1;
+  }
+
+  kafs_ssuperblock_t nosrc_dst_sb = {0};
+  if (read_superblock(dst_v6_nosrc_img, &nosrc_dst_sb) != 0)
+  {
+    fprintf(stderr, "failed to inspect v6 no-source dst image\n");
+    return 1;
+  }
+  if (kafs_sb_magic_get(&nosrc_dst_sb) == KAFS_MAGIC)
+  {
+    fprintf(stderr, "v6 no-source failure touched destination image\n");
+    return 1;
+  }
+
+  const char *dst_v6_dirty_img = "migrate-dst-v6-dirty.img";
+  if (create_sized_file(dst_v6_dirty_img, 64 * 1024 * 1024) != 0)
+  {
+    fprintf(stderr, "failed to create v6 dirty-source dst image\n");
+    return 1;
+  }
+
+  char *migrate_create_v6_dirty_run_argv[] = {(char *)resize_abs,
+                                              (char *)"--migrate-create",
+                                              (char *)"--src-image",
+                                              (char *)src_v5_dirty_img,
+                                              (char *)"--dst-image",
+                                              (char *)dst_v6_dirty_img,
+                                              (char *)"--force",
+                                              (char *)"--inodes",
+                                              (char *)"4096",
+                                              (char *)"--format-version",
+                                              (char *)"6",
+                                              (char *)"--yes",
+                                              NULL};
+  if (run_cmd_status(migrate_create_v6_dirty_run_argv) == 0)
+  {
+    fprintf(stderr, "migrate-create v6 accepted dirty source\n");
+    return 1;
+  }
+
+  kafs_ssuperblock_t dirty_dst_sb = {0};
+  if (read_superblock(dst_v6_dirty_img, &dirty_dst_sb) != 0)
+  {
+    fprintf(stderr, "failed to inspect v6 dirty-source dst image\n");
+    return 1;
+  }
+  if (kafs_sb_magic_get(&dirty_dst_sb) == KAFS_MAGIC)
+  {
+    fprintf(stderr, "v6 dirty-source failure touched destination image\n");
     return 1;
   }
 

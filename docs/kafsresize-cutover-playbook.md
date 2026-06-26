@@ -65,9 +65,22 @@ If the destination must stay on legacy v4, add `--format-version 4` explicitly.
 Otherwise the destination follows the current mkfs default and will be created
 as v5.
 
-For a v6 destination, add `--format-version 6` only after the dry-run precheck
-passes. Current v6 images remain offline descriptor scaffolds until v6 runtime
-mount support is explicitly enabled.
+For a v6 destination, keep the source image in the create command so the same
+clean-v5 and capacity precheck runs before the destination is overwritten:
+
+```sh
+./kafsresize --migrate-create \
+	--src-image /var/lib/kafs/source.img \
+	--dst-image /var/lib/kafs/destination.img \
+	--size-bytes 128G \
+	--inodes 524288 \
+	--hrl-entry-ratio 0.75 \
+	--format-version 6 \
+	--yes --force
+```
+
+Current v6 images remain offline descriptor scaffolds until v6 runtime mount
+support is explicitly enabled.
 
 ## Step 3: Mount Source And Destination
 

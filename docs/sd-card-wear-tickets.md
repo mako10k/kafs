@@ -421,6 +421,10 @@
 ### SDW-P5-T2 `kafsresize --migrate-create --format-version 6`
 
 - 目的: 既存 image から distributed v6 destination image を作成する。
+- 進捗:
+  - `--format-version 6` の通常 `--migrate-create` でも `--src-image` を必須にし、clean v5 source、
+    宛先 inode/data capacity、v6 descriptor replica placement の precheck を destination overwrite 前に
+    実行する。
 - 完了条件:
   - v5 source を v6 destination に migrate できる。
   - pre/post `kafsdump --json` summaries が期待する logical metadata と一致する。

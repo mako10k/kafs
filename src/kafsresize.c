@@ -57,6 +57,19 @@ typedef struct kafsresize_source_info
   uint64_t commit_seq;
 } kafsresize_source_info_t;
 
+typedef struct kafsresize_migrate_create_plan
+{
+  uint32_t target_format;
+  uint64_t size_bytes;
+  uint32_t inodes;
+  int blksize_log;
+  uint64_t journal_bytes;
+  double hrl_entry_ratio;
+  int has_source;
+  kafsresize_source_info_t source;
+  kafsresize_mkfs_layout_t layout;
+} kafsresize_migrate_create_plan_t;
+
 static void usage(const char *prog)
 {
   fprintf(
@@ -69,7 +82,7 @@ static void usage(const char *prog)
       "    - migrate-create builds a new image with target size/inodes via mkfs.kafs\n"
       "    - migrate-create without --size-bytes auto-detects size from --dst-image\n"
       "  options for --migrate-create:\n"
-      "    --src-image IMAGE       source image used by migration precheck/dry-run\n"
+      "    --src-image IMAGE       source image used by v6 migration precheck/dry-run\n"
       "    --format-version V      on-disk format version passed to mkfs.kafs\n"
       "    --journal-size-bytes N   journal size passed to mkfs.kafs\n"
       "    --blksize-log L          block-size log2 passed to mkfs.kafs\n"
@@ -269,6 +282,11 @@ static int kafsresize_format_version_is_supported(uint32_t format_version)
 {
   return format_version == KAFS_FORMAT_VERSION || format_version == KAFS_FORMAT_VERSION_V5 ||
          format_version == KAFS_FORMAT_VERSION_V6;
+}
+
+static uint32_t kafsresize_resolve_target_format(uint32_t format_version)
+{
+  return (format_version > 0) ? format_version : (uint32_t)KAFS_FORMAT_VERSION_V5;
 }
 
 static uint64_t kafsresize_align_up_u64(uint64_t value, uint64_t align_mask)
@@ -488,12 +506,16 @@ static int kafsresize_compute_mkfs_layout(uint32_t format_version, uint64_t tota
   return 0;
 }
 
-static int cmd_migrate_create_dry_run(const char *src_image, const char *dst_image,
-                                      uint64_t size_bytes, uint32_t inodes, uint32_t format_version,
-                                      uint64_t journal_bytes, int blksize_log,
-                                      double hrl_entry_ratio)
+static int kafsresize_prepare_migrate_create_plan(const char *src_image, const char *dst_image,
+                                                  uint64_t size_bytes, uint32_t inodes,
+                                                  uint32_t format_version, uint64_t journal_bytes,
+                                                  int blksize_log, double hrl_entry_ratio,
+                                                  kafsresize_migrate_create_plan_t *plan)
 {
-  uint32_t target_format = (format_version > 0) ? format_version : (uint32_t)KAFS_FORMAT_VERSION_V5;
+  if (!plan)
+    return 2;
+
+  uint32_t target_format = kafsresize_resolve_target_format(format_version);
   if (!kafsresize_format_version_is_supported(target_format))
   {
     fprintf(stderr, "unsupported format version: %" PRIu32 "\n", target_format);
@@ -501,7 +523,7 @@ static int cmd_migrate_create_dry_run(const char *src_image, const char *dst_ima
   }
   if (target_format == KAFS_FORMAT_VERSION_V6 && (!src_image || !*src_image))
   {
-    fprintf(stderr, "--dry-run --format-version 6 requires --src-image\n");
+    fprintf(stderr, "--format-version 6 requires --src-image\n");
     return 2;
   }
 
@@ -559,35 +581,66 @@ static int cmd_migrate_create_dry_run(const char *src_image, const char *dst_ima
     }
   }
 
+  memset(plan, 0, sizeof(*plan));
+  plan->target_format = target_format;
+  plan->size_bytes = size_bytes;
+  plan->inodes = inodes;
+  plan->blksize_log = resolved_blksize_log;
+  plan->journal_bytes = resolved_journal_bytes;
+  plan->hrl_entry_ratio = resolved_hrl_entry_ratio;
+  plan->has_source = (src_image && *src_image);
+  plan->source = source;
+  plan->layout = layout;
+  return 0;
+}
+
+static void kafsresize_print_migrate_create_dry_run(const char *src_image, const char *dst_image,
+                                                    const kafsresize_migrate_create_plan_t *plan)
+{
   printf("kafsresize: migrate-create dry-run PASS\n");
-  if (src_image && *src_image)
+  if (plan->has_source)
   {
     printf("  src_image: %s\n", src_image);
-    printf("  source_format_version: %" PRIu32 "\n", source.format_version);
-    printf("  source_used_data_blocks: %" PRIu64 "\n", source.used_data_blocks);
-    printf("  source_used_inodes: %" PRIu64 "\n", source.used_inodes);
+    printf("  source_format_version: %" PRIu32 "\n", plan->source.format_version);
+    printf("  source_used_data_blocks: %" PRIu64 "\n", plan->source.used_data_blocks);
+    printf("  source_used_inodes: %" PRIu64 "\n", plan->source.used_inodes);
   }
   printf("  dst_image: %s\n", dst_image);
-  printf("  size_bytes: %" PRIu64 "\n", size_bytes);
-  printf("  inodes: %" PRIu32 "\n", inodes);
-  printf("  format_version: %" PRIu32 "\n", target_format);
-  printf("  block_size: %" PRIu64 "\n", (uint64_t)(1ull << resolved_blksize_log));
-  printf("  journal_bytes: %" PRIu64 "\n", resolved_journal_bytes);
-  printf("  hrl_entry_ratio: %.6f\n", resolved_hrl_entry_ratio);
-  printf("  metadata_bytes: %" PRIu64 "\n", layout.mapsize);
-  printf("  first_data_block: %" PRIu64 "\n", layout.first_data_block);
-  printf("  data_block_capacity: %" PRIu64 "\n", layout.data_block_capacity);
-  if (target_format == KAFS_FORMAT_VERSION_V6)
+  printf("  size_bytes: %" PRIu64 "\n", plan->size_bytes);
+  printf("  inodes: %" PRIu32 "\n", plan->inodes);
+  printf("  format_version: %" PRIu32 "\n", plan->target_format);
+  printf("  block_size: %" PRIu64 "\n", (uint64_t)(1ull << plan->blksize_log));
+  printf("  journal_bytes: %" PRIu64 "\n", plan->journal_bytes);
+  printf("  hrl_entry_ratio: %.6f\n", plan->hrl_entry_ratio);
+  printf("  metadata_bytes: %" PRIu64 "\n", plan->layout.mapsize);
+  printf("  first_data_block: %" PRIu64 "\n", plan->layout.first_data_block);
+  printf("  data_block_capacity: %" PRIu64 "\n", plan->layout.data_block_capacity);
+  if (plan->target_format == KAFS_FORMAT_VERSION_V6)
   {
-    printf("  v6_descriptor_bytes: %" PRIu32 "\n", layout.v6_desc_bytes);
-    printf("  v6_descriptor_replicas: %" PRIu32 "\n", layout.v6_candidate_count);
+    printf("  v6_descriptor_bytes: %" PRIu32 "\n", plan->layout.v6_desc_bytes);
+    printf("  v6_descriptor_replicas: %" PRIu32 "\n", plan->layout.v6_candidate_count);
     printf("  v6_descriptor_offsets:");
-    for (uint32_t i = 0; i < layout.v6_candidate_count; ++i)
-      printf(" %" PRIu64, layout.v6_candidates[i]);
+    for (uint32_t i = 0; i < plan->layout.v6_candidate_count; ++i)
+      printf(" %" PRIu64, plan->layout.v6_candidates[i]);
     printf("\n");
     printf("  v6_group_policy: descriptor-backed metadata groups\n");
   }
   printf("  writes_performed: no\n");
+}
+
+static int cmd_migrate_create_dry_run(const char *src_image, const char *dst_image,
+                                      uint64_t size_bytes, uint32_t inodes, uint32_t format_version,
+                                      uint64_t journal_bytes, int blksize_log,
+                                      double hrl_entry_ratio)
+{
+  kafsresize_migrate_create_plan_t plan;
+  int rc = kafsresize_prepare_migrate_create_plan(src_image, dst_image, size_bytes, inodes,
+                                                  format_version, journal_bytes, blksize_log,
+                                                  hrl_entry_ratio, &plan);
+  if (rc != 0)
+    return rc;
+
+  kafsresize_print_migrate_create_dry_run(src_image, dst_image, &plan);
   return 0;
 }
 
@@ -760,14 +813,34 @@ static int cmd_migrate_create(const char *src_image, const char *dst_image, uint
     return cmd_migrate_create_dry_run(src_image, dst_image, size_bytes, inodes, format_version,
                                       journal_bytes, blksize_log, hrl_entry_ratio);
 
+  uint32_t target_format = kafsresize_resolve_target_format(format_version);
+  if (!kafsresize_format_version_is_supported(target_format))
+  {
+    fprintf(stderr, "unsupported format version: %" PRIu32 "\n", target_format);
+    return 2;
+  }
+
   struct stat dst_st;
   int dst_exists = (stat(dst_image, &dst_st) == 0);
   int dst_is_reg = dst_exists && S_ISREG(dst_st.st_mode);
   int dst_is_blk = dst_exists && S_ISBLK(dst_st.st_mode);
 
-  int size_rc = resolve_migrate_create_size(dst_image, &size_bytes);
-  if (size_rc != 0)
-    return size_rc;
+  if (target_format == KAFS_FORMAT_VERSION_V6)
+  {
+    kafsresize_migrate_create_plan_t plan;
+    int precheck_rc = kafsresize_prepare_migrate_create_plan(src_image, dst_image, size_bytes,
+                                                             inodes, format_version, journal_bytes,
+                                                             blksize_log, hrl_entry_ratio, &plan);
+    if (precheck_rc != 0)
+      return precheck_rc;
+    size_bytes = plan.size_bytes;
+  }
+  else
+  {
+    int size_rc = resolve_migrate_create_size(dst_image, &size_bytes);
+    if (size_rc != 0)
+      return size_rc;
+  }
 
   if (!assume_yes && !confirm_yes_stdin())
   {

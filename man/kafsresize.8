@@ -26,9 +26,9 @@ kafsresize \- grow offline KAFS images and create migration target images
 .I image
 .B --format-version
 .I 6
-.B --dry-run
 .B --inodes
 .I I
+.RI [ --dry-run ]
 .RI [ options ]
 .SH DESCRIPTION
 .B kafsresize
@@ -85,8 +85,9 @@ replica placement is valid.
 .TP
 .B --src-image image
 Source image used by
-.B --dry-run
-migration precheck.
+migration precheck. It is required for
+.B --format-version 6
+and is validated before the destination image is overwritten.
 .TP
 .B --size-bytes N
 Target logical size in bytes (supports `K/M/G` suffixes).
@@ -115,6 +116,12 @@ default (v5).
 Use
 .BR --format-version 4
 to keep a legacy v4 destination image.
+Use
+.BR --format-version 6
+with
+.B --src-image
+to run the clean-v5 source precheck before creating the offline v6 descriptor
+destination scaffold.
 .TP
 .B --journal-size-bytes N
 Optional journal size forwarded to
