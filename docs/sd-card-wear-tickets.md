@@ -450,6 +450,11 @@
 ### SDW-P5-T4 Phase 5 validation
 
 - 目的: v6 migration を operator workflow として受け入れる。
+- 進捗:
+  - `docs/sd-card-wear-phase5-validation-20260626.md` に Phase 5 の実行条件、validation coverage、PASS
+    判定、現行 v6 offline-only compatibility boundary を記録した。
+  - `CHANGELOG.md` の Unreleased に v6 `migrate-create` precheck / regression と runtime mount
+    compatibility impact を記載した。
 - 完了条件:
   - build/test PASS。
   - v5-to-v6 migration regression PASS。

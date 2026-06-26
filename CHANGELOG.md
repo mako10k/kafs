@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+- `kafsresize --migrate-create --format-version 6` に clean v5 source precheck を追加し、通常実行でも
+  `--src-image` を必須にした。
+- v5 source / v6 destination の `kafsdump --json` pre/post summary と、v6 destination の
+  `fsck.kafs --balanced-check` regression を追加した。
+- Compatibility: v6 destination image は現時点では offline-only descriptor scaffold として扱う。
+  `kafsdump` / `fsck.kafs` で検査できるが、runtime mount / production cutover はまだ有効化しない。
+  既存 v4/v5 image の runtime mount 互換と、default v5 destination の挙動は維持する。
+
 ## v0.4.0 - 2026-03-17
 - v2/v3 イメージを v4 へ変換する offline pre-start migration を追加し、共有 migrator を `kafsctl migrate` と `kafs --migrate` から利用可能にした。
 - 起動前 migration の CLI 名を `--migrate` に整理し、`--migrate-v2` は後方互換の deprecated alias に変更した。
