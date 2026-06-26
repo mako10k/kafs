@@ -10840,10 +10840,27 @@ static int kafs_fsync_use_journal_only(struct kafs_context *ctx, int isdatasync)
   return isdatasync || ctx->c_pending_ttl_over_soft || ctx->c_pending_ttl_over_hard;
 }
 
+static int kafs_test_forced_fsync_error(int isdatasync)
+{
+  // Test-only fault injection; intentionally kept out of operator-facing help.
+  const char *force = getenv("KAFS_TEST_FORCE_FSYNC_ERROR");
+  if (!force || !*force)
+    return 0;
+
+  const char *op = isdatasync ? "fdatasync" : "fsync";
+  if (strcmp(force, "1") != 0 && strcmp(force, "all") != 0 && strcmp(force, op) != 0)
+    return 0;
+
+  errno = EIO;
+  return -1;
+}
+
 static int kafs_fsync_backing_sync(struct kafs_context *ctx, const char *path, uint32_t ino,
                                    int isdatasync)
 {
-  int src = isdatasync ? fdatasync(ctx->c_fd) : fsync(ctx->c_fd);
+  int src = kafs_test_forced_fsync_error(isdatasync);
+  if (src == 0)
+    src = isdatasync ? fdatasync(ctx->c_fd) : fsync(ctx->c_fd);
   if (src != 0)
   {
     int e = errno;

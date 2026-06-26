@@ -396,6 +396,24 @@ static int expect_failed_errno(const char *label, int rc, int expected_a, int ex
   return 0;
 }
 
+static int expect_repeated_byte(const char *label, const unsigned char *buf, size_t start,
+                                size_t end, unsigned char expected)
+{
+  if (!buf || start > end)
+    return 1;
+
+  for (size_t i = start; i < end; ++i)
+  {
+    if (buf[i] != expected)
+    {
+      tlogf("%s byte[%zu]=0x%02x expected 0x%02x", label, i, (unsigned)buf[i],
+            (unsigned)expected);
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static int file_digest64(const char *path, uint64_t *digest_out, off_t *size_out)
 {
   int fd = open(path, O_RDONLY);
@@ -703,7 +721,9 @@ static int check_v6_controlled_write_mount_smoke(const char *img)
   kafs_test_mount_options_t options = {
       .debug = "1",
       .log_path = log_path,
-      .extra_options = "rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off",
+      .extra_options =
+          "rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,"
+          "fsync_policy=full",
       .timeout_ms = 15000,
   };
 
@@ -762,6 +782,71 @@ static int check_v6_controlled_write_mount_smoke(const char *img)
       memcmp(rbuf, wbuf, sizeof(wbuf)) != 0)
   {
     tlogf("v6 controlled readback mismatch");
+    rc = 1;
+    close(fd);
+    goto out_stop;
+  }
+
+  const off_t second_block_off = (off_t)sizeof(wbuf);
+  unsigned char zbuf[sizeof(wbuf)] = {0};
+  if (pwrite(fd, zbuf, sizeof(zbuf), second_block_off) != (ssize_t)sizeof(zbuf))
+  {
+    tlogf("v6 controlled zero-block write failed: %s", strerror(errno));
+    rc = 1;
+    close(fd);
+    goto out_stop;
+  }
+  if (fdatasync(fd) != 0)
+  {
+    tlogf("v6 controlled fdatasync failed: %s", strerror(errno));
+    rc = 1;
+    close(fd);
+    goto out_stop;
+  }
+
+  unsigned char second[sizeof(wbuf)];
+  if (pread(fd, second, sizeof(second), second_block_off) != (ssize_t)sizeof(second) ||
+      expect_repeated_byte("v6 controlled zero block", second, 0, sizeof(second), 0) != 0)
+  {
+    tlogf("v6 controlled zero-block readback mismatch");
+    rc = 1;
+    close(fd);
+    goto out_stop;
+  }
+
+  const char patch[] = "v6-partial-write";
+  const size_t patch_off = 123u;
+  const size_t patch_len = sizeof(patch) - 1u;
+  if (pwrite(fd, patch, patch_len, second_block_off + (off_t)patch_off) !=
+      (ssize_t)patch_len)
+  {
+    tlogf("v6 controlled partial write failed: %s", strerror(errno));
+    rc = 1;
+    close(fd);
+    goto out_stop;
+  }
+  if (fsync(fd) != 0)
+  {
+    tlogf("v6 controlled post-partial fsync failed: %s", strerror(errno));
+    rc = 1;
+    close(fd);
+    goto out_stop;
+  }
+  if (pread(fd, second, sizeof(second), second_block_off) != (ssize_t)sizeof(second) ||
+      expect_repeated_byte("v6 controlled partial prefix", second, 0, patch_off, 0) != 0 ||
+      memcmp(second + patch_off, patch, patch_len) != 0 ||
+      expect_repeated_byte("v6 controlled partial suffix", second, patch_off + patch_len,
+                           sizeof(second), 0) != 0)
+  {
+    tlogf("v6 controlled partial-block readback mismatch");
+    rc = 1;
+    close(fd);
+    goto out_stop;
+  }
+  if (pread(fd, rbuf, sizeof(rbuf), 0) != (ssize_t)sizeof(rbuf) ||
+      memcmp(rbuf, wbuf, sizeof(wbuf)) != 0)
+  {
+    tlogf("v6 controlled first block changed after zero/partial writes");
     rc = 1;
     close(fd);
     goto out_stop;
@@ -842,7 +927,8 @@ static int check_v6_controlled_write_mount_smoke(const char *img)
   }
 
   struct stat st = {0};
-  if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size != (off_t)sizeof(wbuf))
+  const off_t expected_size = (off_t)(sizeof(wbuf) * 2u);
+  if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size != expected_size)
   {
     tlogf("v6 controlled file missing after rejected mutations: %s", strerror(errno));
     rc = 1;
@@ -864,6 +950,254 @@ out_stop:
     if (run_cmd_capture(fsck_argv, 0, out, sizeof(out)) != 0)
     {
       tlogf("fsck --balanced-check after v6 controlled write failed: %s", out);
+      rc = 1;
+    }
+  }
+  return rc;
+}
+
+static int check_v6_controlled_write_enospc_smoke(void)
+{
+  if (access("/dev/fuse", R_OK | W_OK) != 0)
+  {
+    tlogf("skip v6 controlled ENOSPC smoke: /dev/fuse unavailable");
+    return 0;
+  }
+
+  const char *img = "v6-enospc.img";
+  char out[8192];
+  char *mkfs_argv[] = {(char *)kafs_test_mkfs_bin(), (char *)img, (char *)"--format-version",
+                       (char *)"6", (char *)"--size-bytes", (char *)"8M", (char *)"--yes",
+                       NULL};
+  if (run_cmd_capture(mkfs_argv, 0, out, sizeof(out)) != 0)
+  {
+    tlogf("mkfs v6 ENOSPC fixture failed: %s", out);
+    return 1;
+  }
+  if (seed_v6_readonly_traversal_fixture(img) != 0)
+  {
+    tlogf("v6 ENOSPC fixture seed failed");
+    return 1;
+  }
+
+  const char *mnt = "mnt-v6-enospc";
+  const char *log_path = "v6-controlled-enospc-mount.log";
+  kafs_test_mount_options_t options = {
+      .debug = "1",
+      .log_path = log_path,
+      .extra_options =
+          "rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,"
+          "fsync_policy=full",
+      .timeout_ms = 15000,
+  };
+
+  pid_t srv = kafs_test_start_kafs(img, mnt, &options);
+  if (srv <= 0)
+  {
+    kafs_test_dump_log(log_path, "v6 controlled ENOSPC mount failed");
+    return 77;
+  }
+
+  int rc = 0;
+  int fd = -1;
+  char path[PATH_MAX];
+  snprintf(path, sizeof(path), "%s/fill.bin", mnt);
+  fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0644);
+  if (fd < 0)
+  {
+    tlogf("v6 ENOSPC fill create failed: %s", strerror(errno));
+    rc = 1;
+    goto out_stop;
+  }
+
+  unsigned char block[4096];
+  for (size_t i = 0; i < sizeof(block); ++i)
+    block[i] = (unsigned char)(0x31u + (i % 47u));
+
+  int saw_enospc = 0;
+  size_t blocks_written = 0;
+  for (; blocks_written < 4096u; ++blocks_written)
+  {
+    block[0] = (unsigned char)(blocks_written & 0xFFu);
+    block[1] = (unsigned char)((blocks_written >> 8) & 0xFFu);
+    block[2] = (unsigned char)((blocks_written >> 16) & 0xFFu);
+    block[3] = (unsigned char)(0x80u | ((blocks_written >> 24) & 0x7Fu));
+    errno = 0;
+    ssize_t n = write(fd, block, sizeof(block));
+    if (n == (ssize_t)sizeof(block))
+      continue;
+    if (n > 0 || (n < 0 && errno == ENOSPC))
+    {
+      saw_enospc = 1;
+      break;
+    }
+    if (n == 0)
+      tlogf("v6 ENOSPC fill write returned zero after %zu blocks", blocks_written);
+    else
+      tlogf("v6 ENOSPC fill write failed after %zu blocks: %s", blocks_written,
+            strerror(errno));
+    rc = 1;
+    break;
+  }
+
+  if (rc == 0 && !saw_enospc)
+  {
+    tlogf("v6 ENOSPC fill did not exhaust space after %zu blocks", blocks_written);
+    rc = 1;
+  }
+  if (rc == 0)
+  {
+    errno = 0;
+    if (fdatasync(fd) != 0 && errno != ENOSPC)
+    {
+      tlogf("v6 ENOSPC fdatasync failed with unexpected errno: %s", strerror(errno));
+      rc = 1;
+    }
+  }
+  if (fd >= 0)
+  {
+    errno = 0;
+    if (close(fd) != 0 && errno != ENOSPC && rc == 0)
+    {
+      tlogf("v6 ENOSPC close failed with unexpected errno: %s", strerror(errno));
+      rc = 1;
+    }
+    fd = -1;
+  }
+
+out_stop:
+  if (fd >= 0)
+    close(fd);
+  kafs_test_stop_kafs(mnt, srv);
+  if (rc == 0 && !file_contains(log_path, "format v6 controlled write mount"))
+  {
+    tlogf("v6 controlled ENOSPC mount log missing admission message");
+    rc = 1;
+  }
+  if (rc == 0)
+  {
+    char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)"--balanced-check", (char *)img,
+                         NULL};
+    if (run_cmd_capture(fsck_argv, 0, out, sizeof(out)) != 0)
+    {
+      tlogf("fsck --balanced-check after v6 ENOSPC failed: %s", out);
+      rc = 1;
+    }
+  }
+  return rc;
+}
+
+static int check_v6_controlled_write_fsync_failure_smoke(void)
+{
+  if (access("/dev/fuse", R_OK | W_OK) != 0)
+  {
+    tlogf("skip v6 controlled fsync failure smoke: /dev/fuse unavailable");
+    return 0;
+  }
+
+  const char *img = "v6-fsync-fail.img";
+  char out[8192];
+  char *mkfs_argv[] = {(char *)kafs_test_mkfs_bin(), (char *)img, (char *)"--format-version",
+                       (char *)"6", (char *)"--size-bytes", (char *)"16M", (char *)"--yes",
+                       NULL};
+  if (run_cmd_capture(mkfs_argv, 0, out, sizeof(out)) != 0)
+  {
+    tlogf("mkfs v6 fsync-failure fixture failed: %s", out);
+    return 1;
+  }
+  if (seed_v6_readonly_traversal_fixture(img) != 0)
+  {
+    tlogf("v6 fsync-failure fixture seed failed");
+    return 1;
+  }
+
+  const char *mnt = "mnt-v6-fsync-fail";
+  const char *log_path = "v6-controlled-fsync-fail-mount.log";
+  kafs_test_mount_options_t options = {
+      .debug = "1",
+      .log_path = log_path,
+      .extra_options =
+          "rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,"
+          "fsync_policy=full",
+      .timeout_ms = 15000,
+  };
+
+  if (setenv("KAFS_TEST_FORCE_FSYNC_ERROR", "all", 1) != 0)
+  {
+    tlogf("setenv KAFS_TEST_FORCE_FSYNC_ERROR failed: %s", strerror(errno));
+    return 1;
+  }
+  pid_t srv = kafs_test_start_kafs(img, mnt, &options);
+  unsetenv("KAFS_TEST_FORCE_FSYNC_ERROR");
+  if (srv <= 0)
+  {
+    kafs_test_dump_log(log_path, "v6 controlled fsync-failure mount failed");
+    return 77;
+  }
+
+  int rc = 0;
+  int fd = -1;
+  char path[PATH_MAX];
+  snprintf(path, sizeof(path), "%s/sync-fail.bin", mnt);
+  fd = open(path, O_CREAT | O_EXCL | O_RDWR, 0644);
+  if (fd < 0)
+  {
+    tlogf("v6 fsync-failure create failed: %s", strerror(errno));
+    rc = 1;
+    goto out_stop;
+  }
+
+  unsigned char block[4096];
+  for (size_t i = 0; i < sizeof(block); ++i)
+    block[i] = (unsigned char)(0x51u + (i % 29u));
+  if (write(fd, block, sizeof(block)) != (ssize_t)sizeof(block))
+  {
+    tlogf("v6 fsync-failure write failed: %s", strerror(errno));
+    rc = 1;
+    goto out_stop;
+  }
+
+  int fdatasync_failed = 0;
+  errno = 0;
+  if (fdatasync(fd) != 0)
+  {
+    if (errno != EIO)
+    {
+      tlogf("v6 forced fdatasync failure errno=%s (expected EIO)", strerror(errno));
+      rc = 1;
+      goto out_stop;
+    }
+    fdatasync_failed = 1;
+  }
+  errno = 0;
+  if (fsync(fd) == 0 || errno != EIO)
+  {
+    tlogf("v6 forced fsync failure errno=%s (expected EIO)", strerror(errno));
+    rc = 1;
+    goto out_stop;
+  }
+
+out_stop:
+  if (fd >= 0)
+    close(fd);
+  kafs_test_stop_kafs(mnt, srv);
+  if (rc == 0 && !file_contains(log_path, "fsync failed"))
+  {
+    tlogf("v6 controlled fsync failure log missing expected messages");
+    rc = 1;
+  }
+  if (rc == 0 && fdatasync_failed && !file_contains(log_path, "fdatasync failed"))
+  {
+    tlogf("v6 controlled fdatasync failure log missing expected messages");
+    rc = 1;
+  }
+  if (rc == 0)
+  {
+    char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)"--balanced-check", (char *)img,
+                         NULL};
+    if (run_cmd_capture(fsck_argv, 0, out, sizeof(out)) != 0)
+    {
+      tlogf("fsck --balanced-check after v6 fsync failure failed: %s", out);
       rc = 1;
     }
   }
@@ -1133,6 +1467,18 @@ int main(void)
   if (write_rc == 77)
     return 77;
   if (write_rc != 0)
+    return 1;
+
+  int enospc_rc = check_v6_controlled_write_enospc_smoke();
+  if (enospc_rc == 77)
+    return 77;
+  if (enospc_rc != 0)
+    return 1;
+
+  int fsync_failure_rc = check_v6_controlled_write_fsync_failure_smoke();
+  if (fsync_failure_rc == 77)
+    return 77;
+  if (fsync_failure_rc != 0)
     return 1;
 
   return 0;

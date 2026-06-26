@@ -175,23 +175,28 @@ mount support is enabled and a write-capable smoke mount has passed. The current
 safe endpoint is an offline-validated staged image, optionally inspected through
 `-o ro,v6_inspection_mount`.
 
-## Future Controlled v6 Write Opt-In Boundary
+## Controlled v6 Write Opt-In Boundary
 
-This boundary is reserved for a future implementation. It is not available in
-the current v6 staging workflow.
+This boundary is an experimental controlled write path. It is disabled by
+default and must not be treated as a production default cutover path.
 
-When v6 write admission is implemented, it must remain disabled by default and
-require an explicit controlled opt-in:
+The mount must use an explicit controlled opt-in:
 
 ```sh
 ./kafs --image /var/lib/kafs/destination.img /mnt/kafs-v6 -f \
 	-o rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off
 ```
 
-The future admission must fail closed when `rw,v6_write_mount` is not explicit,
-when `ro` or `v6_inspection_mount` is also present, or when unsupported
-writeback cache, runtime TRIM, delayed/background mutation, or v6 repair-write
-paths are requested.
+Admission fails closed when `rw,v6_write_mount` is not explicit, when `ro` or
+`v6_inspection_mount` is also present, or when unsupported writeback cache,
+runtime TRIM, delayed/background mutation, hotplug delegated write, or v6
+repair-write paths are requested.
+
+Use explicit regular-file create/write/fsync smoke commands. Do not use `cp` or
+copy/reflink operations as the acceptance signal. Some kernels satisfy
+`copy_file_range(2)` through generic read/write fallback before the FUSE copy
+hook is reached; that fallback is ordinary regular-file write behavior, while
+`KAFS_IOCTL_COPY`, `FICLONE`, and the FUSE copy hook remain unsupported.
 
 Before the first write-capable smoke session, capture an offline baseline:
 
@@ -212,6 +217,15 @@ fusermount3 -u /mnt/kafs-v6
 If the post-write check fails, do not repair-write the v6 image in place. Preserve
 the destination image, logs, and dump/fsck output for diagnosis, then return to
 the known-good source image when its write-freeze boundary is still valid.
+
+Minimum artifacts to preserve on failure:
+
+- failed destination image, or an immutable copy of it
+- mount log from the controlled write session
+- exact smoke workload commands or script
+- `kafsdump --json` before/after output
+- `fsck.kafs --balanced-check` stdout/stderr and exit status
+- image size/stat and digest if they were captured before cutover
 
 ## Rollback Guidance
 

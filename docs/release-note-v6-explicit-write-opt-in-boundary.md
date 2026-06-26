@@ -48,9 +48,25 @@ The initial controlled opt-in excludes:
 `fsck.kafs` remains detect-only for v6 write outcomes. Operators must run
 `fsck.kafs --balanced-check <image>` before and after a write smoke session.
 
+## Durability and copy fallback notes
+
+The controlled write smoke covers zero-filled block materialization, partial
+block overwrite, ENOSPC handling, explicit `fsync` / `fdatasync`, unmount, and
+post-write `fsck.kafs --balanced-check`.
+
+Explicit copy/reflink interfaces remain unsupported. `KAFS_IOCTL_COPY`,
+`FICLONE`, and the FUSE copy hook fail closed. On some kernels,
+`copy_file_range(2)` may be satisfied by a generic read/write fallback before
+the FUSE copy hook is reached; that fallback is treated as ordinary regular-file
+read/write, not as proof that copy/reflink is supported.
+
 ## Rollback wording
 
 If validation fails, do not repair-write the v6 image in place. Stop new writes,
 unmount the v6 image, preserve the failed image and logs for diagnosis, and
 return to the known-good source image when its write-freeze boundary is still
 valid.
+
+Preserve at least the failed destination image, mount log, exact write workload,
+`kafsdump --json` before/after output, `fsck.kafs --balanced-check` stdout and
+stderr, and any image digest/stat metadata captured during cutover.

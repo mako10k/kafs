@@ -733,6 +733,18 @@
   - copy_file_range が通常 read/write fallback になる kernel での operator wording と test expectation を文書化する。
   - post-write `fsck.kafs --balanced-check` 失敗時の rollback log/artifact 保存手順を release note / cutover playbook に反映する。
   - `make check -j2` と relevant static gates が PASS している。
+- 実装メモ (2026-06-26):
+  - `v6_descriptor_smoketest` の controlled write smoke を拡張し、zero-filled block materialization、
+    partial block overwrite、`fsync_policy=full` での `fsync` / `fdatasync`、post-write
+    `fsck.kafs --balanced-check` を確認する。
+  - 8MiB の独立 v6 image で内容の異なる data block を書き続け、HRL dedup に吸収されない ENOSPC regression
+    と、ENOSPC 後の unmount / balanced fsck を確認する。
+  - `KAFS_TEST_FORCE_FSYNC_ERROR=all` の test-only fault injection を追加し、backing `fsync` / `fdatasync`
+    failure が FUSE sync path から `EIO` として返る regression を追加した。
+  - copy/reflink ioctl と FUSE copy hook は引き続き拒否する。kernel が `copy_file_range` を通常 read/write
+    fallback で満たす場合は、regular write と同じ扱いとして test expectation / operator wording に反映する。
+  - release note / cutover playbook に、post-write fsck 失敗時に保存する image、mount log、before/after dump、
+    fsck stdout/stderr、実行 workload の証跡を追加した。
 
 ---
 

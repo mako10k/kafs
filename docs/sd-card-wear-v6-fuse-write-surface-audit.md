@@ -118,4 +118,18 @@ fusermount3 -u /mnt/kafs-v6
 `SDW-V6RT-T12 v6 controlled write admission skeleton and operation guard` で、T10 の reserved parser gate を
 explicit opt-in 成功 path に接続し、上記 allowlist 外 operation を runtime guard に接続した。通常 v6 mount は
 引き続き暗黙 write admission にしない。copy_file_range syscall は kernel が通常 read/write fallback で満たす
-環境があるため、明示 copy/reflink ioctl と FUSE hook を guard 対象とし、fallback wording は T13 で固める。
+環境があるため、明示 copy/reflink ioctl と FUSE hook を guard 対象とする。
+
+## T13 hardening result
+
+`SDW-V6RT-T13 v6 controlled write durability and fallback hardening` で、controlled write smoke は
+zero-filled block、partial block overwrite、ENOSPC、`fsync` / `fdatasync`、unmount 後
+`fsck.kafs --balanced-check` までを確認するようになった。
+
+copy/reflink の operator wording は次の通り固定する。
+
+- `KAFS_IOCTL_COPY`、`FICLONE`、FUSE copy hook は初期 controlled write surface では unsupported。
+- kernel が `copy_file_range(2)` を FUSE copy hook に渡さず generic read/write fallback で処理する場合、
+  それは通常 regular-file read/write と同じ扱いであり、copy/reflink support の証明にはしない。
+- controlled write acceptance smoke は `cp` / `copy_file_range` ではなく、明示的な create/write/fsync と
+  post-write `fsck.kafs --balanced-check` を使う。
