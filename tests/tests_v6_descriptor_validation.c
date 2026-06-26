@@ -2312,17 +2312,31 @@ static int test_journal_distributed_group_selection(void)
   if (failed)
     return -1;
 
-  char out[8192];
+  char out[32768];
   char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)img, NULL};
   if (run_cmd_capture(fsck_argv, 0, out, sizeof(out)) != 0 ||
       !strstr(out, "v6 journal segments:") || !strstr(out, "selected_segment=1") ||
       !strstr(out, "selected_group=1"))
     return -1;
 
+  char *dump_text_argv[] = {(char *)kafs_test_kafsdump_bin(), (char *)img, NULL};
+  if (run_cmd_capture(dump_text_argv, 0, out, sizeof(out)) != 0 || !strstr(out, "  groups:") ||
+      !strstr(out, "group[1]: group_id=1") || !strstr(out, "  shards:") ||
+      !strstr(out, "type=journal_header type_id=6 group_id=1 logical_start=1") ||
+      !strstr(out, "type=journal_data type_id=7 group_id=1 logical_start=1"))
+    return -1;
+
   char *dump_argv[] = {(char *)kafs_test_kafsdump_bin(), (char *)"--json", (char *)img, NULL};
   if (run_cmd_capture(dump_argv, 0, out, sizeof(out)) != 0 ||
       !strstr(out, "\"group_count\": 2") || !strstr(out, "\"segment_count\": 2") ||
-      !strstr(out, "\"selected_segment\": 1") || !strstr(out, "\"selected_group\": 1"))
+      !strstr(out, "\"selected_segment\": 1") || !strstr(out, "\"selected_group\": 1") ||
+      !strstr(out, "\"groups\": [") ||
+      !strstr(out, "{\"group_id\": 1, \"metadata_start_block\"") ||
+      !strstr(out, "\"shards\": [") ||
+      !strstr(out, "\"type_id\": 6, \"type\": \"journal_header\", \"group_id\": 1, "
+                   "\"logical_start\": 1") ||
+      !strstr(out, "\"type_id\": 7, \"type\": \"journal_data\", \"group_id\": 1, "
+                   "\"logical_start\": 1"))
     return -1;
   return 0;
 }

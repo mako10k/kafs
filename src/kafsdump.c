@@ -275,6 +275,8 @@ struct dump_report
   const kafs_v6_journal_header_coverage_report_t *v6_journal_header;
   const kafs_v6_journal_data_coverage_report_t *v6_journal_data;
   const kafs_v6_journal_segment_report_t *v6_journal_segments;
+  const void *v6_desc;
+  uint32_t v6_desc_bytes;
   const struct metadata_region_summary *regions;
   int rc_inode;
   int rc_hrl;
@@ -286,6 +288,146 @@ struct dump_report
   int rc_v6_journal_data;
   int rc_v6_journal_segments;
 };
+
+static const char *v6_shard_type_name(uint16_t type)
+{
+  if (type == KAFS_V6_SHARD_TYPE_LAYOUT_DESCRIPTOR)
+    return "layout_descriptor";
+  if (type <= KAFS_META_REGION_TAIL_METADATA)
+    return kafs_meta_region_name(type);
+  return "unknown";
+}
+
+static const kafs_sv6_group_desc_t *dump_v6_group_table(const struct dump_report *dump,
+                                                        uint32_t *out_count)
+{
+  if (out_count)
+    *out_count = 0;
+  if (!dump || !dump->v6_desc || dump->v6_desc_bytes < sizeof(kafs_sv6_layout_desc_header_t))
+    return NULL;
+
+  const kafs_sv6_layout_desc_header_t *hdr = (const kafs_sv6_layout_desc_header_t *)dump->v6_desc;
+  uint32_t group_count = kafs_u32_stoh(hdr->ld_group_count);
+  uint32_t group_off = kafs_u32_stoh(hdr->ld_group_desc_off);
+
+  if (kafs_u32_stoh(hdr->ld_descriptor_bytes) != dump->v6_desc_bytes ||
+      le16toh(hdr->ld_group_desc_bytes) != KAFS_V6_GROUP_DESC_BYTES ||
+      kafs_v6_table_bounds(group_off, group_count, KAFS_V6_GROUP_DESC_BYTES, dump->v6_desc_bytes) !=
+          0)
+    return NULL;
+  if (out_count)
+    *out_count = group_count;
+  return (const kafs_sv6_group_desc_t *)((const char *)dump->v6_desc + group_off);
+}
+
+static const kafs_sv6_shard_desc_t *dump_v6_shard_table(const struct dump_report *dump,
+                                                        uint32_t *out_count)
+{
+  if (out_count)
+    *out_count = 0;
+  if (!dump || !dump->v6_desc)
+    return NULL;
+  return kafs_v6_shard_table(dump->v6_desc, dump->v6_desc_bytes, out_count);
+}
+
+static void print_v6_groups_text(const struct dump_report *dump)
+{
+  uint32_t group_count = 0;
+  const kafs_sv6_group_desc_t *groups = dump_v6_group_table(dump, &group_count);
+
+  printf("  groups:\n");
+  if (!groups)
+    return;
+  for (uint32_t i = 0; i < group_count; ++i)
+    printf("    group[%" PRIu32 "]: group_id=%" PRIu32 " metadata_start_block=%" PRIu32
+           " metadata_blocks=%" PRIu32 " data_start_block=%" PRIu32 " data_blocks=%" PRIu32
+           " first_shard=%" PRIu32 " shard_count=%" PRIu32 " generation_floor=%" PRIu64 "\n",
+           i, kafs_u32_stoh(groups[i].gd_group_id), kafs_u32_stoh(groups[i].gd_metadata_start_blo),
+           kafs_u32_stoh(groups[i].gd_metadata_block_count),
+           kafs_u32_stoh(groups[i].gd_data_start_blo), kafs_u32_stoh(groups[i].gd_data_block_count),
+           kafs_u32_stoh(groups[i].gd_first_shard_index), kafs_u32_stoh(groups[i].gd_shard_count),
+           kafs_u64_stoh(groups[i].gd_generation_floor));
+}
+
+static void print_v6_shards_text(const struct dump_report *dump)
+{
+  uint32_t shard_count = 0;
+  const kafs_sv6_shard_desc_t *shards = dump_v6_shard_table(dump, &shard_count);
+
+  printf("  shards:\n");
+  if (!shards)
+    return;
+  for (uint32_t i = 0; i < shard_count; ++i)
+  {
+    uint16_t type = le16toh(shards[i].sd_type);
+    printf("    shard[%" PRIu32 "]: type=%s type_id=%" PRIu16 " group_id=%" PRIu32
+           " logical_start=%" PRIu64 " logical_count=%" PRIu64 " physical_off=%" PRIu64
+           " physical_bytes=%" PRIu64 " record_bytes=%" PRIu32 " header_bytes=%" PRIu32
+           " generation_floor=%" PRIu64 "\n",
+           i, v6_shard_type_name(type), type, kafs_u32_stoh(shards[i].sd_group_id),
+           kafs_u64_stoh(shards[i].sd_logical_start), kafs_u64_stoh(shards[i].sd_logical_count),
+           kafs_u64_stoh(shards[i].sd_physical_off), kafs_u64_stoh(shards[i].sd_physical_bytes),
+           kafs_u32_stoh(shards[i].sd_record_bytes), kafs_u32_stoh(shards[i].sd_header_bytes),
+           kafs_u64_stoh(shards[i].sd_generation_floor));
+  }
+}
+
+static void print_v6_groups_json(const struct dump_report *dump)
+{
+  uint32_t group_count = 0;
+  const kafs_sv6_group_desc_t *groups = dump_v6_group_table(dump, &group_count);
+
+  printf("    \"groups\": [");
+  if (groups)
+  {
+    for (uint32_t i = 0; i < group_count; ++i)
+    {
+      printf("%s\n      {\"group_id\": %" PRIu32 ", \"metadata_start_block\": %" PRIu32
+             ", \"metadata_blocks\": %" PRIu32 ", \"data_start_block\": %" PRIu32
+             ", \"data_blocks\": %" PRIu32 ", \"first_shard\": %" PRIu32
+             ", \"shard_count\": %" PRIu32 ", \"generation_floor\": %" PRIu64 "}",
+             (i == 0u) ? "" : ",", kafs_u32_stoh(groups[i].gd_group_id),
+             kafs_u32_stoh(groups[i].gd_metadata_start_blo),
+             kafs_u32_stoh(groups[i].gd_metadata_block_count),
+             kafs_u32_stoh(groups[i].gd_data_start_blo),
+             kafs_u32_stoh(groups[i].gd_data_block_count),
+             kafs_u32_stoh(groups[i].gd_first_shard_index), kafs_u32_stoh(groups[i].gd_shard_count),
+             kafs_u64_stoh(groups[i].gd_generation_floor));
+    }
+    if (group_count > 0u)
+      printf("\n    ");
+  }
+  printf("]");
+}
+
+static void print_v6_shards_json(const struct dump_report *dump)
+{
+  uint32_t shard_count = 0;
+  const kafs_sv6_shard_desc_t *shards = dump_v6_shard_table(dump, &shard_count);
+
+  printf("    \"shards\": [");
+  if (shards)
+  {
+    for (uint32_t i = 0; i < shard_count; ++i)
+    {
+      uint16_t type = le16toh(shards[i].sd_type);
+      printf("%s\n      {\"index\": %" PRIu32 ", \"type_id\": %" PRIu16
+             ", \"type\": \"%s\", \"group_id\": %" PRIu32 ", \"logical_start\": %" PRIu64
+             ", \"logical_count\": %" PRIu64 ", \"physical_off\": %" PRIu64
+             ", \"physical_bytes\": %" PRIu64 ", \"record_bytes\": %" PRIu32
+             ", \"header_bytes\": %" PRIu32 ", \"generation_floor\": %" PRIu64 "}",
+             (i == 0u) ? "" : ",", i, type, v6_shard_type_name(type),
+             kafs_u32_stoh(shards[i].sd_group_id), kafs_u64_stoh(shards[i].sd_logical_start),
+             kafs_u64_stoh(shards[i].sd_logical_count), kafs_u64_stoh(shards[i].sd_physical_off),
+             kafs_u64_stoh(shards[i].sd_physical_bytes), kafs_u32_stoh(shards[i].sd_record_bytes),
+             kafs_u32_stoh(shards[i].sd_header_bytes),
+             kafs_u64_stoh(shards[i].sd_generation_floor));
+    }
+    if (shard_count > 0u)
+      printf("\n    ");
+  }
+  printf("]");
+}
 
 static void print_text(const struct dump_report *dump)
 {
@@ -338,6 +480,8 @@ static void print_text(const struct dump_report *dump)
       kafs_v6_replica_summary(summary, sizeof(summary), replica);
       printf("  replica[%" PRIu32 "]: %s\n", replica->replica_id, summary);
     }
+    print_v6_groups_text(dump);
+    print_v6_shards_text(dump);
   }
 
   printf("v6_bitmap_shards:\n");
@@ -537,7 +681,11 @@ static void print_json(const struct dump_report *dump)
            replica->generation, replica->crc_ok ? "true" : "false",
            replica->selected ? "true" : "false");
   }
-  printf("]\n");
+  printf("],\n");
+  print_v6_groups_json(dump);
+  printf(",\n");
+  print_v6_shards_json(dump);
+  printf("\n");
   printf("  },\n");
 
   printf("  \"v6_bitmap_shards\": {\n");
@@ -766,6 +914,8 @@ int main(int argc, char **argv)
   int rc_v6_journal_header = 0;
   int rc_v6_journal_data = 0;
   int rc_v6_journal_segments = 0;
+  void *v6_desc = NULL;
+  uint32_t v6_desc_bytes = 0;
   memset(&v6, 0, sizeof(v6));
   memset(&v6_bitmap, 0, sizeof(v6_bitmap));
   memset(&v6_journal_header, 0, sizeof(v6_journal_header));
@@ -776,20 +926,18 @@ int main(int argc, char **argv)
     rc_v6 = kafs_v6_discover_layout(fd, &sb, file_size, &v6);
     if (rc_v6 == 0)
     {
-      void *desc = NULL;
-      uint32_t desc_bytes = 0;
-      rc_v6_bitmap = kafs_v6_read_selected_descriptor(fd, &v6, &desc, &desc_bytes);
+      rc_v6_bitmap = kafs_v6_read_selected_descriptor(fd, &v6, &v6_desc, &v6_desc_bytes);
       if (rc_v6_bitmap == 0)
       {
         rc_v6_bitmap =
-            kafs_v6_bitmap_validate_coverage(desc, desc_bytes, &sb, file_size, &v6_bitmap);
+            kafs_v6_bitmap_validate_coverage(v6_desc, v6_desc_bytes, &sb, file_size, &v6_bitmap);
         rc_v6_journal_header = kafs_v6_journal_header_validate_coverage(
-            desc, desc_bytes, &sb, file_size, &v6_journal_header);
-        rc_v6_journal_data = kafs_v6_journal_data_validate_coverage(desc, desc_bytes, &sb,
+            v6_desc, v6_desc_bytes, &sb, file_size, &v6_journal_header);
+        rc_v6_journal_data = kafs_v6_journal_data_validate_coverage(v6_desc, v6_desc_bytes, &sb,
                                                                     file_size, &v6_journal_data);
         if (rc_v6_journal_header == 0 && rc_v6_journal_data == 0)
           rc_v6_journal_segments = kafs_v6_journal_validate_segments_fd(
-              fd, desc, desc_bytes, &sb, file_size, &v6_journal_segments);
+              fd, v6_desc, v6_desc_bytes, &sb, file_size, &v6_journal_segments);
         else
           rc_v6_journal_segments =
               (rc_v6_journal_header != 0) ? rc_v6_journal_header : rc_v6_journal_data;
@@ -800,7 +948,6 @@ int main(int argc, char **argv)
         rc_v6_journal_data = rc_v6_bitmap;
         rc_v6_journal_segments = rc_v6_bitmap;
       }
-      free(desc);
     }
   }
   collect_metadata_regions(&sb, file_size, regions);
@@ -833,6 +980,8 @@ int main(int argc, char **argv)
       .v6_journal_header = &v6_journal_header,
       .v6_journal_data = &v6_journal_data,
       .v6_journal_segments = &v6_journal_segments,
+      .v6_desc = v6_desc,
+      .v6_desc_bytes = v6_desc_bytes,
       .regions = regions,
       .rc_inode = rc_inode,
       .rc_hrl = rc_hrl,
@@ -849,6 +998,7 @@ int main(int argc, char **argv)
   else
     print_text(&dump);
 
+  free(v6_desc);
   close(fd);
   return (rc_inode == 0 && rc_hrl == 0 && rc_journal == 0 && rc_tailmeta == 0 && rc_v6 == 0 &&
           rc_v6_bitmap == 0 && rc_v6_journal_header == 0 && rc_v6_journal_data == 0 &&

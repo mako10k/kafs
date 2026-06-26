@@ -386,6 +386,9 @@
   - `v6_descriptor_validation` は 2 metadata group / 2 journal segment の descriptor fixture を
     作り、highest generation segment が group 1 から選択され、`fsck.kafs` / `kafsdump --json` が
     `selected_group=1` として報告することを確認する。v6 write mount はまだ有効化しない。
+  - `kafsdump` text / JSON は selected v6 descriptor の group / shard summaries を表示し、
+    2-group fixture で group 1 の journal header/data shards を機械的に読めることを
+    `v6_descriptor_validation` で確認する。
 - 完了条件:
   - build/test PASS。
   - v6 mkfs/mount/basic filesystem semantics PASS。

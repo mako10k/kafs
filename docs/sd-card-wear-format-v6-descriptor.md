@@ -391,8 +391,8 @@ nested `readdir` / `lookup` / `getattr`, small-file `read`, and symlink `readlin
 
 ### `kafsdump`
 
-`kafsdump --json` should report the v6 descriptor in read-only mode once the parser is implemented.
-It must list every deterministic replica candidate with:
+`kafsdump` text / JSON reports the v6 descriptor in read-only mode. It lists every deterministic
+replica candidate with:
 
 - `replica_id`
 - `role`
@@ -403,8 +403,10 @@ It must list every deterministic replica candidate with:
 - `crc_ok`
 - `selected`
 
-If the selected descriptor is found, `kafsdump` should print group, shard, and replica summaries
-from that descriptor. Stale or corrupt non-selected candidates are reported in the replica list. If
+If the selected descriptor is found, `kafsdump` prints group, shard, and replica summaries from that
+descriptor. Group summaries include metadata/data block ranges and shard table spans; shard summaries
+include type, group, logical range, physical range, record bytes, and header bytes. Stale or corrupt
+non-selected candidates are reported in the replica list. If
 all candidates fail, or if the selected generation has divergent valid CRCs, `kafsdump` must report
 the superblock format plus descriptor replica statuses and exit non-zero.
 
@@ -569,7 +571,9 @@ Journal distribution:
   mapping is enabled.
 - Distributed journal readiness is covered by a descriptor fixture with two metadata groups and two
   journal segments: segment 1 lives in group 1, carries the highest valid generation, and is reported
-  by `fsck.kafs` / `kafsdump --json` as the selected group without enabling v6 write mount.
+  by `fsck.kafs` / `kafsdump` as the selected group. The same fixture verifies `kafsdump` text / JSON
+  group and shard summaries for the group-1 journal header/data shards without enabling v6 write
+  mount.
 
 ## Phase 3 Follow-Ups
 
