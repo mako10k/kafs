@@ -563,6 +563,10 @@ Journal distribution:
   `KAFS_V6_READONLY_SMOKE=1` gate is limited to read-only `statfs`, root and nested metadata
   traversal, inline small-file `read`, symlink `readlink`, and write rejection smoke coverage. It
   does not enable v6 write admission.
+- Boundary regression coverage now includes selected descriptors whose inode shard record shape,
+  inode physical span, or journal-data record shape is invalid: discovery may select the descriptor,
+  but `fsck.kafs`, descriptor admission, and CLI admission preflight fail closed before any runtime
+  mapping is enabled.
 
 ## Phase 3 Follow-Ups
 

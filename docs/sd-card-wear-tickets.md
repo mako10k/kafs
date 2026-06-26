@@ -379,6 +379,10 @@
     background mutation worker は起動しない。root と nested directory の `getattr` / `readdir` /
     lookup、inline small-file `read`、symlink `readlink`、`EROFS` write rejection を smoke test で
     確認する。通常の v6 mount と v6 write admission はまだ有効化しない。
+  - `v6_descriptor_validation` は inode shard の record-size mismatch / physical truncation と
+    journal-data shard の record-size mismatch を、selected descriptor として読めるが
+    fsck / descriptor admission / CLI admission preflight で fail-closed になる regression として
+    確認する。
 - 完了条件:
   - build/test PASS。
   - v6 mkfs/mount/basic filesystem semantics PASS。

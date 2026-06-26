@@ -864,6 +864,49 @@ static void mutate_journal_split_two_segments(void *buf, uint32_t desc_bytes)
   shards[old_shard_count + 1u].sd_physical_bytes = kafs_u64_htos(second_data_bytes);
 }
 
+static void mutate_shard_record_bytes(void *buf, uint32_t desc_bytes, uint16_t shard_type,
+                                      uint32_t record_bytes)
+{
+  uint32_t shard_count = 0;
+  kafs_sv6_shard_desc_t *shards = mutable_shard_table(buf, desc_bytes, &shard_count);
+  if (!shards)
+    return;
+
+  uint32_t index = UINT32_MAX;
+  if (find_mutable_shard_index(shards, shard_count, shard_type, &index) != 0)
+    return;
+  shards[index].sd_record_bytes = kafs_u32_htos(record_bytes);
+}
+
+static void mutate_inode_record_bytes_bad(void *buf, uint32_t desc_bytes)
+{
+  uint32_t record_bytes = (uint32_t)kafs_inode_bytes_for_format(KAFS_FORMAT_VERSION_V6);
+  mutate_shard_record_bytes(buf, desc_bytes, KAFS_META_REGION_INODE_TABLE, record_bytes + 1u);
+}
+
+static void mutate_journal_data_record_bytes_bad(void *buf, uint32_t desc_bytes)
+{
+  mutate_shard_record_bytes(buf, desc_bytes, KAFS_META_REGION_JOURNAL_DATA, 1u);
+}
+
+static void mutate_inode_physical_truncated(void *buf, uint32_t desc_bytes)
+{
+  uint32_t shard_count = 0;
+  kafs_sv6_shard_desc_t *shards = mutable_shard_table(buf, desc_bytes, &shard_count);
+  if (!shards)
+    return;
+
+  uint32_t index = UINT32_MAX;
+  if (find_mutable_shard_index(shards, shard_count, KAFS_META_REGION_INODE_TABLE, &index) != 0)
+    return;
+
+  uint32_t block_size = kafs_u32_stoh(((kafs_sv6_layout_desc_header_t *)buf)->ld_block_size);
+  uint64_t physical_bytes = kafs_u64_stoh(shards[index].sd_physical_bytes);
+  if (block_size == 0u || physical_bytes <= block_size)
+    return;
+  shards[index].sd_physical_bytes = kafs_u64_htos(block_size);
+}
+
 static uint64_t test_hrl_hash64(const void *buf, size_t len)
 {
   const unsigned char *p = (const unsigned char *)buf;
@@ -2107,15 +2150,23 @@ static int test_journal_torn_latest_segment_recovers(void)
   return 0;
 }
 
-static int test_runtime_mount_preflight_rejects_descriptor_gap(void)
+static int expect_fsck_rejects_v6_metadata(const char *img, const char *needle)
 {
-  const char *img = "runtime-preflight-journal-gap.img";
-  const char *mnt = "runtime-preflight-journal-gap-mnt";
-  if (make_v6_image(img) != 0)
+  char out[8192];
+  char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)img, NULL};
+  if (run_cmd_capture(fsck_argv, 13, out, sizeof(out)) != 0 ||
+      !strstr(out, "v6 metadata shard validation failed") ||
+      (needle && !strstr(out, needle)))
+  {
+    tlogf("fsck did not reject v6 metadata as expected: %s", out);
     return -1;
+  }
+  return 0;
+}
+
+static int expect_runtime_preflight_rejects_v6_metadata(const char *img, const char *mnt)
+{
   if (mkdir(mnt, 0755) != 0)
-    return -1;
-  if (mutate_all_descriptors(img, mutate_journal_header_gap, 1) != 0)
     return -1;
 
   char out[8192];
@@ -2123,9 +2174,144 @@ static int test_runtime_mount_preflight_rejects_descriptor_gap(void)
   if (run_cmd_capture(mount_argv, 2, out, sizeof(out)) != 0 ||
       !strstr(out, "admission preflight failed") || !strstr(out, "offline-only"))
   {
-    tlogf("v6 runtime mount did not report failed preflight plus offline-only gate: %s", out);
+    tlogf("v6 runtime mount did not reject failed preflight plus offline-only gate: %s", out);
     return -1;
   }
+  return 0;
+}
+
+static int expect_full_admission_rejected(const char *img)
+{
+  v6_image_info_t info;
+  if (open_v6_image(img, 1, &info) != 0)
+    return -1;
+
+  int failed = 0;
+  void *map = MAP_FAILED;
+  kafs_context_t ctx;
+  memset(&ctx, 0, sizeof(ctx));
+
+  map = mmap(NULL, (size_t)info.file_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, info.fd, 0);
+  if (map == MAP_FAILED)
+    failed = 1;
+  if (!failed)
+  {
+    ctx.c_img_base = map;
+    ctx.c_img_size = (size_t)info.file_size;
+    ctx.c_superblock = (kafs_ssuperblock_t *)map;
+    ctx.c_fd = info.fd;
+
+    int rc = kafs_v6_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL, NULL, NULL,
+                                                 NULL, NULL);
+    if (rc == 0 || ctx.c_v6_bitmap_mapping_enabled || ctx.c_v6_inode_mapping_enabled ||
+        ctx.c_v6_alloc_summary_mapping_enabled || ctx.c_v6_hrl_mapping_enabled ||
+        ctx.c_v6_layout_desc || ctx.c_v6_layout_desc_bytes != 0u || ctx.c_v6_layout_desc_owned ||
+        ctx.c_v6_inode_shards || ctx.c_v6_alloc_summary_shards || ctx.c_v6_hrl_index_shards ||
+        ctx.c_v6_hrl_entry_shards)
+      failed = 1;
+  }
+
+  kafs_bitmap_descriptor_mapping_clear(&ctx);
+  if (map != MAP_FAILED)
+    munmap(map, (size_t)info.file_size);
+  close_v6_image(&info);
+  return failed ? -1 : 0;
+}
+
+static int test_inode_record_shape_rejected(void)
+{
+  const char *img = "inode-record-shape.img";
+  if (make_v6_image(img) != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_inode_record_bytes_bad, 1) != 0)
+    return -1;
+
+  void *desc = NULL;
+  uint32_t desc_bytes = 0;
+  kafs_ssuperblock_t sb;
+  uint64_t file_size = 0;
+  if (read_selected_descriptor_for_image(img, &desc, &desc_bytes, &sb, &file_size, NULL) != 0)
+    return -1;
+
+  kafs_v6_inode_coverage_report_t report;
+  int rc = kafs_v6_inode_validate_coverage(desc, desc_bytes, &sb, file_size, &report);
+  free(desc);
+  if (rc == 0 || !report.available)
+    return -1;
+
+  if (expect_fsck_rejects_v6_metadata(img, "v6 inode shards:") != 0 ||
+      expect_full_admission_rejected(img) != 0 ||
+      expect_runtime_preflight_rejects_v6_metadata(img, "inode-record-shape-mnt") != 0)
+    return -1;
+  return 0;
+}
+
+static int test_inode_physical_truncation_rejected(void)
+{
+  const char *img = "inode-physical-truncation.img";
+  if (make_v6_image(img) != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_inode_physical_truncated, 1) != 0)
+    return -1;
+
+  void *desc = NULL;
+  uint32_t desc_bytes = 0;
+  kafs_ssuperblock_t sb;
+  uint64_t file_size = 0;
+  if (read_selected_descriptor_for_image(img, &desc, &desc_bytes, &sb, &file_size, NULL) != 0)
+    return -1;
+
+  kafs_v6_inode_coverage_report_t report;
+  int rc = kafs_v6_inode_validate_coverage(desc, desc_bytes, &sb, file_size, &report);
+  free(desc);
+  if (rc == 0 || !report.available)
+    return -1;
+
+  if (expect_fsck_rejects_v6_metadata(img, "v6 inode shards:") != 0 ||
+      expect_full_admission_rejected(img) != 0)
+    return -1;
+  return 0;
+}
+
+static int test_journal_data_record_shape_rejected(void)
+{
+  const char *img = "journal-data-record-shape.img";
+  if (make_v6_image(img) != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_journal_data_record_bytes_bad, 1) != 0)
+    return -1;
+
+  void *desc = NULL;
+  uint32_t desc_bytes = 0;
+  kafs_ssuperblock_t sb;
+  uint64_t file_size = 0;
+  if (read_selected_descriptor_for_image(img, &desc, &desc_bytes, &sb, &file_size, NULL) != 0)
+    return -1;
+
+  kafs_v6_journal_data_coverage_report_t report;
+  int rc = kafs_v6_journal_data_validate_coverage(desc, desc_bytes, &sb, file_size, &report);
+  free(desc);
+  if (rc == 0)
+    return -1;
+
+  if (expect_fsck_rejects_v6_metadata(img, NULL) != 0 ||
+      expect_full_admission_rejected(img) != 0 ||
+      expect_runtime_preflight_rejects_v6_metadata(img, "journal-data-record-shape-mnt") != 0)
+    return -1;
+  return 0;
+}
+
+static int test_runtime_mount_preflight_rejects_descriptor_gap(void)
+{
+  const char *img = "runtime-preflight-journal-gap.img";
+  const char *mnt = "runtime-preflight-journal-gap-mnt";
+  if (make_v6_image(img) != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_journal_header_gap, 1) != 0)
+    return -1;
+
+  if (expect_runtime_preflight_rejects_v6_metadata(img, mnt) != 0)
+    return -1;
   return 0;
 }
 
@@ -2376,6 +2562,9 @@ int main(void)
       {"journal_coverage_valid_lookup_and_segments", test_journal_coverage_valid_lookup_and_segments},
       {"journal_header_gap_rejected", test_journal_header_gap_rejected},
       {"journal_torn_latest_segment_recovers", test_journal_torn_latest_segment_recovers},
+      {"inode_record_shape_rejected", test_inode_record_shape_rejected},
+      {"inode_physical_truncation_rejected", test_inode_physical_truncation_rejected},
+      {"journal_data_record_shape_rejected", test_journal_data_record_shape_rejected},
       {"runtime_mount_preflight_rejects_descriptor_gap",
        test_runtime_mount_preflight_rejects_descriptor_gap},
       {"bitmap_overlap_rejected", test_bitmap_overlap_rejected},
