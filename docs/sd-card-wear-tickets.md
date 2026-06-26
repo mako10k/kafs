@@ -1,6 +1,6 @@
 # KAFS SDカード劣化対策 バックログ
 
-最終更新: 2026-06-25
+最終更新: 2026-06-26
 
 計画: [sd-card-wear-plan.md](sd-card-wear-plan.md)
 
@@ -462,6 +462,29 @@
   - v5-to-v6 migration regression PASS。
   - migrated image が fsck と現行互換境界の basic mount admission semantics に通る。
   - documentation と release notes に compatibility impact が記載されている。
+- 完了メモ:
+  - v6 `migrate-create` workflow は offline migration staging として受け入れ済み。
+  - validation 結果は [sd-card-wear-phase5-validation-20260626.md](sd-card-wear-phase5-validation-20260626.md) に記録した。
+  - v6 destination は `kafsdump --json` / `fsck.kafs --balanced-check` の offline validation に通る。
+  - runtime mount attempt は admission preflight で descriptor-backed metadata checks を通した後、
+    offline-only gate で exit 2 として fail closed する。
+  - v6 production runtime mount / cutover は Phase 5 の範囲外とし、次段チケットで扱う。
+
+---
+
+## Post-Phase 5: Format v6 Runtime Mount Enablement
+
+### SDW-V6RT-T1 v6 runtime mount admission design checkpoint
+
+- 目的: offline-only v6 scaffold から runtime mount 有効化へ進む前に、許可する mount mode と安全境界を固定する。
+- 変更:
+  - v6 read-only mount と write mount を同時に進めるか、read-only admission を先に昇格するかを決める。
+  - descriptor-backed journal replay/write、background mutation workers、repair/write fsck の解禁順を決める。
+  - v5/v6 compatibility、rollback、operator cutover、release note の境界を文書化する。
+- 完了条件:
+  - v6 runtime mount の最初の有効化対象が read-only / write のどちらか明記されている。
+  - admission preflight、journal health、descriptor lifetime、lock/rank policy の必須条件が列挙されている。
+  - Phase 5 で作成した v6 migration destination を本番 cutover 対象にできる条件と、まだ対象外にする条件が分離されている。
 
 ---
 
