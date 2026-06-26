@@ -569,6 +569,9 @@ Journal distribution:
   inode physical span, or journal-data record shape is invalid: discovery may select the descriptor,
   but `fsck.kafs`, descriptor admission, and CLI admission preflight fail closed before any runtime
   mapping is enabled.
+- Shard boundary regression coverage rejects descriptor-level inode shard physical ranges that extend
+  outside the image during discovery, and selected inode shard logical ranges that extend outside
+  `[0, s_inocnt)` during metadata shard validation.
 - Distributed journal readiness is covered by a descriptor fixture with two metadata groups and two
   journal segments: segment 1 lives in group 1, carries the highest valid generation, and is reported
   by `fsck.kafs` / `kafsdump` as the selected group. The same fixture verifies `kafsdump` text / JSON

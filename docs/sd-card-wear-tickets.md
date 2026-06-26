@@ -389,6 +389,10 @@
   - `kafsdump` text / JSON は selected v6 descriptor の group / shard summaries を表示し、
     2-group fixture で group 1 の journal header/data shards を機械的に読めることを
     `v6_descriptor_validation` で確認する。
+  - `v6_descriptor_validation` は inode shard の descriptor-level physical boundary corruption と
+    selected descriptor の logical boundary corruption を確認する。前者は descriptor discovery で
+    corrupt replica として拒否し、後者は fsck / descriptor admission / CLI admission preflight で
+    fail-closed になる。
 - 完了条件:
   - build/test PASS。
   - v6 mkfs/mount/basic filesystem semantics PASS。

@@ -565,6 +565,26 @@ static int find_mutable_shard_index(kafs_sv6_shard_desc_t *shards, uint32_t shar
   return -ENOENT;
 }
 
+static void mutate_inode_shard_physical_bounds_bad(void *buf, uint32_t desc_bytes)
+{
+  kafs_sv6_layout_desc_header_t *hdr = (kafs_sv6_layout_desc_header_t *)buf;
+  uint32_t shard_count = 0;
+  kafs_sv6_shard_desc_t *shards = mutable_shard_table(buf, desc_bytes, &shard_count);
+  if (!shards)
+    return;
+
+  uint32_t index = UINT32_MAX;
+  if (find_mutable_shard_index(shards, shard_count, KAFS_META_REGION_INODE_TABLE, &index) != 0)
+    return;
+
+  uint64_t image_size = kafs_u64_stoh(hdr->ld_image_size_bytes);
+  uint32_t block_size = kafs_u32_stoh(hdr->ld_block_size);
+  if (image_size == 0u || block_size == 0u)
+    return;
+  shards[index].sd_physical_off = kafs_u64_htos(image_size);
+  shards[index].sd_physical_bytes = kafs_u64_htos(block_size);
+}
+
 static kafs_sv6_shard_desc_t *append_mutable_shard_slot(void *buf, uint32_t desc_bytes,
                                                         uint32_t *out_old_shard_count)
 {
@@ -1008,6 +1028,23 @@ static void mutate_inode_physical_truncated(void *buf, uint32_t desc_bytes)
   shards[index].sd_physical_bytes = kafs_u64_htos(block_size);
 }
 
+static void mutate_inode_logical_boundary_bad(void *buf, uint32_t desc_bytes)
+{
+  uint32_t shard_count = 0;
+  kafs_sv6_shard_desc_t *shards = mutable_shard_table(buf, desc_bytes, &shard_count);
+  if (!shards)
+    return;
+
+  uint32_t index = UINT32_MAX;
+  if (find_mutable_shard_index(shards, shard_count, KAFS_META_REGION_INODE_TABLE, &index) != 0)
+    return;
+
+  uint64_t logical_count = kafs_u64_stoh(shards[index].sd_logical_count);
+  if (logical_count == 0u)
+    return;
+  shards[index].sd_logical_start = kafs_u64_htos(1u);
+}
+
 static uint64_t test_hrl_hash64(const void *buf, size_t len)
 {
   const unsigned char *p = (const unsigned char *)buf;
@@ -1077,6 +1114,30 @@ static int test_descriptor_bounds_bad(void)
   for (uint32_t i = 0; i < report.replica_count; ++i)
     if (report.replicas[i].status != KAFS_V6_REPLICA_STATUS_CORRUPT)
       return -1;
+  return 0;
+}
+
+static int test_descriptor_shard_physical_bounds_bad(void)
+{
+  const char *img = "descriptor-shard-physical-bounds.img";
+  if (make_v6_image(img) != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_inode_shard_physical_bounds_bad, 1) != 0)
+    return -1;
+
+  kafs_v6_layout_report_t report;
+  int rc = discover_v6_image(img, &report);
+  if (rc != -EINVAL || report.replica_count != 3u)
+    return -1;
+  for (uint32_t i = 0; i < report.replica_count; ++i)
+    if (report.replicas[i].status != KAFS_V6_REPLICA_STATUS_CORRUPT)
+      return -1;
+
+  char out[8192];
+  char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)img, NULL};
+  if (run_cmd_capture(fsck_argv, 13, out, sizeof(out)) != 0 ||
+      !strstr(out, "v6 descriptor discovery failed") || !strstr(out, "status=corrupt"))
+    return -1;
   return 0;
 }
 
@@ -2464,6 +2525,40 @@ static int test_inode_physical_truncation_rejected(void)
   return 0;
 }
 
+static int test_inode_logical_boundary_rejected(void)
+{
+  const char *img = "inode-logical-boundary.img";
+  if (make_v6_image(img) != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_inode_logical_boundary_bad, 1) != 0)
+    return -1;
+
+  void *desc = NULL;
+  uint32_t desc_bytes = 0;
+  kafs_ssuperblock_t sb;
+  uint64_t file_size = 0;
+  if (read_selected_descriptor_for_image(img, &desc, &desc_bytes, &sb, &file_size, NULL) != 0)
+    return -1;
+
+  kafs_v6_inode_coverage_report_t report;
+  int rc = kafs_v6_inode_validate_coverage(desc, desc_bytes, &sb, file_size, &report);
+  free(desc);
+  if (rc != -ERANGE || !report.available)
+    return -1;
+
+  char out[8192];
+  char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)img, NULL};
+  if (run_cmd_capture(fsck_argv, 13, out, sizeof(out)) != 0 ||
+      !strstr(out, "v6 inode shards: status=Numerical result out of range") ||
+      !strstr(out, "v6 metadata shard validation failed"))
+    return -1;
+
+  if (expect_full_admission_rejected(img) != 0 ||
+      expect_runtime_preflight_rejects_v6_metadata(img, "inode-logical-boundary-mnt") != 0)
+    return -1;
+  return 0;
+}
+
 static int test_journal_data_record_shape_rejected(void)
 {
   const char *img = "journal-data-record-shape.img";
@@ -2727,6 +2822,7 @@ int main(void)
       {"anchor_crc_bad", test_anchor_crc_bad},
       {"all_descriptor_crc_bad", test_all_descriptor_crc_bad},
       {"descriptor_bounds_bad", test_descriptor_bounds_bad},
+      {"descriptor_shard_physical_bounds_bad", test_descriptor_shard_physical_bounds_bad},
       {"unsupported_version", test_unsupported_version},
       {"incompat_flag", test_incompat_flag},
       {"primary_corrupt_backup_selected", test_primary_corrupt_backup_selected},
@@ -2756,6 +2852,7 @@ int main(void)
       {"journal_distributed_group_selection", test_journal_distributed_group_selection},
       {"inode_record_shape_rejected", test_inode_record_shape_rejected},
       {"inode_physical_truncation_rejected", test_inode_physical_truncation_rejected},
+      {"inode_logical_boundary_rejected", test_inode_logical_boundary_rejected},
       {"journal_data_record_shape_rejected", test_journal_data_record_shape_rejected},
       {"runtime_mount_preflight_rejects_descriptor_gap",
        test_runtime_mount_preflight_rejects_descriptor_gap},
