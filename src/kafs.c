@@ -11007,6 +11007,7 @@ static void usage(const char *prog)
           "    --trim-on-free                    Enable TRIM on freed data blocks\n"
           "    --no-trim-on-free                 Disable TRIM on freed data blocks\n"
           "    --sd-card-profile[=conservative]  Enable low metadata-churn profile\n"
+          "    --v6-inspection-mount             Permit explicit v6 inspection mount with -o ro\n"
           "    -o writeback_cache                Enable writeback cache (FUSE -o)\n"
           "    -o no_writeback_cache             Disable writeback cache (FUSE -o)\n"
           "    -o trim_on_free | trim-on-free    Enable TRIM (FUSE -o)\n"
@@ -11014,6 +11015,7 @@ static void usage(const char *prog)
           "                                      Disable TRIM (FUSE -o)\n"
           "    -o sd_card_profile=<none|conservative>\n"
           "                                      Apply SD-card profile settings (opt-in)\n"
+          "    -o v6_inspection_mount            Permit explicit v6 inspection mount with -o ro\n"
           "\n"
           "  [Threading]\n"
           "    -o multi_thread[=N]               Enable MT mode (alias: multi-thread, "
@@ -11400,6 +11402,8 @@ typedef struct kafs_main_options
   kafs_bool_t writeback_cache_explicit;
   kafs_bool_t trim_on_free_enabled;
   kafs_bool_t trim_on_free_explicit;
+  kafs_bool_t v6_inspection_mount;
+  kafs_bool_t mount_read_only_requested;
   kafs_bool_t show_help;
   kafs_bool_t enable_mt;
   char hotplug_uds_opt[sizeof(((struct sockaddr_un *)0)->sun_path)];
@@ -11717,6 +11721,11 @@ static int kafs_main_handle_flag_arg(kafs_main_options_t *opts, const char *arg)
     kafs_main_apply_sd_card_profile(opts, KAFS_SD_CARD_PROFILE_CONSERVATIVE);
     return 1;
   }
+  if (strcmp(arg, "--v6-inspection-mount") == 0)
+  {
+    opts->v6_inspection_mount = KAFS_TRUE;
+    return 1;
+  }
   if (strncmp(arg, "--sd-card-profile=", 18) == 0)
   {
     uint32_t profile = KAFS_SD_CARD_PROFILE_NONE;
@@ -11869,6 +11878,26 @@ static int kafs_main_handle_writeback_cache_token(kafs_main_options_t *opts, con
   {
     opts->writeback_cache_enabled = KAFS_FALSE;
     opts->writeback_cache_explicit = KAFS_TRUE;
+    return 1;
+  }
+  return 0;
+}
+
+static void kafs_main_note_mount_mode_token(kafs_main_options_t *opts, const char *tok)
+{
+  if (!opts || !tok)
+    return;
+  if (strcmp(tok, "ro") == 0)
+    opts->mount_read_only_requested = KAFS_TRUE;
+  else if (strcmp(tok, "rw") == 0)
+    opts->mount_read_only_requested = KAFS_FALSE;
+}
+
+static int kafs_main_handle_v6_inspection_token(kafs_main_options_t *opts, const char *tok)
+{
+  if (strcmp(tok, "v6_inspection_mount") == 0 || strcmp(tok, "v6-inspection-mount") == 0)
+  {
+    opts->v6_inspection_mount = KAFS_TRUE;
     return 1;
   }
   return 0;
@@ -12260,7 +12289,11 @@ static void kafs_main_append_filtered_token(char *filtered, size_t *used, const 
 
 static int kafs_main_handle_mount_token(kafs_main_options_t *opts, const char *tok, int *want_mt)
 {
-  int rc = kafs_main_handle_sd_card_profile_token(opts, tok);
+  int rc = kafs_main_handle_v6_inspection_token(opts, tok);
+  if (rc != 0)
+    return rc;
+
+  rc = kafs_main_handle_sd_card_profile_token(opts, tok);
   if (rc != 0)
     return rc;
 
@@ -12320,6 +12353,7 @@ static int kafs_main_filter_mount_tokens(kafs_main_options_t *opts, const char *
   char *saveptr = NULL;
   for (char *tok = strtok_r(dup, ",", &saveptr); tok; tok = strtok_r(NULL, ",", &saveptr))
   {
+    kafs_main_note_mount_mode_token(opts, tok);
     int rc = kafs_main_handle_mount_token(opts, tok, &want_mt);
     if (rc == 2)
     {
@@ -12441,6 +12475,18 @@ static int kafs_main_validate_options(const kafs_main_options_t *opts)
       opts->bg_dedup_pressure_used_pct < opts->bg_dedup_start_used_pct)
   {
     fprintf(stderr, "invalid bg dedup thresholds: pressure_used_pct must be >= start_used_pct\n");
+    return 2;
+  }
+  if (opts->v6_inspection_mount && !opts->mount_read_only_requested)
+  {
+    fprintf(stderr, "v6 inspection mount requires -o ro and -o v6_inspection_mount.\n");
+    return 2;
+  }
+  if (opts->v6_inspection_mount && opts->writeback_cache_explicit && opts->writeback_cache_enabled)
+  {
+    fprintf(stderr,
+            "v6 inspection mount does not allow writeback_cache; use no_writeback_cache or omit "
+            "writeback_cache.\n");
     return 2;
   }
   return 0;
@@ -12953,6 +12999,30 @@ static int kafs_main_v6_readonly_smoke_mount(kafs_context_t *ctx, const kafs_ssu
   return rc;
 }
 
+static int kafs_main_v6_inspection_mount(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk,
+                                         kafs_inocnt_t *inocnt_out, kafs_blkcnt_t *r_blkcnt_out)
+{
+  int rc = kafs_main_v6_runtime_admit_context(ctx, sbdisk, PROT_READ);
+  if (rc == 0)
+  {
+    ctx->c_runtime_read_only = 1u;
+    if (inocnt_out)
+      *inocnt_out = kafs_inocnt_stoh(sbdisk->s_inocnt);
+    if (r_blkcnt_out)
+      *r_blkcnt_out = kafs_blkcnt_stoh(sbdisk->s_r_blkcnt);
+    fprintf(stderr, "format v6 inspection mount: selected descriptor retained in read-only "
+                    "runtime context; FUSE mount is inspection-only and write admission remains "
+                    "disabled.\n");
+  }
+  else
+  {
+    char errbuf[128];
+    fprintf(stderr, "format v6 inspection mount admission failed: %s.\n",
+            kafs_main_rc_text(rc, errbuf, sizeof(errbuf)));
+  }
+  return rc;
+}
+
 static void kafs_main_map_runtime_memory(kafs_context_t *ctx, uint32_t fmt_ver, off_t imgsize,
                                          off_t mapsize, intptr_t blkmask_off, intptr_t inotbl_off)
 {
@@ -13027,9 +13097,12 @@ static void kafs_main_lock_runtime_image(kafs_context_t *ctx, const char *image_
 }
 
 static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *image_path,
-                                           kafs_bool_t auto_migrate, kafs_bool_t migrate_yes)
+                                           kafs_bool_t auto_migrate, kafs_bool_t migrate_yes,
+                                           kafs_bool_t v6_inspection_mount,
+                                           kafs_bool_t mount_read_only_requested)
 {
-  ctx->c_fd = open(image_path, O_RDWR, 0666);
+  int open_flags = v6_inspection_mount ? O_RDONLY : O_RDWR;
+  ctx->c_fd = open(image_path, open_flags, 0666);
   if (ctx->c_fd < 0)
   {
     perror("open image");
@@ -13053,10 +13126,25 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
   }
 
   uint32_t fmt_ver = kafs_sb_format_version_get(&sbdisk);
+  if (v6_inspection_mount && fmt_ver != KAFS_FORMAT_VERSION_V6)
+  {
+    fprintf(stderr, "v6 inspection mount applies only to format v6 images (found v%u).\n", fmt_ver);
+    exit(2);
+  }
+
   kafs_inocnt_t inocnt = 0;
   kafs_blkcnt_t r_blkcnt = 0;
   if (fmt_ver == KAFS_FORMAT_VERSION_V6)
   {
+    if (v6_inspection_mount)
+    {
+      int rc = kafs_main_v6_inspection_mount(ctx, &sbdisk, &inocnt, &r_blkcnt);
+      if (rc != 0)
+        exit(2);
+      kafs_main_init_runtime_diag(ctx, image_path, inocnt);
+      kafs_main_lock_runtime_image(ctx, image_path);
+      return;
+    }
     if (kafs_main_v6_readonly_smoke_enabled())
     {
       int rc = kafs_main_v6_readonly_smoke_mount(ctx, &sbdisk, &inocnt, &r_blkcnt);
@@ -13070,6 +13158,9 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
       (void)kafs_main_v6_admission_handoff(ctx, &sbdisk);
     else
       (void)kafs_main_v6_admission_preflight(ctx->c_fd, &sbdisk);
+    if (mount_read_only_requested)
+      fprintf(stderr, "format v6 inspection mount requires -o ro and -o v6_inspection_mount; "
+                      "-o ro alone keeps v6 offline-only.\n");
   }
   kafs_main_validate_image_format(image_path, fmt_ver, auto_migrate, migrate_yes);
   kafs_main_map_runtime_image(ctx, &sbdisk, fmt_ver, &inocnt, &r_blkcnt);
@@ -13174,7 +13265,8 @@ int main(int argc, char **argv)
                               sizeof(hotplug_uds_path)) != 0)
     return 2;
 
-  kafs_main_open_runtime_context(&ctx, image_path, auto_migrate, migrate_yes);
+  kafs_main_open_runtime_context(&ctx, image_path, auto_migrate, migrate_yes,
+                                 opts.v6_inspection_mount, opts.mount_read_only_requested);
   if (ctx.c_runtime_read_only)
   {
     writeback_cache_enabled = KAFS_FALSE;

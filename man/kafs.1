@@ -67,6 +67,12 @@ Deprecated alias of
 .TP
 .B --yes
 Skip interactive confirmation for migration.
+.TP
+.B --v6-inspection-mount
+Permit an explicit format v6 inspection mount.  This option must be combined
+with FUSE
+.BR -o " " ro .
+The mount is for inspection only and does not enable format v6 write admission.
 .SS Cache And TRIM
 .TP
 .BR --writeback-cache
@@ -139,6 +145,16 @@ Defaults are unchanged unless this profile is explicitly selected.
 .BR -o " " sd-card-profile= "<none|conservative>"
 Alias for
 .BR sd_card_profile .
+.TP
+.BR -o " " v6_inspection_mount
+Permit an explicit format v6 inspection mount when combined with
+.BR -o " " ro .
+The image is admitted through the v6 descriptor checks, exposed read-only, and
+write operations remain disabled.
+.TP
+.BR -o " " v6-inspection-mount
+Alias for
+.BR v6_inspection_mount .
 .SS Threading And Worker Tuning
 .TP
 .BR "-o multi_thread" "[=N]"

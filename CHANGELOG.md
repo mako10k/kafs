@@ -7,9 +7,12 @@
   `fsck.kafs --balanced-check` regression を追加した。
 - v6 migration destination の runtime mount attempt が admission preflight 後に offline-only gate で
   exit 2 になることを regression に追加した。
-- Compatibility: v6 destination image は現時点では offline-only descriptor scaffold として扱う。
-  `kafsdump` / `fsck.kafs` で検査できるが、runtime mount / production cutover はまだ有効化しない。
-  既存 v4/v5 image の runtime mount 互換と、default v5 destination の挙動は維持する。
+- v6 destination image の検査用 runtime path として `-o ro,v6_inspection_mount` を追加した。
+  selected descriptor を read-only runtime context に保持し、write admission / production cutover は
+  引き続き無効にする。
+- Compatibility: v6 destination image は `kafsdump` / `fsck.kafs` に加えて inspection mount で検査できる。
+  v6 write mount / production cutover はまだ有効化しない。既存 v4/v5 image の runtime mount 互換と、
+  default v5 destination の挙動は維持する。
 
 ## v0.4.0 - 2026-03-17
 - v2/v3 イメージを v4 へ変換する offline pre-start migration を追加し、共有 migrator を `kafsctl migrate` と `kafs --migrate` から利用可能にした。

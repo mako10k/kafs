@@ -480,9 +480,9 @@
 - 進捗:
   - [sd-card-wear-v6-runtime-mount-checkpoint.md](sd-card-wear-v6-runtime-mount-checkpoint.md) に
     read-only admission 先行、write admission 併走、offline-only 継続の判断基準を整理した。
-  - 実装側の推奨は read-only admission 先行。write admission は journal / mutation workers /
-    repair / lock policy の条件を同時に満たす場合だけ選ぶ。
-  - mount mode はユーザー判断待ち。判断後に次チケットを切って実装する。
+  - A + dedicated opt-in を採用し、operator-facing な名称は `v6 inspection mount` とする。
+    read-only は安全性質として強制するが、機能名にはしない。
+  - write admission は journal / mutation workers / repair / lock policy の条件を同時に満たす場合だけ選ぶ。
 - 変更:
   - v6 read-only mount と write mount を同時に進めるか、read-only admission を先に昇格するかを決める。
   - descriptor-backed journal replay/write、background mutation workers、repair/write fsck の解禁順を決める。
@@ -491,6 +491,27 @@
   - v6 runtime mount の最初の有効化対象が read-only / write のどちらか明記されている。
   - admission preflight、journal health、descriptor lifetime、lock/rank policy の必須条件が列挙されている。
   - Phase 5 で作成した v6 migration destination を本番 cutover 対象にできる条件と、まだ対象外にする条件が分離されている。
+- 完了メモ:
+  - 初回 runtime 対象は `v6 inspection mount` とし、write admission / production cutover は対象外にした。
+  - 専用 opt-in は `-o ro,v6_inspection_mount`。`-o ro` だけでは v6 を許可しない。
+
+### SDW-V6RT-T2 v6 inspection mount admission
+
+- 目的: v6 destination image を production write cutover ではなく、検査用 runtime path として mount できるようにする。
+- 進捗:
+  - `-o ro,v6_inspection_mount` を v6 inspection mount の専用 opt-in として追加した。
+  - `-o ro` だけでは v6 mount を許可せず、offline-only gate と inspection option guidance を返す。
+  - v6 inspection mount は image を read-only open / `PROT_READ` mapping / read lock / FUSE `ro` で扱い、
+    writeback cache と TRIM を無効化する。
+  - `v6_descriptor_smoketest` に explicit option regression、writeback_cache rejection、mutation `EROFS`
+    rejection、mount/unmount 前後の backing image content unchanged check を追加した。
+- 完了条件:
+  - `-o ro,v6_inspection_mount` で v6 fixture の `statfs` / traversal / read / readlink が通る。
+  - mutation attempt が `EROFS` で拒否され、backing image content が変化しない。
+  - v6 write mount / production cutover は引き続き対象外として文書化されている。
+- 完了メモ:
+  - `v6_descriptor_smoketest`、`kafsresize`、`make check -j2`、format/lint/static gates で PASS。
+  - `make check -j2` の 15 秒 timeout run では `stress_fs` が一度 SKIP したが、同条件の単体再実行で PASS。
 
 ---
 

@@ -367,6 +367,42 @@ static int read_file_equals(const char *path, const char *expected)
   return 0;
 }
 
+static int file_digest64(const char *path, uint64_t *digest_out, off_t *size_out)
+{
+  int fd = open(path, O_RDONLY);
+  if (fd < 0)
+    return -errno;
+
+  uint64_t digest = UINT64_C(1469598103934665603);
+  off_t total = 0;
+  for (;;)
+  {
+    unsigned char buf[8192];
+    ssize_t n = read(fd, buf, sizeof(buf));
+    if (n < 0)
+    {
+      int err = -errno;
+      close(fd);
+      return err;
+    }
+    if (n == 0)
+      break;
+    for (ssize_t i = 0; i < n; ++i)
+    {
+      digest ^= (uint64_t)buf[i];
+      digest *= UINT64_C(1099511628211);
+    }
+    total += (off_t)n;
+  }
+
+  close(fd);
+  if (digest_out)
+    *digest_out = digest;
+  if (size_out)
+    *size_out = total;
+  return 0;
+}
+
 static int check_v6_readonly_fixture_paths(const char *mnt)
 {
   char path[PATH_MAX];
@@ -427,29 +463,35 @@ static int check_v6_readonly_fixture_paths(const char *mnt)
   return 0;
 }
 
-static int check_v6_readonly_mount_smoke(const char *img)
+static int check_v6_inspection_mount_smoke(const char *img)
 {
   if (access("/dev/fuse", R_OK | W_OK) != 0)
   {
-    tlogf("skip v6 readonly mount smoke: /dev/fuse unavailable");
+    tlogf("skip v6 inspection mount smoke: /dev/fuse unavailable");
     return 0;
   }
 
-  const char *mnt = "mnt-readonly-smoke";
-  const char *log_path = "v6-readonly-smoke.log";
+  uint64_t digest_before = 0;
+  off_t size_before = 0;
+  if (file_digest64(img, &digest_before, &size_before) != 0)
+  {
+    tlogf("v6 inspection mount pre-digest failed");
+    return 1;
+  }
+
+  const char *mnt = "mnt-inspection";
+  const char *log_path = "v6-inspection-mount.log";
   kafs_test_mount_options_t options = {
       .debug = "1",
       .log_path = log_path,
-      .extra_options = "ro,no_writeback_cache",
+      .extra_options = "ro,v6_inspection_mount,no_writeback_cache",
       .timeout_ms = 10000,
   };
 
-  setenv("KAFS_V6_READONLY_SMOKE", "1", 1);
   pid_t srv = kafs_test_start_kafs(img, mnt, &options);
-  unsetenv("KAFS_V6_READONLY_SMOKE");
   if (srv <= 0)
   {
-    kafs_test_dump_log(log_path, "v6 readonly smoke mount failed");
+    kafs_test_dump_log(log_path, "v6 inspection mount failed");
     return 77;
   }
 
@@ -531,9 +573,20 @@ static int check_v6_readonly_mount_smoke(const char *img)
 
 out_stop:
   kafs_test_stop_kafs(mnt, srv);
-  if (rc == 0 && !file_contains(log_path, "format v6 readonly smoke"))
+  if (rc == 0)
   {
-    tlogf("v6 readonly smoke log missing admission message");
+    uint64_t digest_after = 0;
+    off_t size_after = 0;
+    if (file_digest64(img, &digest_after, &size_after) != 0 || digest_after != digest_before ||
+        size_after != size_before)
+    {
+      tlogf("v6 inspection mount changed backing image");
+      rc = 1;
+    }
+  }
+  if (rc == 0 && !file_contains(log_path, "format v6 inspection mount"))
+  {
+    tlogf("v6 inspection mount log missing admission message");
     rc = 1;
   }
   return rc;
@@ -610,6 +663,47 @@ int main(void)
     return 1;
   }
 
+  char *ro_only_argv[] = {(char *)kafs_test_kafs_bin(), (char *)img, (char *)"mnt", (char *)"-o",
+                          (char *)"ro", NULL};
+  if (run_cmd_capture(ro_only_argv, 2, out, sizeof(out)) != 0)
+  {
+    tlogf("v6 ro-only runtime mount did not fail as expected: %s", out);
+    return 1;
+  }
+  if (!strstr(out, "v6 inspection mount requires") || !strstr(out, "offline-only"))
+  {
+    tlogf("v6 ro-only runtime mount missing inspection guidance: %s", out);
+    return 1;
+  }
+
+  char *inspection_without_ro_argv[] = {
+      (char *)kafs_test_kafs_bin(), (char *)img, (char *)"mnt", (char *)"-o",
+      (char *)"v6_inspection_mount", NULL};
+  if (run_cmd_capture(inspection_without_ro_argv, 2, out, sizeof(out)) != 0)
+  {
+    tlogf("v6 inspection mount without ro did not fail as expected: %s", out);
+    return 1;
+  }
+  if (!strstr(out, "requires -o ro"))
+  {
+    tlogf("v6 inspection mount without ro missing guidance: %s", out);
+    return 1;
+  }
+
+  char *inspection_writeback_argv[] = {
+      (char *)kafs_test_kafs_bin(), (char *)img, (char *)"mnt", (char *)"-o",
+      (char *)"ro,v6_inspection_mount,writeback_cache", NULL};
+  if (run_cmd_capture(inspection_writeback_argv, 2, out, sizeof(out)) != 0)
+  {
+    tlogf("v6 inspection mount with writeback_cache did not fail as expected: %s", out);
+    return 1;
+  }
+  if (!strstr(out, "does not allow writeback_cache"))
+  {
+    tlogf("v6 inspection mount with writeback_cache missing guidance: %s", out);
+    return 1;
+  }
+
   char *handoff_argv[] = {(char *)kafs_test_kafs_bin(), (char *)img, (char *)"mnt-handoff",
                           NULL};
   if (run_cmd_capture_env(handoff_argv, 2, "KAFS_V6_ADMISSION_HANDOFF", "1", out, sizeof(out)) !=
@@ -631,7 +725,7 @@ int main(void)
     return 1;
   }
 
-  int readonly_rc = check_v6_readonly_mount_smoke(img);
+  int readonly_rc = check_v6_inspection_mount_smoke(img);
   if (readonly_rc == 77)
     return 77;
   if (readonly_rc != 0)

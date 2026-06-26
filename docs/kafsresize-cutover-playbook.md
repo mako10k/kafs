@@ -79,9 +79,9 @@ clean-v5 and capacity precheck runs before the destination is overwritten:
 	--yes --force
 ```
 
-Current v6 images remain offline descriptor scaffolds until v6 runtime mount
-support is explicitly enabled. They can be inspected with `kafsdump` and
-`fsck.kafs`, but they are not production mount targets yet.
+Current v6 images remain write-disabled descriptor destinations. They can be
+inspected with `kafsdump`, `fsck.kafs`, and the explicit v6 inspection mount
+path, but they are not production write mount targets yet.
 
 ## Step 3: Mount Supported Source And Destination
 
@@ -100,11 +100,17 @@ In another shell, confirm both mounts answer stats requests:
 ./kafsctl fsstat /mnt/kafs-dst --json --mib
 ```
 
-Do not mount a v6 descriptor destination in this phase. Current v6 images are
-offline descriptor scaffolds and the runtime rejects them until v6 mount support
-is explicitly enabled. For v6, skip the mount and copy steps below, validate the
-image offline in Step 6, and keep it staged rather than cutting traffic over to
-it.
+Do not mount a v6 descriptor destination as a production write target in this
+phase. For optional inspection, use the explicit inspection mount:
+
+```sh
+./kafs --image /var/lib/kafs/destination.img /mnt/kafs-v6-inspect -f -o ro,v6_inspection_mount
+```
+
+This path is for inspection only. It keeps the image read-only, rejects
+mutations with `EROFS`, and does not enable v6 write admission. For v6, skip the
+copy steps below, validate the image offline in Step 6, and keep it staged
+rather than cutting traffic over to it.
 
 ## Step 4: Seed Copy
 
@@ -115,8 +121,8 @@ rsync -aH --delete /mnt/kafs-src/ /mnt/kafs-dst/
 ```
 
 This step is expected to copy most of the data volume. Current v6 descriptor
-destinations are not mountable data-copy targets, so content cutover waits for
-v6 runtime mount support or a separately scoped offline copy path.
+destinations are not writable data-copy targets, so content cutover waits for
+v6 write mount support or a separately scoped offline copy path.
 
 ## Step 5: Freeze Writes And Final Sync
 
@@ -164,9 +170,10 @@ location.
 
 Keep the old source image untouched until the new mount has passed smoke checks.
 
-For v6 descriptor destinations, do not perform production cutover until v6
-runtime mount support is enabled and a smoke mount has passed. The current safe
-endpoint is an offline-validated staged image.
+For v6 descriptor destinations, do not perform production cutover until v6 write
+mount support is enabled and a write-capable smoke mount has passed. The current
+safe endpoint is an offline-validated staged image, optionally inspected through
+`-o ro,v6_inspection_mount`.
 
 ## Rollback Guidance
 

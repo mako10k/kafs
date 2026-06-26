@@ -373,7 +373,7 @@ Logical coverage requirements:
 
 ### Runtime Mount
 
-Until `SDW-P4` explicitly enables v6 runtime support, `kafs` must reject `s_format_version=6` with
+Until explicit v6 runtime support is selected, `kafs` must reject `s_format_version=6` with
 an unsupported-format error. It must not attempt to mount a v6 descriptor image through the v4/v5
 prefix layout. The CLI mount path runs a v6 admission preflight before that rejection: it discovers
 the selected descriptor, validates descriptor-backed bitmap/inode/allocator/HRL coverage plus journal
@@ -382,12 +382,16 @@ For runtime handoff testing only, `KAFS_V6_ADMISSION_HANDOFF=1` maps the full im
 mount context, retains the selected descriptor and shard maps in `kafs_context`, validates journal
 segment health from that context, reports the handoff, releases the mapping, and still exits through
 the same offline-only gate. This does not enable FUSE mount or v6 write admission.
-For the next smoke stage, `KAFS_V6_READONLY_SMOKE=1` keeps that admitted descriptor in the real
-runtime context and permits a FUSE mount only as read-only. The image is mapped read-only, journal
-replay and background mutation workers are not started, write/copy/metadata mutation operations
-return `EROFS`, and the normal v6 mount path without this environment gate still rejects the image.
-Current smoke coverage injects only inline metadata/data into a v6 fixture and verifies root and
-nested `readdir` / `lookup` / `getattr`, small-file `read`, and symlink `readlink`.
+The supported first runtime path is the inspection mount: `-o ro,v6_inspection_mount`. It keeps the
+admitted descriptor in the real runtime context and permits FUSE access only for inspection. The image
+is opened without write access, mapped read-only, locked with a read lock, and passed to FUSE with
+`ro`. Journal replay and background mutation workers are not started, write/copy/metadata mutation
+operations return `EROFS`, and v6 write admission remains disabled. `-o ro` by itself is not enough:
+the dedicated `v6_inspection_mount` opt-in is required. `KAFS_V6_READONLY_SMOKE=1` remains a test/debug
+gate for the earlier smoke path, not the supported operator entrypoint.
+Current inspection coverage injects only inline metadata/data into a v6 fixture and verifies root and
+nested `readdir` / `lookup` / `getattr`, small-file `read`, symlink `readlink`, mutation rejection,
+and no backing image content change across mount/unmount.
 
 ### `kafsdump`
 
@@ -558,13 +562,13 @@ Journal distribution:
   initialization or replay when `kafs_context` owns a selected v6 descriptor. Header writes, ring data
   writes, and replay/reset use that segment's `journal_header` and `journal_data` offsets instead of
   legacy prefix geometry.
-- Runtime v6 mount is still disabled. The live journal write/replay path must use the descriptor
+- Runtime v6 write mount is still disabled. The live journal write/replay path must use the descriptor
   journal segment lookup before v6 write mount is enabled; until then, the implemented checks are
-  offline scaffold validation, dormant admission validation, CLI mount preflight diagnostics, and the
-  explicit `KAFS_V6_ADMISSION_HANDOFF=1` runtime-context handoff diagnostic only. The
-  `KAFS_V6_READONLY_SMOKE=1` gate is limited to read-only `statfs`, root and nested metadata
-  traversal, inline small-file `read`, symlink `readlink`, and write rejection smoke coverage. It
-  does not enable v6 write admission.
+  offline scaffold validation, dormant admission validation, CLI mount preflight diagnostics, the
+  explicit `KAFS_V6_ADMISSION_HANDOFF=1` runtime-context handoff diagnostic, and the supported
+  `-o ro,v6_inspection_mount` inspection path. The inspection path is limited to read-only `statfs`,
+  root and nested metadata traversal, inline small-file `read`, symlink `readlink`, write rejection,
+  and no-content-change smoke coverage. It does not enable v6 write admission.
 - Boundary regression coverage now includes selected descriptors whose inode shard record shape,
   inode physical span, or journal-data record shape is invalid: discovery may select the descriptor,
   but `fsck.kafs`, descriptor admission, and CLI admission preflight fail closed before any runtime
