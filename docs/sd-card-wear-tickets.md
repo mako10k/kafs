@@ -533,6 +533,14 @@
 ### SDW-V6RT-T4 descriptor-backed journal write/replay proof
 
 - 目的: v6 write admission 前に、journal write/replay が selected descriptor-backed segment だけを使うことを証明する。
+- 進捗:
+  - `journal_boundary` の v6 descriptor-backed routing regression を強化し、
+    `kafs_journal_begin()` / `kafs_journal_commit()` / `kafs_journal_force_flush()` が selected
+    `journal_header` / `journal_data` shard を更新することを確認する。
+  - replay は descriptor-backed segment を scan し、replay reset 後に selected journal data 先頭が zeroed
+    になることを確認する。
+  - v6 legacy journal data prefix 相当の byte range を snapshot し、write/force_flush 後と replay reset 後の
+    両方で変化しないことを確認する。
 - 変更:
   - focused journal regression
   - 必要なら v6 descriptor-backed runtime journal harness
@@ -541,6 +549,9 @@
     `journal_header` / `journal_data` shard を更新する。
   - `kafs_journal_replay()` が descriptor-backed segment を scan し、replay reset も selected segment に限定される。
   - legacy journal prefix region が v6 test fixture で更新されない。
+- 完了メモ:
+  - write mount はまだ有効化しない。
+  - 次は `SDW-V6RT-T5 v6 live metadata mutation routing proof` に進む。
 
 ### SDW-V6RT-T5 v6 live metadata mutation routing proof
 

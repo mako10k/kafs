@@ -96,6 +96,12 @@ static int read_rec_hdr(int fd, uint64_t data_off, uint64_t ring_off, kj_rec_hdr
   return (r == (ssize_t)sizeof(*rh)) ? 0 : -EIO;
 }
 
+static int read_region_bytes(int fd, uint64_t off, void *buf, size_t len)
+{
+  ssize_t r = pread(fd, buf, len, (off_t)off);
+  return (r == (ssize_t)len) ? 0 : -EIO;
+}
+
 static int replay_count_cb(struct kafs_context *ctx, const char *op, const char *args, void *user)
 {
   (void)ctx;
@@ -218,10 +224,23 @@ static int test_v6_descriptor_journal_routing(void)
     failed = 1;
 
   uint64_t legacy_data_off = 0;
+  unsigned char legacy_before[1024];
+  unsigned char legacy_after_write[sizeof(legacy_before)];
+  unsigned char legacy_after_replay[sizeof(legacy_before)];
+  size_t legacy_probe_len = 0;
   if (!failed)
   {
     legacy_data_off = kj_journal_data_offset(kafs_sb_journal_offset_get(ctx.c_superblock));
-    if (legacy_data_off == lookup.data.data_off || lookup.data.data_bytes == 0u)
+    if (legacy_data_off == lookup.data.data_off || lookup.data.data_bytes == 0u ||
+        legacy_data_off >= lookup.data.data_off)
+      failed = 1;
+  }
+  if (!failed)
+  {
+    uint64_t legacy_gap = lookup.data.data_off - legacy_data_off;
+    legacy_probe_len = (legacy_gap < sizeof(legacy_before)) ? (size_t)legacy_gap : sizeof(legacy_before);
+    if (legacy_probe_len == 0u || read_region_bytes(fd, legacy_data_off, legacy_before,
+                                                    legacy_probe_len) != 0)
       failed = 1;
   }
 
@@ -259,6 +278,10 @@ static int test_v6_descriptor_journal_routing(void)
   if (!failed && read_rec_hdr(fd, legacy_data_off, 0, &legacy_first) == 0 &&
       (legacy_first.tag == KJ_TAG_BEG || legacy_first.tag == KJ_TAG_CMT))
     failed = 1;
+  if (!failed &&
+      (read_region_bytes(fd, legacy_data_off, legacy_after_write, legacy_probe_len) != 0 ||
+       memcmp(legacy_before, legacy_after_write, legacy_probe_len) != 0))
+    failed = 1;
 
   int replay_count = 0;
   if (!failed && kafs_journal_replay(&ctx, replay_count_cb, &replay_count) != 0)
@@ -268,6 +291,17 @@ static int test_v6_descriptor_journal_routing(void)
   if (!failed && read_header(fd, lookup.header.header_off, &hdr) != 0)
     failed = 1;
   if (!failed && (!kj_header_valid_for_area(&hdr, lookup.data.data_bytes) || hdr.write_off != 0u))
+    failed = 1;
+  if (!failed)
+  {
+    kj_rec_hdr_t selected_after_replay;
+    if (read_rec_hdr(fd, lookup.data.data_off, 0, &selected_after_replay) != 0 ||
+        selected_after_replay.tag != 0u)
+      failed = 1;
+  }
+  if (!failed &&
+      (read_region_bytes(fd, legacy_data_off, legacy_after_replay, legacy_probe_len) != 0 ||
+       memcmp(legacy_before, legacy_after_replay, legacy_probe_len) != 0))
     failed = 1;
 
   kafs_bitmap_descriptor_mapping_clear(&ctx);
