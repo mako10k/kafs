@@ -513,6 +513,67 @@
   - `v6_descriptor_smoketest`、`kafsresize`、`make check -j2`、format/lint/static gates で PASS。
   - `make check -j2` の 15 秒 timeout run では `stress_fs` が一度 SKIP したが、同条件の単体再実行で PASS。
 
+### SDW-V6RT-T3 v6 write-mount dependency audit
+
+- 目的: v6 write mount を有効化する前に、journal、metadata mutation path、pending/tail/worker、
+  fsck/repair、lock policy の依存関係を固定する。
+- 進捗:
+  - [sd-card-wear-v6-write-mount-dependency-audit.md](sd-card-wear-v6-write-mount-dependency-audit.md) に
+    write admission 前の必須条件とブロッカーを記録した。
+  - v6 write mount は単一 gate ではなく、descriptor-backed journal proof、live metadata mutation
+    routing proof、pending/tail/worker policy、post-write fsck/repair policy、lock/stress validation に
+    分けて進める方針にした。
+- 完了条件:
+  - write mount の未対応 path が journal / mutation / worker / repair / lock / operator 境界に分解されている。
+  - 次に実装するチケットが明記されている。
+- 完了メモ:
+  - 次は `SDW-V6RT-T4 descriptor-backed journal write/replay proof` に進む。
+  - T4 では write mount をまだ有効化せず、selected v6 journal segment への write/replay routing を証明する。
+
+### SDW-V6RT-T4 descriptor-backed journal write/replay proof
+
+- 目的: v6 write admission 前に、journal write/replay が selected descriptor-backed segment だけを使うことを証明する。
+- 変更:
+  - focused journal regression
+  - 必要なら v6 descriptor-backed runtime journal harness
+- 完了条件:
+  - `kafs_journal_begin()` / `kafs_journal_commit()` / `kafs_journal_force_flush()` が selected
+    `journal_header` / `journal_data` shard を更新する。
+  - `kafs_journal_replay()` が descriptor-backed segment を scan し、replay reset も selected segment に限定される。
+  - legacy journal prefix region が v6 test fixture で更新されない。
+
+### SDW-V6RT-T5 v6 live metadata mutation routing proof
+
+- 目的: write mount の主要 mutation operations が descriptor-backed metadata shards を正しく更新することを確認する。
+- 完了条件:
+  - create/write/truncate/fallocate/unlink/rename/link/symlink/copy/reflink/fsync/release の matrix がある。
+  - bitmap / inode / allocator summary / HRL の expected shard write counters が増え、unexpected shard が変化しない。
+  - bitmap word alignment 制約または byte-granular update 方針が admission validation に反映されている。
+
+### SDW-V6RT-T6 v6 delayed/background mutation policy
+
+- 目的: pending log、tail metadata、tombstone GC、background dedup worker を v6 write mount でどう扱うか固定する。
+- 完了条件:
+  - v6 write mount で無効化する機能と、descriptor-backed 実装して有効化する機能が分離されている。
+  - pending log / tail metadata を無効化する場合、該当 option や delayed mutation が fail closed する。
+  - worker を有効化する場合、descriptor-backed routing と stress regression がある。
+
+### SDW-V6RT-T7 v6 post-write fsck and repair policy
+
+- 目的: v6 write mount 後に fsck が detect-only で安全に判定できる境界と repair 解禁順を決める。
+- 完了条件:
+  - dirty journal、torn journal、descriptor divergence、metadata shard corruption の detect-only 判定がある。
+  - repair write を未対応のままにする状態と、repair write が必要な状態が明確に分かれている。
+  - production write cutover 前の required fsck command が文書化されている。
+
+### SDW-V6RT-T8 v6 write mount lock/stress gate
+
+- 目的: write admission 対象 path が `.github/lock-policy.md` に従うことを確認する。
+- 完了条件:
+  - lock rank order と `KAFS_CALL` after lock 禁止の監査が完了している。
+  - contention / concurrent write regression が少なくとも 1 つある。
+  - T4-T7 の結果を踏まえて、write mount を explicit opt-in で有効化できるか判断できる。
+
 ---
 
 ## 最初に着手するチケット

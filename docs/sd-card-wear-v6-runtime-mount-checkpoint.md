@@ -135,8 +135,11 @@ Operator boundary:
 1. 最初の実装対象を A / B / C のどれにするか。決定: A。
 2. A の場合、read-only mount を `-o ro` だけで許可するか、専用 option も要求するか。決定:
    `-o ro,v6_inspection_mount` を要求する。
-3. B の write admission は現時点では未選択。write mount に進む前に mutation path / journal / repair /
-   lock policy の dependency audit を別チケットで行う。
+3. B の write admission は現時点では未選択。write mount に進む前の mutation path / journal / repair /
+   lock policy の dependency audit は
+   [sd-card-wear-v6-write-mount-dependency-audit.md](sd-card-wear-v6-write-mount-dependency-audit.md)
+   に記録した。
 
 次に write admission を検討する場合は、read/write admission を直接実装せず、先に
-`SDW-V6RT-T3 v6 write-mount dependency audit` として mutation path の未対応箇所を潰す。
+`SDW-V6RT-T4 descriptor-backed journal write/replay proof` として selected v6 journal segment の
+write/replay routing を証明する。

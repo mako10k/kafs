@@ -41,6 +41,7 @@ historical investigations and deep design notes.
 - [sd-card-wear-phase5-validation-20260626.md](sd-card-wear-phase5-validation-20260626.md)
 - [sd-card-wear-format-v6-descriptor.md](sd-card-wear-format-v6-descriptor.md)
 - [sd-card-wear-v6-runtime-mount-checkpoint.md](sd-card-wear-v6-runtime-mount-checkpoint.md)
+- [sd-card-wear-v6-write-mount-dependency-audit.md](sd-card-wear-v6-write-mount-dependency-audit.md)
 - [write-performance-ideas.md](write-performance-ideas.md)
 - [bottleneck-measurement-plan.md](bottleneck-measurement-plan.md)
 - [perf-evaluation-20260228.md](perf-evaluation-20260228.md)
