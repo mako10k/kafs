@@ -87,7 +87,8 @@ static int run_cmd_status_with_stdin(char *const argv[], const char *stdin_data)
   return 255;
 }
 
-static int run_cmd_capture_stdout(char *const argv[], char *stdout_buf, size_t stdout_buf_sz)
+static int run_cmd_capture(char *const argv[], int capture_stderr, char *output_buf,
+                           size_t output_buf_sz)
 {
   int pipefd[2];
   if (pipe(pipefd) != 0)
@@ -106,6 +107,8 @@ static int run_cmd_capture_stdout(char *const argv[], char *stdout_buf, size_t s
     close(pipefd[0]);
     if (dup2(pipefd[1], STDOUT_FILENO) < 0)
       _exit(127);
+    if (capture_stderr && dup2(pipefd[1], STDERR_FILENO) < 0)
+      _exit(127);
     close(pipefd[1]);
     execvp(argv[0], argv);
     _exit(127);
@@ -113,9 +116,9 @@ static int run_cmd_capture_stdout(char *const argv[], char *stdout_buf, size_t s
 
   close(pipefd[1]);
   size_t used = 0;
-  while (stdout_buf && used + 1 < stdout_buf_sz)
+  while (output_buf && used + 1 < output_buf_sz)
   {
-    ssize_t n = read(pipefd[0], stdout_buf + used, stdout_buf_sz - used - 1);
+    ssize_t n = read(pipefd[0], output_buf + used, output_buf_sz - used - 1);
     if (n < 0)
     {
       int saved = errno;
@@ -127,8 +130,8 @@ static int run_cmd_capture_stdout(char *const argv[], char *stdout_buf, size_t s
       break;
     used += (size_t)n;
   }
-  if (stdout_buf && stdout_buf_sz > 0)
-    stdout_buf[used] = '\0';
+  if (output_buf && output_buf_sz > 0)
+    output_buf[used] = '\0';
   close(pipefd[0]);
 
   int st = 0;
@@ -137,6 +140,16 @@ static int run_cmd_capture_stdout(char *const argv[], char *stdout_buf, size_t s
   if (WIFEXITED(st))
     return WEXITSTATUS(st);
   return 255;
+}
+
+static int run_cmd_capture_stdout(char *const argv[], char *stdout_buf, size_t stdout_buf_sz)
+{
+  return run_cmd_capture(argv, 0, stdout_buf, stdout_buf_sz);
+}
+
+static int run_cmd_capture_combined(char *const argv[], char *output_buf, size_t output_buf_sz)
+{
+  return run_cmd_capture(argv, 1, output_buf, output_buf_sz);
 }
 
 static int expect_text_contains(const char *label, const char *text, const char *needle)
@@ -321,6 +334,36 @@ static int expect_v6_migrate_destination_dump_json(const char *json)
          expect_text_contains("v6 destination kafsdump JSON", json, "\"tail_metadata\": {\n"
                                                                       "    \"status\": \"ok\",\n"
                                                                       "    \"available\": false");
+}
+
+static int expect_v6_migrate_destination_fsck(const char *text)
+{
+  return expect_text_contains("v6 destination fsck", text,
+                              "v6 descriptor: anchor_valid=true selected=true") ||
+         expect_text_contains("v6 destination fsck", text, "groups=1 shards=12 replicas=3") ||
+         expect_text_contains("v6 destination fsck", text, "v6 descriptor replica[0]:") ||
+         expect_text_contains("v6 destination fsck", text,
+                              "status=selected generation=1 crc_ok=true selected=true") ||
+         expect_text_contains("v6 destination fsck", text,
+                              "v6 bitmap shards: status=ok available=true") ||
+         expect_text_contains("v6 destination fsck", text,
+                              "v6 inode shards: status=ok available=true") ||
+         expect_text_contains("v6 destination fsck", text,
+                              "v6 allocator summary shards: status=ok available=true") ||
+         expect_text_contains("v6 destination fsck", text,
+                              "v6 HRL index shards: status=ok available=true") ||
+         expect_text_contains("v6 destination fsck", text,
+                              "v6 HRL entry shards: status=ok available=true") ||
+         expect_text_contains("v6 destination fsck", text,
+                              "v6 HRL chains: status=ok available=true") ||
+         expect_text_contains("v6 destination fsck", text,
+                              "v6 journal header shards: status=ok available=true") ||
+         expect_text_contains("v6 destination fsck", text,
+                              "v6 journal data shards: status=ok available=true") ||
+         expect_text_contains("v6 destination fsck", text,
+                              "v6 journal segments: status=ok available=true") ||
+         expect_text_contains("v6 destination fsck", text,
+                              "Journal check: v6 descriptor-backed segment health OK.");
 }
 
 static int read_tailmeta_region_header(const char *img, uint64_t off,
@@ -1205,6 +1248,18 @@ int main(void)
     return 1;
   }
   if (expect_v6_migrate_destination_dump_json(migrate_v6_dst_json) != 0)
+    return 1;
+
+  char migrate_v6_fsck_output[KAFSRESIZE_DUMP_JSON_BUF_SIZE];
+  char *fsck_dst_v6_argv[] = {(char *)fsck_abs, (char *)"--balanced-check", (char *)dst_v6_img,
+                              NULL};
+  if (run_cmd_capture_combined(fsck_dst_v6_argv, migrate_v6_fsck_output,
+                               sizeof(migrate_v6_fsck_output)) != 0)
+  {
+    fprintf(stderr, "fsck.kafs --balanced-check for migrate-create v6 destination failed\n");
+    return 1;
+  }
+  if (expect_v6_migrate_destination_fsck(migrate_v6_fsck_output) != 0)
     return 1;
 
   const char *dst_v6_nosrc_img = "migrate-dst-v6-nosrc.img";

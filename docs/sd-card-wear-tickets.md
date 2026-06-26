@@ -435,6 +435,11 @@
 ### SDW-P5-T3 Migration fsck and cutover workflow
 
 - 目的: operator cutover を安全にする。
+- 進捗:
+  - v6 `migrate-create` destination に対して `fsck.kafs --balanced-check` を実行し、descriptor replica、
+    shard coverage、HRL chain、journal segment health の summary を regression で確認する。
+  - cutover playbook は v4/v5 の smoke mount / rsync cutover と、現行 v6 descriptor destination の
+    offline-only staging を分離し、v6 runtime mount compatibility gate を明記する。
 - 変更:
   - `fsck.kafs` v6 validation coverage
   - `docs/kafsresize-cutover-playbook.md` update

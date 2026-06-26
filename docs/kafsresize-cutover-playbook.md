@@ -80,11 +80,12 @@ clean-v5 and capacity precheck runs before the destination is overwritten:
 ```
 
 Current v6 images remain offline descriptor scaffolds until v6 runtime mount
-support is explicitly enabled.
+support is explicitly enabled. They can be inspected with `kafsdump` and
+`fsck.kafs`, but they are not production mount targets yet.
 
-## Step 3: Mount Source And Destination
+## Step 3: Mount Supported Source And Destination
 
-Mount both images and verify basic access:
+For v4/v5 destinations, mount both images and verify basic access:
 
 ```sh
 mkdir -p /mnt/kafs-src /mnt/kafs-dst
@@ -99,20 +100,28 @@ In another shell, confirm both mounts answer stats requests:
 ./kafsctl fsstat /mnt/kafs-dst --json --mib
 ```
 
+Do not mount a v6 descriptor destination in this phase. Current v6 images are
+offline descriptor scaffolds and the runtime rejects them until v6 mount support
+is explicitly enabled. For v6, skip the mount and copy steps below, validate the
+image offline in Step 6, and keep it staged rather than cutting traffic over to
+it.
+
 ## Step 4: Seed Copy
 
-Run the first bulk copy while the source stays online:
+For v4/v5 destinations, run the first bulk copy while the source stays online:
 
 ```sh
 rsync -aH --delete /mnt/kafs-src/ /mnt/kafs-dst/
 ```
 
-This step is expected to copy most of the data volume.
+This step is expected to copy most of the data volume. Current v6 descriptor
+destinations are not mountable data-copy targets, so content cutover waits for
+v6 runtime mount support or a separately scoped offline copy path.
 
 ## Step 5: Freeze Writes And Final Sync
 
-Schedule a write stop on the source workload, then perform a final low-transfer
-sync:
+For v4/v5 destinations, schedule a write stop on the source workload, then
+perform a final low-transfer sync:
 
 ```sh
 rsync -aH --delete --inplace --no-whole-file /mnt/kafs-src/ /mnt/kafs-dst/
@@ -123,11 +132,18 @@ The `--inplace --no-whole-file` combination matches the cutover guidance that
 
 ## Step 6: Validate The Destination
 
-Before switching production traffic, validate the destination image offline or
-via the mounted instance:
+Before switching production traffic for a mountable v4/v5 destination, validate
+the destination image offline or via the mounted instance:
 
 ```sh
 ./kafsctl fsstat /mnt/kafs-dst --json --mib
+./fsck.kafs --balanced-check /var/lib/kafs/destination.img
+```
+
+For current v6 descriptor destinations, validation is offline only:
+
+```sh
+./kafsdump --json /var/lib/kafs/destination.img
 ./fsck.kafs --balanced-check /var/lib/kafs/destination.img
 ```
 
@@ -136,15 +152,21 @@ Recommended validation points:
 - key application data is present and readable
 - offline fsck passes on the destination image
 - expected format version and geometry match the migration plan
-- for v6 destinations, descriptor replica offsets and group policy match the
-  dry-run precheck
+- for v6 destinations, `kafsdump --json` reports a healthy descriptor scaffold,
+  and `fsck.kafs --balanced-check` reports the v6 descriptor, shard coverage, HRL
+  chain, and journal segment checks as `status=ok`
 
 ## Step 7: Cut Over
 
-Unmount the old and new mounts in a controlled order, update service paths, and
-remount the destination image at the production location.
+For v4/v5 destinations, unmount the old and new mounts in a controlled order,
+update service paths, and remount the destination image at the production
+location.
 
 Keep the old source image untouched until the new mount has passed smoke checks.
+
+For v6 descriptor destinations, do not perform production cutover until v6
+runtime mount support is enabled and a smoke mount has passed. The current safe
+endpoint is an offline-validated staged image.
 
 ## Rollback Guidance
 
@@ -153,6 +175,10 @@ workflow after fixing the cause.
 
 If post-cutover validation fails, stop new writes and return to the original
 source image while preserving the failed destination image for inspection.
+
+For v6 staging, rollback before runtime support is enabled means discarding the
+staged destination and keeping the unchanged v5 source in service; no production
+traffic should have been moved to the v6 image.
 
 ## Notes
 
