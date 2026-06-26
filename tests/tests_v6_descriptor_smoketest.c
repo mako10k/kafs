@@ -713,6 +713,9 @@ int main(void)
     return 1;
   }
   if (!strstr(out, "admission handoff") || !strstr(out, "selected descriptor retained") ||
+      !strstr(out, "delayed/background mutations disabled") ||
+      !strstr(out, "pending_log=disabled") || !strstr(out, "tail_metadata=disabled") ||
+      !strstr(out, "tombstone_gc=disabled") || !strstr(out, "bg_dedup=disabled") ||
       !strstr(out, "offline-only"))
   {
     tlogf("v6 runtime handoff error missing descriptor/offline-only guidance: %s", out);

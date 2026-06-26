@@ -10829,6 +10829,14 @@ static void *kafs_op_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
   kafs_context_t *ctx = fctx ? (kafs_context_t *)fctx->private_data : NULL;
   if (ctx && ctx->c_runtime_read_only)
     return ctx;
+  if (ctx && ctx->c_superblock &&
+      kafs_sb_format_version_get(ctx->c_superblock) == KAFS_FORMAT_VERSION_V6)
+  {
+    if (!ctx->c_v6_delayed_mutation_policy_applied)
+      kafs_log(KAFS_LOG_WARNING,
+               "kafs: suppressing v6 delayed/background workers without explicit policy marker\n");
+    return ctx;
+  }
   if (ctx && ctx->c_pendinglog_enabled)
   {
     int prc = kafs_pending_worker_start(ctx);
@@ -12921,6 +12929,23 @@ static int kafs_main_map_v6_runtime_admission_memory(kafs_context_t *ctx,
   return 0;
 }
 
+static void kafs_main_v6_apply_delayed_mutation_policy(kafs_context_t *ctx)
+{
+  if (!ctx || !ctx->c_superblock ||
+      kafs_sb_format_version_get(ctx->c_superblock) != KAFS_FORMAT_VERSION_V6)
+    return;
+
+  ctx->c_pendinglog_enabled = 0u;
+  ctx->c_pendinglog_base = NULL;
+  ctx->c_pendinglog_size = 0u;
+  ctx->c_pendinglog_capacity = 0u;
+  ctx->c_pending_worker_stop = 1;
+  ctx->c_tombstone_gc_worker_stop = 1;
+  ctx->c_bg_dedup_enabled = 0u;
+  ctx->c_bg_dedup_worker_stop = 1;
+  ctx->c_v6_delayed_mutation_policy_applied = 1u;
+}
+
 static int kafs_main_v6_runtime_admit_context(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk,
                                               int prot)
 {
@@ -12945,6 +12970,8 @@ static int kafs_main_v6_runtime_admit_context(kafs_context_t *ctx, const kafs_ss
                   !ctx->c_v6_inode_mapping_enabled || !ctx->c_v6_alloc_summary_mapping_enabled ||
                   !ctx->c_v6_hrl_mapping_enabled))
     rc = -EPROTO;
+  if (rc == 0)
+    kafs_main_v6_apply_delayed_mutation_policy(ctx);
 
   if (rc != 0)
     kafs_ctx_unmap_image(ctx);
@@ -12960,6 +12987,9 @@ static int kafs_main_v6_admission_handoff(kafs_context_t *ctx, const kafs_ssuper
     fprintf(stderr,
             "format v6 admission handoff: selected descriptor retained in runtime context "
             "(inode_shards=%u allocator_shards=%u hrl_index_shards=%u hrl_entry_shards=%u); "
+            "delayed/background mutations disabled "
+            "(pending_log=disabled tail_metadata=disabled tombstone_gc=disabled "
+            "bg_dedup=disabled); "
             "runtime mount remains offline-only.\n",
             ctx->c_v6_inode_shard_count, ctx->c_v6_alloc_summary_shard_count,
             ctx->c_v6_hrl_index_shard_count, ctx->c_v6_hrl_entry_shard_count);
@@ -12988,7 +13018,8 @@ static int kafs_main_v6_readonly_smoke_mount(kafs_context_t *ctx, const kafs_ssu
     if (r_blkcnt_out)
       *r_blkcnt_out = kafs_blkcnt_stoh(sbdisk->s_r_blkcnt);
     fprintf(stderr, "format v6 readonly smoke: selected descriptor retained in read-only runtime "
-                    "context; FUSE mount is read-only and write admission remains disabled.\n");
+                    "context; delayed/background mutations are disabled; FUSE mount is read-only "
+                    "and write admission remains disabled.\n");
   }
   else
   {
@@ -13011,8 +13042,8 @@ static int kafs_main_v6_inspection_mount(kafs_context_t *ctx, const kafs_ssuperb
     if (r_blkcnt_out)
       *r_blkcnt_out = kafs_blkcnt_stoh(sbdisk->s_r_blkcnt);
     fprintf(stderr, "format v6 inspection mount: selected descriptor retained in read-only "
-                    "runtime context; FUSE mount is inspection-only and write admission remains "
-                    "disabled.\n");
+                    "runtime context; delayed/background mutations are disabled; FUSE mount is "
+                    "inspection-only and write admission remains disabled.\n");
   }
   else
   {

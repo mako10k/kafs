@@ -581,10 +581,23 @@
 ### SDW-V6RT-T6 v6 delayed/background mutation policy
 
 - 目的: pending log、tail metadata、tombstone GC、background dedup worker を v6 write mount でどう扱うか固定する。
+- 進捗:
+  - [sd-card-wear-v6-delayed-background-policy.md](sd-card-wear-v6-delayed-background-policy.md) に
+    v6 runtime admission 時の delayed/background mutation policy を記録した。
+  - 現段階では pending log / pending worker、tail metadata packing / normalization、tombstone GC /
+    tail reclaim、background dedup scan はすべて disabled とする。
+  - `kafs_main_v6_runtime_admit_context()` は selected descriptor admission 後に disabled policy を適用し、
+    `kafs_op_init()` は v6 runtime context では pending worker、tombstone GC worker、background dedup worker
+    を起動しない。
+  - `v6_descriptor_smoketest` は `KAFS_V6_ADMISSION_HANDOFF=1` の診断出力で
+    `pending_log=disabled tail_metadata=disabled tombstone_gc=disabled bg_dedup=disabled` を確認する。
 - 完了条件:
   - v6 write mount で無効化する機能と、descriptor-backed 実装して有効化する機能が分離されている。
   - pending log / tail metadata を無効化する場合、該当 option や delayed mutation が fail closed する。
   - worker を有効化する場合、descriptor-backed routing と stress regression がある。
+- 完了メモ:
+  - write mount はまだ有効化しない。
+  - 次は `SDW-V6RT-T7 v6 post-write fsck and repair policy` に進む。
 
 ### SDW-V6RT-T7 v6 post-write fsck and repair policy
 

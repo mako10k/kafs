@@ -187,6 +187,7 @@ struct kafs_context
   // --- Runtime admission mode ---
   uint32_t c_runtime_read_only;
   uint32_t c_v6_readonly_smoke_enabled;
+  uint32_t c_v6_delayed_mutation_policy_applied;
 
   // --- Phase2 meta delta (runtime batching) ---
   uint32_t c_meta_delta_enabled;
