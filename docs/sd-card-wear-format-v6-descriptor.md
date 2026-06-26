@@ -567,6 +567,9 @@ Journal distribution:
   inode physical span, or journal-data record shape is invalid: discovery may select the descriptor,
   but `fsck.kafs`, descriptor admission, and CLI admission preflight fail closed before any runtime
   mapping is enabled.
+- Distributed journal readiness is covered by a descriptor fixture with two metadata groups and two
+  journal segments: segment 1 lives in group 1, carries the highest valid generation, and is reported
+  by `fsck.kafs` / `kafsdump --json` as the selected group without enabling v6 write mount.
 
 ## Phase 3 Follow-Ups
 

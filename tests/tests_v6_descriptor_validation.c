@@ -864,6 +864,107 @@ static void mutate_journal_split_two_segments(void *buf, uint32_t desc_bytes)
   shards[old_shard_count + 1u].sd_physical_bytes = kafs_u64_htos(second_data_bytes);
 }
 
+static void mutate_journal_split_two_group_segments(void *buf, uint32_t desc_bytes)
+{
+  kafs_sv6_layout_desc_header_t *hdr = (kafs_sv6_layout_desc_header_t *)buf;
+  uint32_t old_group_count = kafs_u32_stoh(hdr->ld_group_count);
+  uint32_t old_shard_count = kafs_u32_stoh(hdr->ld_shard_count);
+  uint32_t replica_count = kafs_u32_stoh(hdr->ld_replica_count);
+  uint32_t group_off = kafs_u32_stoh(hdr->ld_group_desc_off);
+  uint32_t old_shard_off = kafs_u32_stoh(hdr->ld_shard_desc_off);
+  uint32_t old_replica_off = kafs_u32_stoh(hdr->ld_replica_desc_off);
+  uint32_t block_size = kafs_u32_stoh(hdr->ld_block_size);
+  uint32_t new_group_count = 2u;
+  uint32_t new_shard_count = old_shard_count + 2u;
+  uint32_t new_shard_off = group_off + new_group_count * KAFS_V6_GROUP_DESC_BYTES;
+  uint32_t new_replica_off = new_shard_off + new_shard_count * KAFS_V6_SHARD_DESC_BYTES;
+  uint64_t replica_bytes = (uint64_t)replica_count * KAFS_V6_REPLICA_DESC_BYTES;
+
+  if (old_group_count != 1u || block_size == 0u || replica_count == 0u)
+    return;
+  if (kafs_v6_table_bounds(group_off, new_group_count, KAFS_V6_GROUP_DESC_BYTES, desc_bytes) != 0 ||
+      kafs_v6_table_bounds(old_shard_off, old_shard_count, KAFS_V6_SHARD_DESC_BYTES,
+                           desc_bytes) != 0 ||
+      kafs_v6_table_bounds(new_shard_off, new_shard_count, KAFS_V6_SHARD_DESC_BYTES,
+                           desc_bytes) != 0 ||
+      kafs_v6_table_bounds(new_replica_off, replica_count, KAFS_V6_REPLICA_DESC_BYTES,
+                           desc_bytes) != 0 ||
+      old_replica_off > desc_bytes || replica_bytes > (uint64_t)desc_bytes - old_replica_off)
+    return;
+
+  kafs_sv6_shard_desc_t *old_shards = (kafs_sv6_shard_desc_t *)((char *)buf + old_shard_off);
+  uint32_t header_index = UINT32_MAX;
+  uint32_t data_index = UINT32_MAX;
+  if (find_mutable_shard_index(old_shards, old_shard_count, KAFS_META_REGION_JOURNAL_HEADER,
+                               &header_index) != 0 ||
+      find_mutable_shard_index(old_shards, old_shard_count, KAFS_META_REGION_JOURNAL_DATA,
+                               &data_index) != 0)
+    return;
+
+  kafs_sv6_shard_desc_t header0 = old_shards[header_index];
+  kafs_sv6_shard_desc_t data0 = old_shards[data_index];
+  uint64_t data_off = kafs_u64_stoh(data0.sd_physical_off);
+  uint64_t data_bytes = kafs_u64_stoh(data0.sd_physical_bytes);
+  if (data_bytes <= (uint64_t)block_size * 3u || data_off > UINT64_MAX - block_size)
+    return;
+
+  uint64_t remaining_data = data_bytes - block_size;
+  uint64_t first_data_bytes = (remaining_data / 2u / block_size) * block_size;
+  if (first_data_bytes == 0u || first_data_bytes >= remaining_data)
+    return;
+  uint64_t second_data_bytes = remaining_data - first_data_bytes;
+  if ((second_data_bytes % block_size) != 0u)
+    return;
+
+  memmove((char *)buf + new_replica_off, (char *)buf + old_replica_off, (size_t)replica_bytes);
+  memmove((char *)buf + new_shard_off, (char *)buf + old_shard_off,
+          (size_t)old_shard_count * KAFS_V6_SHARD_DESC_BYTES);
+
+  hdr->ld_group_count = kafs_u32_htos(new_group_count);
+  hdr->ld_shard_count = kafs_u32_htos(new_shard_count);
+  hdr->ld_shard_desc_off = kafs_u32_htos(new_shard_off);
+  hdr->ld_replica_desc_off = kafs_u32_htos(new_replica_off);
+
+  kafs_sv6_group_desc_t *groups = (kafs_sv6_group_desc_t *)((char *)buf + group_off);
+  kafs_sv6_group_desc_t group0 = groups[0];
+  group0.gd_shard_count = kafs_u32_htos(old_shard_count);
+  groups[0] = group0;
+
+  memset(&groups[1], 0, sizeof(groups[1]));
+  groups[1].gd_group_id = kafs_u32_htos(1u);
+  groups[1].gd_metadata_start_blo = kafs_u32_htos((uint32_t)(data_off / block_size));
+  groups[1].gd_metadata_block_count =
+      kafs_u32_htos((uint32_t)((block_size + second_data_bytes) / block_size));
+  groups[1].gd_data_start_blo = group0.gd_data_start_blo;
+  groups[1].gd_data_block_count = group0.gd_data_block_count;
+  groups[1].gd_first_shard_index = kafs_u32_htos(old_shard_count);
+  groups[1].gd_shard_count = kafs_u32_htos(2u);
+
+  kafs_sv6_shard_desc_t *shards = (kafs_sv6_shard_desc_t *)((char *)buf + new_shard_off);
+  shards[header_index].sd_logical_start = kafs_u64_htos(0);
+  shards[header_index].sd_logical_count = kafs_u64_htos(1);
+  shards[header_index].sd_physical_bytes = kafs_u64_htos(block_size);
+
+  shards[data_index].sd_logical_start = kafs_u64_htos(0);
+  shards[data_index].sd_logical_count = kafs_u64_htos(1);
+  shards[data_index].sd_physical_off = kafs_u64_htos(data_off + block_size + second_data_bytes);
+  shards[data_index].sd_physical_bytes = kafs_u64_htos(first_data_bytes);
+
+  shards[old_shard_count] = header0;
+  shards[old_shard_count].sd_group_id = kafs_u32_htos(1u);
+  shards[old_shard_count].sd_logical_start = kafs_u64_htos(1);
+  shards[old_shard_count].sd_logical_count = kafs_u64_htos(1);
+  shards[old_shard_count].sd_physical_off = kafs_u64_htos(data_off);
+  shards[old_shard_count].sd_physical_bytes = kafs_u64_htos(block_size);
+
+  shards[old_shard_count + 1u] = data0;
+  shards[old_shard_count + 1u].sd_group_id = kafs_u32_htos(1u);
+  shards[old_shard_count + 1u].sd_logical_start = kafs_u64_htos(1);
+  shards[old_shard_count + 1u].sd_logical_count = kafs_u64_htos(1);
+  shards[old_shard_count + 1u].sd_physical_off = kafs_u64_htos(data_off + block_size);
+  shards[old_shard_count + 1u].sd_physical_bytes = kafs_u64_htos(second_data_bytes);
+}
+
 static void mutate_shard_record_bytes(void *buf, uint32_t desc_bytes, uint16_t shard_type,
                                       uint32_t record_bytes)
 {
@@ -2150,6 +2251,82 @@ static int test_journal_torn_latest_segment_recovers(void)
   return 0;
 }
 
+static int test_journal_distributed_group_selection(void)
+{
+  const char *img = "journal-distributed-groups.img";
+  if (make_v6_image(img) != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_journal_split_two_group_segments, 1) != 0)
+    return -1;
+
+  v6_image_info_t info;
+  if (open_v6_image(img, 1, &info) != 0)
+    return -1;
+
+  void *desc = NULL;
+  int failed = 0;
+  if (read_descriptor(&info, 0, &desc) != 0)
+    failed = 1;
+
+  if (!failed &&
+      (write_journal_segment_header(&info, desc, 0, 1) != 0 ||
+       write_journal_segment_header(&info, desc, 1, 2) != 0))
+    failed = 1;
+
+  if (!failed)
+  {
+    kafs_v6_layout_report_t layout_report;
+    int rc = kafs_v6_discover_layout(info.fd, &info.sb, info.file_size, &layout_report);
+    if (rc != 0 || !layout_report.selected_found || layout_report.group_count != 2u)
+      failed = 1;
+  }
+
+  if (!failed)
+  {
+    kafs_v6_journal_header_coverage_report_t header_report;
+    kafs_v6_journal_data_coverage_report_t data_report;
+    kafs_v6_journal_segment_report_t segment_report;
+    int rc = kafs_v6_journal_header_validate_coverage(desc, info.desc_bytes, &info.sb,
+                                                      info.file_size, &header_report);
+    if (rc != 0 || header_report.shard_count != 2u || header_report.expected_count != 2u)
+      failed = 1;
+
+    rc = kafs_v6_journal_data_validate_coverage(desc, info.desc_bytes, &info.sb, info.file_size,
+                                                &data_report);
+    if (!failed && (rc != 0 || data_report.shard_count != 2u || data_report.expected_count != 2u))
+      failed = 1;
+
+    rc = kafs_v6_journal_validate_segments_fd(info.fd, desc, info.desc_bytes, &info.sb,
+                                              info.file_size, &segment_report);
+    if (!failed &&
+        (rc != 0 || segment_report.segment_count != 2u || segment_report.valid_segments != 2u ||
+         segment_report.selected_segment_id != 1u || segment_report.selected_generation != 2u ||
+         segment_report.selected_group_id != 1u || segment_report.has_group_mismatch ||
+         segment_report.has_missing_pair || segment_report.has_invalid_header ||
+         segment_report.has_torn_data || segment_report.has_read_error))
+      failed = 1;
+  }
+
+  free(desc);
+  close_v6_image(&info);
+  if (failed)
+    return -1;
+
+  char out[8192];
+  char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)img, NULL};
+  if (run_cmd_capture(fsck_argv, 0, out, sizeof(out)) != 0 ||
+      !strstr(out, "v6 journal segments:") || !strstr(out, "selected_segment=1") ||
+      !strstr(out, "selected_group=1"))
+    return -1;
+
+  char *dump_argv[] = {(char *)kafs_test_kafsdump_bin(), (char *)"--json", (char *)img, NULL};
+  if (run_cmd_capture(dump_argv, 0, out, sizeof(out)) != 0 ||
+      !strstr(out, "\"group_count\": 2") || !strstr(out, "\"segment_count\": 2") ||
+      !strstr(out, "\"selected_segment\": 1") || !strstr(out, "\"selected_group\": 1"))
+    return -1;
+  return 0;
+}
+
 static int expect_fsck_rejects_v6_metadata(const char *img, const char *needle)
 {
   char out[8192];
@@ -2562,6 +2739,7 @@ int main(void)
       {"journal_coverage_valid_lookup_and_segments", test_journal_coverage_valid_lookup_and_segments},
       {"journal_header_gap_rejected", test_journal_header_gap_rejected},
       {"journal_torn_latest_segment_recovers", test_journal_torn_latest_segment_recovers},
+      {"journal_distributed_group_selection", test_journal_distributed_group_selection},
       {"inode_record_shape_rejected", test_inode_record_shape_rejected},
       {"inode_physical_truncation_rejected", test_inode_physical_truncation_rejected},
       {"journal_data_record_shape_rejected", test_journal_data_record_shape_rejected},

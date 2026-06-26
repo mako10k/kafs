@@ -383,6 +383,9 @@
     journal-data shard の record-size mismatch を、selected descriptor として読めるが
     fsck / descriptor admission / CLI admission preflight で fail-closed になる regression として
     確認する。
+  - `v6_descriptor_validation` は 2 metadata group / 2 journal segment の descriptor fixture を
+    作り、highest generation segment が group 1 から選択され、`fsck.kafs` / `kafsdump --json` が
+    `selected_group=1` として報告することを確認する。v6 write mount はまだ有効化しない。
 - 完了条件:
   - build/test PASS。
   - v6 mkfs/mount/basic filesystem semantics PASS。
