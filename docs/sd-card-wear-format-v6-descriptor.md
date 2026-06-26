@@ -386,6 +386,8 @@ For the next smoke stage, `KAFS_V6_READONLY_SMOKE=1` keeps that admitted descrip
 runtime context and permits a FUSE mount only as read-only. The image is mapped read-only, journal
 replay and background mutation workers are not started, write/copy/metadata mutation operations
 return `EROFS`, and the normal v6 mount path without this environment gate still rejects the image.
+Current smoke coverage injects only inline metadata/data into a v6 fixture and verifies root and
+nested `readdir` / `lookup` / `getattr`, small-file `read`, and symlink `readlink`.
 
 ### `kafsdump`
 
@@ -558,8 +560,9 @@ Journal distribution:
   journal segment lookup before v6 write mount is enabled; until then, the implemented checks are
   offline scaffold validation, dormant admission validation, CLI mount preflight diagnostics, and the
   explicit `KAFS_V6_ADMISSION_HANDOFF=1` runtime-context handoff diagnostic only. The
-  `KAFS_V6_READONLY_SMOKE=1` gate is limited to read-only root `statfs` / `getattr` / `readdir`
-  smoke coverage and does not enable v6 write admission.
+  `KAFS_V6_READONLY_SMOKE=1` gate is limited to read-only `statfs`, root and nested metadata
+  traversal, inline small-file `read`, symlink `readlink`, and write rejection smoke coverage. It
+  does not enable v6 write admission.
 
 ## Phase 3 Follow-Ups
 

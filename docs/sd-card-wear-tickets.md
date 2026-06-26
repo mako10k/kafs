@@ -376,8 +376,9 @@
     有効化しない。
   - `KAFS_V6_READONLY_SMOKE=1` を指定した CLI mount は admitted descriptor を保持した実 runtime
     context で read-only FUSE mount だけを許可する。image は read-only mmap、journal replay と
-    background mutation worker は起動しない。root `statfs` / `getattr` / `readdir` と `EROFS` write
-    rejection を smoke test で確認する。通常の v6 mount と v6 write admission はまだ有効化しない。
+    background mutation worker は起動しない。root と nested directory の `getattr` / `readdir` /
+    lookup、inline small-file `read`、symlink `readlink`、`EROFS` write rejection を smoke test で
+    確認する。通常の v6 mount と v6 write admission はまだ有効化しない。
 - 完了条件:
   - build/test PASS。
   - v6 mkfs/mount/basic filesystem semantics PASS。
