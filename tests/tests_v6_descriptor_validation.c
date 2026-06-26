@@ -7,6 +7,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -1887,6 +1888,36 @@ static int exercise_bitmap_mapping_blo(kafs_context_t *ctx, kafs_blkcnt_t blo, u
   return 0;
 }
 
+static int snapshot_span(const void *map, size_t map_size, uint64_t off, void *out, size_t len)
+{
+  if (!map || !out)
+    return -1;
+  if (off > (uint64_t)map_size || (uint64_t)len > (uint64_t)map_size - off)
+    return -1;
+  memcpy(out, (const char *)map + (size_t)off, len);
+  return 0;
+}
+
+static int span_matches(const void *map, size_t map_size, uint64_t off, const void *expected,
+                        size_t len)
+{
+  if (!map || !expected)
+    return 0;
+  if (off > (uint64_t)map_size || (uint64_t)len > (uint64_t)map_size - off)
+    return 0;
+  return memcmp((const char *)map + (size_t)off, expected, len) == 0;
+}
+
+static int span_differs(const void *map, size_t map_size, uint64_t off, const void *before,
+                        size_t len)
+{
+  if (!map || !before)
+    return 0;
+  if (off > (uint64_t)map_size || (uint64_t)len > (uint64_t)map_size - off)
+    return 0;
+  return memcmp((const char *)map + (size_t)off, before, len) != 0;
+}
+
 static int test_bitmap_runtime_descriptor_mapping(void)
 {
   const char *img = "bitmap-runtime-mapping.img";
@@ -1983,6 +2014,463 @@ static int test_bitmap_multi_shard_runtime_mapping(void)
       failed = 1;
     if (!failed && used_shard != second.shard_index)
       failed = 1;
+  }
+
+  kafs_bitmap_descriptor_mapping_clear(&ctx);
+  if (map != MAP_FAILED)
+    munmap(map, (size_t)info.file_size);
+  close_v6_image(&info);
+  return failed ? -1 : 0;
+}
+
+static int exercise_live_bitmap_allocator_mutation(kafs_context_t *ctx, void *map,
+                                                   kafs_blkcnt_t *out_blo)
+{
+  if (!ctx || !map || !out_blo || ctx->c_v6_alloc_summary_shard_count < 2u)
+    return -1;
+
+  const kafs_v6_alloc_summary_runtime_shard_t *second_alloc =
+      &ctx->c_v6_alloc_summary_shards[1];
+  kafs_blkcnt_t fdb = kafs_sb_first_data_block_get(ctx->c_superblock);
+  kafs_blkcnt_t blocnt = kafs_sb_blkcnt_get(ctx->c_superblock);
+  uint64_t target64 = second_alloc->logical_start;
+  if (target64 < (uint64_t)fdb || target64 >= (uint64_t)blocnt || target64 > UINT32_MAX ||
+      second_alloc->physical_end > ctx->c_img_size ||
+      second_alloc->physical_end < second_alloc->physical_off)
+  {
+    tlogf("bitmap/alloc matrix: invalid target fdb=%" PRIuFAST32 " blocnt=%" PRIuFAST32
+          " target=%" PRIu64 " phys=%" PRIu64 "..%" PRIu64 " img=%zu",
+          fdb, blocnt, target64, second_alloc->physical_off, second_alloc->physical_end,
+          ctx->c_img_size);
+    return -1;
+  }
+
+  kafs_blkcnt_t target = (kafs_blkcnt_t)target64;
+  kafs_v6_bitmap_lookup_t alloc_bitmap;
+  kafs_v6_allocator_summary_lookup_t alloc_first;
+  kafs_v6_allocator_summary_lookup_t alloc_second;
+  if (kafs_v6_bitmap_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes,
+                            (uint64_t)target, &alloc_bitmap) != 0 ||
+      kafs_v6_allocator_summary_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes,
+                                       (uint64_t)fdb, &alloc_first) != 0 ||
+      kafs_v6_allocator_summary_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes,
+                                       (uint64_t)target, &alloc_second) != 0)
+  {
+    tlogf("bitmap/alloc matrix: lookup failed fdb=%" PRIuFAST32 " target=%" PRIuFAST32, fdb,
+          target);
+    return -1;
+  }
+  if (alloc_first.shard_index == alloc_second.shard_index)
+  {
+    tlogf("bitmap/alloc matrix: allocator shard did not split alloc=%u/%u",
+          alloc_first.shard_index, alloc_second.shard_index);
+    return -1;
+  }
+  if (target64 > UINT64_MAX - 7u || target64 + 7u >= (uint64_t)blocnt ||
+      target64 + 7u >= second_alloc->logical_start + second_alloc->logical_count)
+    return -1;
+
+  uint8_t target_bitmap_mask = (uint8_t)(1u << alloc_bitmap.bitmap_bit);
+  for (uint64_t i = 0; i < 8u; ++i)
+  {
+    kafs_v6_bitmap_lookup_t group_bitmap;
+    if (kafs_v6_bitmap_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes, target64 + i,
+                              &group_bitmap) != 0)
+      return -1;
+    uint8_t *byte = (uint8_t *)map + (size_t)group_bitmap.bitmap_byte_off;
+    uint8_t mask = (uint8_t)(1u << group_bitmap.bitmap_bit);
+    if (i == 0u)
+      *byte &= (uint8_t)~mask;
+    else
+      *byte |= mask;
+  }
+  uint8_t alloc_l1_mask = (uint8_t)(1u << (alloc_second.l0_idx & 7u));
+  uint8_t alloc_l2_mask = (uint8_t)(1u << (alloc_second.l1_idx & 7u));
+  *((uint8_t *)map + (size_t)alloc_second.l1_byte_off) = alloc_l1_mask;
+  *((uint8_t *)map + (size_t)alloc_second.l2_byte_off) = alloc_l2_mask;
+
+  uint8_t alloc_bitmap_before = 0;
+  uint8_t alloc_first_l1_before = 0;
+  uint8_t alloc_first_l2_before = 0;
+  uint8_t alloc_second_l1_before = 0;
+  uint8_t alloc_second_l2_before = 0;
+  if (snapshot_span(map, ctx->c_img_size, alloc_bitmap.bitmap_byte_off, &alloc_bitmap_before,
+                    sizeof(alloc_bitmap_before)) != 0 ||
+      snapshot_span(map, ctx->c_img_size, alloc_first.l1_byte_off, &alloc_first_l1_before,
+                    sizeof(alloc_first_l1_before)) != 0 ||
+      snapshot_span(map, ctx->c_img_size, alloc_first.l2_byte_off, &alloc_first_l2_before,
+                    sizeof(alloc_first_l2_before)) != 0 ||
+      snapshot_span(map, ctx->c_img_size, alloc_second.l1_byte_off, &alloc_second_l1_before,
+                    sizeof(alloc_second_l1_before)) != 0 ||
+      snapshot_span(map, ctx->c_img_size, alloc_second.l2_byte_off, &alloc_second_l2_before,
+                    sizeof(alloc_second_l2_before)) != 0)
+  {
+    tlogf("bitmap/alloc matrix: snapshot failed");
+    return -1;
+  }
+  if ((alloc_bitmap_before & target_bitmap_mask) != 0u)
+  {
+    tlogf("bitmap/alloc matrix: target bitmap bit still set before allocation");
+    return -1;
+  }
+
+  ctx->c_alloc_v3_summary_dirty = 0u;
+  ctx->c_blo_search = target - 1u;
+  uint64_t bitmap_writes_before = ctx->c_meta_region_writes[KAFS_META_REGION_BLOCK_BITMAP];
+  uint64_t alloc_writes_before = ctx->c_meta_region_writes[KAFS_META_REGION_ALLOCATOR_SUMMARY];
+  kafs_blkcnt_t blo = KAFS_BLO_NONE;
+  int rc = kafs_blk_alloc(ctx, &blo);
+  if (rc != 0 || blo != target || ctx->c_alloc_v3_summary_dirty != 0u ||
+      ctx->c_meta_region_writes[KAFS_META_REGION_BLOCK_BITMAP] <= bitmap_writes_before ||
+      ctx->c_meta_region_writes[KAFS_META_REGION_ALLOCATOR_SUMMARY] <= alloc_writes_before ||
+      !kafs_blk_get_usage(ctx, blo))
+  {
+    tlogf("bitmap/alloc matrix: alloc failed rc=%d blo=%" PRIuFAST32 " target=%" PRIuFAST32
+          " dirty=%u bitmap_writes=%" PRIu64 "->%" PRIu64 " alloc_writes=%" PRIu64 "->%" PRIu64,
+          rc, blo, target, ctx->c_alloc_v3_summary_dirty, bitmap_writes_before,
+          ctx->c_meta_region_writes[KAFS_META_REGION_BLOCK_BITMAP], alloc_writes_before,
+          ctx->c_meta_region_writes[KAFS_META_REGION_ALLOCATOR_SUMMARY]);
+    return -1;
+  }
+
+  if (!span_differs(map, ctx->c_img_size, alloc_bitmap.bitmap_byte_off, &alloc_bitmap_before,
+                    sizeof(alloc_bitmap_before)) ||
+      !span_matches(map, ctx->c_img_size, alloc_first.l1_byte_off, &alloc_first_l1_before,
+                    sizeof(alloc_first_l1_before)) ||
+      !span_matches(map, ctx->c_img_size, alloc_first.l2_byte_off, &alloc_first_l2_before,
+                    sizeof(alloc_first_l2_before)) ||
+      !span_differs(map, ctx->c_img_size, alloc_second.l1_byte_off, &alloc_second_l1_before,
+                    sizeof(alloc_second_l1_before)) ||
+      !span_differs(map, ctx->c_img_size, alloc_second.l2_byte_off, &alloc_second_l2_before,
+                    sizeof(alloc_second_l2_before)))
+  {
+    tlogf("bitmap/alloc matrix: allocator span verification failed bitmap=%d alloc_first_l1=%d "
+          "alloc_first_l2=%d alloc_second_l1=%d alloc_second_l2=%d",
+          span_differs(map, ctx->c_img_size, alloc_bitmap.bitmap_byte_off, &alloc_bitmap_before,
+                       sizeof(alloc_bitmap_before)),
+          span_matches(map, ctx->c_img_size, alloc_first.l1_byte_off, &alloc_first_l1_before,
+                       sizeof(alloc_first_l1_before)),
+          span_matches(map, ctx->c_img_size, alloc_first.l2_byte_off, &alloc_first_l2_before,
+                       sizeof(alloc_first_l2_before)),
+          span_differs(map, ctx->c_img_size, alloc_second.l1_byte_off, &alloc_second_l1_before,
+                       sizeof(alloc_second_l1_before)),
+          span_differs(map, ctx->c_img_size, alloc_second.l2_byte_off, &alloc_second_l2_before,
+                       sizeof(alloc_second_l2_before)));
+    return -1;
+  }
+
+  kafs_v6_bitmap_lookup_t bitmap_first;
+  kafs_v6_bitmap_lookup_t bitmap_second;
+  if (kafs_v6_bitmap_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes, 0,
+                            &bitmap_first) != 0 ||
+      kafs_v6_bitmap_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes,
+                            bitmap_first.logical_start + bitmap_first.logical_count,
+                            &bitmap_second) != 0)
+    return -1;
+  if (bitmap_first.shard_index == bitmap_second.shard_index ||
+      bitmap_second.blo < (uint64_t)fdb || bitmap_second.blo >= (uint64_t)blocnt ||
+      bitmap_second.blo > UINT32_MAX)
+    return -1;
+
+  kafs_blkcnt_t bitmap_target = (kafs_blkcnt_t)bitmap_second.blo;
+  uint8_t *bitmap_second_byte = (uint8_t *)map + (size_t)bitmap_second.bitmap_byte_off;
+  uint8_t bitmap_second_mask = (uint8_t)(1u << bitmap_second.bitmap_bit);
+  *bitmap_second_byte &= (uint8_t)~bitmap_second_mask;
+
+  uint8_t bitmap_first_before = 0;
+  uint8_t bitmap_second_before = 0;
+  if (snapshot_span(map, ctx->c_img_size, bitmap_first.bitmap_byte_off, &bitmap_first_before,
+                    sizeof(bitmap_first_before)) != 0 ||
+      snapshot_span(map, ctx->c_img_size, bitmap_second.bitmap_byte_off, &bitmap_second_before,
+                    sizeof(bitmap_second_before)) != 0)
+    return -1;
+
+  bitmap_writes_before = ctx->c_meta_region_writes[KAFS_META_REGION_BLOCK_BITMAP];
+  if (kafs_blk_set_usage_nolock(ctx, bitmap_target, KAFS_TRUE) != 0 ||
+      ctx->c_meta_region_writes[KAFS_META_REGION_BLOCK_BITMAP] <= bitmap_writes_before ||
+      !kafs_blk_get_usage(ctx, bitmap_target))
+    return -1;
+  if (!span_matches(map, ctx->c_img_size, bitmap_first.bitmap_byte_off, &bitmap_first_before,
+                    sizeof(bitmap_first_before)) ||
+      !span_differs(map, ctx->c_img_size, bitmap_second.bitmap_byte_off, &bitmap_second_before,
+                    sizeof(bitmap_second_before)))
+    return -1;
+
+  uint8_t bitmap_first_after_set = 0;
+  uint8_t bitmap_second_after_set = 0;
+  if (snapshot_span(map, ctx->c_img_size, bitmap_first.bitmap_byte_off, &bitmap_first_after_set,
+                    sizeof(bitmap_first_after_set)) != 0 ||
+      snapshot_span(map, ctx->c_img_size, bitmap_second.bitmap_byte_off, &bitmap_second_after_set,
+                    sizeof(bitmap_second_after_set)) != 0)
+    return -1;
+  bitmap_writes_before = ctx->c_meta_region_writes[KAFS_META_REGION_BLOCK_BITMAP];
+  if (kafs_blk_set_usage_nolock(ctx, bitmap_target, KAFS_FALSE) != 0 ||
+      ctx->c_meta_region_writes[KAFS_META_REGION_BLOCK_BITMAP] <= bitmap_writes_before ||
+      kafs_blk_get_usage(ctx, bitmap_target))
+    return -1;
+  if (!span_matches(map, ctx->c_img_size, bitmap_first.bitmap_byte_off, &bitmap_first_after_set,
+                    sizeof(bitmap_first_after_set)) ||
+      !span_differs(map, ctx->c_img_size, bitmap_second.bitmap_byte_off, &bitmap_second_after_set,
+                    sizeof(bitmap_second_after_set)))
+    return -1;
+
+  *out_blo = blo;
+  return 0;
+}
+
+static int exercise_live_inode_mutation(kafs_context_t *ctx, void *map)
+{
+  if (!ctx || !map || ctx->c_v6_inode_shard_count < 2u)
+    return -1;
+
+  size_t inode_bytes = kafs_ctx_inode_bytes(ctx);
+  unsigned char root_before[sizeof(kafs_sinode_v5_t)];
+  unsigned char ino_before[sizeof(kafs_sinode_v5_t)];
+  if (inode_bytes == 0u || inode_bytes > sizeof(root_before))
+    return -1;
+
+  kafs_inocnt_t inocnt = kafs_sb_inocnt_get(ctx->c_superblock);
+  uint64_t second_start = ctx->c_v6_inode_shards[1].logical_start;
+  if (second_start == 0u || second_start >= (uint64_t)inocnt || second_start > UINT32_MAX)
+    return -1;
+
+  kafs_inocnt_t ino = (kafs_inocnt_t)second_start;
+  kafs_v6_inode_lookup_t root_lookup;
+  kafs_v6_inode_lookup_t ino_lookup;
+  if (kafs_v6_inode_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes, KAFS_INO_ROOTDIR,
+                           &root_lookup) != 0 ||
+      kafs_v6_inode_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes, (uint64_t)ino,
+                           &ino_lookup) != 0)
+    return -1;
+  if (root_lookup.shard_index == ino_lookup.shard_index ||
+      root_lookup.record_bytes != inode_bytes || ino_lookup.record_bytes != inode_bytes)
+    return -1;
+
+  if (snapshot_span(map, ctx->c_img_size, root_lookup.inode_off, root_before, inode_bytes) != 0 ||
+      snapshot_span(map, ctx->c_img_size, ino_lookup.inode_off, ino_before, inode_bytes) != 0)
+    return -1;
+
+  ctx->c_ino_search = ino - 1u;
+  kafs_inocnt_t found = KAFS_INO_NONE;
+  int rc = kafs_ctx_ino_find_free(ctx, &found, &ctx->c_ino_search, inocnt);
+  if (rc != 0 || found != ino)
+    return -1;
+
+  uint64_t inode_writes_before = ctx->c_meta_region_writes[KAFS_META_REGION_INODE_TABLE];
+  kafs_sinode_t *inoent = kafs_ctx_inode(ctx, ino);
+  if (inoent != (kafs_sinode_t *)((char *)map + (size_t)ino_lookup.inode_off))
+    return -1;
+  kafs_ctx_inode_zero(ctx, inoent);
+  kafs_ino_mode_set(inoent, S_IFREG | 0600);
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_INODE_TABLE, (uint64_t)inode_bytes);
+
+  if (!kafs_ino_get_usage(kafs_ctx_inode_const(ctx, ino)) || kafs_ctx_ino_no(ctx, inoent) != ino ||
+      ctx->c_meta_region_writes[KAFS_META_REGION_INODE_TABLE] <= inode_writes_before)
+    return -1;
+  if (!span_matches(map, ctx->c_img_size, root_lookup.inode_off, root_before, inode_bytes) ||
+      !span_differs(map, ctx->c_img_size, ino_lookup.inode_off, ino_before, inode_bytes))
+    return -1;
+  return 0;
+}
+
+static int exercise_live_hrl_mutation(kafs_context_t *ctx, void *map)
+{
+  if (!ctx || !map || ctx->c_v6_hrl_index_shard_count < 2u ||
+      ctx->c_v6_hrl_entry_shard_count < 2u)
+    return -1;
+
+  int failed = 0;
+  int hrl_opened = 0;
+  unsigned char *block = NULL;
+  if (kafs_hrl_open(ctx) != 0)
+    failed = 1;
+  else
+    hrl_opened = 1;
+
+  uint32_t bucket = 0;
+  uint32_t forced_hrid = 0;
+  kafs_v6_hrl_index_lookup_t first_index_lookup;
+  kafs_v6_hrl_index_lookup_t second_index_lookup;
+  kafs_v6_hrl_entry_lookup_t first_entry_lookup;
+  kafs_v6_hrl_entry_lookup_t forced_entry_lookup;
+  memset(&first_index_lookup, 0, sizeof(first_index_lookup));
+  memset(&second_index_lookup, 0, sizeof(second_index_lookup));
+  memset(&first_entry_lookup, 0, sizeof(first_entry_lookup));
+  memset(&forced_entry_lookup, 0, sizeof(forced_entry_lookup));
+
+  if (!failed)
+  {
+    uint32_t block_size = (uint32_t)kafs_sb_blksize_get(ctx->c_superblock);
+    block = calloc(1, block_size);
+    if (!block)
+      failed = 1;
+    uint64_t second_bucket_start = ctx->c_v6_hrl_index_shards[1].logical_start;
+    if (!failed &&
+        choose_block_for_bucket_range(block, block_size, ctx->c_hrl_bucket_cnt,
+                                      second_bucket_start, &bucket) != 0)
+      failed = 1;
+    uint64_t forced64 = ctx->c_v6_hrl_entry_shards[1].logical_start;
+    if (!failed && (forced64 == 0u || forced64 >= UINT32_MAX))
+      failed = 1;
+    forced_hrid = (uint32_t)forced64;
+  }
+
+  if (!failed &&
+      (kafs_v6_hrl_index_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes, 0,
+                                &first_index_lookup) != 0 ||
+       kafs_v6_hrl_index_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes, bucket,
+                                &second_index_lookup) != 0 ||
+       kafs_v6_hrl_entry_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes, 0,
+                                &first_entry_lookup) != 0 ||
+       kafs_v6_hrl_entry_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes, forced_hrid,
+                                &forced_entry_lookup) != 0))
+    failed = 1;
+  if (!failed &&
+      (first_index_lookup.shard_index == second_index_lookup.shard_index ||
+       first_entry_lookup.shard_index == forced_entry_lookup.shard_index))
+    failed = 1;
+
+  uint32_t first_bucket_before = 0;
+  uint32_t second_bucket_before = 0;
+  kafs_hrl_entry_t first_entry_before;
+  kafs_hrl_entry_t forced_entry_before;
+  memset(&first_entry_before, 0, sizeof(first_entry_before));
+  memset(&forced_entry_before, 0, sizeof(forced_entry_before));
+
+  if (!failed)
+  {
+    uint32_t *second_bucket_head = (uint32_t *)((char *)map + (size_t)second_index_lookup.index_off);
+    kafs_hrl_entry_t *forced_entry =
+        (kafs_hrl_entry_t *)((char *)map + (size_t)forced_entry_lookup.entry_off);
+    *second_bucket_head = 0u;
+    memset(forced_entry, 0, sizeof(*forced_entry));
+    forced_entry->blo = KAFS_BLO_NONE;
+    ctx->c_hrl_free_head_plus1 = forced_hrid + 1u;
+    ctx->c_hrl_free_slot_count = 1u;
+
+    if (snapshot_span(map, ctx->c_img_size, first_index_lookup.index_off, &first_bucket_before,
+                      sizeof(first_bucket_before)) != 0 ||
+        snapshot_span(map, ctx->c_img_size, second_index_lookup.index_off, &second_bucket_before,
+                      sizeof(second_bucket_before)) != 0 ||
+        snapshot_span(map, ctx->c_img_size, first_entry_lookup.entry_off, &first_entry_before,
+                      sizeof(first_entry_before)) != 0 ||
+        snapshot_span(map, ctx->c_img_size, forced_entry_lookup.entry_off, &forced_entry_before,
+                      sizeof(forced_entry_before)) != 0)
+      failed = 1;
+  }
+
+  if (!failed)
+  {
+    uint64_t index_writes_before = ctx->c_meta_region_writes[KAFS_META_REGION_HRL_INDEX];
+    uint64_t entry_writes_before = ctx->c_meta_region_writes[KAFS_META_REGION_HRL_ENTRIES];
+    ctx->c_blo_search = (kafs_blkcnt_t)ctx->c_v6_alloc_summary_shards[1].logical_start;
+    kafs_hrid_t hrid = 0;
+    int is_new = 0;
+    kafs_blkcnt_t blo = KAFS_BLO_NONE;
+    int rc = kafs_hrl_put(ctx, block, &hrid, &is_new, &blo);
+    uint32_t *bucket_head = (uint32_t *)((char *)map + (size_t)second_index_lookup.index_off);
+    kafs_hrl_entry_t *forced_entry =
+        (kafs_hrl_entry_t *)((char *)map + (size_t)forced_entry_lookup.entry_off);
+    if (rc != 0 || !is_new || hrid != forced_hrid || blo == KAFS_BLO_NONE ||
+        *bucket_head != forced_hrid + 1u ||
+        ctx->c_meta_region_writes[KAFS_META_REGION_HRL_INDEX] <= index_writes_before ||
+        ctx->c_meta_region_writes[KAFS_META_REGION_HRL_ENTRIES] <= entry_writes_before)
+      failed = 1;
+    if (!failed &&
+        (!span_matches(map, ctx->c_img_size, first_index_lookup.index_off, &first_bucket_before,
+                       sizeof(first_bucket_before)) ||
+         !span_differs(map, ctx->c_img_size, second_index_lookup.index_off, &second_bucket_before,
+                       sizeof(second_bucket_before)) ||
+         !span_matches(map, ctx->c_img_size, first_entry_lookup.entry_off, &first_entry_before,
+                       sizeof(first_entry_before)) ||
+         !span_differs(map, ctx->c_img_size, forced_entry_lookup.entry_off, &forced_entry_before,
+                       sizeof(forced_entry_before))))
+      failed = 1;
+    if (!failed && (kafs_hrl_inc_ref(ctx, hrid) != 0 || forced_entry->refcnt != 2u ||
+                    kafs_hrl_dec_ref(ctx, hrid) != 0 || forced_entry->refcnt != 1u))
+      failed = 1;
+  }
+
+  if (hrl_opened)
+    (void)kafs_hrl_close(ctx);
+  free(block);
+  return failed ? -1 : 0;
+}
+
+static int test_live_metadata_mutation_routing_matrix(void)
+{
+  const char *img = "live-metadata-mutation-routing.img";
+  if (make_v6_image_size(img, "1G") != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_bitmap_split_two_shards, 1) != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_inode_split_two_shards, 1) != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_allocator_split_two_shards, 1) != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_hrl_index_split_two_shards, 1) != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_hrl_entries_split_two_shards, 1) != 0)
+    return -1;
+
+  v6_image_info_t info;
+  if (open_v6_image(img, 1, &info) != 0)
+    return -1;
+
+  int failed = 0;
+  void *map = MAP_FAILED;
+  kafs_context_t ctx;
+  memset(&ctx, 0, sizeof(ctx));
+
+  map = mmap(NULL, (size_t)info.file_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, info.fd, 0);
+  if (map == MAP_FAILED)
+    failed = 1;
+
+  if (!failed)
+  {
+    ctx.c_img_base = map;
+    ctx.c_img_size = (size_t)info.file_size;
+    ctx.c_superblock = (kafs_ssuperblock_t *)map;
+    ctx.c_fd = info.fd;
+
+    kafs_v6_bitmap_coverage_report_t bitmap_coverage;
+    kafs_v6_inode_coverage_report_t inode_coverage;
+    kafs_v6_allocator_summary_coverage_report_t alloc_coverage;
+    kafs_v6_hrl_index_coverage_report_t hrl_index_coverage;
+    kafs_v6_hrl_entries_coverage_report_t hrl_entry_coverage;
+    int rc = kafs_v6_descriptor_mapping_admit_fd(
+        &ctx, info.fd, info.file_size, &bitmap_coverage, &inode_coverage, &alloc_coverage,
+        &hrl_index_coverage, &hrl_entry_coverage);
+    if (rc != 0 || !ctx.c_v6_bitmap_mapping_enabled || !ctx.c_v6_inode_mapping_enabled ||
+        !ctx.c_v6_alloc_summary_mapping_enabled || !ctx.c_v6_hrl_mapping_enabled ||
+        bitmap_coverage.shard_count != 2u || inode_coverage.shard_count != 2u ||
+        alloc_coverage.shard_count != 2u || hrl_index_coverage.shard_count != 2u ||
+        hrl_entry_coverage.shard_count != 2u || ctx.c_v6_inode_shard_count != 2u ||
+        ctx.c_v6_alloc_summary_shard_count != 2u ||
+        ctx.c_v6_hrl_index_shard_count != 2u || ctx.c_v6_hrl_entry_shard_count != 2u)
+      failed = 1;
+  }
+
+  kafs_blkcnt_t allocated_blo = KAFS_BLO_NONE;
+  if (!failed && exercise_live_bitmap_allocator_mutation(&ctx, map, &allocated_blo) != 0)
+  {
+    tlogf("live metadata matrix failed: bitmap/allocator mutation routing");
+    failed = 1;
+  }
+  if (!failed && allocated_blo == KAFS_BLO_NONE)
+  {
+    tlogf("live metadata matrix failed: allocator did not return a block");
+    failed = 1;
+  }
+  if (!failed && exercise_live_inode_mutation(&ctx, map) != 0)
+  {
+    tlogf("live metadata matrix failed: inode mutation routing");
+    failed = 1;
+  }
+  if (!failed && exercise_live_hrl_mutation(&ctx, map) != 0)
+  {
+    tlogf("live metadata matrix failed: hrl mutation routing");
+    failed = 1;
   }
 
   kafs_bitmap_descriptor_mapping_clear(&ctx);
@@ -2929,6 +3417,7 @@ int main(void)
       {"inode_runtime_allocation_mapping", test_inode_runtime_allocation_mapping},
       {"bitmap_runtime_descriptor_mapping", test_bitmap_runtime_descriptor_mapping},
       {"bitmap_multi_shard_runtime_mapping", test_bitmap_multi_shard_runtime_mapping},
+      {"live_metadata_mutation_routing_matrix", test_live_metadata_mutation_routing_matrix},
       {"bitmap_gap_rejected", test_bitmap_gap_rejected},
       {"inode_gap_rejected", test_inode_gap_rejected},
       {"allocator_summary_gap_rejected", test_allocator_summary_gap_rejected},

@@ -556,10 +556,27 @@
 ### SDW-V6RT-T5 v6 live metadata mutation routing proof
 
 - 目的: write mount の主要 mutation operations が descriptor-backed metadata shards を正しく更新することを確認する。
+- 進捗:
+  - `v6_descriptor_validation` に `live_metadata_mutation_routing_matrix` を追加し、同一 v6 descriptor
+    fixture 上で bitmap / inode / allocator summary / HRL index / HRL entries をすべて 2 shard 化して
+    dormant runtime admission 後の live mutation routing を検証する。
+  - allocator allocation、bitmap set/free、inode allocation/init、HRL put/inc/dec を実行し、対象 shard の
+    byte/record が変化し、対応する metadata write counter が増えることを確認する。
+  - 各 region の非対象 shard は targeted snapshot で変化しないことを確認する。allocator は dirty rebuild
+    ではなく通常 summary sync path を通るよう、対象 L0 group だけを「最後の 1 block が空き」の状態にして
+    第2 shard の L1/L2 更新を証明する。
+  - v6 write mount と FUSE operation matrix はまだ有効化しない。今回の proof は write admission 前に必要な
+    lower-level metadata mutation routing の閉じ込みとして扱う。
 - 完了条件:
-  - create/write/truncate/fallocate/unlink/rename/link/symlink/copy/reflink/fsync/release の matrix がある。
+  - write mount 解禁前の lower-level matrix として、allocator allocation、bitmap set/free、inode mutation、
+    HRL put/inc/dec が descriptor-backed shard 経由で動くことを確認する。
+  - create/write/truncate/fallocate/unlink/rename/link/symlink/copy/reflink/fsync/release の FUSE operation
+    matrix は write admission gate で再確認する。
   - bitmap / inode / allocator summary / HRL の expected shard write counters が増え、unexpected shard が変化しない。
   - bitmap word alignment 制約または byte-granular update 方針が admission validation に反映されている。
+- 完了メモ:
+  - write mount はまだ有効化しない。
+  - 次は `SDW-V6RT-T6 v6 delayed/background mutation policy` に進む。
 
 ### SDW-V6RT-T6 v6 delayed/background mutation policy
 
