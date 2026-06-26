@@ -92,8 +92,9 @@ v6_descriptor_smoketest_LDADD = $(KAFS_LIBS)
 
 v6_descriptor_validation_SOURCES = tests_v6_descriptor_validation.c test_utils.c \
 	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
-v6_descriptor_validation_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+v6_descriptor_validation_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -pthread
 v6_descriptor_validation_LDADD = $(KAFS_LIBS)
+v6_descriptor_validation_LDFLAGS = -pthread
 
 clone_template_copy_SOURCES = tests_clone_template_copy.c test_utils.c \
 	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c

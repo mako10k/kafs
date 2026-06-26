@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2529,6 +2530,279 @@ static int test_live_metadata_mutation_routing_matrix(void)
   return failed ? -1 : 0;
 }
 
+typedef enum v6_lock_hold_kind
+{
+  V6_LOCK_HOLD_HRL_GLOBAL = 0,
+  V6_LOCK_HOLD_INODE_ALLOC,
+  V6_LOCK_HOLD_INODE,
+  V6_LOCK_HOLD_HRL_BUCKET,
+  V6_LOCK_HOLD_BITMAP,
+} v6_lock_hold_kind_t;
+
+typedef struct v6_lock_holder_arg
+{
+  kafs_context_t *ctx;
+  v6_lock_hold_kind_t kind;
+  uint32_t ino;
+  uint32_t bucket;
+  int ready;
+} v6_lock_holder_arg_t;
+
+static void v6_lock_for_kind(kafs_context_t *ctx, v6_lock_hold_kind_t kind, uint32_t ino,
+                             uint32_t bucket)
+{
+  switch (kind)
+  {
+  case V6_LOCK_HOLD_HRL_GLOBAL:
+    kafs_hrl_global_lock(ctx);
+    break;
+  case V6_LOCK_HOLD_INODE_ALLOC:
+    kafs_inode_alloc_lock(ctx);
+    break;
+  case V6_LOCK_HOLD_INODE:
+    kafs_inode_lock(ctx, ino);
+    break;
+  case V6_LOCK_HOLD_HRL_BUCKET:
+    kafs_hrl_bucket_lock(ctx, bucket);
+    break;
+  case V6_LOCK_HOLD_BITMAP:
+    kafs_bitmap_lock(ctx);
+    break;
+  }
+}
+
+static void v6_unlock_for_kind(kafs_context_t *ctx, v6_lock_hold_kind_t kind, uint32_t ino,
+                               uint32_t bucket)
+{
+  switch (kind)
+  {
+  case V6_LOCK_HOLD_HRL_GLOBAL:
+    kafs_hrl_global_unlock(ctx);
+    break;
+  case V6_LOCK_HOLD_INODE_ALLOC:
+    kafs_inode_alloc_unlock(ctx);
+    break;
+  case V6_LOCK_HOLD_INODE:
+    kafs_inode_unlock(ctx, ino);
+    break;
+  case V6_LOCK_HOLD_HRL_BUCKET:
+    kafs_hrl_bucket_unlock(ctx, bucket);
+    break;
+  case V6_LOCK_HOLD_BITMAP:
+    kafs_bitmap_unlock(ctx);
+    break;
+  }
+}
+
+static void *v6_lock_holder_thread(void *arg)
+{
+  v6_lock_holder_arg_t *holder = (v6_lock_holder_arg_t *)arg;
+  v6_lock_for_kind(holder->ctx, holder->kind, holder->ino, holder->bucket);
+  __atomic_store_n(&holder->ready, 1, __ATOMIC_RELEASE);
+  usleep(50000);
+  v6_unlock_for_kind(holder->ctx, holder->kind, holder->ino, holder->bucket);
+  return NULL;
+}
+
+static int force_one_lock_contention(kafs_context_t *ctx, v6_lock_hold_kind_t kind, uint32_t ino,
+                                     uint32_t bucket)
+{
+  pthread_t tid;
+  v6_lock_holder_arg_t holder = {
+      .ctx = ctx,
+      .kind = kind,
+      .ino = ino,
+      .bucket = bucket,
+      .ready = 0,
+  };
+  if (pthread_create(&tid, NULL, v6_lock_holder_thread, &holder) != 0)
+    return -1;
+  while (__atomic_load_n(&holder.ready, __ATOMIC_ACQUIRE) == 0)
+    usleep(1000);
+
+  v6_lock_for_kind(ctx, kind, ino, bucket);
+  v6_unlock_for_kind(ctx, kind, ino, bucket);
+  if (pthread_join(tid, NULL) != 0)
+    return -1;
+  return 0;
+}
+
+static int force_v6_lock_contention(kafs_context_t *ctx, uint32_t bucket)
+{
+  uint64_t hrl_global_before = ctx->c_stat_lock_hrl_global_contended;
+  uint64_t inode_alloc_before = ctx->c_stat_lock_inode_alloc_contended;
+  uint64_t inode_before = ctx->c_stat_lock_inode_contended;
+  uint64_t hrl_bucket_before = ctx->c_stat_lock_hrl_bucket_contended;
+  uint64_t bitmap_before = ctx->c_stat_lock_bitmap_contended;
+
+  if (force_one_lock_contention(ctx, V6_LOCK_HOLD_HRL_GLOBAL, KAFS_INO_ROOTDIR, bucket) != 0 ||
+      force_one_lock_contention(ctx, V6_LOCK_HOLD_INODE_ALLOC, KAFS_INO_ROOTDIR, bucket) != 0 ||
+      force_one_lock_contention(ctx, V6_LOCK_HOLD_INODE, KAFS_INO_ROOTDIR, bucket) != 0 ||
+      force_one_lock_contention(ctx, V6_LOCK_HOLD_HRL_BUCKET, KAFS_INO_ROOTDIR, bucket) != 0 ||
+      force_one_lock_contention(ctx, V6_LOCK_HOLD_BITMAP, KAFS_INO_ROOTDIR, bucket) != 0)
+    return -1;
+
+  if (ctx->c_stat_lock_hrl_global_contended <= hrl_global_before ||
+      ctx->c_stat_lock_inode_alloc_contended <= inode_alloc_before ||
+      ctx->c_stat_lock_inode_contended <= inode_before ||
+      ctx->c_stat_lock_hrl_bucket_contended <= hrl_bucket_before ||
+      ctx->c_stat_lock_bitmap_contended <= bitmap_before)
+    return -1;
+  return 0;
+}
+
+typedef struct v6_hrl_concurrent_arg
+{
+  kafs_context_t *ctx;
+  const unsigned char *block;
+  int rounds;
+  int rc;
+} v6_hrl_concurrent_arg_t;
+
+static void *v6_hrl_concurrent_worker(void *arg)
+{
+  v6_hrl_concurrent_arg_t *worker = (v6_hrl_concurrent_arg_t *)arg;
+  for (int i = 0; i < worker->rounds; ++i)
+  {
+    kafs_hrid_t hrid = 0;
+    int is_new = 0;
+    kafs_blkcnt_t blo = KAFS_BLO_NONE;
+    if (kafs_hrl_put(worker->ctx, worker->block, &hrid, &is_new, &blo) != 0 ||
+        blo == KAFS_BLO_NONE || kafs_hrl_inc_ref(worker->ctx, hrid) != 0 ||
+        kafs_hrl_dec_ref(worker->ctx, hrid) != 0 || kafs_hrl_dec_ref(worker->ctx, hrid) != 0)
+    {
+      worker->rc = -1;
+      return NULL;
+    }
+  }
+  worker->rc = 0;
+  return NULL;
+}
+
+static int run_v6_concurrent_hrl_mutation(kafs_context_t *ctx)
+{
+  enum
+  {
+    THREAD_COUNT = 8,
+    ROUNDS = 24,
+  };
+  pthread_t tids[THREAD_COUNT];
+  v6_hrl_concurrent_arg_t args[THREAD_COUNT];
+  uint32_t block_size = (uint32_t)kafs_sb_blksize_get(ctx->c_superblock);
+  unsigned char *block = (unsigned char *)calloc(1, block_size);
+  if (!block)
+    return -1;
+  for (uint32_t i = 0; i < block_size; ++i)
+    block[i] = (unsigned char)(0x33u ^ (i * 17u));
+
+  uint64_t hrl_bucket_acquire_before = ctx->c_stat_lock_hrl_bucket_acquire;
+  uint64_t bitmap_acquire_before = ctx->c_stat_lock_bitmap_acquire;
+  uint64_t hrl_entry_writes_before = ctx->c_meta_region_writes[KAFS_META_REGION_HRL_ENTRIES];
+
+  int failed = 0;
+  int created = 0;
+  for (int i = 0; i < THREAD_COUNT; ++i)
+  {
+    args[i].ctx = ctx;
+    args[i].block = block;
+    args[i].rounds = ROUNDS;
+    args[i].rc = -1;
+    if (pthread_create(&tids[i], NULL, v6_hrl_concurrent_worker, &args[i]) != 0)
+    {
+      failed = 1;
+      break;
+    }
+    ++created;
+  }
+  for (int i = 0; i < created; ++i)
+  {
+    pthread_join(tids[i], NULL);
+    if (args[i].rc != 0)
+      failed = 1;
+  }
+
+  if (!failed &&
+      (ctx->c_stat_lock_hrl_bucket_acquire <= hrl_bucket_acquire_before ||
+       ctx->c_stat_lock_bitmap_acquire <= bitmap_acquire_before ||
+       ctx->c_meta_region_writes[KAFS_META_REGION_HRL_ENTRIES] <= hrl_entry_writes_before))
+    failed = 1;
+
+  free(block);
+  return failed ? -1 : 0;
+}
+
+static int test_v6_write_lock_stress_gate(void)
+{
+  const char *img = "v6-write-lock-stress-gate.img";
+  if (make_v6_image_size(img, "1G") != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_bitmap_split_two_shards, 1) != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_allocator_split_two_shards, 1) != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_hrl_index_split_two_shards, 1) != 0)
+    return -1;
+  if (mutate_all_descriptors(img, mutate_hrl_entries_split_two_shards, 1) != 0)
+    return -1;
+
+  v6_image_info_t info;
+  if (open_v6_image(img, 1, &info) != 0)
+    return -1;
+
+  int failed = 0;
+  int hrl_opened = 0;
+  void *map = MAP_FAILED;
+  kafs_context_t ctx;
+  memset(&ctx, 0, sizeof(ctx));
+
+  map = mmap(NULL, (size_t)info.file_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, info.fd, 0);
+  if (map == MAP_FAILED)
+    failed = 1;
+
+  if (!failed)
+  {
+    ctx.c_img_base = map;
+    ctx.c_img_size = (size_t)info.file_size;
+    ctx.c_superblock = (kafs_ssuperblock_t *)map;
+    ctx.c_fd = info.fd;
+
+    int rc =
+        kafs_v6_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL, NULL, NULL, NULL,
+                                            NULL);
+    if (rc != 0 || !ctx.c_v6_bitmap_mapping_enabled ||
+        !ctx.c_v6_alloc_summary_mapping_enabled || !ctx.c_v6_hrl_mapping_enabled ||
+        ctx.c_v6_hrl_index_shard_count != 2u || ctx.c_v6_hrl_entry_shard_count != 2u)
+      failed = 1;
+  }
+
+  if (!failed)
+  {
+    if (kafs_hrl_open(&ctx) != 0)
+      failed = 1;
+    else
+      hrl_opened = 1;
+  }
+
+  if (!failed && force_v6_lock_contention(&ctx, 0) != 0)
+  {
+    tlogf("v6 lock stress gate failed: lock contention counters");
+    failed = 1;
+  }
+  if (!failed && run_v6_concurrent_hrl_mutation(&ctx) != 0)
+  {
+    tlogf("v6 lock stress gate failed: concurrent HRL mutation");
+    failed = 1;
+  }
+
+  if (hrl_opened)
+    (void)kafs_hrl_close(&ctx);
+  kafs_bitmap_descriptor_mapping_clear(&ctx);
+  if (map != MAP_FAILED)
+    munmap(map, (size_t)info.file_size);
+  close_v6_image(&info);
+  return failed ? -1 : 0;
+}
+
 static int test_bitmap_gap_rejected(void)
 {
   const char *img = "bitmap-gap.img";
@@ -3517,6 +3791,7 @@ int main(void)
       {"bitmap_runtime_descriptor_mapping", test_bitmap_runtime_descriptor_mapping},
       {"bitmap_multi_shard_runtime_mapping", test_bitmap_multi_shard_runtime_mapping},
       {"live_metadata_mutation_routing_matrix", test_live_metadata_mutation_routing_matrix},
+      {"v6_write_lock_stress_gate", test_v6_write_lock_stress_gate},
       {"bitmap_gap_rejected", test_bitmap_gap_rejected},
       {"inode_gap_rejected", test_inode_gap_rejected},
       {"allocator_summary_gap_rejected", test_allocator_summary_gap_rejected},

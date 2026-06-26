@@ -622,10 +622,29 @@
 ### SDW-V6RT-T8 v6 write mount lock/stress gate
 
 - 目的: write admission 対象 path が `.github/lock-policy.md` に従うことを確認する。
+- 実施内容:
+  - `docs/sd-card-wear-v6-lock-stress-gate.md` に lock rank order、`KAFS_CALL` after lock、対象範囲外の
+    user-visible FUSE write surface を整理した。
+  - `v6_descriptor_validation` に `v6_write_lock_stress_gate` を追加した。
+  - 追加 regression は v6 descriptor-backed HRL/bitmap mapping を使い、全 lock class の contention
+    counter と並行 HRL mutation を確認する。
 - 完了条件:
   - lock rank order と `KAFS_CALL` after lock 禁止の監査が完了している。
   - contention / concurrent write regression が少なくとも 1 つある。
   - T4-T7 の結果を踏まえて、write mount を explicit opt-in で有効化できるか判断できる。
+- 完了メモ:
+  - T4-T7 で固定した explicit write opt-in 候補の低レイヤ path は T8 gate を通過した。
+  - 通常の v6 FUSE write mount はまだ有効化しない。
+  - 次は `SDW-V6RT-T9 v6 explicit write opt-in cutover boundary` に進む。
+
+### SDW-V6RT-T9 v6 explicit write opt-in cutover boundary
+
+- 目的: v6 write を user-visible opt-in に進める前に、operator cutover と rollback の境界を固定する。
+- 完了条件:
+  - user-visible opt-in 名と fail-closed admission 条件が決まっている。
+  - unsupported option、delayed/background mutation、v6 repair write の拒否境界が operator 向けに明記されている。
+  - write 前後の required fsck command と失敗時 rollback が文書化されている。
+  - release note に experimental / controlled opt-in の範囲が記載されている。
 
 ---
 
