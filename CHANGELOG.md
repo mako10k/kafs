@@ -5,6 +5,8 @@
   `--src-image` を必須にした。
 - v5 source / v6 destination の `kafsdump --json` pre/post summary と、v6 destination の
   `fsck.kafs --balanced-check` regression を追加した。
+- v6 migration destination の runtime mount attempt が admission preflight 後に offline-only gate で
+  exit 2 になることを regression に追加した。
 - Compatibility: v6 destination image は現時点では offline-only descriptor scaffold として扱う。
   `kafsdump` / `fsck.kafs` で検査できるが、runtime mount / production cutover はまだ有効化しない。
   既存 v4/v5 image の runtime mount 互換と、default v5 destination の挙動は維持する。

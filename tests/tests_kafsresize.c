@@ -366,6 +366,19 @@ static int expect_v6_migrate_destination_fsck(const char *text)
                               "Journal check: v6 descriptor-backed segment health OK.");
 }
 
+static int expect_v6_migrate_destination_mount_rejection(const char *text)
+{
+  return expect_text_contains("v6 destination runtime mount", text,
+                              "format v6 admission preflight:") ||
+         expect_text_contains("v6 destination runtime mount", text,
+                              "descriptor-backed metadata checks OK") ||
+         expect_text_contains("v6 destination runtime mount", text,
+                              "runtime mount remains offline-only") ||
+         expect_text_contains("v6 destination runtime mount", text,
+                              "unsupported format version: v6 descriptor scaffold is "
+                              "offline-only");
+}
+
 static int read_tailmeta_region_header(const char *img, uint64_t off,
                                        kafs_tailmeta_region_hdr_t *hdr)
 {
@@ -1260,6 +1273,28 @@ int main(void)
     return 1;
   }
   if (expect_v6_migrate_destination_fsck(migrate_v6_fsck_output) != 0)
+    return 1;
+
+  const char *dst_v6_mnt = "migrate-dst-v6-mnt";
+  if (mkdir(dst_v6_mnt, 0700) != 0)
+  {
+    fprintf(stderr, "failed to create v6 migrate mountpoint\n");
+    return 1;
+  }
+
+  char migrate_v6_mount_output[4096];
+  char *mount_dst_v6_argv[] = {(char *)kafs_abs, (char *)dst_v6_img, (char *)dst_v6_mnt,
+                               NULL};
+  int mount_v6_rc =
+      run_cmd_capture_combined(mount_dst_v6_argv, migrate_v6_mount_output,
+                               sizeof(migrate_v6_mount_output));
+  if (mount_v6_rc != 2)
+  {
+    fprintf(stderr, "migrate-create v6 runtime mount rc=%d, want=2: %s\n", mount_v6_rc,
+            migrate_v6_mount_output);
+    return 1;
+  }
+  if (expect_v6_migrate_destination_mount_rejection(migrate_v6_mount_output) != 0)
     return 1;
 
   const char *dst_v6_nosrc_img = "migrate-dst-v6-nosrc.img";

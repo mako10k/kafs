@@ -455,10 +455,12 @@
     判定、現行 v6 offline-only compatibility boundary を記録した。
   - `CHANGELOG.md` の Unreleased に v6 `migrate-create` precheck / regression と runtime mount
     compatibility impact を記載した。
+  - v6 `migrate-create` destination の runtime mount attempt が admission preflight 後に offline-only gate
+    で exit 2 になることを regression に追加し、現行境界の basic mount admission semantics を固定した。
 - 完了条件:
   - build/test PASS。
   - v5-to-v6 migration regression PASS。
-  - migrated image が fsck と basic mount semantics に通る。
+  - migrated image が fsck と現行互換境界の basic mount admission semantics に通る。
   - documentation と release notes に compatibility impact が記載されている。
 
 ---
