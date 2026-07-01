@@ -836,6 +836,26 @@
   - gate の PASS は production cutover approval ではないと output / docs に明記される。
   - `bash -n`、`shellcheck`、fresh v6 image に対する gate 実行、validate-only rerun が PASS する。
 
+### SDW-V6RT-T19 v6 runtime binary split decision
+
+- 目的: v6 runtime write work を production `kafs` binary の中で広げ続ける方針を止め、専用 v6 runtime
+  entrypoint へ分離する方針変更を記録する。
+- 決定:
+  - 既存 `kafs` は v4/v5 production runtime の入口として維持する。
+  - v6 の今後の write runtime admission / user-facing write surface 拡張は、専用 v6 runtime binary または
+    front-end の背後で進める。
+  - 共通実装は library または Automake common object として共有し、filesystem logic を重複させない。
+  - 現在の `kafs` 内 v6 inspection / controlled-write path は、bounded diagnostic / smoke surface として扱い、
+    ここへ `mkdir` などの新しい user-facing v6 write operation を追加しない。
+- 完了条件:
+  - decision record が docs に追加され、handoff / index から参照できる。
+  - 次の implementation boundary が「v6 runtime binary split plan」であり、broader `kafs` controlled-write
+    expansion ではないと明記される。
+- 実装メモ (2026-07-01):
+  - `docs/sd-card-wear-v6-runtime-binary-split-decision.md` を追加した。
+  - `docs/sd-card-wear-v6-runtime-handoff-20260626.md` の current next boundary を、production acceptance
+    gate ではなく v6 runtime binary split に更新した。
+
 ---
 
 ## 最初に着手するチケット

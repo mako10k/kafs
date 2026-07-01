@@ -46,6 +46,7 @@ historical investigations and deep design notes.
 - [sd-card-wear-v6-post-write-fsck-repair-policy.md](sd-card-wear-v6-post-write-fsck-repair-policy.md)
 - [sd-card-wear-v6-lock-stress-gate.md](sd-card-wear-v6-lock-stress-gate.md)
 - [sd-card-wear-v6-explicit-write-cutover-boundary.md](sd-card-wear-v6-explicit-write-cutover-boundary.md)
+- [sd-card-wear-v6-runtime-binary-split-decision.md](sd-card-wear-v6-runtime-binary-split-decision.md)
 - [sd-card-wear-v6-runtime-handoff-20260626.md](sd-card-wear-v6-runtime-handoff-20260626.md)
 - [write-performance-ideas.md](write-performance-ideas.md)
 - [bottleneck-measurement-plan.md](bottleneck-measurement-plan.md)

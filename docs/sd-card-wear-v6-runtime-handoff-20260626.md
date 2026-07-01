@@ -64,6 +64,11 @@ Additional closeout after the original handoff:
   matrix.
 - T16 synchronized `kafs --help` and `man/kafs.1` with the experimental
   controlled write boundary.
+- T19 changed the v6 runtime direction: future v6 write work moves behind a
+  dedicated v6 runtime entrypoint instead of broadening the production `kafs`
+  binary. Shared implementation should be linked through libraries or common
+  objects. See
+  [sd-card-wear-v6-runtime-binary-split-decision.md](sd-card-wear-v6-runtime-binary-split-decision.md).
 
 ## Original validation run
 
@@ -103,15 +108,22 @@ block this closeout.
 ## Current next boundary
 
 The controlled write path is available only as an experimental opt-in and
-operator smoke surface. The next boundary before any production cutover is a
-separate production acceptance gate for real workload copy, power-loss or
-torn-write behavior, rollback evidence, and operational recovery.
+operator smoke surface in the current `kafs` binary. Do not broaden that
+user-facing v6 write surface in `kafs` as the next step.
+
+The next boundary is a v6 runtime binary split: define the dedicated v6
+entrypoint, move future v6 runtime admission behind it, and factor shared code
+through libraries or common objects. Production cutover discussion stays behind
+that split and behind later v5-parity, workload-copy, power-loss or torn-write,
+rollback, and recovery evidence.
 
 ## Resume checklist
 
 1. Confirm the pushed branch and clean worktree.
 2. Start from `docs/sd-card-wear-tickets.md` at the latest `SDW-V6RT` entry.
-3. Keep the allowed FUSE write surface narrow until a new ticket explicitly
-   broadens it.
-4. Do not enable production v6 write cutover from the controlled smoke result
+3. Start the next implementation from the v6 runtime binary split decision, not
+   from a broader `kafs` controlled-write surface.
+4. Keep shared code in libraries or common objects rather than duplicating v5/v6
+   filesystem logic.
+5. Do not enable production v6 write cutover from the controlled smoke result
    alone.
