@@ -192,7 +192,7 @@ The mount must use an explicit controlled opt-in:
 	-o rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off
 ```
 
-Use the repeatable operator helper for acceptance evidence:
+Use the repeatable operator helper for smoke evidence:
 
 ```sh
 scripts/v6-controlled-write-smoke.sh \
@@ -204,6 +204,21 @@ scripts/v6-controlled-write-smoke.sh \
 The helper uses the controlled opt-in, adds `fsync_policy=full`, runs an
 explicit regular-file create/write/fsync workload, unmounts, and stores
 timestamped before/after artifacts under the report root.
+
+Use the pre-production acceptance gate when you need a mechanical check that the
+smoke artifacts are complete:
+
+```sh
+scripts/v6-controlled-write-acceptance-gate.sh \
+	--image /var/lib/kafs/destination.img \
+	--yes \
+	--report-root /var/tmp/kafs-v6-controlled-write-acceptance
+```
+
+The gate verifies the controlled write mount log, workload success, before/after
+`kafsdump --json`, before/after `fsck.kafs --balanced-check`, image stat/digest,
+and the absence of copy/reflink workload evidence. Passing this gate is not
+production cutover approval.
 
 Admission fails closed when `rw,v6_write_mount` is not explicit, when `ro` or
 `v6_inspection_mount` is also present, or when unsupported writeback cache,

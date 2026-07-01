@@ -821,6 +821,21 @@
     `sd-card-wear-v6-fuse-write-surface-audit.md` に、T14-T16 後の current boundary を追記した。
   - T9-T11 の historical note は履歴として残し、現在状態と誤読される `現段階` / future 表現を避けた。
 
+### SDW-V6RT-T18 v6 controlled write pre-production acceptance gate
+
+- 目的: experimental controlled write smoke の artifact が production 前の evidence として揃っていることを
+  機械的に確認する。ただし production cutover approval にはしない。
+- 変更:
+  - `scripts/v6-controlled-write-acceptance-gate.sh` を追加し、既存 smoke helper の実行と既存 report の
+    validate-only check をサポートする。
+  - `docs/kafsresize-cutover-playbook.md` に acceptance gate の使い方と非 cutover 境界を追記する。
+- 完了条件:
+  - gate は controlled write mount log、regular-file workload success、before/after `kafsdump --json`、
+    before/after `fsck.kafs --balanced-check`、image stat/digest を検証する。
+  - gate は workload が copy/reflink evidence に依存していないことを確認する。
+  - gate の PASS は production cutover approval ではないと output / docs に明記される。
+  - `bash -n`、`shellcheck`、fresh v6 image に対する gate 実行、validate-only rerun が PASS する。
+
 ---
 
 ## 最初に着手するチケット
