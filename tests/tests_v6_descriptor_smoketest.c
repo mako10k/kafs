@@ -20,6 +20,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/ioctl.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifdef __linux__
@@ -708,6 +709,80 @@ static int check_v6_controlled_write_copy_guards(int fd, const char *mnt)
   return 0;
 }
 
+static int expect_path_absent(const char *label, const char *path)
+{
+  struct stat st;
+  errno = 0;
+  if (lstat(path, &st) == 0)
+  {
+    tlogf("%s unexpectedly created path=%s", label, path);
+    return 1;
+  }
+  if (errno != ENOENT)
+  {
+    tlogf("%s lstat errno=%s (expected ENOENT)", label, strerror(errno));
+    return 1;
+  }
+  return 0;
+}
+
+static int check_v6_controlled_write_rejection_matrix(const char *mnt, const char *regular_path)
+{
+  char path[PATH_MAX];
+
+  snprintf(path, sizeof(path), "%s/reject-dir", mnt);
+  errno = 0;
+  if (expect_failed_errno("v6 controlled mkdir", mkdir(path, 0755), EOPNOTSUPP, 0) != 0 ||
+      expect_path_absent("v6 controlled mkdir", path) != 0)
+    return 1;
+
+  snprintf(path, sizeof(path), "%s/d", mnt);
+  errno = 0;
+  if (expect_failed_errno("v6 controlled rmdir", rmdir(path), EOPNOTSUPP, 0) != 0)
+    return 1;
+
+  snprintf(path, sizeof(path), "%s/reject-fifo", mnt);
+  errno = 0;
+  if (expect_failed_errno("v6 controlled mkfifo", mkfifo(path, 0644), EOPNOTSUPP, 0) != 0 ||
+      expect_path_absent("v6 controlled mkfifo", path) != 0)
+    return 1;
+
+  errno = 0;
+  if (expect_failed_errno("v6 controlled chmod", chmod(regular_path, 0600), EOPNOTSUPP, 0) !=
+      0)
+    return 1;
+
+  errno = 0;
+  if (expect_failed_errno("v6 controlled chown", chown(regular_path, getuid(), getgid()),
+                          EOPNOTSUPP, 0) != 0)
+    return 1;
+
+  const struct timespec ts[2] = {
+      {.tv_sec = 0, .tv_nsec = 0},
+      {.tv_sec = 0, .tv_nsec = 0},
+  };
+  errno = 0;
+  if (expect_failed_errno("v6 controlled utimens",
+                          utimensat(AT_FDCWD, regular_path, ts, 0), EOPNOTSUPP, 0) != 0)
+    return 1;
+
+  int dfd = open(mnt, O_RDONLY | O_DIRECTORY);
+  if (dfd < 0)
+  {
+    tlogf("v6 controlled fsyncdir open failed: %s", strerror(errno));
+    return 1;
+  }
+  errno = 0;
+  int frc = fsync(dfd);
+  int frc_errno = errno;
+  close(dfd);
+  errno = frc_errno;
+  if (expect_failed_errno("v6 controlled fsyncdir", frc, EOPNOTSUPP, 0) != 0)
+    return 1;
+
+  return 0;
+}
+
 static int check_v6_controlled_write_mount_smoke(const char *img)
 {
   if (access("/dev/fuse", R_OK | W_OK) != 0)
@@ -873,12 +948,19 @@ static int check_v6_controlled_write_mount_smoke(const char *img)
     goto out_stop;
   }
   close(fd);
+  fd = -1;
 
   errno = 0;
   fd = open(path, O_WRONLY | O_TRUNC);
+  int open_trunc_errno = errno;
+  int open_trunc_rc = (fd < 0) ? -1 : 0;
   if (fd >= 0)
+  {
     close(fd);
-  if (expect_failed_errno("v6 controlled open(O_TRUNC)", fd < 0 ? -1 : 0, EOPNOTSUPP, 0) != 0)
+    fd = -1;
+  }
+  errno = open_trunc_errno;
+  if (expect_failed_errno("v6 controlled open(O_TRUNC)", open_trunc_rc, EOPNOTSUPP, 0) != 0)
   {
     rc = 1;
     goto out_stop;
@@ -921,6 +1003,12 @@ static int check_v6_controlled_write_mount_smoke(const char *img)
 
   errno = 0;
   if (expect_failed_errno("v6 controlled unlink", unlink(path), EOPNOTSUPP, 0) != 0)
+  {
+    rc = 1;
+    goto out_stop;
+  }
+
+  if (check_v6_controlled_write_rejection_matrix(mnt, path) != 0)
   {
     rc = 1;
     goto out_stop;

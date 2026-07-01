@@ -769,6 +769,18 @@
   - workload は script 内に保存される Python helper で regular-file create/write/fsync/fdatasync/readback を
     実行し、`cp` / `copy_file_range` / reflink を acceptance evidence にしない。
 
+### SDW-V6RT-T15 v6 controlled write rejection matrix completion
+
+- 目的: 初期 controlled write の allowlist 外 operation が引き続き fail closed することを regression で固定する。
+- 変更:
+  - `v6_descriptor_smoketest` の controlled write smoke に rejection matrix を追加
+- 完了条件:
+  - `mkdir`、`rmdir`、non-regular create、`chmod`、`chown`、`utimens`、`fsyncdir` が
+    `-EOPNOTSUPP` で拒否される。
+  - 拒否された directory / FIFO path が作成されない。
+  - 既存の regular-file create/write/fsync/release 成功 path と post-write `fsck.kafs --balanced-check`
+    が維持される。
+
 ---
 
 ## 最初に着手するチケット
