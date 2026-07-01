@@ -781,6 +781,20 @@
   - 既存の regular-file create/write/fsync/release 成功 path と post-write `fsck.kafs --balanced-check`
     が維持される。
 
+### SDW-V6RT-T16 v6 controlled write help/man synchronization
+
+- 目的: 実装済みの experimental controlled write opt-in と、operator-facing help / man page の説明を一致させる。
+- 変更:
+  - `kafs --help` の `--v6-write-mount` / `-o v6_write_mount` 説明から reserved/future 表現を外す。
+  - `man/kafs.1` に、accepted option shape、fail-closed 条件、初期 write surface を明記する。
+- 完了条件:
+  - `--help` と `man/kafs.1` が `rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off`
+    を experimental controlled write の accepted shape として説明する。
+  - `ro`、`v6_inspection_mount`、`writeback_cache`、`trim_on_free`、`bg_dedup_scan=on` が
+    fail-closed 条件として user-facing docs に出る。
+  - 初期許可面が regular-file create/write/fsync/release に限定され、その他 metadata mutation は
+    `EOPNOTSUPP` として説明される。
+
 ---
 
 ## 最初に着手するチケット

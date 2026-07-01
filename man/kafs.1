@@ -75,9 +75,9 @@ with FUSE
 The mount is for inspection only and does not enable format v6 write admission.
 .TP
 .B --v6-write-mount
-Reserved gate for a future controlled format v6 write opt-in.  The parser
-recognizes this option, but current releases fail closed and do not enable
-format v6 write admission.
+Permit the experimental format v6 controlled write mount.  This is not a
+production default, and admission still requires the explicit FUSE option shape
+documented below.
 .SS Cache And TRIM
 .TP
 .BR --writeback-cache
@@ -162,11 +162,21 @@ Alias for
 .BR v6_inspection_mount .
 .TP
 .BR -o " " v6_write_mount
-Reserved gate for a future controlled format v6 write opt-in.  The initial
-accepted shape is
-.BR -o " " rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off ,
-but current releases still fail closed until write admission wiring is
-implemented.
+Permit the experimental format v6 controlled write opt-in.  The accepted shape
+is
+.BR -o " " rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off .
+Requests with
+.BR ro ,
+.BR v6_inspection_mount ,
+.BR writeback_cache ,
+.BR trim_on_free ,
+or
+.BR bg_dedup_scan=on
+fail closed.  The initial write surface is limited to regular-file create,
+write,
+.BR fsync ,
+and release; other metadata mutations fail with
+.BR EOPNOTSUPP .
 .TP
 .BR -o " " v6-write-mount
 Alias for
