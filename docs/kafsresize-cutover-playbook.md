@@ -79,9 +79,10 @@ clean-v5 and capacity precheck runs before the destination is overwritten:
 	--yes --force
 ```
 
-Current v6 images remain write-disabled descriptor destinations. They can be
+Current v6 images remain non-production descriptor destinations. They can be
 inspected with `kafsdump`, `fsck.kafs`, and the explicit v6 inspection mount
-path, but they are not production write mount targets yet.
+path. They can also be exercised through the experimental controlled write
+smoke described below, but they are not production write mount targets yet.
 
 ## Step 3: Mount Supported Source And Destination
 
@@ -110,7 +111,8 @@ phase. For optional inspection, use the explicit inspection mount:
 This path is for inspection only. It keeps the image read-only, rejects
 mutations with `EROFS`, and does not enable v6 write admission. For v6, skip the
 copy steps below, validate the image offline in Step 6, and keep it staged
-rather than cutting traffic over to it.
+rather than cutting traffic over to it. Use the controlled write helper only for
+explicit acceptance smoke, not for production data movement.
 
 ## Step 4: Seed Copy
 
@@ -121,8 +123,9 @@ rsync -aH --delete /mnt/kafs-src/ /mnt/kafs-dst/
 ```
 
 This step is expected to copy most of the data volume. Current v6 descriptor
-destinations are not writable data-copy targets, so content cutover waits for
-v6 write mount support or a separately scoped offline copy path.
+destinations are not general writable data-copy targets. The experimental
+controlled write path is limited to regular-file smoke evidence, so content
+cutover still waits for a separately scoped production copy path.
 
 ## Step 5: Freeze Writes And Final Sync
 
@@ -146,7 +149,7 @@ the destination image offline or via the mounted instance:
 ./fsck.kafs --balanced-check /var/lib/kafs/destination.img
 ```
 
-For current v6 descriptor destinations, validation is offline only:
+For current v6 descriptor destinations, baseline validation remains offline:
 
 ```sh
 ./kafsdump --json /var/lib/kafs/destination.img
@@ -170,10 +173,12 @@ location.
 
 Keep the old source image untouched until the new mount has passed smoke checks.
 
-For v6 descriptor destinations, do not perform production cutover until v6 write
-mount support is enabled and a write-capable smoke mount has passed. The current
-safe endpoint is an offline-validated staged image, optionally inspected through
-`-o ro,v6_inspection_mount`.
+For v6 descriptor destinations, do not perform production cutover based on the
+experimental controlled write smoke alone. Production cutover still needs a
+separately scoped acceptance gate for real workload copy, rollback, and
+operations. The current safe endpoint is an offline-validated staged image,
+optionally inspected through `-o ro,v6_inspection_mount` and exercised by the
+controlled smoke helper.
 
 ## Controlled v6 Write Opt-In Boundary
 

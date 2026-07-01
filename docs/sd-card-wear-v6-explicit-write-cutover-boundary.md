@@ -1,6 +1,6 @@
 # KAFS format v6 explicit write opt-in cutover boundary
 
-最終更新: 2026-06-26
+最終更新: 2026-07-01
 
 対象: `SDW-V6RT-T9 v6 explicit write opt-in cutover boundary`
 
@@ -9,23 +9,24 @@
 v6 write mount を user-visible opt-in として実装する前に、operator が見る名前、admission の
 fail-closed 条件、unsupported option、write 前後の fsck、rollback、release note の境界を固定する。
 
-この文書は cutover boundary であり、現時点では v6 write mount を有効化しない。
+この文書は cutover boundary である。T12 以降、experimental controlled write opt-in は
+実装済みだが、production v6 cutover を有効化するものではない。
 
 ## User-visible opt-in
 
-次の名前を予約する。
+次の user-visible entrypoint を使う。
 
 - CLI option: `--v6-write-mount`
 - FUSE mount option: `-o v6_write_mount`
 - Alias: `-o v6-write-mount`
 - Operator-facing label: `format v6 controlled write mount`
 
-実装時の admission は、通常の v6 mount を暗黙 write admission にしない。`-o rw` と
+現在の admission は、通常の v6 mount を暗黙 write admission にしない。`-o rw` と
 `v6_write_mount` の両方が明示されている場合だけ、controlled write admission の判定に進む。
 
 ## Fail-closed admission 条件
 
-`--v6-write-mount` / `-o v6_write_mount` を実装する場合、次を全て満たさない限り exit 2 で拒否する。
+`--v6-write-mount` / `-o v6_write_mount` は、次を全て満たさない限り exit 2 で拒否する。
 
 - image は format v6 であり、selected descriptor、replica status、generation、CRC が valid。
 - bitmap、inode、allocator summary、HRL、journal segment の coverage / bounds / overlap validation が PASS。
@@ -45,8 +46,9 @@ fail-closed 条件、unsupported option、write 前後の fsck、rollback、rele
   -o rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off
 ```
 
-このコマンドは T9 時点ではまだ使用不可である。実際に使えるようにするには、別チケットで mount admission
-wiring と regression を追加する。
+この形は T12 以降の experimental controlled write admission 入口である。ただし production
+cutover 入口ではなく、operator acceptance evidence は `scripts/v6-controlled-write-smoke.sh`
+で取得する。
 
 ## Unsupported option boundary
 
@@ -66,14 +68,20 @@ Controlled write opt-in の初期段階では、次を unsupported とする。
 
 ## Required operator checks
 
-Write 前:
+Preferred smoke:
+
+```sh
+scripts/v6-controlled-write-smoke.sh --image /var/lib/kafs/destination.img --yes
+```
+
+Manual reproduction write 前:
 
 ```sh
 ./kafsdump --json /var/lib/kafs/destination.img > /var/tmp/kafs-v6-before.json
 ./fsck.kafs --balanced-check /var/lib/kafs/destination.img
 ```
 
-Write smoke 後:
+Manual reproduction write smoke 後:
 
 ```sh
 sync
@@ -107,7 +115,7 @@ Release note には次を明記する。
 
 ## 次の実装条件
 
-次に code wiring へ進む場合、最初の slice は option parser と fail-closed regression にする。
+T9 時点で次に code wiring へ進む場合、最初の slice は option parser と fail-closed regression にする方針だった。
 
 - `--v6-write-mount`、`-o v6_write_mount`、`-o v6-write-mount` を parser に追加する。
 - `rw` なし、`ro` 同時指定、inspection 同時指定、writeback cache、TRIM、background scan enabled を拒否する。
@@ -117,7 +125,7 @@ Release note には次を明記する。
 ## T10 parser gate 結果
 
 T10 で上記 parser / fail-closed gate を追加した。`rw,v6_write_mount,no_writeback_cache,no_trim_on_free,
-bg_dedup_scan=off` まで満たした場合も、現段階では `controlled write mount is not enabled yet` として
+bg_dedup_scan=off` まで満たした場合も、T10 時点では `controlled write mount is not enabled yet` として
 拒否する。
 
 次に成功 path を入れる前に、`SDW-V6RT-T11 v6 FUSE write surface admission audit` で user-visible
@@ -134,3 +142,7 @@ hotplug delegated write を初期範囲外として扱う。
 T12 で `SDW-V6RT-T12 v6 controlled write admission skeleton and operation guard` を実装し、T10 parser gate を
 explicit opt-in 成功 path に接続しつつ T11 allowlist を runtime に実装した。次は T13 で write failure、
 copy_file_range fallback、post-write validation / rollback wording を固める。
+
+T14 で repeatable operator smoke helper、T15 で rejection matrix、T16 で help / man page
+synchronization を完了した。現在も production cutover は未解禁であり、controlled smoke は実験的な
+regular-file create/write/fsync acceptance evidence に限定する。

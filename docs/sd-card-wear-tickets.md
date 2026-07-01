@@ -643,7 +643,8 @@
 - 実施内容:
   - `docs/sd-card-wear-v6-explicit-write-cutover-boundary.md` に opt-in 名、fail-closed admission 条件、
     unsupported option、required fsck、rollback を固定した。
-  - `docs/kafsresize-cutover-playbook.md` に future controlled v6 write opt-in boundary を追加した。
+  - `docs/kafsresize-cutover-playbook.md` に、当時 future 扱いだった controlled v6 write opt-in
+    boundary を追加した。
   - `docs/release-note-v6-explicit-write-opt-in-boundary.md` に experimental / controlled opt-in の release
     note draft を追加した。
 - 完了条件:
@@ -665,7 +666,7 @@
   - `rw` 未指定、`ro` 同時指定、`v6_inspection_mount` 同時指定、`writeback_cache`、`trim_on_free`、
     `bg_dedup_scan=on` を拒否する fail-closed gate を追加した。
   - 推奨形 `rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off` まで満たしても、
-    現段階では `controlled write mount is not enabled yet` として拒否する。
+    T10 時点では `controlled write mount is not enabled yet` として拒否する。
   - `v6_descriptor_smoketest` に parser / fail-closed regression を追加した。
 - 完了条件:
   - `--v6-write-mount`、`-o v6_write_mount`、`-o v6-write-mount` が parser で認識される。
@@ -794,6 +795,31 @@
     fail-closed 条件として user-facing docs に出る。
   - 初期許可面が regular-file create/write/fsync/release に限定され、その他 metadata mutation は
     `EOPNOTSUPP` として説明される。
+- 実装メモ (2026-07-01):
+  - `kafs --help` と `man/kafs.1` を、reserved/future gate ではなく experimental controlled write
+    opt-in として説明する形に更新した。
+  - `rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off`、fail-closed 条件、
+    regular-file create/write/fsync/release の初期許可面を user-facing text に反映した。
+
+### SDW-V6RT-T17 v6 controlled write operator-doc consistency sweep
+
+- 目的: T14-T16 後の docs を、experimental controlled write は実装済みだが production cutover は
+  未解禁という境界にそろえる。
+- 変更:
+  - `docs/kafsresize-cutover-playbook.md` の v6 destination guidance を、controlled smoke helper は使えるが
+    general data-copy / production cutover ではないという表現に更新する。
+  - runtime handoff / cutover boundary / write-surface audit に、T14-T16 後の current boundary を追記する。
+- 完了条件:
+  - 現在状態として「v6 controlled write は未実装」と読める表現を残さない。
+  - 現在状態として「production v6 cutover が解禁済み」と読める表現を残さない。
+  - acceptance evidence は `scripts/v6-controlled-write-smoke.sh --image <image> --yes` を正規 helper として案内する。
+  - docs-only closeout として `git diff --check` と境界文言の `rg` 確認が PASS している。
+- 実装メモ (2026-07-01):
+  - `kafsresize-cutover-playbook.md` は、v6 destination を non-production descriptor destination とし、
+    controlled write helper は explicit acceptance smoke 専用で production data movement ではないと明記した。
+  - `sd-card-wear-v6-runtime-handoff-20260626.md`、`sd-card-wear-v6-explicit-write-cutover-boundary.md`、
+    `sd-card-wear-v6-fuse-write-surface-audit.md` に、T14-T16 後の current boundary を追記した。
+  - T9-T11 の historical note は履歴として残し、現在状態と誤読される `現段階` / future 表現を避けた。
 
 ---
 

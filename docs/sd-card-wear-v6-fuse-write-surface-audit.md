@@ -7,7 +7,7 @@
 ## 目的
 
 Controlled write mount の成功 path を入れる前に、user-visible FUSE write operations の初期許可範囲を
-function 単位で固定する。この文書は admission audit であり、v6 write mount を有効化しない。
+function 単位で固定する。この文書自体は admission audit であり、T12 以降の実装結果は末尾に追記する。
 
 ## 観測した入口
 
@@ -26,8 +26,8 @@ function 単位で固定する。この文書は admission audit であり、v6 
 - `kafs_op_fsync`
 - `kafs_op_release`
 
-現状の入口 guard は `kafs_runtime_write_guard()` / `kafs_mutation_path_context()` で
-`c_runtime_read_only` の場合だけ `-EROFS` を返す。T10 時点では `rw,v6_write_mount` の推奨形も
+T11 監査時点の入口 guard は `kafs_runtime_write_guard()` / `kafs_mutation_path_context()` で
+`c_runtime_read_only` の場合だけ `-EROFS` を返していた。T10 時点では `rw,v6_write_mount` の推奨形も
 `controlled write mount is not enabled yet` で拒否されるため、以下の判定は次の成功 path 実装向けの
 allowlist である。
 
@@ -133,3 +133,17 @@ copy/reflink の operator wording は次の通り固定する。
   それは通常 regular-file read/write と同じ扱いであり、copy/reflink support の証明にはしない。
 - controlled write acceptance smoke は `cp` / `copy_file_range` ではなく、明示的な create/write/fsync と
   post-write `fsck.kafs --balanced-check` を使う。
+
+## T14-T16 operator boundary result
+
+`SDW-V6RT-T14` で `scripts/v6-controlled-write-smoke.sh` を追加し、controlled write
+acceptance evidence は repeatable helper で取得できるようになった。`SDW-V6RT-T15` で
+allowlist 外 operation の rejection matrix を追加し、`SDW-V6RT-T16` で `kafs --help` と
+`man/kafs.1` の operator-facing wording を現在の experimental opt-in に同期した。
+
+この結果、現在の boundary は次の通りである。
+
+- experimental controlled write opt-in は実装済み。
+- production v6 cutover は未解禁。
+- 初期許可面は regular-file create/write/fsync/release に限定する。
+- acceptance smoke は `scripts/v6-controlled-write-smoke.sh --image <image> --yes` を使う。

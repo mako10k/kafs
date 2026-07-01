@@ -2,12 +2,17 @@
 
 ## Scope
 
-This handoff covers the Post-Phase 5 format v6 runtime mount enablement work
-through `SDW-V6RT-T13 v6 controlled write durability and fallback hardening`.
+This handoff covers the Post-Phase 5 format v6 runtime mount enablement work.
+It was originally written after `SDW-V6RT-T13 v6 controlled write durability and
+fallback hardening` and has been updated through the controlled write operator
+documentation closeout.
 
-Current implementation head before this handoff document:
+Implementation checkpoints:
 
 - `83e9505 Harden v6 controlled write durability`
+- `dea5df3 Add v6 controlled write smoke helper`
+- `20d653d Extend v6 controlled write rejection smoke`
+- `ead12aa Sync v6 controlled write help text`
 
 ## Current status
 
@@ -51,7 +56,16 @@ Operator docs updated:
 - [sd-card-wear-v6-fuse-write-surface-audit.md](sd-card-wear-v6-fuse-write-surface-audit.md)
 - [sd-card-wear-tickets.md](sd-card-wear-tickets.md)
 
-## Validation run
+Additional closeout after the original handoff:
+
+- T14 added `scripts/v6-controlled-write-smoke.sh` as the repeatable acceptance
+  helper.
+- T15 extended `v6_descriptor_smoketest` with the allowlist-out rejection
+  matrix.
+- T16 synchronized `kafs --help` and `man/kafs.1` with the experimental
+  controlled write boundary.
+
+## Original validation run
 
 Commands completed successfully:
 
@@ -86,35 +100,18 @@ block this closeout.
 - FUSE mount availability can make some mount tests skip in constrained
   environments.
 
-## Recommended next task
+## Current next boundary
 
-`SDW-V6RT-T14 v6 controlled write operator smoke script`
-
-Goal: turn the documented operator smoke into a repeatable script under
-`scripts/` that captures:
-
-- before/after `kafsdump --json`
-- before/after `fsck.kafs --balanced-check`
-- mount log
-- exact regular-file create/write/fsync workload
-- image stat/digest
-- failure artifacts under a timestamped report directory
-
-Acceptance criteria:
-
-- script refuses unsafe option sets and does not use copy/reflink as acceptance
-  evidence
-- script exits non-zero and preserves artifacts when mount, workload, unmount,
-  or post-write fsck fails
-- focused regression or shellcheck/static coverage is added where practical
-- closeout runs at least `make -j2`, the relevant smoke/test command, and the
-  static gates needed for changed scripts/docs
+The controlled write path is available only as an experimental opt-in and
+operator smoke surface. The next boundary before any production cutover is a
+separate production acceptance gate for real workload copy, power-loss or
+torn-write behavior, rollback evidence, and operational recovery.
 
 ## Resume checklist
 
 1. Confirm the pushed branch and clean worktree.
-2. Start from `docs/sd-card-wear-tickets.md` at `SDW-V6RT-T14`.
-3. Register or implement `SDW-V6RT-T14` before expanding the allowed FUSE write
-   surface.
-4. Do not enable production v6 write cutover until the operator smoke script and
-   artifact workflow are proven.
+2. Start from `docs/sd-card-wear-tickets.md` at the latest `SDW-V6RT` entry.
+3. Keep the allowed FUSE write surface narrow until a new ticket explicitly
+   broadens it.
+4. Do not enable production v6 write cutover from the controlled smoke result
+   alone.
