@@ -48,6 +48,16 @@ The initial controlled opt-in excludes:
 `fsck.kafs` remains detect-only for v6 write outcomes. Operators must run
 `fsck.kafs --balanced-check <image>` before and after a write smoke session.
 
+The repeatable helper is:
+
+```sh
+scripts/v6-controlled-write-smoke.sh --image <image> --yes
+```
+
+It records timestamped before/after dumps, fsck stdout/stderr, mount log,
+image stat/digest, and the exact regular-file workload under `report/` by
+default.
+
 ## Durability and copy fallback notes
 
 The controlled write smoke covers zero-filled block materialization, partial

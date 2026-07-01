@@ -187,6 +187,19 @@ The mount must use an explicit controlled opt-in:
 	-o rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off
 ```
 
+Use the repeatable operator helper for acceptance evidence:
+
+```sh
+scripts/v6-controlled-write-smoke.sh \
+	--image /var/lib/kafs/destination.img \
+	--yes \
+	--report-root /var/tmp/kafs-v6-controlled-write-smoke
+```
+
+The helper uses the controlled opt-in, adds `fsync_policy=full`, runs an
+explicit regular-file create/write/fsync workload, unmounts, and stores
+timestamped before/after artifacts under the report root.
+
 Admission fails closed when `rw,v6_write_mount` is not explicit, when `ro` or
 `v6_inspection_mount` is also present, or when unsupported writeback cache,
 runtime TRIM, delayed/background mutation, hotplug delegated write, or v6
@@ -198,14 +211,15 @@ copy/reflink operations as the acceptance signal. Some kernels satisfy
 hook is reached; that fallback is ordinary regular-file write behavior, while
 `KAFS_IOCTL_COPY`, `FICLONE`, and the FUSE copy hook remain unsupported.
 
-Before the first write-capable smoke session, capture an offline baseline:
+For manual reproduction only, capture an offline baseline before the first
+write-capable smoke session:
 
 ```sh
 ./kafsdump --json /var/lib/kafs/destination.img > /var/tmp/kafs-v6-before.json
 ./fsck.kafs --balanced-check /var/lib/kafs/destination.img
 ```
 
-After the smoke session, unmount and validate offline again:
+After a manual smoke session, unmount and validate offline again:
 
 ```sh
 sync

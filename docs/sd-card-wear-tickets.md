@@ -1,6 +1,6 @@
 # KAFS SDカード劣化対策 バックログ
 
-最終更新: 2026-06-26
+最終更新: 2026-07-01
 
 計画: [sd-card-wear-plan.md](sd-card-wear-plan.md)
 
@@ -758,6 +758,16 @@
   - mount、workload、unmount、post-write fsck のいずれかが失敗した場合、非 0 exit で artifact を残す。
   - copy/reflink や `cp` を acceptance evidence とせず、明示的な regular-file create/write/fsync を使う。
   - closeout で relevant smoke/test と script/doc 向け static gates が PASS している。
+- 実装メモ (2026-07-01):
+  - `scripts/v6-controlled-write-smoke.sh` を追加し、既定で `report/v6-controlled-write-smoke/<timestamp>`
+    に artifact を保存する。
+  - script は `--yes` を必須にする。既定 mount option は
+    `rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full`
+    とする。
+  - `ro`、`v6_inspection_mount`、`writeback_cache`、`trim_on_free`、`bg_dedup_scan=on`、hotplug、
+    `fsync_policy=full` 以外の sync policy は helper 側でも拒否する。
+  - workload は script 内に保存される Python helper で regular-file create/write/fsync/fdatasync/readback を
+    実行し、`cp` / `copy_file_range` / reflink を acceptance evidence にしない。
 
 ---
 
