@@ -89,13 +89,15 @@ binaries:
 runtime helper surface for the dedicated entrypoint. T25 links `kafs-v6` with a
 common object set that includes `kafs.c`, guarded by `KAFS_V6_ENTRYPOINT`, while
 keeping `kafs_v6_runtime.c` out of production `kafs`. T26 uses the same common
-object boundary for controlled-write admission. Later slices can replace the
-common-object bridge with a non-installed static archive or a narrower runtime
-context helper.
+object boundary for controlled-write admission. T27 removes the `kafs-v6`
+bridge dependency on the generic v4/v5 `kafs_main_open_runtime_context()` path
+and gives the dedicated entrypoint its own v6 open/admit/init helper. Later
+slices can replace the common-object bridge with a non-installed static archive
+or a narrower runtime context helper.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).
-The immediate next implementation boundary is v6-native runtime context
+The immediate next implementation boundary is descriptor-backed runtime view
 pureification, not write-surface expansion.
 
 ## Smoke

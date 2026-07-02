@@ -1018,6 +1018,31 @@
     を正規 mount command とし、legacy `v6_write_mount` mount option を拒否する。
   - `make check -j2` は all 26 tests passed、3 tests not run で完了した。
 
+### SDW-V6RT-T27 kafs-v6 runtime context opener pureification
+
+- 目的: `kafs-v6` の successful runtime path が production `kafs` の v4/v5 汎用
+  `kafs_main_open_runtime_context()` 分岐に依存しないようにし、v6 専用 open/read/admit/init sequence
+  へ切り分ける。これは pureification slice であり、write surface expansion ではない。
+- 変更:
+  - `KAFS_V6_ENTRYPOINT` bridge に v6 専用 runtime context opener を追加し、image open、superblock
+    read、format v6 check、descriptor-backed admission、diag/journal init、runtime lock を dedicated
+    entrypoint sequence として実行する。
+  - `kafs-v6` bridge から `kafs_main_open_runtime_context()` 呼び出しを外し、legacy `kafs` の v6
+    offline/preflight/handoff branch と successful `kafs-v6` mount path を分離する。
+  - `kafs_main_init_context()` は fd 初期値を `-1` にし、dedicated opener の failure path が stdin を
+    誤って close しないようにする。
+- 完了条件:
+  - `kafs-v6 --inspection-mount` / `--controlled-write-mount` の acceptance behavior が T25/T26 と同じ。
+  - production `kafs` の v4/v5 runtime と legacy v6 fail-closed guidance は維持されている。
+  - `./scripts/format.sh`、`git diff --check`、`./scripts/test-cli-surface.sh`、`make -j2`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`make check -j2` が PASS している。
+- 実装メモ (2026-07-02):
+  - `kafs-v6` bridge から `kafs_main_open_runtime_context()` 呼び出しを外し、
+    `kafs_v6_entrypoint_open_runtime_context()` で v6 専用の open/read/admit/init sequence を実行するようにした。
+  - inspection は read-only open + descriptor-backed admission + diag init、controlled-write は read-write open
+    + descriptor-backed admission + diag/journal init を dedicated entrypoint helper で分離した。
+  - `make check -j2` は all 29 tests passed で完了した。
+
 ---
 
 ## 最初に着手するチケット

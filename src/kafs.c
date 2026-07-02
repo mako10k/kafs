@@ -12744,6 +12744,7 @@ static void kafs_main_init_context(kafs_context_t *ctx, const kafs_main_options_
   memset(ctx, 0, sizeof(*ctx));
   kafs_main_set_mountpoint(ctx, mount_arg, mnt_abs, mnt_abs_size);
 
+  ctx->c_fd = -1;
   ctx->c_hotplug_fd = -1;
   ctx->c_hotplug_state = KAFS_HOTPLUG_STATE_DISABLED;
   ctx->c_hotplug_wait_queue_limit = KAFS_HOTPLUG_WAIT_QUEUE_LIMIT_DEFAULT;
@@ -13490,6 +13491,73 @@ static int kafs_main_cleanup(kafs_context_t *ctx, char *hotplug_uds_path, int rc
 }
 
 #ifdef KAFS_V6_ENTRYPOINT
+static int kafs_v6_entrypoint_read_superblock(kafs_context_t *ctx, const char *image_path,
+                                              kafs_bool_t controlled_write_mount,
+                                              kafs_ssuperblock_t *sbdisk)
+{
+  const int open_flags = controlled_write_mount ? O_RDWR : O_RDONLY;
+  ctx->c_fd = open(image_path, open_flags, 0666);
+  if (ctx->c_fd < 0)
+  {
+    perror("open image");
+    fprintf(stderr, "image not found. run mkfs.kafs first.\n");
+    return 2;
+  }
+
+  ctx->c_blo_search = 0;
+  ctx->c_ino_search = 0;
+
+  int rc = kafs_ctx_read_superblock_fd(ctx, sbdisk);
+  if (rc != 0)
+  {
+    char errbuf[128];
+    fprintf(stderr, "kafs-v6: failed to read superblock: %s.\n",
+            kafs_main_rc_text(rc, errbuf, sizeof(errbuf)));
+    return 2;
+  }
+  if (kafs_sb_magic_get(sbdisk) != KAFS_MAGIC)
+  {
+    fprintf(stderr, "kafs-v6: invalid magic. run mkfs.kafs to format.\n");
+    kafs_ctx_close_fd(ctx);
+    return 2;
+  }
+
+  uint32_t fmt_ver = kafs_sb_format_version_get(sbdisk);
+  if (fmt_ver != KAFS_FORMAT_VERSION_V6)
+  {
+    fprintf(stderr, "kafs-v6 %s mount applies only to format v6 images (found v%u).\n",
+            controlled_write_mount ? "controlled write" : "inspection", fmt_ver);
+    kafs_ctx_close_fd(ctx);
+    return 2;
+  }
+  return 0;
+}
+
+static int kafs_v6_entrypoint_open_runtime_context(kafs_context_t *ctx, const char *image_path,
+                                                   kafs_bool_t controlled_write_mount)
+{
+  kafs_ssuperblock_t sbdisk;
+  if (kafs_v6_entrypoint_read_superblock(ctx, image_path, controlled_write_mount, &sbdisk) != 0)
+    return 2;
+
+  kafs_inocnt_t inocnt = 0;
+  kafs_blkcnt_t r_blkcnt = 0;
+  int rc = controlled_write_mount
+               ? kafs_main_v6_controlled_write_mount(ctx, &sbdisk, &inocnt, &r_blkcnt)
+               : kafs_main_v6_inspection_mount(ctx, &sbdisk, &inocnt, &r_blkcnt);
+  if (rc != 0)
+  {
+    kafs_ctx_close_fd(ctx);
+    return 2;
+  }
+
+  kafs_main_init_runtime_diag(ctx, image_path, inocnt);
+  if (controlled_write_mount)
+    kafs_main_init_runtime_journal(ctx, image_path, r_blkcnt);
+  kafs_main_lock_runtime_image(ctx, image_path);
+  return 0;
+}
+
 static int kafs_v6_mount_main_common(const char *image_path, const char *mountpoint, int argc_extra,
                                      char **argv_extra, kafs_bool_t controlled_write_mount)
 {
@@ -13538,10 +13606,8 @@ static int kafs_v6_mount_main_common(const char *image_path, const char *mountpo
   hotplug_uds_path[0] = '\0';
   kafs_main_init_context(&ctx, &opts, argv_clean[1], mnt_abs, sizeof(mnt_abs));
 
-  kafs_main_open_runtime_context(&ctx, image_path, KAFS_FALSE, KAFS_FALSE,
-                                 controlled_write_mount ? KAFS_FALSE : KAFS_TRUE,
-                                 controlled_write_mount ? KAFS_TRUE : KAFS_FALSE,
-                                 controlled_write_mount ? KAFS_FALSE : KAFS_TRUE);
+  if (kafs_v6_entrypoint_open_runtime_context(&ctx, image_path, controlled_write_mount) != 0)
+    return 2;
   if (ctx.c_runtime_read_only)
   {
     opts.writeback_cache_enabled = KAFS_FALSE;

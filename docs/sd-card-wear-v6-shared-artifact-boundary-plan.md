@@ -137,6 +137,12 @@ needs more shared build machinery, the acceptable first form remains a
 non-installed static archive or common object/source list. Do not add a new
 runtime executable.
 
+`SDW-V6RT-T27` starts that pureification by removing the `kafs-v6` bridge call
+into the generic v4/v5 runtime context opener. `kafs-v6` still shares common
+runtime mechanics through `KAFS_V6_ENTRYPOINT`, but its open/read/admit/init
+sequence is now a dedicated v6 entrypoint helper rather than a legacy production
+`kafs` branch.
+
 ## Validation Standard
 
 For boundary-only changes:
