@@ -881,6 +881,21 @@
   - `docs/sd-card-wear-v6-runtime-entrypoint-plan.md` に CLI 契約、移動対象、shared implementation
     boundary、T20 smoke を記録した。
 
+### SDW-V6RT-T21 v6 runtime admission extraction phase 1
+
+- 目的: v6 runtime admission の option / image-format validation を専用 helper へ切り出し、`kafs-v6`
+  と production `kafs` entrypoint が同じ request model を使えるようにする。
+- 変更:
+  - `kafs_v6_runtime_request_t` と validation reason を `src/kafs_v6_runtime.h` に追加する。
+  - `kafs-v6` の CLI shape / image-format validation を `src/kafs_v6_runtime.c` 経由にする。
+  - production `kafs` の既存 v6 inspection / controlled-write option validation は user-facing error
+    wording を維持したまま、同じ helper を使う。
+- 完了条件:
+  - `kafs-v6` の T20 fail-closed behavior が維持される。
+  - `v6_descriptor_smoketest` の既存 v6 admission / rejection matrix が PASS する。
+  - `kafs` の v4/v5 production runtime behavior を広げない。
+  - `make -j2` と CLI surface smoke が PASS している。
+
 ---
 
 ## 最初に着手するチケット

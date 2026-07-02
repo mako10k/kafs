@@ -1,38 +1,17 @@
 #include "kafs.h"
 #include "kafs_cli_opts.h"
-#include "kafs_superblock.h"
+#include "kafs_v6_runtime.h"
 
 #include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
-
-typedef enum kafs_v6_mode
-{
-  KAFS_V6_MODE_UNSET = 0,
-  KAFS_V6_MODE_INSPECTION,
-  KAFS_V6_MODE_CONTROLLED_WRITE,
-} kafs_v6_mode_t;
 
 typedef struct kafs_v6_options
 {
   const char *image_path;
   const char *mountpoint;
-  kafs_v6_mode_t mode;
+  kafs_v6_runtime_request_t request;
   int show_help;
-  int mount_read_only_requested;
-  int mount_read_write_requested;
-  int no_writeback_cache;
-  int writeback_cache;
-  int no_trim_on_free;
-  int trim_on_free;
-  int bg_dedup_scan_off;
-  int bg_dedup_scan_on;
-  int fsync_policy_full;
-  int fsync_policy_other;
-  int legacy_v6_mount_token;
-  int hotplug_token;
 } kafs_v6_options_t;
 
 static void usage(const char *prog)
@@ -64,53 +43,66 @@ static void usage(const char *prog)
 static void kafs_v6_options_init(kafs_v6_options_t *opts)
 {
   memset(opts, 0, sizeof(*opts));
+  kafs_v6_runtime_request_init(&opts->request);
   opts->image_path = getenv("KAFS_IMAGE");
 }
 
-static int kafs_v6_set_mode(kafs_v6_options_t *opts, kafs_v6_mode_t mode)
+static int kafs_v6_set_mode(kafs_v6_options_t *opts, kafs_v6_runtime_mode_t mode)
 {
-  if (opts->mode != KAFS_V6_MODE_UNSET && opts->mode != mode)
+  if (opts->request.mode != KAFS_V6_RUNTIME_MODE_NONE && opts->request.mode != mode)
   {
     fprintf(stderr, "kafs-v6 accepts exactly one runtime mode.\n");
     return -EINVAL;
   }
-  opts->mode = mode;
+  opts->request.mode = mode;
   return 0;
 }
 
 static void kafs_v6_record_o_token(kafs_v6_options_t *opts, const char *tok)
 {
   if (strcmp(tok, "ro") == 0)
-    opts->mount_read_only_requested = 1;
+  {
+    opts->request.mount_read_only_requested = 1;
+    opts->request.mount_read_only_seen = 1;
+  }
   else if (strcmp(tok, "rw") == 0)
-    opts->mount_read_write_requested = 1;
+    opts->request.mount_read_write_requested = 1;
   else if (strcmp(tok, "no_writeback_cache") == 0 || strcmp(tok, "no-writeback-cache") == 0)
-    opts->no_writeback_cache = 1;
+    opts->request.no_writeback_cache_requested = 1;
   else if (strcmp(tok, "writeback_cache") == 0 || strcmp(tok, "writeback-cache") == 0)
-    opts->writeback_cache = 1;
+  {
+    opts->request.writeback_cache_enabled = 1;
+    opts->request.writeback_cache_explicit = 1;
+  }
   else if (strcmp(tok, "no_trim_on_free") == 0 || strcmp(tok, "no-trim-on-free") == 0)
-    opts->no_trim_on_free = 1;
+    opts->request.no_trim_on_free_requested = 1;
   else if (strcmp(tok, "trim_on_free") == 0 || strcmp(tok, "trim-on-free") == 0)
-    opts->trim_on_free = 1;
+    opts->request.trim_on_free_enabled = 1;
   else if (strcmp(tok, "bg_dedup_scan=off") == 0 || strcmp(tok, "dedup_scan=off") == 0 ||
            strcmp(tok, "no_bg_dedup_scan") == 0 || strcmp(tok, "no-bg-dedup-scan") == 0)
-    opts->bg_dedup_scan_off = 1;
+    opts->request.bg_dedup_scan_off_requested = 1;
   else if (strcmp(tok, "bg_dedup_scan") == 0 || strcmp(tok, "dedup_scan") == 0 ||
            strcmp(tok, "bg_dedup_scan=on") == 0 || strcmp(tok, "dedup_scan=on") == 0)
-    opts->bg_dedup_scan_on = 1;
+  {
+    opts->request.bg_dedup_scan_enabled = 1;
+    opts->request.bg_dedup_scan_explicit = 1;
+  }
   else if (strcmp(tok, "fsync_policy=full") == 0)
-    opts->fsync_policy_full = 1;
+  {
+    opts->request.fsync_policy_full_requested = 1;
+    opts->request.fsync_policy = KAFS_FSYNC_POLICY_FULL;
+  }
   else if (strncmp(tok, "fsync_policy=", strlen("fsync_policy=")) == 0)
-    opts->fsync_policy_other = 1;
+    opts->request.fsync_policy_other_requested = 1;
   else if (strcmp(tok, "v6_inspection_mount") == 0 || strcmp(tok, "v6-inspection-mount") == 0 ||
            strcmp(tok, "v6_write_mount") == 0 || strcmp(tok, "v6-write-mount") == 0)
-    opts->legacy_v6_mount_token = 1;
+    opts->request.legacy_mode_token_seen = 1;
   else if (strcmp(tok, "hotplug") == 0 || strncmp(tok, "hotplug=", strlen("hotplug=")) == 0 ||
            strncmp(tok, "hotplug_uds=", strlen("hotplug_uds=")) == 0 ||
            strncmp(tok, "hotplug-uds=", strlen("hotplug-uds=")) == 0 ||
            strncmp(tok, "hotplug_back_bin=", strlen("hotplug_back_bin=")) == 0 ||
            strncmp(tok, "hotplug-back-bin=", strlen("hotplug-back-bin=")) == 0)
-    opts->hotplug_token = 1;
+    opts->request.hotplug_requested = 1;
 }
 
 static int kafs_v6_parse_o_list(kafs_v6_options_t *opts, const char *value)
@@ -175,19 +167,19 @@ static int kafs_v6_parse_args(int argc, char **argv, kafs_v6_options_t *opts)
     }
     if (strcmp(arg, "--inspection-mount") == 0)
     {
-      if (kafs_v6_set_mode(opts, KAFS_V6_MODE_INSPECTION) != 0)
+      if (kafs_v6_set_mode(opts, KAFS_V6_RUNTIME_MODE_INSPECTION) != 0)
         return -EINVAL;
       continue;
     }
     if (strcmp(arg, "--controlled-write-mount") == 0)
     {
-      if (kafs_v6_set_mode(opts, KAFS_V6_MODE_CONTROLLED_WRITE) != 0)
+      if (kafs_v6_set_mode(opts, KAFS_V6_RUNTIME_MODE_CONTROLLED_WRITE) != 0)
         return -EINVAL;
       continue;
     }
     if (strcmp(arg, "--v6-inspection-mount") == 0 || strcmp(arg, "--v6-write-mount") == 0)
     {
-      opts->legacy_v6_mount_token = 1;
+      opts->request.legacy_mode_token_seen = 1;
       continue;
     }
     if (strcmp(arg, "--option") == 0 || strcmp(arg, "-o") == 0)
@@ -214,7 +206,7 @@ static int kafs_v6_parse_args(int argc, char **argv, kafs_v6_options_t *opts)
         strcmp(arg, "--hotplug-back-bin") == 0 ||
         strncmp(arg, "--hotplug-back-bin=", strlen("--hotplug-back-bin=")) == 0)
     {
-      opts->hotplug_token = 1;
+      opts->request.hotplug_requested = 1;
       if ((strcmp(arg, "--hotplug-uds") == 0 || strcmp(arg, "--hotplug-back-bin") == 0) &&
           i + 1 < argc)
         i++;
@@ -231,6 +223,49 @@ static int kafs_v6_parse_args(int argc, char **argv, kafs_v6_options_t *opts)
   return 0;
 }
 
+static void kafs_v6_print_validation_error(kafs_v6_runtime_validation_reason_t reason)
+{
+  switch (reason)
+  {
+  case KAFS_V6_RUNTIME_INVALID_NO_MODE:
+    fprintf(stderr, "kafs-v6 requires --inspection-mount or --controlled-write-mount.\n");
+    return;
+  case KAFS_V6_RUNTIME_INVALID_LEGACY_MODE_TOKEN:
+    fprintf(stderr, "kafs-v6 owns the v6 runtime mode; do not pass legacy v6_* mount options.\n");
+    return;
+  case KAFS_V6_RUNTIME_INVALID_HOTPLUG:
+    fprintf(stderr, "kafs-v6 does not admit hotplug delegated write options.\n");
+    return;
+  case KAFS_V6_RUNTIME_INVALID_INSPECTION_NEEDS_RO:
+    fprintf(stderr, "kafs-v6 inspection mode requires -o ro and does not allow -o rw.\n");
+    return;
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_RO:
+    fprintf(stderr, "kafs-v6 controlled write mode does not allow -o ro.\n");
+    return;
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_UNSAFE_WRITEBACK:
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_UNSAFE_TRIM:
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_UNSAFE_BG_DEDUP:
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_UNSAFE_FSYNC:
+    fprintf(stderr, "kafs-v6 controlled write mode rejected unsafe mount options.\n");
+    return;
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_NEEDS_RW:
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_NEEDS_NO_WRITEBACK:
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_NEEDS_NO_TRIM:
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_NEEDS_BG_OFF:
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_NEEDS_FSYNC_FULL:
+    fprintf(stderr,
+            "kafs-v6 controlled write mode requires "
+            "-o rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full.\n");
+    return;
+  case KAFS_V6_RUNTIME_VALID:
+  case KAFS_V6_RUNTIME_INVALID_INSPECTION_WRITEBACK_CACHE:
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_WITH_INSPECTION:
+  default:
+    fprintf(stderr, "kafs-v6 rejected invalid v6 runtime admission options.\n");
+    return;
+  }
+}
+
 static int kafs_v6_validate_options(const kafs_v6_options_t *opts)
 {
   if (!opts->image_path || !opts->mountpoint)
@@ -238,83 +273,12 @@ static int kafs_v6_validate_options(const kafs_v6_options_t *opts)
     fprintf(stderr, "kafs-v6 requires an image path and mountpoint.\n");
     return -EINVAL;
   }
-  if (opts->mode == KAFS_V6_MODE_UNSET)
-  {
-    fprintf(stderr, "kafs-v6 requires --inspection-mount or --controlled-write-mount.\n");
-    return -EINVAL;
-  }
-  if (opts->legacy_v6_mount_token)
-  {
-    fprintf(stderr, "kafs-v6 owns the v6 runtime mode; do not pass legacy v6_* mount options.\n");
-    return -EINVAL;
-  }
-  if (opts->hotplug_token)
-  {
-    fprintf(stderr, "kafs-v6 does not admit hotplug delegated write options.\n");
-    return -EINVAL;
-  }
 
-  if (opts->mode == KAFS_V6_MODE_INSPECTION)
+  kafs_v6_runtime_validation_reason_t reason = KAFS_V6_RUNTIME_VALID;
+  if (kafs_v6_runtime_validate_entrypoint_request(&opts->request, &reason) != 0)
   {
-    if (!opts->mount_read_only_requested || opts->mount_read_write_requested)
-    {
-      fprintf(stderr, "kafs-v6 inspection mode requires -o ro and does not allow -o rw.\n");
-      return -EINVAL;
-    }
-    return 0;
-  }
-
-  if (opts->mount_read_only_requested)
-  {
-    fprintf(stderr, "kafs-v6 controlled write mode does not allow -o ro.\n");
+    kafs_v6_print_validation_error(reason);
     return -EINVAL;
-  }
-  if (!opts->mount_read_write_requested || !opts->no_writeback_cache || !opts->no_trim_on_free ||
-      !opts->bg_dedup_scan_off || !opts->fsync_policy_full)
-  {
-    fprintf(stderr,
-            "kafs-v6 controlled write mode requires "
-            "-o rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full.\n");
-    return -EINVAL;
-  }
-  if (opts->writeback_cache || opts->trim_on_free || opts->bg_dedup_scan_on ||
-      opts->fsync_policy_other)
-  {
-    fprintf(stderr, "kafs-v6 controlled write mode rejected unsafe mount options.\n");
-    return -EINVAL;
-  }
-  return 0;
-}
-
-static int kafs_v6_check_image_format(const char *image_path)
-{
-  kafs_ssuperblock_t sb;
-  int fd = open(image_path, O_RDONLY | O_CLOEXEC);
-  if (fd < 0)
-  {
-    fprintf(stderr, "kafs-v6: open image failed: %s: %s\n", image_path, strerror(errno));
-    return -errno;
-  }
-
-  ssize_t r = pread(fd, &sb, sizeof(sb), 0);
-  int saved_errno = errno;
-  close(fd);
-  if (r != (ssize_t)sizeof(sb))
-  {
-    fprintf(stderr, "kafs-v6: failed to read superblock from %s: %s\n", image_path,
-            (r < 0) ? strerror(saved_errno) : "short read");
-    return (r < 0) ? -saved_errno : -EIO;
-  }
-  if (kafs_sb_magic_get(&sb) != KAFS_MAGIC)
-  {
-    fprintf(stderr, "kafs-v6: invalid KAFS magic in %s.\n", image_path);
-    return -EINVAL;
-  }
-  if (kafs_sb_format_version_get(&sb) != KAFS_FORMAT_VERSION_V6)
-  {
-    fprintf(stderr, "kafs-v6: image is format v%u; expected format v6.\n",
-            (unsigned)kafs_sb_format_version_get(&sb));
-    return -EPROTONOSUPPORT;
   }
   return 0;
 }
@@ -336,7 +300,8 @@ int main(int argc, char **argv)
     usage(argv[0]);
     return 2;
   }
-  if (kafs_v6_check_image_format(opts.image_path) != 0)
+  if (kafs_v6_runtime_check_image_format(opts.image_path, KAFS_FORMAT_VERSION_V6, stderr,
+                                         "kafs-v6") != 0)
     return 2;
 
   fprintf(stderr, "kafs-v6: format v6 runtime entrypoint skeleton validated the CLI boundary and "
