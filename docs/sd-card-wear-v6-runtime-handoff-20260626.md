@@ -4,8 +4,8 @@
 
 This handoff covers the Post-Phase 5 format v6 runtime mount enablement work.
 It was originally written after `SDW-V6RT-T13 v6 controlled write durability and
-fallback hardening` and has been updated through the controlled write operator
-documentation closeout.
+fallback hardening` and is now updated through the 2026-07-02 `kafs-v6`
+entrypoint isolation and runtime-context opener pureification closeout.
 
 Implementation checkpoints:
 
@@ -13,17 +13,27 @@ Implementation checkpoints:
 - `dea5df3 Add v6 controlled write smoke helper`
 - `20d653d Extend v6 controlled write rejection smoke`
 - `ead12aa Sync v6 controlled write help text`
+- `ec233f8 Move v6 inspection admission behind kafs-v6`
+- `2b9e53d Move v6 controlled write admission behind kafs-v6`
+- `7568068 Split kafs-v6 runtime context opener`
 
 ## Current status
 
-Format v6 now has two explicit runtime paths:
+Format v6 now has two explicit runtime paths, both owned by the dedicated
+`kafs-v6` runtime entrypoint:
 
-- Inspection mount: `-o ro,v6_inspection_mount`
+- Inspection mount: `kafs-v6 --inspection-mount <mountpoint> -o ro`
 - Experimental controlled write mount:
-  `-o rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off`
 
-Normal v6 mount attempts still do not become implicit write admission.
-Controlled write admission is not a production default cutover path.
+```sh
+kafs-v6 --controlled-write-mount <mountpoint> -o \
+  rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full
+```
+
+Normal v6 mount attempts through production `kafs` still do not become implicit
+runtime admission. Legacy `kafs -o v6_inspection_mount` and
+`kafs -o v6_write_mount` fail closed with `kafs-v6` guidance. Controlled write
+admission is not a production default cutover path.
 
 Initial controlled write scope is intentionally narrow:
 
@@ -72,6 +82,51 @@ Additional closeout after the original handoff:
 - T20 added `kafs-v6` as the dedicated v6 runtime entrypoint skeleton and
   recorded the CLI contract / shared-code split plan in
   [sd-card-wear-v6-runtime-entrypoint-plan.md](sd-card-wear-v6-runtime-entrypoint-plan.md).
+- T23 recorded the v6 cutover preparation policy: v6 has no compatibility
+  promise before cutover, while v4/v5 compatibility remains protected.
+- T24 recorded the shared artifact boundary: final runtime binaries are
+  `kafs` and `kafs-v6`; shared implementation may use common objects,
+  non-installed archives, or future shared libraries.
+- T25 moved read-only v6 inspection admission behind
+  `kafs-v6 --inspection-mount`.
+- T26 moved controlled-write admission behind
+  `kafs-v6 --controlled-write-mount` and updated the operator smoke helper to
+  use that entrypoint.
+- T27 split the `kafs-v6` successful runtime path away from the generic v4/v5
+  `kafs_main_open_runtime_context()` branch and added a dedicated v6
+  open/read/admit/init helper.
+
+## 2026-07-02 closeout
+
+Latest implementation checkpoint before this handoff refresh:
+
+- `7568068 Split kafs-v6 runtime context opener`
+
+Current validation:
+
+```sh
+make -j2
+./scripts/format.sh
+git diff --check
+./scripts/test-cli-surface.sh
+make -C tests check TESTS=v6_descriptor_smoketest
+make check -j2
+```
+
+Latest `make check -j2` result:
+
+- all 29 tests passed
+
+Current entrypoint boundary:
+
+- `kafs`: production runtime for v4/v5 before v6 cutover; legacy v6
+  inspection/write tokens fail closed with `kafs-v6` guidance.
+- `kafs-v6`: dedicated format v6 runtime entrypoint; owns v6 inspection and
+  controlled-write admission.
+- `kafs_v6_runtime.c`: linked only into `kafs-v6`, not production `kafs`.
+- Shared implementation is currently through the `KAFS_V6_ENTRYPOINT` common
+  object boundary in `kafs.c`; future slices may replace this with a
+  non-installed archive or narrower runtime helper.
 
 ## Original validation run
 
@@ -110,14 +165,20 @@ block this closeout.
 
 ## Current next boundary
 
-The controlled write path is available only as an experimental opt-in and
-operator smoke surface in the current `kafs` binary. Do not broaden that
-user-facing v6 write surface in `kafs` as the next step.
+The next boundary is descriptor-backed runtime view pureification. Do not
+broaden the v6 write surface as the next step.
 
-The next boundary is v6 runtime admission extraction: keep `kafs-v6` as the
-dedicated entrypoint, move v6-specific admission code out of the production
-`kafs` entrypoint, and factor shared code through libraries or common objects.
-Production cutover discussion stays behind that split and behind later
+Start from the pressure points recorded in
+[sd-card-wear-v6-runtime-entrypoint-plan.md](sd-card-wear-v6-runtime-entrypoint-plan.md):
+
+- descriptor-backed runtime views instead of v5-style mmap geometry;
+- controlled-write runtime context setup that does not inherit generic v5
+  worker assumptions;
+- explicit v6 delayed/background mutation policy;
+- retirement plan for legacy v6 diagnostic scaffolding in `kafs` after
+  operator workflows no longer depend on it.
+
+Production cutover discussion stays behind that pureification and behind later
 v5-parity, workload-copy, power-loss or torn-write, rollback, and recovery
 evidence.
 
@@ -125,9 +186,11 @@ evidence.
 
 1. Confirm the pushed branch and clean worktree.
 2. Start from `docs/sd-card-wear-tickets.md` at the latest `SDW-V6RT` entry.
-3. Start the next implementation from `kafs-v6` admission extraction, not from a
-   broader `kafs` controlled-write surface.
-4. Keep shared code in libraries or common objects rather than duplicating v5/v6
+3. Confirm `kafs-v6 --inspection-mount` and `--controlled-write-mount` remain
+   the only successful v6 runtime admission paths.
+4. Start the next implementation from descriptor-backed runtime view
+   pureification, not from a broader write surface.
+5. Keep shared code in libraries or common objects rather than duplicating v5/v6
    filesystem logic.
-5. Do not enable production v6 write cutover from the controlled smoke result
+6. Do not enable production v6 write cutover from the controlled smoke result
    alone.
