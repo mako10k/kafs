@@ -214,6 +214,12 @@ const char *kafs_test_kafs_bin(void)
   return kafs_test_resolve_tool("KAFS_TEST_KAFS", "kafs", path);
 }
 
+const char *kafs_test_kafs_v6_bin(void)
+{
+  static char path[PATH_MAX];
+  return kafs_test_resolve_tool("KAFS_TEST_KAFS_V6", "kafs-v6", path);
+}
+
 const char *kafs_test_mkfs_bin(void)
 {
   static char path[PATH_MAX];

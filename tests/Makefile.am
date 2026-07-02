@@ -14,6 +14,7 @@ noinst_HEADERS = test_utils.h
 # Provide deterministic paths to the built tools for tests that exec them.
 AM_TESTS_ENVIRONMENT = \
 	KAFS_TEST_KAFS='$(abs_top_builddir)/src/kafs'; \
+	KAFS_TEST_KAFS_V6='$(abs_top_builddir)/src/kafs-v6'; \
 	KAFS_TEST_KAFSCTL='$(abs_top_builddir)/src/kafsctl'; \
 	KAFS_TEST_MKFS='$(abs_top_builddir)/src/mkfs.kafs'; \
 	KAFS_TEST_FSCK='$(abs_top_builddir)/src/fsck.kafs'; \
@@ -21,7 +22,7 @@ AM_TESTS_ENVIRONMENT = \
 	KAFS_TEST_KAFSRESIZE='$(abs_top_builddir)/src/kafsresize'; \
 	KAFS_TEST_KAFSDUMP='$(abs_top_builddir)/src/kafsdump'; \
 	KAFS_TEST_KAFS_BACK='$(abs_top_builddir)/src/kafs-back'; \
-	export KAFS_TEST_KAFS KAFS_TEST_KAFSCTL KAFS_TEST_MKFS KAFS_TEST_FSCK KAFS_TEST_KAFS_INFO KAFS_TEST_KAFSRESIZE KAFS_TEST_KAFSDUMP KAFS_TEST_KAFS_BACK;
+	export KAFS_TEST_KAFS KAFS_TEST_KAFS_V6 KAFS_TEST_KAFSCTL KAFS_TEST_MKFS KAFS_TEST_FSCK KAFS_TEST_KAFS_INFO KAFS_TEST_KAFSRESIZE KAFS_TEST_KAFSDUMP KAFS_TEST_KAFS_BACK;
 
 # --- Tests ---
 # NOTE: stress_fs mounts in multithread mode and exercises heavier workloads.

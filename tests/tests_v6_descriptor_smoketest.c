@@ -133,6 +133,39 @@ static int check_v6_descriptor_direct(const char *img)
   return 0;
 }
 
+static int corrupt_all_v6_descriptors(const char *img)
+{
+  int fd = open(img, O_RDWR);
+  if (fd < 0)
+    return -errno;
+
+  kafs_ssuperblock_t sb;
+  uint64_t file_size = 0;
+  kafs_v6_layout_report_t report;
+  int rc = kafs_pread_all(fd, &sb, sizeof(sb), 0);
+  if (rc == 0)
+    rc = kafs_offline_detect_file_size(fd, &file_size);
+  if (rc == 0)
+    rc = kafs_v6_discover_layout(fd, &sb, file_size, &report);
+  if (rc == 0 && (report.replica_count == 0u || report.descriptor_bytes == 0u))
+    rc = -EINVAL;
+
+  for (uint32_t i = 0; rc == 0 && i < report.replica_count; ++i)
+  {
+    uint8_t byte = 0;
+    off_t off = (off_t)(report.replicas[i].offset + report.descriptor_bytes - 1u);
+    rc = kafs_pread_all(fd, &byte, sizeof(byte), off);
+    if (rc == 0)
+    {
+      byte ^= 0x5au;
+      rc = kafs_pwrite_all(fd, &byte, sizeof(byte), off);
+    }
+  }
+
+  close(fd);
+  return rc;
+}
+
 static int file_contains(const char *path, const char *needle)
 {
   FILE *fp = fopen(path, "r");
@@ -1474,6 +1507,53 @@ int main(void)
       !strstr(out, "offline-only"))
   {
     tlogf("v6 runtime mount error missing preflight/offline-only guidance: %s", out);
+    return 1;
+  }
+
+  if (mkdir("mnt-kafsv6", 0755) != 0)
+  {
+    tlogf("mkdir mnt-kafsv6 failed");
+    return 1;
+  }
+  char *kafsv6_argv[] = {(char *)kafs_test_kafs_v6_bin(), (char *)img, (char *)"mnt-kafsv6",
+                         (char *)"--inspection-mount", (char *)"-o", (char *)"ro", NULL};
+  if (run_cmd_capture(kafsv6_argv, 2, out, sizeof(out)) != 0)
+  {
+    tlogf("kafs-v6 admission preflight did not fail closed as expected: %s", out);
+    return 1;
+  }
+  if (!strstr(out, "kafs-v6: format v6 admission preflight") ||
+      !strstr(out, "metadata checks OK") || !strstr(out, "failed closed before mounting"))
+  {
+    tlogf("kafs-v6 output missing descriptor preflight/fail-closed guidance: %s", out);
+    return 1;
+  }
+
+  const char *corrupt_img = "v6-desc-corrupt.img";
+  char *mkfs_corrupt_argv[] = {(char *)kafs_test_mkfs_bin(), (char *)corrupt_img,
+                               (char *)"--format-version", (char *)"6", (char *)"--size-bytes",
+                               (char *)"64M", (char *)"--yes", NULL};
+  if (run_cmd_capture(mkfs_corrupt_argv, 0, out, sizeof(out)) != 0)
+  {
+    tlogf("mkfs corrupt v6 fixture failed: %s", out);
+    return 1;
+  }
+  if (corrupt_all_v6_descriptors(corrupt_img) != 0)
+  {
+    tlogf("failed to corrupt v6 descriptor replicas");
+    return 1;
+  }
+  char *kafsv6_corrupt_argv[] = {
+      (char *)kafs_test_kafs_v6_bin(), (char *)corrupt_img, (char *)"mnt-kafsv6",
+      (char *)"--inspection-mount", (char *)"-o", (char *)"ro", NULL};
+  if (run_cmd_capture(kafsv6_corrupt_argv, 2, out, sizeof(out)) != 0)
+  {
+    tlogf("kafs-v6 corrupt descriptor preflight did not exit 2: %s", out);
+    return 1;
+  }
+  if (!strstr(out, "kafs-v6: format v6 admission preflight failed"))
+  {
+    tlogf("kafs-v6 corrupt descriptor output missing preflight failure: %s", out);
     return 1;
   }
 

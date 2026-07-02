@@ -48,6 +48,9 @@ int kafs_test_lookup_root_dirent_ino(void *base, off_t mapsize, const char *name
 // If KAFS_TEST_KAFS is set, it is used; otherwise falls back to "./kafs".
 const char *kafs_test_kafs_bin(void);
 
+// If KAFS_TEST_KAFS_V6 is set, it is used; otherwise resolves kafs-v6 near the test binary.
+const char *kafs_test_kafs_v6_bin(void);
+
 // If KAFS_TEST_MKFS is set, it is used; otherwise resolves mkfs.kafs near the test binary.
 const char *kafs_test_mkfs_bin(void);
 

@@ -53,10 +53,10 @@ should move into common objects or libraries when it is needed by both binaries:
 - common FUSE operation tables where policy checks are explicit
 - inode, block allocation, HRL, and filesystem operation helpers
 
-`src/Makefile.am` now builds `kafs-v6` as a separate binary. T21 starts the
+`src/Makefile.am` now builds `kafs-v6` as a separate binary. T21 started the
 shared-code split with `kafs_v6_runtime_request_t` and option / image-format
-validation helpers. Later slices can move descriptor preflight and runtime
-context setup behind the same shared boundary.
+validation helpers. T22 moves descriptor / journal segment preflight into the
+same shared boundary. Later slices can move runtime context setup behind it.
 
 ## T20 smoke
 

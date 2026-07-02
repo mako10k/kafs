@@ -300,12 +300,11 @@ int main(int argc, char **argv)
     usage(argv[0]);
     return 2;
   }
-  if (kafs_v6_runtime_check_image_format(opts.image_path, KAFS_FORMAT_VERSION_V6, stderr,
-                                         "kafs-v6") != 0)
+  if (kafs_v6_runtime_admission_preflight_image(opts.image_path, stderr, "kafs-v6") != 0)
     return 2;
 
-  fprintf(stderr, "kafs-v6: format v6 runtime entrypoint skeleton validated the CLI boundary and "
-                  "image format, then failed closed before mounting.\n");
+  fprintf(stderr, "kafs-v6: format v6 runtime entrypoint skeleton validated the CLI boundary, "
+                  "image format, and descriptor preflight, then failed closed before mounting.\n");
   fprintf(stderr, "kafs-v6: move future v6 runtime admission behind this binary before expanding "
                   "the v6 write surface.\n");
   return 2;

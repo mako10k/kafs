@@ -896,6 +896,23 @@
   - `kafs` の v4/v5 production runtime behavior を広げない。
   - `make -j2` と CLI surface smoke が PASS している。
 
+### SDW-V6RT-T22 v6 descriptor/journal preflight extraction
+
+- 目的: v6 descriptor / journal segment preflight を `kafs-v6` と production `kafs` の共有 helper
+  へ移し、専用 entrypoint 側で format check より深い admission evidence を取れるようにする。
+- 変更:
+  - `kafs_v6_runtime_admission_preflight_fd()` を追加し、descriptor mapping admission と journal segment
+    validation を実行する。
+  - `kafs_v6_runtime_admission_preflight_image()` を追加し、`kafs-v6` が image format check 後に同じ
+    preflight を実行する。
+  - production `kafs` の既存 offline-only preflight 表示は維持し、v4/v5 runtime behavior は変更しない。
+- 完了条件:
+  - valid v6 image に対する `kafs-v6` が descriptor / journal preflight 成功後に mount 前 fail closed
+    する。
+  - corrupt v6 descriptor に対する `kafs-v6` が preflight failure で exit 2 になる。
+  - `v6_descriptor_smoketest` の既存 v6 admission / rejection matrix が PASS する。
+  - `make -j2` と CLI surface smoke が PASS している。
+
 ---
 
 ## 最初に着手するチケット

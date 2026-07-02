@@ -62,3 +62,7 @@ int kafs_v6_runtime_validate_entrypoint_request(const kafs_v6_runtime_request_t 
                                                 kafs_v6_runtime_validation_reason_t *reason_out);
 int kafs_v6_runtime_check_image_format(const char *image_path, uint32_t expected_format, FILE *err,
                                        const char *tool_name);
+int kafs_v6_runtime_admission_preflight_fd(int fd, const kafs_ssuperblock_t *sbdisk, FILE *err,
+                                           const char *tool_name);
+int kafs_v6_runtime_admission_preflight_image(const char *image_path, FILE *err,
+                                              const char *tool_name);
