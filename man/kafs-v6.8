@@ -1,0 +1,74 @@
+'.\" -*- nroff -*-
+.TH KAFS-V6 8 "2026-07-02" "kafs 0.4.0" "System Administration"
+.SH NAME
+kafs-v6 \- dedicated format v6 runtime entrypoint skeleton
+.SH SYNOPSIS
+.B kafs-v6
+.RB --image
+.I image
+.B --inspection-mount
+.I mountpoint
+.BR -o " " ro
+.RI [ FUSE\ options ]
+.PP
+.B kafs-v6
+.RB --image
+.I image
+.B --controlled-write-mount
+.I mountpoint
+.BR -o " " rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full
+.SH DESCRIPTION
+.B kafs-v6
+is the dedicated format v6 runtime entrypoint skeleton.
+It validates the format v6 CLI boundary and image format, then fails closed
+before mounting.
+.PP
+Future format v6 runtime admission and write-surface work should move behind
+this binary instead of broadening the production
+.BR kafs (1)
+binary.  The existing
+.B kafs
+binary remains the v4/v5 production runtime entrypoint.
+.SH OPTIONS
+.TP
+.BR -h ", " --help
+Show help and exit.
+.TP
+.BR --image " " <image>
+Specify the format v6 image path.
+.TP
+.BR --image= "<image>"
+Specify the format v6 image path using the inline form.
+.TP
+.B --inspection-mount
+Select the read-only v6 inspection contract.
+The request must include
+.BR -o " " ro .
+.TP
+.B --controlled-write-mount
+Select the experimental v6 controlled write contract.
+The request must include
+.BR -o " " rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full .
+.TP
+.BR --option " " <opt[,opt...]>
+Alias for FUSE
+.BR -o .
+.TP
+.BR --option= "<opt[,opt...]>"
+Inline form of
+.BR --option .
+.SH EXIT STATUS
+.TP
+.B 0
+Help was printed.
+.TP
+.B 2
+The request was invalid, the image was not format v6, or the skeleton rejected
+the mount before admission.
+.SH SEE ALSO
+.BR kafs (1),
+.BR mkfs.kafs (8),
+.BR fsck.kafs (8),
+.BR kafsdump (8)
+.SH AUTHOR
+kafs project.

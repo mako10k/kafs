@@ -129,6 +129,50 @@ _kafs() {
   COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
 }
 
+_kafs_v6() {
+  local cur prev
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+  local opts="-h --help --image --image= --inspection-mount --controlled-write-mount --option --option="
+
+  if [[ "${prev}" == "--image" ]]; then
+    _kafs__path_complete "$prev" "$cur"
+    return
+  fi
+
+  local oopts="ro rw no_writeback_cache no-writeback-cache no_trim_on_free no-trim-on-free bg_dedup_scan=off dedup_scan=off fsync_policy=full allow_other allow_root auto_unmount default_permissions kernel_cache auto_cache direct_io hard_remove use_ino readdir_ino nonempty big_writes max_read= max_readahead= max_write= blksize= uid= gid= umask= fsname= subtype= modules="
+
+  if [[ "${prev}" == "-o" || "${prev}" == "--option" ]]; then
+    _kafs__comma_complete "${cur}" "${oopts}"
+    return
+  fi
+
+  if [[ "${cur}" == -o* ]]; then
+    local o_cur
+    local i
+    o_cur="${cur#-o}"
+    _kafs__comma_complete "${o_cur}" "${oopts}"
+    for i in "${!COMPREPLY[@]}"; do
+      COMPREPLY[$i]="-o${COMPREPLY[$i]}"
+    done
+    return
+  fi
+
+  if [[ "${cur}" == --option=* ]]; then
+    local opt_cur
+    local i
+    opt_cur="${cur#--option=}"
+    _kafs__comma_complete "${opt_cur}" "${oopts}"
+    for i in "${!COMPREPLY[@]}"; do
+      COMPREPLY[$i]="--option=${COMPREPLY[$i]}"
+    done
+    return
+  fi
+
+  COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+}
+
 _mkfs_kafs() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
@@ -299,6 +343,7 @@ _kafs_info() {
 
 complete -F _kafs kafs
 complete -F _kafs mount.kafs
+complete -F _kafs_v6 kafs-v6
 complete -F _kafsctl kafsctl
 complete -F _mkfs_kafs mkfs.kafs
 complete -F _fsck_kafs fsck.kafs

@@ -69,6 +69,9 @@ Additional closeout after the original handoff:
   binary. Shared implementation should be linked through libraries or common
   objects. See
   [sd-card-wear-v6-runtime-binary-split-decision.md](sd-card-wear-v6-runtime-binary-split-decision.md).
+- T20 added `kafs-v6` as the dedicated v6 runtime entrypoint skeleton and
+  recorded the CLI contract / shared-code split plan in
+  [sd-card-wear-v6-runtime-entrypoint-plan.md](sd-card-wear-v6-runtime-entrypoint-plan.md).
 
 ## Original validation run
 
@@ -111,18 +114,19 @@ The controlled write path is available only as an experimental opt-in and
 operator smoke surface in the current `kafs` binary. Do not broaden that
 user-facing v6 write surface in `kafs` as the next step.
 
-The next boundary is a v6 runtime binary split: define the dedicated v6
-entrypoint, move future v6 runtime admission behind it, and factor shared code
-through libraries or common objects. Production cutover discussion stays behind
-that split and behind later v5-parity, workload-copy, power-loss or torn-write,
-rollback, and recovery evidence.
+The next boundary is v6 runtime admission extraction: keep `kafs-v6` as the
+dedicated entrypoint, move v6-specific admission code out of the production
+`kafs` entrypoint, and factor shared code through libraries or common objects.
+Production cutover discussion stays behind that split and behind later
+v5-parity, workload-copy, power-loss or torn-write, rollback, and recovery
+evidence.
 
 ## Resume checklist
 
 1. Confirm the pushed branch and clean worktree.
 2. Start from `docs/sd-card-wear-tickets.md` at the latest `SDW-V6RT` entry.
-3. Start the next implementation from the v6 runtime binary split decision, not
-   from a broader `kafs` controlled-write surface.
+3. Start the next implementation from `kafs-v6` admission extraction, not from a
+   broader `kafs` controlled-write surface.
 4. Keep shared code in libraries or common objects rather than duplicating v5/v6
    filesystem logic.
 5. Do not enable production v6 write cutover from the controlled smoke result

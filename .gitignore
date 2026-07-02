@@ -45,6 +45,7 @@
 /src/Makefile.in
 /src/*.img
 /src/kafs
+/src/kafs-v6
 /src/kafsctl
 /src/mkfs.kafs
 /src/fsck.kafs
@@ -111,6 +112,8 @@
 /tests/v5_default_promotion_smoketest
 /tests/v5_tail_mixed_smoketest
 /tests/v5_tail_smallfile_smoketest
+/tests/v6_descriptor_smoketest
+/tests/v6_descriptor_validation
 
 ### Local mount/test workdirs (repo root)
 /mnt-*/

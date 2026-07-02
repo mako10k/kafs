@@ -6,6 +6,7 @@ cd "$ROOT_DIR"
 
 declare -a help_bins=(
   "./src/kafs"
+  "./src/kafs-v6"
   "./src/mkfs.kafs"
   "./src/fsck.kafs"
   "./src/kafsctl"

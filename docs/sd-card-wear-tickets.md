@@ -1,6 +1,6 @@
 # KAFS SDカード劣化対策 バックログ
 
-最終更新: 2026-07-01
+最終更新: 2026-07-02
 
 計画: [sd-card-wear-plan.md](sd-card-wear-plan.md)
 
@@ -855,6 +855,31 @@
   - `docs/sd-card-wear-v6-runtime-binary-split-decision.md` を追加した。
   - `docs/sd-card-wear-v6-runtime-handoff-20260626.md` の current next boundary を、production acceptance
     gate ではなく v6 runtime binary split に更新した。
+
+### SDW-V6RT-T20 v6 runtime entrypoint skeleton
+
+- 目的: 専用 v6 runtime binary の名前・CLI 契約・初期 fail-closed 境界を固定し、今後の v6 runtime
+  admission を production `kafs` binary の拡張ではなく専用入口へ移す準備をする。
+- 変更:
+  - `kafs-v6` を dedicated format v6 runtime entrypoint skeleton として追加する。
+  - `src/Makefile.am` に `kafs-v6` を追加し、build surface を固定する。
+  - `docs/sd-card-wear-v6-runtime-entrypoint-plan.md` に CLI 契約、移動対象、shared implementation
+    boundary、smoke を記録する。
+- 完了条件:
+  - `kafs-v6 --help` が専用 v6 entrypoint の CLI 契約を表示する。
+  - `kafs-v6` は `--inspection-mount` / `--controlled-write-mount` の明示 mode を要求し、legacy
+    `v6_inspection_mount` / `v6_write_mount` token を拒否する。
+  - T20 skeleton は v6 image format と mount option shape を検証したうえで、実 mount 前に fail closed
+    する。
+  - `kafs` の v4/v5 production entrypoint behavior を広げない。
+  - `make -j2` と CLI help surface smoke が PASS している。
+- 実装メモ (2026-07-02):
+  - `kafs-v6` を追加し、inspection / controlled-write の明示 mode と mount option shape を検証する
+    fail-closed skeleton とした。
+  - `kafs-v6` は format v6 image を確認した後も実 mount へ進まず、次 slice で admission code を移す
+    入口だけを固定する。
+  - `docs/sd-card-wear-v6-runtime-entrypoint-plan.md` に CLI 契約、移動対象、shared implementation
+    boundary、T20 smoke を記録した。
 
 ---
 

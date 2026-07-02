@@ -1,6 +1,6 @@
 AM_CPPFLAGS = -include $(srcdir)/kafs_config.h
 
-bin_PROGRAMS = kafs mkfs.kafs fsck.kafs kafs-info kafsdump kafsimage kafsresize kafsctl kafs-front kafs-back
+bin_PROGRAMS = kafs kafs-v6 mkfs.kafs fsck.kafs kafs-info kafsdump kafsimage kafsresize kafsctl kafs-front kafs-back
 sbin_SCRIPTS = mount.kafs
 EXTRA_DIST = mount.kafs.in
 CLEANFILES = $(sbin_SCRIPTS)
@@ -9,6 +9,10 @@ CLEANFILES = $(sbin_SCRIPTS)
 kafs_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 kafs_LDADD = $(KAFS_LIBS)
 kafs_SOURCES = kafs.c kafs_hrl.c kafs_locks.c kafs_journal.c kafs_rpc.c
+
+kafs_v6_SOURCES = kafs_v6.c
+kafs_v6_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+kafs_v6_LDADD = $(KAFS_LIBS)
 
 # new mkfs.kafs target
 mkfs_kafs_SOURCES = mkfs_kafs.c kafs_hrl.c kafs_locks.c
