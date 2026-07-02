@@ -419,8 +419,8 @@ static int kafs_test_mount_timeout_ms(const kafs_test_mount_options_t *options)
   return 5000;
 }
 
-pid_t kafs_test_start_kafs(const char *img, const char *mnt,
-                           const kafs_test_mount_options_t *options)
+static pid_t kafs_test_start_kafs_tool(const char *tool, int v6_inspection_mode, const char *img,
+                                       const char *mnt, const kafs_test_mount_options_t *options)
 {
   if (mkdir(mnt, 0700) != 0 && errno != EEXIST)
     return -errno;
@@ -461,11 +461,13 @@ pid_t kafs_test_start_kafs(const char *img, const char *mnt,
       close(lfd);
     }
 
-    const char *kafs = kafs_test_kafs_bin();
-    char *args[6];
+    const char *kafs = tool;
+    char *args[10];
     int argc = 0;
     args[argc++] = (char *)kafs;
     args[argc++] = (char *)mp;
+    if (v6_inspection_mode)
+      args[argc++] = "--inspection-mount";
     args[argc++] = "-f";
     if (options && options->extra_options && *options->extra_options)
     {
@@ -512,6 +514,18 @@ pid_t kafs_test_start_kafs(const char *img, const char *mnt,
   kill_wait_timeout(pid, 2000);
   kafs_test_dump_log(log_path, "mount timed out");
   return -1;
+}
+
+pid_t kafs_test_start_kafs(const char *img, const char *mnt,
+                           const kafs_test_mount_options_t *options)
+{
+  return kafs_test_start_kafs_tool(kafs_test_kafs_bin(), 0, img, mnt, options);
+}
+
+pid_t kafs_test_start_kafs_v6(const char *img, const char *mnt,
+                              const kafs_test_mount_options_t *options)
+{
+  return kafs_test_start_kafs_tool(kafs_test_kafs_v6_bin(), 1, img, mnt, options);
 }
 
 void kafs_test_stop_kafs(const char *mnt, pid_t kafs_pid)

@@ -66,3 +66,5 @@ int kafs_v6_runtime_admission_preflight_fd(int fd, const kafs_ssuperblock_t *sbd
                                            const char *tool_name);
 int kafs_v6_runtime_admission_preflight_image(const char *image_path, FILE *err,
                                               const char *tool_name);
+int kafs_v6_inspection_mount_main(const char *image_path, const char *mountpoint, int argc_extra,
+                                  char **argv_extra);

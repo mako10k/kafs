@@ -10,8 +10,10 @@ kafs_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 kafs_LDADD = $(KAFS_LIBS)
 kafs_SOURCES = kafs.c kafs_hrl.c kafs_locks.c kafs_journal.c kafs_rpc.c
 
-kafs_v6_SOURCES = kafs_v6.c kafs_v6_runtime.c
-kafs_v6_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+kafs_v6_SOURCES = kafs_v6.c kafs_v6_runtime.c kafs.c kafs_hrl.c kafs_locks.c \
+	kafs_journal.c kafs_rpc.c
+kafs_v6_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -DKAFS_NO_MAIN \
+	-DKAFS_V6_ENTRYPOINT
 kafs_v6_LDADD = $(KAFS_LIBS)
 
 # new mkfs.kafs target

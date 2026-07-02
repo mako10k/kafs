@@ -31,13 +31,16 @@ that users can run is a product surface and needs its own CLI policy.
 
 | Target | Current shared sources | v6-specific sources | Boundary |
 | --- | --- | --- | --- |
-| `kafs` | `kafs_hrl.c`, `kafs_locks.c`, `kafs_journal.c`, `kafs_rpc.c` | none in `Makefile.am` | v4/v5 production runtime plus legacy v6 diagnostics still inside `kafs.c` |
-| `kafs-v6` | none beyond headers | `kafs_v6.c`, `kafs_v6_runtime.c` | v6 CLI/admission owner, currently fail-closed before mounting |
+| `kafs` | `kafs_hrl.c`, `kafs_locks.c`, `kafs_journal.c`, `kafs_rpc.c` | none in `Makefile.am` | v4/v5 production runtime; legacy v6 inspection token now fails closed with `kafs-v6` guidance |
+| `kafs-v6` | `kafs.c`, `kafs_hrl.c`, `kafs_locks.c`, `kafs_journal.c`, `kafs_rpc.c` through `KAFS_V6_ENTRYPOINT` | `kafs_v6.c`, `kafs_v6_runtime.c` | v6 CLI/admission owner; read-only inspection admission is active, controlled write remains fail-closed |
 | `kafsctl` / `kafs-back` | selected runtime support sources through `kafs.c` and RPC/HRL/journal helpers | none in `Makefile.am` | must not gain `kafs_v6_runtime.c` implicitly |
 | offline tools | mostly standalone source files plus header-only v6 layout helpers | header-only v6 descriptor logic | offline/staging tools, not runtime admission owners |
 
 This boundary deliberately keeps `kafs_v6_runtime.c` out of the production
-`kafs` link until a later shared artifact is introduced explicitly.
+`kafs` link. T25 temporarily shares `kafs.c` into `kafs-v6` as a common object
+bridge for FUSE operations and read-only inspection setup, guarded by
+`KAFS_V6_ENTRYPOINT` so the bridge is not part of the production `kafs`
+entrypoint.
 
 ## Artifact Classes
 
@@ -90,7 +93,9 @@ log drain, tombstone GC, or background dedup for a v6 context.
 
 Keep this code local until retired or moved:
 
-- legacy `v6_inspection_mount` / `v6_write_mount` parsing in `kafs`;
+- legacy `v6_inspection_mount` parsing in `kafs`, now fail-closed with
+  `kafs-v6` guidance;
+- legacy `v6_write_mount` parsing and controlled-write admission in `kafs`;
 - `KAFS_V6_READONLY_SMOKE` and `KAFS_V6_ADMISSION_HANDOFF`;
 - legacy v6 diagnostic messages emitted by `kafs`;
 - production auto-migration and v2/v3/v4/v5 compatibility gates.
@@ -98,12 +103,12 @@ Keep this code local until retired or moved:
 These paths are compatibility and smoke scaffolding, not the target v6 runtime
 contract.
 
-## Next Implementation Boundary
+## T25 Result And Next Boundary
 
-The next implementation slice should be `SDW-V6RT-T25 kafs-v6 inspection
-admission migration`.
+`SDW-V6RT-T25 kafs-v6 inspection admission migration` moved the read-only v6
+inspection acceptance path behind `kafs-v6`.
 
-T25 should:
+T25:
 
 1. move read-only v6 inspection admission out of `kafs.c` and behind
    `kafs-v6`;
@@ -113,9 +118,11 @@ T25 should:
 4. add tests that measure v6 acceptance through `kafs-v6`, not through the
    production `kafs` binary.
 
-If T25 needs shared build machinery, the acceptable first form is a
-non-installed static archive or common object/source list. Do not add a new
-runtime executable.
+The next isolation slice should move or retire the legacy controlled-write
+admission path in `kafs`. That slice should still be an isolation step, not a
+write-surface expansion. If it needs more shared build machinery, the acceptable
+first form remains a non-installed static archive or common object/source list.
+Do not add a new runtime executable.
 
 ## Validation Standard
 

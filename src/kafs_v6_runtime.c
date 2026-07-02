@@ -80,6 +80,9 @@ int kafs_v6_runtime_validate_entrypoint_request(const kafs_v6_runtime_request_t 
   {
     if (!req->mount_read_only_requested || req->mount_read_write_requested)
       return kafs_v6_runtime_invalid(KAFS_V6_RUNTIME_INVALID_INSPECTION_NEEDS_RO, reason_out);
+    if (req->writeback_cache_explicit && req->writeback_cache_enabled)
+      return kafs_v6_runtime_invalid(KAFS_V6_RUNTIME_INVALID_INSPECTION_WRITEBACK_CACHE,
+                                     reason_out);
     return kafs_v6_runtime_valid(reason_out);
   }
 

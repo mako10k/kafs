@@ -4,6 +4,7 @@
 
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 typedef struct kafs_v6_options
@@ -11,6 +12,9 @@ typedef struct kafs_v6_options
   const char *image_path;
   const char *mountpoint;
   kafs_v6_runtime_request_t request;
+  char **fuse_args;
+  int fuse_argc;
+  int fuse_arg_cap;
   int show_help;
 } kafs_v6_options_t;
 
@@ -33,18 +37,31 @@ static void usage(const char *prog)
           "  --option=<opt[,opt...]>    Inline form of --option\n"
           "\n"
           "Notes:\n"
-          "  This is the dedicated format v6 runtime entrypoint skeleton. It validates\n"
-          "  the v6 CLI boundary and image format, then fails closed before mounting.\n"
-          "  Future v6 runtime admission work should move behind this binary instead of\n"
-          "  broadening the production kafs binary.\n",
+          "  This is the dedicated format v6 runtime entrypoint. It owns v6 CLI\n"
+          "  admission, rejects legacy v6_* mount tokens, and admits read-only\n"
+          "  inspection mounts after descriptor preflight. Controlled write remains\n"
+          "  fail-closed until its v6 policy is moved behind this binary.\n",
           prog, prog, prog);
 }
 
-static void kafs_v6_options_init(kafs_v6_options_t *opts)
+static void kafs_v6_options_init(kafs_v6_options_t *opts, char **fuse_args, int fuse_arg_cap)
 {
   memset(opts, 0, sizeof(*opts));
   kafs_v6_runtime_request_init(&opts->request);
   opts->image_path = getenv("KAFS_IMAGE");
+  opts->fuse_args = fuse_args;
+  opts->fuse_arg_cap = fuse_arg_cap;
+}
+
+static int kafs_v6_add_fuse_arg(kafs_v6_options_t *opts, char *arg)
+{
+  if (!opts || !arg || opts->fuse_argc >= opts->fuse_arg_cap)
+  {
+    fprintf(stderr, "kafs-v6: too many FUSE passthrough arguments.\n");
+    return -EINVAL;
+  }
+  opts->fuse_args[opts->fuse_argc++] = arg;
+  return 0;
 }
 
 static int kafs_v6_set_mode(kafs_v6_options_t *opts, kafs_v6_runtime_mode_t mode)
@@ -184,19 +201,25 @@ static int kafs_v6_parse_args(int argc, char **argv, kafs_v6_options_t *opts)
     }
     if (strcmp(arg, "--option") == 0 || strcmp(arg, "-o") == 0)
     {
-      if (i + 1 >= argc || kafs_v6_parse_o_list(opts, argv[++i]) != 0)
+      if (i + 1 >= argc)
+        return -EINVAL;
+      const char *value = argv[++i];
+      if (kafs_v6_parse_o_list(opts, value) != 0 || kafs_v6_add_fuse_arg(opts, "-o") != 0 ||
+          kafs_v6_add_fuse_arg(opts, (char *)value) != 0)
         return -EINVAL;
       continue;
     }
     if (strncmp(arg, "--option=", strlen("--option=")) == 0)
     {
-      if (kafs_v6_parse_o_list(opts, arg + strlen("--option=")) != 0)
+      const char *value = arg + strlen("--option=");
+      if (kafs_v6_parse_o_list(opts, value) != 0 || kafs_v6_add_fuse_arg(opts, "-o") != 0 ||
+          kafs_v6_add_fuse_arg(opts, (char *)value) != 0)
         return -EINVAL;
       continue;
     }
     if (arg[0] == '-' && arg[1] == 'o' && arg[2] != '\0')
     {
-      if (kafs_v6_parse_o_list(opts, arg + 2) != 0)
+      if (kafs_v6_parse_o_list(opts, arg + 2) != 0 || kafs_v6_add_fuse_arg(opts, (char *)arg) != 0)
         return -EINVAL;
       continue;
     }
@@ -213,7 +236,11 @@ static int kafs_v6_parse_args(int argc, char **argv, kafs_v6_options_t *opts)
       continue;
     }
     if (arg[0] == '-')
+    {
+      if (kafs_v6_add_fuse_arg(opts, (char *)arg) != 0)
+        return -EINVAL;
       continue;
+    }
 
     if (!opts->image_path)
       opts->image_path = arg;
@@ -239,6 +266,9 @@ static void kafs_v6_print_validation_error(kafs_v6_runtime_validation_reason_t r
   case KAFS_V6_RUNTIME_INVALID_INSPECTION_NEEDS_RO:
     fprintf(stderr, "kafs-v6 inspection mode requires -o ro and does not allow -o rw.\n");
     return;
+  case KAFS_V6_RUNTIME_INVALID_INSPECTION_WRITEBACK_CACHE:
+    fprintf(stderr, "kafs-v6 inspection mode does not allow writeback_cache.\n");
+    return;
   case KAFS_V6_RUNTIME_INVALID_CONTROLLED_RO:
     fprintf(stderr, "kafs-v6 controlled write mode does not allow -o ro.\n");
     return;
@@ -258,7 +288,6 @@ static void kafs_v6_print_validation_error(kafs_v6_runtime_validation_reason_t r
             "-o rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full.\n");
     return;
   case KAFS_V6_RUNTIME_VALID:
-  case KAFS_V6_RUNTIME_INVALID_INSPECTION_WRITEBACK_CACHE:
   case KAFS_V6_RUNTIME_INVALID_CONTROLLED_WITH_INSPECTION:
   default:
     fprintf(stderr, "kafs-v6 rejected invalid v6 runtime admission options.\n");
@@ -286,8 +315,9 @@ static int kafs_v6_validate_options(const kafs_v6_options_t *opts)
 int main(int argc, char **argv)
 {
   kafs_v6_options_t opts;
+  char *fuse_args[(argc > 0 ? argc : 1) * 2 + 1];
 
-  kafs_v6_options_init(&opts);
+  kafs_v6_options_init(&opts, fuse_args, (int)(sizeof(fuse_args) / sizeof(fuse_args[0])));
   if (kafs_v6_parse_args(argc, argv, &opts) != 0)
     return 2;
   if (opts.show_help)
@@ -303,9 +333,13 @@ int main(int argc, char **argv)
   if (kafs_v6_runtime_admission_preflight_image(opts.image_path, stderr, "kafs-v6") != 0)
     return 2;
 
-  fprintf(stderr, "kafs-v6: format v6 runtime entrypoint skeleton validated the CLI boundary, "
-                  "image format, and descriptor preflight, then failed closed before mounting.\n");
-  fprintf(stderr, "kafs-v6: move future v6 runtime admission behind this binary before expanding "
-                  "the v6 write surface.\n");
+  if (opts.request.mode == KAFS_V6_RUNTIME_MODE_INSPECTION)
+    return kafs_v6_inspection_mount_main(opts.image_path, opts.mountpoint, opts.fuse_argc,
+                                         opts.fuse_args);
+
+  fprintf(stderr, "kafs-v6: format v6 controlled write admission is still fail-closed before "
+                  "mounting.\n");
+  fprintf(stderr, "kafs-v6: move controlled-write runtime policy behind this binary before "
+                  "expanding the v6 write surface.\n");
   return 2;
 }

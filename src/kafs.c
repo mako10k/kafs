@@ -13,6 +13,7 @@
 #include "kafs_core.h"
 #include "kafs_crash_diag.h"
 #include "kafs_tailmeta.h"
+#include "kafs_v6_runtime.h"
 
 #include <fuse.h>
 #include <fuse_log.h>
@@ -11080,7 +11081,7 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
   return rc;
 }
 
-#ifndef KAFS_NO_MAIN
+#if !defined(KAFS_NO_MAIN) || defined(KAFS_V6_ENTRYPOINT)
 static struct fuse_operations kafs_operations = {
     .init = kafs_op_init,
     .destroy = kafs_op_destroy,
@@ -13490,6 +13491,77 @@ static int kafs_main_cleanup(kafs_context_t *ctx, char *hotplug_uds_path, int rc
   return rc;
 }
 
+#ifdef KAFS_V6_ENTRYPOINT
+int kafs_v6_inspection_mount_main(const char *image_path, const char *mountpoint, int argc_extra,
+                                  char **argv_extra)
+{
+  if (!image_path || !mountpoint || argc_extra < 0)
+  {
+    fprintf(stderr, "kafs-v6 inspection mount requires an image path and mountpoint.\n");
+    return 2;
+  }
+
+  kafs_main_options_t opts;
+  kafs_main_options_init(&opts);
+  opts.image_path = image_path;
+  opts.v6_inspection_mount = KAFS_TRUE;
+  opts.v6_write_mount = KAFS_FALSE;
+  opts.mount_read_only_requested = KAFS_TRUE;
+  opts.mount_read_only_seen = KAFS_TRUE;
+  opts.mount_read_write_requested = KAFS_FALSE;
+  opts.writeback_cache_enabled = KAFS_FALSE;
+  opts.writeback_cache_explicit = KAFS_TRUE;
+  opts.trim_on_free_enabled = KAFS_FALSE;
+  opts.trim_on_free_explicit = KAFS_TRUE;
+  opts.bg_dedup_scan_enabled = 0u;
+
+  char *argv_clean[argc_extra + 3];
+  int argc_clean = 0;
+  argv_clean[argc_clean++] = "kafs-v6";
+  argv_clean[argc_clean++] = (char *)mountpoint;
+  for (int i = 0; i < argc_extra; ++i)
+    argv_clean[argc_clean++] = argv_extra[i];
+
+  if (kafs_main_filter_mount_options(&opts, argv_clean, &argc_clean) != 0 ||
+      kafs_main_validate_options(&opts) != 0)
+    return 2;
+  if (opts.mount_read_write_requested)
+  {
+    fprintf(stderr, "kafs-v6 inspection mount does not allow -o rw.\n");
+    return 2;
+  }
+
+  static kafs_context_t ctx;
+  static char mnt_abs[PATH_MAX];
+  char hotplug_uds_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
+  hotplug_uds_path[0] = '\0';
+  kafs_main_init_context(&ctx, &opts, argv_clean[1], mnt_abs, sizeof(mnt_abs));
+
+  kafs_main_open_runtime_context(&ctx, image_path, KAFS_FALSE, KAFS_FALSE, KAFS_TRUE, KAFS_FALSE,
+                                 KAFS_TRUE);
+  opts.writeback_cache_enabled = KAFS_FALSE;
+  opts.writeback_cache_explicit = KAFS_TRUE;
+  opts.trim_on_free_enabled = KAFS_FALSE;
+  opts.trim_on_free_explicit = KAFS_TRUE;
+
+  char *argv_fuse[argc_clean + 10];
+  char mt_opt_buf[64];
+  int argc_fuse = 0;
+  kafs_bool_t enable_mt = opts.enable_mt;
+  kafs_main_build_fuse_argv(argv_clean, argc_clean, &enable_mt, opts.saw_max_threads,
+                            opts.mt_cnt_override, opts.mt_cnt_override_set, argv_fuse, &argc_fuse,
+                            mt_opt_buf, sizeof(mt_opt_buf));
+  kafs_main_apply_fuse_readonly_arg(&ctx, argv_fuse, &argc_fuse);
+  kafs_main_log_runtime_options(&ctx, opts.writeback_cache_enabled, opts.writeback_cache_explicit,
+                                opts.trim_on_free_enabled, opts.trim_on_free_explicit, argc_fuse,
+                                argv_fuse);
+  fuse_set_log_func(kafs_fuse_log_func);
+  int rc = fuse_main(argc_fuse, argv_fuse, &kafs_operations, &ctx);
+  fuse_set_log_func(NULL);
+  return kafs_main_cleanup(&ctx, hotplug_uds_path, rc);
+}
+#endif
+
 #ifndef KAFS_NO_MAIN
 int main(int argc, char **argv)
 {
@@ -13522,8 +13594,15 @@ int main(int argc, char **argv)
     return 2;
   }
 
-  if (kafs_main_filter_mount_options(&opts, argv_clean, &argc_clean) != 0 ||
-      kafs_main_validate_options(&opts) != 0)
+  if (kafs_main_filter_mount_options(&opts, argv_clean, &argc_clean) != 0)
+    return 2;
+  if (opts.v6_inspection_mount && !opts.v6_write_mount)
+  {
+    fprintf(stderr, "kafs: legacy v6 inspection mount moved to kafs-v6; use "
+                    "kafs-v6 --image <image> --inspection-mount <mountpoint> -o ro.\n");
+    return 2;
+  }
+  if (kafs_main_validate_options(&opts) != 0)
     return 2;
 
   const char *image_path = opts.image_path;

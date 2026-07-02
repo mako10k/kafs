@@ -1,16 +1,17 @@
 # KAFS format v6 runtime entrypoint plan
 
 Date: 2026-07-02
-Status: skeleton implemented
+Status: inspection admission implemented
 
 ## Boundary
 
 The dedicated format v6 runtime entrypoint is `kafs-v6`.
 
-`kafs` remains the production runtime entrypoint for v4/v5 images. Existing v6
-inspection and controlled-write behavior in `kafs` remains bounded diagnostic
-and smoke surface while the runtime split is completed; new v6 write-surface
-expansion must move behind `kafs-v6`.
+`kafs` remains the production runtime entrypoint for v4/v5 images. Legacy v6
+inspection tokens in `kafs` now fail closed with `kafs-v6` guidance. Existing
+controlled-write behavior in `kafs` remains bounded legacy surface while the
+runtime split is completed; new v6 write-surface expansion must move behind
+`kafs-v6`.
 
 Until v6 production cutover, v6 has no backward compatibility promise. The
 format and feature set may change drastically when the pure v6 target requires
@@ -28,20 +29,35 @@ The entrypoint rejects legacy `v6_inspection_mount` / `v6_write_mount` tokens.
 Those tokens belong to the historical `kafs` bounded diagnostic surface. In
 `kafs-v6`, selecting the binary and mode is the v6 admission signal.
 
-The T20 skeleton validates the CLI boundary and the image format, then fails
-closed before mounting. This is intentional: it creates the separate entrypoint
-and build surface without moving FUSE runtime admission or expanding v6 write
-semantics in the same slice.
+The T20 skeleton validated the CLI boundary and image format, then failed
+closed before mounting. T25 moves the read-only inspection admission path behind
+`kafs-v6`: descriptor preflight still runs first, then `--inspection-mount`
+admits a read-only FUSE mount. Controlled write still fails closed in
+`kafs-v6`.
+
+## T25 inspection admission
+
+T25 links `kafs-v6` with the shared FUSE runtime object set through
+`KAFS_V6_ENTRYPOINT`. The bridge is available only to `kafs-v6`; production
+`kafs` does not link `kafs_v6_runtime.c` and no longer admits
+`v6_inspection_mount` as a successful runtime path.
+
+The read-only inspection path now uses:
+
+- `kafs-v6 --inspection-mount ... -o ro` as the admission signal;
+- descriptor and journal preflight from `kafs_v6_runtime.c`;
+- shared FUSE/runtime mechanics from `kafs.c` compiled as a common object;
+- forced read-only runtime state before `fuse_main`.
 
 ## Code to move next
 
-The next implementation slice should move the v6-specific admission path out of
-the production `kafs` entrypoint and behind `kafs-v6`. Candidate code areas:
+The next implementation slice should finish the isolation phase by moving or
+retiring the legacy controlled-write admission path in `kafs`. Candidate code
+areas:
 
-- v6 option/mode admission currently represented by `v6_inspection_mount` and
-  `v6_write_mount` handling in `src/kafs.c`.
-- v6 descriptor and journal segment preflight before runtime context admission.
-- v6 runtime context setup for read-only inspection and controlled write modes.
+- v6 option/mode admission currently represented by `v6_write_mount` handling
+  in `src/kafs.c`.
+- controlled-write runtime context setup.
 - v6 delayed/background mutation policy application.
 - user-facing v6 fail-closed diagnostics that should no longer be mixed into
   the v4/v5 production entrypoint.
@@ -59,27 +75,27 @@ binaries:
 - common FUSE operation tables where policy checks are explicit
 - inode, block allocation, HRL, and filesystem operation helpers
 
-`src/Makefile.am` now builds `kafs-v6` as a separate binary. T21/T22 created
-the v6 runtime helper surface for the dedicated entrypoint. The follow-up
-cutover preparation keeps that helper out of the production `kafs` link so the
-v4/v5 binary does not grow a new v6 runtime helper dependency while the split is
-incomplete. Later slices can move runtime context setup behind `kafs-v6` and
-then introduce explicit common-object or library boundaries where code is truly
-shared.
+`src/Makefile.am` builds `kafs-v6` as a separate binary. T21/T22 created the v6
+runtime helper surface for the dedicated entrypoint. T25 links `kafs-v6` with a
+common object set that includes `kafs.c`, guarded by `KAFS_V6_ENTRYPOINT`, while
+keeping `kafs_v6_runtime.c` out of production `kafs`. Later slices can replace
+the common-object bridge with a non-installed static archive or a narrower
+runtime context helper once the controlled-write path is also isolated.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).
-The immediate next implementation boundary is read-only inspection admission
-migration into `kafs-v6`, not controlled-write expansion.
+The immediate next implementation boundary is controlled-write isolation behind
+`kafs-v6`, not write-surface expansion.
 
-## T20 smoke
+## Smoke
 
-The minimum smoke for this skeleton is:
+The minimum smoke for this entrypoint is:
 
 ```sh
 make -j2
 ./src/kafs-v6 --help
 ./scripts/test-cli-surface.sh
+make -C tests check TESTS=v6_descriptor_smoketest
 ```
 
 Broader regression remains required when the split starts moving shared runtime

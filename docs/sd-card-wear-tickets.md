@@ -961,6 +961,33 @@
     archive を次 slice で選択する方針にした。
   - `./scripts/format.sh`、`git diff --check`、`./scripts/test-cli-surface.sh`、`make -j2` が PASS した。
 
+### SDW-V6RT-T25 kafs-v6 inspection admission migration
+
+- 目的: read-only v6 inspection admission を production `kafs` の successful runtime path から外し、
+  `kafs-v6 --inspection-mount` を v6 acceptance の入口にする。
+- 変更:
+  - `kafs-v6` を `KAFS_V6_ENTRYPOINT` 付きで `kafs.c` / HRL / journal / RPC の common object set
+    に link し、read-only inspection mount だけを shared FUSE runtime bridge へ渡す。
+  - `kafs-v6` は legacy `v6_inspection_mount` / `v6_write_mount` token を拒否し、valid
+    `--inspection-mount -o ro` では descriptor / journal preflight 後に read-only FUSE mount へ進む。
+  - production `kafs` の legacy `v6_inspection_mount` は successful path から外し、`kafs-v6`
+    への案内で fail-closed にする。controlled-write legacy path は今回の scope 外として残す。
+  - `v6_descriptor_smoketest` の read-only mount smoke を `kafs-v6` 起動に切り替え、legacy `kafs`
+    inspection token の fail-closed guidance を regression にする。
+- 完了条件:
+  - `kafs-v6 --inspection-mount ... -o ro` が v6 read-only inspection acceptance を所有する。
+  - `kafs -o v6_inspection_mount` は successful mount path に入らず `kafs-v6` guidance を出す。
+  - controlled-write admission は拡張せず、既存 legacy path の isolation は次 slice に残す。
+  - `./scripts/format.sh`、`git diff --check`、`./scripts/test-cli-surface.sh`、`make -j2`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`make check -j2` が PASS している。
+- 実装メモ (2026-07-02):
+  - `src/Makefile.am` で `kafs-v6` に common object set を追加し、`KAFS_V6_ENTRYPOINT` で bridge
+    compile 対象を dedicated entrypoint に限定した。
+  - `src/kafs_v6.c` は FUSE passthrough 引数を保持し、inspection mode だけ shared bridge に進める。
+    controlled-write mode は引き続き fail-closed。
+  - `src/kafs.c` の legacy inspection token は validation 前に `kafs-v6` guidance で拒否する。
+  - `make check -j2` は all 29 tests passed で完了した。
+
 ---
 
 ## 最初に着手するチケット

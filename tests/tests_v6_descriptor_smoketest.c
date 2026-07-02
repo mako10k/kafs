@@ -548,7 +548,7 @@ static int check_v6_inspection_mount_smoke(const char *img)
 {
   if (access("/dev/fuse", R_OK | W_OK) != 0)
   {
-    tlogf("skip v6 inspection mount smoke: /dev/fuse unavailable");
+    tlogf("skip kafs-v6 inspection mount smoke: /dev/fuse unavailable");
     return 0;
   }
 
@@ -565,14 +565,14 @@ static int check_v6_inspection_mount_smoke(const char *img)
   kafs_test_mount_options_t options = {
       .debug = "1",
       .log_path = log_path,
-      .extra_options = "ro,v6_inspection_mount,no_writeback_cache",
+      .extra_options = "ro,no_writeback_cache",
       .timeout_ms = 10000,
   };
 
-  pid_t srv = kafs_test_start_kafs(img, mnt, &options);
+  pid_t srv = kafs_test_start_kafs_v6(img, mnt, &options);
   if (srv <= 0)
   {
-    kafs_test_dump_log(log_path, "v6 inspection mount failed");
+    kafs_test_dump_log(log_path, "kafs-v6 inspection mount failed");
     return 77;
   }
 
@@ -667,7 +667,7 @@ out_stop:
   }
   if (rc == 0 && !file_contains(log_path, "format v6 inspection mount"))
   {
-    tlogf("v6 inspection mount log missing admission message");
+    tlogf("kafs-v6 inspection mount log missing admission message");
     rc = 1;
   }
   return rc;
@@ -1515,17 +1515,33 @@ int main(void)
     tlogf("mkdir mnt-kafsv6 failed");
     return 1;
   }
-  char *kafsv6_argv[] = {(char *)kafs_test_kafs_v6_bin(), (char *)img, (char *)"mnt-kafsv6",
-                         (char *)"--inspection-mount", (char *)"-o", (char *)"ro", NULL};
-  if (run_cmd_capture(kafsv6_argv, 2, out, sizeof(out)) != 0)
+  char *kafsv6_legacy_argv[] = {
+      (char *)kafs_test_kafs_v6_bin(), (char *)img, (char *)"mnt-kafsv6",
+      (char *)"--inspection-mount",    (char *)"-o",  (char *)"ro,v6_inspection_mount",
+      NULL};
+  if (run_cmd_capture(kafsv6_legacy_argv, 2, out, sizeof(out)) != 0)
   {
-    tlogf("kafs-v6 admission preflight did not fail closed as expected: %s", out);
+    tlogf("kafs-v6 legacy token admission did not fail as expected: %s", out);
     return 1;
   }
-  if (!strstr(out, "kafs-v6: format v6 admission preflight") ||
-      !strstr(out, "metadata checks OK") || !strstr(out, "failed closed before mounting"))
+  if (!strstr(out, "kafs-v6 owns the v6 runtime mode") || !strstr(out, "legacy v6_*"))
   {
-    tlogf("kafs-v6 output missing descriptor preflight/fail-closed guidance: %s", out);
+    tlogf("kafs-v6 legacy token output missing dedicated-entrypoint guidance: %s", out);
+    return 1;
+  }
+
+  char *kafsv6_writeback_argv[] = {
+      (char *)kafs_test_kafs_v6_bin(), (char *)img, (char *)"mnt-kafsv6",
+      (char *)"--inspection-mount",    (char *)"-o",  (char *)"ro,writeback_cache",
+      NULL};
+  if (run_cmd_capture(kafsv6_writeback_argv, 2, out, sizeof(out)) != 0)
+  {
+    tlogf("kafs-v6 inspection writeback_cache did not fail as expected: %s", out);
+    return 1;
+  }
+  if (!strstr(out, "kafs-v6 inspection mode does not allow writeback_cache"))
+  {
+    tlogf("kafs-v6 inspection writeback_cache output missing guidance: %s", out);
     return 1;
   }
 
@@ -1578,9 +1594,9 @@ int main(void)
     tlogf("v6 inspection mount without ro did not fail as expected: %s", out);
     return 1;
   }
-  if (!strstr(out, "requires -o ro"))
+  if (!strstr(out, "legacy v6 inspection mount moved to kafs-v6"))
   {
-    tlogf("v6 inspection mount without ro missing guidance: %s", out);
+    tlogf("legacy kafs v6 inspection mount missing kafs-v6 guidance: %s", out);
     return 1;
   }
 
@@ -1592,9 +1608,10 @@ int main(void)
     tlogf("v6 inspection mount with writeback_cache did not fail as expected: %s", out);
     return 1;
   }
-  if (!strstr(out, "does not allow writeback_cache"))
+  if (!strstr(out, "legacy v6 inspection mount moved to kafs-v6"))
   {
-    tlogf("v6 inspection mount with writeback_cache missing guidance: %s", out);
+    tlogf("legacy kafs v6 inspection mount with writeback_cache missing kafs-v6 guidance: %s",
+          out);
     return 1;
   }
 
