@@ -45,7 +45,8 @@ binary. Do not create user-facing helper binaries just to share code.
 1. Keep `kafs_v6_runtime.c` linked only into the v6 runtime entrypoint unless a
    later shared-object/library boundary makes the dependency explicit.
 2. Add a concrete common-object or static-library plan before moving more FUSE
-   runtime setup behind `kafs-v6`.
+   runtime setup behind `kafs-v6`. Completed by
+   [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).
 3. Move current `kafs` v6 inspection and controlled-write admission code to
    `kafs-v6`, then deprecate or hide the legacy `kafs` v6 flags.
 4. Rework docs and tests so v6 acceptance is measured through `kafs-v6`, while

@@ -67,6 +67,11 @@ incomplete. Later slices can move runtime context setup behind `kafs-v6` and
 then introduce explicit common-object or library boundaries where code is truly
 shared.
 
+The concrete shared artifact boundary is recorded in
+[sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).
+The immediate next implementation boundary is read-only inspection admission
+migration into `kafs-v6`, not controlled-write expansion.
+
 ## T20 smoke
 
 The minimum smoke for this skeleton is:

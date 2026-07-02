@@ -48,6 +48,7 @@ historical investigations and deep design notes.
 - [sd-card-wear-v6-explicit-write-cutover-boundary.md](sd-card-wear-v6-explicit-write-cutover-boundary.md)
 - [sd-card-wear-v6-runtime-binary-split-decision.md](sd-card-wear-v6-runtime-binary-split-decision.md)
 - [sd-card-wear-v6-cutover-preparation.md](sd-card-wear-v6-cutover-preparation.md)
+- [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md)
 - [sd-card-wear-v6-runtime-entrypoint-plan.md](sd-card-wear-v6-runtime-entrypoint-plan.md)
 - [sd-card-wear-v6-runtime-handoff-20260626.md](sd-card-wear-v6-runtime-handoff-20260626.md)
 - [write-performance-ideas.md](write-performance-ideas.md)

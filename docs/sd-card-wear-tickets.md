@@ -938,6 +938,29 @@
   - `make -j2`、`make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/test-cli-surface.sh`、
     `make check -j2` が PASS した。
 
+### SDW-V6RT-T24 v6 shared artifact boundary plan
+
+- 目的: `kafs-v6` へ runtime setup を移す前に、最終 binary 境界と `.o` / `.a` / `.so`
+  implementation artifact 境界を具体化し、user-facing helper binary を増やさずに共有する範囲を固定する。
+- 変更:
+  - `docs/sd-card-wear-v6-shared-artifact-boundary-plan.md` を追加し、product boundary、current link
+    surface、artifact classes、次の implementation boundary を記録する。
+  - `kafs_v6_runtime.c` は引き続き `kafs-v6` 専用 link とし、production `kafs` には戻さない方針を明記する。
+  - shared pure metadata helper、shared runtime mechanics、v6-only runtime policy、legacy `kafs`
+    diagnostic surface を分類する。
+- 完了条件:
+  - 共有は user-facing binary ではなく common object list、non-installed static archive、将来の shared
+    library として扱う方針が文書化されている。
+  - T25 の境界が `kafs-v6` read-only inspection admission migration であり、controlled-write expansion
+    ではないと明記されている。
+  - `git diff --check`、`./scripts/test-cli-surface.sh`、`make -j2` が PASS している。
+- 実装メモ (2026-07-02):
+  - `docs/sd-card-wear-v6-shared-artifact-boundary-plan.md` を追加し、product boundary、current link
+    surface、artifact classes、T25 境界を固定した。
+  - 現時点では Autotools archive support を追加せず、common source/object list または non-installed
+    archive を次 slice で選択する方針にした。
+  - `./scripts/format.sh`、`git diff --check`、`./scripts/test-cli-surface.sh`、`make -j2` が PASS した。
+
 ---
 
 ## 最初に着手するチケット
