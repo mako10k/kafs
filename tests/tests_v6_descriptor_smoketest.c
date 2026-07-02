@@ -830,12 +830,11 @@ static int check_v6_controlled_write_mount_smoke(const char *img)
       .debug = "1",
       .log_path = log_path,
       .extra_options =
-          "rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,"
-          "fsync_policy=full",
+          "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
       .timeout_ms = 15000,
   };
 
-  pid_t srv = kafs_test_start_kafs(img, mnt, &options);
+  pid_t srv = kafs_test_start_kafs_v6_controlled_write(img, mnt, &options);
   if (srv <= 0)
   {
     kafs_test_dump_log(log_path, "v6 controlled write mount failed");
@@ -1107,12 +1106,11 @@ static int check_v6_controlled_write_enospc_smoke(void)
       .debug = "1",
       .log_path = log_path,
       .extra_options =
-          "rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,"
-          "fsync_policy=full",
+          "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
       .timeout_ms = 15000,
   };
 
-  pid_t srv = kafs_test_start_kafs(img, mnt, &options);
+  pid_t srv = kafs_test_start_kafs_v6_controlled_write(img, mnt, &options);
   if (srv <= 0)
   {
     kafs_test_dump_log(log_path, "v6 controlled ENOSPC mount failed");
@@ -1238,8 +1236,7 @@ static int check_v6_controlled_write_fsync_failure_smoke(void)
       .debug = "1",
       .log_path = log_path,
       .extra_options =
-          "rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,"
-          "fsync_policy=full",
+          "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
       .timeout_ms = 15000,
   };
 
@@ -1248,7 +1245,7 @@ static int check_v6_controlled_write_fsync_failure_smoke(void)
     tlogf("setenv KAFS_TEST_FORCE_FSYNC_ERROR failed: %s", strerror(errno));
     return 1;
   }
-  pid_t srv = kafs_test_start_kafs(img, mnt, &options);
+  pid_t srv = kafs_test_start_kafs_v6_controlled_write(img, mnt, &options);
   unsetenv("KAFS_TEST_FORCE_FSYNC_ERROR");
   if (srv <= 0)
   {
@@ -1344,23 +1341,25 @@ static int expect_v6_write_mount_rejected(const char *label, char *const argv[],
 static int check_v6_write_mount_fail_closed(const char *img, char *out, size_t out_sz)
 {
   char *missing_rw_argv[] = {
-      (char *)kafs_test_kafs_bin(),
+      (char *)kafs_test_kafs_v6_bin(),
       (char *)img,
       (char *)"mnt",
+      (char *)"--controlled-write-mount",
       (char *)"-o",
-      (char *)"v6-write-mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off",
+      (char *)"no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
       NULL,
   };
   if (expect_v6_write_mount_rejected("v6 write mount without rw", missing_rw_argv,
-                                     "requires explicit -o rw", out, out_sz) != 0)
+                                     "controlled write mode requires", out, out_sz) != 0)
     return 1;
 
   char *ro_argv[] = {
-      (char *)kafs_test_kafs_bin(),
+      (char *)kafs_test_kafs_v6_bin(),
       (char *)img,
       (char *)"mnt",
+      (char *)"--controlled-write-mount",
       (char *)"-o",
-      (char *)"ro,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off",
+      (char *)"ro,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
       NULL,
   };
   if (expect_v6_write_mount_rejected("v6 write mount with ro", ro_argv, "does not allow -o ro",
@@ -1368,74 +1367,87 @@ static int check_v6_write_mount_fail_closed(const char *img, char *out, size_t o
     return 1;
 
   char *inspection_argv[] = {
-      (char *)kafs_test_kafs_bin(),
+      (char *)kafs_test_kafs_v6_bin(),
       (char *)img,
       (char *)"mnt",
+      (char *)"--controlled-write-mount",
       (char *)"-o",
-      (char *)"rw,v6_write_mount,v6_inspection_mount,no_writeback_cache,no_trim_on_free,"
-              "bg_dedup_scan=off",
+      (char *)"rw,v6_inspection_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,"
+              "fsync_policy=full",
       NULL,
   };
   if (expect_v6_write_mount_rejected("v6 write mount with inspection", inspection_argv,
-                                     "does not allow v6_inspection_mount", out, out_sz) != 0)
+                                     "kafs-v6 owns the v6 runtime mode", out, out_sz) != 0)
     return 1;
 
   char *writeback_argv[] = {
-      (char *)kafs_test_kafs_bin(),
+      (char *)kafs_test_kafs_v6_bin(),
       (char *)img,
       (char *)"mnt",
+      (char *)"--controlled-write-mount",
       (char *)"-o",
-      (char *)"rw,v6_write_mount,writeback_cache,no_trim_on_free,bg_dedup_scan=off",
+      (char *)"rw,writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
       NULL,
   };
   if (expect_v6_write_mount_rejected("v6 write mount with writeback", writeback_argv,
-                                     "requires no_writeback_cache", out, out_sz) != 0)
+                                     "controlled write mode requires", out, out_sz) != 0)
     return 1;
 
   char *trim_argv[] = {
-      (char *)kafs_test_kafs_bin(),
+      (char *)kafs_test_kafs_v6_bin(),
       (char *)img,
       (char *)"mnt",
+      (char *)"--controlled-write-mount",
       (char *)"-o",
-      (char *)"rw,v6_write_mount,no_writeback_cache,trim_on_free,bg_dedup_scan=off",
+      (char *)"rw,no_writeback_cache,trim_on_free,bg_dedup_scan=off,fsync_policy=full",
       NULL,
   };
   if (expect_v6_write_mount_rejected("v6 write mount with trim", trim_argv,
-                                     "requires no_trim_on_free", out, out_sz) != 0)
+                                     "controlled write mode requires", out, out_sz) != 0)
     return 1;
 
   char *bg_argv[] = {
-      (char *)kafs_test_kafs_bin(),
+      (char *)kafs_test_kafs_v6_bin(),
       (char *)img,
       (char *)"mnt",
+      (char *)"--controlled-write-mount",
       (char *)"-o",
-      (char *)"rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=on",
+      (char *)"rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=on,fsync_policy=full",
       NULL,
   };
   if (expect_v6_write_mount_rejected("v6 write mount with bg dedup", bg_argv,
-                                     "requires bg_dedup_scan=off", out, out_sz) != 0)
+                                     "controlled write mode requires", out, out_sz) != 0)
     return 1;
 
   char *hotplug_argv[] = {
+      (char *)kafs_test_kafs_v6_bin(),
+      (char *)img,
+      (char *)"mnt",
+      (char *)"--controlled-write-mount",
+      (char *)"--hotplug-uds",
+      (char *)"/tmp/kafs-v6-controlled-write-hotplug.sock",
+      (char *)"-o",
+      (char *)"rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
+      NULL,
+  };
+  if (expect_v6_write_mount_rejected("v6 write mount with hotplug", hotplug_argv,
+                                     "does not admit hotplug", out, out_sz) != 0)
+    return 1;
+
+  char *legacy_kafs_argv[] = {
       (char *)kafs_test_kafs_bin(),
-      (char *)"--v6-write-mount",
       (char *)img,
       (char *)"mnt",
       (char *)"-o",
-      (char *)"rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off",
+      (char *)"rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,"
+              "fsync_policy=full",
       NULL,
   };
-  if (run_cmd_capture_env(hotplug_argv, 2, "KAFS_HOTPLUG_UDS",
-                          "/tmp/kafs-v6-controlled-write-hotplug.sock", out, out_sz) != 0)
-  {
-    tlogf("v6 write mount with hotplug did not fail as expected: %s", out);
+  if (expect_v6_write_mount_rejected("legacy kafs v6 write mount", legacy_kafs_argv,
+                                     "legacy v6 controlled write mount moved to kafs-v6", out,
+                                     out_sz) != 0)
     return 1;
-  }
-  if (!strstr(out, "does not allow hotplug delegated write path"))
-  {
-    tlogf("v6 write mount hotplug reject missing guidance: %s", out);
-    return 1;
-  }
+
   return 0;
 }
 

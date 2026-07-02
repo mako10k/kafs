@@ -49,9 +49,10 @@ binary. Do not create user-facing helper binaries just to share code.
    [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).
 3. Move current `kafs` v6 inspection and controlled-write admission code to
    `kafs-v6`, then deprecate or hide the legacy `kafs` v6 flags. Read-only
-   inspection admission was moved by T25; controlled-write isolation remains.
+   inspection admission was moved by T25; controlled-write admission was moved
+   by T26.
 4. Rework docs and tests so v6 acceptance is measured through `kafs-v6`, while
    `kafs` tests prove v4/v5 behavior is unchanged. This is complete for
-   read-only inspection and still pending for controlled write.
+   read-only inspection and controlled write.
 5. Before adding more v6 operations, decide whether each feature is
    v6-native, temporarily disabled, or retained only for migration/staging.

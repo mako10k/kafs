@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT_DIR"
 
-DEFAULT_MOUNT_OPTIONS="rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full"
+DEFAULT_MOUNT_OPTIONS="rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full"
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 
 IMAGE=""
@@ -18,7 +18,7 @@ MOUNT_TIMEOUT_MS="${KAFS_V6_WRITE_SMOKE_MOUNT_TIMEOUT_MS:-15000}"
 MOUNT_OPTIONS="${KAFS_V6_WRITE_SMOKE_MOUNT_OPTIONS:-$DEFAULT_MOUNT_OPTIONS}"
 KAFS_DEBUG_LEVEL="${KAFS_V6_WRITE_SMOKE_DEBUG:-0}"
 
-KAFS_BIN="${KAFS_BIN:-$ROOT_DIR/src/kafs}"
+KAFS_BIN="${KAFS_BIN:-$ROOT_DIR/src/kafs-v6}"
 KAFSDUMP_BIN="${KAFSDUMP_BIN:-$ROOT_DIR/src/kafsdump}"
 FSCK_BIN="${FSCK_BIN:-$ROOT_DIR/src/fsck.kafs}"
 
@@ -51,6 +51,7 @@ Options:
 
 Environment:
   KAFS_BIN, KAFSDUMP_BIN, FSCK_BIN can override tool paths.
+  KAFS_BIN should point to the dedicated kafs-v6 runtime entrypoint.
   KAFS_V6_WRITE_SMOKE_MOUNT_OPTIONS can override the default mount options.
   KAFS_V6_WRITE_SMOKE_MOUNT_TIMEOUT_MS can override the default timeout.
   KAFS_V6_WRITE_SMOKE_DEBUG can set KAFS_DEBUG for the mount (default: 0).
@@ -96,7 +97,6 @@ validate_unsigned() {
 validate_mount_options() {
   local opts="$1"
   local has_rw=0
-  local has_v6_write=0
   local has_no_writeback=0
   local has_no_trim=0
   local has_bg_off=0
@@ -120,7 +120,7 @@ validate_mount_options() {
         die "unsafe mount option refused for controlled write smoke: ro"
         ;;
       v6_write_mount|v6-write-mount)
-        has_v6_write=1
+        die "legacy v6 mount option refused for controlled write smoke: $tok"
         ;;
       v6_inspection_mount|v6-inspection-mount)
         die "unsafe mount option refused for controlled write smoke: $tok"
@@ -156,7 +156,6 @@ validate_mount_options() {
   done
 
   [[ "$has_rw" -eq 1 ]] || die "controlled write smoke requires -o rw"
-  [[ "$has_v6_write" -eq 1 ]] || die "controlled write smoke requires -o v6_write_mount"
   [[ "$has_no_writeback" -eq 1 ]] || die "controlled write smoke requires no_writeback_cache"
   [[ "$has_no_trim" -eq 1 ]] || die "controlled write smoke requires no_trim_on_free"
   [[ "$has_bg_off" -eq 1 ]] || die "controlled write smoke requires bg_dedup_scan=off"
@@ -299,12 +298,13 @@ PYEOF
 }
 
 start_mount() {
-  quote_cmd "$KAFS_BIN" "$IMAGE_ABS" "$MOUNT_DIR" -f -o "$MOUNT_OPTIONS" \
+  quote_cmd "$KAFS_BIN" --image "$IMAGE_ABS" --controlled-write-mount "$MOUNT_DIR" -f -o \
+    "$MOUNT_OPTIONS" \
     >"$REPORT_DIR/mount.cmd"
 
   set +e
-  KAFS_DEBUG="$KAFS_DEBUG_LEVEL" "$KAFS_BIN" "$IMAGE_ABS" "$MOUNT_DIR" -f -o "$MOUNT_OPTIONS" \
-    >"$MOUNT_LOG" 2>&1 &
+  KAFS_DEBUG="$KAFS_DEBUG_LEVEL" "$KAFS_BIN" --image "$IMAGE_ABS" --controlled-write-mount \
+    "$MOUNT_DIR" -f -o "$MOUNT_OPTIONS" >"$MOUNT_LOG" 2>&1 &
   KAFS_PID=$!
   set -e
 

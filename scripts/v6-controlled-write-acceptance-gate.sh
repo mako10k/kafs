@@ -303,7 +303,8 @@ validate_report() {
   require_contains "$REPORT_DIR/mount.log" "format v6 controlled write mount" "mount log"
   require_contains "$REPORT_DIR/workload.stdout" \
     "regular-file create/write/fsync workload passed" "workload stdout"
-  require_contains "$REPORT_DIR/mount.cmd" "v6_write_mount" "mount command"
+  require_contains "$REPORT_DIR/mount.cmd" "kafs-v6" "mount command"
+  require_contains "$REPORT_DIR/mount.cmd" "--controlled-write-mount" "mount command"
   require_contains "$REPORT_DIR/fsck-before.cmd" "--balanced-check" "before fsck command"
   require_contains "$REPORT_DIR/fsck-after.cmd" "--balanced-check" "after fsck command"
 
@@ -319,7 +320,6 @@ validate_report() {
     fail "manifest missing mount_options"
   else
     require_mount_token "$mount_opts" "rw"
-    require_any_mount_token "$mount_opts" "v6_write_mount" "v6_write_mount" "v6-write-mount"
     require_any_mount_token "$mount_opts" "no_writeback_cache" "no_writeback_cache" \
       "no-writeback-cache"
     require_any_mount_token "$mount_opts" "no_trim_on_free" "no_trim_on_free" \
@@ -328,6 +328,8 @@ validate_report() {
       "dedup_scan=off" "no_bg_dedup_scan" "no-bg-dedup-scan"
     require_mount_token "$mount_opts" "fsync_policy=full"
     reject_mount_token "$mount_opts" "ro"
+    reject_mount_token "$mount_opts" "v6_write_mount"
+    reject_mount_token "$mount_opts" "v6-write-mount"
     reject_mount_token "$mount_opts" "v6_inspection_mount"
     reject_mount_token "$mount_opts" "v6-inspection-mount"
     reject_mount_token "$mount_opts" "writeback_cache"

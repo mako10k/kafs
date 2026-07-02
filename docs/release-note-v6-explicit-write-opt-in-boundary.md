@@ -6,25 +6,30 @@ default production path.
 
 ## Summary
 
-Format v6 write mount remains disabled by default. The experimental controlled
-write mount requires explicit `rw,v6_write_mount` opt-in and fails closed unless
-descriptor validation, journal health, metadata shard coverage, lock policy, and
-operator fsck requirements are all satisfied.
+Format v6 write mount remains disabled by default in the production `kafs`
+runtime. The experimental controlled write mount requires the dedicated
+`kafs-v6 --controlled-write-mount` entrypoint plus explicit
+`rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full`
+mount options, and fails closed unless descriptor validation, journal health,
+metadata shard coverage, lock policy, and operator fsck requirements are all
+satisfied.
 
 ## Compatibility
 
 - Existing v4/v5 runtime mounts are unchanged.
-- v6 inspection remains read-only through `-o ro,v6_inspection_mount`.
+- v6 inspection is read-only through `kafs-v6 --inspection-mount -o ro`.
 - Normal v6 runtime mount attempts remain fail-closed unless the explicit
-  controlled write opt-in is present.
+  controlled write entrypoint and mount option shape are present.
 
 ## Controlled opt-in scope
 
-The user-visible entrypoints are:
+The user-visible entrypoint is:
 
-- `--v6-write-mount`
-- `-o v6_write_mount`
-- `-o v6-write-mount`
+- `kafs-v6 --controlled-write-mount`
+
+The required mount option shape is:
+
+- `-o rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full`
 
 The controlled opt-in is experimental and must be documented as operationally
 bounded. It is not a production default.

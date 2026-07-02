@@ -11140,8 +11140,8 @@ static void usage(const char *prog)
           "    --trim-on-free                    Enable TRIM on freed data blocks\n"
           "    --no-trim-on-free                 Disable TRIM on freed data blocks\n"
           "    --sd-card-profile[=conservative]  Enable low metadata-churn profile\n"
-          "    --v6-inspection-mount             Permit explicit v6 inspection mount with -o ro\n"
-          "    --v6-write-mount                  Experimental v6 controlled write opt-in\n"
+          "    --v6-inspection-mount             Legacy v6 token; use kafs-v6\n"
+          "    --v6-write-mount                  Legacy v6 token; use kafs-v6\n"
           "    -o writeback_cache                Enable writeback cache (FUSE -o)\n"
           "    -o no_writeback_cache             Disable writeback cache (FUSE -o)\n"
           "    -o trim_on_free | trim-on-free    Enable TRIM (FUSE -o)\n"
@@ -11149,10 +11149,8 @@ static void usage(const char *prog)
           "                                      Disable TRIM (FUSE -o)\n"
           "    -o sd_card_profile=<none|conservative>\n"
           "                                      Apply SD-card profile settings (opt-in)\n"
-          "    -o v6_inspection_mount            Permit explicit v6 inspection mount with -o ro\n"
-          "    -o v6_write_mount                 Experimental v6 controlled write opt-in\n"
-          "                                      Requires rw,no_writeback_cache,\n"
-          "                                      no_trim_on_free,bg_dedup_scan=off\n"
+          "    -o v6_inspection_mount            Legacy v6 token; use kafs-v6\n"
+          "    -o v6_write_mount                 Legacy v6 token; use kafs-v6\n"
           "\n"
           "  [Threading]\n"
           "    -o multi_thread[=N]               Enable MT mode (alias: multi-thread, "
@@ -12637,12 +12635,12 @@ static int kafs_main_validate_v6_runtime_options(const kafs_main_options_t *opts
     }
     if (opts->mount_read_only_seen)
     {
-      fprintf(stderr, "v6 write mount does not allow -o ro; use explicit -o rw,v6_write_mount.\n");
+      fprintf(stderr, "v6 controlled write mount does not allow -o ro; use explicit -o rw.\n");
       return 2;
     }
     if (!opts->mount_read_write_requested)
     {
-      fprintf(stderr, "v6 write mount requires explicit -o rw and -o v6_write_mount.\n");
+      fprintf(stderr, "v6 controlled write mount requires explicit -o rw.\n");
       return 2;
     }
     if (opts->writeback_cache_enabled)
@@ -13492,28 +13490,21 @@ static int kafs_main_cleanup(kafs_context_t *ctx, char *hotplug_uds_path, int rc
 }
 
 #ifdef KAFS_V6_ENTRYPOINT
-int kafs_v6_inspection_mount_main(const char *image_path, const char *mountpoint, int argc_extra,
-                                  char **argv_extra)
+static int kafs_v6_mount_main_common(const char *image_path, const char *mountpoint, int argc_extra,
+                                     char **argv_extra, kafs_bool_t controlled_write_mount)
 {
   if (!image_path || !mountpoint || argc_extra < 0)
   {
-    fprintf(stderr, "kafs-v6 inspection mount requires an image path and mountpoint.\n");
+    fprintf(stderr, "kafs-v6 %s mount requires an image path and mountpoint.\n",
+            controlled_write_mount ? "controlled write" : "inspection");
     return 2;
   }
 
   kafs_main_options_t opts;
   kafs_main_options_init(&opts);
   opts.image_path = image_path;
-  opts.v6_inspection_mount = KAFS_TRUE;
-  opts.v6_write_mount = KAFS_FALSE;
-  opts.mount_read_only_requested = KAFS_TRUE;
-  opts.mount_read_only_seen = KAFS_TRUE;
-  opts.mount_read_write_requested = KAFS_FALSE;
-  opts.writeback_cache_enabled = KAFS_FALSE;
-  opts.writeback_cache_explicit = KAFS_TRUE;
-  opts.trim_on_free_enabled = KAFS_FALSE;
-  opts.trim_on_free_explicit = KAFS_TRUE;
-  opts.bg_dedup_scan_enabled = 0u;
+  opts.v6_inspection_mount = controlled_write_mount ? KAFS_FALSE : KAFS_TRUE;
+  opts.v6_write_mount = controlled_write_mount ? KAFS_TRUE : KAFS_FALSE;
 
   char *argv_clean[argc_extra + 3];
   int argc_clean = 0;
@@ -13525,9 +13516,19 @@ int kafs_v6_inspection_mount_main(const char *image_path, const char *mountpoint
   if (kafs_main_filter_mount_options(&opts, argv_clean, &argc_clean) != 0 ||
       kafs_main_validate_options(&opts) != 0)
     return 2;
-  if (opts.mount_read_write_requested)
+  if (!controlled_write_mount && opts.mount_read_write_requested)
   {
     fprintf(stderr, "kafs-v6 inspection mount does not allow -o rw.\n");
+    return 2;
+  }
+  if (controlled_write_mount &&
+      (!opts.mount_read_write_requested || opts.mount_read_only_seen || opts.v6_inspection_mount ||
+       opts.writeback_cache_enabled || !opts.trim_on_free_explicit || opts.trim_on_free_enabled ||
+       opts.bg_dedup_scan_enabled || opts.fsync_policy != KAFS_FSYNC_POLICY_FULL))
+  {
+    fprintf(stderr,
+            "kafs-v6 controlled write mount requires "
+            "-o rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full.\n");
     return 2;
   }
 
@@ -13537,12 +13538,17 @@ int kafs_v6_inspection_mount_main(const char *image_path, const char *mountpoint
   hotplug_uds_path[0] = '\0';
   kafs_main_init_context(&ctx, &opts, argv_clean[1], mnt_abs, sizeof(mnt_abs));
 
-  kafs_main_open_runtime_context(&ctx, image_path, KAFS_FALSE, KAFS_FALSE, KAFS_TRUE, KAFS_FALSE,
-                                 KAFS_TRUE);
-  opts.writeback_cache_enabled = KAFS_FALSE;
-  opts.writeback_cache_explicit = KAFS_TRUE;
-  opts.trim_on_free_enabled = KAFS_FALSE;
-  opts.trim_on_free_explicit = KAFS_TRUE;
+  kafs_main_open_runtime_context(&ctx, image_path, KAFS_FALSE, KAFS_FALSE,
+                                 controlled_write_mount ? KAFS_FALSE : KAFS_TRUE,
+                                 controlled_write_mount ? KAFS_TRUE : KAFS_FALSE,
+                                 controlled_write_mount ? KAFS_FALSE : KAFS_TRUE);
+  if (ctx.c_runtime_read_only)
+  {
+    opts.writeback_cache_enabled = KAFS_FALSE;
+    opts.writeback_cache_explicit = KAFS_TRUE;
+    opts.trim_on_free_enabled = KAFS_FALSE;
+    opts.trim_on_free_explicit = KAFS_TRUE;
+  }
 
   char *argv_fuse[argc_clean + 10];
   char mt_opt_buf[64];
@@ -13559,6 +13565,18 @@ int kafs_v6_inspection_mount_main(const char *image_path, const char *mountpoint
   int rc = fuse_main(argc_fuse, argv_fuse, &kafs_operations, &ctx);
   fuse_set_log_func(NULL);
   return kafs_main_cleanup(&ctx, hotplug_uds_path, rc);
+}
+
+int kafs_v6_inspection_mount_main(const char *image_path, const char *mountpoint, int argc_extra,
+                                  char **argv_extra)
+{
+  return kafs_v6_mount_main_common(image_path, mountpoint, argc_extra, argv_extra, KAFS_FALSE);
+}
+
+int kafs_v6_controlled_write_mount_main(const char *image_path, const char *mountpoint,
+                                        int argc_extra, char **argv_extra)
+{
+  return kafs_v6_mount_main_common(image_path, mountpoint, argc_extra, argv_extra, KAFS_TRUE);
 }
 #endif
 
@@ -13600,6 +13618,14 @@ int main(int argc, char **argv)
   {
     fprintf(stderr, "kafs: legacy v6 inspection mount moved to kafs-v6; use "
                     "kafs-v6 --image <image> --inspection-mount <mountpoint> -o ro.\n");
+    return 2;
+  }
+  if (opts.v6_write_mount)
+  {
+    fprintf(stderr,
+            "kafs: legacy v6 controlled write mount moved to kafs-v6; use "
+            "kafs-v6 --image <image> --controlled-write-mount <mountpoint> "
+            "-o rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full.\n");
     return 2;
   }
   if (kafs_main_validate_options(&opts) != 0)

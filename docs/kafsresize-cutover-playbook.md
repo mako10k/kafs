@@ -185,11 +185,13 @@ controlled smoke helper.
 This boundary is an experimental controlled write path. It is disabled by
 default and must not be treated as a production default cutover path.
 
-The mount must use an explicit controlled opt-in:
+The mount must use the dedicated v6 runtime entrypoint and explicit controlled
+write mode:
 
 ```sh
-./kafs --image /var/lib/kafs/destination.img /mnt/kafs-v6 -f \
-	-o rw,v6_write_mount,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off
+./kafs-v6 --image /var/lib/kafs/destination.img \
+	--controlled-write-mount /mnt/kafs-v6 -f \
+	-o rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full
 ```
 
 Use the repeatable operator helper for smoke evidence:
@@ -201,8 +203,8 @@ scripts/v6-controlled-write-smoke.sh \
 	--report-root /var/tmp/kafs-v6-controlled-write-smoke
 ```
 
-The helper uses the controlled opt-in, adds `fsync_policy=full`, runs an
-explicit regular-file create/write/fsync workload, unmounts, and stores
+The helper uses `kafs-v6 --controlled-write-mount`, runs an explicit
+regular-file create/write/fsync workload, unmounts, and stores
 timestamped before/after artifacts under the report root.
 
 Use the pre-production acceptance gate when you need a mechanical check that the
@@ -220,10 +222,12 @@ The gate verifies the controlled write mount log, workload success, before/after
 and the absence of copy/reflink workload evidence. Passing this gate is not
 production cutover approval.
 
-Admission fails closed when `rw,v6_write_mount` is not explicit, when `ro` or
-`v6_inspection_mount` is also present, or when unsupported writeback cache,
-runtime TRIM, delayed/background mutation, hotplug delegated write, or v6
-repair-write paths are requested.
+Admission fails closed when `kafs-v6 --controlled-write-mount` is not explicit,
+when required mount options are missing, when `ro` or legacy `v6_*` mode tokens
+are present, or when unsupported writeback cache, runtime TRIM,
+delayed/background mutation, hotplug delegated write, or v6 repair-write paths
+are requested. The required mount options are:
+`rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full`.
 
 Use explicit regular-file create/write/fsync smoke commands. Do not use `cp` or
 copy/reflink operations as the acceptance signal. Some kernels satisfy

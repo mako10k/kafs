@@ -419,8 +419,16 @@ static int kafs_test_mount_timeout_ms(const kafs_test_mount_options_t *options)
   return 5000;
 }
 
-static pid_t kafs_test_start_kafs_tool(const char *tool, int v6_inspection_mode, const char *img,
-                                       const char *mnt, const kafs_test_mount_options_t *options)
+typedef enum kafs_test_v6_tool_mode
+{
+  KAFS_TEST_V6_TOOL_MODE_NONE = 0,
+  KAFS_TEST_V6_TOOL_MODE_INSPECTION,
+  KAFS_TEST_V6_TOOL_MODE_CONTROLLED_WRITE,
+} kafs_test_v6_tool_mode_t;
+
+static pid_t kafs_test_start_kafs_tool(const char *tool, kafs_test_v6_tool_mode_t v6_mode,
+                                       const char *img, const char *mnt,
+                                       const kafs_test_mount_options_t *options)
 {
   if (mkdir(mnt, 0700) != 0 && errno != EEXIST)
     return -errno;
@@ -462,12 +470,14 @@ static pid_t kafs_test_start_kafs_tool(const char *tool, int v6_inspection_mode,
     }
 
     const char *kafs = tool;
-    char *args[10];
+    char *args[11];
     int argc = 0;
     args[argc++] = (char *)kafs;
     args[argc++] = (char *)mp;
-    if (v6_inspection_mode)
+    if (v6_mode == KAFS_TEST_V6_TOOL_MODE_INSPECTION)
       args[argc++] = "--inspection-mount";
+    else if (v6_mode == KAFS_TEST_V6_TOOL_MODE_CONTROLLED_WRITE)
+      args[argc++] = "--controlled-write-mount";
     args[argc++] = "-f";
     if (options && options->extra_options && *options->extra_options)
     {
@@ -519,13 +529,22 @@ static pid_t kafs_test_start_kafs_tool(const char *tool, int v6_inspection_mode,
 pid_t kafs_test_start_kafs(const char *img, const char *mnt,
                            const kafs_test_mount_options_t *options)
 {
-  return kafs_test_start_kafs_tool(kafs_test_kafs_bin(), 0, img, mnt, options);
+  return kafs_test_start_kafs_tool(kafs_test_kafs_bin(), KAFS_TEST_V6_TOOL_MODE_NONE, img, mnt,
+                                   options);
 }
 
 pid_t kafs_test_start_kafs_v6(const char *img, const char *mnt,
                               const kafs_test_mount_options_t *options)
 {
-  return kafs_test_start_kafs_tool(kafs_test_kafs_v6_bin(), 1, img, mnt, options);
+  return kafs_test_start_kafs_tool(kafs_test_kafs_v6_bin(), KAFS_TEST_V6_TOOL_MODE_INSPECTION, img,
+                                   mnt, options);
+}
+
+pid_t kafs_test_start_kafs_v6_controlled_write(const char *img, const char *mnt,
+                                               const kafs_test_mount_options_t *options)
+{
+  return kafs_test_start_kafs_tool(kafs_test_kafs_v6_bin(),
+                                   KAFS_TEST_V6_TOOL_MODE_CONTROLLED_WRITE, img, mnt, options);
 }
 
 void kafs_test_stop_kafs(const char *mnt, pid_t kafs_pid)

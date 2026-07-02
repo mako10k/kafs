@@ -35,6 +35,11 @@ pid_t kafs_test_start_kafs(const char *img, const char *mnt,
 pid_t kafs_test_start_kafs_v6(const char *img, const char *mnt,
                               const kafs_test_mount_options_t *options);
 
+// Start kafs-v6 in controlled-write mode for mount-based tests.
+// Returns the child pid on success, negative/zero on failure.
+pid_t kafs_test_start_kafs_v6_controlled_write(const char *img, const char *mnt,
+                                               const kafs_test_mount_options_t *options);
+
 // Dump a previously captured kafs log file to stderr if it exists.
 void kafs_test_dump_log(const char *log_path, const char *reason);
 

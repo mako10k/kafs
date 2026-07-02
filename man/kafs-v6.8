@@ -1,7 +1,7 @@
 '.\" -*- nroff -*-
 .TH KAFS-V6 8 "2026-07-02" "kafs 0.4.0" "System Administration"
 .SH NAME
-kafs-v6 \- dedicated format v6 runtime entrypoint skeleton
+kafs-v6 \- dedicated format v6 runtime entrypoint
 .SH SYNOPSIS
 .B kafs-v6
 .RB --image
@@ -19,9 +19,11 @@ kafs-v6 \- dedicated format v6 runtime entrypoint skeleton
 .BR -o " " rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full
 .SH DESCRIPTION
 .B kafs-v6
-is the dedicated format v6 runtime entrypoint skeleton.
-It validates the format v6 CLI boundary and image format, then fails closed
-before mounting.
+is the dedicated format v6 runtime entrypoint.
+It validates the format v6 CLI boundary, rejects legacy
+.B v6_*
+mount-option mode tokens, runs descriptor preflight, and then admits the
+selected v6 runtime contract.
 .PP
 Future format v6 runtime admission and write-surface work should move behind
 this binary instead of broadening the production
@@ -63,8 +65,8 @@ Inline form of
 Help was printed.
 .TP
 .B 2
-The request was invalid, the image was not format v6, or the skeleton rejected
-the mount before admission.
+The request was invalid, the image was not format v6, descriptor preflight
+failed, or runtime admission failed.
 .SH SEE ALSO
 .BR kafs (1),
 .BR mkfs.kafs (8),

@@ -39,8 +39,8 @@ static void usage(const char *prog)
           "Notes:\n"
           "  This is the dedicated format v6 runtime entrypoint. It owns v6 CLI\n"
           "  admission, rejects legacy v6_* mount tokens, and admits read-only\n"
-          "  inspection mounts after descriptor preflight. Controlled write remains\n"
-          "  fail-closed until its v6 policy is moved behind this binary.\n",
+          "  inspection or controlled-write mounts after descriptor preflight.\n"
+          "  Controlled write requires the explicit conservative policy shape.\n",
           prog, prog, prog);
 }
 
@@ -337,9 +337,6 @@ int main(int argc, char **argv)
     return kafs_v6_inspection_mount_main(opts.image_path, opts.mountpoint, opts.fuse_argc,
                                          opts.fuse_args);
 
-  fprintf(stderr, "kafs-v6: format v6 controlled write admission is still fail-closed before "
-                  "mounting.\n");
-  fprintf(stderr, "kafs-v6: move controlled-write runtime policy behind this binary before "
-                  "expanding the v6 write surface.\n");
-  return 2;
+  return kafs_v6_controlled_write_mount_main(opts.image_path, opts.mountpoint, opts.fuse_argc,
+                                             opts.fuse_args);
 }

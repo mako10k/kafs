@@ -988,6 +988,36 @@
   - `src/kafs.c` の legacy inspection token は validation 前に `kafs-v6` guidance で拒否する。
   - `make check -j2` は all 29 tests passed で完了した。
 
+### SDW-V6RT-T26 kafs-v6 controlled-write admission isolation
+
+- 目的: existing controlled-write admission を production `kafs` の successful runtime path から外し、
+  `kafs-v6 --controlled-write-mount` を v6 write acceptance の入口にする。これは isolation slice であり、
+  write surface expansion ではない。
+- 変更:
+  - `kafs-v6 --controlled-write-mount` は descriptor / journal preflight 後に shared FUSE runtime bridge
+    へ進み、既存の conservative controlled-write policy shape だけを許可する。
+  - production `kafs` の legacy `v6_write_mount` は successful path から外し、`kafs-v6`
+    への案内で fail-closed にする。
+  - `v6_descriptor_smoketest` の controlled-write mount / ENOSPC / fsync-failure smoke を `kafs-v6`
+    起動に切り替え、legacy `kafs` write token の fail-closed guidance を regression にする。
+  - operator smoke helper は `kafs-v6 --controlled-write-mount` を使い、legacy `v6_write_mount`
+    mount option を拒否する。
+- 完了条件:
+  - `kafs-v6 --controlled-write-mount ... -o
+    rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full` が v6
+    controlled-write acceptance を所有する。
+  - `kafs -o v6_write_mount` は successful mount path に入らず `kafs-v6` guidance を出す。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - `./scripts/format.sh`、`git diff --check`、`./scripts/test-cli-surface.sh`、`make -j2`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`make check -j2` が PASS している。
+- 実装メモ (2026-07-02):
+  - `src/kafs.c` の `KAFS_V6_ENTRYPOINT` bridge を inspection / controlled-write 共通にし、
+    `kafs-v6 --controlled-write-mount` から既存 controlled write runtime setup へ進むようにした。
+  - production `kafs` の legacy `v6_write_mount` は validation 前に `kafs-v6` guidance で拒否する。
+  - `scripts/v6-controlled-write-smoke.sh` / acceptance gate は `kafs-v6 --controlled-write-mount`
+    を正規 mount command とし、legacy `v6_write_mount` mount option を拒否する。
+  - `make check -j2` は all 26 tests passed、3 tests not run で完了した。
+
 ---
 
 ## 最初に着手するチケット
