@@ -13,9 +13,14 @@ existing v6 inspection and controlled-write paths are retained only as bounded
 diagnostic and smoke-test surfaces until they can be retired, hidden, or routed
 through the dedicated v6 entrypoint.
 
-Shared implementation must be factored into libraries or common object files
+Until explicit v6 production cutover, v6 does not carry a backward
+compatibility promise. Format and feature changes may be drastic when the v6
+target design requires it. This policy does not loosen v4/v5 compatibility.
+
+Runtime binaries are final deliverables only. Shared implementation may be
+factored into common object files, static libraries, or future shared libraries
 that both runtimes can link. The split is an entrypoint and policy split, not a
-request to duplicate filesystem logic.
+request to duplicate filesystem logic or create helper executables.
 
 ## Context
 
@@ -51,6 +56,8 @@ v5-visible filesystem behavior was still absent from the v6 runtime surface.
   Candidate shared areas include descriptor parsing and validation, inode
   helpers, block allocation helpers, journal helpers, fsck/dump shared readers,
   and common FUSE operation utilities where the policy boundary is explicit.
+- The acceptable shared artifacts are implementation artifacts such as `.o`,
+  `.a`, and `.so`, not additional user-facing binaries.
 - Treat v5 parity as a v6 runtime goal, but validate it through the dedicated
   v6 entrypoint once that entrypoint exists.
 - Keep `kafsresize --migrate-create --format-version 6`, `kafsdump`, and
@@ -64,6 +71,6 @@ expansion. It is the split plan:
 
 1. define the v6 runtime binary name and CLI contract;
 2. identify which current `kafs` v6 admission code moves to that entrypoint;
-3. define shared library/common-object boundaries in `Makefile.am`;
+3. define shared `.o` / `.a` / `.so` boundaries in `Makefile.am`;
 4. add a narrow smoke that proves v4/v5 `kafs` behavior is unchanged while the
    v6 entrypoint owns v6 runtime admission.

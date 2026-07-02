@@ -913,6 +913,31 @@
   - `v6_descriptor_smoketest` の既存 v6 admission / rejection matrix が PASS する。
   - `make -j2` と CLI surface smoke が PASS している。
 
+### SDW-V6RT-T23 v6 cutover preparation policy reset
+
+- 目的: v6 production cutover 前の開発方針を再固定し、v6 は後方互換を約束せず純粋な v6 target
+  design を優先すること、最終 runtime binary は `kafs` / `kafs-v6` の分離であることを明記する。
+- 変更:
+  - `docs/sd-card-wear-v6-cutover-preparation.md` を追加し、v6 cutover 前の互換性ポリシー、最終
+    binary 境界、許可する `.o` / `.a` / `.so` 共有境界を記録する。
+  - v5 互換都合で v6 実装が歪む箇所を棚卸しし、v6-native direction を明文化する。
+  - `kafs_v6_runtime.c` を production `kafs` / `kafsctl` / `kafs-back` の link surface から外し、
+    dedicated `kafs-v6` entrypoint 側の helper として扱う。
+- 完了条件:
+  - `kafs` / `kafs-v6` は最終生成物として分離し、共有は user-facing binary ではなく `.o` / `.a` /
+    `.so` などの implementation artifact で行うと docs に明記されている。
+  - v6 cutover 前は v6 format / feature の drastic change を許可する一方、v4/v5 compatibility は
+    維持する方針が記録されている。
+  - v5 互換制約に引っ張られている v6 実装領域と v6-native direction が一覧化されている。
+  - `make -j2`、`v6_descriptor_smoketest`、CLI surface smoke が PASS している。
+- 実装メモ (2026-07-02):
+  - `docs/sd-card-wear-v6-cutover-preparation.md` を追加し、v6 cutover 前の互換性ポリシー、v6-native
+    direction、最終 binary / shared artifact 境界を記録した。
+  - `kafs_v6_runtime.c` は `kafs-v6` だけへ link し、production `kafs` / `kafsctl` / `kafs-back` から
+    外した。legacy `kafs` の v6 診断 surface は既存挙動を維持するためローカル検査として残した。
+  - `make -j2`、`make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/test-cli-surface.sh`、
+    `make check -j2` が PASS した。
+
 ---
 
 ## 最初に着手するチケット

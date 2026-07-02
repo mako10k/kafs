@@ -12,6 +12,10 @@ inspection and controlled-write behavior in `kafs` remains bounded diagnostic
 and smoke surface while the runtime split is completed; new v6 write-surface
 expansion must move behind `kafs-v6`.
 
+Until v6 production cutover, v6 has no backward compatibility promise. The
+format and feature set may change drastically when the pure v6 target requires
+it. The v4/v5 production runtime remains compatibility-preserving.
+
 ## CLI contract
 
 Initial `kafs-v6` modes are explicit and mutually exclusive:
@@ -44,8 +48,10 @@ the production `kafs` entrypoint and behind `kafs-v6`. Candidate code areas:
 
 ## Shared implementation boundary
 
-Do not duplicate filesystem logic between `kafs` and `kafs-v6`. Shared code
-should move into common objects or libraries when it is needed by both binaries:
+Do not duplicate filesystem logic between `kafs` and `kafs-v6`. Final runtime
+binaries are the product boundary; shared implementation may move into common
+objects or libraries (`.o`, `.a`, and future `.so`) when it is needed by both
+binaries:
 
 - descriptor parsing and validation
 - journal segment validation
@@ -53,10 +59,13 @@ should move into common objects or libraries when it is needed by both binaries:
 - common FUSE operation tables where policy checks are explicit
 - inode, block allocation, HRL, and filesystem operation helpers
 
-`src/Makefile.am` now builds `kafs-v6` as a separate binary. T21 started the
-shared-code split with `kafs_v6_runtime_request_t` and option / image-format
-validation helpers. T22 moves descriptor / journal segment preflight into the
-same shared boundary. Later slices can move runtime context setup behind it.
+`src/Makefile.am` now builds `kafs-v6` as a separate binary. T21/T22 created
+the v6 runtime helper surface for the dedicated entrypoint. The follow-up
+cutover preparation keeps that helper out of the production `kafs` link so the
+v4/v5 binary does not grow a new v6 runtime helper dependency while the split is
+incomplete. Later slices can move runtime context setup behind `kafs-v6` and
+then introduce explicit common-object or library boundaries where code is truly
+shared.
 
 ## T20 smoke
 

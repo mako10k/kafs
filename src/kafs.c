@@ -13,7 +13,6 @@
 #include "kafs_core.h"
 #include "kafs_crash_diag.h"
 #include "kafs_tailmeta.h"
-#include "kafs_v6_runtime.h"
 
 #include <fuse.h>
 #include <fuse_log.h>
@@ -12622,77 +12621,61 @@ static int kafs_main_filter_mount_options(kafs_main_options_t *opts, char **argv
   return 0;
 }
 
-static void kafs_main_fill_v6_runtime_request(const kafs_main_options_t *opts,
-                                              kafs_v6_runtime_request_t *req)
+static int kafs_main_validate_v6_runtime_options(const kafs_main_options_t *opts)
 {
-  kafs_v6_runtime_request_init(req);
-  if (opts->v6_write_mount)
-    req->mode = KAFS_V6_RUNTIME_MODE_CONTROLLED_WRITE;
-  else if (opts->v6_inspection_mount)
-    req->mode = KAFS_V6_RUNTIME_MODE_INSPECTION;
-  req->inspection_token_seen = opts->v6_inspection_mount == KAFS_TRUE;
-  req->mount_read_only_requested = opts->mount_read_only_requested == KAFS_TRUE;
-  req->mount_read_only_seen = opts->mount_read_only_seen == KAFS_TRUE;
-  req->mount_read_write_requested = opts->mount_read_write_requested == KAFS_TRUE;
-  req->no_writeback_cache_requested = opts->writeback_cache_enabled == KAFS_FALSE;
-  req->writeback_cache_enabled = opts->writeback_cache_enabled == KAFS_TRUE;
-  req->writeback_cache_explicit = opts->writeback_cache_explicit == KAFS_TRUE;
-  req->no_trim_on_free_requested = opts->trim_on_free_enabled == KAFS_FALSE;
-  req->trim_on_free_enabled = opts->trim_on_free_enabled == KAFS_TRUE;
-  req->bg_dedup_scan_off_requested = opts->bg_dedup_scan_enabled == 0u;
-  req->bg_dedup_scan_enabled = opts->bg_dedup_scan_enabled != 0u;
-  req->fsync_policy_full_requested = opts->fsync_policy == KAFS_FSYNC_POLICY_FULL;
-  req->fsync_policy = opts->fsync_policy;
-}
-
-static int kafs_main_print_v6_runtime_validation_error(kafs_v6_runtime_validation_reason_t reason)
-{
-  switch (reason)
-  {
-  case KAFS_V6_RUNTIME_VALID:
+  if (!opts->v6_inspection_mount && !opts->v6_write_mount)
     return 0;
-  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_WITH_INSPECTION:
-    fprintf(stderr,
-            "v6 write mount does not allow v6_inspection_mount; inspection is read-only.\n");
-    return 2;
-  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_RO:
-    fprintf(stderr, "v6 write mount does not allow -o ro; use explicit -o rw,v6_write_mount.\n");
-    return 2;
-  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_NEEDS_RW:
-    fprintf(stderr, "v6 write mount requires explicit -o rw and -o v6_write_mount.\n");
-    return 2;
-  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_NEEDS_NO_WRITEBACK:
-    fprintf(stderr,
-            "v6 write mount requires no_writeback_cache; writeback_cache is unsupported.\n");
-    return 2;
-  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_NEEDS_NO_TRIM:
-    fprintf(stderr, "v6 write mount requires no_trim_on_free; runtime TRIM is unsupported.\n");
-    return 2;
-  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_NEEDS_BG_OFF:
-    fprintf(stderr,
-            "v6 write mount requires bg_dedup_scan=off; background dedup is unsupported.\n");
-    return 2;
-  case KAFS_V6_RUNTIME_INVALID_INSPECTION_NEEDS_RO:
+
+  if (opts->v6_write_mount)
+  {
+    if (opts->v6_inspection_mount)
+    {
+      fprintf(stderr,
+              "v6 write mount does not allow v6_inspection_mount; inspection is read-only.\n");
+      return 2;
+    }
+    if (opts->mount_read_only_seen)
+    {
+      fprintf(stderr, "v6 write mount does not allow -o ro; use explicit -o rw,v6_write_mount.\n");
+      return 2;
+    }
+    if (!opts->mount_read_write_requested)
+    {
+      fprintf(stderr, "v6 write mount requires explicit -o rw and -o v6_write_mount.\n");
+      return 2;
+    }
+    if (opts->writeback_cache_enabled)
+    {
+      fprintf(stderr,
+              "v6 write mount requires no_writeback_cache; writeback_cache is unsupported.\n");
+      return 2;
+    }
+    if (opts->trim_on_free_enabled)
+    {
+      fprintf(stderr, "v6 write mount requires no_trim_on_free; runtime TRIM is unsupported.\n");
+      return 2;
+    }
+    if (opts->bg_dedup_scan_enabled)
+    {
+      fprintf(stderr,
+              "v6 write mount requires bg_dedup_scan=off; background dedup is unsupported.\n");
+      return 2;
+    }
+    return 0;
+  }
+
+  if (!opts->mount_read_only_requested)
+  {
     fprintf(stderr, "v6 inspection mount requires -o ro and -o v6_inspection_mount.\n");
     return 2;
-  case KAFS_V6_RUNTIME_INVALID_INSPECTION_WRITEBACK_CACHE:
+  }
+  if (opts->writeback_cache_explicit && opts->writeback_cache_enabled)
+  {
     fprintf(stderr,
             "v6 inspection mount does not allow writeback_cache; use no_writeback_cache or omit "
             "writeback_cache.\n");
     return 2;
-  default:
-    fprintf(stderr, "invalid v6 runtime admission options.\n");
-    return 2;
   }
-}
-
-static int kafs_main_validate_v6_runtime_options(const kafs_main_options_t *opts)
-{
-  kafs_v6_runtime_request_t req;
-  kafs_v6_runtime_validation_reason_t reason = KAFS_V6_RUNTIME_VALID;
-  kafs_main_fill_v6_runtime_request(opts, &req);
-  if (kafs_v6_runtime_validate_kafs_request(&req, &reason) != 0)
-    return kafs_main_print_v6_runtime_validation_error(reason);
   return 0;
 }
 
@@ -13074,6 +13057,46 @@ static const char *kafs_main_rc_text(int rc, char *buf, size_t buf_sz)
   return buf;
 }
 
+static int kafs_main_v6_admission_preflight(int fd, const kafs_ssuperblock_t *sbdisk)
+{
+  if (fd < 0 || !sbdisk)
+    return -EINVAL;
+
+  uint64_t file_size = 0;
+  int rc = kafs_offline_detect_file_size(fd, &file_size);
+
+  kafs_context_t preflight_ctx;
+  memset(&preflight_ctx, 0, sizeof(preflight_ctx));
+  preflight_ctx.c_fd = fd;
+  preflight_ctx.c_superblock = (kafs_ssuperblock_t *)sbdisk;
+
+  if (rc == 0)
+    rc = kafs_v6_descriptor_mapping_admit_fd(&preflight_ctx, fd, file_size, NULL, NULL, NULL, NULL,
+                                             NULL);
+  if (rc == 0)
+  {
+    kafs_v6_journal_segment_report_t journal_report;
+    rc = kafs_v6_journal_validate_segments_fd(fd, preflight_ctx.c_v6_layout_desc,
+                                              preflight_ctx.c_v6_layout_desc_bytes, sbdisk,
+                                              file_size, &journal_report);
+  }
+
+  if (rc == 0)
+  {
+    fprintf(stderr, "format v6 admission preflight: descriptor-backed metadata checks OK; "
+                    "runtime mount remains offline-only.\n");
+  }
+  else
+  {
+    char errbuf[128];
+    fprintf(stderr, "format v6 admission preflight failed: %s.\n",
+            kafs_main_rc_text(rc, errbuf, sizeof(errbuf)));
+  }
+
+  kafs_bitmap_descriptor_mapping_clear(&preflight_ctx);
+  return rc;
+}
+
 static int kafs_main_v6_admission_handoff_enabled(void)
 {
   const char *value = getenv("KAFS_V6_ADMISSION_HANDOFF");
@@ -13424,7 +13447,7 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
     if (kafs_main_v6_admission_handoff_enabled())
       (void)kafs_main_v6_admission_handoff(ctx, &sbdisk);
     else
-      (void)kafs_v6_runtime_admission_preflight_fd(ctx->c_fd, &sbdisk, stderr, NULL);
+      (void)kafs_main_v6_admission_preflight(ctx->c_fd, &sbdisk);
     if (mount_read_only_requested)
       fprintf(stderr, "format v6 inspection mount requires -o ro and -o v6_inspection_mount; "
                       "-o ro alone keeps v6 offline-only.\n");
