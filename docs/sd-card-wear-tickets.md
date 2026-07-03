@@ -1215,6 +1215,39 @@
   - `make check` は all 28 tests passed、1 test not run。SKIP は `stress_fs` で、
     ログ上は FUSE mount failure によるもの。
 
+### SDW-V6RT-T33 v6 FUSE bridge API narrowing
+
+- 目的: `KAFS_V6_ENTRYPOINT` common-object bridge の外部APIと FUSE 実行境界を少し狭め、
+  `kafs_v6_runtime.h` を v6 runtime helper contract に戻す。これは bridge pureification slice であり、
+  write surface expansion ではない。
+- 変更:
+  - `kafs_v6_inspection_mount_main()` と `kafs_v6_controlled_write_mount_main()` の宣言を
+    `kafs_v6_runtime.h` から新規 `kafs_v6_mount_bridge.h` へ移す。
+  - `src/kafs.c` の production `kafs` と `KAFS_V6_ENTRYPOINT` bridge が直接 `fuse_main()` と
+    `kafs_operations` を触る重複を `kafs_main_run_fuse()` に集約する。
+  - `src/Makefile.am` の `noinst_HEADERS` に bridge header を追加し、`autoreconf -fi` /
+    `./configure` でローカル生成状態を更新する。
+- 完了条件:
+  - `kafs-v6` は bridge header 経由で mount bridge API だけを参照し、`kafs_v6_runtime.h` は
+    runtime request / admission helper surface に集中している。
+  - production `kafs` と `kafs-v6` の FUSE operation table は同じままだが、FUSE 実行呼び出しは
+    shared helper 経由になっている。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - `autoreconf -fi`、`./configure`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `make check -j2` が PASS している。
+- 実装結果:
+  - `src/kafs_v6_mount_bridge.h` を追加し、`kafs-v6` parser は bridge entrypoint API をこのヘッダから参照する。
+  - `kafs_v6_runtime.h` から bridge entrypoint 宣言を削除し、runtime helper contract に集中させた。
+  - `src/kafs.c` の production main と `KAFS_V6_ENTRYPOINT` bridge は `kafs_main_run_fuse()` 経由で
+    `fuse_main()` と cleanup path を共有する。
+- 検証:
+  - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+  - clone strict source gate は 36 clones / 353 duplicated lines / 0.96% で閾値内だった。
+  - `make check` は all 29 tests passed で完了した。
+
 ---
 
 ## 最初に着手するチケット

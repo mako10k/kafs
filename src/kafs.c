@@ -14,6 +14,7 @@
 #include "kafs_crash_diag.h"
 #include "kafs_tailmeta.h"
 #include "kafs_v6_admission.h"
+#include "kafs_v6_mount_bridge.h"
 #include "kafs_v6_runtime.h"
 
 #include <fuse.h>
@@ -13437,6 +13438,17 @@ static int kafs_main_cleanup(kafs_context_t *ctx, char *hotplug_uds_path, int rc
   return rc;
 }
 
+#if !defined(KAFS_NO_MAIN) || defined(KAFS_V6_ENTRYPOINT)
+static int kafs_main_run_fuse(kafs_context_t *ctx, int argc_fuse, char **argv_fuse,
+                              char *hotplug_uds_path)
+{
+  fuse_set_log_func(kafs_fuse_log_func);
+  int rc = fuse_main(argc_fuse, argv_fuse, &kafs_operations, ctx);
+  fuse_set_log_func(NULL);
+  return kafs_main_cleanup(ctx, hotplug_uds_path, rc);
+}
+#endif
+
 #ifdef KAFS_V6_ENTRYPOINT
 static void kafs_v6_entrypoint_request_from_options(kafs_v6_runtime_request_t *req,
                                                     const kafs_main_options_t *opts,
@@ -13558,10 +13570,7 @@ static int kafs_v6_mount_main_common(const char *image_path, const char *mountpo
   kafs_main_log_runtime_options(&ctx, opts.writeback_cache_enabled, opts.writeback_cache_explicit,
                                 opts.trim_on_free_enabled, opts.trim_on_free_explicit, argc_fuse,
                                 argv_fuse);
-  fuse_set_log_func(kafs_fuse_log_func);
-  int rc = fuse_main(argc_fuse, argv_fuse, &kafs_operations, &ctx);
-  fuse_set_log_func(NULL);
-  return kafs_main_cleanup(&ctx, hotplug_uds_path, rc);
+  return kafs_main_run_fuse(&ctx, argc_fuse, argv_fuse, hotplug_uds_path);
 }
 
 int kafs_v6_inspection_mount_main(const char *image_path, const char *mountpoint, int argc_extra,
@@ -13682,9 +13691,6 @@ int main(int argc, char **argv)
   kafs_main_apply_fuse_readonly_arg(&ctx, argv_fuse, &argc_fuse);
   kafs_main_log_runtime_options(&ctx, writeback_cache_enabled, writeback_cache_explicit,
                                 trim_on_free_enabled, trim_on_free_explicit, argc_fuse, argv_fuse);
-  fuse_set_log_func(kafs_fuse_log_func);
-  int rc = fuse_main(argc_fuse, argv_fuse, &kafs_operations, &ctx);
-  fuse_set_log_func(NULL);
-  return kafs_main_cleanup(&ctx, hotplug_uds_path, rc);
+  return kafs_main_run_fuse(&ctx, argc_fuse, argv_fuse, hotplug_uds_path);
 }
 #endif

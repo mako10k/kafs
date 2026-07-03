@@ -1,5 +1,6 @@
 #include "kafs.h"
 #include "kafs_cli_opts.h"
+#include "kafs_v6_mount_bridge.h"
 #include "kafs_v6_runtime.h"
 
 #include <errno.h>

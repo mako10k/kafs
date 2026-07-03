@@ -1,7 +1,7 @@
 # KAFS format v6 runtime entrypoint plan
 
 Date: 2026-07-03
-Status: entrypoint request policy reporter extraction implemented
+Status: v6 FUSE bridge API narrowing implemented
 
 ## Boundary
 
@@ -124,12 +124,25 @@ T32 moved the entrypoint request policy reporter into the v6 runtime helper:
 - production `kafs` keeps its legacy v6 validation and fail-closed guidance
   local to `kafs.c`.
 
+T33 narrows the remaining bridge surface without changing FUSE operation
+semantics:
+
+- `kafs_v6_mount_bridge.h` owns the `KAFS_V6_ENTRYPOINT` mount bridge
+  declarations, so `kafs_v6_runtime.h` is again limited to runtime request,
+  admission, image-open, and service-init helpers;
+- `kafs_main_run_fuse()` is the single local helper that installs the FUSE log
+  hook, calls `fuse_main()` with the shared `kafs_operations`, and runs the
+  existing cleanup path for both production `kafs` and the `kafs-v6` bridge;
+- the shared FUSE operation table remains in `kafs.c`; the change only
+  reduces direct bridge contact with the FUSE invocation mechanics.
+
 The remaining pureification pressure points are:
 
 - removal or retirement plan for legacy v6 diagnostic scaffolding in `kafs`
   after operator workflows no longer depend on it;
 - further reduction of the `KAFS_V6_ENTRYPOINT` common-object bridge, especially
-  around FUSE operation sharing, without duplicating filesystem logic.
+  around shared FUSE operation implementations, without duplicating filesystem
+  logic.
 
 ## Shared implementation boundary
 
@@ -163,8 +176,11 @@ The reusable invariants remain in `kafs_context.h`, so production `kafs` does
 not gain a `kafs_v6_runtime.c` link. T32 moves the entrypoint request rejection
 reporter into `kafs_v6_runtime.c` and makes the bridge consume the same
 `kafs_v6_runtime_request_t` validation contract as the standalone `kafs-v6`
-parser. Later slices can replace the common-object bridge with a non-installed
-static archive or narrower runtime context / FUSE operation helpers.
+parser. T33 moves the mount bridge declarations out of the runtime helper
+header and hides direct `fuse_main()` / `kafs_operations` invocation behind
+`kafs_main_run_fuse()`. Later slices can replace the common-object bridge with a
+non-installed static archive or narrower runtime context / FUSE operation
+helpers.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).

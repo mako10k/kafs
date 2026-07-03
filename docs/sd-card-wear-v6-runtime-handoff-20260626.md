@@ -116,6 +116,10 @@ Additional closeout after the original handoff:
   `kafs_v6_runtime.c`; standalone `kafs-v6` and the `KAFS_V6_ENTRYPOINT`
   bridge now share the same `kafs_v6_runtime_request_t` validation/reporting
   contract.
+- T33 narrows the v6 FUSE bridge API: `kafs_v6_mount_bridge.h` owns the bridge
+  entrypoint declarations, `kafs_v6_runtime.h` stays focused on runtime helper
+  contracts, and `kafs_main_run_fuse()` hides the direct `fuse_main()` /
+  `kafs_operations` invocation behind the existing cleanup path.
 
 ## 2026-07-02 closeout
 
@@ -296,6 +300,39 @@ Validation result:
   passed and 1 test not run. The skipped test was `stress_fs`, whose log says
   mount failed and was skipped, likely due to missing FUSE permissions.
 
+## 2026-07-03 T33 validation
+
+Commands completed successfully:
+
+```sh
+./scripts/format.sh fix
+autoreconf -fi
+./configure
+make -j2
+git diff --check
+./scripts/test-cli-surface.sh
+make -C tests check TESTS=v6_descriptor_smoketest
+./scripts/static-checks.sh
+KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2
+```
+
+Current T33 boundary:
+
+- `kafs_v6_mount_bridge.h` declares the `KAFS_V6_ENTRYPOINT` mount bridge API,
+  so `kafs_v6_runtime.h` no longer exposes bridge entrypoints.
+- `kafs_main_run_fuse()` is the shared local FUSE runner for production `kafs`
+  main and the `kafs-v6` bridge.
+- The shared FUSE operation table remains unchanged in `kafs.c`; this slice
+  does not broaden controlled-write admission or the FUSE write surface.
+
+Validation result:
+
+- `./scripts/static-checks.sh` completed format, lint, clone, and complexity
+  checks successfully. The strict source clone report was 36 clones, 353
+  duplicated lines, 0.96%, which remains below the configured threshold.
+- `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` completed with all 29 tests
+  passed.
+
 ## Original validation run
 
 Commands completed successfully:
@@ -333,8 +370,8 @@ block this closeout.
 
 ## Current next boundary
 
-The next boundary remains v6 runtime pureification after the entrypoint request
-policy reporter slice. Do not broaden the v6 write surface as the next step.
+The next boundary remains v6 runtime pureification after the v6 FUSE bridge API
+narrowing slice. Do not broaden the v6 write surface as the next step.
 
 Start from the pressure points recorded in
 [sd-card-wear-v6-runtime-entrypoint-plan.md](sd-card-wear-v6-runtime-entrypoint-plan.md):
@@ -342,8 +379,8 @@ Start from the pressure points recorded in
 - retirement plan for legacy v6 diagnostic scaffolding in `kafs` after
   operator workflows no longer depend on it;
 - further reduction of the remaining `KAFS_V6_ENTRYPOINT` common-object bridge,
-  especially around FUSE operation sharing, without duplicating filesystem
-  logic.
+  especially around shared FUSE operation implementations, without duplicating
+  filesystem logic.
 
 Production cutover discussion stays behind that pureification and behind later
 v5-parity, workload-copy, power-loss or torn-write, rollback, and recovery
