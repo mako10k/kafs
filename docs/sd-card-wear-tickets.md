@@ -1043,6 +1043,37 @@
     + descriptor-backed admission + diag/journal init を dedicated entrypoint helper で分離した。
   - `make check -j2` は all 29 tests passed で完了した。
 
+### SDW-V6RT-T28 v6 descriptor-backed runtime view pureification phase 1
+
+- 目的: `kafs-v6` の successful runtime path が v5-style contiguous metadata table view を持たず、
+  descriptor-backed bitmap / inode / allocator / HRL view を runtime view の所有者として使うことを固定する。
+  これは pureification slice であり、write surface expansion ではない。
+- 変更:
+  - v6 admission 用 mmap 初期化では image 全体と superblock だけを設定し、`c_blkmasktbl` /
+    `c_inotbl` / `c_mapsize` を legacy contiguous view として初期化しない。
+  - successful v6 admission 後に descriptor-backed bitmap / inode / allocator / HRL mapping が揃い、
+    legacy contiguous inode/bitmap table pointer が未設定であることを runtime invariant として検査する。
+  - v6 context では journal meta-delta bitmap overlay を起動せず、contiguous `c_blkmasktbl` への依存を
+    controlled-write path へ戻さない。
+  - `v6_descriptor_smoketest` は `KAFS_V6_ADMISSION_HANDOFF` と `kafs-v6` mount log で、
+    descriptor-backed runtime view が active で legacy contiguous table が未設定であることを確認する。
+- 完了条件:
+  - `kafs-v6 --inspection-mount` / `--controlled-write-mount` の T25/T26 acceptance behavior が維持される。
+  - production `kafs` の v4/v5 runtime と legacy v6 fail-closed guidance は維持されている。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - `./scripts/format.sh fix`、`git diff --check`、`./scripts/test-cli-surface.sh`、`make -j2`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`make check -j2` が PASS している。
+- 実装メモ (2026-07-03):
+  - `kafs_main_map_v6_runtime_admission_memory()` は v6 admission で image / superblock だけを mmap
+    view とし、legacy contiguous `c_blkmasktbl` / `c_inotbl` / `c_mapsize` を設定しないようにした。
+  - `kafs_main_v6_validate_runtime_views()` を追加し、successful v6 admission が descriptor-backed
+    runtime view だけを持つことを fail-closed invariant にした。
+  - v6 context では journal meta-delta bitmap overlay を無効化し、contiguous bitmap table 前提の
+    optimization を v6 controlled-write path から外した。
+  - `v6_descriptor_smoketest` で handoff output と `kafs-v6` mount log の descriptor-backed runtime
+    view guidance を regression にした。
+  - `make check -j2` は all 25 tests passed、4 tests not run で完了した。
+
 ---
 
 ## 最初に着手するチケット

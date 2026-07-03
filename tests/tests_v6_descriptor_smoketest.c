@@ -186,6 +186,13 @@ static int file_contains(const char *path, const char *needle)
   return found;
 }
 
+static int file_contains_v6_runtime_view_admission(const char *path, const char *admission)
+{
+  return file_contains(path, admission) &&
+         file_contains(path, "descriptor-backed runtime views active") &&
+         file_contains(path, "legacy contiguous inode/bitmap tables are not installed");
+}
+
 typedef struct v6_dir_fixture_entry
 {
   kafs_inocnt_t ino;
@@ -665,9 +672,10 @@ out_stop:
       rc = 1;
     }
   }
-  if (rc == 0 && !file_contains(log_path, "format v6 inspection mount"))
+  if (rc == 0 &&
+      !file_contains_v6_runtime_view_admission(log_path, "format v6 inspection mount"))
   {
-    tlogf("kafs-v6 inspection mount log missing admission message");
+    tlogf("kafs-v6 inspection mount log missing descriptor-backed admission message");
     rc = 1;
   }
   return rc;
@@ -1057,9 +1065,10 @@ static int check_v6_controlled_write_mount_smoke(const char *img)
 
 out_stop:
   kafs_test_stop_kafs(mnt, srv);
-  if (rc == 0 && !file_contains(log_path, "format v6 controlled write mount"))
+  if (rc == 0 &&
+      !file_contains_v6_runtime_view_admission(log_path, "format v6 controlled write mount"))
   {
-    tlogf("v6 controlled write mount log missing admission message");
+    tlogf("v6 controlled write mount log missing descriptor-backed admission message");
     rc = 1;
   }
   if (rc == 0)
@@ -1188,9 +1197,10 @@ out_stop:
   if (fd >= 0)
     close(fd);
   kafs_test_stop_kafs(mnt, srv);
-  if (rc == 0 && !file_contains(log_path, "format v6 controlled write mount"))
+  if (rc == 0 &&
+      !file_contains_v6_runtime_view_admission(log_path, "format v6 controlled write mount"))
   {
-    tlogf("v6 controlled ENOSPC mount log missing admission message");
+    tlogf("v6 controlled ENOSPC mount log missing descriptor-backed admission message");
     rc = 1;
   }
   if (rc == 0)
@@ -1307,6 +1317,12 @@ out_stop:
   if (rc == 0 && fdatasync_failed && !file_contains(log_path, "fdatasync failed"))
   {
     tlogf("v6 controlled fdatasync failure log missing expected messages");
+    rc = 1;
+  }
+  if (rc == 0 &&
+      !file_contains_v6_runtime_view_admission(log_path, "format v6 controlled write mount"))
+  {
+    tlogf("v6 controlled fsync-failure mount log missing descriptor-backed admission message");
     rc = 1;
   }
   if (rc == 0)
@@ -1639,6 +1655,8 @@ int main(void)
     return 1;
   }
   if (!strstr(out, "admission handoff") || !strstr(out, "selected descriptor retained") ||
+      !strstr(out, "descriptor-backed runtime views active") ||
+      !strstr(out, "legacy contiguous inode/bitmap tables are not installed") ||
       !strstr(out, "delayed/background mutations disabled") ||
       !strstr(out, "pending_log=disabled") || !strstr(out, "tail_metadata=disabled") ||
       !strstr(out, "tombstone_gc=disabled") || !strstr(out, "bg_dedup=disabled") ||

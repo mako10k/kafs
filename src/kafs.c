@@ -7051,6 +7051,15 @@ static int kafs_ctx_validate_runtime_mount_state(kafs_context_t *ctx)
 
 static void kafs_ctx_setup_meta_delta(kafs_context_t *ctx, kafs_blkcnt_t r_blkcnt)
 {
+  if (!ctx)
+    return;
+  if (ctx->c_superblock && kafs_sb_format_version_get(ctx->c_superblock) == KAFS_FORMAT_VERSION_V6)
+  {
+    ctx->c_meta_delta_enabled = 0;
+    ctx->c_meta_bitmap_words_enabled = 0;
+    return;
+  }
+
   ctx->c_meta_delta_enabled = (uint32_t)kafs_journal_is_enabled(ctx);
   if (!ctx->c_meta_delta_enabled)
     return;
@@ -13120,12 +13129,6 @@ static int kafs_main_map_v6_runtime_admission_memory(kafs_context_t *ctx,
   if (!ctx || !sbdisk || file_size == 0u || file_size > (uint64_t)SIZE_MAX)
     return -EINVAL;
 
-  off_t mapsize = 0;
-  off_t imgsize = 0;
-  intptr_t blkmask_off = 0;
-  intptr_t inotbl_off = 0;
-  kafs_ctx_compute_map_layout(sbdisk, &mapsize, &imgsize, &blkmask_off, &inotbl_off);
-
   size_t map_size = (size_t)file_size;
   ctx->c_img_base = mmap(NULL, map_size, prot, MAP_SHARED, ctx->c_fd, 0);
   if (ctx->c_img_base == MAP_FAILED)
@@ -13137,11 +13140,9 @@ static int kafs_main_map_v6_runtime_admission_memory(kafs_context_t *ctx,
 
   ctx->c_img_size = map_size;
   ctx->c_superblock = (kafs_ssuperblock_t *)ctx->c_img_base;
-  ctx->c_mapsize = (mapsize > 0 && (uint64_t)mapsize <= file_size) ? (size_t)mapsize : map_size;
-  if (blkmask_off >= 0 && (uint64_t)blkmask_off < file_size)
-    ctx->c_blkmasktbl = (kafs_blkmask_t *)((char *)ctx->c_superblock + blkmask_off);
-  if (inotbl_off >= 0 && (uint64_t)inotbl_off < file_size)
-    ctx->c_inotbl = (kafs_sinode_t *)((char *)ctx->c_superblock + inotbl_off);
+  ctx->c_mapsize = 0;
+  ctx->c_blkmasktbl = NULL;
+  ctx->c_inotbl = NULL;
   return 0;
 }
 
@@ -13160,6 +13161,20 @@ static void kafs_main_v6_apply_delayed_mutation_policy(kafs_context_t *ctx)
   ctx->c_bg_dedup_enabled = 0u;
   ctx->c_bg_dedup_worker_stop = 1;
   ctx->c_v6_delayed_mutation_policy_applied = 1u;
+}
+
+static int kafs_main_v6_validate_runtime_views(const kafs_context_t *ctx)
+{
+  if (!ctx || !ctx->c_superblock ||
+      kafs_sb_format_version_get(ctx->c_superblock) != KAFS_FORMAT_VERSION_V6)
+    return -EINVAL;
+  if (ctx->c_blkmasktbl || ctx->c_inotbl || ctx->c_mapsize != 0u)
+    return -EPROTO;
+  if (!ctx->c_v6_layout_desc_owned || !ctx->c_v6_bitmap_mapping_enabled ||
+      !ctx->c_v6_inode_mapping_enabled || !ctx->c_v6_alloc_summary_mapping_enabled ||
+      !ctx->c_v6_hrl_mapping_enabled)
+    return -EPROTO;
+  return 0;
 }
 
 static int kafs_main_v6_runtime_admit_context(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk,
@@ -13187,6 +13202,8 @@ static int kafs_main_v6_runtime_admit_context(kafs_context_t *ctx, const kafs_ss
                   !ctx->c_v6_hrl_mapping_enabled))
     rc = -EPROTO;
   if (rc == 0)
+    rc = kafs_main_v6_validate_runtime_views(ctx);
+  if (rc == 0)
     kafs_main_v6_apply_delayed_mutation_policy(ctx);
 
   if (rc != 0)
@@ -13203,6 +13220,8 @@ static int kafs_main_v6_admission_handoff(kafs_context_t *ctx, const kafs_ssuper
     fprintf(stderr,
             "format v6 admission handoff: selected descriptor retained in runtime context "
             "(inode_shards=%u allocator_shards=%u hrl_index_shards=%u hrl_entry_shards=%u); "
+            "descriptor-backed runtime views active; legacy contiguous inode/bitmap tables are "
+            "not installed; "
             "delayed/background mutations disabled "
             "(pending_log=disabled tail_metadata=disabled tombstone_gc=disabled "
             "bg_dedup=disabled); "
@@ -13234,7 +13253,9 @@ static int kafs_main_v6_readonly_smoke_mount(kafs_context_t *ctx, const kafs_ssu
     if (r_blkcnt_out)
       *r_blkcnt_out = kafs_blkcnt_stoh(sbdisk->s_r_blkcnt);
     fprintf(stderr, "format v6 readonly smoke: selected descriptor retained in read-only runtime "
-                    "context; delayed/background mutations are disabled; FUSE mount is read-only "
+                    "context; descriptor-backed runtime views active; legacy contiguous "
+                    "inode/bitmap tables are not installed; delayed/background mutations are "
+                    "disabled; FUSE mount is read-only "
                     "and write admission remains disabled.\n");
   }
   else
@@ -13261,7 +13282,9 @@ static int kafs_main_v6_controlled_write_mount(kafs_context_t *ctx,
       *r_blkcnt_out = kafs_blkcnt_stoh(sbdisk->s_r_blkcnt);
     fprintf(stderr,
             "format v6 controlled write mount: selected descriptor retained in write runtime "
-            "context; delayed/background mutations are disabled; FUSE write surface is limited "
+            "context; descriptor-backed runtime views active; legacy contiguous inode/bitmap "
+            "tables are not installed; delayed/background mutations are disabled; FUSE write "
+            "surface is limited "
             "to regular-file create/write/fsync/release.\n");
   }
   else
@@ -13285,7 +13308,9 @@ static int kafs_main_v6_inspection_mount(kafs_context_t *ctx, const kafs_ssuperb
     if (r_blkcnt_out)
       *r_blkcnt_out = kafs_blkcnt_stoh(sbdisk->s_r_blkcnt);
     fprintf(stderr, "format v6 inspection mount: selected descriptor retained in read-only "
-                    "runtime context; delayed/background mutations are disabled; FUSE mount is "
+                    "runtime context; descriptor-backed runtime views active; legacy contiguous "
+                    "inode/bitmap tables are not installed; delayed/background mutations are "
+                    "disabled; FUSE mount is "
                     "inspection-only and write admission remains disabled.\n");
   }
   else

@@ -4,10 +4,10 @@
 
 This handoff covers the Post-Phase 5 format v6 runtime mount enablement work.
 It was originally written after `SDW-V6RT-T13 v6 controlled write durability and
-fallback hardening` and is now updated through the 2026-07-02 `kafs-v6`
-entrypoint isolation and runtime-context opener pureification closeout.
+fallback hardening` and is now updated through the 2026-07-03 descriptor-backed
+runtime view pureification phase 1 closeout.
 
-Implementation checkpoints:
+Committed implementation checkpoints:
 
 - `83e9505 Harden v6 controlled write durability`
 - `dea5df3 Add v6 controlled write smoke helper`
@@ -95,6 +95,9 @@ Additional closeout after the original handoff:
 - T27 split the `kafs-v6` successful runtime path away from the generic v4/v5
   `kafs_main_open_runtime_context()` branch and added a dedicated v6
   open/read/admit/init helper.
+- T28 made the successful v6 runtime view descriptor-backed: v6 admission no
+  longer installs legacy contiguous inode/bitmap table pointers, and v6 contexts
+  do not start the journal meta-delta bitmap overlay.
 
 ## 2026-07-02 closeout
 
@@ -116,6 +119,24 @@ make check -j2
 Latest `make check -j2` result:
 
 - all 29 tests passed
+
+## 2026-07-03 T28 validation
+
+Commands completed successfully:
+
+```sh
+./scripts/format.sh fix
+make -j2
+make -C tests check TESTS=v6_descriptor_smoketest
+git diff --check
+./scripts/test-cli-surface.sh
+make check -j2
+```
+
+Latest `make check -j2` result:
+
+- all 25 tests passed
+- 4 tests were not run
 
 Current entrypoint boundary:
 
@@ -165,16 +186,19 @@ block this closeout.
 
 ## Current next boundary
 
-The next boundary is descriptor-backed runtime view pureification. Do not
-broaden the v6 write surface as the next step.
+The next boundary remains v6 runtime pureification after the descriptor-backed
+runtime view phase 1 slice. Do not broaden the v6 write surface as the next
+step.
 
 Start from the pressure points recorded in
 [sd-card-wear-v6-runtime-entrypoint-plan.md](sd-card-wear-v6-runtime-entrypoint-plan.md):
 
-- descriptor-backed runtime views instead of v5-style mmap geometry;
 - controlled-write runtime context setup that does not inherit generic v5
   worker assumptions;
 - explicit v6 delayed/background mutation policy;
+- narrower v6 runtime context helpers or shared artifact extraction that reduce
+  the remaining `KAFS_V6_ENTRYPOINT` bridge without duplicating filesystem
+  logic;
 - retirement plan for legacy v6 diagnostic scaffolding in `kafs` after
   operator workflows no longer depend on it.
 
@@ -188,8 +212,8 @@ evidence.
 2. Start from `docs/sd-card-wear-tickets.md` at the latest `SDW-V6RT` entry.
 3. Confirm `kafs-v6 --inspection-mount` and `--controlled-write-mount` remain
    the only successful v6 runtime admission paths.
-4. Start the next implementation from descriptor-backed runtime view
-   pureification, not from a broader write surface.
+4. Start the next implementation from the remaining v6 runtime pureification
+   pressure points, not from a broader write surface.
 5. Keep shared code in libraries or common objects rather than duplicating v5/v6
    filesystem logic.
 6. Do not enable production v6 write cutover from the controlled smoke result

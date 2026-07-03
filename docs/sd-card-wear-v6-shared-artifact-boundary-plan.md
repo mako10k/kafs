@@ -143,6 +143,13 @@ runtime mechanics through `KAFS_V6_ENTRYPOINT`, but its open/read/admit/init
 sequence is now a dedicated v6 entrypoint helper rather than a legacy production
 `kafs` branch.
 
+`SDW-V6RT-T28` continues that pureification by making successful v6 runtime
+views descriptor-backed. The v6 admission mmap path now installs the image and
+superblock only, requires descriptor-backed bitmap / inode / allocator / HRL
+mapping, and validates that legacy contiguous `c_blkmasktbl` / `c_inotbl`
+views are not present. The journal meta-delta bitmap overlay remains a v4/v5
+contiguous-table optimization and is disabled for v6 contexts.
+
 ## Validation Standard
 
 For boundary-only changes:

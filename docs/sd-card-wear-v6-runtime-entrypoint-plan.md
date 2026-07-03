@@ -1,7 +1,7 @@
 # KAFS format v6 runtime entrypoint plan
 
-Date: 2026-07-02
-Status: inspection and controlled-write admission implemented
+Date: 2026-07-03
+Status: descriptor-backed runtime view pureification phase 1 implemented
 
 ## Boundary
 
@@ -60,12 +60,21 @@ The controlled-write path now uses:
 - the pre-existing bounded write surface: regular-file create/write/fsync and
   release, with broader metadata mutations still rejected.
 
-## Code to pure next
+## Runtime View Pureification
 
-The next implementation slice should move from isolation to v6-native runtime
-context pureification. Candidate pressure points:
+T28 moved the first v6-native runtime view boundary into code:
 
-- descriptor-backed runtime views instead of v5-style mmap geometry;
+- successful `kafs-v6` admission maps the image and superblock, then installs
+  descriptor-backed bitmap / inode / allocator / HRL views;
+- v6 admission no longer installs v5-style contiguous `c_blkmasktbl` /
+  `c_inotbl` pointers or `c_mapsize` as a runtime table view;
+- successful v6 admission validates that descriptor-backed mappings are active
+  and legacy contiguous table pointers are absent;
+- v6 contexts do not start the journal meta-delta bitmap overlay, which still
+  assumes a contiguous bitmap table.
+
+The remaining pureification pressure points are:
+
 - controlled-write runtime context setup that does not inherit generic v5
   worker assumptions;
 - explicit v6 delayed/background mutation policy;
@@ -91,14 +100,15 @@ common object set that includes `kafs.c`, guarded by `KAFS_V6_ENTRYPOINT`, while
 keeping `kafs_v6_runtime.c` out of production `kafs`. T26 uses the same common
 object boundary for controlled-write admission. T27 removes the `kafs-v6`
 bridge dependency on the generic v4/v5 `kafs_main_open_runtime_context()` path
-and gives the dedicated entrypoint its own v6 open/admit/init helper. Later
-slices can replace the common-object bridge with a non-installed static archive
-or a narrower runtime context helper.
+and gives the dedicated entrypoint its own v6 open/admit/init helper. T28 keeps
+that bridge but makes successful v6 runtime views descriptor-backed rather than
+legacy contiguous table-backed. Later slices can replace the common-object
+bridge with a non-installed static archive or a narrower runtime context helper.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).
-The immediate next implementation boundary is descriptor-backed runtime view
-pureification, not write-surface expansion.
+The immediate next implementation boundary remains v6 runtime pureification,
+not write-surface expansion.
 
 ## Smoke
 
