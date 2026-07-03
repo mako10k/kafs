@@ -3,11 +3,13 @@
 #include "kafs_block.h"
 #include "kafs_context.h"
 #include "kafs_offline_summary.h"
+#include "kafs_v6_admission.h"
 #include "kafs_v6_layout.h"
 
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 void kafs_v6_runtime_request_init(kafs_v6_runtime_request_t *req)
@@ -110,6 +112,83 @@ int kafs_v6_runtime_validate_entrypoint_request(const kafs_v6_runtime_request_t 
   return kafs_v6_runtime_valid(reason_out);
 }
 
+static int kafs_v6_runtime_read_superblock_fd(int fd, kafs_ssuperblock_t *sbdisk,
+                                              int *saved_errno_out, int *short_read_out)
+{
+  if (saved_errno_out)
+    *saved_errno_out = 0;
+  if (short_read_out)
+    *short_read_out = 0;
+  if (fd < 0 || !sbdisk)
+    return -EINVAL;
+
+  ssize_t r = pread(fd, sbdisk, sizeof(*sbdisk), 0);
+  if (r == (ssize_t)sizeof(*sbdisk))
+    return 0;
+
+  if (r < 0)
+  {
+    int saved_errno = errno;
+    if (saved_errno_out)
+      *saved_errno_out = saved_errno;
+    return -saved_errno;
+  }
+
+  if (short_read_out)
+    *short_read_out = 1;
+  return -EIO;
+}
+
+static const char *kafs_v6_runtime_superblock_read_error(int rc, int saved_errno, int short_read)
+{
+  if (short_read)
+    return "short read";
+  if (saved_errno != 0)
+    return strerror(saved_errno);
+  if (rc < 0)
+    return strerror(-rc);
+  return strerror(rc);
+}
+
+static int kafs_v6_runtime_open_readonly_superblock(const char *image_path,
+                                                    kafs_ssuperblock_t *sbdisk, FILE *err,
+                                                    const char *tool_name, int *fd_out)
+{
+  if (!tool_name)
+    tool_name = "kafs-v6";
+  if (!err)
+    err = stderr;
+  if (fd_out)
+    *fd_out = -1;
+  if (!image_path || !sbdisk)
+    return -EINVAL;
+
+  int fd = open(image_path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0)
+  {
+    int saved_errno = errno;
+    fprintf(err, "%s: open image failed: %s: %s\n", tool_name, image_path, strerror(saved_errno));
+    return -saved_errno;
+  }
+
+  int saved_errno = 0;
+  int short_read = 0;
+  int rc = kafs_v6_runtime_read_superblock_fd(fd, sbdisk, &saved_errno, &short_read);
+  if (rc != 0)
+  {
+    fprintf(err, "%s: failed to read superblock from %s: %s\n", tool_name, image_path,
+            kafs_v6_runtime_superblock_read_error(rc, saved_errno, short_read));
+    close(fd);
+    return rc;
+  }
+
+  if (fd_out)
+    *fd_out = fd;
+  else
+    close(fd);
+  return 0;
+}
+
 int kafs_v6_runtime_check_image_format(const char *image_path, uint32_t expected_format, FILE *err,
                                        const char *tool_name)
 {
@@ -119,23 +198,10 @@ int kafs_v6_runtime_check_image_format(const char *image_path, uint32_t expected
     err = stderr;
 
   kafs_ssuperblock_t sb;
-  int fd = open(image_path, O_RDONLY | O_CLOEXEC);
-  if (fd < 0)
-  {
-    int saved_errno = errno;
-    fprintf(err, "%s: open image failed: %s: %s\n", tool_name, image_path, strerror(saved_errno));
-    return -saved_errno;
-  }
+  int rc = kafs_v6_runtime_open_readonly_superblock(image_path, &sb, err, tool_name, NULL);
+  if (rc != 0)
+    return rc;
 
-  ssize_t r = pread(fd, &sb, sizeof(sb), 0);
-  int saved_errno = errno;
-  close(fd);
-  if (r != (ssize_t)sizeof(sb))
-  {
-    fprintf(err, "%s: failed to read superblock from %s: %s\n", tool_name, image_path,
-            (r < 0) ? strerror(saved_errno) : "short read");
-    return (r < 0) ? -saved_errno : -EIO;
-  }
   if (kafs_sb_magic_get(&sb) != KAFS_MAGIC)
   {
     fprintf(err, "%s: invalid KAFS magic in %s.\n", tool_name, image_path);
@@ -158,11 +224,170 @@ static const char *kafs_v6_runtime_rc_text(int rc, char *buf, size_t buf_sz)
     return "error";
 
   int err = (rc < 0) ? -rc : rc;
-  if (err != 0)
-    snprintf(buf, buf_sz, "rc=%d (%s)", rc, strerror(err));
-  else
-    snprintf(buf, buf_sz, "rc=%d", rc);
+  int len = snprintf(buf, buf_sz, "rc=%d", rc);
+  if (err != 0 && len >= 0 && (size_t)len < buf_sz)
+    snprintf(buf + len, buf_sz - (size_t)len, " (%s)", strerror(err));
   return buf;
+}
+
+static void kafs_v6_runtime_close_context_fd(kafs_context_t *ctx)
+{
+  if (!ctx)
+    return;
+  if (ctx->c_fd >= 0)
+    close(ctx->c_fd);
+  ctx->c_fd = -1;
+}
+
+int kafs_v6_runtime_open_context_image(kafs_context_t *ctx, const char *image_path,
+                                       kafs_v6_runtime_mode_t mode, kafs_ssuperblock_t *sbdisk,
+                                       FILE *err)
+{
+  if (!err)
+    err = stderr;
+  if (!ctx || !image_path || !sbdisk)
+    return -EINVAL;
+
+  const int controlled_write = (mode == KAFS_V6_RUNTIME_MODE_CONTROLLED_WRITE);
+  if (!controlled_write && mode != KAFS_V6_RUNTIME_MODE_INSPECTION)
+    return -EINVAL;
+
+  const int open_flags = controlled_write ? O_RDWR : O_RDONLY;
+  ctx->c_fd = open(image_path, open_flags, 0666);
+  if (ctx->c_fd < 0)
+  {
+    int saved_errno = errno;
+    perror("open image");
+    fprintf(err, "image not found. run mkfs.kafs first.\n");
+    return -saved_errno;
+  }
+
+  ctx->c_blo_search = 0;
+  ctx->c_ino_search = 0;
+
+  int rc = kafs_v6_runtime_read_superblock_fd(ctx->c_fd, sbdisk, NULL, NULL);
+  if (rc != 0)
+  {
+    char errbuf[128];
+    fprintf(err, "kafs-v6: failed to read superblock: %s.\n",
+            kafs_v6_runtime_rc_text(rc, errbuf, sizeof(errbuf)));
+    kafs_v6_runtime_close_context_fd(ctx);
+    return rc;
+  }
+  if (kafs_sb_magic_get(sbdisk) != KAFS_MAGIC)
+  {
+    fprintf(err, "kafs-v6: invalid magic. run mkfs.kafs to format.\n");
+    kafs_v6_runtime_close_context_fd(ctx);
+    return -EINVAL;
+  }
+
+  uint32_t fmt_ver = kafs_sb_format_version_get(sbdisk);
+  if (fmt_ver != KAFS_FORMAT_VERSION_V6)
+  {
+    fprintf(err, "kafs-v6 %s mount applies only to format v6 images (found v%u).\n",
+            controlled_write ? "controlled write" : "inspection", fmt_ver);
+    kafs_v6_runtime_close_context_fd(ctx);
+    return -EPROTONOSUPPORT;
+  }
+  return 0;
+}
+
+static int kafs_v6_runtime_admit_context(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk,
+                                         kafs_v6_runtime_mode_t mode)
+{
+  int prot = 0;
+  if (mode == KAFS_V6_RUNTIME_MODE_INSPECTION)
+    prot = PROT_READ;
+  else if (mode == KAFS_V6_RUNTIME_MODE_CONTROLLED_WRITE)
+    prot = PROT_READ | PROT_WRITE;
+  else
+    return -EINVAL;
+
+  return kafs_v6_admission_runtime_context(ctx, sbdisk, prot);
+}
+
+int kafs_v6_runtime_admit_mount_context(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk,
+                                        kafs_v6_runtime_mode_t mode, kafs_inocnt_t *inocnt_out,
+                                        kafs_blkcnt_t *r_blkcnt_out, FILE *err)
+{
+  if (!err)
+    err = stderr;
+  if (!ctx || !sbdisk)
+    return -EINVAL;
+
+  int rc = kafs_v6_runtime_admit_context(ctx, sbdisk, mode);
+  if (rc == 0)
+  {
+    if (mode == KAFS_V6_RUNTIME_MODE_INSPECTION)
+      ctx->c_runtime_read_only = 1u;
+    else if (mode == KAFS_V6_RUNTIME_MODE_CONTROLLED_WRITE)
+      ctx->c_v6_controlled_write_enabled = 1u;
+    else
+      return -EINVAL;
+
+    if (inocnt_out)
+      *inocnt_out = kafs_inocnt_stoh(sbdisk->s_inocnt);
+    if (r_blkcnt_out)
+      *r_blkcnt_out = kafs_blkcnt_stoh(sbdisk->s_r_blkcnt);
+
+    if (mode == KAFS_V6_RUNTIME_MODE_INSPECTION)
+    {
+      fprintf(err,
+              "format v6 inspection mount: selected descriptor retained in read-only "
+              "runtime context; descriptor-backed runtime views active; legacy contiguous "
+              "inode/bitmap tables are not installed; %s; delayed/background mutations are "
+              "disabled; FUSE mount is "
+              "inspection-only and write admission remains disabled.\n",
+              kafs_ctx_v6_worker_policy_summary());
+    }
+    else
+    {
+      fprintf(err,
+              "format v6 controlled write mount: selected descriptor retained in write runtime "
+              "context; descriptor-backed runtime views active; legacy contiguous inode/bitmap "
+              "tables are not installed; %s; delayed/background mutations are disabled; FUSE "
+              "write surface is limited "
+              "to regular-file create/write/fsync/release.\n",
+              kafs_ctx_v6_worker_policy_summary());
+    }
+  }
+  else
+  {
+    char errbuf[128];
+    fprintf(err, "format v6 %s mount admission failed: %s.\n",
+            mode == KAFS_V6_RUNTIME_MODE_CONTROLLED_WRITE ? "controlled write" : "inspection",
+            kafs_v6_runtime_rc_text(rc, errbuf, sizeof(errbuf)));
+  }
+  return rc;
+}
+
+int kafs_v6_runtime_init_mount_services(kafs_context_t *ctx, const char *image_path,
+                                        kafs_v6_runtime_mode_t mode, kafs_inocnt_t inocnt,
+                                        kafs_blkcnt_t r_blkcnt, FILE *err)
+{
+  if (!err)
+    err = stderr;
+  if (!ctx || !image_path)
+    return -EINVAL;
+
+  kafs_ctx_init_diag_state(ctx, image_path, inocnt);
+  ctx->c_alloc_v3_summary_dirty = 1;
+  if (mode == KAFS_V6_RUNTIME_MODE_CONTROLLED_WRITE)
+    kafs_ctx_init_runtime_journal(ctx, image_path, r_blkcnt, 0);
+  else if (mode != KAFS_V6_RUNTIME_MODE_INSPECTION)
+    return -EINVAL;
+
+  int rc = kafs_ctx_v6_validate_runtime_views(ctx);
+  if (rc == 0)
+    rc = kafs_ctx_v6_validate_worker_policy(ctx);
+  if (rc != 0)
+  {
+    char errbuf[128];
+    fprintf(err, "kafs-v6 %s runtime policy failed after service init: %s.\n",
+            mode == KAFS_V6_RUNTIME_MODE_CONTROLLED_WRITE ? "controlled write" : "inspection",
+            kafs_v6_runtime_rc_text(rc, errbuf, sizeof(errbuf)));
+  }
+  return rc;
 }
 
 static void kafs_v6_runtime_preflight_message_prefix(FILE *err, const char *tool_name)
@@ -176,27 +401,7 @@ int kafs_v6_runtime_admission_preflight_fd(int fd, const kafs_ssuperblock_t *sbd
 {
   if (!err)
     err = stderr;
-  if (fd < 0 || !sbdisk)
-    return -EINVAL;
-
-  uint64_t file_size = 0;
-  int rc = kafs_offline_detect_file_size(fd, &file_size);
-
-  kafs_context_t preflight_ctx;
-  memset(&preflight_ctx, 0, sizeof(preflight_ctx));
-  preflight_ctx.c_fd = fd;
-  preflight_ctx.c_superblock = (kafs_ssuperblock_t *)sbdisk;
-
-  if (rc == 0)
-    rc = kafs_v6_descriptor_mapping_admit_fd(&preflight_ctx, fd, file_size, NULL, NULL, NULL, NULL,
-                                             NULL);
-  if (rc == 0)
-  {
-    kafs_v6_journal_segment_report_t journal_report;
-    rc = kafs_v6_journal_validate_segments_fd(fd, preflight_ctx.c_v6_layout_desc,
-                                              preflight_ctx.c_v6_layout_desc_bytes, sbdisk,
-                                              file_size, &journal_report);
-  }
+  int rc = kafs_v6_admission_preflight_core(fd, sbdisk);
 
   kafs_v6_runtime_preflight_message_prefix(err, tool_name);
   if (rc == 0)
@@ -210,8 +415,6 @@ int kafs_v6_runtime_admission_preflight_fd(int fd, const kafs_ssuperblock_t *sbd
     fprintf(err, "format v6 admission preflight failed: %s.\n",
             kafs_v6_runtime_rc_text(rc, errbuf, sizeof(errbuf)));
   }
-
-  kafs_bitmap_descriptor_mapping_clear(&preflight_ctx);
   return rc;
 }
 
@@ -224,23 +427,11 @@ int kafs_v6_runtime_admission_preflight_image(const char *image_path, FILE *err,
     err = stderr;
 
   kafs_ssuperblock_t sb;
-  int fd = open(image_path, O_RDONLY | O_CLOEXEC);
-  if (fd < 0)
-  {
-    int saved_errno = errno;
-    fprintf(err, "%s: open image failed: %s: %s\n", tool_name, image_path, strerror(saved_errno));
-    return -saved_errno;
-  }
+  int fd = -1;
+  int rc = kafs_v6_runtime_open_readonly_superblock(image_path, &sb, err, tool_name, &fd);
+  if (rc != 0)
+    return rc;
 
-  ssize_t r = pread(fd, &sb, sizeof(sb), 0);
-  int saved_errno = errno;
-  if (r != (ssize_t)sizeof(sb))
-  {
-    fprintf(err, "%s: failed to read superblock from %s: %s\n", tool_name, image_path,
-            (r < 0) ? strerror(saved_errno) : "short read");
-    close(fd);
-    return (r < 0) ? -saved_errno : -EIO;
-  }
   if (kafs_sb_magic_get(&sb) != KAFS_MAGIC)
   {
     fprintf(err, "%s: invalid KAFS magic in %s.\n", tool_name, image_path);
@@ -255,7 +446,7 @@ int kafs_v6_runtime_admission_preflight_image(const char *image_path, FILE *err,
     return -EPROTONOSUPPORT;
   }
 
-  int rc = kafs_v6_runtime_admission_preflight_fd(fd, &sb, err, tool_name);
+  rc = kafs_v6_runtime_admission_preflight_fd(fd, &sb, err, tool_name);
   close(fd);
   return rc;
 }

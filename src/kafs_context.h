@@ -6,8 +6,11 @@
 #include "kafs_hotplug.h"
 #include "kafs_meta_region.h"
 #include "kafs_profile.h"
+#include <errno.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <stdlib.h>
+#include <sys/mman.h>
 #include <sys/un.h>
 
 typedef struct kafs_v6_inode_runtime_shard
@@ -359,6 +362,143 @@ int kafs_ctx_locks_init(struct kafs_context *ctx);
 void kafs_ctx_locks_destroy(struct kafs_context *ctx);
 
 typedef struct kafs_context kafs_context_t;
+
+void kafs_ctx_unmap_image(kafs_context_t *ctx);
+void kafs_ctx_init_runtime_journal(kafs_context_t *ctx, const char *image_path,
+                                   kafs_blkcnt_t r_blkcnt, int start_pending_worker);
+void kafs_ctx_init_diag_state(kafs_context_t *ctx, const char *image_path, kafs_inocnt_t inocnt);
+
+static inline const char *kafs_ctx_v6_worker_policy_summary(void)
+{
+  return "v6 worker policy sealed "
+         "(pending_worker=disabled tombstone_gc_worker=disabled "
+         "bg_dedup_worker=disabled hotplug=disabled)";
+}
+
+static inline int kafs_ctx_map_v6_runtime_admission_memory(kafs_context_t *ctx,
+                                                           const kafs_ssuperblock_t *sbdisk,
+                                                           uint64_t file_size, int prot)
+{
+  if (!ctx || !sbdisk || file_size == 0u || file_size > (uint64_t)SIZE_MAX)
+    return -EINVAL;
+
+  size_t map_size = (size_t)file_size;
+  ctx->c_img_base = mmap(NULL, map_size, prot, MAP_SHARED, ctx->c_fd, 0);
+  if (ctx->c_img_base == MAP_FAILED)
+  {
+    int err = -errno;
+    ctx->c_img_base = NULL;
+    return err;
+  }
+
+  ctx->c_img_size = map_size;
+  ctx->c_superblock = (kafs_ssuperblock_t *)ctx->c_img_base;
+  ctx->c_mapsize = 0;
+  ctx->c_blkmasktbl = NULL;
+  ctx->c_inotbl = NULL;
+  return 0;
+}
+
+static inline void kafs_ctx_v6_apply_delayed_mutation_policy(kafs_context_t *ctx)
+{
+  if (!ctx || !ctx->c_superblock ||
+      kafs_u32_stoh(ctx->c_superblock->s_format_version) != KAFS_FORMAT_VERSION_V6)
+    return;
+
+  ctx->c_pendinglog_enabled = 0u;
+  ctx->c_pendinglog_base = NULL;
+  ctx->c_pendinglog_size = 0u;
+  ctx->c_pendinglog_capacity = 0u;
+  ctx->c_pending_worker_stop = 1;
+  ctx->c_tombstone_gc_worker_stop = 1;
+  ctx->c_bg_dedup_enabled = 0u;
+  ctx->c_bg_dedup_worker_stop = 1;
+  ctx->c_v6_delayed_mutation_policy_applied = 1u;
+}
+
+static inline int kafs_ctx_v6_pending_policy_sealed(const kafs_context_t *ctx)
+{
+  if (ctx->c_pendinglog_enabled)
+    return 0;
+  if (ctx->c_pendinglog_base)
+    return 0;
+  if (ctx->c_pendinglog_size != 0u)
+    return 0;
+  if (ctx->c_pendinglog_capacity != 0u)
+    return 0;
+  if (ctx->c_pending_worker_running)
+    return 0;
+  if (ctx->c_pending_worker_lock_init)
+    return 0;
+  return ctx->c_pending_worker_stop != 0;
+}
+
+static inline int kafs_ctx_v6_tombstone_gc_policy_sealed(const kafs_context_t *ctx)
+{
+  if (ctx->c_tombstone_gc_worker_running)
+    return 0;
+  if (ctx->c_tombstone_gc_worker_lock_init)
+    return 0;
+  return ctx->c_tombstone_gc_worker_stop != 0;
+}
+
+static inline int kafs_ctx_v6_bg_dedup_policy_sealed(const kafs_context_t *ctx)
+{
+  if (ctx->c_bg_dedup_enabled)
+    return 0;
+  if (ctx->c_bg_dedup_worker_running)
+    return 0;
+  if (ctx->c_bg_dedup_worker_lock_init)
+    return 0;
+  return ctx->c_bg_dedup_worker_stop != 0;
+}
+
+static inline int kafs_ctx_v6_hotplug_policy_sealed(const kafs_context_t *ctx)
+{
+  if (ctx->c_hotplug_active)
+    return 0;
+  if (ctx->c_hotplug_fd >= 0)
+    return 0;
+  if (ctx->c_hotplug_state != KAFS_HOTPLUG_STATE_DISABLED)
+    return 0;
+  if (ctx->c_hotplug_connecting)
+    return 0;
+  return ctx->c_hotplug_uds_path[0] == '\0';
+}
+
+static inline int kafs_ctx_v6_validate_worker_policy(const kafs_context_t *ctx)
+{
+  if (!ctx || !ctx->c_superblock ||
+      kafs_u32_stoh(ctx->c_superblock->s_format_version) != KAFS_FORMAT_VERSION_V6)
+    return -EINVAL;
+  if (!ctx->c_v6_delayed_mutation_policy_applied)
+    return -EPROTO;
+
+  if (!kafs_ctx_v6_pending_policy_sealed(ctx))
+    return -EPROTO;
+  if (!kafs_ctx_v6_tombstone_gc_policy_sealed(ctx))
+    return -EPROTO;
+  if (!kafs_ctx_v6_bg_dedup_policy_sealed(ctx))
+    return -EPROTO;
+  if (!kafs_ctx_v6_hotplug_policy_sealed(ctx))
+    return -EPROTO;
+
+  return 0;
+}
+
+static inline int kafs_ctx_v6_validate_runtime_views(const kafs_context_t *ctx)
+{
+  if (!ctx || !ctx->c_superblock ||
+      kafs_u32_stoh(ctx->c_superblock->s_format_version) != KAFS_FORMAT_VERSION_V6)
+    return -EINVAL;
+  if (ctx->c_blkmasktbl || ctx->c_inotbl || ctx->c_mapsize != 0u)
+    return -EPROTO;
+  if (!ctx->c_v6_layout_desc_owned || !ctx->c_v6_bitmap_mapping_enabled ||
+      !ctx->c_v6_inode_mapping_enabled || !ctx->c_v6_alloc_summary_mapping_enabled ||
+      !ctx->c_v6_hrl_mapping_enabled)
+    return -EPROTO;
+  return 0;
+}
 
 static inline void kafs_ctx_meta_write_count(kafs_context_t *ctx, uint32_t region, uint64_t bytes)
 {

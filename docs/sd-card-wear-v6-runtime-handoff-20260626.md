@@ -4,8 +4,8 @@
 
 This handoff covers the Post-Phase 5 format v6 runtime mount enablement work.
 It was originally written after `SDW-V6RT-T13 v6 controlled write durability and
-fallback hardening` and is now updated through the 2026-07-03 descriptor-backed
-runtime view pureification phase 1 closeout.
+fallback hardening` and is now updated through the 2026-07-03 runtime open
+helper extraction and runtime admission/service helper extraction closeout.
 
 Committed implementation checkpoints:
 
@@ -16,6 +16,7 @@ Committed implementation checkpoints:
 - `ec233f8 Move v6 inspection admission behind kafs-v6`
 - `2b9e53d Move v6 controlled write admission behind kafs-v6`
 - `7568068 Split kafs-v6 runtime context opener`
+- `5d736fe Pure v6 runtime descriptor views`
 
 ## Current status
 
@@ -49,7 +50,8 @@ that copy/reflink is supported.
 
 ## Completed closeout
 
-The latest slice hardened the controlled write path with regression coverage for:
+The original controlled-write closeout hardened the path with regression
+coverage for:
 
 - zero-filled block materialization
 - partial block overwrite
@@ -98,6 +100,17 @@ Additional closeout after the original handoff:
 - T28 made the successful v6 runtime view descriptor-backed: v6 admission no
   longer installs legacy contiguous inode/bitmap table pointers, and v6 contexts
   do not start the journal meta-delta bitmap overlay.
+- T29 seals the v6 worker policy: pending worker, tombstone GC worker,
+  background dedup worker, and hotplug delegation remain disabled, and
+  controlled-write setup revalidates the policy after journal init.
+- T30 moves v6 image open, superblock read, magic check, and format v6 check
+  into `kafs_v6_runtime_open_context_image()`, narrowing the
+  `KAFS_V6_ENTRYPOINT` bridge without expanding the write surface.
+- T31 moves the shared descriptor-backed admission core into
+  `kafs_v6_admission.h`, and moves `kafs-v6` mode state, diag setup, and
+  controlled-write journal service setup into `kafs_v6_runtime.c`, while
+  keeping reusable invariants in `kafs_context.h` so production `kafs` does not
+  link `kafs_v6_runtime.c`.
 
 ## 2026-07-02 closeout
 
@@ -126,6 +139,8 @@ Commands completed successfully:
 
 ```sh
 ./scripts/format.sh fix
+autoreconf -fi
+./configure
 make -j2
 make -C tests check TESTS=v6_descriptor_smoketest
 git diff --check
@@ -148,6 +163,96 @@ Current entrypoint boundary:
 - Shared implementation is currently through the `KAFS_V6_ENTRYPOINT` common
   object boundary in `kafs.c`; future slices may replace this with a
   non-installed archive or narrower runtime helper.
+
+## 2026-07-03 T29 validation
+
+Commands completed successfully:
+
+```sh
+./scripts/format.sh fix
+make -j2
+make -C tests check TESTS=v6_descriptor_smoketest
+git diff --check
+./scripts/test-cli-surface.sh
+make check -j2
+KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make -C tests check TESTS='min_git_hooks fs_semantics'
+```
+
+Latest `make check -j2` result:
+
+- all 27 tests passed
+- 2 tests were not run
+
+The two skipped tests passed when retried with the longer mount timeout:
+
+- all 2 tests passed for `min_git_hooks fs_semantics`
+
+## 2026-07-03 T30 validation
+
+Commands completed successfully:
+
+```sh
+./scripts/format.sh fix
+make -j2
+make -C tests check TESTS=v6_descriptor_smoketest
+git diff --check
+./scripts/test-cli-surface.sh
+KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2
+```
+
+Latest all-test result with the longer mount timeout:
+
+- all 29 tests passed
+
+Static gate status:
+
+- `./scripts/static-checks.sh` completed format, lint, clones, and complexity
+  checks.
+- Strict source clone report: 36 clones, duplicated lines 365 (1.00%), within
+  threshold. The tests clone report remains informational only.
+
+## 2026-07-03 T31 validation
+
+Commands completed successfully:
+
+```sh
+./scripts/format.sh fix
+make -j2
+make -C tests check TESTS=v6_descriptor_smoketest
+git diff --check
+./scripts/test-cli-surface.sh
+./scripts/clones.sh
+./scripts/static-checks.sh
+KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2
+```
+
+Latest all-test result with the longer mount timeout:
+
+- all 28 tests passed
+- 1 test was not run: `stress_fs` skipped after a FUSE mount failure in this
+  environment
+
+Static gate status:
+
+- `./scripts/static-checks.sh` completed format, lint, clones, and complexity
+  checks.
+- Strict source clone report: 35 clones, duplicated lines 345 (0.94%), within
+  threshold. The tests clone report remains informational only.
+
+Current T31 boundary:
+
+- `kafs_v6_admission.h` owns the shared descriptor-backed preflight/runtime
+  admission core used by `kafs-v6` and legacy production `kafs` diagnostic
+  scaffolding.
+- `kafs_v6_runtime_admit_mount_context()` owns `kafs-v6` full-image mmap mode,
+  mode state, and admission messages.
+- `kafs_v6_runtime_init_mount_services()` owns `kafs-v6` diag setup and
+  controlled-write journal service setup, then revalidates descriptor-backed
+  runtime views and sealed worker policy.
+- `kafs_context.h` owns shared v6 context invariants used by both
+  `kafs-v6` and legacy production `kafs` diagnostic scaffolding.
+- Production `kafs` still does not link `kafs_v6_runtime.c`, and legacy v6
+  mount tokens remain fail-closed with `kafs-v6` guidance.
 
 ## Original validation run
 
@@ -186,21 +291,18 @@ block this closeout.
 
 ## Current next boundary
 
-The next boundary remains v6 runtime pureification after the descriptor-backed
-runtime view phase 1 slice. Do not broaden the v6 write surface as the next
+The next boundary remains v6 runtime pureification after the runtime
+admission/service helper slice. Do not broaden the v6 write surface as the next
 step.
 
 Start from the pressure points recorded in
 [sd-card-wear-v6-runtime-entrypoint-plan.md](sd-card-wear-v6-runtime-entrypoint-plan.md):
 
-- controlled-write runtime context setup that does not inherit generic v5
-  worker assumptions;
-- explicit v6 delayed/background mutation policy;
-- narrower v6 runtime context helpers or shared artifact extraction that reduce
-  the remaining `KAFS_V6_ENTRYPOINT` bridge without duplicating filesystem
-  logic;
 - retirement plan for legacy v6 diagnostic scaffolding in `kafs` after
-  operator workflows no longer depend on it.
+  operator workflows no longer depend on it;
+- further reduction of the remaining `KAFS_V6_ENTRYPOINT` common-object bridge,
+  especially around FUSE operation sharing, without duplicating filesystem
+  logic.
 
 Production cutover discussion stays behind that pureification and behind later
 v5-parity, workload-copy, power-loss or torn-write, rollback, and recovery

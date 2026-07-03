@@ -13,6 +13,7 @@
 #include "kafs_core.h"
 #include "kafs_crash_diag.h"
 #include "kafs_tailmeta.h"
+#include "kafs_v6_admission.h"
 #include "kafs_v6_runtime.h"
 
 #include <fuse.h>
@@ -6927,7 +6928,7 @@ static void kafs_ctx_reset_mapping(kafs_context_t *ctx)
   ctx->c_mapsize = 0;
 }
 
-static void kafs_ctx_unmap_image(kafs_context_t *ctx)
+void kafs_ctx_unmap_image(kafs_context_t *ctx)
 {
   if (ctx->c_img_base && ctx->c_img_base != MAP_FAILED)
     munmap(ctx->c_img_base, ctx->c_img_size);
@@ -7087,8 +7088,8 @@ static void kafs_ctx_setup_meta_delta(kafs_context_t *ctx, kafs_blkcnt_t r_blkcn
   ctx->c_meta_bitmap_words_enabled = 1u;
 }
 
-static void kafs_ctx_init_runtime_journal(kafs_context_t *ctx, const char *image_path,
-                                          kafs_blkcnt_t r_blkcnt, int start_pending_worker)
+void kafs_ctx_init_runtime_journal(kafs_context_t *ctx, const char *image_path,
+                                   kafs_blkcnt_t r_blkcnt, int start_pending_worker)
 {
   (void)kafs_hrl_open(ctx);
   (void)kafs_journal_init(ctx, image_path);
@@ -7108,8 +7109,7 @@ static void kafs_ctx_init_runtime_journal(kafs_context_t *ctx, const char *image
   }
 }
 
-static void kafs_ctx_init_diag_state(kafs_context_t *ctx, const char *image_path,
-                                     kafs_inocnt_t inocnt)
+void kafs_ctx_init_diag_state(kafs_context_t *ctx, const char *image_path, kafs_inocnt_t inocnt)
 {
   ctx->c_diag_log_fd = -1;
   ctx->c_ino_epoch = calloc((size_t)inocnt, sizeof(uint32_t));
@@ -10960,9 +10960,12 @@ static void *kafs_op_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
   if (ctx && ctx->c_superblock &&
       kafs_sb_format_version_get(ctx->c_superblock) == KAFS_FORMAT_VERSION_V6)
   {
-    if (!ctx->c_v6_delayed_mutation_policy_applied)
-      kafs_log(KAFS_LOG_WARNING,
-               "kafs: suppressing v6 delayed/background workers without explicit policy marker\n");
+    int wrc = kafs_ctx_v6_validate_worker_policy(ctx);
+    if (wrc != 0)
+      kafs_log(KAFS_LOG_ERR,
+               "kafs: invalid v6 worker policy in FUSE init rc=%d; delayed/background workers "
+               "remain suppressed\n",
+               wrc);
     return ctx;
   }
   if (ctx && ctx->c_pendinglog_enabled)
@@ -13068,27 +13071,7 @@ static const char *kafs_main_rc_text(int rc, char *buf, size_t buf_sz)
 
 static int kafs_main_v6_admission_preflight(int fd, const kafs_ssuperblock_t *sbdisk)
 {
-  if (fd < 0 || !sbdisk)
-    return -EINVAL;
-
-  uint64_t file_size = 0;
-  int rc = kafs_offline_detect_file_size(fd, &file_size);
-
-  kafs_context_t preflight_ctx;
-  memset(&preflight_ctx, 0, sizeof(preflight_ctx));
-  preflight_ctx.c_fd = fd;
-  preflight_ctx.c_superblock = (kafs_ssuperblock_t *)sbdisk;
-
-  if (rc == 0)
-    rc = kafs_v6_descriptor_mapping_admit_fd(&preflight_ctx, fd, file_size, NULL, NULL, NULL, NULL,
-                                             NULL);
-  if (rc == 0)
-  {
-    kafs_v6_journal_segment_report_t journal_report;
-    rc = kafs_v6_journal_validate_segments_fd(fd, preflight_ctx.c_v6_layout_desc,
-                                              preflight_ctx.c_v6_layout_desc_bytes, sbdisk,
-                                              file_size, &journal_report);
-  }
+  int rc = kafs_v6_admission_preflight_core(fd, sbdisk);
 
   if (rc == 0)
   {
@@ -13102,7 +13085,6 @@ static int kafs_main_v6_admission_preflight(int fd, const kafs_ssuperblock_t *sb
             kafs_main_rc_text(rc, errbuf, sizeof(errbuf)));
   }
 
-  kafs_bitmap_descriptor_mapping_clear(&preflight_ctx);
   return rc;
 }
 
@@ -13122,92 +13104,17 @@ static int kafs_main_v6_readonly_smoke_enabled(void)
   return enabled == KAFS_TRUE;
 }
 
-static int kafs_main_map_v6_runtime_admission_memory(kafs_context_t *ctx,
-                                                     const kafs_ssuperblock_t *sbdisk,
-                                                     uint64_t file_size, int prot)
-{
-  if (!ctx || !sbdisk || file_size == 0u || file_size > (uint64_t)SIZE_MAX)
-    return -EINVAL;
-
-  size_t map_size = (size_t)file_size;
-  ctx->c_img_base = mmap(NULL, map_size, prot, MAP_SHARED, ctx->c_fd, 0);
-  if (ctx->c_img_base == MAP_FAILED)
-  {
-    int err = -errno;
-    ctx->c_img_base = NULL;
-    return err;
-  }
-
-  ctx->c_img_size = map_size;
-  ctx->c_superblock = (kafs_ssuperblock_t *)ctx->c_img_base;
-  ctx->c_mapsize = 0;
-  ctx->c_blkmasktbl = NULL;
-  ctx->c_inotbl = NULL;
-  return 0;
-}
-
-static void kafs_main_v6_apply_delayed_mutation_policy(kafs_context_t *ctx)
-{
-  if (!ctx || !ctx->c_superblock ||
-      kafs_sb_format_version_get(ctx->c_superblock) != KAFS_FORMAT_VERSION_V6)
-    return;
-
-  ctx->c_pendinglog_enabled = 0u;
-  ctx->c_pendinglog_base = NULL;
-  ctx->c_pendinglog_size = 0u;
-  ctx->c_pendinglog_capacity = 0u;
-  ctx->c_pending_worker_stop = 1;
-  ctx->c_tombstone_gc_worker_stop = 1;
-  ctx->c_bg_dedup_enabled = 0u;
-  ctx->c_bg_dedup_worker_stop = 1;
-  ctx->c_v6_delayed_mutation_policy_applied = 1u;
-}
-
-static int kafs_main_v6_validate_runtime_views(const kafs_context_t *ctx)
-{
-  if (!ctx || !ctx->c_superblock ||
-      kafs_sb_format_version_get(ctx->c_superblock) != KAFS_FORMAT_VERSION_V6)
-    return -EINVAL;
-  if (ctx->c_blkmasktbl || ctx->c_inotbl || ctx->c_mapsize != 0u)
-    return -EPROTO;
-  if (!ctx->c_v6_layout_desc_owned || !ctx->c_v6_bitmap_mapping_enabled ||
-      !ctx->c_v6_inode_mapping_enabled || !ctx->c_v6_alloc_summary_mapping_enabled ||
-      !ctx->c_v6_hrl_mapping_enabled)
-    return -EPROTO;
-  return 0;
-}
-
 static int kafs_main_v6_runtime_admit_context(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk,
                                               int prot)
 {
-  if (!ctx || ctx->c_fd < 0 || !sbdisk)
-    return -EINVAL;
+  return kafs_v6_admission_runtime_context(ctx, sbdisk, prot);
+}
 
-  uint64_t file_size = 0;
-  int rc = kafs_offline_detect_file_size(ctx->c_fd, &file_size);
+static int kafs_main_v6_validate_controlled_write_runtime(const kafs_context_t *ctx)
+{
+  int rc = kafs_ctx_v6_validate_runtime_views(ctx);
   if (rc == 0)
-    rc = kafs_main_map_v6_runtime_admission_memory(ctx, sbdisk, file_size, prot);
-  if (rc == 0)
-    rc = kafs_v6_descriptor_mapping_admit_fd(ctx, ctx->c_fd, file_size, NULL, NULL, NULL, NULL,
-                                             NULL);
-  if (rc == 0)
-  {
-    kafs_v6_journal_segment_report_t journal_report;
-    rc = kafs_v6_journal_validate_segments_fd(ctx->c_fd, ctx->c_v6_layout_desc,
-                                              ctx->c_v6_layout_desc_bytes, ctx->c_superblock,
-                                              file_size, &journal_report);
-  }
-  if (rc == 0 && (!ctx->c_v6_layout_desc_owned || !ctx->c_v6_bitmap_mapping_enabled ||
-                  !ctx->c_v6_inode_mapping_enabled || !ctx->c_v6_alloc_summary_mapping_enabled ||
-                  !ctx->c_v6_hrl_mapping_enabled))
-    rc = -EPROTO;
-  if (rc == 0)
-    rc = kafs_main_v6_validate_runtime_views(ctx);
-  if (rc == 0)
-    kafs_main_v6_apply_delayed_mutation_policy(ctx);
-
-  if (rc != 0)
-    kafs_ctx_unmap_image(ctx);
+    rc = kafs_ctx_v6_validate_worker_policy(ctx);
   return rc;
 }
 
@@ -13221,13 +13128,14 @@ static int kafs_main_v6_admission_handoff(kafs_context_t *ctx, const kafs_ssuper
             "format v6 admission handoff: selected descriptor retained in runtime context "
             "(inode_shards=%u allocator_shards=%u hrl_index_shards=%u hrl_entry_shards=%u); "
             "descriptor-backed runtime views active; legacy contiguous inode/bitmap tables are "
-            "not installed; "
+            "not installed; %s; "
             "delayed/background mutations disabled "
             "(pending_log=disabled tail_metadata=disabled tombstone_gc=disabled "
             "bg_dedup=disabled); "
             "runtime mount remains offline-only.\n",
             ctx->c_v6_inode_shard_count, ctx->c_v6_alloc_summary_shard_count,
-            ctx->c_v6_hrl_index_shard_count, ctx->c_v6_hrl_entry_shard_count);
+            ctx->c_v6_hrl_index_shard_count, ctx->c_v6_hrl_entry_shard_count,
+            kafs_ctx_v6_worker_policy_summary());
   }
   else
   {
@@ -13252,11 +13160,13 @@ static int kafs_main_v6_readonly_smoke_mount(kafs_context_t *ctx, const kafs_ssu
       *inocnt_out = kafs_inocnt_stoh(sbdisk->s_inocnt);
     if (r_blkcnt_out)
       *r_blkcnt_out = kafs_blkcnt_stoh(sbdisk->s_r_blkcnt);
-    fprintf(stderr, "format v6 readonly smoke: selected descriptor retained in read-only runtime "
-                    "context; descriptor-backed runtime views active; legacy contiguous "
-                    "inode/bitmap tables are not installed; delayed/background mutations are "
-                    "disabled; FUSE mount is read-only "
-                    "and write admission remains disabled.\n");
+    fprintf(stderr,
+            "format v6 readonly smoke: selected descriptor retained in read-only runtime "
+            "context; descriptor-backed runtime views active; legacy contiguous "
+            "inode/bitmap tables are not installed; %s; delayed/background mutations are "
+            "disabled; FUSE mount is read-only "
+            "and write admission remains disabled.\n",
+            kafs_ctx_v6_worker_policy_summary());
   }
   else
   {
@@ -13283,9 +13193,10 @@ static int kafs_main_v6_controlled_write_mount(kafs_context_t *ctx,
     fprintf(stderr,
             "format v6 controlled write mount: selected descriptor retained in write runtime "
             "context; descriptor-backed runtime views active; legacy contiguous inode/bitmap "
-            "tables are not installed; delayed/background mutations are disabled; FUSE write "
+            "tables are not installed; %s; delayed/background mutations are disabled; FUSE write "
             "surface is limited "
-            "to regular-file create/write/fsync/release.\n");
+            "to regular-file create/write/fsync/release.\n",
+            kafs_ctx_v6_worker_policy_summary());
   }
   else
   {
@@ -13307,11 +13218,13 @@ static int kafs_main_v6_inspection_mount(kafs_context_t *ctx, const kafs_ssuperb
       *inocnt_out = kafs_inocnt_stoh(sbdisk->s_inocnt);
     if (r_blkcnt_out)
       *r_blkcnt_out = kafs_blkcnt_stoh(sbdisk->s_r_blkcnt);
-    fprintf(stderr, "format v6 inspection mount: selected descriptor retained in read-only "
-                    "runtime context; descriptor-backed runtime views active; legacy contiguous "
-                    "inode/bitmap tables are not installed; delayed/background mutations are "
-                    "disabled; FUSE mount is "
-                    "inspection-only and write admission remains disabled.\n");
+    fprintf(stderr,
+            "format v6 inspection mount: selected descriptor retained in read-only "
+            "runtime context; descriptor-backed runtime views active; legacy contiguous "
+            "inode/bitmap tables are not installed; %s; delayed/background mutations are "
+            "disabled; FUSE mount is "
+            "inspection-only and write admission remains disabled.\n",
+            kafs_ctx_v6_worker_policy_summary());
   }
   else
   {
@@ -13448,6 +13361,15 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
         exit(2);
       kafs_main_init_runtime_diag(ctx, image_path, inocnt);
       kafs_main_init_runtime_journal(ctx, image_path, r_blkcnt);
+      rc = kafs_main_v6_validate_controlled_write_runtime(ctx);
+      if (rc != 0)
+      {
+        char errbuf[128];
+        fprintf(stderr,
+                "format v6 controlled write runtime policy failed after journal init: %s.\n",
+                kafs_main_rc_text(rc, errbuf, sizeof(errbuf)));
+        exit(2);
+      }
       kafs_main_lock_runtime_image(ctx, image_path);
       return;
     }
@@ -13516,69 +13438,31 @@ static int kafs_main_cleanup(kafs_context_t *ctx, char *hotplug_uds_path, int rc
 }
 
 #ifdef KAFS_V6_ENTRYPOINT
-static int kafs_v6_entrypoint_read_superblock(kafs_context_t *ctx, const char *image_path,
-                                              kafs_bool_t controlled_write_mount,
-                                              kafs_ssuperblock_t *sbdisk)
-{
-  const int open_flags = controlled_write_mount ? O_RDWR : O_RDONLY;
-  ctx->c_fd = open(image_path, open_flags, 0666);
-  if (ctx->c_fd < 0)
-  {
-    perror("open image");
-    fprintf(stderr, "image not found. run mkfs.kafs first.\n");
-    return 2;
-  }
-
-  ctx->c_blo_search = 0;
-  ctx->c_ino_search = 0;
-
-  int rc = kafs_ctx_read_superblock_fd(ctx, sbdisk);
-  if (rc != 0)
-  {
-    char errbuf[128];
-    fprintf(stderr, "kafs-v6: failed to read superblock: %s.\n",
-            kafs_main_rc_text(rc, errbuf, sizeof(errbuf)));
-    return 2;
-  }
-  if (kafs_sb_magic_get(sbdisk) != KAFS_MAGIC)
-  {
-    fprintf(stderr, "kafs-v6: invalid magic. run mkfs.kafs to format.\n");
-    kafs_ctx_close_fd(ctx);
-    return 2;
-  }
-
-  uint32_t fmt_ver = kafs_sb_format_version_get(sbdisk);
-  if (fmt_ver != KAFS_FORMAT_VERSION_V6)
-  {
-    fprintf(stderr, "kafs-v6 %s mount applies only to format v6 images (found v%u).\n",
-            controlled_write_mount ? "controlled write" : "inspection", fmt_ver);
-    kafs_ctx_close_fd(ctx);
-    return 2;
-  }
-  return 0;
-}
-
 static int kafs_v6_entrypoint_open_runtime_context(kafs_context_t *ctx, const char *image_path,
                                                    kafs_bool_t controlled_write_mount)
 {
   kafs_ssuperblock_t sbdisk;
-  if (kafs_v6_entrypoint_read_superblock(ctx, image_path, controlled_write_mount, &sbdisk) != 0)
+  kafs_v6_runtime_mode_t mode = controlled_write_mount ? KAFS_V6_RUNTIME_MODE_CONTROLLED_WRITE
+                                                       : KAFS_V6_RUNTIME_MODE_INSPECTION;
+  if (kafs_v6_runtime_open_context_image(ctx, image_path, mode, &sbdisk, stderr) != 0)
     return 2;
 
   kafs_inocnt_t inocnt = 0;
   kafs_blkcnt_t r_blkcnt = 0;
-  int rc = controlled_write_mount
-               ? kafs_main_v6_controlled_write_mount(ctx, &sbdisk, &inocnt, &r_blkcnt)
-               : kafs_main_v6_inspection_mount(ctx, &sbdisk, &inocnt, &r_blkcnt);
+  int rc = kafs_v6_runtime_admit_mount_context(ctx, &sbdisk, mode, &inocnt, &r_blkcnt, stderr);
   if (rc != 0)
   {
     kafs_ctx_close_fd(ctx);
     return 2;
   }
 
-  kafs_main_init_runtime_diag(ctx, image_path, inocnt);
-  if (controlled_write_mount)
-    kafs_main_init_runtime_journal(ctx, image_path, r_blkcnt);
+  rc = kafs_v6_runtime_init_mount_services(ctx, image_path, mode, inocnt, r_blkcnt, stderr);
+  if (rc != 0)
+  {
+    kafs_ctx_unmap_image(ctx);
+    kafs_ctx_close_fd(ctx);
+    return 2;
+  }
   kafs_main_lock_runtime_image(ctx, image_path);
   return 0;
 }

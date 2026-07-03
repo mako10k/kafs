@@ -1,6 +1,7 @@
 #pragma once
 
 #include "kafs.h"
+#include "kafs_context.h"
 #include "kafs_superblock.h"
 
 #include <stdio.h>
@@ -62,6 +63,15 @@ int kafs_v6_runtime_validate_entrypoint_request(const kafs_v6_runtime_request_t 
                                                 kafs_v6_runtime_validation_reason_t *reason_out);
 int kafs_v6_runtime_check_image_format(const char *image_path, uint32_t expected_format, FILE *err,
                                        const char *tool_name);
+int kafs_v6_runtime_open_context_image(kafs_context_t *ctx, const char *image_path,
+                                       kafs_v6_runtime_mode_t mode, kafs_ssuperblock_t *sbdisk,
+                                       FILE *err);
+int kafs_v6_runtime_admit_mount_context(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk,
+                                        kafs_v6_runtime_mode_t mode, kafs_inocnt_t *inocnt_out,
+                                        kafs_blkcnt_t *r_blkcnt_out, FILE *err);
+int kafs_v6_runtime_init_mount_services(kafs_context_t *ctx, const char *image_path,
+                                        kafs_v6_runtime_mode_t mode, kafs_inocnt_t inocnt,
+                                        kafs_blkcnt_t r_blkcnt, FILE *err);
 int kafs_v6_runtime_admission_preflight_fd(int fd, const kafs_ssuperblock_t *sbdisk, FILE *err,
                                            const char *tool_name);
 int kafs_v6_runtime_admission_preflight_image(const char *image_path, FILE *err,

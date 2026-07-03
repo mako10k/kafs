@@ -1,6 +1,6 @@
 # KAFS SDカード劣化対策 バックログ
 
-最終更新: 2026-07-02
+最終更新: 2026-07-03
 
 計画: [sd-card-wear-plan.md](sd-card-wear-plan.md)
 
@@ -1073,6 +1073,111 @@
   - `v6_descriptor_smoketest` で handoff output と `kafs-v6` mount log の descriptor-backed runtime
     view guidance を regression にした。
   - `make check -j2` は all 25 tests passed、4 tests not run で完了した。
+
+### SDW-V6RT-T29 v6 controlled-write runtime worker-policy pureification
+
+- 目的: `kafs-v6 --controlled-write-mount` の successful runtime path が generic v5 worker
+  assumptions を継承せず、pending log drain、tombstone GC、background dedup worker、hotplug
+  delegated write が sealed disabled policy のまま残ることを runtime invariant として固定する。
+  これは pureification slice であり、write surface expansion ではない。
+- 変更:
+  - v6 admission 後に `pending_worker=disabled`、`tombstone_gc_worker=disabled`、
+    `bg_dedup_worker=disabled`、`hotplug=disabled` を `kafs_main_v6_validate_worker_policy()` で
+    fail-closed 検査する。
+  - controlled-write path は journal init 後にも同じ worker-policy invariant を再検査し、
+    generic runtime init が pending/background worker state を再導入していないことを確認する。
+  - FUSE init の v6 branch は generic worker start path に入らず、policy invariant が崩れている場合は
+    error log を出して delayed/background workers を抑止したままにする。
+  - `v6_descriptor_smoketest` は handoff output と `kafs-v6` mount log で
+    `v6 worker policy sealed` guidance を確認する。
+- 完了条件:
+  - `kafs-v6 --inspection-mount` / `--controlled-write-mount` の T25/T26 acceptance behavior が維持される。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - `./scripts/format.sh fix`、`git diff --check`、`./scripts/test-cli-surface.sh`、`make -j2`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`make check -j2` が PASS している。
+- 実装メモ (2026-07-03):
+  - `kafs_main_v6_validate_worker_policy()` を追加し、v6 admission と controlled-write journal init 後に
+    pending worker / tombstone GC worker / background dedup worker / hotplug delegation が disabled
+    のまま残ることを検査するようにした。
+  - `kafs_op_init()` は v6 context で generic worker start path に入らず、worker-policy invariant の
+    異常を error log として記録する。
+  - `v6_descriptor_smoketest` で handoff output と `kafs-v6` mount log の
+    `v6 worker policy sealed` guidance を regression にした。
+  - `make check -j2` は all 27 tests passed、2 tests not run で完了した。SKIP になった
+    `min_git_hooks` / `fs_semantics` は
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make -C tests check TESTS='min_git_hooks fs_semantics'` で
+    all 2 tests passed を確認した。
+
+### SDW-V6RT-T30 v6 runtime context open helper extraction
+
+- 目的: `kafs-v6` の successful runtime path に残っていた image open / superblock read /
+  magic / format version validation を `kafs_v6_runtime.c` 側の v6 runtime helper へ移し、
+  `KAFS_V6_ENTRYPOINT` bridge をさらに薄くする。これは pureification slice であり、write surface
+  expansion ではない。
+- 変更:
+  - `kafs_v6_runtime_open_context_image()` を追加し、inspection / controlled-write mode に応じた
+    open flag、`c_fd` 設定、search cursor 初期化、superblock read、invalid magic / non-v6 format
+    failure cleanup を v6 runtime helper に集約する。
+  - `kafs-v6` bridge は local read-superblock helper を持たず、v6 runtime helper の結果だけを
+    descriptor-backed admission と diag/journal init へ渡す。
+  - production `kafs` の v4/v5 runtime と legacy v6 fail-closed guidance は変更しない。
+- 完了条件:
+  - `kafs-v6 --inspection-mount` / `--controlled-write-mount` の T25/T26 acceptance behavior が維持される。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - `./scripts/format.sh fix`、`git diff --check`、`./scripts/test-cli-surface.sh`、`make -j2`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`make check -j2` が PASS している。
+- 実装メモ (2026-07-03):
+  - `src/kafs_v6_runtime.c` に `kafs_v6_runtime_open_context_image()` を追加し、open/read-superblock
+    failure path で fd を閉じて `ctx->c_fd = -1` に戻すようにした。
+  - read-only format check / admission preflight の open/read-superblock 処理も
+    `kafs_v6_runtime_open_readonly_superblock()` に寄せ、T30 の helper 追加で重複が増えないようにした。
+  - `src/kafs.c` の `KAFS_V6_ENTRYPOINT` bridge から local `kafs_v6_entrypoint_read_superblock()` を
+    削除し、v6 専用 open helper を呼ぶ形にした。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` は all 29 tests passed で完了した。
+  - `./scripts/static-checks.sh` は format / lint / clones / complexity を完了した。strict source
+    clone report は 36 clones / duplicated lines 365 (1.00%) で threshold 内、test clone report は
+    informational として生成された。
+
+### SDW-V6RT-T31 v6 runtime admission/service helper extraction
+
+- 目的: `kafs-v6` の successful runtime path に残っていた descriptor-backed admission /
+  mmap / mode state / diag / journal service setup を `kafs_v6_runtime.c` 側へ移し、
+  `KAFS_V6_ENTRYPOINT` bridge をさらに薄くする。これは pureification slice であり、
+  write surface expansion ではない。
+- 変更:
+  - descriptor-backed preflight / runtime admission core を `kafs_v6_admission.h` に集約し、
+    `kafs-v6` と production `kafs` の diagnostic-only path が同じ検証実装を共有するようにした。
+  - v6 admission mmap、descriptor-backed runtime view validation、delayed/background mutation
+    suppression、worker-policy seal を `kafs_context.h` の reusable invariant helper にした。
+  - `kafs_v6_runtime_admit_mount_context()` を追加し、`kafs-v6` の descriptor-backed admission、
+    full-image mmap mode、journal segment validation、inspection / controlled-write mode state、
+    admission log を v6 runtime helper に集約した。
+  - `kafs_v6_runtime_init_mount_services()` を追加し、`kafs-v6` の diag setup と
+    controlled-write journal service init、post-init invariant validation を v6 runtime helper に集約した。
+  - production `kafs` は引き続き `kafs_v6_runtime.c` を link しない。legacy v6 diagnostic
+    scaffolding は shared context helper を使うが、successful v6 runtime admission にはならない。
+- 完了条件:
+  - `kafs-v6 --inspection-mount` / `--controlled-write-mount` の T25/T26 acceptance behavior が維持される。
+  - production `kafs` の v4/v5 runtime と legacy v6 fail-closed guidance は維持されている。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - `./scripts/format.sh fix`、`git diff --check`、`./scripts/test-cli-surface.sh`、`make -j2`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`make check -j2` が PASS している。
+- 実装メモ (2026-07-03):
+  - `src/kafs_v6_runtime.c` に `kafs_v6_runtime_admit_mount_context()` と
+    `kafs_v6_runtime_init_mount_services()` を追加し、`kafs-v6` bridge は open/admit/init helper の
+    結果から image lock と FUSE 起動へ進むだけになった。
+  - `src/kafs_v6_admission.h` に descriptor-backed preflight / runtime admission core を追加し、
+    legacy production `kafs` diagnostic path と `kafs-v6` helper の重複を避けた。
+  - `src/kafs_context.h` の v6 invariant helper は production `kafs` の diagnostic-only path と
+    `kafs-v6` helper の両方から使う。これにより production `kafs` へ `kafs_v6_runtime.c` link を
+    追加せず、message / invariant を重複させない。
+  - `src/Makefile.am` の `noinst_HEADERS` に `kafs_v6_admission.h` を追加し、
+    `autoreconf -fi` / `./configure` で生成物を更新した。
+  - `./scripts/static-checks.sh` は format / lint / clones / complexity を完了した。strict source
+    clone report は 35 clones / duplicated lines 345 (0.94%) で threshold 内、test clone report は
+    informational として生成された。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` は all 28 tests passed、1 test not run で
+    完了した。SKIP は `stress_fs` で、ログ上は FUSE mount failure によるもの。
 
 ---
 

@@ -190,7 +190,12 @@ static int file_contains_v6_runtime_view_admission(const char *path, const char 
 {
   return file_contains(path, admission) &&
          file_contains(path, "descriptor-backed runtime views active") &&
-         file_contains(path, "legacy contiguous inode/bitmap tables are not installed");
+         file_contains(path, "legacy contiguous inode/bitmap tables are not installed") &&
+         file_contains(path, "v6 worker policy sealed") &&
+         file_contains(path, "pending_worker=disabled") &&
+         file_contains(path, "tombstone_gc_worker=disabled") &&
+         file_contains(path, "bg_dedup_worker=disabled") &&
+         file_contains(path, "hotplug=disabled");
 }
 
 typedef struct v6_dir_fixture_entry
@@ -1657,6 +1662,9 @@ int main(void)
   if (!strstr(out, "admission handoff") || !strstr(out, "selected descriptor retained") ||
       !strstr(out, "descriptor-backed runtime views active") ||
       !strstr(out, "legacy contiguous inode/bitmap tables are not installed") ||
+      !strstr(out, "v6 worker policy sealed") || !strstr(out, "pending_worker=disabled") ||
+      !strstr(out, "tombstone_gc_worker=disabled") ||
+      !strstr(out, "bg_dedup_worker=disabled") || !strstr(out, "hotplug=disabled") ||
       !strstr(out, "delayed/background mutations disabled") ||
       !strstr(out, "pending_log=disabled") || !strstr(out, "tail_metadata=disabled") ||
       !strstr(out, "tombstone_gc=disabled") || !strstr(out, "bg_dedup=disabled") ||

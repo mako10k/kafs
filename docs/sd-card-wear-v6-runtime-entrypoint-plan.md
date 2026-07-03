@@ -1,7 +1,7 @@
 # KAFS format v6 runtime entrypoint plan
 
 Date: 2026-07-03
-Status: descriptor-backed runtime view pureification phase 1 implemented
+Status: runtime admission/service helper extraction implemented
 
 ## Boundary
 
@@ -73,13 +73,50 @@ T28 moved the first v6-native runtime view boundary into code:
 - v6 contexts do not start the journal meta-delta bitmap overlay, which still
   assumes a contiguous bitmap table.
 
+T29 sealed the controlled-write worker-policy boundary:
+
+- successful v6 admission validates that pending log drain, tombstone GC,
+  background dedup worker, and hotplug delegation are disabled in the runtime
+  context;
+- controlled-write runtime setup revalidates the same policy after journal init,
+  before the FUSE mount is admitted;
+- the v6 FUSE init branch remains outside the generic v4/v5 worker start path.
+
+T30 moved the v6 image-open boundary into the v6 runtime helper:
+
+- `kafs_v6_runtime_open_context_image()` now owns inspection vs.
+  controlled-write open flags, context fd setup, superblock read, magic check,
+  format v6 check, and failure cleanup for `kafs-v6`;
+- the `KAFS_V6_ENTRYPOINT` bridge no longer carries a local read-superblock
+  helper and proceeds from the v6 runtime helper result into descriptor-backed
+  admission and diag/journal init;
+- the extraction does not add a new executable surface and does not broaden the
+  controlled-write operation allowlist.
+
+T31 moved the v6 admission and service-init boundary into the v6 runtime helper
+while preserving the production `kafs` link surface:
+
+- `kafs_v6_admission.h` now owns the shared descriptor-backed preflight and
+  runtime admission core used by `kafs-v6` and legacy production `kafs`
+  diagnostic scaffolding;
+- `kafs_context.h` now owns shared v6 context invariants for admission mmap,
+  descriptor-backed runtime view validation, delayed/background mutation
+  suppression, and worker-policy sealing;
+- `kafs_v6_runtime_admit_mount_context()` now owns `kafs-v6` descriptor
+  admission, full-image mmap mode selection, journal segment validation, mode
+  state, and admission messages;
+- `kafs_v6_runtime_init_mount_services()` now owns `kafs-v6` diag/journal
+  service setup and post-init invariant revalidation;
+- production `kafs` still does not link `kafs_v6_runtime.c`; its legacy v6
+  diagnostic scaffolding uses the shared context helpers without becoming a
+  successful v6 runtime entrypoint.
+
 The remaining pureification pressure points are:
 
-- controlled-write runtime context setup that does not inherit generic v5
-  worker assumptions;
-- explicit v6 delayed/background mutation policy;
 - removal or retirement plan for legacy v6 diagnostic scaffolding in `kafs`
-  after operator workflows no longer depend on it.
+  after operator workflows no longer depend on it;
+- further reduction of the `KAFS_V6_ENTRYPOINT` common-object bridge, especially
+  around FUSE operation sharing, without duplicating filesystem logic.
 
 ## Shared implementation boundary
 
@@ -102,8 +139,17 @@ object boundary for controlled-write admission. T27 removes the `kafs-v6`
 bridge dependency on the generic v4/v5 `kafs_main_open_runtime_context()` path
 and gives the dedicated entrypoint its own v6 open/admit/init helper. T28 keeps
 that bridge but makes successful v6 runtime views descriptor-backed rather than
-legacy contiguous table-backed. Later slices can replace the common-object
-bridge with a non-installed static archive or a narrower runtime context helper.
+legacy contiguous table-backed. T29 keeps v6 runtime setup outside generic v5
+worker assumptions by sealing and revalidating the worker policy. T30 moves
+v6 image open, superblock read, magic validation, and format validation into
+`kafs_v6_runtime.c`, leaving the bridge to handle admission handoff and the
+remaining shared FUSE runtime setup. T31 moves the shared descriptor-backed
+admission core into `kafs_v6_admission.h`, and moves `kafs-v6` mode state, diag
+setup, and controlled-write journal service setup behind `kafs_v6_runtime.c`.
+The reusable invariants remain in `kafs_context.h`, so production `kafs` does
+not gain a `kafs_v6_runtime.c` link. Later slices can replace the common-object
+bridge with a non-installed static archive or narrower runtime context / FUSE
+operation helpers.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).

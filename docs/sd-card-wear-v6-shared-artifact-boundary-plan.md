@@ -1,7 +1,7 @@
 # KAFS format v6 shared artifact boundary plan
 
-Date: 2026-07-02
-Status: accepted
+Date: 2026-07-03
+Status: accepted; runtime admission/service helper extraction reflected
 
 ## Purpose
 
@@ -80,7 +80,9 @@ tests show v4/v5 behavior is unchanged.
 
 Candidates:
 
-- image open/read-superblock helpers;
+- image open/read-superblock helpers when their policy-independent portion is
+  needed outside `kafs-v6`; the current v6-only open helper lives in
+  `kafs_v6_runtime.c`;
 - mmap and unmap helpers that do not assume v5 prefix metadata;
 - descriptor-backed runtime context setup and cleanup;
 - common FUSE operation helpers after write policy remains selected by the
@@ -104,7 +106,7 @@ Keep this code local until retired or moved:
 These paths are compatibility and smoke scaffolding, not the target v6 runtime
 contract.
 
-## T25/T26 Result And Next Boundary
+## T25-T31 Result And Next Boundary
 
 `SDW-V6RT-T25 kafs-v6 inspection admission migration` moved the read-only v6
 inspection acceptance path behind `kafs-v6`.
@@ -149,6 +151,33 @@ superblock only, requires descriptor-backed bitmap / inode / allocator / HRL
 mapping, and validates that legacy contiguous `c_blkmasktbl` / `c_inotbl`
 views are not present. The journal meta-delta bitmap overlay remains a v4/v5
 contiguous-table optimization and is disabled for v6 contexts.
+
+`SDW-V6RT-T29` seals the v6 worker-policy boundary. The successful v6 runtime
+context now validates that pending worker, tombstone GC worker, background dedup
+worker, and hotplug delegation stay disabled, including after controlled-write
+journal init. Future shared runtime helpers must preserve that policy explicitly
+instead of inheriting generic v5 worker setup.
+
+`SDW-V6RT-T30` extracts v6 image open and superblock validation into
+`kafs_v6_runtime_open_context_image()`. The helper remains v6-only for now:
+it owns inspection vs. controlled-write open flags, `c_fd` setup, search cursor
+initialization, superblock read, magic / format checks, and fd cleanup on
+failure. This narrows the `KAFS_V6_ENTRYPOINT` bridge without creating another
+user-facing executable or expanding the v6 write surface.
+
+`SDW-V6RT-T31` extracts the next successful `kafs-v6` runtime boundary without
+changing the product link surface. `kafs_v6_admission.h` owns the shared
+descriptor-backed preflight/runtime admission core for `kafs-v6` and legacy
+production `kafs` diagnostic scaffolding. `kafs_v6_runtime.c` owns the
+`kafs-v6` mode state/messages, diag setup, and controlled-write journal service
+init. The reusable context invariants live in `kafs_context.h`, so production
+`kafs` can keep diagnostic scaffolding without linking `kafs_v6_runtime.c` or
+gaining a successful v6 runtime admission path.
+
+The next slice should reduce the remaining common-object bridge around shared
+FUSE operation/runtime mechanics or retire legacy `kafs` v6 diagnostic
+scaffolding after operator workflows no longer depend on it. Do not add another
+runtime executable and do not broaden the controlled-write surface.
 
 ## Validation Standard
 
