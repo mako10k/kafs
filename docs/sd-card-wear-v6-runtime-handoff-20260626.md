@@ -5,8 +5,8 @@
 This handoff covers the Post-Phase 5 format v6 runtime mount enablement work.
 It was originally written after `SDW-V6RT-T13 v6 controlled write durability and
 fallback hardening` and is now updated through the 2026-07-03 runtime open
-helper extraction, runtime admission/service helper extraction, and entrypoint
-request policy reporter extraction closeout.
+helper extraction, runtime admission/service helper extraction, entrypoint
+request policy reporter extraction, and v6 FUSE bridge API narrowing closeout.
 
 Committed implementation checkpoints:
 
