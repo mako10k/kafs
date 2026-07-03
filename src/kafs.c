@@ -13438,6 +13438,43 @@ static int kafs_main_cleanup(kafs_context_t *ctx, char *hotplug_uds_path, int rc
 }
 
 #ifdef KAFS_V6_ENTRYPOINT
+static void kafs_v6_entrypoint_request_from_options(kafs_v6_runtime_request_t *req,
+                                                    const kafs_main_options_t *opts,
+                                                    kafs_bool_t controlled_write_mount)
+{
+  kafs_v6_runtime_request_init(req);
+  req->mode = controlled_write_mount ? KAFS_V6_RUNTIME_MODE_CONTROLLED_WRITE
+                                     : KAFS_V6_RUNTIME_MODE_INSPECTION;
+  req->legacy_mode_token_seen =
+      opts->v6_inspection_mount == KAFS_TRUE || opts->v6_write_mount == KAFS_TRUE;
+  req->hotplug_requested =
+      opts->hotplug_uds_opt[0] != '\0' || opts->hotplug_back_bin_opt[0] != '\0';
+  req->mount_read_only_requested = opts->mount_read_only_requested == KAFS_TRUE;
+  req->mount_read_only_seen = opts->mount_read_only_seen == KAFS_TRUE;
+  req->mount_read_write_requested = opts->mount_read_write_requested == KAFS_TRUE;
+  req->no_writeback_cache_requested =
+      opts->writeback_cache_explicit == KAFS_TRUE && opts->writeback_cache_enabled == KAFS_FALSE;
+  req->writeback_cache_enabled = opts->writeback_cache_enabled == KAFS_TRUE;
+  req->writeback_cache_explicit = opts->writeback_cache_explicit == KAFS_TRUE;
+  req->no_trim_on_free_requested =
+      opts->trim_on_free_explicit == KAFS_TRUE && opts->trim_on_free_enabled == KAFS_FALSE;
+  req->trim_on_free_enabled = opts->trim_on_free_enabled == KAFS_TRUE;
+  req->bg_dedup_scan_off_requested = opts->bg_dedup_scan_enabled == 0u;
+  req->bg_dedup_scan_enabled = opts->bg_dedup_scan_enabled != 0u;
+  req->fsync_policy_full_requested = opts->fsync_policy == KAFS_FSYNC_POLICY_FULL;
+  req->fsync_policy_other_requested = opts->fsync_policy != KAFS_FSYNC_POLICY_JOURNAL_ONLY &&
+                                      opts->fsync_policy != KAFS_FSYNC_POLICY_FULL;
+  req->fsync_policy = opts->fsync_policy;
+}
+
+static int kafs_v6_entrypoint_validate_runtime_options(const kafs_main_options_t *opts,
+                                                       kafs_bool_t controlled_write_mount)
+{
+  kafs_v6_runtime_request_t req;
+  kafs_v6_entrypoint_request_from_options(&req, opts, controlled_write_mount);
+  return kafs_v6_runtime_report_entrypoint_request(&req, stderr);
+}
+
 static int kafs_v6_entrypoint_open_runtime_context(kafs_context_t *ctx, const char *image_path,
                                                    kafs_bool_t controlled_write_mount)
 {
@@ -13480,8 +13517,6 @@ static int kafs_v6_mount_main_common(const char *image_path, const char *mountpo
   kafs_main_options_t opts;
   kafs_main_options_init(&opts);
   opts.image_path = image_path;
-  opts.v6_inspection_mount = controlled_write_mount ? KAFS_FALSE : KAFS_TRUE;
-  opts.v6_write_mount = controlled_write_mount ? KAFS_TRUE : KAFS_FALSE;
 
   char *argv_clean[argc_extra + 3];
   int argc_clean = 0;
@@ -13491,23 +13526,10 @@ static int kafs_v6_mount_main_common(const char *image_path, const char *mountpo
     argv_clean[argc_clean++] = argv_extra[i];
 
   if (kafs_main_filter_mount_options(&opts, argv_clean, &argc_clean) != 0 ||
-      kafs_main_validate_options(&opts) != 0)
+      kafs_main_validate_pending_options(&opts) != 0 ||
+      kafs_main_validate_bg_dedup_options(&opts) != 0 ||
+      kafs_v6_entrypoint_validate_runtime_options(&opts, controlled_write_mount) != 0)
     return 2;
-  if (!controlled_write_mount && opts.mount_read_write_requested)
-  {
-    fprintf(stderr, "kafs-v6 inspection mount does not allow -o rw.\n");
-    return 2;
-  }
-  if (controlled_write_mount &&
-      (!opts.mount_read_write_requested || opts.mount_read_only_seen || opts.v6_inspection_mount ||
-       opts.writeback_cache_enabled || !opts.trim_on_free_explicit || opts.trim_on_free_enabled ||
-       opts.bg_dedup_scan_enabled || opts.fsync_policy != KAFS_FSYNC_POLICY_FULL))
-  {
-    fprintf(stderr,
-            "kafs-v6 controlled write mount requires "
-            "-o rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full.\n");
-    return 2;
-  }
 
   static kafs_context_t ctx;
   static char mnt_abs[PATH_MAX];

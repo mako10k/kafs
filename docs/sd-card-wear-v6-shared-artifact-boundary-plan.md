@@ -1,7 +1,7 @@
 # KAFS format v6 shared artifact boundary plan
 
 Date: 2026-07-03
-Status: accepted; runtime admission/service helper extraction reflected
+Status: accepted; entrypoint request policy reporter extraction reflected
 
 ## Purpose
 
@@ -106,7 +106,7 @@ Keep this code local until retired or moved:
 These paths are compatibility and smoke scaffolding, not the target v6 runtime
 contract.
 
-## T25-T31 Result And Next Boundary
+## T25-T32 Result And Next Boundary
 
 `SDW-V6RT-T25 kafs-v6 inspection admission migration` moved the read-only v6
 inspection acceptance path behind `kafs-v6`.
@@ -173,6 +173,13 @@ production `kafs` diagnostic scaffolding. `kafs_v6_runtime.c` owns the
 init. The reusable context invariants live in `kafs_context.h`, so production
 `kafs` can keep diagnostic scaffolding without linking `kafs_v6_runtime.c` or
 gaining a successful v6 runtime admission path.
+
+`SDW-V6RT-T32` moves the `kafs-v6` runtime request rejection reporter into
+`kafs_v6_runtime.c`. The standalone `kafs-v6` parser and the
+`KAFS_V6_ENTRYPOINT` bridge now consume the same
+`kafs_v6_runtime_request_t` validation/reporting contract, and the bridge no
+longer carries local inspection / controlled-write option policy checks.
+Production `kafs` keeps its legacy v6 fail-closed validation local.
 
 The next slice should reduce the remaining common-object bridge around shared
 FUSE operation/runtime mechanics or retire legacy `kafs` v6 diagnostic

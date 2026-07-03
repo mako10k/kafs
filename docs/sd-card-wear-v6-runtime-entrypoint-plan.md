@@ -1,7 +1,7 @@
 # KAFS format v6 runtime entrypoint plan
 
 Date: 2026-07-03
-Status: runtime admission/service helper extraction implemented
+Status: entrypoint request policy reporter extraction implemented
 
 ## Boundary
 
@@ -111,6 +111,19 @@ while preserving the production `kafs` link surface:
   diagnostic scaffolding uses the shared context helpers without becoming a
   successful v6 runtime entrypoint.
 
+T32 moved the entrypoint request policy reporter into the v6 runtime helper:
+
+- `kafs_v6_runtime_print_validation_error()` and
+  `kafs_v6_runtime_report_entrypoint_request()` now own the `kafs-v6`
+  admission rejection wording for runtime request validation;
+- the standalone `kafs-v6` parser and the `KAFS_V6_ENTRYPOINT` bridge both use
+  the same request reporter;
+- the bridge builds a `kafs_v6_runtime_request_t` from filtered mount options
+  and no longer carries ad hoc inspection / controlled-write option policy
+  checks;
+- production `kafs` keeps its legacy v6 validation and fail-closed guidance
+  local to `kafs.c`.
+
 The remaining pureification pressure points are:
 
 - removal or retirement plan for legacy v6 diagnostic scaffolding in `kafs`
@@ -147,9 +160,11 @@ remaining shared FUSE runtime setup. T31 moves the shared descriptor-backed
 admission core into `kafs_v6_admission.h`, and moves `kafs-v6` mode state, diag
 setup, and controlled-write journal service setup behind `kafs_v6_runtime.c`.
 The reusable invariants remain in `kafs_context.h`, so production `kafs` does
-not gain a `kafs_v6_runtime.c` link. Later slices can replace the common-object
-bridge with a non-installed static archive or narrower runtime context / FUSE
-operation helpers.
+not gain a `kafs_v6_runtime.c` link. T32 moves the entrypoint request rejection
+reporter into `kafs_v6_runtime.c` and makes the bridge consume the same
+`kafs_v6_runtime_request_t` validation contract as the standalone `kafs-v6`
+parser. Later slices can replace the common-object bridge with a non-installed
+static archive or narrower runtime context / FUSE operation helpers.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).

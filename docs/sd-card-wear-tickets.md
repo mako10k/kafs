@@ -1179,6 +1179,42 @@
   - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` は all 28 tests passed、1 test not run で
     完了した。SKIP は `stress_fs` で、ログ上は FUSE mount failure によるもの。
 
+### SDW-V6RT-T32 v6 entrypoint request policy reporter extraction
+
+- 目的: `KAFS_V6_ENTRYPOINT` bridge に残っていた `kafs-v6` 固有の inspection /
+  controlled-write mount option policy check と rejection wording を `kafs_v6_runtime.c`
+  側の request helper へ移し、standalone `kafs-v6` parser と bridge の admission policy を
+  同じ `kafs_v6_runtime_request_t` contract に揃える。これは pureification slice であり、
+  write surface expansion ではない。
+- 変更:
+  - `kafs_v6_runtime_print_validation_error()` と
+    `kafs_v6_runtime_report_entrypoint_request()` を追加し、`kafs-v6` runtime request の
+    validation と rejection wording を v6 runtime helper に集約する。
+  - `src/kafs_v6.c` の static rejection reporter を削除し、standalone `kafs-v6` parser は
+    `kafs_v6_runtime_report_entrypoint_request()` を呼ぶ。
+  - `src/kafs.c` の `KAFS_V6_ENTRYPOINT` bridge は filtered mount options から
+    `kafs_v6_runtime_request_t` を組み立て、v6 runtime helper で検証する。
+  - bridge から local inspection / controlled-write option policy check を削除した。production
+    `kafs` の legacy v6 validation / fail-closed guidance は引き続き `kafs.c` に残す。
+- 完了条件:
+  - `kafs-v6 --inspection-mount` / `--controlled-write-mount` の T25/T26 acceptance behavior が維持される。
+  - invalid `kafs-v6` request の rejection wording は既存 smoke 期待を維持する。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - `./scripts/format.sh fix`、`git diff --check`、`./scripts/test-cli-surface.sh`、`make -j2`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`make check -j2` が PASS している。
+- 実装結果:
+  - `kafs-v6` standalone parser と `KAFS_V6_ENTRYPOINT` bridge は、同じ
+    `kafs_v6_runtime_report_entrypoint_request()` 経由で runtime request を検証する。
+  - bridge の local inspection / controlled-write option policy check は削除した。
+  - production `kafs` の legacy v6 fail-closed validation は `kafs.c` に残り、write surface は広げていない。
+- 検証:
+  - `./scripts/format.sh fix`、`make -j2`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `git diff --check`、`./scripts/test-cli-surface.sh`、`./scripts/clones.sh`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+  - clone strict source gate は 36 clones / 353 duplicated lines / 0.96% で閾値内だった。
+  - `make check` は all 28 tests passed、1 test not run。SKIP は `stress_fs` で、
+    ログ上は FUSE mount failure によるもの。
+
 ---
 
 ## 最初に着手するチケット

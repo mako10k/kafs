@@ -5,7 +5,8 @@
 This handoff covers the Post-Phase 5 format v6 runtime mount enablement work.
 It was originally written after `SDW-V6RT-T13 v6 controlled write durability and
 fallback hardening` and is now updated through the 2026-07-03 runtime open
-helper extraction and runtime admission/service helper extraction closeout.
+helper extraction, runtime admission/service helper extraction, and entrypoint
+request policy reporter extraction closeout.
 
 Committed implementation checkpoints:
 
@@ -111,6 +112,10 @@ Additional closeout after the original handoff:
   controlled-write journal service setup into `kafs_v6_runtime.c`, while
   keeping reusable invariants in `kafs_context.h` so production `kafs` does not
   link `kafs_v6_runtime.c`.
+- T32 moves the `kafs-v6` runtime request rejection reporter into
+  `kafs_v6_runtime.c`; standalone `kafs-v6` and the `KAFS_V6_ENTRYPOINT`
+  bridge now share the same `kafs_v6_runtime_request_t` validation/reporting
+  contract.
 
 ## 2026-07-02 closeout
 
@@ -254,6 +259,43 @@ Current T31 boundary:
 - Production `kafs` still does not link `kafs_v6_runtime.c`, and legacy v6
   mount tokens remain fail-closed with `kafs-v6` guidance.
 
+## 2026-07-03 T32 validation
+
+Commands completed successfully:
+
+```sh
+./scripts/format.sh fix
+make -j2
+make -C tests check TESTS=v6_descriptor_smoketest
+git diff --check
+./scripts/test-cli-surface.sh
+./scripts/clones.sh
+./scripts/static-checks.sh
+KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2
+```
+
+Current T32 boundary:
+
+- `kafs_v6_runtime_print_validation_error()` and
+  `kafs_v6_runtime_report_entrypoint_request()` own the `kafs-v6` runtime
+  request rejection wording.
+- `src/kafs_v6.c` and the `KAFS_V6_ENTRYPOINT` bridge both call the shared v6
+  runtime request reporter.
+- The bridge no longer has local inspection / controlled-write mount option
+  policy checks; production `kafs` keeps its legacy v6 fail-closed validation
+  local.
+
+Validation result:
+
+- `./scripts/clones.sh` strict source gate reported 36 clones, 353 duplicated
+  lines, 0.96%, which remains below the configured threshold. The tests clone
+  report remains informational.
+- `./scripts/static-checks.sh` completed format, lint, clone, and complexity
+  checks successfully. Complexity warnings remain report-only.
+- `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` completed with all 28 tests
+  passed and 1 test not run. The skipped test was `stress_fs`, whose log says
+  mount failed and was skipped, likely due to missing FUSE permissions.
+
 ## Original validation run
 
 Commands completed successfully:
@@ -291,9 +333,8 @@ block this closeout.
 
 ## Current next boundary
 
-The next boundary remains v6 runtime pureification after the runtime
-admission/service helper slice. Do not broaden the v6 write surface as the next
-step.
+The next boundary remains v6 runtime pureification after the entrypoint request
+policy reporter slice. Do not broaden the v6 write surface as the next step.
 
 Start from the pressure points recorded in
 [sd-card-wear-v6-runtime-entrypoint-plan.md](sd-card-wear-v6-runtime-entrypoint-plan.md):

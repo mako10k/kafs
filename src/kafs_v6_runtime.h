@@ -61,6 +61,8 @@ int kafs_v6_runtime_validate_kafs_request(const kafs_v6_runtime_request_t *req,
                                           kafs_v6_runtime_validation_reason_t *reason_out);
 int kafs_v6_runtime_validate_entrypoint_request(const kafs_v6_runtime_request_t *req,
                                                 kafs_v6_runtime_validation_reason_t *reason_out);
+void kafs_v6_runtime_print_validation_error(kafs_v6_runtime_validation_reason_t reason, FILE *err);
+int kafs_v6_runtime_report_entrypoint_request(const kafs_v6_runtime_request_t *req, FILE *err);
 int kafs_v6_runtime_check_image_format(const char *image_path, uint32_t expected_format, FILE *err,
                                        const char *tool_name);
 int kafs_v6_runtime_open_context_image(kafs_context_t *ctx, const char *image_path,

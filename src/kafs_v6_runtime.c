@@ -112,6 +112,62 @@ int kafs_v6_runtime_validate_entrypoint_request(const kafs_v6_runtime_request_t 
   return kafs_v6_runtime_valid(reason_out);
 }
 
+void kafs_v6_runtime_print_validation_error(kafs_v6_runtime_validation_reason_t reason, FILE *err)
+{
+  if (!err)
+    err = stderr;
+
+  switch (reason)
+  {
+  case KAFS_V6_RUNTIME_INVALID_NO_MODE:
+    fprintf(err, "kafs-v6 requires --inspection-mount or --controlled-write-mount.\n");
+    return;
+  case KAFS_V6_RUNTIME_INVALID_LEGACY_MODE_TOKEN:
+    fprintf(err, "kafs-v6 owns the v6 runtime mode; do not pass legacy v6_* mount options.\n");
+    return;
+  case KAFS_V6_RUNTIME_INVALID_HOTPLUG:
+    fprintf(err, "kafs-v6 does not admit hotplug delegated write options.\n");
+    return;
+  case KAFS_V6_RUNTIME_INVALID_INSPECTION_NEEDS_RO:
+    fprintf(err, "kafs-v6 inspection mode requires -o ro and does not allow -o rw.\n");
+    return;
+  case KAFS_V6_RUNTIME_INVALID_INSPECTION_WRITEBACK_CACHE:
+    fprintf(err, "kafs-v6 inspection mode does not allow writeback_cache.\n");
+    return;
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_RO:
+    fprintf(err, "kafs-v6 controlled write mode does not allow -o ro.\n");
+    return;
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_UNSAFE_WRITEBACK:
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_UNSAFE_TRIM:
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_UNSAFE_BG_DEDUP:
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_UNSAFE_FSYNC:
+    fprintf(err, "kafs-v6 controlled write mode rejected unsafe mount options.\n");
+    return;
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_NEEDS_RW:
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_NEEDS_NO_WRITEBACK:
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_NEEDS_NO_TRIM:
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_NEEDS_BG_OFF:
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_NEEDS_FSYNC_FULL:
+    fprintf(err, "kafs-v6 controlled write mode requires "
+                 "-o rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full.\n");
+    return;
+  case KAFS_V6_RUNTIME_VALID:
+  case KAFS_V6_RUNTIME_INVALID_CONTROLLED_WITH_INSPECTION:
+  default:
+    fprintf(err, "kafs-v6 rejected invalid v6 runtime admission options.\n");
+    return;
+  }
+}
+
+int kafs_v6_runtime_report_entrypoint_request(const kafs_v6_runtime_request_t *req, FILE *err)
+{
+  kafs_v6_runtime_validation_reason_t reason = KAFS_V6_RUNTIME_VALID;
+  int rc = kafs_v6_runtime_validate_entrypoint_request(req, &reason);
+  if (rc != 0)
+    kafs_v6_runtime_print_validation_error(reason, err);
+  return rc;
+}
+
 static int kafs_v6_runtime_read_superblock_fd(int fd, kafs_ssuperblock_t *sbdisk,
                                               int *saved_errno_out, int *short_read_out)
 {
