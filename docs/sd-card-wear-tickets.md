@@ -1522,6 +1522,44 @@
     `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
     `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
 
+### SDW-V6RT-T42 shared FUSE runner API split
+
+- 目的: T40/T41 後も `kafs_v6_entrypoint_adapter.h` に残っていた shared FUSE runner hook を
+  adapter API から分離し、`kafs.c` が実装する共通 FUSE 実行境界を専用ヘッダで表す。
+  これは common-object adapter pureification slice であり、write surface expansion ではない。
+- 変更:
+  - `src/kafs_shared_fuse_runner.h` を追加し、shared FUSE runner handoff と runtime option
+    summary を所有させる。
+  - `src/kafs_v6_entrypoint_adapter.h` から shared runner option struct と
+    `kafs_v6_entrypoint_adapter_run_shared_fuse()` 宣言を削除し、adapter header を
+    v6 entrypoint adapter API に集中させる。
+  - `src/kafs_v6_entrypoint_adapter.c` は `kafs_shared_fuse_run()` を呼び、shared runner
+    hook の名前空間を adapter から切り離す。
+  - `src/kafs.c` の `KAFS_V6_ENTRYPOINT` ブロックは `kafs_shared_fuse_run()` を実装し、
+    `fuse_main()` / `kafs_operations` / cleanup path への接続を保持する。
+- 完了条件:
+  - `kafs_v6_entrypoint_adapter.h` は `kafs-v6` mount-main adapter API だけを公開し、
+    `kafs.c` 実装の shared runner hook を所有しない。
+  - shared FUSE operation implementation と operation table は `src/kafs.c` に残す。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、
+    `git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS している。
+- 実装結果:
+  - `src/kafs_shared_fuse_runner.h` に shared runner handoff と runtime option summary を
+    切り出した。
+  - `src/kafs_v6_entrypoint_adapter.h` は adapter-local mode/options と mount-main API だけを
+    公開するようにした。
+  - `src/kafs.c` は `kafs_shared_fuse_run()` だけを v6 adapter 向けに公開し、shared FUSE
+    operation implementation と operation table は引き続き `src/kafs.c` に残した。
+  - write surface と production `kafs` の v6 fail-closed boundary は変更していない。
+- 検証:
+  - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、
+    `git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+
 ---
 
 ## 最初に着手するチケット

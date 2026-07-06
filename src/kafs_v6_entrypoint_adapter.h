@@ -41,14 +41,6 @@ typedef struct kafs_v6_entrypoint_adapter_options
   uint32_t fsync_policy;
 } kafs_v6_entrypoint_adapter_options_t;
 
-typedef struct kafs_v6_entrypoint_adapter_fuse_options
-{
-  kafs_bool_t writeback_cache_enabled;
-  kafs_bool_t writeback_cache_explicit;
-  kafs_bool_t trim_on_free_enabled;
-  kafs_bool_t trim_on_free_explicit;
-} kafs_v6_entrypoint_adapter_fuse_options_t;
-
 int kafs_v6_entrypoint_adapter_validate_options(const kafs_v6_entrypoint_adapter_options_t *opts,
                                                 FILE *err);
 int kafs_v6_entrypoint_adapter_open_context(kafs_context_t *ctx, const char *image_path,
@@ -57,12 +49,3 @@ int kafs_v6_entrypoint_adapter_mount_main(const char *image_path, const char *mo
                                           int argc_extra, char **argv_extra,
                                           const kafs_v6_entrypoint_adapter_options_t *opts,
                                           FILE *err);
-
-/*
- * Implemented by kafs.c under KAFS_V6_ENTRYPOINT. The adapter owns v6
- * entrypoint preparation; kafs.c owns the shared FUSE operation table and
- * cleanup path.
- */
-int kafs_v6_entrypoint_adapter_run_shared_fuse(
-    kafs_context_t *ctx, int argc_fuse, char **argv_fuse,
-    const kafs_v6_entrypoint_adapter_fuse_options_t *opts);

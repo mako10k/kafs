@@ -221,6 +221,15 @@ T41 separates v6 mount option policy from mount-main orchestration:
   image locking, FUSE argv assembly, and shared-runner handoff, but no longer
   carries the v6 option vocabulary.
 
+T42 separates the shared FUSE runner hook from the v6 adapter API:
+
+- `kafs_shared_fuse_runner.h` owns the narrow internal handoff to the shared
+  `fuse_main()` / `kafs_operations` runner still implemented in `kafs.c`;
+- `kafs_v6_entrypoint_adapter.h` now exposes only adapter-local mode/options,
+  validation/open helpers, and `kafs_v6_entrypoint_adapter_mount_main()`;
+- `kafs_v6_entrypoint_adapter.c` calls `kafs_shared_fuse_run()` instead of
+  publishing a runner hook in the adapter namespace.
+
 The remaining pureification pressure points are:
 
 - removal or retirement plan for legacy v6 diagnostic scaffolding in `kafs`
@@ -283,8 +292,11 @@ lock, and FUSE argv assembly into the adapter; `kafs.c` keeps the shared
 `fuse_main()` / `kafs_operations` runner and cleanup wrapper. T41 moves v6
 option interpretation and FUSE passthrough filtering from the adapter into
 `kafs_v6_mount_options.[ch]`, leaving the adapter with orchestration and argv
-assembly only. Later slices can replace the common-object adapter path with a
-non-installed static archive or narrower shared FUSE operation helpers.
+assembly only. T42 moves the runner hook declaration and runtime option summary
+out of the adapter header into `kafs_shared_fuse_runner.h`, so the adapter API
+no longer appears to own a `kafs.c`-implemented shared runner. Later slices can
+replace the common-object adapter path with a non-installed static archive or
+narrower shared FUSE operation helpers.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).

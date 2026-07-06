@@ -12,10 +12,10 @@
 #include "kafs_rpc.h"
 #include "kafs_core.h"
 #include "kafs_crash_diag.h"
+#include "kafs_shared_fuse_runner.h"
 #include "kafs_tailmeta.h"
 #include "kafs_v6_admission.h"
 #include "kafs_v6_fuse_policy.h"
-#include "kafs_v6_entrypoint_adapter.h"
 
 #include <fuse.h>
 #include <fuse_log.h>
@@ -13443,9 +13443,8 @@ static int kafs_main_run_fuse(kafs_context_t *ctx, int argc_fuse, char **argv_fu
 #endif
 
 #ifdef KAFS_V6_ENTRYPOINT
-int kafs_v6_entrypoint_adapter_run_shared_fuse(
-    kafs_context_t *ctx, int argc_fuse, char **argv_fuse,
-    const kafs_v6_entrypoint_adapter_fuse_options_t *opts)
+int kafs_shared_fuse_run(kafs_context_t *ctx, int argc_fuse, char **argv_fuse,
+                         const kafs_shared_fuse_runtime_options_t *opts)
 {
   if (opts)
     kafs_main_log_runtime_options(ctx, opts->writeback_cache_enabled,

@@ -2,6 +2,7 @@
 
 #include "kafs_inode.h"
 #include "kafs_rpc.h"
+#include "kafs_shared_fuse_runner.h"
 #include "kafs_v6_mount_options.h"
 #include "kafs_v6_runtime.h"
 
@@ -223,10 +224,9 @@ static void kafs_v6_entrypoint_adapter_build_fuse_argv(char **argv_clean, int ar
   argv_fuse[*argc_fuse] = NULL;
 }
 
-static void
-kafs_v6_entrypoint_adapter_fuse_options_from_mount(kafs_v6_entrypoint_adapter_fuse_options_t *out,
-                                                   const kafs_context_t *ctx,
-                                                   const kafs_v6_entrypoint_adapter_options_t *opts)
+static void kafs_v6_entrypoint_adapter_shared_options_from_mount(
+    kafs_shared_fuse_runtime_options_t *out, const kafs_context_t *ctx,
+    const kafs_v6_entrypoint_adapter_options_t *opts)
 {
   memset(out, 0, sizeof(*out));
   out->writeback_cache_enabled = opts->writeback_cache_enabled ? KAFS_TRUE : KAFS_FALSE;
@@ -333,9 +333,9 @@ int kafs_v6_entrypoint_adapter_mount_main(const char *image_path, const char *mo
                                              mt_opt_buf, sizeof(mt_opt_buf));
   argc_fuse = kafs_v6_entrypoint_adapter_append_readonly_arg(&ctx, argv_fuse, argc_fuse);
 
-  kafs_v6_entrypoint_adapter_fuse_options_t fuse_opts;
-  kafs_v6_entrypoint_adapter_fuse_options_from_mount(&fuse_opts, &ctx, opts);
-  int rc = kafs_v6_entrypoint_adapter_run_shared_fuse(&ctx, argc_fuse, argv_fuse, &fuse_opts);
+  kafs_shared_fuse_runtime_options_t fuse_opts;
+  kafs_v6_entrypoint_adapter_shared_options_from_mount(&fuse_opts, &ctx, opts);
+  int rc = kafs_shared_fuse_run(&ctx, argc_fuse, argv_fuse, &fuse_opts);
   kafs_v6_mount_options_free_owned(owned, owned_count);
   return rc;
 }

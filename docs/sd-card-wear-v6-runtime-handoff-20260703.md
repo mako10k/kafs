@@ -65,6 +65,10 @@ Commits queued for push before this handoff doc commit:
   `src/kafs_v6_entrypoint_adapter.c` uses it for FUSE passthrough filtering and
   `multi_thread` / `max_threads` handoff instead of carrying its own token
   vocabulary.
+- T42 separated the shared FUSE runner hook into `src/kafs_shared_fuse_runner.h`.
+  `src/kafs_v6_entrypoint_adapter.h` now exposes only adapter-local state and
+  mount-main APIs, while `src/kafs.c` implements `kafs_shared_fuse_run()` for
+  the remaining common-object handoff into `fuse_main()` / `kafs_operations`.
 - Shared FUSE operation implementations and the operation table remain in
   `src/kafs.c`.
 - The controlled-write surface was not expanded.
@@ -73,12 +77,12 @@ Commits queued for push before this handoff doc commit:
   `make -C tests check TESTS=v6_descriptor_smoketest`,
   `./scripts/static-checks.sh`, and
   `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`; `make check` reported all
-  29 tests passed for the T34, T35, T36, T37, T38, T39, T40, and T41 validation
-  runs.
+  29 tests passed for the T34, T35, T36, T37, T38, T39, T40, T41, and T42
+  validation runs.
 
 ## Validation
 
-Latest completed validation for T41:
+Latest completed validation for T42:
 
 ```sh
 ./scripts/format.sh fix
@@ -121,8 +125,8 @@ Continue v6 runtime pureification without broadening the write surface.
 Recommended next slice:
 
 - continue reducing the remaining `KAFS_V6_ENTRYPOINT` common-object adapter
-  around shared FUSE operation implementations after the T40/T41 mount-main and
-  option-policy split,
+  around shared FUSE operation implementations after the T40/T41/T42
+  mount-main, option-policy, and runner-hook split,
   or
 - prepare a retirement plan for legacy v6 diagnostic scaffolding in production
   `kafs` after operator workflows no longer depend on it.
