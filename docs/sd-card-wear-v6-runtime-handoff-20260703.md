@@ -41,21 +41,21 @@ Commits queued for push before this handoff doc commit:
   `src/kafs_v6_fuse_policy.h`.
 - T35 moved condition-gated controlled-write rejection and regular-file-only
   write checks behind the same v6 FUSE policy helper boundary.
+- T36 moved the remaining direct controlled-write active checks in shared
+  write/fsync/release paths behind named v6 FUSE policy helpers.
 - Shared FUSE operation implementations and the operation table remain in
   `src/kafs.c`.
 - The controlled-write surface was not expanded.
 - Validation completed on 2026-07-06 with `make -j2`,
-  `make -C tests check TESTS=v6_descriptor_smoketest`,
-  `./scripts/static-checks.sh`, and
   `./scripts/test-cli-surface.sh`,
   `make -C tests check TESTS=v6_descriptor_smoketest`,
   `./scripts/static-checks.sh`, and
   `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`; `make check` reported all
-  29 tests passed for both T34 and T35 validation runs.
+  29 tests passed for the T34, T35, and T36 validation runs.
 
 ## Validation
 
-Latest completed validation for T35:
+Latest completed validation for T36:
 
 ```sh
 ./scripts/format.sh fix
@@ -96,8 +96,8 @@ Continue v6 runtime pureification without broadening the write surface.
 Recommended next slice:
 
 - continue reducing the remaining `KAFS_V6_ENTRYPOINT` common-object bridge
-  around shared FUSE operation implementations after the T35 entry-gate helper
-  extraction, or
+  around shared FUSE operation implementations after the T36 data-layout policy
+  helper extraction, or
 - prepare a retirement plan for legacy v6 diagnostic scaffolding in production
   `kafs` after operator workflows no longer depend on it.
 

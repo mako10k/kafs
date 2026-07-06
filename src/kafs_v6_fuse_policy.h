@@ -39,3 +39,23 @@ static inline int kafs_v6_controlled_write_require_regular_write(const kafs_cont
 
   return -EOPNOTSUPP;
 }
+
+static inline int kafs_v6_controlled_write_preserve_zero_block(const kafs_context_t *ctx)
+{
+  return kafs_v6_controlled_write_active(ctx);
+}
+
+static inline int kafs_v6_controlled_write_skip_tail_layout(const kafs_context_t *ctx)
+{
+  return kafs_v6_controlled_write_active(ctx);
+}
+
+static inline int kafs_v6_controlled_write_skip_release_reclaim(const kafs_context_t *ctx)
+{
+  return kafs_v6_controlled_write_active(ctx);
+}
+
+static inline int kafs_v6_controlled_write_use_local_write_path(const kafs_context_t *ctx)
+{
+  return kafs_v6_controlled_write_active(ctx);
+}

@@ -1308,6 +1308,39 @@
   - clone strict source gate は 36 clones / 353 duplicated lines / 0.96% で閾値内だった。
   - `make check` は all 29 tests passed で完了した。
 
+### SDW-V6RT-T36 v6 controlled-write data-layout policy helper extraction
+
+- 目的: shared write/fsync/release path に残る v6 controlled-write active 判定を
+  data-layout policy 名の helper へ移し、`src/kafs.c` が raw active flag を直接読まない
+  境界にする。これは operation-helper extraction slice であり、write surface expansion ではない。
+- 変更:
+  - `kafs_v6_controlled_write_preserve_zero_block()` を追加し、controlled-write で
+    zero-filled block を sparse release せず materialize する policy を明示する。
+  - `kafs_v6_controlled_write_skip_tail_layout()` を追加し、write/fsync path の v5 tail
+    metadata optimization / normalization bypass を明示する。
+  - `kafs_v6_controlled_write_skip_release_reclaim()` を追加し、release path の reclaim bypass
+    を明示する。
+  - `kafs_v6_controlled_write_use_local_write_path()` を追加し、controlled-write の local write
+    fallback selection を明示する。
+- 完了条件:
+  - `src/kafs.c` は shared FUSE operation 実装と operation table を保持するが、
+    `kafs_v6_controlled_write_active()` を直接呼ばない。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - `make -j2`、`git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS している。
+- 実装結果:
+  - `src/kafs_v6_fuse_policy.h` に data-layout policy helper を追加した。
+  - `src/kafs.c` の pwrite zero-block handling、tail layout preparation/sync、write path
+    selection、fsync preparation、release reclaim bypass を helper 呼び出しへ置換した。
+  - controlled-write write surface は広げていない。
+- 検証:
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+  - clone strict source gate は 36 clones / 353 duplicated lines / 0.96% で閾値内だった。
+  - `make check` は all 29 tests passed で完了した。
+
 ---
 
 ## 最初に着手するチケット

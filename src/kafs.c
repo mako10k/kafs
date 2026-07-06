@@ -4819,7 +4819,7 @@ static int kafs_pwrite_commit_block(struct kafs_context *ctx, kafs_sinode_t *ino
 
   if (kafs_ino_size_get(inoent) > KAFS_INODE_DIRECT_BYTES && kafs_blk_is_zero(buf, blksize))
   {
-    if (kafs_v6_controlled_write_active(ctx))
+    if (kafs_v6_controlled_write_preserve_zero_block(ctx))
       return kafs_ino_iblk_write(ctx, inoent, iblo, buf);
     return kafs_ino_iblk_release(ctx, inoent, iblo);
   }
@@ -4876,7 +4876,7 @@ static int kafs_pwrite_prepare_tail_layout(struct kafs_context *ctx, kafs_sinode
   const kafs_sinode_taildesc_v5_t *taildesc = kafs_ctx_inode_taildesc_v5_const(ctx, inoent);
 
   *completed_out = 0;
-  if (kafs_v6_controlled_write_active(ctx))
+  if (kafs_v6_controlled_write_skip_tail_layout(ctx))
     return 0;
 
   if (taildesc &&
@@ -4953,7 +4953,7 @@ static int kafs_pwrite_extend_inode_size(struct kafs_context *ctx, kafs_sinode_t
 static void kafs_pwrite_sync_regular_taildesc(struct kafs_context *ctx, kafs_sinode_t *inoent,
                                               kafs_off_t filesize)
 {
-  if (kafs_v6_controlled_write_active(ctx))
+  if (kafs_v6_controlled_write_skip_tail_layout(ctx))
     return;
 
   if (!kafs_tailmeta_inode_is_regular_v5(ctx, inoent))
@@ -9923,7 +9923,7 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
                                             "hotplug delegated write");
   if (gate != 0)
     return gate;
-  if (kafs_v6_controlled_write_active(ctx))
+  if (kafs_v6_controlled_write_use_local_write_path(ctx))
     return kafs_op_write_fallback(ctx, path, buf, size, offset, ino);
 
   ssize_t rc_hp = kafs_hotplug_call_write(fctx, ctx, ino, buf, size, offset);
@@ -10795,7 +10795,7 @@ static uint32_t kafs_fsync_resolve_inode(struct fuse_context *fctx, struct kafs_
 
 static int kafs_fsync_prepare_inode(struct kafs_context *ctx, const char *path, uint32_t ino)
 {
-  if (kafs_v6_controlled_write_active(ctx))
+  if (kafs_v6_controlled_write_skip_tail_layout(ctx))
     return 0;
 
   kafs_inode_lock(ctx, ino);
@@ -11057,7 +11057,7 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
       (void)__atomic_sub_fetch(&ctx->c_open_cnt[ino], 1u, __ATOMIC_RELAXED);
     return kafs_op_flush(path, fi);
   }
-  if (kafs_v6_controlled_write_active(ctx))
+  if (kafs_v6_controlled_write_skip_release_reclaim(ctx))
   {
     if (ctx->c_open_cnt)
       (void)__atomic_sub_fetch(&ctx->c_open_cnt[ino], 1u, __ATOMIC_RELAXED);
