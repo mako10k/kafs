@@ -21,3 +21,21 @@ static inline int kafs_v6_controlled_write_reject(const kafs_context_t *ctx, con
            op ? op : "operation");
   return -EOPNOTSUPP;
 }
+
+static inline int kafs_v6_controlled_write_reject_if(const kafs_context_t *ctx, int condition,
+                                                     const char *op)
+{
+  if (!condition)
+    return 0;
+
+  return kafs_v6_controlled_write_reject(ctx, op);
+}
+
+static inline int kafs_v6_controlled_write_require_regular_write(const kafs_context_t *ctx,
+                                                                 int is_regular)
+{
+  if (!kafs_v6_controlled_write_active(ctx) || is_regular)
+    return 0;
+
+  return -EOPNOTSUPP;
+}

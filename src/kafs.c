@@ -8954,10 +8954,12 @@ static int kafs_op_open(const char *path, struct fuse_file_info *fi)
       (kafs_is_ctl_path(path) || accmode == O_WRONLY || accmode == O_RDWR ||
        (fi->flags & O_TRUNC) != 0))
     return -EROFS;
-  if (kafs_v6_controlled_write_active(ctx) && kafs_is_ctl_path(path))
-    return kafs_v6_controlled_write_reject(ctx, "control-plane open");
-  if (kafs_v6_controlled_write_active(ctx) && (fi->flags & O_TRUNC) != 0)
-    return kafs_v6_controlled_write_reject(ctx, "open(O_TRUNC)");
+  int gate = kafs_v6_controlled_write_reject_if(ctx, kafs_is_ctl_path(path), "control-plane open");
+  if (gate != 0)
+    return gate;
+  gate = kafs_v6_controlled_write_reject_if(ctx, (fi->flags & O_TRUNC) != 0, "open(O_TRUNC)");
+  if (gate != 0)
+    return gate;
   if (kafs_is_ctl_path(path))
   {
     if (accmode != O_RDWR)
@@ -9868,10 +9870,11 @@ static int kafs_op_write_fallback(struct kafs_context *ctx, const char *path, co
              (unsigned)mode);
     return -EISDIR;
   }
-  if (kafs_v6_controlled_write_active(ctx) && !S_ISREG(mode))
+  int gate = kafs_v6_controlled_write_require_regular_write(ctx, S_ISREG(mode));
+  if (gate != 0)
   {
     kafs_inode_unlock(ctx, (uint32_t)ino);
-    return -EOPNOTSUPP;
+    return gate;
   }
 
   kafs_diag_write_scope_t write_scope =
@@ -9903,8 +9906,9 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
   int gate = kafs_runtime_write_guard(ctx);
   if (gate != 0)
     return gate;
-  if (kafs_v6_controlled_write_active(ctx) && kafs_is_ctl_path(path))
-    return kafs_v6_controlled_write_reject(ctx, "control-plane write");
+  gate = kafs_v6_controlled_write_reject_if(ctx, kafs_is_ctl_path(path), "control-plane write");
+  if (gate != 0)
+    return gate;
   if (kafs_is_ctl_path(path))
     return kafs_op_write_ctl(ctx, fi, buf, size, offset);
   kafs_inocnt_t ino = fi->fh;
@@ -9915,8 +9919,10 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
     if (!fctx || fctx->pid != 0)
       return -EACCES;
   }
-  if (kafs_v6_controlled_write_active(ctx) && ctx->c_hotplug_active)
-    return kafs_v6_controlled_write_reject(ctx, "hotplug delegated write");
+  gate = kafs_v6_controlled_write_reject_if(ctx, ctx && ctx->c_hotplug_active,
+                                            "hotplug delegated write");
+  if (gate != 0)
+    return gate;
   if (kafs_v6_controlled_write_active(ctx))
     return kafs_op_write_fallback(ctx, path, buf, size, offset, ino);
 

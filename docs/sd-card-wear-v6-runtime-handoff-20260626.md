@@ -369,6 +369,38 @@ Validation result:
 - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` completed with all 29 tests
   passed.
 
+## 2026-07-06 T35 validation
+
+Commands completed successfully:
+
+```sh
+./scripts/format.sh fix
+make -j2
+git diff --check
+./scripts/test-cli-surface.sh
+make -C tests check TESTS=v6_descriptor_smoketest
+./scripts/static-checks.sh
+KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2
+```
+
+Current T35 boundary:
+
+- `kafs_v6_fuse_policy.h` owns condition-gated v6 controlled-write rejection
+  and regular-file-only write checks for shared FUSE operation entry points.
+- `src/kafs.c` still owns the shared FUSE operation implementations and table,
+  but control-plane open/write, `open(O_TRUNC)`, hotplug delegated write, and
+  non-regular write gates now call the v6 policy helper boundary.
+- The controlled-write write surface remains limited to regular-file
+  create/write/fsync/release.
+
+Validation result:
+
+- `./scripts/static-checks.sh` completed format, lint, clone, and complexity
+  checks successfully. The strict source clone report was 36 clones, 353
+  duplicated lines, 0.96%, which remains below the configured threshold.
+- `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` completed with all 29 tests
+  passed.
+
 ## Original validation run
 
 Commands completed successfully:
@@ -406,8 +438,8 @@ block this closeout.
 
 ## Current next boundary
 
-The next boundary remains v6 runtime pureification after the v6 FUSE bridge API
-narrowing slice. Do not broaden the v6 write surface as the next step.
+The next boundary remains v6 runtime pureification after the v6 FUSE entry gate
+helper extraction. Do not broaden the v6 write surface as the next step.
 
 Start from the pressure points recorded in
 [sd-card-wear-v6-runtime-entrypoint-plan.md](sd-card-wear-v6-runtime-entrypoint-plan.md):

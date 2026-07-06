@@ -1278,6 +1278,36 @@
   - clone strict source gate は 36 clones / 353 duplicated lines / 0.96% で閾値内だった。
   - `make check` は all 29 tests passed で完了した。
 
+### SDW-V6RT-T35 v6 controlled-write FUSE entry gate helper extraction
+
+- 目的: T34 で作った `kafs_v6_fuse_policy.h` 境界を、shared FUSE operation の入口 gate
+  まで広げる。これは operation-helper extraction slice であり、write surface expansion ではない。
+- 変更:
+  - `kafs_v6_controlled_write_reject_if()` を追加し、condition-gated rejection を policy
+    helper 側へ寄せる。
+  - `kafs_v6_controlled_write_require_regular_write()` を追加し、controlled-write の
+    regular-file-only write check を helper 側へ寄せる。
+  - `src/kafs.c` の control-plane open/write、`open(O_TRUNC)`、hotplug delegated write、
+    non-regular write の gate を helper 呼び出しに置き換える。
+- 完了条件:
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - shared FUSE operation 実装と operation table は `src/kafs.c` に残る。
+  - `make -j2`、`git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS している。
+- 実装結果:
+  - `src/kafs_v6_fuse_policy.h` に condition-gated rejection helper と regular-file-only
+    write helper を追加した。
+  - `src/kafs.c` の FUSE operation 入口は v6 policy condition だけを渡し、active 判定と
+    v6 allowlist-out rejection は helper 側へ寄せた。
+  - controlled-write write surface は広げていない。
+- 検証:
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+  - clone strict source gate は 36 clones / 353 duplicated lines / 0.96% で閾値内だった。
+  - `make check` は all 29 tests passed で完了した。
+
 ---
 
 ## 最初に着手するチケット
