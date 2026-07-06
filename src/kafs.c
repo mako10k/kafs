@@ -14,6 +14,7 @@
 #include "kafs_crash_diag.h"
 #include "kafs_tailmeta.h"
 #include "kafs_v6_admission.h"
+#include "kafs_v6_fuse_policy.h"
 #include "kafs_v6_mount_bridge.h"
 #include "kafs_v6_runtime.h"
 
@@ -574,7 +575,6 @@ static void kafs_tombstone_gc_worker_stop(struct kafs_context *ctx);
 static int kafs_bg_dedup_worker_start(struct kafs_context *ctx);
 static void kafs_bg_dedup_worker_stop(struct kafs_context *ctx);
 static int kafs_inode_is_tombstone(const kafs_sinode_t *inoent);
-static int kafs_v6_controlled_write_active(const kafs_context_t *ctx);
 static int kafs_try_reclaim_unlinked_inode_locked(struct kafs_context *ctx, kafs_inocnt_t ino,
                                                   int *reclaimed);
 
@@ -7519,23 +7519,6 @@ static int kafs_is_ctl_path(const char *path);
 static int kafs_runtime_write_guard(const kafs_context_t *ctx)
 {
   return (ctx && ctx->c_runtime_read_only) ? -EROFS : 0;
-}
-
-static int kafs_v6_controlled_write_active(const kafs_context_t *ctx)
-{
-  return ctx && ctx->c_v6_controlled_write_enabled;
-}
-
-static int kafs_v6_controlled_write_reject(const kafs_context_t *ctx, const char *op)
-{
-  if (!kafs_v6_controlled_write_active(ctx))
-    return 0;
-
-  kafs_log(KAFS_LOG_WARNING,
-           "kafs: format v6 controlled write mount rejects %s; initial surface is "
-           "regular-file create/write/fsync/release only\n",
-           op ? op : "operation");
-  return -EOPNOTSUPP;
 }
 
 static int kafs_mutation_path_context(const char *path, struct fuse_context **fctx_out,

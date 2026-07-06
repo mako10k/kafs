@@ -1248,6 +1248,36 @@
   - clone strict source gate は 36 clones / 353 duplicated lines / 0.96% で閾値内だった。
   - `make check` は all 29 tests passed で完了した。
 
+### SDW-V6RT-T34 v6 controlled-write FUSE policy guard extraction
+
+- 目的: `src/kafs.c` の shared FUSE operation 実装に埋まっている v6 controlled-write
+  allowlist-out rejection policy を専用ヘルパ境界へ移し、operation 実装と v6 policy の境界を
+  明示する。これは bridge pureification slice であり、write surface expansion ではない。
+- 変更:
+  - `src/kafs_v6_fuse_policy.h` を追加し、`kafs_v6_controlled_write_active()` と
+    `kafs_v6_controlled_write_reject()` を移す。
+  - `src/kafs.c` は v6 controlled-write policy guard を header 経由で参照し、FUSE operation
+    実装側には既存の guard 呼び出しだけを残す。
+  - `src/Makefile.am` の `noinst_HEADERS` に policy header を追加し、`autoreconf -fi` /
+    `./configure` でローカル生成状態を更新する。
+- 完了条件:
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - `kafs-v6` の rejection wording と v6 descriptor smoke behavior は維持される。
+  - `autoreconf -fi`、`./configure`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `make check -j2` が PASS している。
+- 実装結果:
+  - `src/kafs_v6_fuse_policy.h` を追加し、v6 controlled-write active check と rejection helper を移した。
+  - `src/kafs.c` の FUSE operation 実装は既存の `kafs_v6_controlled_write_active()` /
+    `kafs_v6_controlled_write_reject()` 呼び出しを維持し、policy 定義だけを helper header へ分離した。
+  - controlled-write write surface は広げていない。
+- 検証:
+  - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+  - clone strict source gate は 36 clones / 353 duplicated lines / 0.96% で閾値内だった。
+  - `make check` は all 29 tests passed で完了した。
+
 ---
 
 ## 最初に着手するチケット

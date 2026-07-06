@@ -1,7 +1,7 @@
 # KAFS format v6 shared artifact boundary plan
 
-Date: 2026-07-03
-Status: accepted; v6 FUSE bridge API narrowing reflected
+Date: 2026-07-06
+Status: accepted; v6 FUSE policy guard extraction reflected
 
 ## Purpose
 
@@ -106,7 +106,7 @@ Keep this code local until retired or moved:
 These paths are compatibility and smoke scaffolding, not the target v6 runtime
 contract.
 
-## T25-T33 Result And Next Boundary
+## T25-T34 Result And Next Boundary
 
 `SDW-V6RT-T25 kafs-v6 inspection admission migration` moved the read-only v6
 inspection acceptance path behind `kafs-v6`.
@@ -188,6 +188,12 @@ runtime helper contracts. `kafs_main_run_fuse()` hides the direct `fuse_main()`
 / `kafs_operations` invocation from both production `kafs` main and the
 `kafs-v6` bridge, while preserving the same cleanup path and write-surface
 policy.
+
+`SDW-V6RT-T34` extracts the v6 controlled-write FUSE policy guard into
+`kafs_v6_fuse_policy.h`. The shared FUSE operation implementations remain in
+`kafs.c`, but the v6 allowlist-out active check and rejection wording now live
+behind a dedicated policy helper. This keeps the write surface unchanged while
+making the v6 policy boundary explicit for later operation-helper extraction.
 
 The next slice should reduce the remaining common-object bridge around shared
 FUSE operation implementations or retire legacy `kafs` v6 diagnostic

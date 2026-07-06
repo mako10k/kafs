@@ -1,7 +1,7 @@
 # KAFS format v6 runtime entrypoint plan
 
-Date: 2026-07-03
-Status: v6 FUSE bridge API narrowing implemented
+Date: 2026-07-06
+Status: v6 FUSE policy guard extraction implemented
 
 ## Boundary
 
@@ -136,6 +136,15 @@ semantics:
 - the shared FUSE operation table remains in `kafs.c`; the change only
   reduces direct bridge contact with the FUSE invocation mechanics.
 
+T34 extracts the v6 controlled-write FUSE policy guard:
+
+- `kafs_v6_fuse_policy.h` owns the controlled-write active check and
+  allowlist-out rejection message used by shared FUSE operation code;
+- the shared FUSE operations still live in `kafs.c`, but they now call the
+  policy guard through a dedicated v6 FUSE policy helper;
+- the initial controlled-write surface remains regular-file
+  create/write/fsync/release only.
+
 The remaining pureification pressure points are:
 
 - removal or retirement plan for legacy v6 diagnostic scaffolding in `kafs`
@@ -178,9 +187,11 @@ reporter into `kafs_v6_runtime.c` and makes the bridge consume the same
 `kafs_v6_runtime_request_t` validation contract as the standalone `kafs-v6`
 parser. T33 moves the mount bridge declarations out of the runtime helper
 header and hides direct `fuse_main()` / `kafs_operations` invocation behind
-`kafs_main_run_fuse()`. Later slices can replace the common-object bridge with a
-non-installed static archive or narrower runtime context / FUSE operation
-helpers.
+`kafs_main_run_fuse()`. T34 moves the v6 controlled-write FUSE policy guard
+into `kafs_v6_fuse_policy.h`, leaving the shared operation implementation in
+`kafs.c` while making the policy boundary explicit. Later slices can replace
+the common-object bridge with a non-installed static archive or narrower
+runtime context / FUSE operation helpers.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).

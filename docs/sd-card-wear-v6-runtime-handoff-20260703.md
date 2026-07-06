@@ -35,6 +35,19 @@ Commits queued for push before this handoff doc commit:
   introduced `kafs_main_run_fuse()` so production `kafs` and the `kafs-v6`
   bridge share FUSE invocation/cleanup mechanics.
 
+## 2026-07-06 Continuation
+
+- T34 extracted the v6 controlled-write FUSE policy guard into
+  `src/kafs_v6_fuse_policy.h`.
+- Shared FUSE operation implementations and the operation table remain in
+  `src/kafs.c`.
+- The controlled-write surface was not expanded.
+- Validation completed on 2026-07-06 with `make -j2`,
+  `make -C tests check TESTS=v6_descriptor_smoketest`,
+  `./scripts/static-checks.sh`, and
+  `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`; `make check` reported all
+  29 tests passed.
+
 ## Validation
 
 Latest completed validation for T33:
@@ -79,8 +92,8 @@ Continue v6 runtime pureification without broadening the write surface.
 
 Recommended next slice:
 
-- reduce the remaining `KAFS_V6_ENTRYPOINT` common-object bridge around shared
-  FUSE operation implementations, or
+- continue reducing the remaining `KAFS_V6_ENTRYPOINT` common-object bridge
+  around shared FUSE operation implementations, or
 - prepare a retirement plan for legacy v6 diagnostic scaffolding in production
   `kafs` after operator workflows no longer depend on it.
 

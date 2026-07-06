@@ -120,6 +120,9 @@ Additional closeout after the original handoff:
   entrypoint declarations, `kafs_v6_runtime.h` stays focused on runtime helper
   contracts, and `kafs_main_run_fuse()` hides the direct `fuse_main()` /
   `kafs_operations` invocation behind the existing cleanup path.
+- T34 extracts the v6 controlled-write FUSE policy guard into
+  `kafs_v6_fuse_policy.h`, so shared FUSE operation implementations call an
+  explicit v6 policy helper while preserving the same write-surface boundary.
 
 ## 2026-07-02 closeout
 
@@ -324,6 +327,39 @@ Current T33 boundary:
   main and the `kafs-v6` bridge.
 - The shared FUSE operation table remains unchanged in `kafs.c`; this slice
   does not broaden controlled-write admission or the FUSE write surface.
+
+Validation result:
+
+- `./scripts/static-checks.sh` completed format, lint, clone, and complexity
+  checks successfully. The strict source clone report was 36 clones, 353
+  duplicated lines, 0.96%, which remains below the configured threshold.
+- `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` completed with all 29 tests
+  passed.
+
+## 2026-07-06 T34 validation
+
+Commands completed successfully:
+
+```sh
+./scripts/format.sh fix
+autoreconf -fi
+./configure
+make -j2
+git diff --check
+./scripts/test-cli-surface.sh
+make -C tests check TESTS=v6_descriptor_smoketest
+./scripts/static-checks.sh
+KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2
+```
+
+Current T34 boundary:
+
+- `kafs_v6_fuse_policy.h` owns the v6 controlled-write active check and
+  allowlist-out rejection helper.
+- `src/kafs.c` still owns the shared FUSE operation implementations and table,
+  but no longer defines the v6 controlled-write policy helper inline.
+- The controlled-write write surface remains limited to regular-file
+  create/write/fsync/release.
 
 Validation result:
 
