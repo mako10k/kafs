@@ -16,7 +16,6 @@
 #include "kafs_v6_admission.h"
 #include "kafs_v6_fuse_policy.h"
 #include "kafs_v6_mount_bridge.h"
-#include "kafs_v6_runtime.h"
 
 #include <fuse.h>
 #include <fuse_log.h>
@@ -13444,70 +13443,46 @@ static int kafs_main_run_fuse(kafs_context_t *ctx, int argc_fuse, char **argv_fu
 #endif
 
 #ifdef KAFS_V6_ENTRYPOINT
-static void kafs_v6_entrypoint_request_from_options(kafs_v6_runtime_request_t *req,
-                                                    const kafs_main_options_t *opts,
-                                                    kafs_bool_t controlled_write_mount)
+static kafs_v6_mount_bridge_mode_t kafs_v6_entrypoint_mode(kafs_bool_t controlled_write_mount)
 {
-  kafs_v6_runtime_request_init(req);
-  req->mode = controlled_write_mount ? KAFS_V6_RUNTIME_MODE_CONTROLLED_WRITE
-                                     : KAFS_V6_RUNTIME_MODE_INSPECTION;
-  req->legacy_mode_token_seen =
+  return controlled_write_mount ? KAFS_V6_MOUNT_BRIDGE_MODE_CONTROLLED_WRITE
+                                : KAFS_V6_MOUNT_BRIDGE_MODE_INSPECTION;
+}
+
+static void kafs_v6_entrypoint_options_from_main(kafs_v6_mount_bridge_options_t *out,
+                                                 const kafs_main_options_t *opts,
+                                                 kafs_bool_t controlled_write_mount)
+{
+  memset(out, 0, sizeof(*out));
+  out->mode = kafs_v6_entrypoint_mode(controlled_write_mount);
+  out->legacy_mode_token_seen =
       opts->v6_inspection_mount == KAFS_TRUE || opts->v6_write_mount == KAFS_TRUE;
-  req->hotplug_requested =
+  out->hotplug_requested =
       opts->hotplug_uds_opt[0] != '\0' || opts->hotplug_back_bin_opt[0] != '\0';
-  req->mount_read_only_requested = opts->mount_read_only_requested == KAFS_TRUE;
-  req->mount_read_only_seen = opts->mount_read_only_seen == KAFS_TRUE;
-  req->mount_read_write_requested = opts->mount_read_write_requested == KAFS_TRUE;
-  req->no_writeback_cache_requested =
+  out->mount_read_only_requested = opts->mount_read_only_requested == KAFS_TRUE;
+  out->mount_read_only_seen = opts->mount_read_only_seen == KAFS_TRUE;
+  out->mount_read_write_requested = opts->mount_read_write_requested == KAFS_TRUE;
+  out->no_writeback_cache_requested =
       opts->writeback_cache_explicit == KAFS_TRUE && opts->writeback_cache_enabled == KAFS_FALSE;
-  req->writeback_cache_enabled = opts->writeback_cache_enabled == KAFS_TRUE;
-  req->writeback_cache_explicit = opts->writeback_cache_explicit == KAFS_TRUE;
-  req->no_trim_on_free_requested =
+  out->writeback_cache_enabled = opts->writeback_cache_enabled == KAFS_TRUE;
+  out->writeback_cache_explicit = opts->writeback_cache_explicit == KAFS_TRUE;
+  out->no_trim_on_free_requested =
       opts->trim_on_free_explicit == KAFS_TRUE && opts->trim_on_free_enabled == KAFS_FALSE;
-  req->trim_on_free_enabled = opts->trim_on_free_enabled == KAFS_TRUE;
-  req->bg_dedup_scan_off_requested = opts->bg_dedup_scan_enabled == 0u;
-  req->bg_dedup_scan_enabled = opts->bg_dedup_scan_enabled != 0u;
-  req->fsync_policy_full_requested = opts->fsync_policy == KAFS_FSYNC_POLICY_FULL;
-  req->fsync_policy_other_requested = opts->fsync_policy != KAFS_FSYNC_POLICY_JOURNAL_ONLY &&
+  out->trim_on_free_enabled = opts->trim_on_free_enabled == KAFS_TRUE;
+  out->bg_dedup_scan_off_requested = opts->bg_dedup_scan_enabled == 0u;
+  out->bg_dedup_scan_enabled = opts->bg_dedup_scan_enabled != 0u;
+  out->fsync_policy_full_requested = opts->fsync_policy == KAFS_FSYNC_POLICY_FULL;
+  out->fsync_policy_other_requested = opts->fsync_policy != KAFS_FSYNC_POLICY_JOURNAL_ONLY &&
                                       opts->fsync_policy != KAFS_FSYNC_POLICY_FULL;
-  req->fsync_policy = opts->fsync_policy;
+  out->fsync_policy = opts->fsync_policy;
 }
 
 static int kafs_v6_entrypoint_validate_runtime_options(const kafs_main_options_t *opts,
                                                        kafs_bool_t controlled_write_mount)
 {
-  kafs_v6_runtime_request_t req;
-  kafs_v6_entrypoint_request_from_options(&req, opts, controlled_write_mount);
-  return kafs_v6_runtime_report_entrypoint_request(&req, stderr);
-}
-
-static int kafs_v6_entrypoint_open_runtime_context(kafs_context_t *ctx, const char *image_path,
-                                                   kafs_bool_t controlled_write_mount)
-{
-  kafs_ssuperblock_t sbdisk;
-  kafs_v6_runtime_mode_t mode = controlled_write_mount ? KAFS_V6_RUNTIME_MODE_CONTROLLED_WRITE
-                                                       : KAFS_V6_RUNTIME_MODE_INSPECTION;
-  if (kafs_v6_runtime_open_context_image(ctx, image_path, mode, &sbdisk, stderr) != 0)
-    return 2;
-
-  kafs_inocnt_t inocnt = 0;
-  kafs_blkcnt_t r_blkcnt = 0;
-  int rc = kafs_v6_runtime_admit_mount_context(ctx, &sbdisk, mode, &inocnt, &r_blkcnt, stderr);
-  if (rc != 0)
-  {
-    kafs_ctx_close_fd(ctx);
-    return 2;
-  }
-
-  rc = kafs_v6_runtime_init_mount_services(ctx, image_path, mode, inocnt, r_blkcnt, stderr);
-  if (rc != 0)
-  {
-    kafs_ctx_unmap_image(ctx);
-    kafs_ctx_close_fd(ctx);
-    return 2;
-  }
-  kafs_main_lock_runtime_image(ctx, image_path);
-  return 0;
+  kafs_v6_mount_bridge_options_t bridge_opts;
+  kafs_v6_entrypoint_options_from_main(&bridge_opts, opts, controlled_write_mount);
+  return kafs_v6_mount_bridge_validate_options(&bridge_opts, stderr);
 }
 
 static int kafs_v6_mount_main_common(const char *image_path, const char *mountpoint, int argc_extra,
@@ -13543,8 +13518,10 @@ static int kafs_v6_mount_main_common(const char *image_path, const char *mountpo
   hotplug_uds_path[0] = '\0';
   kafs_main_init_context(&ctx, &opts, argv_clean[1], mnt_abs, sizeof(mnt_abs));
 
-  if (kafs_v6_entrypoint_open_runtime_context(&ctx, image_path, controlled_write_mount) != 0)
+  if (kafs_v6_mount_bridge_open_context(
+          &ctx, image_path, kafs_v6_entrypoint_mode(controlled_write_mount), stderr) != 0)
     return 2;
+  kafs_main_lock_runtime_image(&ctx, image_path);
   if (ctx.c_runtime_read_only)
   {
     opts.writeback_cache_enabled = KAFS_FALSE;

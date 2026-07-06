@@ -172,13 +172,24 @@ T37 moves rejected-operation vocabulary into the v6 FUSE policy helper:
 - the shared FUSE operations still live in `kafs.c`, and the initial
   controlled-write surface remains unchanged.
 
+T38 moves v6 entrypoint request/open preparation into the mount bridge helper:
+
+- `kafs_v6_mount_bridge.c` owns bridge-local option validation and the
+  open/admit/init sequence for the `kafs-v6` runtime context;
+- `kafs.c` no longer includes `kafs_v6_runtime.h` directly for the
+  `KAFS_V6_ENTRYPOINT` bridge;
+- `kafs_v6_mount_bridge.h` exposes a bridge-local mode enum and does not
+  re-export the v6 runtime helper header;
+- `kafs.c` still owns generic mount-option parsing, FUSE argv assembly, image
+  locking, and the shared FUSE runner.
+
 The remaining pureification pressure points are:
 
 - removal or retirement plan for legacy v6 diagnostic scaffolding in `kafs`
   after operator workflows no longer depend on it;
 - further reduction of the `KAFS_V6_ENTRYPOINT` common-object bridge, especially
-  around shared FUSE operation implementations, without duplicating filesystem
-  logic.
+  around FUSE argv / runner context and shared operation implementations,
+  without duplicating filesystem logic.
 
 ## Shared implementation boundary
 
@@ -222,8 +233,12 @@ shared FUSE operations in `kafs.c`. T36 moves the remaining direct
 controlled-write active checks in shared write/fsync/release code behind
 policy-named helpers. T37 moves rejected-operation names into the same helper
 boundary, so `kafs.c` no longer owns the controlled-write rejection vocabulary.
-Later slices can replace the common-object bridge with a non-installed static
-archive or narrower runtime context / FUSE operation helpers.
+T38 moves bridge-local v6 request validation and open/admit/init sequencing into
+`kafs_v6_mount_bridge.c`, leaving `kafs.c` with the generic parser, FUSE argv
+assembly, image lock, and shared FUSE runner. The mount bridge header exposes a
+bridge-local mode enum instead of re-exporting `kafs_v6_runtime.h`. Later
+slices can replace the common-object bridge with a non-installed static archive
+or narrower runtime context / FUSE operation helpers.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).

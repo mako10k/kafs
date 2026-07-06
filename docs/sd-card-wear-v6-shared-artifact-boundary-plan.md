@@ -215,10 +215,18 @@ flag directly.
 free-form strings. This keeps rejection wording and operation ids on the v6
 policy side while preserving the same write-surface boundary.
 
-The next slice should reduce the remaining common-object bridge around shared
-FUSE operation implementations or retire legacy `kafs` v6 diagnostic
-scaffolding after operator workflows no longer depend on it. Do not add another
-runtime executable and do not broaden the controlled-write surface.
+`SDW-V6RT-T38` moves the next bridge-local runtime preparation layer into
+`kafs_v6_mount_bridge.c`. The bridge helper now owns v6 entrypoint option
+validation plus the open/admit/init sequence for the runtime context.
+`kafs_v6_mount_bridge.h` exposes a bridge-local mode enum instead of
+re-exporting `kafs_v6_runtime.h`. `kafs.c` still owns generic option parsing,
+FUSE argv assembly, image locking, and the shared FUSE runner / operation table.
+
+The next slice should reduce the remaining common-object bridge around FUSE
+argv / runner context or shared FUSE operation implementations, or retire
+legacy `kafs` v6 diagnostic scaffolding after operator workflows no longer
+depend on it. Do not add another runtime executable and do not broaden the
+controlled-write surface.
 
 ## Validation Standard
 

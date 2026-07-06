@@ -1372,6 +1372,43 @@
   - clone strict source gate は 36 clones / 353 duplicated lines / 0.96% で閾値内だった。
   - `make check` は all 29 tests passed で完了した。
 
+### SDW-V6RT-T38 v6 mount bridge request/open helper extraction
+
+- 目的: `KAFS_V6_ENTRYPOINT` bridge に残っていた v6 entrypoint 固有の
+  runtime request 検証と open/admit/init sequence を `kafs_v6_mount_bridge`
+  側へ移す。これは common-object bridge pureification slice であり、write surface
+  expansion ではない。
+- 変更:
+  - `src/kafs_v6_mount_bridge.c` を追加し、`kafs_v6_mount_bridge_validate_options()` と
+    `kafs_v6_mount_bridge_open_context()` を実装する。
+  - `src/kafs_v6_mount_bridge.h` に bridge-local mode enum と option summary 構造体を追加する。
+  - `src/kafs.c` の `KAFS_V6_ENTRYPOINT` ブロックは private parser result を bridge option
+    summary へ写し、FUSE argv assembly / shared FUSE runner / image lock を保持する。
+  - `src/Makefile.am` の `kafs-v6` source set に `kafs_v6_mount_bridge.c` を追加する。
+- 完了条件:
+  - `kafs.c` は `kafs_v6_runtime.h` を直接 include せず、bridge header は runtime helper
+    header を再公開しない。v6 entrypoint request validation と open/admit/init sequence は
+    mount bridge helper 経由になる。
+  - shared FUSE operation implementation と operation table は `kafs.c` に残す。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS
+    している。
+- 実装結果:
+  - `kafs_v6_mount_bridge.c` が v6 entrypoint runtime request 検証、bridge-local mode から
+    runtime mode への変換、v6 context open/admit/init sequence を所有するようにした。
+  - `kafs.c` の bridge は generic mount option parser、FUSE argv assembly、runtime image lock、
+    shared FUSE runner を保持するだけになった。
+  - controlled-write write surface は広げていない。
+- 検証:
+  - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、
+    `git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+  - clone strict source gate は 36 clones / 353 duplicated lines / 0.95% で閾値内だった。
+  - `make check` は all 29 tests passed で完了した。
+
 ---
 
 ## 最初に着手するチケット

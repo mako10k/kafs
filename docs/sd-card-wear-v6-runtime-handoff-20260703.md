@@ -46,6 +46,11 @@ Commits queued for push before this handoff doc commit:
 - T37 moved rejected-operation ids and rejection wording into the v6 FUSE
   policy helper, so shared FUSE operations pass enum values instead of
   free-form strings.
+- T38 moved v6 entrypoint request validation and open/admit/init sequencing into
+  `src/kafs_v6_mount_bridge.c`, leaving `src/kafs.c` with generic option
+  parsing, FUSE argv assembly, image locking, and the shared FUSE runner. The
+  mount bridge header uses a bridge-local mode enum instead of re-exporting
+  `kafs_v6_runtime.h`.
 - Shared FUSE operation implementations and the operation table remain in
   `src/kafs.c`.
 - The controlled-write surface was not expanded.
@@ -54,14 +59,16 @@ Commits queued for push before this handoff doc commit:
   `make -C tests check TESTS=v6_descriptor_smoketest`,
   `./scripts/static-checks.sh`, and
   `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`; `make check` reported all
-  29 tests passed for the T34, T35, T36, and T37 validation runs.
+  29 tests passed for the T34, T35, T36, T37, and T38 validation runs.
 
 ## Validation
 
-Latest completed validation for T37:
+Latest completed validation for T38:
 
 ```sh
 ./scripts/format.sh fix
+autoreconf -fi
+./configure
 make -j2
 git diff --check
 ./scripts/test-cli-surface.sh
@@ -76,7 +83,7 @@ Results:
 - `v6_descriptor_smoketest`: PASS
 - `./scripts/test-cli-surface.sh`: PASS
 - `./scripts/static-checks.sh`: PASS
-- strict source clone gate: 36 clones, 353 duplicated lines, 0.96%, below the
+- strict source clone gate: 36 clones, 353 duplicated lines, 0.95%, below the
   configured threshold
 - `make check`: all 29 tests passed
 
@@ -99,8 +106,8 @@ Continue v6 runtime pureification without broadening the write surface.
 Recommended next slice:
 
 - continue reducing the remaining `KAFS_V6_ENTRYPOINT` common-object bridge
-  around shared FUSE operation implementations after the T37 rejected-operation
-  vocabulary extraction, or
+  around FUSE argv / runner context or shared FUSE operation implementations
+  after the T38 mount bridge helper extraction, or
 - prepare a retirement plan for legacy v6 diagnostic scaffolding in production
   `kafs` after operator workflows no longer depend on it.
 
