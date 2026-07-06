@@ -48,7 +48,7 @@
 #include <sys/syscall.h>
 #endif
 
-#if !defined(KAFS_NO_MAIN) || defined(KAFS_V6_ENTRYPOINT)
+#if !defined(KAFS_NO_MAIN) || defined(KAFS_SHARED_FUSE_RUNNER_EXPORT)
 #define KAFS_COMPILE_SHARED_FUSE_OPERATIONS 1
 #endif
 
@@ -13460,7 +13460,7 @@ static int kafs_main_run_fuse(kafs_context_t *ctx, int argc_fuse, char **argv_fu
 }
 #endif
 
-#ifdef KAFS_V6_ENTRYPOINT
+#ifdef KAFS_SHARED_FUSE_RUNNER_EXPORT
 int kafs_shared_fuse_run(kafs_context_t *ctx, int argc_fuse, char **argv_fuse,
                          const kafs_shared_fuse_runtime_options_t *opts)
 {

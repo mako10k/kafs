@@ -38,11 +38,12 @@ surface.
 
 ## T25/T26 v6 admission
 
-T25 links `kafs-v6` with the shared FUSE runtime object set through
-`KAFS_V6_ENTRYPOINT`. This is a compile-time common-object guard available only
-to the `kafs-v6` build; production `kafs` does not link `kafs_v6_runtime.c`
-and no longer admits `v6_inspection_mount` or `v6_write_mount` as a successful
-runtime path.
+T25 linked `kafs-v6` with the shared FUSE runtime object set through the
+original `KAFS_V6_ENTRYPOINT` common-object guard. T46 later renamed the
+remaining `kafs.c` shared-runner export guard to
+`KAFS_SHARED_FUSE_RUNNER_EXPORT`; production `kafs` still does not link
+`kafs_v6_runtime.c` and no longer admits `v6_inspection_mount` or
+`v6_write_mount` as a successful runtime path.
 
 The read-only inspection path now uses:
 
@@ -258,11 +259,22 @@ T45 names the remaining shared FUSE operation table boundary inside `kafs.c`:
 - production `kafs` and `kafs-v6` still share the same operation
   implementations, and no successful production v6 runtime path is added.
 
+T46 separates the shared FUSE runner export guard from v6 entrypoint naming:
+
+- the `kafs-v6` target now defines `KAFS_SHARED_FUSE_RUNNER_EXPORT` when it
+  links `kafs.c` for the shared runner and operation table;
+- `kafs.c` compiles shared FUSE operations for production `kafs` or for that
+  shared-runner export guard, and exports `kafs_shared_fuse_run()` only under
+  the shared-runner export guard;
+- successful v6 runtime admission remains owned by `kafs-v6` /
+  `kafs_v6_runtime.c`, and production `kafs` still does not link v6 runtime
+  helpers.
+
 The remaining pureification pressure points are:
 
 - removal or retirement plan for legacy v6 diagnostic scaffolding in `kafs`
   after operator workflows no longer depend on it;
-- further reduction of the `KAFS_V6_ENTRYPOINT` common-object adapter path,
+- further reduction of the shared FUSE common-object adapter path,
   especially around shared operation implementations,
   without duplicating filesystem logic.
 
@@ -332,7 +344,10 @@ fail-closed token classification and guidance wording into
 `kafs_legacy_v6_failclosed.h` without creating a successful production v6
 runtime path. T45 renames the local shared FUSE operation table boundary in
 `kafs.c`, replacing direct table-level `KAFS_V6_ENTRYPOINT` naming with a
-shared-operation compile guard and `kafs_shared_fuse_operation_table`.
+shared-operation compile guard and `kafs_shared_fuse_operation_table`. T46
+renames the remaining `kafs.c` shared-runner export guard to
+`KAFS_SHARED_FUSE_RUNNER_EXPORT`, so the source-level export condition describes
+the shared runner instead of v6 admission.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).

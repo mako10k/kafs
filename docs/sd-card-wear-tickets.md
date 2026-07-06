@@ -1657,6 +1657,38 @@
     `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
     `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
 
+### SDW-V6RT-T46 shared FUSE runner export guard split
+
+- 目的: `kafs.c` に残る shared runner export の compile guard を v6 entrypoint 名から分離し、
+  `kafs_shared_fuse_run()` の所有境界を shared FUSE runner export として明示する。これは
+  common-object adapter surface の命名整理であり、v6 admission ownership や write surface は
+  変更しない。
+- 変更:
+  - `src/Makefile.am` の `kafs-v6` target は `KAFS_V6_ENTRYPOINT` ではなく
+    `KAFS_SHARED_FUSE_RUNNER_EXPORT` を定義する。
+  - `src/kafs.c` の shared operation compile guard は
+    `!KAFS_NO_MAIN || KAFS_SHARED_FUSE_RUNNER_EXPORT` を条件にする。
+  - `src/kafs.c` の `kafs_shared_fuse_run()` export guard を
+    `KAFS_SHARED_FUSE_RUNNER_EXPORT` にする。
+  - `src/kafs_v6_entrypoint_adapter.h` の説明を新しい export guard 名へ更新する。
+- 完了条件:
+  - production `kafs` は `kafs_v6_runtime.c` を link しない。
+  - `kafs-v6` は dedicated entrypoint のまま、shared FUSE runner export だけを `kafs.c` から受け取る。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、
+    `git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS している。
+- 実装結果:
+  - `KAFS_SHARED_FUSE_RUNNER_EXPORT` を `kafs-v6` target 専用の shared runner export guard にした。
+  - `kafs.c` の実コードから `KAFS_V6_ENTRYPOINT` guard を外し、shared FUSE runner export 名に置き換えた。
+  - runtime admission、legacy fail-closed guidance、write-surface policy は変更していない。
+- 検証:
+  - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、
+    `git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+
 ---
 
 ## 最初に着手するチケット

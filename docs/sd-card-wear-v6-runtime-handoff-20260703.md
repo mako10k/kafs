@@ -58,7 +58,7 @@ Commits queued for push before this handoff doc commit:
 - T40 moved v6 mount-main preparation, FUSE option filtering, context
   initialization, image locking, runtime option handoff, and FUSE argv assembly
   into `src/kafs_v6_entrypoint_adapter.c`. `src/kafs.c` now keeps only the
-  `KAFS_V6_ENTRYPOINT` shared FUSE runner wrapper plus the shared operation
+  shared FUSE runner wrapper plus the shared operation
   table and cleanup path.
 - T41 separated v6 mount option policy into `src/kafs_v6_mount_options.[ch]`.
   `src/kafs_v6.c` records runtime-admission intent through that helper, while
@@ -83,6 +83,10 @@ Commits queued for push before this handoff doc commit:
   `kafs_shared_fuse_operations()`, and guarded by
   `KAFS_COMPILE_SHARED_FUSE_OPERATIONS` instead of table-level v6 adapter
   wording.
+- T46 renamed the remaining `src/kafs.c` shared-runner export guard to
+  `KAFS_SHARED_FUSE_RUNNER_EXPORT`. The `kafs-v6` target still links `kafs.c`
+  for shared FUSE operations, but the source-level guard now describes the
+  runner export instead of v6 admission ownership.
 - Shared FUSE operation implementations and the operation table remain in
   `src/kafs.c`.
 - The controlled-write surface was not expanded.
@@ -92,11 +96,11 @@ Commits queued for push before this handoff doc commit:
   `./scripts/static-checks.sh`, and
   `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`; `make check` reported all
   29 tests passed for the T34, T35, T36, T37, T38, T39, T40, T41, T42, T43,
-  T44, and T45 validation runs.
+  T44, T45, and T46 validation runs.
 
 ## Validation
 
-Latest completed validation for T45:
+Latest completed validation for T46:
 
 ```sh
 ./scripts/format.sh fix
@@ -138,10 +142,10 @@ Continue v6 runtime pureification without broadening the write surface.
 
 Recommended next slice:
 
-- continue reducing the remaining `KAFS_V6_ENTRYPOINT` common-object adapter
-  around shared FUSE operation implementations after the T40/T41/T42/T43/T44/T45
-  mount-main, option-policy, runner-hook, FUSE-init policy, and legacy
-  fail-closed helper/table-boundary naming split,
+- continue reducing the remaining shared FUSE common-object adapter path after
+  the T40/T41/T42/T43/T44/T45/T46 mount-main, option-policy, runner-hook,
+  FUSE-init policy, legacy fail-closed helper, table-boundary, and runner-export
+  guard split,
   or
 - prepare a retirement plan for legacy v6 diagnostic scaffolding in production
   `kafs` after operator workflows no longer depend on it.

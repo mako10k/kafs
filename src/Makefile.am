@@ -15,8 +15,8 @@ kafs_SOURCES = kafs.c kafs_hrl.c kafs_locks.c kafs_journal.c kafs_rpc.c
 # - kafs_legacy_v6_failclosed.h is the production kafs owner of legacy v6 token
 #   rejection and kafs-v6 guidance.
 # - kafs-v6 is the dedicated v6 runtime entrypoint. It temporarily links
-#   kafs.c with KAFS_V6_ENTRYPOINT to reuse shared FUSE operations while
-#   v6 admission/open/init policy stays in v6-owned sources.
+#   kafs.c with KAFS_SHARED_FUSE_RUNNER_EXPORT to reuse shared FUSE operations
+#   while v6 admission/open/init policy stays in v6-owned sources.
 # - kafs_v6_mount_options.* is the v6-only owner of -o token interpretation
 #   shared by the kafs-v6 CLI and entrypoint adapter.
 # - kafs_v6_entrypoint_adapter.* is a v6-only adapter from kafs-v6 CLI state to
@@ -26,7 +26,7 @@ kafs_SOURCES = kafs.c kafs_hrl.c kafs_locks.c kafs_journal.c kafs_rpc.c
 kafs_v6_SOURCES = kafs_v6.c kafs_v6_runtime.c kafs_v6_mount_options.c \
 	kafs_v6_entrypoint_adapter.c kafs.c kafs_hrl.c kafs_locks.c kafs_journal.c kafs_rpc.c
 kafs_v6_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -DKAFS_NO_MAIN \
-	-DKAFS_V6_ENTRYPOINT
+	-DKAFS_SHARED_FUSE_RUNNER_EXPORT
 kafs_v6_LDADD = $(KAFS_LIBS)
 
 # new mkfs.kafs target
