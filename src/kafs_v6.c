@@ -264,6 +264,45 @@ static int kafs_v6_validate_options(const kafs_v6_options_t *opts)
   return 0;
 }
 
+static kafs_v6_entrypoint_adapter_mode_t
+kafs_v6_adapter_mode_from_runtime(kafs_v6_runtime_mode_t mode)
+{
+  switch (mode)
+  {
+  case KAFS_V6_RUNTIME_MODE_INSPECTION:
+    return KAFS_V6_ENTRYPOINT_ADAPTER_MODE_INSPECTION;
+  case KAFS_V6_RUNTIME_MODE_CONTROLLED_WRITE:
+    return KAFS_V6_ENTRYPOINT_ADAPTER_MODE_CONTROLLED_WRITE;
+  case KAFS_V6_RUNTIME_MODE_NONE:
+  default:
+    return KAFS_V6_ENTRYPOINT_ADAPTER_MODE_NONE;
+  }
+}
+
+static void kafs_v6_adapter_options_from_request(kafs_v6_entrypoint_adapter_options_t *out,
+                                                 const kafs_v6_runtime_request_t *req)
+{
+  memset(out, 0, sizeof(*out));
+  out->mode = kafs_v6_adapter_mode_from_runtime(req->mode);
+  out->legacy_mode_token_seen = req->legacy_mode_token_seen;
+  out->hotplug_requested = req->hotplug_requested;
+  out->mount_read_only_requested = req->mount_read_only_requested;
+  out->mount_read_only_seen = req->mount_read_only_seen;
+  out->mount_read_write_requested = req->mount_read_write_requested;
+  out->no_writeback_cache_requested = req->no_writeback_cache_requested;
+  out->writeback_cache_enabled = req->writeback_cache_enabled;
+  out->writeback_cache_explicit =
+      req->writeback_cache_explicit || req->no_writeback_cache_requested;
+  out->no_trim_on_free_requested = req->no_trim_on_free_requested;
+  out->trim_on_free_enabled = req->trim_on_free_enabled;
+  out->trim_on_free_explicit = req->trim_on_free_enabled || req->no_trim_on_free_requested;
+  out->bg_dedup_scan_off_requested = req->bg_dedup_scan_off_requested;
+  out->bg_dedup_scan_enabled = req->bg_dedup_scan_enabled;
+  out->fsync_policy_full_requested = req->fsync_policy_full_requested;
+  out->fsync_policy_other_requested = req->fsync_policy_other_requested;
+  out->fsync_policy = req->fsync_policy;
+}
+
 int main(int argc, char **argv)
 {
   kafs_v6_options_t opts;
@@ -285,10 +324,8 @@ int main(int argc, char **argv)
   if (kafs_v6_runtime_admission_preflight_image(opts.image_path, stderr, "kafs-v6") != 0)
     return 2;
 
-  if (opts.request.mode == KAFS_V6_RUNTIME_MODE_INSPECTION)
-    return kafs_v6_inspection_mount_main(opts.image_path, opts.mountpoint, opts.fuse_argc,
-                                         opts.fuse_args);
-
-  return kafs_v6_controlled_write_mount_main(opts.image_path, opts.mountpoint, opts.fuse_argc,
-                                             opts.fuse_args);
+  kafs_v6_entrypoint_adapter_options_t adapter_opts;
+  kafs_v6_adapter_options_from_request(&adapter_opts, &opts.request);
+  return kafs_v6_entrypoint_adapter_mount_main(opts.image_path, opts.mountpoint, opts.fuse_argc,
+                                               opts.fuse_args, &adapter_opts, stderr);
 }

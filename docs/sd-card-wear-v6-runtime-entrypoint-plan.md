@@ -197,13 +197,25 @@ T39 clarifies the current source ownership and naming:
 - `src/Makefile.am` and the shared artifact boundary plan now record the
   source ownership map so common-looking file names have a stated role.
 
+T40 moves the v6 mount-main preparation body into the entrypoint adapter:
+
+- `kafs_v6.c` converts the already-validated `kafs_v6_runtime_request_t` into
+  adapter options and calls `kafs_v6_entrypoint_adapter_mount_main()`;
+- `kafs_v6_entrypoint_adapter.c` owns the v6-only FUSE option filtering,
+  context initialization, image lock, FUSE argv assembly, runtime option
+  handoff, and the call into the shared FUSE runner;
+- `kafs.c` keeps only the `KAFS_V6_ENTRYPOINT` shared FUSE runner wrapper that
+  logs runtime options, enters `fuse_main()` with `kafs_operations`, and runs
+  the existing cleanup path;
+- shared FUSE operation implementations and the operation table remain in
+  `kafs.c`; the controlled-write surface is unchanged.
+
 The remaining pureification pressure points are:
 
 - removal or retirement plan for legacy v6 diagnostic scaffolding in `kafs`
   after operator workflows no longer depend on it;
 - further reduction of the `KAFS_V6_ENTRYPOINT` common-object adapter path,
-  especially around FUSE argv / runner context and shared operation
-  implementations,
+  especially around shared operation implementations,
   without duplicating filesystem logic.
 
 ## Shared implementation boundary
@@ -254,9 +266,12 @@ into `kafs_v6_entrypoint_adapter.c`, leaving `kafs.c` with the generic parser,
 FUSE argv assembly, image lock, and shared FUSE runner. The entrypoint adapter
 header exposes an adapter-local mode enum instead of re-exporting
 `kafs_v6_runtime.h`. T39 renames the former mount bridge file/symbols to
-entrypoint adapter terminology and records source ownership. Later slices can
+entrypoint adapter terminology and records source ownership. T40 moves v6
+mount-main preparation, FUSE option filtering, context initialization, image
+lock, and FUSE argv assembly into the adapter; `kafs.c` keeps the shared
+`fuse_main()` / `kafs_operations` runner and cleanup wrapper. Later slices can
 replace the common-object adapter path with a non-installed static archive or
-narrower runtime context / FUSE operation helpers.
+narrower shared FUSE operation helpers.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).

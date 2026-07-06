@@ -13443,117 +13443,18 @@ static int kafs_main_run_fuse(kafs_context_t *ctx, int argc_fuse, char **argv_fu
 #endif
 
 #ifdef KAFS_V6_ENTRYPOINT
-static kafs_v6_entrypoint_adapter_mode_t kafs_v6_entrypoint_mode(kafs_bool_t controlled_write_mount)
+int kafs_v6_entrypoint_adapter_run_shared_fuse(
+    kafs_context_t *ctx, int argc_fuse, char **argv_fuse,
+    const kafs_v6_entrypoint_adapter_fuse_options_t *opts)
 {
-  return controlled_write_mount ? KAFS_V6_ENTRYPOINT_ADAPTER_MODE_CONTROLLED_WRITE
-                                : KAFS_V6_ENTRYPOINT_ADAPTER_MODE_INSPECTION;
-}
+  if (opts)
+    kafs_main_log_runtime_options(ctx, opts->writeback_cache_enabled,
+                                  opts->writeback_cache_explicit, opts->trim_on_free_enabled,
+                                  opts->trim_on_free_explicit, argc_fuse, argv_fuse);
 
-static void kafs_v6_entrypoint_options_from_main(kafs_v6_entrypoint_adapter_options_t *out,
-                                                 const kafs_main_options_t *opts,
-                                                 kafs_bool_t controlled_write_mount)
-{
-  memset(out, 0, sizeof(*out));
-  out->mode = kafs_v6_entrypoint_mode(controlled_write_mount);
-  out->legacy_mode_token_seen =
-      opts->v6_inspection_mount == KAFS_TRUE || opts->v6_write_mount == KAFS_TRUE;
-  out->hotplug_requested =
-      opts->hotplug_uds_opt[0] != '\0' || opts->hotplug_back_bin_opt[0] != '\0';
-  out->mount_read_only_requested = opts->mount_read_only_requested == KAFS_TRUE;
-  out->mount_read_only_seen = opts->mount_read_only_seen == KAFS_TRUE;
-  out->mount_read_write_requested = opts->mount_read_write_requested == KAFS_TRUE;
-  out->no_writeback_cache_requested =
-      opts->writeback_cache_explicit == KAFS_TRUE && opts->writeback_cache_enabled == KAFS_FALSE;
-  out->writeback_cache_enabled = opts->writeback_cache_enabled == KAFS_TRUE;
-  out->writeback_cache_explicit = opts->writeback_cache_explicit == KAFS_TRUE;
-  out->no_trim_on_free_requested =
-      opts->trim_on_free_explicit == KAFS_TRUE && opts->trim_on_free_enabled == KAFS_FALSE;
-  out->trim_on_free_enabled = opts->trim_on_free_enabled == KAFS_TRUE;
-  out->bg_dedup_scan_off_requested = opts->bg_dedup_scan_enabled == 0u;
-  out->bg_dedup_scan_enabled = opts->bg_dedup_scan_enabled != 0u;
-  out->fsync_policy_full_requested = opts->fsync_policy == KAFS_FSYNC_POLICY_FULL;
-  out->fsync_policy_other_requested = opts->fsync_policy != KAFS_FSYNC_POLICY_JOURNAL_ONLY &&
-                                      opts->fsync_policy != KAFS_FSYNC_POLICY_FULL;
-  out->fsync_policy = opts->fsync_policy;
-}
-
-static int kafs_v6_entrypoint_validate_runtime_options(const kafs_main_options_t *opts,
-                                                       kafs_bool_t controlled_write_mount)
-{
-  kafs_v6_entrypoint_adapter_options_t adapter_opts;
-  kafs_v6_entrypoint_options_from_main(&adapter_opts, opts, controlled_write_mount);
-  return kafs_v6_entrypoint_adapter_validate_options(&adapter_opts, stderr);
-}
-
-static int kafs_v6_mount_main_common(const char *image_path, const char *mountpoint, int argc_extra,
-                                     char **argv_extra, kafs_bool_t controlled_write_mount)
-{
-  if (!image_path || !mountpoint || argc_extra < 0)
-  {
-    fprintf(stderr, "kafs-v6 %s mount requires an image path and mountpoint.\n",
-            controlled_write_mount ? "controlled write" : "inspection");
-    return 2;
-  }
-
-  kafs_main_options_t opts;
-  kafs_main_options_init(&opts);
-  opts.image_path = image_path;
-
-  char *argv_clean[argc_extra + 3];
-  int argc_clean = 0;
-  argv_clean[argc_clean++] = "kafs-v6";
-  argv_clean[argc_clean++] = (char *)mountpoint;
-  for (int i = 0; i < argc_extra; ++i)
-    argv_clean[argc_clean++] = argv_extra[i];
-
-  if (kafs_main_filter_mount_options(&opts, argv_clean, &argc_clean) != 0 ||
-      kafs_main_validate_pending_options(&opts) != 0 ||
-      kafs_main_validate_bg_dedup_options(&opts) != 0 ||
-      kafs_v6_entrypoint_validate_runtime_options(&opts, controlled_write_mount) != 0)
-    return 2;
-
-  static kafs_context_t ctx;
-  static char mnt_abs[PATH_MAX];
   char hotplug_uds_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
   hotplug_uds_path[0] = '\0';
-  kafs_main_init_context(&ctx, &opts, argv_clean[1], mnt_abs, sizeof(mnt_abs));
-
-  if (kafs_v6_entrypoint_adapter_open_context(
-          &ctx, image_path, kafs_v6_entrypoint_mode(controlled_write_mount), stderr) != 0)
-    return 2;
-  kafs_main_lock_runtime_image(&ctx, image_path);
-  if (ctx.c_runtime_read_only)
-  {
-    opts.writeback_cache_enabled = KAFS_FALSE;
-    opts.writeback_cache_explicit = KAFS_TRUE;
-    opts.trim_on_free_enabled = KAFS_FALSE;
-    opts.trim_on_free_explicit = KAFS_TRUE;
-  }
-
-  char *argv_fuse[argc_clean + 10];
-  char mt_opt_buf[64];
-  int argc_fuse = 0;
-  kafs_bool_t enable_mt = opts.enable_mt;
-  kafs_main_build_fuse_argv(argv_clean, argc_clean, &enable_mt, opts.saw_max_threads,
-                            opts.mt_cnt_override, opts.mt_cnt_override_set, argv_fuse, &argc_fuse,
-                            mt_opt_buf, sizeof(mt_opt_buf));
-  kafs_main_apply_fuse_readonly_arg(&ctx, argv_fuse, &argc_fuse);
-  kafs_main_log_runtime_options(&ctx, opts.writeback_cache_enabled, opts.writeback_cache_explicit,
-                                opts.trim_on_free_enabled, opts.trim_on_free_explicit, argc_fuse,
-                                argv_fuse);
-  return kafs_main_run_fuse(&ctx, argc_fuse, argv_fuse, hotplug_uds_path);
-}
-
-int kafs_v6_inspection_mount_main(const char *image_path, const char *mountpoint, int argc_extra,
-                                  char **argv_extra)
-{
-  return kafs_v6_mount_main_common(image_path, mountpoint, argc_extra, argv_extra, KAFS_FALSE);
-}
-
-int kafs_v6_controlled_write_mount_main(const char *image_path, const char *mountpoint,
-                                        int argc_extra, char **argv_extra)
-{
-  return kafs_v6_mount_main_common(image_path, mountpoint, argc_extra, argv_extra, KAFS_TRUE);
+  return kafs_main_run_fuse(ctx, argc_fuse, argv_fuse, hotplug_uds_path);
 }
 #endif
 

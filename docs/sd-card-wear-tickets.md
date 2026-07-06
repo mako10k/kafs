@@ -1447,6 +1447,47 @@
     `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
     `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
 
+### SDW-V6RT-T40 v6 mount-main ownership split
+
+- 目的: `kafs_v6_entrypoint_adapter.h` が公開する v6 mount entrypoint API の実装本体を
+  `src/kafs.c` から `src/kafs_v6_entrypoint_adapter.c` へ移し、`src/kafs.c` を shared FUSE
+  runner / operation table / cleanup path に寄せる。これは common-object adapter
+  pureification slice であり、write surface expansion ではない。
+- 変更:
+  - `src/kafs_v6.c` は validation 済み `kafs_v6_runtime_request_t` から
+    `kafs_v6_entrypoint_adapter_options_t` を組み立て、
+    `kafs_v6_entrypoint_adapter_mount_main()` を呼ぶ。
+  - `src/kafs_v6_entrypoint_adapter.c` は v6-only FUSE option filtering、context
+    initialization、image lock、FUSE argv assembly、runtime option handoff、
+    open/admit/init sequence を所有する。
+  - `src/kafs.c` の `KAFS_V6_ENTRYPOINT` ブロックは
+    `kafs_v6_entrypoint_adapter_run_shared_fuse()` だけを公開し、
+    `fuse_main()` / `kafs_operations` / cleanup path への接続だけを保持する。
+  - `kafs_v6_inspection_mount_main()` /
+    `kafs_v6_controlled_write_mount_main()` の旧 API を adapter-local mount main へ統合する。
+- 完了条件:
+  - `kafs.c` の `KAFS_V6_ENTRYPOINT` ブロックは v6 mount option parser、v6 mount-main
+    preparation、open/admit/init sequence を所有しない。
+  - `kafs_v6_entrypoint_adapter.c` は `kafs-v6` request state から shared FUSE runner
+    へ渡すまでの v6-only handoff を所有する。
+  - shared FUSE operation implementation と operation table は `src/kafs.c` に残す。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS
+    している。
+- 実装結果:
+  - `src/kafs.c` の v6 mount-main body を削除し、shared FUSE runner wrapper だけを残した。
+  - `src/kafs_v6_entrypoint_adapter.c` に v6-only FUSE option filter / FUSE argv builder /
+    context initializer / image lock / mount-main body を移した。
+  - `src/kafs_v6.c` は runtime request を adapter options へ変換し、single adapter mount API
+    経由で mount path へ進む。
+  - write surface と production `kafs` の v6 fail-closed boundary は変更していない。
+- 検証:
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+
 ---
 
 ## 最初に着手するチケット

@@ -55,6 +55,11 @@ Commits queued for push before this handoff doc commit:
   `kafs_v6_entrypoint_adapter.*` / `kafs_v6_entrypoint_adapter_*` and added
   source ownership notes to make clear that this is a v6-only adapter, not a
   v5/v6 compatibility layer.
+- T40 moved v6 mount-main preparation, FUSE option filtering, context
+  initialization, image locking, runtime option handoff, and FUSE argv assembly
+  into `src/kafs_v6_entrypoint_adapter.c`. `src/kafs.c` now keeps only the
+  `KAFS_V6_ENTRYPOINT` shared FUSE runner wrapper plus the shared operation
+  table and cleanup path.
 - Shared FUSE operation implementations and the operation table remain in
   `src/kafs.c`.
 - The controlled-write surface was not expanded.
@@ -63,11 +68,11 @@ Commits queued for push before this handoff doc commit:
   `make -C tests check TESTS=v6_descriptor_smoketest`,
   `./scripts/static-checks.sh`, and
   `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`; `make check` reported all
-  29 tests passed for the T34, T35, T36, T37, T38, and T39 validation runs.
+  29 tests passed for the T34, T35, T36, T37, T38, T39, and T40 validation runs.
 
 ## Validation
 
-Latest completed validation for T39:
+Latest completed validation for T40:
 
 ```sh
 ./scripts/format.sh fix
@@ -110,8 +115,8 @@ Continue v6 runtime pureification without broadening the write surface.
 Recommended next slice:
 
 - continue reducing the remaining `KAFS_V6_ENTRYPOINT` common-object adapter
-  around FUSE argv / runner context or shared FUSE operation implementations
-  after the T38/T39 entrypoint adapter clarification, or
+  around shared FUSE operation implementations after the T40 mount-main split,
+  or
 - prepare a retirement plan for legacy v6 diagnostic scaffolding in production
   `kafs` after operator workflows no longer depend on it.
 
