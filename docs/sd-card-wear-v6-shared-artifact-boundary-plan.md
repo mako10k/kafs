@@ -295,6 +295,11 @@ common object path look like v6 admission ownership.
 FUSE operations, but the compile-time name now describes the runner export
 rather than v6 admission or a v5/v6 compatibility layer.
 
+`SDW-V6RT-T47` renames the local shared FUSE runner helper in `kafs.c` from
+`kafs_main_run_fuse()` to `kafs_shared_fuse_run_with_cleanup()`. Production
+`kafs` main and the exported `kafs_shared_fuse_run()` handoff still share the
+same `fuse_main()` / cleanup path; only the local ownership wording changes.
+
 The next slice should reduce the remaining common-object adapter path around
 shared FUSE operation implementations, or retire legacy `kafs` v6 diagnostic
 scaffolding after operator workflows no longer depend on it. Do not add another

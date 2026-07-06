@@ -1689,6 +1689,35 @@
     `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
     `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
 
+### SDW-V6RT-T47 shared FUSE local runner naming split
+
+- 目的: production `kafs` main と `kafs-v6` shared runner export が共用する local
+  `fuse_main()` / cleanup helper を production main 名から分離し、shared FUSE runner
+  実装として読める名前に寄せる。これは命名境界の整理であり、FUSE operation duplication や
+  write surface expansion ではない。
+- 変更:
+  - `src/kafs.c` の local `kafs_main_run_fuse()` を
+    `kafs_shared_fuse_run_with_cleanup()` に改名する。
+  - production `kafs` main と `kafs_shared_fuse_run()` export は同じ local helper を呼び続ける。
+- 完了条件:
+  - production `kafs` と `kafs-v6` は同じ shared FUSE operation table / cleanup path を使う。
+  - `kafs-v6` の successful v6 runtime admission は引き続き `kafs_v6_runtime.c` /
+    `kafs_v6_entrypoint_adapter.c` が所有する。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、
+    `git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS している。
+- 実装結果:
+  - `kafs.c` の local runner helper 名を shared FUSE runner / cleanup ownership に合わせた。
+  - `kafs_shared_fuse_run()` の exported handoff contract と production `kafs` main の挙動は変更していない。
+  - runtime admission、legacy fail-closed guidance、write-surface policy は変更していない。
+- 検証:
+  - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、
+    `git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+
 ---
 
 ## 最初に着手するチケット

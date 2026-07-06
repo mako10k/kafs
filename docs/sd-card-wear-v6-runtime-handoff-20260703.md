@@ -87,6 +87,10 @@ Commits queued for push before this handoff doc commit:
   `KAFS_SHARED_FUSE_RUNNER_EXPORT`. The `kafs-v6` target still links `kafs.c`
   for shared FUSE operations, but the source-level guard now describes the
   runner export instead of v6 admission ownership.
+- T47 renamed the local shared FUSE runner helper in `src/kafs.c` from
+  `kafs_main_run_fuse()` to `kafs_shared_fuse_run_with_cleanup()`. Production
+  `kafs` main and the exported `kafs_shared_fuse_run()` handoff still share the
+  same `fuse_main()` / cleanup path.
 - Shared FUSE operation implementations and the operation table remain in
   `src/kafs.c`.
 - The controlled-write surface was not expanded.
@@ -96,11 +100,11 @@ Commits queued for push before this handoff doc commit:
   `./scripts/static-checks.sh`, and
   `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`; `make check` reported all
   29 tests passed for the T34, T35, T36, T37, T38, T39, T40, T41, T42, T43,
-  T44, T45, and T46 validation runs.
+  T44, T45, T46, and T47 validation runs.
 
 ## Validation
 
-Latest completed validation for T46:
+Latest completed validation for T47:
 
 ```sh
 ./scripts/format.sh fix
@@ -143,9 +147,9 @@ Continue v6 runtime pureification without broadening the write surface.
 Recommended next slice:
 
 - continue reducing the remaining shared FUSE common-object adapter path after
-  the T40/T41/T42/T43/T44/T45/T46 mount-main, option-policy, runner-hook,
-  FUSE-init policy, legacy fail-closed helper, table-boundary, and runner-export
-  guard split,
+  the T40/T41/T42/T43/T44/T45/T46/T47 mount-main, option-policy, runner-hook,
+  FUSE-init policy, legacy fail-closed helper, table-boundary, runner-export
+  guard, and local-runner naming split,
   or
 - prepare a retirement plan for legacy v6 diagnostic scaffolding in production
   `kafs` after operator workflows no longer depend on it.

@@ -270,6 +270,15 @@ T46 separates the shared FUSE runner export guard from v6 entrypoint naming:
   `kafs_v6_runtime.c`, and production `kafs` still does not link v6 runtime
   helpers.
 
+T47 renames the local shared FUSE runner helper inside `kafs.c`:
+
+- `kafs_main_run_fuse()` is now `kafs_shared_fuse_run_with_cleanup()`, matching
+  the fact that both production `kafs` main and the `kafs-v6` shared-runner
+  export use the same local `fuse_main()` / cleanup path;
+- the exported `kafs_shared_fuse_run()` handoff contract is unchanged;
+- no FUSE operation implementation is duplicated, and no successful production
+  v6 runtime path is added.
+
 The remaining pureification pressure points are:
 
 - removal or retirement plan for legacy v6 diagnostic scaffolding in `kafs`
@@ -347,7 +356,10 @@ runtime path. T45 renames the local shared FUSE operation table boundary in
 shared-operation compile guard and `kafs_shared_fuse_operation_table`. T46
 renames the remaining `kafs.c` shared-runner export guard to
 `KAFS_SHARED_FUSE_RUNNER_EXPORT`, so the source-level export condition describes
-the shared runner instead of v6 admission.
+the shared runner instead of v6 admission. T47 renames the local shared runner
+implementation helper to `kafs_shared_fuse_run_with_cleanup()`, so the helper
+used by both production main and the exported shared-runner handoff no longer
+appears production-main-owned.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).

@@ -13450,8 +13450,8 @@ static int kafs_main_cleanup(kafs_context_t *ctx, char *hotplug_uds_path, int rc
 }
 
 #ifdef KAFS_COMPILE_SHARED_FUSE_OPERATIONS
-static int kafs_main_run_fuse(kafs_context_t *ctx, int argc_fuse, char **argv_fuse,
-                              char *hotplug_uds_path)
+static int kafs_shared_fuse_run_with_cleanup(kafs_context_t *ctx, int argc_fuse, char **argv_fuse,
+                                             char *hotplug_uds_path)
 {
   fuse_set_log_func(kafs_fuse_log_func);
   int rc = fuse_main(argc_fuse, argv_fuse, kafs_shared_fuse_operations(), ctx);
@@ -13471,7 +13471,7 @@ int kafs_shared_fuse_run(kafs_context_t *ctx, int argc_fuse, char **argv_fuse,
 
   char hotplug_uds_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
   hotplug_uds_path[0] = '\0';
-  return kafs_main_run_fuse(ctx, argc_fuse, argv_fuse, hotplug_uds_path);
+  return kafs_shared_fuse_run_with_cleanup(ctx, argc_fuse, argv_fuse, hotplug_uds_path);
 }
 #endif
 
@@ -13569,6 +13569,6 @@ int main(int argc, char **argv)
   kafs_main_apply_fuse_readonly_arg(&ctx, argv_fuse, &argc_fuse);
   kafs_main_log_runtime_options(&ctx, writeback_cache_enabled, writeback_cache_explicit,
                                 trim_on_free_enabled, trim_on_free_explicit, argc_fuse, argv_fuse);
-  return kafs_main_run_fuse(&ctx, argc_fuse, argv_fuse, hotplug_uds_path);
+  return kafs_shared_fuse_run_with_cleanup(&ctx, argc_fuse, argv_fuse, hotplug_uds_path);
 }
 #endif
