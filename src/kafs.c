@@ -12979,11 +12979,12 @@ static void kafs_main_apply_fuse_readonly_arg(kafs_context_t *ctx, char **argv_f
   argv_fuse[*argc_fuse] = NULL;
 }
 
-static void kafs_main_log_runtime_options(kafs_context_t *ctx, kafs_bool_t writeback_cache_enabled,
-                                          kafs_bool_t writeback_cache_explicit,
-                                          kafs_bool_t trim_on_free_enabled,
-                                          kafs_bool_t trim_on_free_explicit, int argc_fuse,
-                                          char **argv_fuse)
+static void kafs_shared_fuse_log_runtime_options(kafs_context_t *ctx,
+                                                 kafs_bool_t writeback_cache_enabled,
+                                                 kafs_bool_t writeback_cache_explicit,
+                                                 kafs_bool_t trim_on_free_enabled,
+                                                 kafs_bool_t trim_on_free_explicit, int argc_fuse,
+                                                 char **argv_fuse)
 {
   g_kafs_writeback_cache_enabled = writeback_cache_enabled ? 1 : 0;
   ctx->c_trim_on_free = trim_on_free_enabled ? 1u : 0u;
@@ -13465,9 +13466,9 @@ int kafs_shared_fuse_run(kafs_context_t *ctx, int argc_fuse, char **argv_fuse,
                          const kafs_shared_fuse_runtime_options_t *opts)
 {
   if (opts)
-    kafs_main_log_runtime_options(ctx, opts->writeback_cache_enabled,
-                                  opts->writeback_cache_explicit, opts->trim_on_free_enabled,
-                                  opts->trim_on_free_explicit, argc_fuse, argv_fuse);
+    kafs_shared_fuse_log_runtime_options(ctx, opts->writeback_cache_enabled,
+                                         opts->writeback_cache_explicit, opts->trim_on_free_enabled,
+                                         opts->trim_on_free_explicit, argc_fuse, argv_fuse);
 
   char hotplug_uds_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
   hotplug_uds_path[0] = '\0';
@@ -13567,8 +13568,9 @@ int main(int argc, char **argv)
                             mt_cnt_override_set, argv_fuse, &argc_fuse, mt_opt_buf,
                             sizeof(mt_opt_buf));
   kafs_main_apply_fuse_readonly_arg(&ctx, argv_fuse, &argc_fuse);
-  kafs_main_log_runtime_options(&ctx, writeback_cache_enabled, writeback_cache_explicit,
-                                trim_on_free_enabled, trim_on_free_explicit, argc_fuse, argv_fuse);
+  kafs_shared_fuse_log_runtime_options(&ctx, writeback_cache_enabled, writeback_cache_explicit,
+                                       trim_on_free_enabled, trim_on_free_explicit, argc_fuse,
+                                       argv_fuse);
   return kafs_shared_fuse_run_with_cleanup(&ctx, argc_fuse, argv_fuse, hotplug_uds_path);
 }
 #endif

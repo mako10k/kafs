@@ -1792,6 +1792,47 @@
   - clone strict source gate は 35 clones / 345 duplicated lines / 0.91% で閾値内だった。
   - `make check` は all 29 tests passed で完了した。
 
+### SDW-V6RT-T50 shared FUSE runtime option logger boundary naming
+
+- 目的: production `kafs` main と `kafs-v6` shared runner export が共用する runtime
+  option logging helper を production main 名から分離し、shared FUSE runner の
+  pre-`fuse_main()` runtime option boundary として読める名前に寄せる。これは命名境界の
+  整理であり、runtime option semantics や write surface expansion ではない。
+- 変更:
+  - `src/kafs.c` の local `kafs_main_log_runtime_options()` を
+    `kafs_shared_fuse_log_runtime_options()` に改名する。
+  - production `kafs` main と `kafs-v6` shared runner export は引き続き同じ runtime
+    option logging helper を呼ぶ。
+  - logging content、writeback cache / trim state handoff、FUSE argv dump behavior は変更しない。
+- 完了条件:
+  - `lsp-cli` の rename dry-run / references で active compile branch の rename 対象を
+    確認し、preprocessor inactive branch は `rg` で残参照を確認する。
+  - `src/kafs.c` の runtime option logging helper 名が production main 所有ではなく
+    shared FUSE runner runtime option 所有として読める。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release
+    範囲から広げない。
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS
+    している。
+- 実装結果:
+  - `lsp-cli` の rename dry-run は active production compile branch の定義と
+    production main call site を返した。
+  - `KAFS_SHARED_FUSE_RUNNER_EXPORT` 側は compile database 上の inactive branch だったため、
+    `rg` で残参照を確認して同じ `kafs_shared_fuse_log_runtime_options()` 呼び出しへ揃えた。
+  - runtime option logging content、shared FUSE operation table、cleanup path、
+    write-surface policy は変更していない。
+- 検証:
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+  - `lsp-cli --root . --server clangd --format pretty references src/kafs.c 12981 12` は
+    active compile branch の definition と production main call site の 2 箇所を返した。
+  - `rg` は `kafs_shared_fuse_log_runtime_options()` の definition、`kafs-v6`
+    shared runner export call site、production main call site の 3 箇所を返し、旧名は残らなかった。
+  - clone strict source gate は 35 clones / 345 duplicated lines / 0.91% で閾値内だった。
+  - `make check` は all 29 tests passed で完了した。
+
 ---
 
 ## 最初に着手するチケット
