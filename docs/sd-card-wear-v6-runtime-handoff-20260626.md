@@ -434,6 +434,38 @@ Validation result:
 - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` completed with all 29 tests
   passed.
 
+## 2026-07-06 T37 validation
+
+Commands completed successfully:
+
+```sh
+./scripts/format.sh fix
+make -j2
+git diff --check
+./scripts/test-cli-surface.sh
+make -C tests check TESTS=v6_descriptor_smoketest
+./scripts/static-checks.sh
+KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2
+```
+
+Current T37 boundary:
+
+- `kafs_v6_fuse_policy.h` owns `kafs_v6_controlled_write_op_t` and the mapping
+  from controlled-write rejected-operation ids to log wording.
+- `src/kafs.c` still owns the shared FUSE operation implementations and table,
+  but passes enum values to the v6 policy helper instead of free-form rejection
+  strings.
+- The controlled-write write surface remains limited to regular-file
+  create/write/fsync/release.
+
+Validation result:
+
+- `./scripts/static-checks.sh` completed format, lint, clone, and complexity
+  checks successfully. The strict source clone report was 36 clones, 353
+  duplicated lines, 0.96%, which remains below the configured threshold.
+- `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` completed with all 29 tests
+  passed.
+
 ## Original validation run
 
 Commands completed successfully:
@@ -471,9 +503,9 @@ block this closeout.
 
 ## Current next boundary
 
-The next boundary remains v6 runtime pureification after the v6 controlled-write
-data-layout policy helper extraction. Do not broaden the v6 write surface as
-the next step.
+The next boundary remains v6 runtime pureification after the v6
+rejected-operation vocabulary extraction. Do not broaden the v6 write surface
+as the next step.
 
 Start from the pressure points recorded in
 [sd-card-wear-v6-runtime-entrypoint-plan.md](sd-card-wear-v6-runtime-entrypoint-plan.md):

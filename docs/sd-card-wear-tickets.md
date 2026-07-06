@@ -1341,6 +1341,37 @@
   - clone strict source gate は 36 clones / 353 duplicated lines / 0.96% で閾値内だった。
   - `make check` は all 29 tests passed で完了した。
 
+### SDW-V6RT-T37 v6 controlled-write rejected-operation vocabulary extraction
+
+- 目的: `src/kafs.c` の shared FUSE operation 実装に散っている controlled-write
+  rejection operation 文字列を `kafs_v6_fuse_policy.h` 側の語彙に移す。これは
+  operation-helper extraction slice であり、write surface expansion ではない。
+- 変更:
+  - `kafs_v6_controlled_write_op_t` を追加し、reflink / copy / truncate / unlink など
+    rejected operation id を v6 policy helper 側に集約する。
+  - `kafs_v6_controlled_write_op_name()`、`kafs_v6_controlled_write_reject_op()`、
+    `kafs_v6_controlled_write_reject_if_op()` を追加する。
+  - `src/kafs.c` の controlled-write rejection は free-form string ではなく enum value を
+    policy helper に渡す。
+  - 旧 `kafs_v6_controlled_write_reject_if()` は header surface から外す。
+- 完了条件:
+  - `src/kafs.c` は shared FUSE operation 実装と operation table を保持するが、
+    controlled-write rejection wording を直接所有しない。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - `make -j2`、`git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS している。
+- 実装結果:
+  - `src/kafs_v6_fuse_policy.h` に rejected-operation enum と名前変換 helper を追加した。
+  - `src/kafs.c` の direct rejection は enum-based helper 呼び出しへ置換した。
+  - controlled-write write surface は広げていない。
+- 検証:
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+  - clone strict source gate は 36 clones / 353 duplicated lines / 0.96% で閾値内だった。
+  - `make check` は all 29 tests passed で完了した。
+
 ---
 
 ## 最初に着手するチケット

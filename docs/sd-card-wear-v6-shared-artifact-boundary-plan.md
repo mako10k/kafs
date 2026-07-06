@@ -1,7 +1,7 @@
 # KAFS format v6 shared artifact boundary plan
 
 Date: 2026-07-06
-Status: accepted; v6 controlled-write data-layout policy helper extraction reflected
+Status: accepted; v6 controlled-write rejected-operation vocabulary extraction reflected
 
 ## Purpose
 
@@ -106,7 +106,7 @@ Keep this code local until retired or moved:
 These paths are compatibility and smoke scaffolding, not the target v6 runtime
 contract.
 
-## T25-T36 Result And Next Boundary
+## T25-T37 Result And Next Boundary
 
 `SDW-V6RT-T25 kafs-v6 inspection admission migration` moved the read-only v6
 inspection acceptance path behind `kafs-v6`.
@@ -208,6 +208,12 @@ release reclaim bypass, and local write-path selection now call
 `kafs_v6_fuse_policy.h` helpers. The shared FUSE operation implementations
 remain in `kafs.c`, but `kafs.c` no longer reads the raw controlled-write active
 flag directly.
+
+`SDW-V6RT-T37` moves controlled-write rejected-operation vocabulary into
+`kafs_v6_fuse_policy.h`. The shared operation implementations still live in
+`kafs.c`, but they pass `kafs_v6_controlled_write_op_t` values instead of
+free-form strings. This keeps rejection wording and operation ids on the v6
+policy side while preserving the same write-surface boundary.
 
 The next slice should reduce the remaining common-object bridge around shared
 FUSE operation implementations or retire legacy `kafs` v6 diagnostic
