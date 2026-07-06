@@ -2,12 +2,11 @@
 
 #include "kafs_inode.h"
 #include "kafs_rpc.h"
+#include "kafs_v6_mount_options.h"
 #include "kafs_v6_runtime.h"
 
-#include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -21,14 +20,6 @@
 #define KAFS_V6_ENTRYPOINT_BG_DEDUP_START_USED_PCT_DEFAULT 85u
 #define KAFS_V6_ENTRYPOINT_BG_DEDUP_PRESSURE_USED_PCT_DEFAULT 95u
 #define KAFS_V6_ENTRYPOINT_BG_DEDUP_MODE_COLD 1u
-
-typedef struct kafs_v6_entrypoint_adapter_mount_filter
-{
-  kafs_bool_t enable_mt;
-  int saw_max_threads;
-  unsigned mt_cnt_override;
-  int mt_cnt_override_set;
-} kafs_v6_entrypoint_adapter_mount_filter_t;
 
 static kafs_v6_runtime_mode_t
 kafs_v6_entrypoint_adapter_runtime_mode(kafs_v6_entrypoint_adapter_mode_t mode)
@@ -78,273 +69,6 @@ kafs_v6_entrypoint_adapter_request_from_options(kafs_v6_runtime_request_t *req,
   req->fsync_policy_full_requested = opts->fsync_policy_full_requested != 0;
   req->fsync_policy_other_requested = opts->fsync_policy_other_requested != 0;
   req->fsync_policy = opts->fsync_policy;
-}
-
-static int kafs_v6_entrypoint_adapter_starts_with(const char *s, const char *prefix)
-{
-  size_t len = strlen(prefix);
-  return strncmp(s, prefix, len) == 0;
-}
-
-static int
-kafs_v6_entrypoint_adapter_parse_mt_token(const char *tok,
-                                          kafs_v6_entrypoint_adapter_mount_filter_t *filter)
-{
-  if (kafs_v6_entrypoint_adapter_starts_with(tok, "max_threads=") ||
-      strcmp(tok, "max_threads") == 0)
-  {
-    filter->saw_max_threads = 1;
-    return 0;
-  }
-
-  if (strcmp(tok, "multi_thread") == 0 || strcmp(tok, "multi-thread") == 0 ||
-      strcmp(tok, "multithread") == 0)
-  {
-    filter->enable_mt = KAFS_TRUE;
-    return 1;
-  }
-
-  const char *vstr = NULL;
-  if (kafs_v6_entrypoint_adapter_starts_with(tok, "multi_thread="))
-    vstr = tok + strlen("multi_thread=");
-  else if (kafs_v6_entrypoint_adapter_starts_with(tok, "multi-thread="))
-    vstr = tok + strlen("multi-thread=");
-  else if (kafs_v6_entrypoint_adapter_starts_with(tok, "multithread="))
-    vstr = tok + strlen("multithread=");
-  if (!vstr)
-    return 0;
-
-  char *endp = NULL;
-  unsigned long value = strtoul(vstr, &endp, 10);
-  if (!endp || *endp != '\0')
-  {
-    fprintf(stderr, "invalid -o multi_thread=N: '%s'\n", vstr);
-    return 2;
-  }
-  if (value < 1)
-    value = 1;
-  if (value > 100000)
-    value = 100000;
-  filter->enable_mt = KAFS_TRUE;
-  filter->mt_cnt_override = (unsigned)value;
-  filter->mt_cnt_override_set = 1;
-  return 1;
-}
-
-static int kafs_v6_entrypoint_adapter_is_internal_mount_token(
-    const char *tok, kafs_v6_entrypoint_adapter_mount_filter_t *filter)
-{
-  int rc = kafs_v6_entrypoint_adapter_parse_mt_token(tok, filter);
-  if (rc != 0)
-    return rc;
-
-  if (strcmp(tok, "no_writeback_cache") == 0 || strcmp(tok, "no-writeback-cache") == 0 ||
-      strcmp(tok, "writeback_cache") == 0 || strcmp(tok, "writeback-cache") == 0 ||
-      strcmp(tok, "no_trim_on_free") == 0 || strcmp(tok, "no-trim-on-free") == 0 ||
-      strcmp(tok, "trim_on_free") == 0 || strcmp(tok, "trim-on-free") == 0 ||
-      strcmp(tok, "hotplug") == 0 || strcmp(tok, "sd_card_profile") == 0 ||
-      strcmp(tok, "sd-card-profile") == 0 || strcmp(tok, "v6_inspection_mount") == 0 ||
-      strcmp(tok, "v6-inspection-mount") == 0 || strcmp(tok, "v6_write_mount") == 0 ||
-      strcmp(tok, "v6-write-mount") == 0 || strcmp(tok, "bg_dedup_scan") == 0 ||
-      strcmp(tok, "dedup_scan") == 0 || strcmp(tok, "no_bg_dedup_scan") == 0 ||
-      strcmp(tok, "no-bg-dedup-scan") == 0 || strcmp(tok, "no_dedup_scan") == 0 ||
-      strcmp(tok, "no-dedup-scan") == 0)
-    return 1;
-
-  static const char *const prefixes[] = {
-      "hotplug=",
-      "hotplug_uds=",
-      "hotplug-uds=",
-      "hotplug_back_bin=",
-      "hotplug-back-bin=",
-      "sd_card_profile=",
-      "sd-card-profile=",
-      "pending_worker_prio=",
-      "dedup_worker_prio=",
-      "pending_worker_nice=",
-      "dedup_worker_nice=",
-      "pending_ttl_soft_ms=",
-      "pending_ttl_hard_ms=",
-      "pendinglog_cap_initial=",
-      "pending_cap_initial=",
-      "pendinglog_cap_min=",
-      "pending_cap_min=",
-      "pendinglog_cap_max=",
-      "pending_cap_max=",
-      "fsync_policy=",
-      "bg_dedup_scan=",
-      "dedup_scan=",
-      "bg_dedup_interval_ms=",
-      "dedup_interval_ms=",
-      "bg_dedup_quiet_interval_ms=",
-      "dedup_quiet_interval_ms=",
-      "bg_dedup_pressure_interval_ms=",
-      "dedup_pressure_interval_ms=",
-      "bg_dedup_start_used_pct=",
-      "dedup_start_used_pct=",
-      "bg_dedup_pressure_used_pct=",
-      "dedup_pressure_used_pct=",
-      "bg_dedup_worker_prio=",
-      "dedup_scan_worker_prio=",
-      "bg_dedup_worker_nice=",
-      "dedup_scan_worker_nice=",
-  };
-  for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i)
-  {
-    if (kafs_v6_entrypoint_adapter_starts_with(tok, prefixes[i]))
-      return 1;
-  }
-
-  return 0;
-}
-
-static int kafs_v6_entrypoint_adapter_append_filtered_token(char *filtered, size_t filtered_size,
-                                                            size_t *used, const char *tok)
-{
-  size_t tok_len = strlen(tok);
-  size_t extra = tok_len + (*used ? 1u : 0u);
-  if (extra >= filtered_size || *used > filtered_size - 1u - extra)
-  {
-    fprintf(stderr, "kafs-v6: filtered FUSE option list is too long.\n");
-    return 2;
-  }
-  if (*used)
-    filtered[(*used)++] = ',';
-  memcpy(filtered + *used, tok, tok_len);
-  *used += tok_len;
-  filtered[*used] = '\0';
-  return 0;
-}
-
-static int
-kafs_v6_entrypoint_adapter_filter_o_list(const char *oval, char *filtered, size_t filtered_size,
-                                         kafs_v6_entrypoint_adapter_mount_filter_t *filter)
-{
-  char *dup = strdup(oval);
-  if (!dup)
-  {
-    perror("strdup");
-    return 2;
-  }
-
-  filtered[0] = '\0';
-  size_t used = 0;
-  char *saveptr = NULL;
-  for (char *tok = strtok_r(dup, ",", &saveptr); tok; tok = strtok_r(NULL, ",", &saveptr))
-  {
-    while (*tok == ' ' || *tok == '\t')
-      tok++;
-    if (*tok == '\0')
-    {
-      fprintf(stderr, "kafs-v6: empty token in -o option list.\n");
-      free(dup);
-      return 2;
-    }
-
-    int internal = kafs_v6_entrypoint_adapter_is_internal_mount_token(tok, filter);
-    if (internal == 2)
-    {
-      free(dup);
-      return 2;
-    }
-    if (internal == 1)
-      continue;
-
-    if (kafs_v6_entrypoint_adapter_append_filtered_token(filtered, filtered_size, &used, tok) != 0)
-    {
-      free(dup);
-      return 2;
-    }
-  }
-
-  free(dup);
-  return 0;
-}
-
-static int kafs_v6_entrypoint_adapter_append_o_arg(char **argv_clean, int *argc_clean, char **owned,
-                                                   int *owned_count, const char *filtered,
-                                                   int compact)
-{
-  char *kept = NULL;
-  if (compact)
-  {
-    kept = (char *)malloc(strlen(filtered) + 3u);
-    if (!kept)
-    {
-      perror("malloc");
-      return 2;
-    }
-    kept[0] = '-';
-    kept[1] = 'o';
-    strcpy(kept + 2, filtered);
-    argv_clean[(*argc_clean)++] = kept;
-  }
-  else
-  {
-    kept = strdup(filtered);
-    if (!kept)
-    {
-      perror("strdup");
-      return 2;
-    }
-    argv_clean[(*argc_clean)++] = "-o";
-    argv_clean[(*argc_clean)++] = kept;
-  }
-
-  owned[(*owned_count)++] = kept;
-  return 0;
-}
-
-static int kafs_v6_entrypoint_adapter_filter_fuse_args(
-    const char *mountpoint, int argc_extra, char **argv_extra, char **argv_clean, int *argc_clean,
-    char **owned, int *owned_count, kafs_v6_entrypoint_adapter_mount_filter_t *filter)
-{
-  *argc_clean = 0;
-  *owned_count = 0;
-  argv_clean[(*argc_clean)++] = "kafs-v6";
-  argv_clean[(*argc_clean)++] = (char *)mountpoint;
-
-  for (int i = 0; i < argc_extra; ++i)
-  {
-    char *arg = argv_extra[i];
-    const char *oval = NULL;
-    int compact = 0;
-    if (strcmp(arg, "-o") == 0)
-    {
-      if (i + 1 >= argc_extra)
-      {
-        fprintf(stderr, "kafs-v6: -o requires an option list.\n");
-        return 2;
-      }
-      oval = argv_extra[++i];
-    }
-    else if (strncmp(arg, "-o", 2) == 0 && arg[2] != '\0')
-    {
-      oval = arg + 2;
-      compact = 1;
-    }
-
-    if (!oval)
-    {
-      argv_clean[(*argc_clean)++] = arg;
-      continue;
-    }
-
-    char filtered[strlen(oval) + 1u];
-    if (kafs_v6_entrypoint_adapter_filter_o_list(oval, filtered, sizeof(filtered), filter) != 0)
-      return 2;
-    if (filtered[0] != '\0' &&
-        kafs_v6_entrypoint_adapter_append_o_arg(argv_clean, argc_clean, owned, owned_count,
-                                                filtered, compact) != 0)
-      return 2;
-  }
-  return 0;
-}
-
-static void kafs_v6_entrypoint_adapter_free_owned(char **owned, int owned_count)
-{
-  for (int i = 0; i < owned_count; ++i)
-    free(owned[i]);
 }
 
 static void kafs_v6_entrypoint_adapter_set_mountpoint(kafs_context_t *ctx, const char *mount_arg,
@@ -442,38 +166,14 @@ static int kafs_v6_entrypoint_adapter_has_single_arg(char **argv_clean, int argc
   return 0;
 }
 
-static unsigned
-kafs_v6_entrypoint_adapter_mt_thread_count(const kafs_v6_entrypoint_adapter_mount_filter_t *filter)
+static void kafs_v6_entrypoint_adapter_apply_fuse_single_arg(kafs_v6_mount_thread_options_t *thread,
+                                                             int saw_single, char **argv_fuse,
+                                                             int *argc_fuse)
 {
-  unsigned mt_cnt = 8;
-  if (filter->mt_cnt_override_set)
-    mt_cnt = filter->mt_cnt_override;
-  else
-  {
-    const char *mt_env = getenv("KAFS_MAX_THREADS");
-    if (mt_env && *mt_env)
-    {
-      char *endp = NULL;
-      unsigned long parsed = strtoul(mt_env, &endp, 10);
-      if (endp && *endp == '\0')
-        mt_cnt = (unsigned)parsed;
-    }
-    if (mt_cnt < 1)
-      mt_cnt = 1;
-    if (mt_cnt > 100000)
-      mt_cnt = 100000;
-  }
-  return mt_cnt;
-}
-
-static void
-kafs_v6_entrypoint_adapter_apply_fuse_single_arg(kafs_v6_entrypoint_adapter_mount_filter_t *filter,
-                                                 int saw_single, char **argv_fuse, int *argc_fuse)
-{
-  if (!filter->enable_mt && !saw_single)
+  if (!thread->enable_mt && !saw_single)
     argv_fuse[(*argc_fuse)++] = "-s";
-  if (filter->enable_mt && saw_single)
-    filter->enable_mt = KAFS_FALSE;
+  if (thread->enable_mt && saw_single)
+    thread->enable_mt = KAFS_FALSE;
 }
 
 static void kafs_v6_entrypoint_adapter_apply_fuse_debug_arg(char **argv_fuse, int *argc_fuse)
@@ -482,14 +182,15 @@ static void kafs_v6_entrypoint_adapter_apply_fuse_debug_arg(char **argv_fuse, in
     argv_fuse[(*argc_fuse)++] = "-d";
 }
 
-static void kafs_v6_entrypoint_adapter_apply_fuse_mt_arg(
-    const kafs_v6_entrypoint_adapter_mount_filter_t *filter, char **argv_fuse, int *argc_fuse,
-    char *mt_opt_buf, size_t mt_opt_buf_size)
+static void
+kafs_v6_entrypoint_adapter_apply_fuse_mt_arg(const kafs_v6_mount_thread_options_t *thread,
+                                             char **argv_fuse, int *argc_fuse, char *mt_opt_buf,
+                                             size_t mt_opt_buf_size)
 {
-  if (!filter->enable_mt || filter->saw_max_threads)
+  if (!thread->enable_mt || thread->saw_max_threads)
     return;
 
-  unsigned mt_cnt = kafs_v6_entrypoint_adapter_mt_thread_count(filter);
+  unsigned mt_cnt = kafs_v6_mount_options_thread_count(thread);
   snprintf(mt_opt_buf, mt_opt_buf_size, "max_threads=%u", mt_cnt);
   argv_fuse[(*argc_fuse)++] = "-o";
   argv_fuse[(*argc_fuse)++] = mt_opt_buf;
@@ -507,16 +208,17 @@ static int kafs_v6_entrypoint_adapter_append_readonly_arg(const kafs_context_t *
   return argc_fuse;
 }
 
-static void kafs_v6_entrypoint_adapter_build_fuse_argv(
-    char **argv_clean, int argc_clean, kafs_v6_entrypoint_adapter_mount_filter_t *filter,
-    char **argv_fuse, int *argc_fuse, char *mt_opt_buf, size_t mt_opt_buf_size)
+static void kafs_v6_entrypoint_adapter_build_fuse_argv(char **argv_clean, int argc_clean,
+                                                       kafs_v6_mount_thread_options_t *thread,
+                                                       char **argv_fuse, int *argc_fuse,
+                                                       char *mt_opt_buf, size_t mt_opt_buf_size)
 {
   memcpy(argv_fuse, argv_clean, sizeof(argv_fuse[0]) * (size_t)argc_clean);
   int saw_single = kafs_v6_entrypoint_adapter_has_single_arg(argv_clean, argc_clean);
   *argc_fuse = argc_clean;
-  kafs_v6_entrypoint_adapter_apply_fuse_single_arg(filter, saw_single, argv_fuse, argc_fuse);
+  kafs_v6_entrypoint_adapter_apply_fuse_single_arg(thread, saw_single, argv_fuse, argc_fuse);
   kafs_v6_entrypoint_adapter_apply_fuse_debug_arg(argv_fuse, argc_fuse);
-  kafs_v6_entrypoint_adapter_apply_fuse_mt_arg(filter, argv_fuse, argc_fuse, mt_opt_buf,
+  kafs_v6_entrypoint_adapter_apply_fuse_mt_arg(thread, argv_fuse, argc_fuse, mt_opt_buf,
                                                mt_opt_buf_size);
   argv_fuse[*argc_fuse] = NULL;
 }
@@ -599,11 +301,11 @@ int kafs_v6_entrypoint_adapter_mount_main(const char *image_path, const char *mo
   char *owned[argc_extra + 3];
   int argc_clean = 0;
   int owned_count = 0;
-  kafs_v6_entrypoint_adapter_mount_filter_t filter = {0};
-  if (kafs_v6_entrypoint_adapter_filter_fuse_args(mountpoint, argc_extra, argv_extra, argv_clean,
-                                                  &argc_clean, owned, &owned_count, &filter) != 0)
+  kafs_v6_mount_thread_options_t thread = {0};
+  if (kafs_v6_mount_options_filter_fuse_args(mountpoint, argc_extra, argv_extra, argv_clean,
+                                             &argc_clean, owned, &owned_count, &thread, err) != 0)
   {
-    kafs_v6_entrypoint_adapter_free_owned(owned, owned_count);
+    kafs_v6_mount_options_free_owned(owned, owned_count);
     return 2;
   }
 
@@ -613,27 +315,27 @@ int kafs_v6_entrypoint_adapter_mount_main(const char *image_path, const char *mo
 
   if (kafs_v6_entrypoint_adapter_open_context(&ctx, image_path, opts->mode, err) != 0)
   {
-    kafs_v6_entrypoint_adapter_free_owned(owned, owned_count);
+    kafs_v6_mount_options_free_owned(owned, owned_count);
     return 2;
   }
   if (kafs_v6_entrypoint_adapter_lock_runtime_image(&ctx, image_path) != 0)
   {
     kafs_ctx_unmap_image(&ctx);
     kafs_v6_entrypoint_adapter_close_context_fd(&ctx);
-    kafs_v6_entrypoint_adapter_free_owned(owned, owned_count);
+    kafs_v6_mount_options_free_owned(owned, owned_count);
     return 2;
   }
 
   char *argv_fuse[argc_clean + 10];
   char mt_opt_buf[64];
   int argc_fuse = 0;
-  kafs_v6_entrypoint_adapter_build_fuse_argv(argv_clean, argc_clean, &filter, argv_fuse, &argc_fuse,
+  kafs_v6_entrypoint_adapter_build_fuse_argv(argv_clean, argc_clean, &thread, argv_fuse, &argc_fuse,
                                              mt_opt_buf, sizeof(mt_opt_buf));
   argc_fuse = kafs_v6_entrypoint_adapter_append_readonly_arg(&ctx, argv_fuse, argc_fuse);
 
   kafs_v6_entrypoint_adapter_fuse_options_t fuse_opts;
   kafs_v6_entrypoint_adapter_fuse_options_from_mount(&fuse_opts, &ctx, opts);
   int rc = kafs_v6_entrypoint_adapter_run_shared_fuse(&ctx, argc_fuse, argv_fuse, &fuse_opts);
-  kafs_v6_entrypoint_adapter_free_owned(owned, owned_count);
+  kafs_v6_mount_options_free_owned(owned, owned_count);
   return rc;
 }

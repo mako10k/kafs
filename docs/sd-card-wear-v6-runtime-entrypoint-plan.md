@@ -210,6 +210,17 @@ T40 moves the v6 mount-main preparation body into the entrypoint adapter:
 - shared FUSE operation implementations and the operation table remain in
   `kafs.c`; the controlled-write surface is unchanged.
 
+T41 separates v6 mount option policy from mount-main orchestration:
+
+- `kafs_v6_mount_options.[ch]` owns the v6-owned `-o` token vocabulary,
+  runtime-admission request recording, FUSE passthrough filtering, and
+  `multi_thread` / `max_threads` handoff state;
+- `kafs_v6.c` keeps CLI argument shape, mode/image/mountpoint selection, and
+  `-o` list splitting, but delegates token meaning to the option helper;
+- `kafs_v6_entrypoint_adapter.c` keeps mount-main orchestration, context setup,
+  image locking, FUSE argv assembly, and shared-runner handoff, but no longer
+  carries the v6 option vocabulary.
+
 The remaining pureification pressure points are:
 
 - removal or retirement plan for legacy v6 diagnostic scaffolding in `kafs`
@@ -269,9 +280,11 @@ header exposes an adapter-local mode enum instead of re-exporting
 entrypoint adapter terminology and records source ownership. T40 moves v6
 mount-main preparation, FUSE option filtering, context initialization, image
 lock, and FUSE argv assembly into the adapter; `kafs.c` keeps the shared
-`fuse_main()` / `kafs_operations` runner and cleanup wrapper. Later slices can
-replace the common-object adapter path with a non-installed static archive or
-narrower shared FUSE operation helpers.
+`fuse_main()` / `kafs_operations` runner and cleanup wrapper. T41 moves v6
+option interpretation and FUSE passthrough filtering from the adapter into
+`kafs_v6_mount_options.[ch]`, leaving the adapter with orchestration and argv
+assembly only. Later slices can replace the common-object adapter path with a
+non-installed static archive or narrower shared FUSE operation helpers.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).

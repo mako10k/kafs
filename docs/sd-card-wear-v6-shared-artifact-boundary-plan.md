@@ -51,7 +51,8 @@ live in `kafs.c`; it is not a v5/v6 compatibility layer.
 | `src/kafs.c` | production runtime plus temporary shared FUSE implementation | `kafs`, `kafs-v6`, `kafsctl`, `kafs-back` with per-target guards | v4/v5 runtime, legacy v6 fail-closed diagnostics, shared FUSE operations, shared FUSE runner/cleanup wrapper | v6 admission policy, v6 mount-main preparation, v6 runtime open/admit/init ownership, v6 write-surface expansion |
 | `src/kafs_v6.c` | v6 product entrypoint | `kafs-v6` only | `kafs-v6` CLI shape, mode selection, descriptor preflight handoff, admission signal | shared FUSE operation implementation, production `kafs` behavior |
 | `src/kafs_v6_runtime.c` | v6-only runtime policy/helper | `kafs-v6` only | v6 request reporting, image open, descriptor-backed runtime admission, service init | production `kafs` link surface, generic v4/v5 runtime context setup |
-| `src/kafs_v6_entrypoint_adapter.[ch]` | v6-only entrypoint adapter | `kafs-v6` only | translation from `kafs-v6` parser/main state to shared FUSE runtime entrypoints, v6 FUSE option filtering, context initialization, image lock, FUSE argv assembly, and runtime handoff | v5/v6 compatibility policy, user-facing helper CLI, installed ABI |
+| `src/kafs_v6_mount_options.[ch]` | v6-only mount option policy helper | `kafs-v6` only | v6-owned `-o` token vocabulary, runtime request token recording, FUSE passthrough filtering, `multi_thread` / `max_threads` handoff state | mount-main orchestration, context open/admit/init, shared FUSE operation implementation, installed ABI |
+| `src/kafs_v6_entrypoint_adapter.[ch]` | v6-only entrypoint adapter | `kafs-v6` only | translation from `kafs-v6` parser/main state to shared FUSE runtime entrypoints, context initialization, image lock, FUSE argv assembly, and runtime handoff | v5/v6 compatibility policy, user-facing helper CLI, v6 option vocabulary, installed ABI |
 | `src/kafs_v6_fuse_policy.h` | v6 FUSE policy helper | targets compiling shared FUSE operations | controlled-write active checks, rejected-operation vocabulary, write-surface gates | FUSE operation table ownership, generic filesystem mutation logic |
 | `src/kafs_v6_admission.h` | shared pure v6 metadata/admission helper | runtime diagnostics and v6 runtime helper users | descriptor-backed preflight/runtime admission core without product CLI ownership | successful production `kafs` v6 admission |
 | `src/kafs_v6_layout.h` | shared pure metadata helper | offline and runtime users | descriptor layout parsing and validation primitives | runtime admission wording or mount policy |
@@ -255,6 +256,12 @@ operation implementation remains a temporary common-object path.
 filter, context initialization, runtime option handoff, image lock, and FUSE
 argv assembly. `kafs.c` keeps only the shared FUSE runner wrapper for the
 `KAFS_V6_ENTRYPOINT` path, plus the shared operation table and cleanup path.
+
+`SDW-V6RT-T41` moves v6 option interpretation out of the adapter and into
+`kafs_v6_mount_options.[ch]`. The helper is now the single v6-only owner of
+`-o` token classification for both CLI admission recording and FUSE
+passthrough filtering; the adapter consumes the helper result instead of
+carrying its own token vocabulary.
 
 The next slice should reduce the remaining common-object adapter path around
 shared FUSE operation implementations, or retire legacy `kafs` v6 diagnostic

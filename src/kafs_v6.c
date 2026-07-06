@@ -1,6 +1,7 @@
 #include "kafs.h"
 #include "kafs_cli_opts.h"
 #include "kafs_v6_entrypoint_adapter.h"
+#include "kafs_v6_mount_options.h"
 #include "kafs_v6_runtime.h"
 
 #include <errno.h>
@@ -76,53 +77,6 @@ static int kafs_v6_set_mode(kafs_v6_options_t *opts, kafs_v6_runtime_mode_t mode
   return 0;
 }
 
-static void kafs_v6_record_o_token(kafs_v6_options_t *opts, const char *tok)
-{
-  if (strcmp(tok, "ro") == 0)
-  {
-    opts->request.mount_read_only_requested = 1;
-    opts->request.mount_read_only_seen = 1;
-  }
-  else if (strcmp(tok, "rw") == 0)
-    opts->request.mount_read_write_requested = 1;
-  else if (strcmp(tok, "no_writeback_cache") == 0 || strcmp(tok, "no-writeback-cache") == 0)
-    opts->request.no_writeback_cache_requested = 1;
-  else if (strcmp(tok, "writeback_cache") == 0 || strcmp(tok, "writeback-cache") == 0)
-  {
-    opts->request.writeback_cache_enabled = 1;
-    opts->request.writeback_cache_explicit = 1;
-  }
-  else if (strcmp(tok, "no_trim_on_free") == 0 || strcmp(tok, "no-trim-on-free") == 0)
-    opts->request.no_trim_on_free_requested = 1;
-  else if (strcmp(tok, "trim_on_free") == 0 || strcmp(tok, "trim-on-free") == 0)
-    opts->request.trim_on_free_enabled = 1;
-  else if (strcmp(tok, "bg_dedup_scan=off") == 0 || strcmp(tok, "dedup_scan=off") == 0 ||
-           strcmp(tok, "no_bg_dedup_scan") == 0 || strcmp(tok, "no-bg-dedup-scan") == 0)
-    opts->request.bg_dedup_scan_off_requested = 1;
-  else if (strcmp(tok, "bg_dedup_scan") == 0 || strcmp(tok, "dedup_scan") == 0 ||
-           strcmp(tok, "bg_dedup_scan=on") == 0 || strcmp(tok, "dedup_scan=on") == 0)
-  {
-    opts->request.bg_dedup_scan_enabled = 1;
-    opts->request.bg_dedup_scan_explicit = 1;
-  }
-  else if (strcmp(tok, "fsync_policy=full") == 0)
-  {
-    opts->request.fsync_policy_full_requested = 1;
-    opts->request.fsync_policy = KAFS_FSYNC_POLICY_FULL;
-  }
-  else if (strncmp(tok, "fsync_policy=", strlen("fsync_policy=")) == 0)
-    opts->request.fsync_policy_other_requested = 1;
-  else if (strcmp(tok, "v6_inspection_mount") == 0 || strcmp(tok, "v6-inspection-mount") == 0 ||
-           strcmp(tok, "v6_write_mount") == 0 || strcmp(tok, "v6-write-mount") == 0)
-    opts->request.legacy_mode_token_seen = 1;
-  else if (strcmp(tok, "hotplug") == 0 || strncmp(tok, "hotplug=", strlen("hotplug=")) == 0 ||
-           strncmp(tok, "hotplug_uds=", strlen("hotplug_uds=")) == 0 ||
-           strncmp(tok, "hotplug-uds=", strlen("hotplug-uds=")) == 0 ||
-           strncmp(tok, "hotplug_back_bin=", strlen("hotplug_back_bin=")) == 0 ||
-           strncmp(tok, "hotplug-back-bin=", strlen("hotplug-back-bin=")) == 0)
-    opts->request.hotplug_requested = 1;
-}
-
 static int kafs_v6_parse_o_list(kafs_v6_options_t *opts, const char *value)
 {
   char buf[1024];
@@ -152,7 +106,8 @@ static int kafs_v6_parse_o_list(kafs_v6_options_t *opts, const char *value)
       fprintf(stderr, "kafs-v6: empty token in -o option list.\n");
       return -EINVAL;
     }
-    kafs_v6_record_o_token(opts, tok);
+    if (kafs_v6_mount_options_record_runtime_token(&opts->request, tok) != 0)
+      return -EINVAL;
   }
   return 0;
 }

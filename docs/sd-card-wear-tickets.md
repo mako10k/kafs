@@ -1488,6 +1488,40 @@
     `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
     `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
 
+### SDW-V6RT-T41 v6 mount option policy helper split
+
+- 目的: T40 で `src/kafs_v6_entrypoint_adapter.c` に寄せた v6 mount-main から `-o` token の意味付けを
+  分離し、`kafs-v6` CLI と adapter が同じ v6-only option policy helper を参照する形にする。
+  これは option interpretation ownership split であり、write surface expansion ではない。
+- 変更:
+  - `src/kafs_v6_mount_options.[ch]` を追加し、v6-owned `-o` token vocabulary、
+    runtime request への記録、FUSE passthrough filter、`multi_thread` / `max_threads`
+    handoff state を所有させる。
+  - `src/kafs_v6.c` は `-o` list の構文分割と CLI mode / image / mountpoint 選択を続けて所有し、
+    token ごとの admission state update は `kafs_v6_mount_options_record_runtime_token()` へ委譲する。
+  - `src/kafs_v6_entrypoint_adapter.c` は mount-main orchestration、context initialization、image lock、
+    FUSE argv assembly、shared runner handoff に集中し、kafs-owned token vocabulary を持たない。
+  - `src/Makefile.am` の source ownership comment と `kafs-v6` link set に v6 mount option helper を追加する。
+- 完了条件:
+  - `kafs_v6.c` と `kafs_v6_entrypoint_adapter.c` が同じ `-o` token 群を別々に再実装しない。
+  - FUSE に渡す token と adapter が消費する token の境界が helper API 名で分かる。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、
+    `git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS している。
+- 実装結果:
+  - `src/kafs_v6_mount_options.[ch]` に v6 mount option policy を切り出した。
+  - `src/kafs_v6.c` から admission token の if-chain を削除し、runtime request 記録を helper に寄せた。
+  - `src/kafs_v6_entrypoint_adapter.c` から FUSE option filtering / internal token 判定の if-chain を削除し、
+    helper の filter result と thread handoff state だけを使うようにした。
+  - write surface と production `kafs` の v6 fail-closed boundary は変更していない。
+- 検証:
+  - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、
+    `git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+
 ---
 
 ## 最初に着手するチケット
