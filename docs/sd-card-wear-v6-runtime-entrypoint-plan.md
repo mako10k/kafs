@@ -218,6 +218,8 @@ T41 separates v6 mount option policy from mount-main orchestration:
   `multi_thread` / `max_threads` handoff state;
 - `kafs_v6.c` keeps CLI argument shape, mode/image/mountpoint selection, and
   `-o` list splitting, but delegates token meaning to the option helper;
+- the option helper rejects KAFS-owned production tuning tokens that are not
+  part of the v6 admission vocabulary instead of silently stripping them;
 - `kafs_v6_entrypoint_adapter.c` keeps mount-main orchestration, context setup,
   image locking, FUSE argv assembly, and shared-runner handoff, but no longer
   carries the v6 option vocabulary.

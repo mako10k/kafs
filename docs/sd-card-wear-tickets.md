@@ -1718,6 +1718,41 @@
     `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
     `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
 
+### SDW-V6RT-T48 kafs-v6 unsupported KAFS option rejection
+
+- 目的: T41 で v6 専用 `-o` token helper へ分離した後、`kafs-v6` が解釈しない
+  production `kafs` 固有 tuning token を黙って strip しないようにする。これは option
+  interpretation ownership correction であり、write surface expansion ではない。
+- 変更:
+  - `src/kafs_v6_mount_options.c` は v6 admission vocabulary と production-only KAFS
+    tuning vocabulary を分ける。
+  - `sd_card_profile=*`、pending worker / TTL / capacity tuning、bg-dedup interval /
+    threshold / worker tuning など、v6 が context に反映しない KAFS 固有 token は明示的に
+    reject する。
+  - v6 admission token、`multi_thread` / `max_threads` handoff、FUSE passthrough option の
+    既存経路は維持する。
+  - `tests/tests_v6_descriptor_smoketest.c` に unsupported KAFS option の rejection 回帰を追加する。
+- 完了条件:
+  - `kafs-v6 --inspection-mount -o ro,sd_card_profile=conservative` は mount 続行せず、
+    unsupported KAFS mount option として exit 2 になる。
+  - `kafs-v6` の controlled-write write surface は既存の regular-file
+    create/write/fsync/release 範囲から広げない。
+  - `make -j2`、`git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest` が PASS している。
+- 実装結果:
+  - `kafs_v6_mount_options` の internal token 判定を v6 admission token と
+    unsupported production-only KAFS token に分けた。
+  - production-only KAFS tuning token は FUSE passthrough から黙って消さず、
+    `unsupported KAFS mount option` として exit 2 にする。
+  - `no_dedup_scan` / `no-dedup-scan` は bg-dedup off alias として v6 admission token
+    vocabulary に揃えた。
+- 検証:
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+  - clone strict source gate は 35 clones / 345 duplicated lines / 0.91% で閾値内だった。
+  - `make check` は all 29 tests passed で完了した。
+
 ---
 
 ## 最初に着手するチケット

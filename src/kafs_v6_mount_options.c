@@ -84,10 +84,8 @@ static int kafs_v6_mount_options_record_bg_dedup_token(kafs_v6_runtime_request_t
                                                        const char *tok)
 {
   static const char *const off_tokens[] = {
-      "bg_dedup_scan=off",
-      "dedup_scan=off",
-      "no_bg_dedup_scan",
-      "no-bg-dedup-scan",
+      "bg_dedup_scan=off", "dedup_scan=off", "no_bg_dedup_scan",
+      "no-bg-dedup-scan",  "no_dedup_scan",  "no-dedup-scan",
   };
   static const char *const on_tokens[] = {
       "bg_dedup_scan",
@@ -221,7 +219,24 @@ static int kafs_v6_mount_options_parse_thread_token(const char *tok,
   return 1;
 }
 
-static int kafs_v6_mount_options_is_kafs_owned_token(const char *tok)
+static int kafs_v6_mount_options_is_v6_internal_runtime_token(const char *tok)
+{
+  kafs_v6_runtime_request_t req;
+  kafs_v6_runtime_request_init(&req);
+
+  if (kafs_v6_mount_options_record_cache_token(&req, tok) ||
+      kafs_v6_mount_options_record_bg_dedup_token(&req, tok) ||
+      kafs_v6_mount_options_record_legacy_mode_token(&req, tok) ||
+      kafs_v6_mount_options_record_hotplug_token(&req, tok))
+    return 1;
+
+  if (strcmp(tok, "fsync_policy=full") == 0)
+    return 1;
+
+  return 0;
+}
+
+static int kafs_v6_mount_options_is_unsupported_kafs_token(const char *tok)
 {
   static const char *const exact[] = {
       "no_writeback_cache",  "no-writeback-cache", "writeback_cache",
@@ -282,8 +297,16 @@ static int kafs_v6_mount_options_is_internal_token(const char *tok,
   int rc = kafs_v6_mount_options_parse_thread_token(tok, thread, err);
   if (rc != 0)
     return rc;
-  if (kafs_v6_mount_options_is_kafs_owned_token(tok))
+  if (kafs_v6_mount_options_is_v6_internal_runtime_token(tok))
     return 1;
+  if (kafs_v6_mount_options_is_unsupported_kafs_token(tok))
+  {
+    fprintf(err ? err : stderr,
+            "kafs-v6: unsupported KAFS mount option '-o %s'; use v6 admission options or FUSE "
+            "passthrough options.\n",
+            tok);
+    return 2;
+  }
   return 0;
 }
 

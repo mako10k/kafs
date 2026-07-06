@@ -1578,6 +1578,21 @@ int main(void)
     return 1;
   }
 
+  char *kafsv6_unsupported_opt_argv[] = {
+      (char *)kafs_test_kafs_v6_bin(), (char *)img, (char *)"mnt-kafsv6",
+      (char *)"--inspection-mount",    (char *)"-o",  (char *)"ro,sd_card_profile=conservative",
+      NULL};
+  if (run_cmd_capture(kafsv6_unsupported_opt_argv, 2, out, sizeof(out)) != 0)
+  {
+    tlogf("kafs-v6 unsupported KAFS option did not fail as expected: %s", out);
+    return 1;
+  }
+  if (!strstr(out, "unsupported KAFS mount option"))
+  {
+    tlogf("kafs-v6 unsupported KAFS option output missing guidance: %s", out);
+    return 1;
+  }
+
   const char *corrupt_img = "v6-desc-corrupt.img";
   char *mkfs_corrupt_argv[] = {(char *)kafs_test_mkfs_bin(), (char *)corrupt_img,
                                (char *)"--format-version", (char *)"6", (char *)"--size-bytes",
