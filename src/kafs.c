@@ -13418,7 +13418,7 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
   kafs_main_lock_runtime_image(ctx, image_path);
 }
 
-static int kafs_main_cleanup(kafs_context_t *ctx, char *hotplug_uds_path, int rc)
+static int kafs_shared_fuse_cleanup_after_run(kafs_context_t *ctx, char *hotplug_uds_path, int rc)
 {
   kafs_bg_dedup_worker_stop(ctx);
   kafs_pending_worker_stop(ctx);
@@ -13456,7 +13456,7 @@ static int kafs_shared_fuse_run_with_cleanup(kafs_context_t *ctx, int argc_fuse,
   fuse_set_log_func(kafs_fuse_log_func);
   int rc = fuse_main(argc_fuse, argv_fuse, kafs_shared_fuse_operations(), ctx);
   fuse_set_log_func(NULL);
-  return kafs_main_cleanup(ctx, hotplug_uds_path, rc);
+  return kafs_shared_fuse_cleanup_after_run(ctx, hotplug_uds_path, rc);
 }
 #endif
 

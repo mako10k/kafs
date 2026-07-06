@@ -1753,6 +1753,45 @@
   - clone strict source gate は 35 clones / 345 duplicated lines / 0.91% で閾値内だった。
   - `make check` は all 29 tests passed で完了した。
 
+### SDW-V6RT-T49 shared FUSE cleanup helper boundary naming
+
+- 目的: production `kafs` main と `kafs-v6` shared runner export が共用する cleanup
+  helper を production main 名から分離し、shared FUSE runner の post-`fuse_main()`
+  cleanup boundary として読める名前に寄せる。これは命名境界の整理であり、FUSE
+  operation duplication や write surface expansion ではない。
+- 変更:
+  - `src/kafs.c` の local `kafs_main_cleanup()` を
+    `kafs_shared_fuse_cleanup_after_run()` に改名する。
+  - `kafs_shared_fuse_run_with_cleanup()` は同じ cleanup sequence を呼び続ける。
+  - production `kafs` main と `kafs-v6` shared runner export は引き続き同じ
+    shared FUSE operation table / cleanup path を使う。
+- 完了条件:
+  - `lsp-cli` の rename dry-run / references で、cleanup helper の rename 対象が
+    定義と shared runner からの呼び出しに閉じていることを確認する。
+  - `src/kafs.c` の cleanup helper 名が production main 所有ではなく shared FUSE runner
+    cleanup 所有として読める。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release
+    範囲から広げない。
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS
+    している。
+- 実装結果:
+  - `lsp-cli` の rename dry-run で `kafs_main_cleanup()` の参照が定義と呼び出しの
+    2 箇所だけであることを確認し、`kafs_shared_fuse_cleanup_after_run()` に semantic
+    rename した。
+  - cleanup sequence、shared FUSE operation table、production `kafs` main、
+    `kafs-v6` shared runner export の呼び出し構造は維持した。
+  - runtime admission、legacy fail-closed guidance、write-surface policy は変更していない。
+- 検証:
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+  - `lsp-cli --root . --server clangd --format pretty references src/kafs.c 13420 11` は
+    definition と `kafs_shared_fuse_run_with_cleanup()` からの call site の 2 箇所を返した。
+  - clone strict source gate は 35 clones / 345 duplicated lines / 0.91% で閾値内だった。
+  - `make check` は all 29 tests passed で完了した。
+
 ---
 
 ## 最初に着手するチケット

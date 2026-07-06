@@ -4,9 +4,8 @@
 
 This handoff covers the Post-Phase 5 format v6 runtime mount enablement work.
 It was originally written after `SDW-V6RT-T13 v6 controlled write durability and
-fallback hardening` and is now updated through the 2026-07-03 runtime open
-helper extraction, runtime admission/service helper extraction, entrypoint
-request policy reporter extraction, and v6 FUSE bridge API narrowing closeout.
+fallback hardening` and is now updated through the 2026-07-06 shared FUSE
+cleanup helper boundary naming closeout.
 
 Committed implementation checkpoints:
 
@@ -123,6 +122,18 @@ Additional closeout after the original handoff:
 - T34 extracts the v6 controlled-write FUSE policy guard into
   `kafs_v6_fuse_policy.h`, so shared FUSE operation implementations call an
   explicit v6 policy helper while preserving the same write-surface boundary.
+- T35-T37 complete the v6 controlled-write FUSE policy helper extraction for
+  entry gates, data-layout policy decisions, and rejected-operation vocabulary.
+- T38-T41 move the `kafs-v6` adapter request/open path, mount-main ownership,
+  and v6-only mount option policy into dedicated v6 entrypoint modules.
+- T42-T47 narrow and rename the shared FUSE runner API, operation table,
+  export guard, and local runner so the remaining shared code is explicitly
+  owned by the shared FUSE runner boundary.
+- T48 makes unsupported production-only KAFS mount options fail closed in
+  `kafs-v6` instead of being silently stripped from the FUSE option list.
+- T49 renames the shared post-`fuse_main()` cleanup helper to
+  `kafs_shared_fuse_cleanup_after_run()`, so the cleanup path no longer reads
+  as production-main-only ownership.
 
 ## 2026-07-02 closeout
 
@@ -466,6 +477,41 @@ Validation result:
 - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` completed with all 29 tests
   passed.
 
+## 2026-07-06 T49 validation
+
+Commands completed successfully:
+
+```sh
+./scripts/format.sh fix
+make -j2
+git diff --check
+./scripts/test-cli-surface.sh
+make -C tests check TESTS=v6_descriptor_smoketest
+./scripts/static-checks.sh
+KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2
+```
+
+Current T49 boundary:
+
+- `kafs_shared_fuse_cleanup_after_run()` owns the shared post-`fuse_main()`
+  cleanup sequence used by production `kafs` and the `kafs-v6` shared runner
+  export path.
+- `src/kafs.c` still owns the shared FUSE operation implementations and table,
+  but the local cleanup helper no longer reads as production-main-only
+  ownership.
+- The controlled-write write surface remains limited to regular-file
+  create/write/fsync/release.
+
+Validation result:
+
+- `lsp-cli` references for the renamed cleanup helper returned only the
+  definition and the `kafs_shared_fuse_run_with_cleanup()` call site.
+- `./scripts/static-checks.sh` completed format, lint, clone, and complexity
+  checks successfully. The strict source clone report was 35 clones, 345
+  duplicated lines, 0.91%, which remains below the configured threshold.
+- `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` completed with all 29 tests
+  passed.
+
 ## Original validation run
 
 Commands completed successfully:
@@ -503,18 +549,18 @@ block this closeout.
 
 ## Current next boundary
 
-The next boundary remains v6 runtime pureification after the v6
-rejected-operation vocabulary extraction. Do not broaden the v6 write surface
-as the next step.
+The next boundary remains v6 runtime pureification after the shared FUSE
+cleanup helper boundary naming. Do not broaden the v6 write surface as the next
+step.
 
 Start from the pressure points recorded in
 [sd-card-wear-v6-runtime-entrypoint-plan.md](sd-card-wear-v6-runtime-entrypoint-plan.md):
 
 - retirement plan for legacy v6 diagnostic scaffolding in `kafs` after
   operator workflows no longer depend on it;
-- further reduction of the remaining `KAFS_V6_ENTRYPOINT` common-object bridge,
-  especially around shared FUSE operation implementations, without duplicating
-  filesystem logic.
+- further reduction of the remaining shared FUSE runner / operation
+  implementation boundaries, especially where production `kafs` and `kafs-v6`
+  still meet in `src/kafs.c`, without duplicating filesystem logic.
 
 Production cutover discussion stays behind that pureification and behind later
 v5-parity, workload-copy, power-loss or torn-write, rollback, and recovery
@@ -526,8 +572,8 @@ evidence.
 2. Start from `docs/sd-card-wear-tickets.md` at the latest `SDW-V6RT` entry.
 3. Confirm `kafs-v6 --inspection-mount` and `--controlled-write-mount` remain
    the only successful v6 runtime admission paths.
-4. Start the next implementation from the remaining v6 runtime pureification
-   pressure points, not from a broader write surface.
+4. Start the next implementation from the remaining shared FUSE runner /
+   operation boundary pressure points, not from a broader write surface.
 5. Keep shared code in libraries or common objects rather than duplicating v5/v6
    filesystem logic.
 6. Do not enable production v6 write cutover from the controlled smoke result
