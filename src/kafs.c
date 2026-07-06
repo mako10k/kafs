@@ -48,6 +48,10 @@
 #include <sys/syscall.h>
 #endif
 
+#if !defined(KAFS_NO_MAIN) || defined(KAFS_V6_ENTRYPOINT)
+#define KAFS_COMPILE_SHARED_FUSE_OPERATIONS 1
+#endif
+
 #ifndef SEEK_DATA
 #define SEEK_DATA 3
 #endif
@@ -11080,8 +11084,8 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
   return rc;
 }
 
-#if !defined(KAFS_NO_MAIN) || defined(KAFS_V6_ENTRYPOINT)
-static struct fuse_operations kafs_operations = {
+#ifdef KAFS_COMPILE_SHARED_FUSE_OPERATIONS
+static struct fuse_operations kafs_shared_fuse_operation_table = {
     .init = kafs_op_init,
     .destroy = kafs_op_destroy,
     .getattr = kafs_op_getattr,
@@ -11114,6 +11118,11 @@ static struct fuse_operations kafs_operations = {
     .ioctl = kafs_op_ioctl,
     .copy_file_range = kafs_op_copy_file_range,
 };
+
+static struct fuse_operations *kafs_shared_fuse_operations(void)
+{
+  return &kafs_shared_fuse_operation_table;
+}
 #endif
 
 static void usage(const char *prog)
@@ -13440,12 +13449,12 @@ static int kafs_main_cleanup(kafs_context_t *ctx, char *hotplug_uds_path, int rc
   return rc;
 }
 
-#if !defined(KAFS_NO_MAIN) || defined(KAFS_V6_ENTRYPOINT)
+#ifdef KAFS_COMPILE_SHARED_FUSE_OPERATIONS
 static int kafs_main_run_fuse(kafs_context_t *ctx, int argc_fuse, char **argv_fuse,
                               char *hotplug_uds_path)
 {
   fuse_set_log_func(kafs_fuse_log_func);
-  int rc = fuse_main(argc_fuse, argv_fuse, &kafs_operations, ctx);
+  int rc = fuse_main(argc_fuse, argv_fuse, kafs_shared_fuse_operations(), ctx);
   fuse_set_log_func(NULL);
   return kafs_main_cleanup(ctx, hotplug_uds_path, rc);
 }

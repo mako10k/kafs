@@ -132,7 +132,7 @@ operation semantics:
   adapter declarations, so `kafs_v6_runtime.h` is again limited to runtime request,
   admission, image-open, and service-init helpers;
 - `kafs_main_run_fuse()` is the single local helper that installs the FUSE log
-  hook, calls `fuse_main()` with the shared `kafs_operations`, and runs the
+  hook, calls `fuse_main()` with the shared operation table, and runs the
   existing cleanup path for both production `kafs` and the `kafs-v6` adapter
   path;
 - the shared FUSE operation table remains in `kafs.c`; the change only
@@ -205,7 +205,7 @@ T40 moves the v6 mount-main preparation body into the entrypoint adapter:
   context initialization, image lock, FUSE argv assembly, runtime option
   handoff, and the call into the shared FUSE runner;
 - `kafs.c` keeps only the `KAFS_V6_ENTRYPOINT` shared FUSE runner wrapper that
-  logs runtime options, enters `fuse_main()` with `kafs_operations`, and runs
+  logs runtime options, enters `fuse_main()` with the shared operation table, and runs
   the existing cleanup path;
 - shared FUSE operation implementations and the operation table remain in
   `kafs.c`; the controlled-write surface is unchanged.
@@ -224,7 +224,7 @@ T41 separates v6 mount option policy from mount-main orchestration:
 T42 separates the shared FUSE runner hook from the v6 adapter API:
 
 - `kafs_shared_fuse_runner.h` owns the narrow internal handoff to the shared
-  `fuse_main()` / `kafs_operations` runner still implemented in `kafs.c`;
+  `fuse_main()` / operation-table runner still implemented in `kafs.c`;
 - `kafs_v6_entrypoint_adapter.h` now exposes only adapter-local mode/options,
   validation/open helpers, and `kafs_v6_entrypoint_adapter_mount_main()`;
 - `kafs_v6_entrypoint_adapter.c` calls `kafs_shared_fuse_run()` instead of
@@ -247,6 +247,16 @@ T44 separates legacy v6 fail-closed guidance from the production mount flow:
   delegates token vocabulary and fail-closed wording to that helper;
 - successful v6 runtime admission remains owned by `kafs-v6`, and production
   `kafs` still does not link `kafs_v6_runtime.c`.
+
+T45 names the remaining shared FUSE operation table boundary inside `kafs.c`:
+
+- the local compile guard is now `KAFS_COMPILE_SHARED_FUSE_OPERATIONS`, so the
+  table/runner code is described by the shared FUSE implementation it compiles
+  rather than by the v6 adapter target that also consumes it;
+- `kafs_operations` is now `kafs_shared_fuse_operation_table`, with
+  `kafs_shared_fuse_operations()` as the local accessor used by `fuse_main()`;
+- production `kafs` and `kafs-v6` still share the same operation
+  implementations, and no successful production v6 runtime path is added.
 
 The remaining pureification pressure points are:
 
@@ -290,7 +300,7 @@ not gain a `kafs_v6_runtime.c` link. T32 moves the entrypoint request rejection
 reporter into `kafs_v6_runtime.c` and makes the adapter consume the same
 `kafs_v6_runtime_request_t` validation contract as the standalone `kafs-v6`
 parser. T33 moves the entrypoint adapter declarations out of the runtime helper
-header and hides direct `fuse_main()` / `kafs_operations` invocation behind
+header and hides direct `fuse_main()` / shared operation-table invocation behind
 `kafs_main_run_fuse()`. T34 moves the v6 controlled-write FUSE policy guard
 into `kafs_v6_fuse_policy.h`, leaving the shared operation implementation in
 `kafs.c` while making the policy boundary explicit. T35 moves the next
@@ -307,7 +317,7 @@ header exposes an adapter-local mode enum instead of re-exporting
 entrypoint adapter terminology and records source ownership. T40 moves v6
 mount-main preparation, FUSE option filtering, context initialization, image
 lock, and FUSE argv assembly into the adapter; `kafs.c` keeps the shared
-`fuse_main()` / `kafs_operations` runner and cleanup wrapper. T41 moves v6
+`fuse_main()` / operation-table runner and cleanup wrapper. T41 moves v6
 option interpretation and FUSE passthrough filtering from the adapter into
 `kafs_v6_mount_options.[ch]`, leaving the adapter with orchestration and argv
 assembly only. T42 moves the runner hook declaration and runtime option summary
@@ -320,7 +330,9 @@ the shared `kafs_op_init()` implementation in `kafs.c` while reducing the v6
 policy embedded directly in it. T44 moves production `kafs` legacy v6
 fail-closed token classification and guidance wording into
 `kafs_legacy_v6_failclosed.h` without creating a successful production v6
-runtime path.
+runtime path. T45 renames the local shared FUSE operation table boundary in
+`kafs.c`, replacing direct table-level `KAFS_V6_ENTRYPOINT` naming with a
+shared-operation compile guard and `kafs_shared_fuse_operation_table`.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).

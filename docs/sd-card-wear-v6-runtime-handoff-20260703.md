@@ -68,7 +68,8 @@ Commits queued for push before this handoff doc commit:
 - T42 separated the shared FUSE runner hook into `src/kafs_shared_fuse_runner.h`.
   `src/kafs_v6_entrypoint_adapter.h` now exposes only adapter-local state and
   mount-main APIs, while `src/kafs.c` implements `kafs_shared_fuse_run()` for
-  the remaining common-object handoff into `fuse_main()` / `kafs_operations`.
+  the remaining common-object handoff into `fuse_main()` and the shared
+  operation table.
 - T43 separated format-v6 FUSE init worker-policy handling into
   `src/kafs_v6_fuse_init_policy.h`. `kafs_op_init()` remains in `src/kafs.c`,
   but the v6-specific delayed/background worker suppression check and
@@ -77,6 +78,11 @@ Commits queued for push before this handoff doc commit:
   and guidance into `src/kafs_legacy_v6_failclosed.h`. Production `kafs` still
   rejects legacy v6 mount requests with `kafs-v6` guidance and still does not
   link `kafs_v6_runtime.c`.
+- T45 renamed the local shared FUSE operation-table boundary in `src/kafs.c`.
+  The table is now `kafs_shared_fuse_operation_table`, reached through
+  `kafs_shared_fuse_operations()`, and guarded by
+  `KAFS_COMPILE_SHARED_FUSE_OPERATIONS` instead of table-level v6 adapter
+  wording.
 - Shared FUSE operation implementations and the operation table remain in
   `src/kafs.c`.
 - The controlled-write surface was not expanded.
@@ -86,11 +92,11 @@ Commits queued for push before this handoff doc commit:
   `./scripts/static-checks.sh`, and
   `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`; `make check` reported all
   29 tests passed for the T34, T35, T36, T37, T38, T39, T40, T41, T42, T43,
-  and T44 validation runs.
+  T44, and T45 validation runs.
 
 ## Validation
 
-Latest completed validation for T44:
+Latest completed validation for T45:
 
 ```sh
 ./scripts/format.sh fix
@@ -133,9 +139,9 @@ Continue v6 runtime pureification without broadening the write surface.
 Recommended next slice:
 
 - continue reducing the remaining `KAFS_V6_ENTRYPOINT` common-object adapter
-  around shared FUSE operation implementations after the T40/T41/T42/T43/T44
+  around shared FUSE operation implementations after the T40/T41/T42/T43/T44/T45
   mount-main, option-policy, runner-hook, FUSE-init policy, and legacy
-  fail-closed helper split,
+  fail-closed helper/table-boundary naming split,
   or
 - prepare a retirement plan for legacy v6 diagnostic scaffolding in production
   `kafs` after operator workflows no longer depend on it.

@@ -1625,6 +1625,38 @@
     `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
     `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
 
+### SDW-V6RT-T45 shared FUSE operation table boundary naming
+
+- 目的: `kafs.c` に残る shared FUSE operation table / runner 経路を、v6 adapter ではなく
+  shared FUSE 実装境界として読める名前に寄せる。これは common-object adapter surface の
+  命名整理であり、filesystem operation duplication や write surface expansion ではない。
+- 変更:
+  - `kafs.c` の direct `!KAFS_NO_MAIN || KAFS_V6_ENTRYPOINT` 条件を
+    `KAFS_COMPILE_SHARED_FUSE_OPERATIONS` に集約する。
+  - `kafs_operations` を `kafs_shared_fuse_operation_table` に改名し、
+    `kafs_shared_fuse_operations()` 経由で `fuse_main()` へ渡す。
+  - production `kafs` と `kafs-v6` は同じ shared FUSE operation table を使い続ける。
+- 完了条件:
+  - `KAFS_V6_ENTRYPOINT` は `kafs.c` 内で shared FUSE operation table を直接名付けない。
+  - `kafs-v6` の successful v6 runtime admission は引き続き `kafs_v6_runtime.c` /
+    `kafs_v6_entrypoint_adapter.c` が所有する。
+  - production `kafs` の v6 fail-closed boundary と controlled-write write surface は変更しない。
+  - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、
+    `git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS している。
+- 実装結果:
+  - `KAFS_COMPILE_SHARED_FUSE_OPERATIONS` を `kafs.c` 内の shared table/runner compile guard
+    として追加した。
+  - shared operation table を `kafs_shared_fuse_operation_table` として明示し、
+    local accessor から `fuse_main()` へ渡すようにした。
+  - runtime admission、legacy fail-closed guidance、write-surface policy は変更していない。
+- 検証:
+  - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、
+    `git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+
 ---
 
 ## 最初に着手するチケット

@@ -208,7 +208,7 @@ Production `kafs` keeps its legacy v6 fail-closed validation local.
 expanding the FUSE operation table. `kafs_v6_entrypoint_adapter.h` now declares
 only the `KAFS_V6_ENTRYPOINT` adapter entrypoints, leaving
 `kafs_v6_runtime.h` for runtime helper contracts. `kafs_main_run_fuse()` hides
-the direct `fuse_main()` / `kafs_operations` invocation from both production
+the direct `fuse_main()` / shared operation-table invocation from both production
 `kafs` main and the `kafs-v6` adapter path, while preserving the same cleanup
 path and write-surface policy.
 
@@ -270,7 +270,7 @@ carrying its own token vocabulary.
 summary out of `kafs_v6_entrypoint_adapter.h` and into
 `kafs_shared_fuse_runner.h`. The adapter still orchestrates the `kafs-v6`
 mount-main path, but it no longer owns the API name for the `kafs.c`
-`fuse_main()` / `kafs_operations` handoff.
+`fuse_main()` / shared operation-table handoff.
 
 `SDW-V6RT-T43` moves the format-v6 FUSE-init worker suppression check and
 diagnostic into `kafs_v6_fuse_init_policy.h`. `kafs_op_init()` remains in
@@ -281,6 +281,13 @@ is now named and kept beside the other v6 FUSE policy helpers.
 fail-closed guidance into `kafs_legacy_v6_failclosed.h`. This preserves the
 operator-facing rejection behavior while making clear that successful v6
 runtime admission remains outside production `kafs`.
+
+`SDW-V6RT-T45` renames the local shared FUSE operation table boundary inside
+`kafs.c`. The table is now `kafs_shared_fuse_operation_table`, reached through
+`kafs_shared_fuse_operations()`, and the table/runner compile guard is
+`KAFS_COMPILE_SHARED_FUSE_OPERATIONS`. This keeps the shared operation
+implementations in place while avoiding table-level wording that makes the
+common object path look like v6 admission ownership.
 
 The next slice should reduce the remaining common-object adapter path around
 shared FUSE operation implementations, or retire legacy `kafs` v6 diagnostic
