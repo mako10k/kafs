@@ -1,7 +1,7 @@
 # KAFS format v6 shared artifact boundary plan
 
 Date: 2026-07-06
-Status: accepted; v6 controlled-write rejected-operation vocabulary extraction reflected
+Status: accepted; v6 entrypoint adapter naming and source ownership reflected
 
 ## Purpose
 
@@ -32,15 +32,33 @@ that users can run is a product surface and needs its own CLI policy.
 | Target | Current shared sources | v6-specific sources | Boundary |
 | --- | --- | --- | --- |
 | `kafs` | `kafs_hrl.c`, `kafs_locks.c`, `kafs_journal.c`, `kafs_rpc.c` | none in `Makefile.am` | v4/v5 production runtime; legacy v6 inspection/write tokens fail closed with `kafs-v6` guidance |
-| `kafs-v6` | `kafs.c`, `kafs_hrl.c`, `kafs_locks.c`, `kafs_journal.c`, `kafs_rpc.c` through `KAFS_V6_ENTRYPOINT` | `kafs_v6.c`, `kafs_v6_runtime.c` | v6 CLI/admission owner; read-only inspection and controlled-write admission are active |
+| `kafs-v6` | `kafs.c`, `kafs_hrl.c`, `kafs_locks.c`, `kafs_journal.c`, `kafs_rpc.c` through `KAFS_V6_ENTRYPOINT` | `kafs_v6.c`, `kafs_v6_runtime.c`, `kafs_v6_entrypoint_adapter.c` | v6 CLI/admission owner; read-only inspection and controlled-write admission are active |
 | `kafsctl` / `kafs-back` | selected runtime support sources through `kafs.c` and RPC/HRL/journal helpers | none in `Makefile.am` | must not gain `kafs_v6_runtime.c` implicitly |
 | offline tools | mostly standalone source files plus header-only v6 layout helpers | header-only v6 descriptor logic | offline/staging tools, not runtime admission owners |
 
 This boundary deliberately keeps `kafs_v6_runtime.c` out of the production
-`kafs` link. T25 temporarily shares `kafs.c` into `kafs-v6` as a common object
-bridge for FUSE operations and read-only inspection setup, guarded by
-`KAFS_V6_ENTRYPOINT` so the bridge is not part of the production `kafs`
-entrypoint.
+`kafs` link. T25 temporarily shares `kafs.c` into `kafs-v6` as a guarded
+common object path for FUSE operations, compiled with `KAFS_V6_ENTRYPOINT`.
+That path is not part of the production `kafs` entrypoint. The current
+`kafs_v6_entrypoint_adapter.*` name means a v6-only adapter from the dedicated
+`kafs-v6` entrypoint state into the shared FUSE runtime entrypoints that still
+live in `kafs.c`; it is not a v5/v6 compatibility layer.
+
+## Source Ownership Map
+
+| Source | Artifact class | Links into | Owns | Must not own |
+| --- | --- | --- | --- | --- |
+| `src/kafs.c` | production runtime plus temporary shared FUSE implementation | `kafs`, `kafs-v6`, `kafsctl`, `kafs-back` with per-target guards | v4/v5 runtime, legacy v6 fail-closed diagnostics, shared FUSE operations while extraction is incomplete | v6 admission policy, v6 runtime open/admit/init ownership, v6 write-surface expansion |
+| `src/kafs_v6.c` | v6 product entrypoint | `kafs-v6` only | `kafs-v6` CLI shape, mode selection, descriptor preflight handoff, admission signal | shared FUSE operation implementation, production `kafs` behavior |
+| `src/kafs_v6_runtime.c` | v6-only runtime policy/helper | `kafs-v6` only | v6 request reporting, image open, descriptor-backed runtime admission, service init | production `kafs` link surface, generic v4/v5 runtime context setup |
+| `src/kafs_v6_entrypoint_adapter.[ch]` | v6-only entrypoint adapter | `kafs-v6` only | translation from `kafs-v6` parser/main state to the shared FUSE runtime entrypoints in `kafs.c` | v5/v6 compatibility policy, user-facing helper CLI, installed ABI |
+| `src/kafs_v6_fuse_policy.h` | v6 FUSE policy helper | targets compiling shared FUSE operations | controlled-write active checks, rejected-operation vocabulary, write-surface gates | FUSE operation table ownership, generic filesystem mutation logic |
+| `src/kafs_v6_admission.h` | shared pure v6 metadata/admission helper | runtime diagnostics and v6 runtime helper users | descriptor-backed preflight/runtime admission core without product CLI ownership | successful production `kafs` v6 admission |
+| `src/kafs_v6_layout.h` | shared pure metadata helper | offline and runtime users | descriptor layout parsing and validation primitives | runtime admission wording or mount policy |
+
+Files with generic-looking names are therefore not automatically shared product
+surfaces. A source is shared only when the link target and artifact class above
+say it is shared.
 
 ## Artifact Classes
 
@@ -53,6 +71,7 @@ Current and near-term candidates:
 
 - `src/kafs_v6.c`
 - `src/kafs_v6_runtime.c`
+- `src/kafs_v6_entrypoint_adapter.c`
 - future `src/kafs_v6_mount_admission.c`
 - future `src/kafs_v6_runtime_context.c`
 
@@ -106,7 +125,7 @@ Keep this code local until retired or moved:
 These paths are compatibility and smoke scaffolding, not the target v6 runtime
 contract.
 
-## T25-T37 Result And Next Boundary
+## T25-T39 Result And Next Boundary
 
 `SDW-V6RT-T25 kafs-v6 inspection admission migration` moved the read-only v6
 inspection acceptance path behind `kafs-v6`.
@@ -139,11 +158,11 @@ needs more shared build machinery, the acceptable first form remains a
 non-installed static archive or common object/source list. Do not add a new
 runtime executable.
 
-`SDW-V6RT-T27` starts that pureification by removing the `kafs-v6` bridge call
+`SDW-V6RT-T27` starts that pureification by removing the `kafs-v6` adapter call
 into the generic v4/v5 runtime context opener. `kafs-v6` still shares common
 runtime mechanics through `KAFS_V6_ENTRYPOINT`, but its open/read/admit/init
-sequence is now a dedicated v6 entrypoint helper rather than a legacy production
-`kafs` branch.
+sequence is now a dedicated v6 entrypoint helper rather than a legacy
+production `kafs` branch.
 
 `SDW-V6RT-T28` continues that pureification by making successful v6 runtime
 views descriptor-backed. The v6 admission mmap path now installs the image and
@@ -162,8 +181,8 @@ instead of inheriting generic v5 worker setup.
 `kafs_v6_runtime_open_context_image()`. The helper remains v6-only for now:
 it owns inspection vs. controlled-write open flags, `c_fd` setup, search cursor
 initialization, superblock read, magic / format checks, and fd cleanup on
-failure. This narrows the `KAFS_V6_ENTRYPOINT` bridge without creating another
-user-facing executable or expanding the v6 write surface.
+failure. This narrows the `KAFS_V6_ENTRYPOINT` adapter path without creating
+another user-facing executable or expanding the v6 write surface.
 
 `SDW-V6RT-T31` extracts the next successful `kafs-v6` runtime boundary without
 changing the product link surface. `kafs_v6_admission.h` owns the shared
@@ -176,18 +195,18 @@ gaining a successful v6 runtime admission path.
 
 `SDW-V6RT-T32` moves the `kafs-v6` runtime request rejection reporter into
 `kafs_v6_runtime.c`. The standalone `kafs-v6` parser and the
-`KAFS_V6_ENTRYPOINT` bridge now consume the same
-`kafs_v6_runtime_request_t` validation/reporting contract, and the bridge no
+`KAFS_V6_ENTRYPOINT` adapter path now consume the same
+`kafs_v6_runtime_request_t` validation/reporting contract, and the adapter no
 longer carries local inspection / controlled-write option policy checks.
 Production `kafs` keeps its legacy v6 fail-closed validation local.
 
-`SDW-V6RT-T33` narrows the common-object bridge API without moving or expanding
-the FUSE operation table. `kafs_v6_mount_bridge.h` now declares only the
-`KAFS_V6_ENTRYPOINT` mount bridge entrypoints, leaving `kafs_v6_runtime.h` for
-runtime helper contracts. `kafs_main_run_fuse()` hides the direct `fuse_main()`
-/ `kafs_operations` invocation from both production `kafs` main and the
-`kafs-v6` bridge, while preserving the same cleanup path and write-surface
-policy.
+`SDW-V6RT-T33` narrows the common-object adapter API without moving or
+expanding the FUSE operation table. `kafs_v6_entrypoint_adapter.h` now declares
+only the `KAFS_V6_ENTRYPOINT` adapter entrypoints, leaving
+`kafs_v6_runtime.h` for runtime helper contracts. `kafs_main_run_fuse()` hides
+the direct `fuse_main()` / `kafs_operations` invocation from both production
+`kafs` main and the `kafs-v6` adapter path, while preserving the same cleanup
+path and write-surface policy.
 
 `SDW-V6RT-T34` extracts the v6 controlled-write FUSE policy guard into
 `kafs_v6_fuse_policy.h`. The shared FUSE operation implementations remain in
@@ -198,7 +217,7 @@ making the v6 policy boundary explicit for later operation-helper extraction.
 `SDW-V6RT-T35` reduces the next FUSE operation entry gate layer. The shared
 operation implementations still live in `kafs.c`, but condition-gated
 controlled-write rejection and regular-file-only write checks now call through
-`kafs_v6_fuse_policy.h`. This keeps the common-object bridge behavior unchanged
+`kafs_v6_fuse_policy.h`. This keeps the common-object adapter behavior unchanged
 while moving v6 write-surface policy decisions behind the explicit helper
 boundary.
 
@@ -215,15 +234,24 @@ flag directly.
 free-form strings. This keeps rejection wording and operation ids on the v6
 policy side while preserving the same write-surface boundary.
 
-`SDW-V6RT-T38` moves the next bridge-local runtime preparation layer into
-`kafs_v6_mount_bridge.c`. The bridge helper now owns v6 entrypoint option
-validation plus the open/admit/init sequence for the runtime context.
-`kafs_v6_mount_bridge.h` exposes a bridge-local mode enum instead of
+`SDW-V6RT-T38` moves the next adapter-local runtime preparation layer into
+`kafs_v6_entrypoint_adapter.c`. The adapter helper now owns v6 entrypoint
+option validation plus the open/admit/init sequence for the runtime context.
+`kafs_v6_entrypoint_adapter.h` exposes an adapter-local mode enum instead of
 re-exporting `kafs_v6_runtime.h`. `kafs.c` still owns generic option parsing,
 FUSE argv assembly, image locking, and the shared FUSE runner / operation table.
 
-The next slice should reduce the remaining common-object bridge around FUSE
-argv / runner context or shared FUSE operation implementations, or retire
+`SDW-V6RT-T39` renames the temporary `kafs-v6` mount bridge files and symbols
+to `kafs_v6_entrypoint_adapter.*`, then records the source ownership map above.
+The term "bridge" may still appear in historical ticket text, but current
+source names and boundary wording use "entrypoint adapter" for the v6-only
+handoff from `kafs-v6` state into shared FUSE runtime entrypoints. This keeps
+the implementation aligned with the product boundary: `kafs` remains v4/v5
+production runtime, `kafs-v6` owns successful v6 admission, and shared FUSE
+operation implementation remains a temporary common-object path.
+
+The next slice should reduce the remaining common-object adapter path around
+FUSE argv / runner context or shared FUSE operation implementations, or retire
 legacy `kafs` v6 diagnostic scaffolding after operator workflows no longer
 depend on it. Do not add another runtime executable and do not broaden the
 controlled-write surface.

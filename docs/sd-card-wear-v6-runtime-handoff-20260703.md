@@ -30,10 +30,10 @@ Commits queued for push before this handoff doc commit:
   `kafs` from linking `kafs_v6_runtime.c`.
 - T32 moved `kafs-v6` runtime request rejection reporting into
   `kafs_v6_runtime.c`, so standalone `kafs-v6` and the `KAFS_V6_ENTRYPOINT`
-  bridge share `kafs_v6_runtime_request_t` validation/reporting.
-- T33 added `src/kafs_v6_mount_bridge.h` for bridge entrypoint declarations and
-  introduced `kafs_main_run_fuse()` so production `kafs` and the `kafs-v6`
-  bridge share FUSE invocation/cleanup mechanics.
+  adapter path share `kafs_v6_runtime_request_t` validation/reporting.
+- T33 added `src/kafs_v6_entrypoint_adapter.h` for entrypoint adapter
+  declarations and introduced `kafs_main_run_fuse()` so production `kafs` and
+  the `kafs-v6` adapter path share FUSE invocation/cleanup mechanics.
 
 ## 2026-07-06 Continuation
 
@@ -47,10 +47,14 @@ Commits queued for push before this handoff doc commit:
   policy helper, so shared FUSE operations pass enum values instead of
   free-form strings.
 - T38 moved v6 entrypoint request validation and open/admit/init sequencing into
-  `src/kafs_v6_mount_bridge.c`, leaving `src/kafs.c` with generic option
+  `src/kafs_v6_entrypoint_adapter.c`, leaving `src/kafs.c` with generic option
   parsing, FUSE argv assembly, image locking, and the shared FUSE runner. The
-  mount bridge header uses a bridge-local mode enum instead of re-exporting
-  `kafs_v6_runtime.h`.
+  entrypoint adapter header uses an adapter-local mode enum instead of
+  re-exporting `kafs_v6_runtime.h`.
+- T39 renamed the temporary mount bridge files/symbols to
+  `kafs_v6_entrypoint_adapter.*` / `kafs_v6_entrypoint_adapter_*` and added
+  source ownership notes to make clear that this is a v6-only adapter, not a
+  v5/v6 compatibility layer.
 - Shared FUSE operation implementations and the operation table remain in
   `src/kafs.c`.
 - The controlled-write surface was not expanded.
@@ -59,11 +63,11 @@ Commits queued for push before this handoff doc commit:
   `make -C tests check TESTS=v6_descriptor_smoketest`,
   `./scripts/static-checks.sh`, and
   `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`; `make check` reported all
-  29 tests passed for the T34, T35, T36, T37, and T38 validation runs.
+  29 tests passed for the T34, T35, T36, T37, T38, and T39 validation runs.
 
 ## Validation
 
-Latest completed validation for T38:
+Latest completed validation for T39:
 
 ```sh
 ./scripts/format.sh fix
@@ -105,9 +109,9 @@ Continue v6 runtime pureification without broadening the write surface.
 
 Recommended next slice:
 
-- continue reducing the remaining `KAFS_V6_ENTRYPOINT` common-object bridge
+- continue reducing the remaining `KAFS_V6_ENTRYPOINT` common-object adapter
   around FUSE argv / runner context or shared FUSE operation implementations
-  after the T38 mount bridge helper extraction, or
+  after the T38/T39 entrypoint adapter clarification, or
 - prepare a retirement plan for legacy v6 diagnostic scaffolding in production
   `kafs` after operator workflows no longer depend on it.
 

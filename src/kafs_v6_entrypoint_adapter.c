@@ -1,24 +1,25 @@
-#include "kafs_v6_mount_bridge.h"
+#include "kafs_v6_entrypoint_adapter.h"
 
 #include "kafs_v6_runtime.h"
 
 #include <unistd.h>
 
-static kafs_v6_runtime_mode_t kafs_v6_mount_bridge_runtime_mode(kafs_v6_mount_bridge_mode_t mode)
+static kafs_v6_runtime_mode_t
+kafs_v6_entrypoint_adapter_runtime_mode(kafs_v6_entrypoint_adapter_mode_t mode)
 {
   switch (mode)
   {
-  case KAFS_V6_MOUNT_BRIDGE_MODE_INSPECTION:
+  case KAFS_V6_ENTRYPOINT_ADAPTER_MODE_INSPECTION:
     return KAFS_V6_RUNTIME_MODE_INSPECTION;
-  case KAFS_V6_MOUNT_BRIDGE_MODE_CONTROLLED_WRITE:
+  case KAFS_V6_ENTRYPOINT_ADAPTER_MODE_CONTROLLED_WRITE:
     return KAFS_V6_RUNTIME_MODE_CONTROLLED_WRITE;
-  case KAFS_V6_MOUNT_BRIDGE_MODE_NONE:
+  case KAFS_V6_ENTRYPOINT_ADAPTER_MODE_NONE:
   default:
     return KAFS_V6_RUNTIME_MODE_NONE;
   }
 }
 
-static void kafs_v6_mount_bridge_close_context_fd(kafs_context_t *ctx)
+static void kafs_v6_entrypoint_adapter_close_context_fd(kafs_context_t *ctx)
 {
   if (!ctx)
     return;
@@ -27,14 +28,15 @@ static void kafs_v6_mount_bridge_close_context_fd(kafs_context_t *ctx)
   ctx->c_fd = -1;
 }
 
-static void kafs_v6_mount_bridge_request_from_options(kafs_v6_runtime_request_t *req,
-                                                      const kafs_v6_mount_bridge_options_t *opts)
+static void
+kafs_v6_entrypoint_adapter_request_from_options(kafs_v6_runtime_request_t *req,
+                                                const kafs_v6_entrypoint_adapter_options_t *opts)
 {
   kafs_v6_runtime_request_init(req);
   if (!opts)
     return;
 
-  req->mode = kafs_v6_mount_bridge_runtime_mode(opts->mode);
+  req->mode = kafs_v6_entrypoint_adapter_runtime_mode(opts->mode);
   req->legacy_mode_token_seen = opts->legacy_mode_token_seen != 0;
   req->hotplug_requested = opts->hotplug_requested != 0;
   req->mount_read_only_requested = opts->mount_read_only_requested != 0;
@@ -52,17 +54,18 @@ static void kafs_v6_mount_bridge_request_from_options(kafs_v6_runtime_request_t 
   req->fsync_policy = opts->fsync_policy;
 }
 
-int kafs_v6_mount_bridge_validate_options(const kafs_v6_mount_bridge_options_t *opts, FILE *err)
+int kafs_v6_entrypoint_adapter_validate_options(const kafs_v6_entrypoint_adapter_options_t *opts,
+                                                FILE *err)
 {
   kafs_v6_runtime_request_t req;
-  kafs_v6_mount_bridge_request_from_options(&req, opts);
+  kafs_v6_entrypoint_adapter_request_from_options(&req, opts);
   return kafs_v6_runtime_report_entrypoint_request(&req, err);
 }
 
-int kafs_v6_mount_bridge_open_context(kafs_context_t *ctx, const char *image_path,
-                                      kafs_v6_mount_bridge_mode_t mode, FILE *err)
+int kafs_v6_entrypoint_adapter_open_context(kafs_context_t *ctx, const char *image_path,
+                                            kafs_v6_entrypoint_adapter_mode_t mode, FILE *err)
 {
-  kafs_v6_runtime_mode_t runtime_mode = kafs_v6_mount_bridge_runtime_mode(mode);
+  kafs_v6_runtime_mode_t runtime_mode = kafs_v6_entrypoint_adapter_runtime_mode(mode);
   kafs_ssuperblock_t sbdisk;
   if (kafs_v6_runtime_open_context_image(ctx, image_path, runtime_mode, &sbdisk, err) != 0)
     return 2;
@@ -72,7 +75,7 @@ int kafs_v6_mount_bridge_open_context(kafs_context_t *ctx, const char *image_pat
   int rc = kafs_v6_runtime_admit_mount_context(ctx, &sbdisk, runtime_mode, &inocnt, &r_blkcnt, err);
   if (rc != 0)
   {
-    kafs_v6_mount_bridge_close_context_fd(ctx);
+    kafs_v6_entrypoint_adapter_close_context_fd(ctx);
     return 2;
   }
 
@@ -80,7 +83,7 @@ int kafs_v6_mount_bridge_open_context(kafs_context_t *ctx, const char *image_pat
   if (rc != 0)
   {
     kafs_ctx_unmap_image(ctx);
-    kafs_v6_mount_bridge_close_context_fd(ctx);
+    kafs_v6_entrypoint_adapter_close_context_fd(ctx);
     return 2;
   }
 

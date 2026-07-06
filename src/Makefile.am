@@ -10,7 +10,14 @@ kafs_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 kafs_LDADD = $(KAFS_LIBS)
 kafs_SOURCES = kafs.c kafs_hrl.c kafs_locks.c kafs_journal.c kafs_rpc.c
 
-kafs_v6_SOURCES = kafs_v6.c kafs_v6_runtime.c kafs_v6_mount_bridge.c kafs.c \
+# Runtime source ownership:
+# - kafs is the production v4/v5 runtime and must not link kafs_v6_runtime.c.
+# - kafs-v6 is the dedicated v6 runtime entrypoint. It temporarily links
+#   kafs.c with KAFS_V6_ENTRYPOINT to reuse shared FUSE operations while
+#   v6 admission/open/init policy stays in v6-owned sources.
+# - kafs_v6_entrypoint_adapter.* is a v6-only adapter from kafs-v6 CLI state to
+#   the shared FUSE runtime entrypoints. It is not a v5/v6 compatibility layer.
+kafs_v6_SOURCES = kafs_v6.c kafs_v6_runtime.c kafs_v6_entrypoint_adapter.c kafs.c \
 	kafs_hrl.c kafs_locks.c kafs_journal.c kafs_rpc.c
 kafs_v6_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -DKAFS_NO_MAIN \
 	-DKAFS_V6_ENTRYPOINT
@@ -62,6 +69,6 @@ kafs_back_LDADD = $(KAFS_LIBS)
 noinst_HEADERS = kafs_block.h kafs_config.h kafs_context.h kafs_dirent.h kafs_inode.h \
 	kafs_meta_region.h kafs_profile.h kafs_superblock.h kafs.h kafs_ioctl.h kafs_journal.h \
 	kafs_rpc.h kafs_core.h kafs_v6_admission.h kafs_v6_fuse_policy.h kafs_v6_layout.h \
-	kafs_v6_mount_bridge.h kafs_v6_runtime.h
+	kafs_v6_entrypoint_adapter.h kafs_v6_runtime.h
 
 CFLAGS = @CFLAGS@ -Wall -Werror -Wno-unused-function -Wno-unused-parameter

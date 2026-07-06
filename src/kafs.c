@@ -15,7 +15,7 @@
 #include "kafs_tailmeta.h"
 #include "kafs_v6_admission.h"
 #include "kafs_v6_fuse_policy.h"
-#include "kafs_v6_mount_bridge.h"
+#include "kafs_v6_entrypoint_adapter.h"
 
 #include <fuse.h>
 #include <fuse_log.h>
@@ -13443,13 +13443,13 @@ static int kafs_main_run_fuse(kafs_context_t *ctx, int argc_fuse, char **argv_fu
 #endif
 
 #ifdef KAFS_V6_ENTRYPOINT
-static kafs_v6_mount_bridge_mode_t kafs_v6_entrypoint_mode(kafs_bool_t controlled_write_mount)
+static kafs_v6_entrypoint_adapter_mode_t kafs_v6_entrypoint_mode(kafs_bool_t controlled_write_mount)
 {
-  return controlled_write_mount ? KAFS_V6_MOUNT_BRIDGE_MODE_CONTROLLED_WRITE
-                                : KAFS_V6_MOUNT_BRIDGE_MODE_INSPECTION;
+  return controlled_write_mount ? KAFS_V6_ENTRYPOINT_ADAPTER_MODE_CONTROLLED_WRITE
+                                : KAFS_V6_ENTRYPOINT_ADAPTER_MODE_INSPECTION;
 }
 
-static void kafs_v6_entrypoint_options_from_main(kafs_v6_mount_bridge_options_t *out,
+static void kafs_v6_entrypoint_options_from_main(kafs_v6_entrypoint_adapter_options_t *out,
                                                  const kafs_main_options_t *opts,
                                                  kafs_bool_t controlled_write_mount)
 {
@@ -13480,9 +13480,9 @@ static void kafs_v6_entrypoint_options_from_main(kafs_v6_mount_bridge_options_t 
 static int kafs_v6_entrypoint_validate_runtime_options(const kafs_main_options_t *opts,
                                                        kafs_bool_t controlled_write_mount)
 {
-  kafs_v6_mount_bridge_options_t bridge_opts;
-  kafs_v6_entrypoint_options_from_main(&bridge_opts, opts, controlled_write_mount);
-  return kafs_v6_mount_bridge_validate_options(&bridge_opts, stderr);
+  kafs_v6_entrypoint_adapter_options_t adapter_opts;
+  kafs_v6_entrypoint_options_from_main(&adapter_opts, opts, controlled_write_mount);
+  return kafs_v6_entrypoint_adapter_validate_options(&adapter_opts, stderr);
 }
 
 static int kafs_v6_mount_main_common(const char *image_path, const char *mountpoint, int argc_extra,
@@ -13518,7 +13518,7 @@ static int kafs_v6_mount_main_common(const char *image_path, const char *mountpo
   hotplug_uds_path[0] = '\0';
   kafs_main_init_context(&ctx, &opts, argv_clean[1], mnt_abs, sizeof(mnt_abs));
 
-  if (kafs_v6_mount_bridge_open_context(
+  if (kafs_v6_entrypoint_adapter_open_context(
           &ctx, image_path, kafs_v6_entrypoint_mode(controlled_write_mount), stderr) != 0)
     return 2;
   kafs_main_lock_runtime_image(&ctx, image_path);

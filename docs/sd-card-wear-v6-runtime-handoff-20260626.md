@@ -116,7 +116,7 @@ Additional closeout after the original handoff:
   `kafs_v6_runtime.c`; standalone `kafs-v6` and the `KAFS_V6_ENTRYPOINT`
   bridge now share the same `kafs_v6_runtime_request_t` validation/reporting
   contract.
-- T33 narrows the v6 FUSE bridge API: `kafs_v6_mount_bridge.h` owns the bridge
+- T33 narrows the v6 FUSE bridge API: `kafs_v6_entrypoint_adapter.h` owns the bridge
   entrypoint declarations, `kafs_v6_runtime.h` stays focused on runtime helper
   contracts, and `kafs_main_run_fuse()` hides the direct `fuse_main()` /
   `kafs_operations` invocation behind the existing cleanup path.
@@ -321,10 +321,10 @@ KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2
 
 Current T33 boundary:
 
-- `kafs_v6_mount_bridge.h` declares the `KAFS_V6_ENTRYPOINT` mount bridge API,
-  so `kafs_v6_runtime.h` no longer exposes bridge entrypoints.
+- `kafs_v6_entrypoint_adapter.h` declares the `KAFS_V6_ENTRYPOINT` entrypoint
+  adapter API, so `kafs_v6_runtime.h` no longer exposes adapter entrypoints.
 - `kafs_main_run_fuse()` is the shared local FUSE runner for production `kafs`
-  main and the `kafs-v6` bridge.
+  main and the `kafs-v6` adapter path.
 - The shared FUSE operation table remains unchanged in `kafs.c`; this slice
   does not broaden controlled-write admission or the FUSE write surface.
 

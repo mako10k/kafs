@@ -1222,7 +1222,7 @@
   write surface expansion ではない。
 - 変更:
   - `kafs_v6_inspection_mount_main()` と `kafs_v6_controlled_write_mount_main()` の宣言を
-    `kafs_v6_runtime.h` から新規 `kafs_v6_mount_bridge.h` へ移す。
+    `kafs_v6_runtime.h` から新規 `kafs_v6_entrypoint_adapter.h` へ移す。
   - `src/kafs.c` の production `kafs` と `KAFS_V6_ENTRYPOINT` bridge が直接 `fuse_main()` と
     `kafs_operations` を触る重複を `kafs_main_run_fuse()` に集約する。
   - `src/Makefile.am` の `noinst_HEADERS` に bridge header を追加し、`autoreconf -fi` /
@@ -1237,7 +1237,7 @@
     `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
     `make check -j2` が PASS している。
 - 実装結果:
-  - `src/kafs_v6_mount_bridge.h` を追加し、`kafs-v6` parser は bridge entrypoint API をこのヘッダから参照する。
+  - `src/kafs_v6_entrypoint_adapter.h` を追加し、`kafs-v6` parser は bridge entrypoint API をこのヘッダから参照する。
   - `kafs_v6_runtime.h` から bridge entrypoint 宣言を削除し、runtime helper contract に集中させた。
   - `src/kafs.c` の production main と `KAFS_V6_ENTRYPOINT` bridge は `kafs_main_run_fuse()` 経由で
     `fuse_main()` と cleanup path を共有する。
@@ -1372,23 +1372,23 @@
   - clone strict source gate は 36 clones / 353 duplicated lines / 0.96% で閾値内だった。
   - `make check` は all 29 tests passed で完了した。
 
-### SDW-V6RT-T38 v6 mount bridge request/open helper extraction
+### SDW-V6RT-T38 v6 entrypoint adapter request/open helper extraction
 
-- 目的: `KAFS_V6_ENTRYPOINT` bridge に残っていた v6 entrypoint 固有の
-  runtime request 検証と open/admit/init sequence を `kafs_v6_mount_bridge`
-  側へ移す。これは common-object bridge pureification slice であり、write surface
+- 目的: `KAFS_V6_ENTRYPOINT` adapter path に残っていた v6 entrypoint 固有の
+  runtime request 検証と open/admit/init sequence を `kafs_v6_entrypoint_adapter`
+  側へ移す。これは common-object adapter pureification slice であり、write surface
   expansion ではない。
 - 変更:
-  - `src/kafs_v6_mount_bridge.c` を追加し、`kafs_v6_mount_bridge_validate_options()` と
-    `kafs_v6_mount_bridge_open_context()` を実装する。
-  - `src/kafs_v6_mount_bridge.h` に bridge-local mode enum と option summary 構造体を追加する。
-  - `src/kafs.c` の `KAFS_V6_ENTRYPOINT` ブロックは private parser result を bridge option
+  - `src/kafs_v6_entrypoint_adapter.c` を追加し、`kafs_v6_entrypoint_adapter_validate_options()` と
+    `kafs_v6_entrypoint_adapter_open_context()` を実装する。
+  - `src/kafs_v6_entrypoint_adapter.h` に adapter-local mode enum と option summary 構造体を追加する。
+  - `src/kafs.c` の `KAFS_V6_ENTRYPOINT` ブロックは private parser result を adapter option
     summary へ写し、FUSE argv assembly / shared FUSE runner / image lock を保持する。
-  - `src/Makefile.am` の `kafs-v6` source set に `kafs_v6_mount_bridge.c` を追加する。
+  - `src/Makefile.am` の `kafs-v6` source set に `kafs_v6_entrypoint_adapter.c` を追加する。
 - 完了条件:
-  - `kafs.c` は `kafs_v6_runtime.h` を直接 include せず、bridge header は runtime helper
+  - `kafs.c` は `kafs_v6_runtime.h` を直接 include せず、entrypoint adapter header は runtime helper
     header を再公開しない。v6 entrypoint request validation と open/admit/init sequence は
-    mount bridge helper 経由になる。
+    entrypoint adapter 経由になる。
   - shared FUSE operation implementation と operation table は `kafs.c` に残す。
   - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
   - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、`git diff --check`、
@@ -1396,10 +1396,10 @@
     `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS
     している。
 - 実装結果:
-  - `kafs_v6_mount_bridge.c` が v6 entrypoint runtime request 検証、bridge-local mode から
+  - `kafs_v6_entrypoint_adapter.c` が v6 entrypoint runtime request 検証、adapter-local mode から
     runtime mode への変換、v6 context open/admit/init sequence を所有するようにした。
-  - `kafs.c` の bridge は generic mount option parser、FUSE argv assembly、runtime image lock、
-    shared FUSE runner を保持するだけになった。
+  - `kafs.c` の `KAFS_V6_ENTRYPOINT` adapter path は generic mount option parser、FUSE argv
+    assembly、runtime image lock、shared FUSE runner を保持するだけになった。
   - controlled-write write surface は広げていない。
 - 検証:
   - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、
@@ -1408,6 +1408,44 @@
     `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
   - clone strict source gate は 36 clones / 353 duplicated lines / 0.95% で閾値内だった。
   - `make check` は all 29 tests passed で完了した。
+
+### SDW-V6RT-T39 v6 entrypoint adapter naming and source ownership clarification
+
+- 目的: `v6 bridge` という共通名に見える表現を現行責務に合わせて明確化し、v5/v6
+  互換 layer ではなく `kafs-v6` 専用 entrypoint adapter であることを source 名と
+  docs から読めるようにする。これは boundary clarification slice であり、write
+  surface expansion ではない。
+- 変更:
+  - `src/kafs_v6_mount_bridge.c` / `.h` を `src/kafs_v6_entrypoint_adapter.c` / `.h`
+    に改名する。
+  - `kafs_v6_mount_bridge_*` / `KAFS_V6_MOUNT_BRIDGE_*` を
+    `kafs_v6_entrypoint_adapter_*` / `KAFS_V6_ENTRYPOINT_ADAPTER_*` に改名する。
+  - `src/Makefile.am` に runtime source ownership コメントを追加し、production
+    `kafs`、dedicated `kafs-v6`、v6-only entrypoint adapter の link boundary を明記する。
+  - `docs/sd-card-wear-v6-shared-artifact-boundary-plan.md` に source ownership map を追加し、
+    common-looking file names の位置づけを artifact class / link target / owns / must not own
+    で明示する。
+  - runtime entrypoint plan / handoff / tickets の現行説明を `bridge` ではなく
+    `entrypoint adapter` に更新する。過去チケットの旧称は履歴として残す。
+- 完了条件:
+  - `kafs_v6_entrypoint_adapter.*` は v6-only internal adapter として説明され、v5/v6
+    compatibility layer や user-facing helper ではないことが明記されている。
+  - production `kafs` は引き続き `kafs_v6_runtime.c` を link しない。
+  - shared FUSE operation implementation と operation table は `src/kafs.c` に残す。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS
+    している。
+- 実装結果:
+  - `kafs-v6` の common-object handoff 名を entrypoint adapter に統一した。
+  - `src/Makefile.am` と v6 shared artifact boundary plan に source ownership を追記した。
+  - write surface と production `kafs` の v6 fail-closed boundary は変更していない。
+- 検証:
+  - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、
+    `git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
 
 ---
 
