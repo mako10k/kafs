@@ -15,6 +15,7 @@
 #include "kafs_shared_fuse_runner.h"
 #include "kafs_tailmeta.h"
 #include "kafs_v6_admission.h"
+#include "kafs_v6_fuse_init_policy.h"
 #include "kafs_v6_fuse_policy.h"
 
 #include <fuse.h>
@@ -10951,17 +10952,8 @@ static void *kafs_op_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
   kafs_context_t *ctx = fctx ? (kafs_context_t *)fctx->private_data : NULL;
   if (ctx && ctx->c_runtime_read_only)
     return ctx;
-  if (ctx && ctx->c_superblock &&
-      kafs_sb_format_version_get(ctx->c_superblock) == KAFS_FORMAT_VERSION_V6)
-  {
-    int wrc = kafs_ctx_v6_validate_worker_policy(ctx);
-    if (wrc != 0)
-      kafs_log(KAFS_LOG_ERR,
-               "kafs: invalid v6 worker policy in FUSE init rc=%d; delayed/background workers "
-               "remain suppressed\n",
-               wrc);
+  if (kafs_v6_fuse_init_suppresses_background_workers(ctx))
     return ctx;
-  }
   if (ctx && ctx->c_pendinglog_enabled)
   {
     int prc = kafs_pending_worker_start(ctx);

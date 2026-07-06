@@ -230,6 +230,15 @@ T42 separates the shared FUSE runner hook from the v6 adapter API:
 - `kafs_v6_entrypoint_adapter.c` calls `kafs_shared_fuse_run()` instead of
   publishing a runner hook in the adapter namespace.
 
+T43 extracts the format-v6 FUSE init worker policy:
+
+- `kafs_v6_fuse_init_policy.h` owns the FUSE-init decision that format-v6
+  runtime mounts keep delayed/background mutation workers suppressed;
+- `kafs_op_init()` still lives in `kafs.c`, but it now delegates the v6 worker
+  policy check and diagnostic to that helper before starting v4/v5 workers;
+- shared FUSE operation implementations and the operation table remain in
+  `kafs.c`.
+
 The remaining pureification pressure points are:
 
 - removal or retirement plan for legacy v6 diagnostic scaffolding in `kafs`
@@ -296,7 +305,10 @@ assembly only. T42 moves the runner hook declaration and runtime option summary
 out of the adapter header into `kafs_shared_fuse_runner.h`, so the adapter API
 no longer appears to own a `kafs.c`-implemented shared runner. Later slices can
 replace the common-object adapter path with a non-installed static archive or
-narrower shared FUSE operation helpers.
+narrower shared FUSE operation helpers. T43 moves the v6 FUSE-init
+background-worker suppression check into `kafs_v6_fuse_init_policy.h`, keeping
+the shared `kafs_op_init()` implementation in `kafs.c` while reducing the v6
+policy embedded directly in it.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).

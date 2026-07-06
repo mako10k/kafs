@@ -73,7 +73,7 @@ kafs_back_LDADD = $(KAFS_LIBS)
 noinst_HEADERS = kafs_block.h kafs_config.h kafs_context.h kafs_dirent.h kafs_inode.h \
 	kafs_meta_region.h kafs_profile.h kafs_superblock.h kafs.h kafs_ioctl.h kafs_journal.h \
 	kafs_rpc.h kafs_core.h kafs_shared_fuse_runner.h kafs_v6_admission.h \
-	kafs_v6_fuse_policy.h kafs_v6_layout.h kafs_v6_entrypoint_adapter.h \
-	kafs_v6_mount_options.h kafs_v6_runtime.h
+	kafs_v6_fuse_init_policy.h kafs_v6_fuse_policy.h kafs_v6_layout.h \
+	kafs_v6_entrypoint_adapter.h kafs_v6_mount_options.h kafs_v6_runtime.h
 
 CFLAGS = @CFLAGS@ -Wall -Werror -Wno-unused-function -Wno-unused-parameter

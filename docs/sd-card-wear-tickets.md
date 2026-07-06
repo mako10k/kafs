@@ -1560,6 +1560,39 @@
     `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
     `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
 
+### SDW-V6RT-T43 v6 FUSE init worker-policy helper split
+
+- 目的: shared FUSE operation の `kafs_op_init()` に残っている format-v6 worker-policy 判定を
+  v6 FUSE init policy helper へ分離する。これは operation-helper extraction slice であり、
+  write surface expansion ではない。
+- 変更:
+  - `src/kafs_v6_fuse_init_policy.h` を追加し、format-v6 runtime mount では delayed /
+    background mutation workers を起動しない判定と診断を所有させる。
+  - `src/kafs.c` の `kafs_op_init()` は v6 判定と worker policy validation を
+    `kafs_v6_fuse_init_suppresses_background_workers()` へ委譲する。
+  - `src/Makefile.am` の `noinst_HEADERS` と source ownership docs に v6 FUSE init policy
+    helper を追加する。
+- 完了条件:
+  - `kafs_op_init()` は shared FUSE operation implementation として `src/kafs.c` に残るが、
+    format-v6 固有の background worker suppression policy を直接所有しない。
+  - v4/v5 worker startup policy と shared FUSE operation table は `src/kafs.c` に残す。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、
+    `git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS している。
+- 実装結果:
+  - `src/kafs_v6_fuse_init_policy.h` に v6 FUSE init worker-policy helper を追加した。
+  - `src/kafs.c` の `kafs_op_init()` から format-v6 superblock 判定と
+    `kafs_ctx_v6_validate_worker_policy()` の直接呼び出しを削除した。
+  - shared FUSE operation implementation と operation table は引き続き `src/kafs.c` に残した。
+  - write surface と production `kafs` の v6 fail-closed boundary は変更していない。
+- 検証:
+  - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、
+    `git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+
 ---
 
 ## 最初に着手するチケット

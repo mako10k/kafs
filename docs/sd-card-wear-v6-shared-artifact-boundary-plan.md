@@ -54,6 +54,7 @@ live in `kafs.c`; it is not a v5/v6 compatibility layer.
 | `src/kafs_v6_mount_options.[ch]` | v6-only mount option policy helper | `kafs-v6` only | v6-owned `-o` token vocabulary, runtime request token recording, FUSE passthrough filtering, `multi_thread` / `max_threads` handoff state | mount-main orchestration, context open/admit/init, shared FUSE operation implementation, installed ABI |
 | `src/kafs_v6_entrypoint_adapter.[ch]` | v6-only entrypoint adapter | `kafs-v6` only | translation from `kafs-v6` parser/main state to shared FUSE runtime entrypoints, context initialization, image lock, FUSE argv assembly, and runtime handoff | v5/v6 compatibility policy, user-facing helper CLI, v6 option vocabulary, shared FUSE runner hook ownership, installed ABI |
 | `src/kafs_shared_fuse_runner.h` | internal shared FUSE runner boundary | targets compiling shared FUSE operations | narrow handoff to `kafs.c` shared FUSE runner, runtime cache/TRIM option summary | v6 admission policy, mount-main orchestration, FUSE operation implementation, installed ABI |
+| `src/kafs_v6_fuse_init_policy.h` | v6 FUSE init policy helper | targets compiling shared FUSE operations | format-v6 FUSE init worker suppression check and diagnostic | FUSE operation table ownership, v4/v5 worker startup policy, installed ABI |
 | `src/kafs_v6_fuse_policy.h` | v6 FUSE policy helper | targets compiling shared FUSE operations | controlled-write active checks, rejected-operation vocabulary, write-surface gates | FUSE operation table ownership, generic filesystem mutation logic |
 | `src/kafs_v6_admission.h` | shared pure v6 metadata/admission helper | runtime diagnostics and v6 runtime helper users | descriptor-backed preflight/runtime admission core without product CLI ownership | successful production `kafs` v6 admission |
 | `src/kafs_v6_layout.h` | shared pure metadata helper | offline and runtime users | descriptor layout parsing and validation primitives | runtime admission wording or mount policy |
@@ -269,6 +270,11 @@ summary out of `kafs_v6_entrypoint_adapter.h` and into
 `kafs_shared_fuse_runner.h`. The adapter still orchestrates the `kafs-v6`
 mount-main path, but it no longer owns the API name for the `kafs.c`
 `fuse_main()` / `kafs_operations` handoff.
+
+`SDW-V6RT-T43` moves the format-v6 FUSE-init worker suppression check and
+diagnostic into `kafs_v6_fuse_init_policy.h`. `kafs_op_init()` remains in
+`kafs.c`, but the v6-specific "do not start delayed/background workers" policy
+is now named and kept beside the other v6 FUSE policy helpers.
 
 The next slice should reduce the remaining common-object adapter path around
 shared FUSE operation implementations, or retire legacy `kafs` v6 diagnostic
