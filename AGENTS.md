@@ -96,6 +96,13 @@
 - Follow `.clang-format`; use `./scripts/format.sh fix` for C formatting.
 - Keep C changes warning-clean under the existing `-Wall -Werror` build flags.
 - Avoid introducing code clones. Extract helpers when repeated logic becomes meaningful.
+- For refactoring, actively use `lsp-cli` with `clangd` when available. Prefer
+  semantic checks such as `symbols`, `references`, `definition`, `hover`, and
+  rename dry-runs before broad textual edits; apply edits only after reviewing
+  the planned workspace changes.
+- Keep `compile_commands.json` current for LSP-backed refactoring. When it is
+  missing or stale, regenerate it with the repository build flow, for example
+  `bear -- make -j2` after a clean or relevant rebuild.
 - Prefer structured parsing and existing helper APIs over ad hoc string handling.
 - If `Makefile.am`, `configure.ac`, or other Autotools inputs change, refresh generated files with `autoreconf -fi` or explain why generated outputs were intentionally left untouched.
 
