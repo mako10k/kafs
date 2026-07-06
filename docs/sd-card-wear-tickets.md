@@ -1593,6 +1593,38 @@
     `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
     `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
 
+### SDW-V6RT-T44 legacy v6 fail-closed helper split
+
+- 目的: production `kafs` に残す legacy v6 token の fail-closed guidance を専用 helper
+  に分離し、successful v6 runtime admission は引き続き `kafs-v6` が所有することを明確にする。
+  これは legacy diagnostic ownership split であり、write surface expansion ではない。
+- 変更:
+  - `src/kafs_legacy_v6_failclosed.h` を追加し、legacy `--v6-inspection-mount` /
+    `--v6-write-mount` / `-o v6_inspection_mount` / `-o v6_write_mount` の token 分類と
+    `kafs-v6` guidance を所有させる。
+  - `src/kafs.c` は legacy v6 request flag を保持し、token 判定と fail-closed message は
+    helper 呼び出しへ委譲する。
+  - `src/Makefile.am` の source ownership comment と `noinst_HEADERS` に helper を追加する。
+- 完了条件:
+  - production `kafs` は legacy v6 token を成功 mount path に通さず、同じ `kafs-v6`
+    guidance で fail closed する。
+  - production `kafs` は引き続き `kafs_v6_runtime.c` を link しない。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、
+    `git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS している。
+- 実装結果:
+  - `src/kafs_legacy_v6_failclosed.h` に legacy v6 token 分類と guidance 出力を切り出した。
+  - `src/kafs.c` の CLI flag / `-o` token handling は helper の分類結果を request flag へ写すだけにした。
+  - `src/kafs.c` の main path は helper 経由で legacy v6 request を拒否する。
+  - write surface と production `kafs` の v6 fail-closed boundary は変更していない。
+- 検証:
+  - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、
+    `git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、`./scripts/static-checks.sh`、
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+
 ---
 
 ## 最初に着手するチケット

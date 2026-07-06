@@ -48,7 +48,8 @@ live in `kafs.c`; it is not a v5/v6 compatibility layer.
 
 | Source | Artifact class | Links into | Owns | Must not own |
 | --- | --- | --- | --- | --- |
-| `src/kafs.c` | production runtime plus temporary shared FUSE implementation | `kafs`, `kafs-v6`, `kafsctl`, `kafs-back` with per-target guards | v4/v5 runtime, legacy v6 fail-closed diagnostics, shared FUSE operations, shared FUSE runner/cleanup wrapper | v6 admission policy, v6 mount-main preparation, v6 runtime open/admit/init ownership, v6 write-surface expansion |
+| `src/kafs.c` | production runtime plus temporary shared FUSE implementation | `kafs`, `kafs-v6`, `kafsctl`, `kafs-back` with per-target guards | v4/v5 runtime, production CLI/mount flow, shared FUSE operations, shared FUSE runner/cleanup wrapper | v6 admission policy, v6 mount-main preparation, v6 runtime open/admit/init ownership, legacy v6 guidance wording, v6 write-surface expansion |
+| `src/kafs_legacy_v6_failclosed.h` | production legacy v6 fail-closed helper | production `kafs` users of legacy tokens | legacy v6 token classification and `kafs-v6` guidance for production fail-closed paths | successful v6 runtime admission, v6 mount-main orchestration, shared FUSE operation implementation, installed ABI |
 | `src/kafs_v6.c` | v6 product entrypoint | `kafs-v6` only | `kafs-v6` CLI shape, mode selection, descriptor preflight handoff, admission signal | shared FUSE operation implementation, production `kafs` behavior |
 | `src/kafs_v6_runtime.c` | v6-only runtime policy/helper | `kafs-v6` only | v6 request reporting, image open, descriptor-backed runtime admission, service init | production `kafs` link surface, generic v4/v5 runtime context setup |
 | `src/kafs_v6_mount_options.[ch]` | v6-only mount option policy helper | `kafs-v6` only | v6-owned `-o` token vocabulary, runtime request token recording, FUSE passthrough filtering, `multi_thread` / `max_threads` handoff state | mount-main orchestration, context open/admit/init, shared FUSE operation implementation, installed ABI |
@@ -275,6 +276,11 @@ mount-main path, but it no longer owns the API name for the `kafs.c`
 diagnostic into `kafs_v6_fuse_init_policy.h`. `kafs_op_init()` remains in
 `kafs.c`, but the v6-specific "do not start delayed/background workers" policy
 is now named and kept beside the other v6 FUSE policy helpers.
+
+`SDW-V6RT-T44` moves production `kafs` legacy v6 token classification and
+fail-closed guidance into `kafs_legacy_v6_failclosed.h`. This preserves the
+operator-facing rejection behavior while making clear that successful v6
+runtime admission remains outside production `kafs`.
 
 The next slice should reduce the remaining common-object adapter path around
 shared FUSE operation implementations, or retire legacy `kafs` v6 diagnostic

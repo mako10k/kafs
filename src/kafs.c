@@ -12,6 +12,7 @@
 #include "kafs_rpc.h"
 #include "kafs_core.h"
 #include "kafs_crash_diag.h"
+#include "kafs_legacy_v6_failclosed.h"
 #include "kafs_shared_fuse_runner.h"
 #include "kafs_tailmeta.h"
 #include "kafs_v6_admission.h"
@@ -11806,6 +11807,22 @@ static int kafs_main_copy_cli_string_option(char *dst, size_t dst_size, const ch
   return 0;
 }
 
+static void kafs_main_record_legacy_v6_request(kafs_main_options_t *opts,
+                                               kafs_legacy_v6_request_t request)
+{
+  switch (request)
+  {
+  case KAFS_LEGACY_V6_REQUEST_INSPECTION:
+    opts->v6_inspection_mount = KAFS_TRUE;
+    break;
+  case KAFS_LEGACY_V6_REQUEST_CONTROLLED_WRITE:
+    opts->v6_write_mount = KAFS_TRUE;
+    break;
+  case KAFS_LEGACY_V6_REQUEST_NONE:
+    break;
+  }
+}
+
 static int kafs_main_handle_flag_arg(kafs_main_options_t *opts, const char *arg)
 {
   if (kafs_cli_is_help_arg(arg))
@@ -11857,14 +11874,10 @@ static int kafs_main_handle_flag_arg(kafs_main_options_t *opts, const char *arg)
     kafs_main_apply_sd_card_profile(opts, KAFS_SD_CARD_PROFILE_CONSERVATIVE);
     return 1;
   }
-  if (strcmp(arg, "--v6-inspection-mount") == 0)
+  kafs_legacy_v6_request_t legacy_v6 = KAFS_LEGACY_V6_REQUEST_NONE;
+  if (kafs_legacy_v6_flag_request(arg, &legacy_v6))
   {
-    opts->v6_inspection_mount = KAFS_TRUE;
-    return 1;
-  }
-  if (strcmp(arg, "--v6-write-mount") == 0)
-  {
-    opts->v6_write_mount = KAFS_TRUE;
+    kafs_main_record_legacy_v6_request(opts, legacy_v6);
     return 1;
   }
   if (strncmp(arg, "--sd-card-profile=", 18) == 0)
@@ -12042,9 +12055,11 @@ static void kafs_main_note_mount_mode_token(kafs_main_options_t *opts, const cha
 
 static int kafs_main_handle_v6_inspection_token(kafs_main_options_t *opts, const char *tok)
 {
-  if (strcmp(tok, "v6_inspection_mount") == 0 || strcmp(tok, "v6-inspection-mount") == 0)
+  kafs_legacy_v6_request_t legacy_v6 = KAFS_LEGACY_V6_REQUEST_NONE;
+  if (kafs_legacy_v6_option_request(tok, &legacy_v6) &&
+      legacy_v6 == KAFS_LEGACY_V6_REQUEST_INSPECTION)
   {
-    opts->v6_inspection_mount = KAFS_TRUE;
+    kafs_main_record_legacy_v6_request(opts, legacy_v6);
     return 1;
   }
   return 0;
@@ -12052,9 +12067,11 @@ static int kafs_main_handle_v6_inspection_token(kafs_main_options_t *opts, const
 
 static int kafs_main_handle_v6_write_token(kafs_main_options_t *opts, const char *tok)
 {
-  if (strcmp(tok, "v6_write_mount") == 0 || strcmp(tok, "v6-write-mount") == 0)
+  kafs_legacy_v6_request_t legacy_v6 = KAFS_LEGACY_V6_REQUEST_NONE;
+  if (kafs_legacy_v6_option_request(tok, &legacy_v6) &&
+      legacy_v6 == KAFS_LEGACY_V6_REQUEST_CONTROLLED_WRITE)
   {
-    opts->v6_write_mount = KAFS_TRUE;
+    kafs_main_record_legacy_v6_request(opts, legacy_v6);
     return 1;
   }
   return 0;
@@ -13483,20 +13500,9 @@ int main(int argc, char **argv)
 
   if (kafs_main_filter_mount_options(&opts, argv_clean, &argc_clean) != 0)
     return 2;
-  if (opts.v6_inspection_mount && !opts.v6_write_mount)
-  {
-    fprintf(stderr, "kafs: legacy v6 inspection mount moved to kafs-v6; use "
-                    "kafs-v6 --image <image> --inspection-mount <mountpoint> -o ro.\n");
+  if (kafs_legacy_v6_reject_if_requested(opts.v6_inspection_mount, opts.v6_write_mount, stderr) !=
+      0)
     return 2;
-  }
-  if (opts.v6_write_mount)
-  {
-    fprintf(stderr,
-            "kafs: legacy v6 controlled write mount moved to kafs-v6; use "
-            "kafs-v6 --image <image> --controlled-write-mount <mountpoint> "
-            "-o rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full.\n");
-    return 2;
-  }
   if (kafs_main_validate_options(&opts) != 0)
     return 2;
 

@@ -239,6 +239,15 @@ T43 extracts the format-v6 FUSE init worker policy:
 - shared FUSE operation implementations and the operation table remain in
   `kafs.c`.
 
+T44 separates legacy v6 fail-closed guidance from the production mount flow:
+
+- `kafs_legacy_v6_failclosed.h` owns legacy v6 token classification and the
+  `kafs-v6` guidance emitted by production `kafs`;
+- `kafs.c` keeps the production CLI/mount flow and legacy request flags, but it
+  delegates token vocabulary and fail-closed wording to that helper;
+- successful v6 runtime admission remains owned by `kafs-v6`, and production
+  `kafs` still does not link `kafs_v6_runtime.c`.
+
 The remaining pureification pressure points are:
 
 - removal or retirement plan for legacy v6 diagnostic scaffolding in `kafs`
@@ -308,7 +317,10 @@ replace the common-object adapter path with a non-installed static archive or
 narrower shared FUSE operation helpers. T43 moves the v6 FUSE-init
 background-worker suppression check into `kafs_v6_fuse_init_policy.h`, keeping
 the shared `kafs_op_init()` implementation in `kafs.c` while reducing the v6
-policy embedded directly in it.
+policy embedded directly in it. T44 moves production `kafs` legacy v6
+fail-closed token classification and guidance wording into
+`kafs_legacy_v6_failclosed.h` without creating a successful production v6
+runtime path.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).
