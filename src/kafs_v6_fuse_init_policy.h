@@ -6,8 +6,9 @@
 /*
  * Format-v6 FUSE init policy.
  *
- * Shared FUSE operation implementations still live in kafs.c, but format-v6
- * runtime mounts must keep delayed/background mutation workers suppressed.
+ * Shared FUSE operation implementations live in kafs_shared_fuse_runtime.c,
+ * but format-v6 runtime mounts must keep delayed/background mutation workers
+ * suppressed.
  */
 
 static inline int kafs_v6_fuse_init_suppresses_background_workers(kafs_context_t *ctx)

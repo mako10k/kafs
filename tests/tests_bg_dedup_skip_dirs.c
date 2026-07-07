@@ -1,5 +1,5 @@
 #define KAFS_NO_MAIN
-#include "kafs.c"
+#include "kafs_shared_fuse_runtime.c"
 #include "test_utils.h"
 
 #include <assert.h>

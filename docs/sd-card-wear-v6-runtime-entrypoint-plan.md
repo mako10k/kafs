@@ -1,7 +1,7 @@
 # KAFS format v6 runtime entrypoint plan
 
 Date: 2026-07-07
-Status: production legacy v6 token guidance retired
+Status: shared FUSE runtime source split from production kafs entrypoint
 
 ## Boundary
 
@@ -38,17 +38,19 @@ surface.
 ## T25/T26 v6 admission
 
 T25 linked `kafs-v6` with the shared FUSE runtime object set through the
-original `KAFS_V6_ENTRYPOINT` common-object guard. T46 later renamed the
-remaining `kafs.c` shared-runner export guard to
-`KAFS_SHARED_FUSE_RUNNER_EXPORT`; production `kafs` still does not link
-`kafs_v6_runtime.c` and no longer admits `v6_inspection_mount` or
-`v6_write_mount` as a successful runtime path.
+original `KAFS_V6_ENTRYPOINT` common-object guard. T46 later renamed the shared
+runner export guard to `KAFS_SHARED_FUSE_RUNNER_EXPORT`, and T59 moved the
+shared FUSE runtime implementation into `kafs_shared_fuse_runtime.c` so
+`kafs-v6` no longer links the production `src/kafs.c` entrypoint wrapper.
+Production `kafs` still does not link `kafs_v6_runtime.c` and no longer admits
+`v6_inspection_mount` or `v6_write_mount` as a successful runtime path.
 
 The read-only inspection path now uses:
 
 - `kafs-v6 --inspection-mount ... -o ro` as the admission signal;
 - descriptor and journal preflight from `kafs_v6_runtime.c`;
-- shared FUSE/runtime mechanics from `kafs.c` compiled as a common object;
+- shared FUSE/runtime mechanics from `kafs_shared_fuse_runtime.c` compiled as
+  a common object;
 - forced read-only runtime state before `fuse_main`.
 
 The controlled-write path now uses:
@@ -57,7 +59,8 @@ The controlled-write path now uses:
   rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full`
   as the admission signal;
 - descriptor and journal preflight from `kafs_v6_runtime.c`;
-- shared FUSE/runtime mechanics from `kafs.c` compiled as a common object;
+- shared FUSE/runtime mechanics from `kafs_shared_fuse_runtime.c` compiled as
+  a common object;
 - the pre-existing bounded write surface: regular-file create/write/fsync and
   release, with broader metadata mutations still rejected.
 
@@ -355,6 +358,15 @@ T58 narrows the shared FUSE runner handoff into a request boundary:
 - filesystem operation implementations and the operation table remain in
   `src/kafs.c`.
 
+T59 splits the shared FUSE runtime source from the production `kafs` entrypoint:
+
+- the former shared FUSE runtime implementation now lives in
+  `src/kafs_shared_fuse_runtime.c`;
+- `src/kafs.c` is only the production `kafs` process wrapper and calls
+  `kafs_production_main()`;
+- `kafs-v6` links `kafs_shared_fuse_runtime.c` directly and no longer links
+  `src/kafs.c`.
+
 The remaining pureification pressure points are:
 
 - further reduction of the shared FUSE common-object adapter path around shared
@@ -375,10 +387,11 @@ binaries:
 - inode, block allocation, HRL, and filesystem operation helpers
 
 `src/Makefile.am` builds `kafs-v6` as a separate binary. T21/T22 created the v6
-runtime helper surface for the dedicated entrypoint. T25 links `kafs-v6` with a
-common object set that includes `kafs.c`, guarded by `KAFS_V6_ENTRYPOINT`, while
-keeping `kafs_v6_runtime.c` out of production `kafs`. T26 uses the same common
-object boundary for controlled-write admission. T27 removes the `kafs-v6`
+runtime helper surface for the dedicated entrypoint. T25 linked `kafs-v6` with
+a common object set that included the former `kafs.c` implementation, guarded
+by `KAFS_V6_ENTRYPOINT`, while keeping `kafs_v6_runtime.c` out of production
+`kafs`. T26 uses the same common object boundary for controlled-write
+admission. T27 removes the `kafs-v6`
 adapter dependency on the generic v4/v5 `kafs_main_open_runtime_context()` path
 and gives the dedicated entrypoint its own v6 open/admit/init helper. T28 keeps
 that adapter path but makes successful v6 runtime views descriptor-backed
@@ -453,14 +466,15 @@ production preflight, so production `kafs` rejects v6 images directly with
 production legacy v6 token compatibility guidance, so `kafs.c` no longer owns
 legacy v6 token vocabulary or a dedicated legacy-v6 reject gate. T58 narrows the
 shared FUSE runner handoff to a request object shared by production `kafs` main
-and the `kafs-v6` adapter while keeping operation implementations in `kafs.c`.
+and the `kafs-v6` adapter. T59 moves the shared FUSE runtime implementation to
+`kafs_shared_fuse_runtime.c`, leaving `src/kafs.c` as a production wrapper only.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).
 The immediate next implementation boundary remains v6 runtime pureification,
 not write-surface expansion. The next remaining implementation boundary is
-further reduction of the shared FUSE operation implementation common-object
-path.
+further reduction of the broad shared FUSE runtime source into smaller helpers
+or production-only mount-main ownership where that lowers coupling.
 
 ## Smoke
 

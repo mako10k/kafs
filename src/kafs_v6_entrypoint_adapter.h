@@ -9,9 +9,9 @@
  * Internal kafs-v6 adapter.
  *
  * This is not a v5/v6 compatibility layer. It translates the dedicated
- * kafs-v6 entrypoint state into the shared FUSE runtime entrypoints that still
- * live in kafs.c under KAFS_SHARED_FUSE_RUNNER_EXPORT. Keep it linked only into
- * kafs-v6.
+ * kafs-v6 entrypoint state into the shared FUSE runtime entrypoints exported
+ * from kafs_shared_fuse_runtime.c under KAFS_SHARED_FUSE_RUNNER_EXPORT. Keep it
+ * linked only into kafs-v6.
  */
 
 typedef enum kafs_v6_entrypoint_adapter_mode

@@ -6,10 +6,10 @@
 /*
  * Internal shared FUSE runner boundary.
  *
- * This is implemented by kafs.c for targets that compile the shared FUSE
- * operation table. It is not a v6 entrypoint adapter API and not an installed
- * ABI; it only gives v6-owned entrypoint code a narrow handoff into the common
- * FUSE runner that still lives beside the operation implementations.
+ * This is implemented by kafs_shared_fuse_runtime.c for targets that compile
+ * the shared FUSE operation table. It is not a v6 entrypoint adapter API and
+ * not an installed ABI; it only gives v6-owned entrypoint code a narrow handoff
+ * into the common FUSE runner that lives beside the operation implementations.
  */
 
 typedef struct kafs_shared_fuse_runtime_options

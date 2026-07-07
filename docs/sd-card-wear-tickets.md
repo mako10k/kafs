@@ -2134,6 +2134,52 @@
     `git diff --check`、`make -C tests check TESTS=v6_descriptor_smoketest`、
     `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
 
+### SDW-V6RT-T59 shared FUSE runtime source ownership split
+
+- 目的: `kafs-v6` が production `src/kafs.c` entrypoint wrapper を経由せず、shared FUSE
+  runtime implementation へ直接 link するように source ownership を分ける。filesystem
+  operation 実装の複製や v6 write surface 拡張は行わない。
+- 変更:
+  - 旧 `src/kafs.c` の shared FUSE runtime implementation を
+    `src/kafs_shared_fuse_runtime.c` に移す。
+  - `src/kafs.c` を production `kafs` process entrypoint wrapper にし、
+    `kafs_production_main()` へ委譲する。
+  - `src/Makefile.am` で `kafs-v6`、`kafsctl`、`kafs-back` の common source を
+    `kafs.c` から `kafs_shared_fuse_runtime.c` に差し替える。
+  - shared runtime を direct include する internal regression test と source-level
+    ownership comments を新しい source 境界に合わせる。
+- 完了条件:
+  - `src/Makefile.am` の `kafs_v6_SOURCES` が `kafs.c` を含まない。
+  - `rg '#include "kafs\\.c"' src tests` が no match になる。
+  - `lsp-cli --server-cmd clangd-18` で `kafs_production_main` と
+    `kafs_shared_fuse_run_request` 周辺の symbols/references を確認できる。
+  - `./scripts/format.sh fix`、`autoreconf -fi && ./configure && make -j2`、
+    `git diff --check`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS している。
+- 実装結果:
+  - `src/kafs_shared_fuse_runtime.c` を追加し、shared FUSE operation
+    implementation、operation table、shared runner、production mount-main body を
+    旧 `src/kafs.c` から移した。
+  - `src/kafs.c` は `kafs_crash_diag_install("kafs")` と
+    `kafs_production_main()` 呼び出しだけを持つ production wrapper になった。
+  - `kafs-v6`、`kafsctl`、`kafs-back` は `src/Makefile.am` で
+    `kafs_shared_fuse_runtime.c` を link し、`kafs-v6` は `src/kafs.c` を link しなくなった。
+  - `tests/tests_bg_dedup_skip_dirs.c` は shared runtime source を direct include
+    する internal test として更新した。
+- 検証:
+  - `bear -- make -j2` で `compile_commands.json` を更新し、`kafs-v6` が
+    `kafs_v6-kafs_shared_fuse_runtime.o` を使うことを確認した。
+  - `lsp-cli --root . --server-cmd clangd-18` の `symbols` / `references` /
+    `definition` / `hover` で `kafs_production_main` と
+    `kafs_shared_fuse_run_request` 周辺を確認した。
+  - `rg` は `src/Makefile.am` の `kafs_v6_SOURCES` から `kafs.c` 直接依存が消え、
+    `src` / `tests` から `#include "kafs.c"` が消えたことを示した。
+  - `./scripts/format.sh fix`、`autoreconf -fi && ./configure && make -j2`、
+    `make clean && bear -- make -j2`、`git diff --check`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/test-cli-surface.sh`、`./scripts/static-checks.sh`、
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+
 ---
 
 ## 最初に着手するチケット

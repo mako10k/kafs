@@ -167,6 +167,9 @@ Additional closeout after the original handoff:
 - T58 narrows the shared FUSE runner handoff to
   `kafs_shared_fuse_run_request_t`, so production `kafs` main and the
   `kafs-v6` adapter enter the shared runner through the same request shape.
+- T59 moves the shared FUSE runtime implementation into
+  `kafs_shared_fuse_runtime.c`; production `src/kafs.c` is now only the `kafs`
+  process entrypoint wrapper, and `kafs-v6` no longer links it.
 
 ## 2026-07-02 closeout
 
@@ -843,6 +846,41 @@ Current T58 boundary:
 - Shared FUSE operation implementations and the operation table still live in
   `src/kafs.c`; this slice does not broaden the v6 write surface.
 
+## 2026-07-07 T59 validation
+
+Commands completed successfully:
+
+```sh
+./scripts/format.sh fix
+autoreconf -fi && ./configure && make -j2
+make clean && bear -- make -j2
+git diff --check
+make -C tests check TESTS=v6_descriptor_smoketest
+./scripts/test-cli-surface.sh
+./scripts/static-checks.sh
+KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2
+```
+
+Validation result:
+
+- `kafs-v6` builds with `kafs_v6-kafs_shared_fuse_runtime.o`; the regenerated
+  compile database no longer has a `kafs_v6-kafs.o` path.
+- `lsp-cli --root . --server-cmd clangd-18` served `symbols`, `references`,
+  `definition`, and `hover` checks for `kafs_production_main` and
+  `kafs_shared_fuse_run_request`.
+- `rg` showed no `#include "kafs.c"` in `src` / `tests` and no
+  `kafs_v6_SOURCES` entry that links `kafs.c`.
+- `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` passed all 29 tests.
+
+Current T59 boundary:
+
+- `src/kafs.c` is the production `kafs` entrypoint wrapper only.
+- `src/kafs_shared_fuse_runtime.c` owns the shared FUSE operation
+  implementations, operation table, shared runner, cleanup wrapper, and
+  production mount-main body behind `kafs_production_main()`.
+- `kafs-v6` links `src/kafs_shared_fuse_runtime.c` directly and no longer links
+  `src/kafs.c`; this slice does not broaden the v6 write surface.
+
 ## Original validation run
 
 Commands completed successfully:
@@ -881,16 +919,15 @@ block this closeout.
 ## Current next boundary
 
 The next boundary remains v6 runtime pureification after the shared FUSE
-runner request boundary and production diagnostic scaffolding retirement. Do not
-broaden the v6 write surface as the next step.
+runtime source split. Do not broaden the v6 write surface as the next step.
 
 Start from the pressure points recorded in
 [sd-card-wear-v6-runtime-entrypoint-plan.md](sd-card-wear-v6-runtime-entrypoint-plan.md):
 
 - reduction of the shared FUSE common-object adapter path around shared
   operation implementations;
-- further reduction of the remaining shared FUSE operation implementation
-  boundaries where production `kafs` and `kafs-v6` still meet in `src/kafs.c`,
+- further reduction of the broad `src/kafs_shared_fuse_runtime.c` boundary into
+  production mount-main helpers or smaller FUSE operation support helpers,
   without duplicating filesystem logic.
 
 Production cutover discussion stays behind that pureification and behind later

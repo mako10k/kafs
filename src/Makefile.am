@@ -8,21 +8,26 @@ CLEANFILES = $(sbin_SCRIPTS)
 # add per-target flags; silence unused-function as headers provide many static helpers
 kafs_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 kafs_LDADD = $(KAFS_LIBS)
-kafs_SOURCES = kafs.c kafs_hrl.c kafs_locks.c kafs_journal.c kafs_rpc.c
+kafs_SOURCES = kafs.c kafs_shared_fuse_runtime.c kafs_hrl.c kafs_locks.c kafs_journal.c kafs_rpc.c
 
 # Runtime source ownership:
 # - kafs is the production v4/v5 runtime and must not link kafs_v6_runtime.c.
-# - kafs-v6 is the dedicated v6 runtime entrypoint. It temporarily links
-#   kafs.c with KAFS_SHARED_FUSE_RUNNER_EXPORT to reuse shared FUSE operations
-#   while v6 admission/open/init policy stays in v6-owned sources.
+# - kafs_shared_fuse_runtime.c owns the shared FUSE operation implementation and
+#   request runner used by production kafs, kafs-v6, and internal control tools.
+# - kafs.c is the production kafs process entrypoint wrapper only; kafs-v6 must
+#   not link it.
+# - kafs-v6 is the dedicated v6 runtime entrypoint. It links the shared FUSE
+#   runtime source with KAFS_SHARED_FUSE_RUNNER_EXPORT while v6
+#   admission/open/init policy stays in v6-owned sources.
 # - kafs_v6_mount_options.* is the v6-only owner of -o token interpretation
 #   shared by the kafs-v6 CLI and entrypoint adapter.
 # - kafs_v6_entrypoint_adapter.* is a v6-only adapter from kafs-v6 CLI state to
 #   the shared FUSE runtime entrypoints. It is not a v5/v6 compatibility layer.
 # - kafs_shared_fuse_runner.h is the request-based internal handoff to the
-#   shared FUSE runner / operation table that still lives in kafs.c.
+#   shared FUSE runner / operation table in kafs_shared_fuse_runtime.c.
 kafs_v6_SOURCES = kafs_v6.c kafs_v6_runtime.c kafs_v6_mount_options.c \
-	kafs_v6_entrypoint_adapter.c kafs.c kafs_hrl.c kafs_locks.c kafs_journal.c kafs_rpc.c
+	kafs_v6_entrypoint_adapter.c kafs_shared_fuse_runtime.c kafs_hrl.c kafs_locks.c \
+	kafs_journal.c kafs_rpc.c
 kafs_v6_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -DKAFS_NO_MAIN \
 	-DKAFS_SHARED_FUSE_RUNNER_EXPORT
 kafs_v6_LDADD = $(KAFS_LIBS)
@@ -58,7 +63,7 @@ kafsresize_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 kafsresize_LDADD = $(KAFS_LIBS)
 
 # runtime control/stats tool
-kafsctl_SOURCES = kafsctl.c kafs.c kafs_hrl.c kafs_locks.c kafs_journal.c kafs_rpc.c
+kafsctl_SOURCES = kafsctl.c kafs_shared_fuse_runtime.c kafs_hrl.c kafs_locks.c kafs_journal.c kafs_rpc.c
 kafsctl_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -DKAFS_NO_MAIN
 kafsctl_LDADD = $(KAFS_LIBS)
 
@@ -66,7 +71,7 @@ kafs_front_SOURCES = kafs_front.c kafs_rpc.c
 kafs_front_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 kafs_front_LDADD = $(KAFS_LIBS)
 
-kafs_back_SOURCES = kafs_back.c kafs_rpc.c kafs.c kafs_hrl.c kafs_locks.c kafs_journal.c
+kafs_back_SOURCES = kafs_back.c kafs_rpc.c kafs_shared_fuse_runtime.c kafs_hrl.c kafs_locks.c kafs_journal.c
 kafs_back_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -DKAFS_NO_MAIN
 kafs_back_LDADD = $(KAFS_LIBS)
 
