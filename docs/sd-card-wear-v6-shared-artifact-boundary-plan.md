@@ -123,7 +123,7 @@ Keep this code local until retired or moved:
   `kafs-v6` guidance;
 - legacy `v6_write_mount` parsing in `kafs`, now fail-closed with `kafs-v6`
   guidance;
-- `KAFS_V6_READONLY_SMOKE` and `KAFS_V6_ADMISSION_HANDOFF`;
+- `KAFS_V6_ADMISSION_HANDOFF` as a diagnostic-only offline gate;
 - legacy v6 diagnostic messages emitted by `kafs`;
 - production auto-migration and v2/v3/v4/v5 compatibility gates.
 
@@ -310,8 +310,12 @@ The inventory keeps legacy token fail-closed guidance separate from successful
 `KAFS_V6_READONLY_SMOKE` plus the already fail-closed legacy-token successful
 branches as the next retirement candidates.
 
-The next slice should retire those production diagnostic leftovers or reduce
-the remaining common-object adapter path around shared FUSE operation
+`SDW-V6RT-T53` retires the production `KAFS_V6_READONLY_SMOKE` gate. Read-only
+format-v6 FUSE inspection is now owned by `kafs-v6 --inspection-mount`; the
+remaining production diagnostic gate is `KAFS_V6_ADMISSION_HANDOFF`.
+
+The next slice should retire the fail-closed legacy-token successful branches
+or reduce the remaining common-object adapter path around shared FUSE operation
 implementations. Do not add another runtime executable and do not broaden the
 controlled-write surface.
 

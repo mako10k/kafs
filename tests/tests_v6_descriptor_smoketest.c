@@ -592,7 +592,7 @@ static int check_v6_inspection_mount_smoke(const char *img)
   struct stat st = {0};
   if (stat(mnt, &st) != 0 || !S_ISDIR(st.st_mode))
   {
-    tlogf("v6 readonly smoke root stat failed: %s", strerror(errno));
+    tlogf("v6 inspection smoke root stat failed: %s", strerror(errno));
     rc = 1;
     goto out_stop;
   }
@@ -600,7 +600,7 @@ static int check_v6_inspection_mount_smoke(const char *img)
   struct statvfs sv = {0};
   if (statvfs(mnt, &sv) != 0 || sv.f_blocks == 0)
   {
-    tlogf("v6 readonly smoke statvfs failed: %s", strerror(errno));
+    tlogf("v6 inspection smoke statvfs failed: %s", strerror(errno));
     rc = 1;
     goto out_stop;
   }
@@ -608,7 +608,7 @@ static int check_v6_inspection_mount_smoke(const char *img)
   DIR *dir = opendir(mnt);
   if (!dir)
   {
-    tlogf("v6 readonly smoke opendir failed: %s", strerror(errno));
+    tlogf("v6 inspection smoke opendir failed: %s", strerror(errno));
     rc = 1;
     goto out_stop;
   }
@@ -623,7 +623,7 @@ static int check_v6_inspection_mount_smoke(const char *img)
   closedir(dir);
   if (saved_errno != 0 || !saw_dot)
   {
-    tlogf("v6 readonly smoke readdir failed: errno=%s saw_dot=%d", strerror(saved_errno),
+    tlogf("v6 inspection smoke readdir failed: errno=%s saw_dot=%d", strerror(saved_errno),
           saw_dot);
     rc = 1;
     goto out_stop;
@@ -639,13 +639,13 @@ static int check_v6_inspection_mount_smoke(const char *img)
   if (fd >= 0)
   {
     close(fd);
-    tlogf("v6 readonly smoke create unexpectedly succeeded");
+    tlogf("v6 inspection smoke create unexpectedly succeeded");
     rc = 1;
     goto out_stop;
   }
   if (errno != EROFS)
   {
-    tlogf("v6 readonly smoke create errno=%s (expected EROFS)", strerror(errno));
+    tlogf("v6 inspection smoke create errno=%s (expected EROFS)", strerror(errno));
     rc = 1;
     goto out_stop;
   }
@@ -653,13 +653,13 @@ static int check_v6_inspection_mount_smoke(const char *img)
   snprintf(path, sizeof(path), "%s/subdir", mnt);
   if (mkdir(path, 0755) == 0)
   {
-    tlogf("v6 readonly smoke mkdir unexpectedly succeeded");
+    tlogf("v6 inspection smoke mkdir unexpectedly succeeded");
     rc = 1;
     goto out_stop;
   }
   if (errno != EROFS)
   {
-    tlogf("v6 readonly smoke mkdir errno=%s (expected EROFS)", strerror(errno));
+    tlogf("v6 inspection smoke mkdir errno=%s (expected EROFS)", strerror(errno));
     rc = 1;
     goto out_stop;
   }

@@ -13109,14 +13109,6 @@ static int kafs_main_v6_admission_handoff_enabled(void)
   return enabled == KAFS_TRUE;
 }
 
-static int kafs_main_v6_readonly_smoke_enabled(void)
-{
-  const char *value = getenv("KAFS_V6_READONLY_SMOKE");
-  kafs_bool_t enabled = KAFS_FALSE;
-  kafs_main_apply_optional_bool_env(value, &enabled);
-  return enabled == KAFS_TRUE;
-}
-
 static int kafs_main_v6_runtime_admit_context(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk,
                                               int prot)
 {
@@ -13158,35 +13150,6 @@ static int kafs_main_v6_admission_handoff(kafs_context_t *ctx, const kafs_ssuper
   }
 
   kafs_ctx_unmap_image(ctx);
-  return rc;
-}
-
-static int kafs_main_v6_readonly_smoke_mount(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk,
-                                             kafs_inocnt_t *inocnt_out, kafs_blkcnt_t *r_blkcnt_out)
-{
-  int rc = kafs_main_v6_runtime_admit_context(ctx, sbdisk, PROT_READ);
-  if (rc == 0)
-  {
-    ctx->c_runtime_read_only = 1u;
-    ctx->c_v6_readonly_smoke_enabled = 1u;
-    if (inocnt_out)
-      *inocnt_out = kafs_inocnt_stoh(sbdisk->s_inocnt);
-    if (r_blkcnt_out)
-      *r_blkcnt_out = kafs_blkcnt_stoh(sbdisk->s_r_blkcnt);
-    fprintf(stderr,
-            "format v6 readonly smoke: selected descriptor retained in read-only runtime "
-            "context; descriptor-backed runtime views active; legacy contiguous "
-            "inode/bitmap tables are not installed; %s; delayed/background mutations are "
-            "disabled; FUSE mount is read-only "
-            "and write admission remains disabled.\n",
-            kafs_ctx_v6_worker_policy_summary());
-  }
-  else
-  {
-    char errbuf[128];
-    fprintf(stderr, "format v6 readonly smoke admission failed: %s.\n",
-            kafs_main_rc_text(rc, errbuf, sizeof(errbuf)));
-  }
   return rc;
 }
 
@@ -13389,15 +13352,6 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
     if (v6_inspection_mount)
     {
       int rc = kafs_main_v6_inspection_mount(ctx, &sbdisk, &inocnt, &r_blkcnt);
-      if (rc != 0)
-        exit(2);
-      kafs_main_init_runtime_diag(ctx, image_path, inocnt);
-      kafs_main_lock_runtime_image(ctx, image_path);
-      return;
-    }
-    if (kafs_main_v6_readonly_smoke_enabled())
-    {
-      int rc = kafs_main_v6_readonly_smoke_mount(ctx, &sbdisk, &inocnt, &r_blkcnt);
       if (rc != 0)
         exit(2);
       kafs_main_init_runtime_diag(ctx, image_path, inocnt);

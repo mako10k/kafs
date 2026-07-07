@@ -387,8 +387,10 @@ admitted descriptor in the real runtime context and permits FUSE access only for
 is opened without write access, mapped read-only, locked with a read lock, and passed to FUSE with
 `ro`. Journal replay and background mutation workers are not started, write/copy/metadata mutation
 operations return `EROFS`, and v6 write admission remains disabled. `-o ro` by itself is not enough:
-the dedicated `v6_inspection_mount` opt-in is required. `KAFS_V6_READONLY_SMOKE=1` remains a test/debug
-gate for the earlier smoke path, not the supported operator entrypoint.
+the dedicated `v6_inspection_mount` opt-in is required. The older
+`KAFS_V6_READONLY_SMOKE=1` production-`kafs` debug gate was retired by
+SDW-V6RT-T53; use `kafs-v6 --inspection-mount` for read-only v6 FUSE
+inspection.
 Current inspection coverage injects only inline metadata/data into a v6 fixture and verifies root and
 nested `readdir` / `lookup` / `getattr`, small-file `read`, symlink `readlink`, mutation rejection,
 and no backing image content change across mount/unmount.

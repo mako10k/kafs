@@ -307,11 +307,19 @@ T52 inventories the production `kafs` legacy v6 diagnostic scaffolding in
 - `KAFS_V6_READONLY_SMOKE` and the legacy-token successful branches left behind
   `kafs_main_open_runtime_context()` are the next retirement candidates.
 
+T53 retires the production `kafs` readonly smoke environment gate:
+
+- `KAFS_V6_READONLY_SMOKE` no longer admits a read-only FUSE path through
+  production `kafs`;
+- read-only format-v6 FUSE coverage is owned by `kafs-v6 --inspection-mount`;
+- `KAFS_V6_ADMISSION_HANDOFF` remains a diagnostic-only offline gate, and
+  production `kafs` still fails closed for legacy v6 tokens.
+
 The remaining pureification pressure points are:
 
-- retirement of legacy v6 diagnostic scaffolding in production `kafs`, starting
-  with `KAFS_V6_READONLY_SMOKE` and the legacy-token successful branches that
-  are already shielded by production `main()` fail-closed guidance;
+- retirement of legacy v6 diagnostic scaffolding in production `kafs`, next
+  focusing on the legacy-token successful branches that are already shielded by
+  production `main()` fail-closed guidance;
 - further reduction of the shared FUSE common-object adapter path,
   especially around shared operation implementations,
   without duplicating filesystem logic.
@@ -396,7 +404,9 @@ production-main-owned. T51 renames the shared table/runner compile guard to
 `KAFS_COMPILE_SHARED_FUSE_RUNTIME`, matching the shared FUSE runtime boundary
 it actually covers. T52 inventories production `kafs` legacy v6 diagnostic
 scaffolding and records `KAFS_V6_READONLY_SMOKE` plus the fail-closed legacy
-successful branches as the next retirement candidates.
+successful branches as the next retirement candidates. T53 retires the
+`KAFS_V6_READONLY_SMOKE` env gate, leaving read-only v6 FUSE inspection owned by
+`kafs-v6 --inspection-mount`.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).

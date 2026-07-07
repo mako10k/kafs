@@ -22,7 +22,8 @@ mount 対象へ進める前に、最初に許可する mount mode と安全境�
 - `-o ro,v6_inspection_mount` は supported inspection mount として admitted descriptor を保持する。
   image は read-only open / read-only mapping / read lock / FUSE `ro` で扱い、journal replay と
   background mutation workers は未起動、mutation operations は `EROFS` で拒否する。
-- `KAFS_V6_READONLY_SMOKE=1` は過去の smoke/debug gate として残るが、operator entrypoint ではない。
+- `KAFS_V6_READONLY_SMOKE=1` は SDW-V6RT-T53 で production `kafs` から退役した。
+  read-only v6 FUSE inspection は `kafs-v6 --inspection-mount` が所有する。
 - Phase 5 migration validation では、v6 destination が `kafsdump --json` と
   `fsck.kafs --balanced-check` の offline validation に通り、通常 mount が offline-only gate で
   拒否されることを確認した。

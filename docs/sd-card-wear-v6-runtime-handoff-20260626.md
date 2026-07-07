@@ -6,7 +6,7 @@ This handoff covers the Post-Phase 5 format v6 runtime mount enablement work.
 It was originally written after `SDW-V6RT-T13 v6 controlled write durability and
 fallback hardening` and is now updated through the 2026-07-07 shared FUSE
 runtime compile guard naming and production diagnostic scaffolding inventory
-closeout.
+closeout, and through the production readonly smoke env gate retirement.
 
 Committed implementation checkpoints:
 
@@ -146,6 +146,9 @@ Additional closeout after the original handoff:
   records `KAFS_V6_READONLY_SMOKE` plus the already fail-closed legacy-token
   successful branches as the next retirement candidates. See
   [sd-card-wear-v6-production-diagnostic-scaffolding-inventory.md](sd-card-wear-v6-production-diagnostic-scaffolding-inventory.md).
+- T53 retires the production `KAFS_V6_READONLY_SMOKE` environment gate. Read-only
+  v6 FUSE coverage is now owned only by `kafs-v6 --inspection-mount`; production
+  `kafs` keeps legacy fail-closed guidance and offline diagnostics.
 
 ## 2026-07-02 closeout
 
@@ -626,6 +629,38 @@ Validation result:
 - `make -C tests check TESTS=v6_descriptor_smoketest` completed with 1 test
   passed.
 
+## 2026-07-07 T53 validation
+
+Commands completed successfully:
+
+```sh
+./scripts/format.sh fix
+make -j2
+git diff --check
+./scripts/test-cli-surface.sh
+make -C tests check TESTS=v6_descriptor_smoketest
+./scripts/static-checks.sh
+KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2
+```
+
+Current T53 boundary:
+
+- `KAFS_V6_READONLY_SMOKE` no longer exists in `src/` or tests.
+- Read-only format-v6 FUSE inspection remains owned by `kafs-v6 --inspection-mount`.
+- Production `kafs` keeps `KAFS_V6_ADMISSION_HANDOFF` as a diagnostic-only
+  offline gate plus legacy v6 token fail-closed guidance.
+- The controlled-write write surface remains limited to regular-file
+  create/write/fsync/release.
+
+Validation result:
+
+- `rg KAFS_V6_READONLY_SMOKE src tests` returned no matches.
+- `./scripts/static-checks.sh` completed format, lint, clone, and complexity
+  checks successfully. The strict source clone report was 35 clones, 345
+  duplicated lines, 0.91%, which remains below the configured threshold.
+- `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` completed with all 29 tests
+  passed.
+
 ## Original validation run
 
 Commands completed successfully:
@@ -671,9 +706,9 @@ the next step.
 Start from the pressure points recorded in
 [sd-card-wear-v6-runtime-entrypoint-plan.md](sd-card-wear-v6-runtime-entrypoint-plan.md):
 
-- retirement of legacy v6 diagnostic scaffolding in `kafs`, starting with
-  `KAFS_V6_READONLY_SMOKE` and the legacy-token successful branches that are
-  already shielded by production `main()` fail-closed guidance;
+- retirement of legacy v6 diagnostic scaffolding in `kafs`, next targeting the
+  legacy-token successful branches that are already shielded by production
+  `main()` fail-closed guidance;
 - further reduction of the remaining shared FUSE runner / operation
   implementation boundaries, especially where production `kafs` and `kafs-v6`
   still meet in `src/kafs.c`, without duplicating filesystem logic.

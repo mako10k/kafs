@@ -1906,6 +1906,38 @@
   - `git diff --check`、`./scripts/test-cli-surface.sh`、
     `make -C tests check TESTS=v6_descriptor_smoketest` が成功した。
 
+### SDW-V6RT-T53 retire production kafs readonly smoke env gate
+
+- 目的: T52 で retirement candidate とした `KAFS_V6_READONLY_SMOKE` を production
+  `kafs` から削除し、read-only format-v6 FUSE coverage を `kafs-v6 --inspection-mount` に一本化する。
+  これは diagnostic scaffolding retirement であり、runtime admission ownership や write surface は
+  変更しない。
+- 変更:
+  - `src/kafs.c` から `KAFS_V6_READONLY_SMOKE` env gate、readonly smoke helper、
+    `kafs_main_open_runtime_context()` の readonly-smoke branch を削除する。
+  - `src/kafs_context.h` から readonly-smoke 専用 runtime flag を削除する。
+  - inventory / handoff / runtime plan docs を、`KAFS_V6_READONLY_SMOKE` retired として更新する。
+- 完了条件:
+  - `rg KAFS_V6_READONLY_SMOKE src tests` が該当なしになる。
+  - `kafs-v6 --inspection-mount` が引き続き read-only v6 FUSE inspection coverage の所有 entrypoint である。
+  - production `kafs` の legacy v6 token fail-closed guidance と plain-v6 offline-only preflight は維持される。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS している。
+- 実装結果:
+  - `KAFS_V6_READONLY_SMOKE` env gate と専用 runtime flag を削除した。
+  - production `kafs` の v6 image path は `KAFS_V6_ADMISSION_HANDOFF` diagnostic または
+    plain-v6 offline-only preflight に閉じるようになった。
+  - read-only FUSE inspection は `kafs-v6 --inspection-mount` のまま維持し、write-surface policy は変更していない。
+- 検証:
+  - `rg KAFS_V6_READONLY_SMOKE src tests` は該当なしだった。
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+  - clone strict source gate は 35 clones / 345 duplicated lines / 0.91% で閾値内だった。
+  - `make check` は all 29 tests passed で完了した。
+
 ---
 
 ## 最初に着手するチケット
