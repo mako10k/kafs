@@ -4,8 +4,8 @@
 
 This handoff covers the Post-Phase 5 format v6 runtime mount enablement work.
 It was originally written after `SDW-V6RT-T13 v6 controlled write durability and
-fallback hardening` and is now updated through the 2026-07-06 shared FUSE
-runtime option logger boundary naming closeout.
+fallback hardening` and is now updated through the 2026-07-07 shared FUSE
+runtime compile guard naming closeout.
 
 Committed implementation checkpoints:
 
@@ -137,6 +137,10 @@ Additional closeout after the original handoff:
 - T50 renames the shared pre-`fuse_main()` runtime option logger to
   `kafs_shared_fuse_log_runtime_options()`, so the option logging path no
   longer reads as production-main-only ownership.
+- T51 renames the local shared table/runner compile guard to
+  `KAFS_COMPILE_SHARED_FUSE_RUNTIME`, so the guard reads as the shared FUSE
+  runtime boundary it actually covers instead of operation-table-only
+  ownership.
 
 ## 2026-07-02 closeout
 
@@ -552,6 +556,42 @@ Validation result:
 - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` completed with all 29 tests
   passed.
 
+## 2026-07-07 T51 validation
+
+Commands completed successfully:
+
+```sh
+./scripts/format.sh fix
+make -j2
+git diff --check
+./scripts/test-cli-surface.sh
+make -C tests check TESTS=v6_descriptor_smoketest
+./scripts/static-checks.sh
+KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2
+```
+
+Current T51 boundary:
+
+- `KAFS_COMPILE_SHARED_FUSE_RUNTIME` owns the local shared table/runner compile
+  guard used when building production `kafs` or the `kafs-v6` shared runner
+  export path.
+- `src/kafs.c` still owns the shared FUSE operation implementations and table,
+  but the compile guard no longer reads as operation-table-only ownership.
+- The controlled-write write surface remains limited to regular-file
+  create/write/fsync/release.
+
+Validation result:
+
+- `lsp-cli` references/hover confirmed the macro definition and the two
+  `#ifdef` sites guarding the shared operation table and local shared runner
+  helper. `lsp-cli rename` reported macro rename as unsupported, so the rename
+  was applied after checking all refs with `rg`.
+- `./scripts/static-checks.sh` completed format, lint, clone, and complexity
+  checks successfully. The strict source clone report was 35 clones, 345
+  duplicated lines, 0.91%, which remains below the configured threshold.
+- `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` completed with all 29 tests
+  passed.
+
 ## Original validation run
 
 Commands completed successfully:
@@ -590,7 +630,7 @@ block this closeout.
 ## Current next boundary
 
 The next boundary remains v6 runtime pureification after the shared FUSE
-runtime option logger boundary naming. Do not broaden the v6 write surface as
+runtime compile guard naming. Do not broaden the v6 write surface as
 the next step.
 
 Start from the pressure points recorded in

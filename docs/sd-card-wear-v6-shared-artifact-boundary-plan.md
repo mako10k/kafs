@@ -285,10 +285,11 @@ runtime admission remains outside production `kafs`.
 
 `SDW-V6RT-T45` renames the local shared FUSE operation table boundary inside
 `kafs.c`. The table is now `kafs_shared_fuse_operation_table`, reached through
-`kafs_shared_fuse_operations()`, and the table/runner compile guard is
-`KAFS_COMPILE_SHARED_FUSE_OPERATIONS`. This keeps the shared operation
-implementations in place while avoiding table-level wording that makes the
-common object path look like v6 admission ownership.
+`kafs_shared_fuse_operations()`. `SDW-V6RT-T51` later renames the table/runner
+compile guard to `KAFS_COMPILE_SHARED_FUSE_RUNTIME`, because the guard covers
+the shared FUSE runtime boundary rather than only the operation table. This
+keeps the shared operation implementations in place while avoiding table-level
+wording that makes the common object path look like v6 admission ownership.
 
 `SDW-V6RT-T46` renames the remaining `kafs.c` shared-runner export guard to
 `KAFS_SHARED_FUSE_RUNNER_EXPORT`. `kafs-v6` still links `kafs.c` for shared

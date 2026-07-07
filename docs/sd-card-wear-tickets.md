@@ -1833,6 +1833,44 @@
   - clone strict source gate は 35 clones / 345 duplicated lines / 0.91% で閾値内だった。
   - `make check` は all 29 tests passed で完了した。
 
+### SDW-V6RT-T51 shared FUSE runtime compile guard naming
+
+- 目的: T45 で導入した local compile guard `KAFS_COMPILE_SHARED_FUSE_OPERATIONS` が
+  operation table だけでなく `kafs_shared_fuse_run_with_cleanup()` も guard しているため、
+  shared FUSE runtime boundary として読める `KAFS_COMPILE_SHARED_FUSE_RUNTIME` に改名する。
+  これは compile guard の命名整理であり、runtime admission ownership や write surface は
+  変更しない。
+- 変更:
+  - `src/kafs.c` の local shared table/runner compile guard を
+    `KAFS_COMPILE_SHARED_FUSE_RUNTIME` に改名する。
+  - production `kafs` main と `kafs-v6` shared runner export は引き続き同じ shared
+    FUSE operation table / cleanup path を使う。
+  - historical ticket text では旧名が T45 の導入名だったことを残し、現行仕様は T51 の
+    新名として記録する。
+- 完了条件:
+  - `lsp-cli` references/hover と `rg` で compile guard の定義と `#ifdef` 範囲を確認する。
+  - `src/kafs.c` の guard 名が operation-table-only ではなく shared FUSE runtime 所有として読める。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release
+    範囲から広げない。
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS
+    している。
+- 実装結果:
+  - `lsp-cli` references/hover で macro definition と shared operation table /
+    local shared runner helper の `#ifdef` sites を確認した。
+  - `lsp-cli rename` は macro kind unsupported だったため、`rg` で全参照を確認して
+    現行コードと current-boundary docs を `KAFS_COMPILE_SHARED_FUSE_RUNTIME` に揃えた。
+  - runtime admission、legacy fail-closed guidance、write-surface policy は変更していない。
+- 検証:
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+  - `lsp-cli --root . --server clangd --format pretty references src/kafs.c 51 8` は
+    macro definition と shared table / local shared runner guard の 3 箇所を返した。
+  - clone strict source gate は 35 clones / 345 duplicated lines / 0.91% で閾値内だった。
+  - `make check` は all 29 tests passed で完了した。
+
 ---
 
 ## 最初に着手するチケット

@@ -253,9 +253,11 @@ T44 separates legacy v6 fail-closed guidance from the production mount flow:
 
 T45 names the remaining shared FUSE operation table boundary inside `kafs.c`:
 
-- the local compile guard is now `KAFS_COMPILE_SHARED_FUSE_OPERATIONS`, so the
-  table/runner code is described by the shared FUSE implementation it compiles
-  rather than by the v6 adapter target that also consumes it;
+- the local compile guard introduced for this boundary was
+  `KAFS_COMPILE_SHARED_FUSE_OPERATIONS`, later renamed by T51 to
+  `KAFS_COMPILE_SHARED_FUSE_RUNTIME`, so the table/runner code is described by
+  the shared FUSE implementation it compiles rather than by the v6 adapter
+  target that also consumes it;
 - `kafs_operations` is now `kafs_shared_fuse_operation_table`, with
   `kafs_shared_fuse_operations()` as the local accessor used by `fuse_main()`;
 - production `kafs` and `kafs-v6` still share the same operation
@@ -280,6 +282,20 @@ T47 renames the local shared FUSE runner helper inside `kafs.c`:
 - the exported `kafs_shared_fuse_run()` handoff contract is unchanged;
 - no FUSE operation implementation is duplicated, and no successful production
   v6 runtime path is added.
+
+T48-T51 continue the same pureification direction without changing the write
+surface:
+
+- T48 makes `kafs-v6` reject unsupported production-only KAFS tuning options
+  instead of silently stripping options that are not reflected into the v6
+  runtime context;
+- T49 renames the shared post-`fuse_main()` cleanup helper to
+  `kafs_shared_fuse_cleanup_after_run()`;
+- T50 renames the shared runtime option logger to
+  `kafs_shared_fuse_log_runtime_options()`;
+- T51 renames the shared table/runner compile guard to
+  `KAFS_COMPILE_SHARED_FUSE_RUNTIME`, because the guard covers the shared FUSE
+  runtime boundary rather than only the operation table.
 
 The remaining pureification pressure points are:
 
@@ -361,7 +377,13 @@ renames the remaining `kafs.c` shared-runner export guard to
 the shared runner instead of v6 admission. T47 renames the local shared runner
 implementation helper to `kafs_shared_fuse_run_with_cleanup()`, so the helper
 used by both production main and the exported shared-runner handoff no longer
-appears production-main-owned.
+appears production-main-owned. T48 makes `kafs-v6` reject unsupported
+production-only KAFS tuning options instead of silently stripping options that
+the v6 entrypoint does not apply. T49 and T50 rename the shared cleanup and
+runtime option logging helpers so those local helpers no longer read as
+production-main-owned. T51 renames the shared table/runner compile guard to
+`KAFS_COMPILE_SHARED_FUSE_RUNTIME`, matching the shared FUSE runtime boundary
+it actually covers.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).

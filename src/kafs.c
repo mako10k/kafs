@@ -49,7 +49,7 @@
 #endif
 
 #if !defined(KAFS_NO_MAIN) || defined(KAFS_SHARED_FUSE_RUNNER_EXPORT)
-#define KAFS_COMPILE_SHARED_FUSE_OPERATIONS 1
+#define KAFS_COMPILE_SHARED_FUSE_RUNTIME 1
 #endif
 
 #ifndef SEEK_DATA
@@ -11084,7 +11084,7 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
   return rc;
 }
 
-#ifdef KAFS_COMPILE_SHARED_FUSE_OPERATIONS
+#ifdef KAFS_COMPILE_SHARED_FUSE_RUNTIME
 static struct fuse_operations kafs_shared_fuse_operation_table = {
     .init = kafs_op_init,
     .destroy = kafs_op_destroy,
@@ -13450,7 +13450,7 @@ static int kafs_shared_fuse_cleanup_after_run(kafs_context_t *ctx, char *hotplug
   return rc;
 }
 
-#ifdef KAFS_COMPILE_SHARED_FUSE_OPERATIONS
+#ifdef KAFS_COMPILE_SHARED_FUSE_RUNTIME
 static int kafs_shared_fuse_run_with_cleanup(kafs_context_t *ctx, int argc_fuse, char **argv_fuse,
                                              char *hotplug_uds_path)
 {
