@@ -1536,10 +1536,11 @@ int main(void)
     tlogf("v6 runtime mount did not fail as expected: %s", out);
     return 1;
   }
-  if (!strstr(out, "admission preflight") || !strstr(out, "metadata checks OK") ||
-      !strstr(out, "offline-only"))
+  if (!strstr(out, "unsupported format version: v6 runtime admission is owned by kafs-v6") ||
+      !strstr(out, "kafs-v6 --inspection-mount") ||
+      !strstr(out, "kafs-v6 --controlled-write-mount") || strstr(out, "admission preflight"))
   {
-    tlogf("v6 runtime mount error missing preflight/offline-only guidance: %s", out);
+    tlogf("v6 runtime mount error missing direct kafs-v6 guidance: %s", out);
     return 1;
   }
 
@@ -1628,7 +1629,9 @@ int main(void)
     tlogf("v6 ro-only runtime mount did not fail as expected: %s", out);
     return 1;
   }
-  if (!strstr(out, "v6 inspection mount requires") || !strstr(out, "offline-only"))
+  if (!strstr(out, "v6 inspection mount requires kafs-v6 --inspection-mount") ||
+      !strstr(out, "unsupported format version: v6 runtime admission is owned by kafs-v6") ||
+      strstr(out, "admission preflight"))
   {
     tlogf("v6 ro-only runtime mount missing inspection guidance: %s", out);
     return 1;
@@ -1674,10 +1677,12 @@ int main(void)
     tlogf("v6 runtime mount with retired handoff env did not fail as expected: %s", out);
     return 1;
   }
-  if (!strstr(out, "admission preflight") || !strstr(out, "metadata checks OK") ||
-      !strstr(out, "offline-only") || strstr(out, "admission handoff"))
+  if (!strstr(out, "unsupported format version: v6 runtime admission is owned by kafs-v6") ||
+      !strstr(out, "kafs-v6 --inspection-mount") ||
+      !strstr(out, "kafs-v6 --controlled-write-mount") ||
+      strstr(out, "admission preflight") || strstr(out, "admission handoff"))
   {
-    tlogf("retired handoff env changed production v6 preflight output: %s", out);
+    tlogf("retired handoff env changed production v6 direct guidance output: %s", out);
     return 1;
   }
 

@@ -319,13 +319,17 @@ production `kafs` can fail closed with `kafs-v6` guidance; they no longer reach
 a production successful v6 runtime path.
 
 `SDW-V6RT-T55` retires the production `KAFS_V6_ADMISSION_HANDOFF` gate.
-Production `kafs` now keeps only plain-v6 offline-only descriptor preflight as
-its remaining v6 diagnostic surface.
+After T55 and before T56, production `kafs` kept only plain-v6 offline-only
+descriptor preflight as its remaining v6 diagnostic surface.
 
-The next slice should decide whether to keep plain-v6 offline-only descriptor
-preflight, or reduce the remaining common-object adapter path around shared FUSE
-operation implementations. Do not add another runtime executable and do not
-broaden the controlled-write surface.
+`SDW-V6RT-T56` retires the production plain-v6 descriptor preflight.
+Production `kafs` now rejects v6 images directly with `kafs-v6` guidance and no
+longer includes `kafs_v6_admission.h`.
+
+The next slice should reduce the remaining common-object adapter path around
+shared FUSE operation implementations, or retire legacy v6 token compatibility
+guidance when operators no longer need it. Do not add another runtime executable
+and do not broaden the controlled-write surface.
 
 ## Validation Standard
 

@@ -3365,7 +3365,7 @@ static int expect_fsck_rejects_v6_metadata(const char *img, const char *needle)
   return 0;
 }
 
-static int expect_runtime_preflight_rejects_v6_metadata(const char *img, const char *mnt)
+static int expect_runtime_rejects_v6_without_preflight(const char *img, const char *mnt)
 {
   if (mkdir(mnt, 0755) != 0)
     return -1;
@@ -3373,9 +3373,11 @@ static int expect_runtime_preflight_rejects_v6_metadata(const char *img, const c
   char out[8192];
   char *mount_argv[] = {(char *)kafs_test_kafs_bin(), (char *)img, (char *)mnt, NULL};
   if (run_cmd_capture(mount_argv, 2, out, sizeof(out)) != 0 ||
-      !strstr(out, "admission preflight failed") || !strstr(out, "offline-only"))
+      !strstr(out, "unsupported format version: v6 runtime admission is owned by kafs-v6") ||
+      !strstr(out, "kafs-v6 --inspection-mount") ||
+      !strstr(out, "kafs-v6 --controlled-write-mount") || strstr(out, "admission preflight"))
   {
-    tlogf("v6 runtime mount did not reject failed preflight plus offline-only gate: %s", out);
+    tlogf("v6 runtime mount did not reject directly with kafs-v6 guidance: %s", out);
     return -1;
   }
   return 0;
@@ -3442,7 +3444,7 @@ static int test_inode_record_shape_rejected(void)
 
   if (expect_fsck_rejects_v6_metadata(img, "v6 inode shards:") != 0 ||
       expect_full_admission_rejected(img) != 0 ||
-      expect_runtime_preflight_rejects_v6_metadata(img, "inode-record-shape-mnt") != 0)
+      expect_runtime_rejects_v6_without_preflight(img, "inode-record-shape-mnt") != 0)
     return -1;
   return 0;
 }
@@ -3503,7 +3505,7 @@ static int test_inode_logical_boundary_rejected(void)
     return -1;
 
   if (expect_full_admission_rejected(img) != 0 ||
-      expect_runtime_preflight_rejects_v6_metadata(img, "inode-logical-boundary-mnt") != 0)
+      expect_runtime_rejects_v6_without_preflight(img, "inode-logical-boundary-mnt") != 0)
     return -1;
   return 0;
 }
@@ -3531,21 +3533,21 @@ static int test_journal_data_record_shape_rejected(void)
 
   if (expect_fsck_rejects_v6_metadata(img, NULL) != 0 ||
       expect_full_admission_rejected(img) != 0 ||
-      expect_runtime_preflight_rejects_v6_metadata(img, "journal-data-record-shape-mnt") != 0)
+      expect_runtime_rejects_v6_without_preflight(img, "journal-data-record-shape-mnt") != 0)
     return -1;
   return 0;
 }
 
-static int test_runtime_mount_preflight_rejects_descriptor_gap(void)
+static int test_runtime_mount_rejects_v6_without_preflight(void)
 {
-  const char *img = "runtime-preflight-journal-gap.img";
-  const char *mnt = "runtime-preflight-journal-gap-mnt";
+  const char *img = "runtime-no-preflight-journal-gap.img";
+  const char *mnt = "runtime-no-preflight-journal-gap-mnt";
   if (make_v6_image(img) != 0)
     return -1;
   if (mutate_all_descriptors(img, mutate_journal_header_gap, 1) != 0)
     return -1;
 
-  if (expect_runtime_preflight_rejects_v6_metadata(img, mnt) != 0)
+  if (expect_runtime_rejects_v6_without_preflight(img, mnt) != 0)
     return -1;
   return 0;
 }
@@ -3807,8 +3809,8 @@ int main(void)
       {"inode_physical_truncation_rejected", test_inode_physical_truncation_rejected},
       {"inode_logical_boundary_rejected", test_inode_logical_boundary_rejected},
       {"journal_data_record_shape_rejected", test_journal_data_record_shape_rejected},
-      {"runtime_mount_preflight_rejects_descriptor_gap",
-       test_runtime_mount_preflight_rejects_descriptor_gap},
+      {"runtime_mount_rejects_v6_without_preflight",
+       test_runtime_mount_rejects_v6_without_preflight},
       {"bitmap_overlap_rejected", test_bitmap_overlap_rejected},
       {"allocator_summary_admission_rejects_gap", test_allocator_summary_admission_rejects_gap},
       {"hrl_admission_rejects_gap", test_hrl_admission_rejects_gap},

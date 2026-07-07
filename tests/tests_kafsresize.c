@@ -160,6 +160,14 @@ static int expect_text_contains(const char *label, const char *text, const char 
   return 1;
 }
 
+static int expect_text_absent(const char *label, const char *text, const char *needle)
+{
+  if (!strstr(text, needle))
+    return 0;
+  fprintf(stderr, "%s contained unexpected text: %s\n", label, needle);
+  return 1;
+}
+
 static int expect_json_u64_field(const char *label, const char *json, const char *field,
                                  uint64_t value)
 {
@@ -369,14 +377,13 @@ static int expect_v6_migrate_destination_fsck(const char *text)
 static int expect_v6_migrate_destination_mount_rejection(const char *text)
 {
   return expect_text_contains("v6 destination runtime mount", text,
-                              "format v6 admission preflight:") ||
+                              "unsupported format version: v6 runtime admission is owned by "
+                              "kafs-v6") ||
          expect_text_contains("v6 destination runtime mount", text,
-                              "descriptor-backed metadata checks OK") ||
+                              "kafs-v6 --inspection-mount") ||
          expect_text_contains("v6 destination runtime mount", text,
-                              "runtime mount remains offline-only") ||
-         expect_text_contains("v6 destination runtime mount", text,
-                              "unsupported format version: v6 descriptor scaffold is "
-                              "offline-only");
+                              "kafs-v6 --controlled-write-mount") ||
+         expect_text_absent("v6 destination runtime mount", text, "admission preflight");
 }
 
 static int read_tailmeta_region_header(const char *img, uint64_t off,

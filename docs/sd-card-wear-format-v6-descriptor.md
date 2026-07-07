@@ -375,13 +375,13 @@ Logical coverage requirements:
 
 Until explicit v6 runtime support is selected, `kafs` must reject `s_format_version=6` with
 an unsupported-format error. It must not attempt to mount a v6 descriptor image through the v4/v5
-prefix layout. The CLI mount path runs a v6 admission preflight before that rejection: it discovers
-the selected descriptor, validates descriptor-backed bitmap/inode/allocator/HRL coverage plus journal
-segment health, reports the result, and then still exits through the offline-only gate.
+prefix layout. Since SDW-V6RT-T56, the production `kafs` CLI mount path does not
+run descriptor admission preflight for plain v6 images; it rejects directly with
+`kafs-v6` guidance. Descriptor health diagnostics remain owned by offline tools
+and the dedicated `kafs-v6` entrypoint.
 The older `KAFS_V6_ADMISSION_HANDOFF=1` production-`kafs` runtime-context
-diagnostic was retired by SDW-V6RT-T55. Production `kafs` now uses the same
-admission preflight and offline-only gate for v6 images regardless of that
-environment variable.
+diagnostic was retired by SDW-V6RT-T55, and the remaining production
+plain-v6 preflight was retired by SDW-V6RT-T56.
 The supported first runtime path is the `kafs-v6 --inspection-mount` entrypoint
 with FUSE `-o ro`. It keeps the admitted descriptor in the real runtime context
 and permits FUSE access only for inspection. The image is opened without write
@@ -573,8 +573,8 @@ Journal distribution:
 - Runtime v6 write mount through production `kafs` is disabled. The successful
   controlled-write runtime path is owned by `kafs-v6 --controlled-write-mount`
   and remains limited by its explicit write-surface policy. The remaining
-  production `kafs` checks are offline scaffold validation, dormant admission
-  validation, and CLI mount preflight diagnostics. The retired
+  production `kafs` checks are offline scaffold validation and dormant admission
+  validation; CLI mount preflight diagnostics were retired by SDW-V6RT-T56. The retired
   `KAFS_V6_ADMISSION_HANDOFF=1` environment variable no longer changes
   production `kafs` behavior. The
   `kafs-v6 --inspection-mount` path is limited to read-only `statfs`, root and
@@ -583,8 +583,8 @@ Journal distribution:
   admission.
 - Boundary regression coverage now includes selected descriptors whose inode shard record shape,
   inode physical span, or journal-data record shape is invalid: discovery may select the descriptor,
-  but `fsck.kafs`, descriptor admission, and CLI admission preflight fail closed before any runtime
-  mapping is enabled.
+  but `fsck.kafs`, descriptor admission, and the dedicated `kafs-v6` preflight fail closed before any
+  runtime mapping is enabled. Production `kafs` rejects v6 images before descriptor preflight.
 - Shard boundary regression coverage rejects descriptor-level inode shard physical ranges that extend
   outside the image during discovery, and selected inode shard logical ranges that extend outside
   `[0, s_inocnt)` during metadata shard validation.

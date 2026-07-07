@@ -2015,6 +2015,46 @@
     `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
     `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
 
+### SDW-V6RT-T56 retire production kafs plain-v6 descriptor preflight
+
+- 目的: production `kafs` に残る plain-v6 descriptor admission preflight を削除し、
+  production `kafs` の v6 image path を direct `kafs-v6` guidance に一本化する。
+  descriptor validation と successful runtime admission は `fsck.kafs` / offline helpers /
+  `kafs-v6` が所有する。
+- 変更:
+  - `src/kafs.c` から `kafs_v6_admission.h` include、
+    `kafs_main_v6_admission_preflight()`、preflight-local `kafs_main_rc_text()` を削除する。
+  - production `kafs` の v6 image path は descriptor preflight を実行せず、
+    `kafs-v6 --inspection-mount` / `kafs-v6 --controlled-write-mount` guidance で
+    fail closed する。
+  - `v6_descriptor_smoketest`、`v6_descriptor_validation`、`kafsresize` は production
+    `kafs` が preflight を出さないことを regression として固定する。
+  - inventory / handoff / runtime plan docs を、plain-v6 preflight retired として更新する。
+- 完了条件:
+  - `rg kafs_main_v6_admission_preflight src/kafs.c tests` が no match になる。
+  - `rg 'kafs_v6_admission.h' src/kafs.c` が no match になる。
+  - production `kafs` の v6 image mount は direct `kafs-v6` guidance を出し、
+    `admission preflight` を出さない。
+  - `kafs-v6 --inspection-mount` と `kafs-v6 --controlled-write-mount` は successful
+    v6 runtime admission entrypoint のまま維持される。
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `make -C tests check TESTS=v6_descriptor_validation`、`make -C tests check TESTS=kafsresize`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS している。
+- 実装結果:
+  - production `kafs` の plain-v6 descriptor preflight branch を削除した。
+  - production `kafs` は v6 image mount で descriptor validation を実行せず、direct
+    `kafs-v6` guidance で fail closed する。
+  - production `src/kafs.c` は `kafs_v6_admission.h` を include しなくなった。
+- 検証:
+  - `rg` は production `src/kafs.c` と更新対象 tests から
+    `kafs_main_v6_admission_preflight` / `kafs_main_rc_text` / production
+    `kafs_v6_admission.h` include が消えたことを示した。
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `make -C tests check TESTS=v6_descriptor_validation`、`make -C tests check TESTS=kafsresize`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+
 ---
 
 ## 最初に着手するチケット

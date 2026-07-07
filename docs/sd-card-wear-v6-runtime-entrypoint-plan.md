@@ -1,7 +1,7 @@
 # KAFS format v6 runtime entrypoint plan
 
 Date: 2026-07-07
-Status: production legacy v6 diagnostic scaffolding inventoried
+Status: production plain-v6 descriptor preflight retired
 
 ## Boundary
 
@@ -330,11 +330,19 @@ T55 retires the production `kafs` admission handoff environment gate:
   guidance for v6 images regardless of that environment variable;
 - descriptor-backed successful runtime admission remains owned by `kafs-v6`.
 
+T56 retires the remaining production plain-v6 descriptor preflight:
+
+- production `kafs` no longer includes `kafs_v6_admission.h` or runs descriptor
+  admission preflight for plain v6 image mounts;
+- plain v6 image mounts through production `kafs` reject directly with
+  `kafs-v6 --inspection-mount` / `kafs-v6 --controlled-write-mount` guidance;
+- descriptor validation and successful runtime admission remain owned by
+  `fsck.kafs`, offline validation helpers, and `kafs-v6`.
+
 The remaining pureification pressure points are:
 
-- retirement of remaining diagnostic scaffolding in production `kafs`, next
-  deciding whether to keep plain-v6 offline-only descriptor preflight or reduce
-  production `kafs` to direct `kafs-v6` guidance;
+- retirement of legacy v6 token compatibility guidance in production `kafs`
+  when operator compatibility no longer depends on it;
 - further reduction of the shared FUSE common-object adapter path,
   especially around shared operation implementations,
   without duplicating filesystem logic.
@@ -424,14 +432,17 @@ successful branches as the next retirement candidates. T53 retires the
 `kafs-v6 --inspection-mount`. T54 retires the production `kafs` legacy-token
 successful branches, so legacy v6 tokens now exist only as fail-closed guidance
 inputs and no longer reach a production successful v6 runtime path. T55 retires
-the production `KAFS_V6_ADMISSION_HANDOFF` env gate, so production `kafs` keeps
-only plain-v6 admission preflight / offline-only diagnostics.
+the production `KAFS_V6_ADMISSION_HANDOFF` env gate, leaving only plain-v6
+admission preflight / offline-only diagnostics. T56 retires that remaining
+production preflight, so production `kafs` rejects v6 images directly with
+`kafs-v6` guidance and no longer includes `kafs_v6_admission.h`.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).
 The immediate next implementation boundary remains v6 runtime pureification,
 not write-surface expansion. The next production-v6 reduction is the remaining
-plain-v6 offline-only descriptor preflight.
+legacy token compatibility guidance; the larger remaining implementation
+boundary is the shared FUSE common-object adapter path.
 
 ## Smoke
 

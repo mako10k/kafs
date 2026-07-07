@@ -154,8 +154,12 @@ Additional closeout after the original handoff:
   exist only to produce `kafs-v6` guidance; successful v6 runtime admission is
   `kafs-v6`-owned.
 - T55 retires the production `KAFS_V6_ADMISSION_HANDOFF` environment gate.
-  Production `kafs` now treats v6 images through the plain-v6 admission preflight
-  / offline-only path regardless of that environment variable.
+  After T55 and before T56, production `kafs` treated v6 images through the
+  plain-v6 admission preflight / offline-only path regardless of that
+  environment variable.
+- T56 retires the production plain-v6 descriptor preflight. Production `kafs`
+  now rejects v6 images directly with `kafs-v6` guidance and no longer includes
+  `kafs_v6_admission.h`.
 
 ## 2026-07-02 closeout
 
@@ -734,6 +738,39 @@ Validation result:
 - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` completed with all 29 tests
   passed.
 
+## 2026-07-07 T56 validation
+
+Commands completed successfully:
+
+```sh
+./scripts/format.sh fix
+make -j2
+git diff --check
+./scripts/test-cli-surface.sh
+make -C tests check TESTS=v6_descriptor_smoketest
+make -C tests check TESTS=v6_descriptor_validation
+make -C tests check TESTS=kafsresize
+./scripts/static-checks.sh
+KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2
+```
+
+Current T56 boundary:
+
+- Production `kafs` no longer runs descriptor admission preflight for plain v6
+  image mounts.
+- Production `kafs` no longer includes `kafs_v6_admission.h`.
+- Plain v6 image mounts through production `kafs` reject directly with
+  `kafs-v6 --inspection-mount` / `kafs-v6 --controlled-write-mount` guidance.
+- `kafs-v6 --inspection-mount` and `kafs-v6 --controlled-write-mount` remain the
+  only successful format-v6 runtime admission entrypoints.
+
+Validation result:
+
+- `rg` found no `kafs_main_v6_admission_preflight`, `kafs_main_rc_text`, or
+  production `kafs_v6_admission.h` include in `src/kafs.c`.
+- `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` completed with all 29 tests
+  passed.
+
 ## Original validation run
 
 Commands completed successfully:
@@ -778,9 +815,10 @@ Do not broaden the v6 write surface as the next step.
 Start from the pressure points recorded in
 [sd-card-wear-v6-runtime-entrypoint-plan.md](sd-card-wear-v6-runtime-entrypoint-plan.md):
 
-- retirement of remaining v6 diagnostic scaffolding in `kafs`, next deciding
-  whether to keep plain-v6 offline-only descriptor preflight or reduce
-  production `kafs` to direct `kafs-v6` guidance;
+- retirement of remaining legacy v6 token compatibility guidance in `kafs`
+  when operator compatibility no longer depends on it;
+- reduction of the shared FUSE common-object adapter path around shared
+  operation implementations;
 - further reduction of the remaining shared FUSE runner / operation
   implementation boundaries, especially where production `kafs` and `kafs-v6`
   still meet in `src/kafs.c`, without duplicating filesystem logic.

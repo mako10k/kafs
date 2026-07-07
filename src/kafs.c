@@ -15,7 +15,6 @@
 #include "kafs_legacy_v6_failclosed.h"
 #include "kafs_shared_fuse_runner.h"
 #include "kafs_tailmeta.h"
-#include "kafs_v6_admission.h"
 #include "kafs_v6_fuse_init_policy.h"
 #include "kafs_v6_fuse_policy.h"
 
@@ -12960,8 +12959,9 @@ static void kafs_main_validate_image_format(const char *image_path, uint32_t fmt
     return;
   if (fmt_ver == KAFS_FORMAT_VERSION_V6)
   {
-    fprintf(stderr, "unsupported format version: v6 descriptor scaffold is offline-only until "
-                    "distributed metadata support lands.\n");
+    fprintf(stderr, "unsupported format version: v6 runtime admission is owned by kafs-v6.\n"
+                    "Use kafs-v6 --inspection-mount for read-only v6 inspection or "
+                    "kafs-v6 --controlled-write-mount for the controlled write surface.\n");
     exit(2);
   }
   if (fmt_ver == KAFS_FORMAT_VERSION_V2 || fmt_ver == KAFS_FORMAT_VERSION_V3)
@@ -13000,40 +13000,6 @@ static void kafs_main_validate_image_format(const char *image_path, uint32_t fmt
             (unsigned)KAFS_FORMAT_VERSION);
     exit(2);
   }
-}
-
-static const char *kafs_main_rc_text(int rc, char *buf, size_t buf_sz)
-{
-  if (rc == 0)
-    return "ok";
-  if (!buf || buf_sz == 0u)
-    return "error";
-
-  int err = (rc < 0) ? -rc : rc;
-  if (err != 0)
-    snprintf(buf, buf_sz, "rc=%d (%s)", rc, strerror(err));
-  else
-    snprintf(buf, buf_sz, "rc=%d", rc);
-  return buf;
-}
-
-static int kafs_main_v6_admission_preflight(int fd, const kafs_ssuperblock_t *sbdisk)
-{
-  int rc = kafs_v6_admission_preflight_core(fd, sbdisk);
-
-  if (rc == 0)
-  {
-    fprintf(stderr, "format v6 admission preflight: descriptor-backed metadata checks OK; "
-                    "runtime mount remains offline-only.\n");
-  }
-  else
-  {
-    char errbuf[128];
-    fprintf(stderr, "format v6 admission preflight failed: %s.\n",
-            kafs_main_rc_text(rc, errbuf, sizeof(errbuf)));
-  }
-
-  return rc;
 }
 
 static void kafs_main_map_runtime_memory(kafs_context_t *ctx, uint32_t fmt_ver, off_t imgsize,
@@ -13141,10 +13107,9 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
   kafs_blkcnt_t r_blkcnt = 0;
   if (fmt_ver == KAFS_FORMAT_VERSION_V6)
   {
-    (void)kafs_main_v6_admission_preflight(ctx->c_fd, &sbdisk);
     if (mount_read_only_requested)
-      fprintf(stderr, "format v6 inspection mount requires -o ro and -o v6_inspection_mount; "
-                      "-o ro alone keeps v6 offline-only.\n");
+      fprintf(stderr, "format v6 inspection mount requires kafs-v6 --inspection-mount with "
+                      "-o ro; -o ro through kafs keeps v6 unsupported.\n");
   }
   kafs_main_validate_image_format(image_path, fmt_ver, auto_migrate, migrate_yes);
   kafs_main_map_runtime_image(ctx, &sbdisk, fmt_ver, &inocnt, &r_blkcnt);
