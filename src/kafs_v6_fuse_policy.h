@@ -91,9 +91,9 @@ static inline int kafs_v6_controlled_write_reject(const kafs_context_t *ctx, con
     return 0;
 
   kafs_log(KAFS_LOG_WARNING,
-           "kafs: format v6 controlled write mount rejects %s; initial surface is "
+           "kafs: format v%u controlled write mount rejects %s; initial surface is "
            "regular-file create/write/fsync/release only\n",
-           op ? op : "operation");
+           kafs_ctx_inode_format(ctx), op ? op : "operation");
   return -EOPNOTSUPP;
 }
 

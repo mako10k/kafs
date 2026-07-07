@@ -98,7 +98,7 @@ static int kafs_bitmap_descriptor_mapping_enabled(const struct kafs_context *ctx
 {
   if (!ctx || !ctx->c_superblock)
     return KAFS_FALSE;
-  if (kafs_sb_format_version_get(ctx->c_superblock) != KAFS_FORMAT_VERSION_V6)
+  if (!kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(ctx->c_superblock)))
     return KAFS_FALSE;
   if (!ctx->c_v6_bitmap_mapping_enabled || !ctx->c_v6_layout_desc ||
       ctx->c_v6_layout_desc_bytes == 0u)
@@ -296,7 +296,7 @@ static int kafs_v6_descriptor_mapping_read_fd(struct kafs_context *ctx, int fd, 
 {
   if (!ctx || !ctx->c_superblock || fd < 0 || !out_desc || !out_desc_bytes)
     return -EINVAL;
-  if (kafs_sb_format_version_get(ctx->c_superblock) != KAFS_FORMAT_VERSION_V6)
+  if (!kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(ctx->c_superblock)))
     return -EPROTONOSUPPORT;
 
   kafs_v6_layout_report_t layout;
@@ -312,7 +312,7 @@ static int kafs_bitmap_descriptor_mapping_admit_desc(struct kafs_context *ctx, v
 {
   if (!ctx || !ctx->c_superblock || !desc || desc_bytes == 0u)
     return -EINVAL;
-  if (kafs_sb_format_version_get(ctx->c_superblock) != KAFS_FORMAT_VERSION_V6)
+  if (!kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(ctx->c_superblock)))
     return -EPROTONOSUPPORT;
 
   kafs_v6_bitmap_coverage_report_t report;
@@ -341,7 +341,7 @@ static int kafs_v6_descriptor_mapping_admit_desc(
 {
   if (!ctx || !ctx->c_superblock || !desc || desc_bytes == 0u)
     return -EINVAL;
-  if (kafs_sb_format_version_get(ctx->c_superblock) != KAFS_FORMAT_VERSION_V6)
+  if (!kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(ctx->c_superblock)))
     return -EPROTONOSUPPORT;
 
   kafs_v6_bitmap_coverage_report_t bitmap_report;
@@ -517,7 +517,7 @@ static int kafs_bitmap_descriptor_mapping_admit_fd(struct kafs_context *ctx, int
 {
   if (!ctx || !ctx->c_superblock || fd < 0)
     return -EINVAL;
-  if (kafs_sb_format_version_get(ctx->c_superblock) != KAFS_FORMAT_VERSION_V6)
+  if (!kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(ctx->c_superblock)))
     return -EPROTONOSUPPORT;
 
   kafs_bitmap_descriptor_mapping_clear(ctx);
@@ -542,7 +542,7 @@ kafs_v6_descriptor_mapping_admit_fd(struct kafs_context *ctx, int fd, uint64_t f
 {
   if (!ctx || !ctx->c_superblock || fd < 0)
     return -EINVAL;
-  if (kafs_sb_format_version_get(ctx->c_superblock) != KAFS_FORMAT_VERSION_V6)
+  if (!kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(ctx->c_superblock)))
     return -EPROTONOSUPPORT;
 
   kafs_bitmap_descriptor_mapping_clear(ctx);
@@ -697,7 +697,7 @@ static int kafs_alloc_v3_summary_descriptor_enabled(const struct kafs_context *c
 {
   if (!ctx || !ctx->c_superblock)
     return KAFS_FALSE;
-  if (kafs_sb_format_version_get(ctx->c_superblock) != KAFS_FORMAT_VERSION_V6)
+  if (!kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(ctx->c_superblock)))
     return KAFS_FALSE;
   if (!ctx->c_v6_alloc_summary_mapping_enabled || !ctx->c_v6_alloc_summary_shards ||
       ctx->c_v6_alloc_summary_shard_count == 0u)

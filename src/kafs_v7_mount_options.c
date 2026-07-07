@@ -1,18 +1,22 @@
-#include "kafs_v6_mount_options.h"
+#include "kafs_v7_mount_options.h"
 
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define KAFS_V6_ARRAY_COUNT(a) (sizeof(a) / sizeof((a)[0]))
+#define KAFS_V7_ARRAY_COUNT(a) (sizeof(a) / sizeof((a)[0]))
 
-static int kafs_v6_mount_options_starts_with(const char *s, const char *prefix)
+#ifndef KAFS_V7_TOOL_NAME
+#define KAFS_V7_TOOL_NAME "kafs-v7"
+#endif
+
+static int kafs_v7_mount_options_starts_with(const char *s, const char *prefix)
 {
   size_t len = strlen(prefix);
   return strncmp(s, prefix, len) == 0;
 }
 
-static int kafs_v6_mount_options_eq_any(const char *tok, const char *const *values, size_t count)
+static int kafs_v7_mount_options_eq_any(const char *tok, const char *const *values, size_t count)
 {
   for (size_t i = 0; i < count; ++i)
   {
@@ -22,18 +26,18 @@ static int kafs_v6_mount_options_eq_any(const char *tok, const char *const *valu
   return 0;
 }
 
-static int kafs_v6_mount_options_starts_with_any(const char *tok, const char *const *prefixes,
+static int kafs_v7_mount_options_starts_with_any(const char *tok, const char *const *prefixes,
                                                  size_t count)
 {
   for (size_t i = 0; i < count; ++i)
   {
-    if (kafs_v6_mount_options_starts_with(tok, prefixes[i]))
+    if (kafs_v7_mount_options_starts_with(tok, prefixes[i]))
       return 1;
   }
   return 0;
 }
 
-static int kafs_v6_mount_options_record_mode_token(kafs_v6_runtime_request_t *req, const char *tok)
+static int kafs_v7_mount_options_record_mode_token(kafs_v7_runtime_request_t *req, const char *tok)
 {
   if (strcmp(tok, "ro") == 0)
   {
@@ -49,30 +53,30 @@ static int kafs_v6_mount_options_record_mode_token(kafs_v6_runtime_request_t *re
   return 0;
 }
 
-static int kafs_v6_mount_options_record_cache_token(kafs_v6_runtime_request_t *req, const char *tok)
+static int kafs_v7_mount_options_record_cache_token(kafs_v7_runtime_request_t *req, const char *tok)
 {
   static const char *const no_writeback[] = {"no_writeback_cache", "no-writeback-cache"};
   static const char *const writeback[] = {"writeback_cache", "writeback-cache"};
   static const char *const no_trim[] = {"no_trim_on_free", "no-trim-on-free"};
   static const char *const trim[] = {"trim_on_free", "trim-on-free"};
 
-  if (kafs_v6_mount_options_eq_any(tok, no_writeback, KAFS_V6_ARRAY_COUNT(no_writeback)))
+  if (kafs_v7_mount_options_eq_any(tok, no_writeback, KAFS_V7_ARRAY_COUNT(no_writeback)))
   {
     req->no_writeback_cache_requested = 1;
     return 1;
   }
-  if (kafs_v6_mount_options_eq_any(tok, writeback, KAFS_V6_ARRAY_COUNT(writeback)))
+  if (kafs_v7_mount_options_eq_any(tok, writeback, KAFS_V7_ARRAY_COUNT(writeback)))
   {
     req->writeback_cache_enabled = 1;
     req->writeback_cache_explicit = 1;
     return 1;
   }
-  if (kafs_v6_mount_options_eq_any(tok, no_trim, KAFS_V6_ARRAY_COUNT(no_trim)))
+  if (kafs_v7_mount_options_eq_any(tok, no_trim, KAFS_V7_ARRAY_COUNT(no_trim)))
   {
     req->no_trim_on_free_requested = 1;
     return 1;
   }
-  if (kafs_v6_mount_options_eq_any(tok, trim, KAFS_V6_ARRAY_COUNT(trim)))
+  if (kafs_v7_mount_options_eq_any(tok, trim, KAFS_V7_ARRAY_COUNT(trim)))
   {
     req->trim_on_free_enabled = 1;
     return 1;
@@ -80,7 +84,7 @@ static int kafs_v6_mount_options_record_cache_token(kafs_v6_runtime_request_t *r
   return 0;
 }
 
-static int kafs_v6_mount_options_record_bg_dedup_token(kafs_v6_runtime_request_t *req,
+static int kafs_v7_mount_options_record_bg_dedup_token(kafs_v7_runtime_request_t *req,
                                                        const char *tok)
 {
   static const char *const off_tokens[] = {
@@ -94,12 +98,12 @@ static int kafs_v6_mount_options_record_bg_dedup_token(kafs_v6_runtime_request_t
       "dedup_scan=on",
   };
 
-  if (kafs_v6_mount_options_eq_any(tok, off_tokens, KAFS_V6_ARRAY_COUNT(off_tokens)))
+  if (kafs_v7_mount_options_eq_any(tok, off_tokens, KAFS_V7_ARRAY_COUNT(off_tokens)))
   {
     req->bg_dedup_scan_off_requested = 1;
     return 1;
   }
-  if (kafs_v6_mount_options_eq_any(tok, on_tokens, KAFS_V6_ARRAY_COUNT(on_tokens)))
+  if (kafs_v7_mount_options_eq_any(tok, on_tokens, KAFS_V7_ARRAY_COUNT(on_tokens)))
   {
     req->bg_dedup_scan_enabled = 1;
     req->bg_dedup_scan_explicit = 1;
@@ -108,7 +112,7 @@ static int kafs_v6_mount_options_record_bg_dedup_token(kafs_v6_runtime_request_t
   return 0;
 }
 
-static int kafs_v6_mount_options_record_fsync_token(kafs_v6_runtime_request_t *req, const char *tok)
+static int kafs_v7_mount_options_record_fsync_token(kafs_v7_runtime_request_t *req, const char *tok)
 {
   if (strcmp(tok, "fsync_policy=full") == 0)
   {
@@ -116,7 +120,7 @@ static int kafs_v6_mount_options_record_fsync_token(kafs_v6_runtime_request_t *r
     req->fsync_policy = KAFS_FSYNC_POLICY_FULL;
     return 1;
   }
-  if (kafs_v6_mount_options_starts_with(tok, "fsync_policy="))
+  if (kafs_v7_mount_options_starts_with(tok, "fsync_policy="))
   {
     req->fsync_policy_other_requested = 1;
     return 1;
@@ -124,7 +128,7 @@ static int kafs_v6_mount_options_record_fsync_token(kafs_v6_runtime_request_t *r
   return 0;
 }
 
-static int kafs_v6_mount_options_record_legacy_mode_token(kafs_v6_runtime_request_t *req,
+static int kafs_v7_mount_options_record_legacy_mode_token(kafs_v7_runtime_request_t *req,
                                                           const char *tok)
 {
   static const char *const legacy_tokens[] = {
@@ -134,7 +138,7 @@ static int kafs_v6_mount_options_record_legacy_mode_token(kafs_v6_runtime_reques
       "v6-write-mount",
   };
 
-  if (kafs_v6_mount_options_eq_any(tok, legacy_tokens, KAFS_V6_ARRAY_COUNT(legacy_tokens)))
+  if (kafs_v7_mount_options_eq_any(tok, legacy_tokens, KAFS_V7_ARRAY_COUNT(legacy_tokens)))
   {
     req->legacy_mode_token_seen = 1;
     return 1;
@@ -142,7 +146,7 @@ static int kafs_v6_mount_options_record_legacy_mode_token(kafs_v6_runtime_reques
   return 0;
 }
 
-static int kafs_v6_mount_options_record_hotplug_token(kafs_v6_runtime_request_t *req,
+static int kafs_v7_mount_options_record_hotplug_token(kafs_v7_runtime_request_t *req,
                                                       const char *tok)
 {
   static const char *const hotplug_prefixes[] = {
@@ -150,8 +154,8 @@ static int kafs_v6_mount_options_record_hotplug_token(kafs_v6_runtime_request_t 
   };
 
   if (strcmp(tok, "hotplug") == 0 ||
-      kafs_v6_mount_options_starts_with_any(tok, hotplug_prefixes,
-                                            KAFS_V6_ARRAY_COUNT(hotplug_prefixes)))
+      kafs_v7_mount_options_starts_with_any(tok, hotplug_prefixes,
+                                            KAFS_V7_ARRAY_COUNT(hotplug_prefixes)))
   {
     req->hotplug_requested = 1;
     return 1;
@@ -159,45 +163,45 @@ static int kafs_v6_mount_options_record_hotplug_token(kafs_v6_runtime_request_t 
   return 0;
 }
 
-int kafs_v6_mount_options_record_runtime_token(kafs_v6_runtime_request_t *req, const char *tok)
+int kafs_v7_mount_options_record_runtime_token(kafs_v7_runtime_request_t *req, const char *tok)
 {
   if (!req || !tok)
     return -EINVAL;
 
-  if (kafs_v6_mount_options_record_mode_token(req, tok) ||
-      kafs_v6_mount_options_record_cache_token(req, tok) ||
-      kafs_v6_mount_options_record_bg_dedup_token(req, tok) ||
-      kafs_v6_mount_options_record_fsync_token(req, tok) ||
-      kafs_v6_mount_options_record_legacy_mode_token(req, tok) ||
-      kafs_v6_mount_options_record_hotplug_token(req, tok))
+  if (kafs_v7_mount_options_record_mode_token(req, tok) ||
+      kafs_v7_mount_options_record_cache_token(req, tok) ||
+      kafs_v7_mount_options_record_bg_dedup_token(req, tok) ||
+      kafs_v7_mount_options_record_fsync_token(req, tok) ||
+      kafs_v7_mount_options_record_legacy_mode_token(req, tok) ||
+      kafs_v7_mount_options_record_hotplug_token(req, tok))
     return 0;
 
   return 0;
 }
 
-static int kafs_v6_mount_options_parse_thread_token(const char *tok,
-                                                    kafs_v6_mount_thread_options_t *thread,
+static int kafs_v7_mount_options_parse_thread_token(const char *tok,
+                                                    kafs_v7_mount_thread_options_t *thread,
                                                     FILE *err)
 {
-  if (kafs_v6_mount_options_starts_with(tok, "max_threads=") || strcmp(tok, "max_threads") == 0)
+  if (kafs_v7_mount_options_starts_with(tok, "max_threads=") || strcmp(tok, "max_threads") == 0)
   {
     thread->saw_max_threads = 1;
     return 0;
   }
 
   static const char *const mt_tokens[] = {"multi_thread", "multi-thread", "multithread"};
-  if (kafs_v6_mount_options_eq_any(tok, mt_tokens, KAFS_V6_ARRAY_COUNT(mt_tokens)))
+  if (kafs_v7_mount_options_eq_any(tok, mt_tokens, KAFS_V7_ARRAY_COUNT(mt_tokens)))
   {
     thread->enable_mt = KAFS_TRUE;
     return 1;
   }
 
   const char *vstr = NULL;
-  if (kafs_v6_mount_options_starts_with(tok, "multi_thread="))
+  if (kafs_v7_mount_options_starts_with(tok, "multi_thread="))
     vstr = tok + strlen("multi_thread=");
-  else if (kafs_v6_mount_options_starts_with(tok, "multi-thread="))
+  else if (kafs_v7_mount_options_starts_with(tok, "multi-thread="))
     vstr = tok + strlen("multi-thread=");
-  else if (kafs_v6_mount_options_starts_with(tok, "multithread="))
+  else if (kafs_v7_mount_options_starts_with(tok, "multithread="))
     vstr = tok + strlen("multithread=");
   if (!vstr)
     return 0;
@@ -219,15 +223,15 @@ static int kafs_v6_mount_options_parse_thread_token(const char *tok,
   return 1;
 }
 
-static int kafs_v6_mount_options_is_v6_internal_runtime_token(const char *tok)
+static int kafs_v7_mount_options_is_entrypoint_internal_token(const char *tok)
 {
-  kafs_v6_runtime_request_t req;
-  kafs_v6_runtime_request_init(&req);
+  kafs_v7_runtime_request_t req;
+  kafs_v7_runtime_request_init(&req);
 
-  if (kafs_v6_mount_options_record_cache_token(&req, tok) ||
-      kafs_v6_mount_options_record_bg_dedup_token(&req, tok) ||
-      kafs_v6_mount_options_record_legacy_mode_token(&req, tok) ||
-      kafs_v6_mount_options_record_hotplug_token(&req, tok))
+  if (kafs_v7_mount_options_record_cache_token(&req, tok) ||
+      kafs_v7_mount_options_record_bg_dedup_token(&req, tok) ||
+      kafs_v7_mount_options_record_legacy_mode_token(&req, tok) ||
+      kafs_v7_mount_options_record_hotplug_token(&req, tok))
     return 1;
 
   if (strcmp(tok, "fsync_policy=full") == 0)
@@ -236,7 +240,7 @@ static int kafs_v6_mount_options_is_v6_internal_runtime_token(const char *tok)
   return 0;
 }
 
-static int kafs_v6_mount_options_is_unsupported_kafs_token(const char *tok)
+static int kafs_v7_mount_options_is_unsupported_kafs_token(const char *tok)
 {
   static const char *const exact[] = {
       "no_writeback_cache",  "no-writeback-cache", "writeback_cache",
@@ -286,39 +290,39 @@ static int kafs_v6_mount_options_is_unsupported_kafs_token(const char *tok)
       "dedup_scan_worker_nice=",
   };
 
-  return kafs_v6_mount_options_eq_any(tok, exact, KAFS_V6_ARRAY_COUNT(exact)) ||
-         kafs_v6_mount_options_starts_with_any(tok, prefixes, KAFS_V6_ARRAY_COUNT(prefixes));
+  return kafs_v7_mount_options_eq_any(tok, exact, KAFS_V7_ARRAY_COUNT(exact)) ||
+         kafs_v7_mount_options_starts_with_any(tok, prefixes, KAFS_V7_ARRAY_COUNT(prefixes));
 }
 
-static int kafs_v6_mount_options_is_internal_token(const char *tok,
-                                                   kafs_v6_mount_thread_options_t *thread,
+static int kafs_v7_mount_options_is_internal_token(const char *tok,
+                                                   kafs_v7_mount_thread_options_t *thread,
                                                    FILE *err)
 {
-  int rc = kafs_v6_mount_options_parse_thread_token(tok, thread, err);
+  int rc = kafs_v7_mount_options_parse_thread_token(tok, thread, err);
   if (rc != 0)
     return rc;
-  if (kafs_v6_mount_options_is_v6_internal_runtime_token(tok))
+  if (kafs_v7_mount_options_is_entrypoint_internal_token(tok))
     return 1;
-  if (kafs_v6_mount_options_is_unsupported_kafs_token(tok))
+  if (kafs_v7_mount_options_is_unsupported_kafs_token(tok))
   {
     fprintf(err ? err : stderr,
             "%s: unsupported KAFS mount option '-o %s'; use descriptor-backed admission options or "
             "FUSE "
             "passthrough options.\n",
-            "kafs-v6", tok);
+            KAFS_V7_TOOL_NAME, tok);
     return 2;
   }
   return 0;
 }
 
-static int kafs_v6_mount_options_append_filtered_token(char *filtered, size_t filtered_size,
+static int kafs_v7_mount_options_append_filtered_token(char *filtered, size_t filtered_size,
                                                        size_t *used, const char *tok, FILE *err)
 {
   size_t tok_len = strlen(tok);
   size_t extra = tok_len + (*used ? 1u : 0u);
   if (extra >= filtered_size || *used > filtered_size - 1u - extra)
   {
-    fprintf(err ? err : stderr, "%s: filtered FUSE option list is too long.\n", "kafs-v6");
+    fprintf(err ? err : stderr, "%s: filtered FUSE option list is too long.\n", KAFS_V7_TOOL_NAME);
     return 2;
   }
   if (*used)
@@ -329,9 +333,9 @@ static int kafs_v6_mount_options_append_filtered_token(char *filtered, size_t fi
   return 0;
 }
 
-static int kafs_v6_mount_options_filter_o_list(const char *oval, char *filtered,
+static int kafs_v7_mount_options_filter_o_list(const char *oval, char *filtered,
                                                size_t filtered_size,
-                                               kafs_v6_mount_thread_options_t *thread, FILE *err)
+                                               kafs_v7_mount_thread_options_t *thread, FILE *err)
 {
   char *dup = strdup(oval);
   if (!dup)
@@ -349,12 +353,12 @@ static int kafs_v6_mount_options_filter_o_list(const char *oval, char *filtered,
       tok++;
     if (*tok == '\0')
     {
-      fprintf(err ? err : stderr, "%s: empty token in -o option list.\n", "kafs-v6");
+      fprintf(err ? err : stderr, "%s: empty token in -o option list.\n", KAFS_V7_TOOL_NAME);
       free(dup);
       return 2;
     }
 
-    int internal = kafs_v6_mount_options_is_internal_token(tok, thread, err);
+    int internal = kafs_v7_mount_options_is_internal_token(tok, thread, err);
     if (internal == 2)
     {
       free(dup);
@@ -363,7 +367,7 @@ static int kafs_v6_mount_options_filter_o_list(const char *oval, char *filtered,
     if (internal == 1)
       continue;
 
-    if (kafs_v6_mount_options_append_filtered_token(filtered, filtered_size, &used, tok, err) != 0)
+    if (kafs_v7_mount_options_append_filtered_token(filtered, filtered_size, &used, tok, err) != 0)
     {
       free(dup);
       return 2;
@@ -374,7 +378,7 @@ static int kafs_v6_mount_options_filter_o_list(const char *oval, char *filtered,
   return 0;
 }
 
-static int kafs_v6_mount_options_extract_o_arg(char **argv_extra, int argc_extra, int *index,
+static int kafs_v7_mount_options_extract_o_arg(char **argv_extra, int argc_extra, int *index,
                                                const char **oval_out, int *compact_out, FILE *err)
 {
   char *arg = argv_extra[*index];
@@ -385,13 +389,13 @@ static int kafs_v6_mount_options_extract_o_arg(char **argv_extra, int argc_extra
   {
     if (*index + 1 >= argc_extra)
     {
-      fprintf(err, "%s: -o requires an option list.\n", "kafs-v6");
+      fprintf(err, "%s: -o requires an option list.\n", KAFS_V7_TOOL_NAME);
       return 2;
     }
     *oval_out = argv_extra[++(*index)];
     if (!*oval_out)
     {
-      fprintf(err, "%s: -o received a null option list.\n", "kafs-v6");
+      fprintf(err, "%s: -o received a null option list.\n", KAFS_V7_TOOL_NAME);
       return 2;
     }
     return 0;
@@ -405,7 +409,7 @@ static int kafs_v6_mount_options_extract_o_arg(char **argv_extra, int argc_extra
   return 0;
 }
 
-static int kafs_v6_mount_options_append_o_arg(char **argv_clean, int *argc_clean, char **owned,
+static int kafs_v7_mount_options_append_o_arg(char **argv_clean, int *argc_clean, char **owned,
                                               int *owned_count, const char *filtered, int compact)
 {
   char *kept = NULL;
@@ -438,34 +442,34 @@ static int kafs_v6_mount_options_append_o_arg(char **argv_clean, int *argc_clean
   return 0;
 }
 
-static int kafs_v6_mount_options_validate_filter_args(
+static int kafs_v7_mount_options_validate_filter_args(
     const char *mountpoint, int argc_extra, char **argv_extra, char **argv_clean, int *argc_clean,
-    char **owned, int *owned_count, kafs_v6_mount_thread_options_t *thread, FILE *err)
+    char **owned, int *owned_count, kafs_v7_mount_thread_options_t *thread, FILE *err)
 {
   if (!mountpoint || argc_extra < 0 || (argc_extra > 0 && !argv_extra) || !argv_clean ||
       !argc_clean || !owned || !owned_count || !thread)
   {
-    fprintf(err, "%s: invalid mount option filter arguments.\n", "kafs-v6");
+    fprintf(err, "%s: invalid mount option filter arguments.\n", KAFS_V7_TOOL_NAME);
     return 2;
   }
   return 0;
 }
 
-static int kafs_v6_mount_options_filter_fuse_arg(char **argv_extra, int argc_extra, int *index,
+static int kafs_v7_mount_options_filter_fuse_arg(char **argv_extra, int argc_extra, int *index,
                                                  char **argv_clean, int *argc_clean, char **owned,
                                                  int *owned_count,
-                                                 kafs_v6_mount_thread_options_t *thread, FILE *err)
+                                                 kafs_v7_mount_thread_options_t *thread, FILE *err)
 {
   char *arg = argv_extra[*index];
   if (!arg)
   {
-    fprintf(err, "%s: null FUSE argument.\n", "kafs-v6");
+    fprintf(err, "%s: null FUSE argument.\n", KAFS_V7_TOOL_NAME);
     return 2;
   }
 
   const char *oval = NULL;
   int compact = 0;
-  if (kafs_v6_mount_options_extract_o_arg(argv_extra, argc_extra, index, &oval, &compact, err) != 0)
+  if (kafs_v7_mount_options_extract_o_arg(argv_extra, argc_extra, index, &oval, &compact, err) != 0)
     return 2;
 
   if (!oval)
@@ -475,47 +479,47 @@ static int kafs_v6_mount_options_filter_fuse_arg(char **argv_extra, int argc_ext
   }
 
   char filtered[strlen(oval) + 1u];
-  if (kafs_v6_mount_options_filter_o_list(oval, filtered, sizeof(filtered), thread, err) != 0)
+  if (kafs_v7_mount_options_filter_o_list(oval, filtered, sizeof(filtered), thread, err) != 0)
     return 2;
   if (filtered[0] == '\0')
     return 0;
-  return kafs_v6_mount_options_append_o_arg(argv_clean, argc_clean, owned, owned_count, filtered,
+  return kafs_v7_mount_options_append_o_arg(argv_clean, argc_clean, owned, owned_count, filtered,
                                             compact);
 }
 
-int kafs_v6_mount_options_filter_fuse_args(const char *mountpoint, int argc_extra,
+int kafs_v7_mount_options_filter_fuse_args(const char *mountpoint, int argc_extra,
                                            char **argv_extra, char **argv_clean, int *argc_clean,
                                            char **owned, int *owned_count,
-                                           kafs_v6_mount_thread_options_t *thread, FILE *err)
+                                           kafs_v7_mount_thread_options_t *thread, FILE *err)
 {
   if (!err)
     err = stderr;
-  if (kafs_v6_mount_options_validate_filter_args(mountpoint, argc_extra, argv_extra, argv_clean,
+  if (kafs_v7_mount_options_validate_filter_args(mountpoint, argc_extra, argv_extra, argv_clean,
                                                  argc_clean, owned, owned_count, thread, err) != 0)
     return 2;
 
   memset(thread, 0, sizeof(*thread));
   *argc_clean = 0;
   *owned_count = 0;
-  argv_clean[(*argc_clean)++] = "kafs-v6";
+  argv_clean[(*argc_clean)++] = KAFS_V7_TOOL_NAME;
   argv_clean[(*argc_clean)++] = (char *)mountpoint;
 
   for (int i = 0; i < argc_extra; ++i)
   {
-    if (kafs_v6_mount_options_filter_fuse_arg(argv_extra, argc_extra, &i, argv_clean, argc_clean,
+    if (kafs_v7_mount_options_filter_fuse_arg(argv_extra, argc_extra, &i, argv_clean, argc_clean,
                                               owned, owned_count, thread, err) != 0)
       return 2;
   }
   return 0;
 }
 
-void kafs_v6_mount_options_free_owned(char **owned, int owned_count)
+void kafs_v7_mount_options_free_owned(char **owned, int owned_count)
 {
   for (int i = 0; i < owned_count; ++i)
     free(owned[i]);
 }
 
-unsigned kafs_v6_mount_options_thread_count(const kafs_v6_mount_thread_options_t *thread)
+unsigned kafs_v7_mount_options_thread_count(const kafs_v7_mount_thread_options_t *thread)
 {
   unsigned mt_cnt = 8;
   if (thread && thread->mt_cnt_override_set)

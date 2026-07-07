@@ -3,6 +3,7 @@ SUBDIRS = src tests
 man_MANS = \
 	man/kafs.1 \
 	man/kafs-v6.8 \
+	man/kafs-v7.8 \
 	man/mount.kafs.8 \
 	man/kafsctl.1 \
 	man/mkfs.kafs.8 \

@@ -29,11 +29,12 @@
     - format version 5 scaffold image の grow と offline migrate-create を受け付ける。
   - `mkfs.kafs` / `fsck.kafs`
     - `mkfs.kafs` は `--format-version` に対応し、新規 image は既定で v5 を作成する。legacy v4 image が必要な場合は `--format-version 4` を明示する。
-    - `fsck.kafs` は統合モードに加えて tail metadata region の境界と owner 整合も検査する。
+    - `--format-version 7` は v6 実験実装を足掛かりにした破壊的変更用の descriptor-backed format を作成し、runtime 入口は `kafs-v7` が所有する。
+    - `fsck.kafs` は統合モードに加えて tail metadata region の境界と owner 整合、v6/v7 descriptor-backed image の detect-only validation も検査する。
   - `stress_fs` テスト（Automake tests）。マウント/並行操作のストレス検証で PASS。
   - offline tool 回帰は `tests/tests_kafsresize.c` に集約され、empty v5 tailmeta scaffold に対する mkfs/fsck/kafsresize/kafsdump/kafsimage/kafs-info の read-only coverage を持つ。
 - ドキュメント
-  - man page は `kafs-info(8)` / `kafsdump(8)` / `kafsimage(8)` / `kafsresize(8)` / `mkfs.kafs(8)` / `fsck.kafs(8)` を提供。
+  - man page は `kafs-info(8)` / `kafs-v6(8)` / `kafs-v7(8)` / `kafsdump(8)` / `kafsimage(8)` / `kafsresize(8)` / `mkfs.kafs(8)` / `fsck.kafs(8)` を提供。
   - `docs/journal-plan.md`（M1〜M4 の計画）。
 
 課題（ギャップ）

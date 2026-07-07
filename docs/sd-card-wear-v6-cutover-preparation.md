@@ -1,7 +1,16 @@
 # KAFS format v6 cutover preparation policy
 
 Date: 2026-07-02
-Status: accepted
+Status: superseded by
+[sd-card-wear-format-v7-pivot.md](sd-card-wear-format-v7-pivot.md)
+
+## 2026-07-07 Update
+
+Format v6 is now closed as an experimental implementation and a stepping stone
+to format v7.  The project will not grow old-v6 compatibility gates just to
+preserve the experimental v6 shape.  Breaking descriptor-backed format work
+continues through `mkfs.kafs --format-version 7` and the `kafs-v7` runtime
+entrypoint.
 
 ## Policy
 

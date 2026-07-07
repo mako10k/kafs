@@ -120,41 +120,44 @@ void kafs_v6_runtime_print_validation_error(kafs_v6_runtime_validation_reason_t 
   switch (reason)
   {
   case KAFS_V6_RUNTIME_INVALID_NO_MODE:
-    fprintf(err, "kafs-v6 requires --inspection-mount or --controlled-write-mount.\n");
+    fprintf(err, "%s requires --inspection-mount or --controlled-write-mount.\n", "kafs-v6");
     return;
   case KAFS_V6_RUNTIME_INVALID_LEGACY_MODE_TOKEN:
-    fprintf(err, "kafs-v6 owns the v6 runtime mode; do not pass legacy v6_* mount options.\n");
+    fprintf(err, "%s owns the %s runtime mode; do not pass legacy v6_* mount options.\n", "kafs-v6",
+            "v6");
     return;
   case KAFS_V6_RUNTIME_INVALID_HOTPLUG:
-    fprintf(err, "kafs-v6 does not admit hotplug delegated write options.\n");
+    fprintf(err, "%s does not admit hotplug delegated write options.\n", "kafs-v6");
     return;
   case KAFS_V6_RUNTIME_INVALID_INSPECTION_NEEDS_RO:
-    fprintf(err, "kafs-v6 inspection mode requires -o ro and does not allow -o rw.\n");
+    fprintf(err, "%s inspection mode requires -o ro and does not allow -o rw.\n", "kafs-v6");
     return;
   case KAFS_V6_RUNTIME_INVALID_INSPECTION_WRITEBACK_CACHE:
-    fprintf(err, "kafs-v6 inspection mode does not allow writeback_cache.\n");
+    fprintf(err, "%s inspection mode does not allow writeback_cache.\n", "kafs-v6");
     return;
   case KAFS_V6_RUNTIME_INVALID_CONTROLLED_RO:
-    fprintf(err, "kafs-v6 controlled write mode does not allow -o ro.\n");
+    fprintf(err, "%s controlled write mode does not allow -o ro.\n", "kafs-v6");
     return;
   case KAFS_V6_RUNTIME_INVALID_CONTROLLED_UNSAFE_WRITEBACK:
   case KAFS_V6_RUNTIME_INVALID_CONTROLLED_UNSAFE_TRIM:
   case KAFS_V6_RUNTIME_INVALID_CONTROLLED_UNSAFE_BG_DEDUP:
   case KAFS_V6_RUNTIME_INVALID_CONTROLLED_UNSAFE_FSYNC:
-    fprintf(err, "kafs-v6 controlled write mode rejected unsafe mount options.\n");
+    fprintf(err, "%s controlled write mode rejected unsafe mount options.\n", "kafs-v6");
     return;
   case KAFS_V6_RUNTIME_INVALID_CONTROLLED_NEEDS_RW:
   case KAFS_V6_RUNTIME_INVALID_CONTROLLED_NEEDS_NO_WRITEBACK:
   case KAFS_V6_RUNTIME_INVALID_CONTROLLED_NEEDS_NO_TRIM:
   case KAFS_V6_RUNTIME_INVALID_CONTROLLED_NEEDS_BG_OFF:
   case KAFS_V6_RUNTIME_INVALID_CONTROLLED_NEEDS_FSYNC_FULL:
-    fprintf(err, "kafs-v6 controlled write mode requires "
-                 "-o rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full.\n");
+    fprintf(err,
+            "%s controlled write mode requires "
+            "-o rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full.\n",
+            "kafs-v6");
     return;
   case KAFS_V6_RUNTIME_VALID:
   case KAFS_V6_RUNTIME_INVALID_CONTROLLED_WITH_INSPECTION:
   default:
-    fprintf(err, "kafs-v6 rejected invalid v6 runtime admission options.\n");
+    fprintf(err, "%s rejected invalid %s runtime admission options.\n", "kafs-v6", "v6");
     return;
   }
 }
@@ -325,14 +328,14 @@ int kafs_v6_runtime_open_context_image(kafs_context_t *ctx, const char *image_pa
   if (rc != 0)
   {
     char errbuf[128];
-    fprintf(err, "kafs-v6: failed to read superblock: %s.\n",
+    fprintf(err, "%s: failed to read superblock: %s.\n", "kafs-v6",
             kafs_v6_runtime_rc_text(rc, errbuf, sizeof(errbuf)));
     kafs_v6_runtime_close_context_fd(ctx);
     return rc;
   }
   if (kafs_sb_magic_get(sbdisk) != KAFS_MAGIC)
   {
-    fprintf(err, "kafs-v6: invalid magic. run mkfs.kafs to format.\n");
+    fprintf(err, "%s: invalid magic. run mkfs.kafs to format.\n", "kafs-v6");
     kafs_v6_runtime_close_context_fd(ctx);
     return -EINVAL;
   }
@@ -340,8 +343,8 @@ int kafs_v6_runtime_open_context_image(kafs_context_t *ctx, const char *image_pa
   uint32_t fmt_ver = kafs_sb_format_version_get(sbdisk);
   if (fmt_ver != KAFS_FORMAT_VERSION_V6)
   {
-    fprintf(err, "kafs-v6 %s mount applies only to format v6 images (found v%u).\n",
-            controlled_write ? "controlled write" : "inspection", fmt_ver);
+    fprintf(err, "%s %s mount applies only to format %s images (found v%u).\n", "kafs-v6",
+            controlled_write ? "controlled write" : "inspection", "v6", fmt_ver);
     kafs_v6_runtime_close_context_fd(ctx);
     return -EPROTONOSUPPORT;
   }
@@ -389,28 +392,28 @@ int kafs_v6_runtime_admit_mount_context(kafs_context_t *ctx, const kafs_ssuperbl
     if (mode == KAFS_V6_RUNTIME_MODE_INSPECTION)
     {
       fprintf(err,
-              "format v6 inspection mount: selected descriptor retained in read-only "
+              "format %s inspection mount: selected descriptor retained in read-only "
               "runtime context; descriptor-backed runtime views active; legacy contiguous "
               "inode/bitmap tables are not installed; %s; delayed/background mutations are "
               "disabled; FUSE mount is "
               "inspection-only and write admission remains disabled.\n",
-              kafs_ctx_v6_worker_policy_summary());
+              "v6", kafs_ctx_v6_worker_policy_summary());
     }
     else
     {
       fprintf(err,
-              "format v6 controlled write mount: selected descriptor retained in write runtime "
+              "format %s controlled write mount: selected descriptor retained in write runtime "
               "context; descriptor-backed runtime views active; legacy contiguous inode/bitmap "
               "tables are not installed; %s; delayed/background mutations are disabled; FUSE "
               "write surface is limited "
               "to regular-file create/write/fsync/release.\n",
-              kafs_ctx_v6_worker_policy_summary());
+              "v6", kafs_ctx_v6_worker_policy_summary());
     }
   }
   else
   {
     char errbuf[128];
-    fprintf(err, "format v6 %s mount admission failed: %s.\n",
+    fprintf(err, "format %s %s mount admission failed: %s.\n", "v6",
             mode == KAFS_V6_RUNTIME_MODE_CONTROLLED_WRITE ? "controlled write" : "inspection",
             kafs_v6_runtime_rc_text(rc, errbuf, sizeof(errbuf)));
   }
@@ -439,7 +442,7 @@ int kafs_v6_runtime_init_mount_services(kafs_context_t *ctx, const char *image_p
   if (rc != 0)
   {
     char errbuf[128];
-    fprintf(err, "kafs-v6 %s runtime policy failed after service init: %s.\n",
+    fprintf(err, "%s %s runtime policy failed after service init: %s.\n", "kafs-v6",
             mode == KAFS_V6_RUNTIME_MODE_CONTROLLED_WRITE ? "controlled write" : "inspection",
             kafs_v6_runtime_rc_text(rc, errbuf, sizeof(errbuf)));
   }
@@ -462,13 +465,15 @@ int kafs_v6_runtime_admission_preflight_fd(int fd, const kafs_ssuperblock_t *sbd
   kafs_v6_runtime_preflight_message_prefix(err, tool_name);
   if (rc == 0)
   {
-    fprintf(err, "format v6 admission preflight: descriptor-backed metadata checks OK; "
-                 "runtime mount remains offline-only.\n");
+    fprintf(err,
+            "format %s admission preflight: descriptor-backed metadata checks OK; "
+            "runtime mount remains offline-only.\n",
+            "v6");
   }
   else
   {
     char errbuf[128];
-    fprintf(err, "format v6 admission preflight failed: %s.\n",
+    fprintf(err, "format %s admission preflight failed: %s.\n", "v6",
             kafs_v6_runtime_rc_text(rc, errbuf, sizeof(errbuf)));
   }
   return rc;
@@ -496,8 +501,8 @@ int kafs_v6_runtime_admission_preflight_image(const char *image_path, FILE *err,
   }
   if (kafs_sb_format_version_get(&sb) != KAFS_FORMAT_VERSION_V6)
   {
-    fprintf(err, "%s: image is format v%u; expected format v6.\n", tool_name,
-            (unsigned)kafs_sb_format_version_get(&sb));
+    fprintf(err, "%s: image is format v%u; expected format %s.\n", tool_name,
+            (unsigned)kafs_sb_format_version_get(&sb), "v6");
     close(fd);
     return -EPROTONOSUPPORT;
   }

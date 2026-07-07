@@ -191,7 +191,7 @@ static int file_contains_v6_runtime_view_admission(const char *path, const char 
   return file_contains(path, admission) &&
          file_contains(path, "descriptor-backed runtime views active") &&
          file_contains(path, "legacy contiguous inode/bitmap tables are not installed") &&
-         file_contains(path, "v6 worker policy sealed") &&
+         file_contains(path, "descriptor-backed worker policy sealed") &&
          file_contains(path, "pending_worker=disabled") &&
          file_contains(path, "tombstone_gc_worker=disabled") &&
          file_contains(path, "bg_dedup_worker=disabled") &&
@@ -1540,7 +1540,7 @@ int main(void)
     tlogf("fsck v6 descriptor failed: %s", out);
     return 1;
   }
-  if (!strstr(out, "v6 descriptor:") || !strstr(out, "status=selected"))
+  if (!strstr(out, "layout descriptor:") || !strstr(out, "status=selected"))
   {
     tlogf("fsck output missing v6 descriptor status: %s", out);
     return 1;

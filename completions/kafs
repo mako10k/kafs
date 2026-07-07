@@ -129,7 +129,7 @@ _kafs() {
   COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
 }
 
-_kafs_v6() {
+_kafs_descriptor_runtime() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
@@ -171,6 +171,14 @@ _kafs_v6() {
   fi
 
   COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+}
+
+_kafs_v7() {
+  _kafs_descriptor_runtime "$@"
+}
+
+_kafs_v6() {
+  _kafs_descriptor_runtime "$@"
 }
 
 _mkfs_kafs() {
@@ -344,6 +352,7 @@ _kafs_info() {
 complete -F _kafs kafs
 complete -F _kafs mount.kafs
 complete -F _kafs_v6 kafs-v6
+complete -F _kafs_v7 kafs-v7
 complete -F _kafsctl kafsctl
 complete -F _mkfs_kafs mkfs.kafs
 complete -F _fsck_kafs fsck.kafs

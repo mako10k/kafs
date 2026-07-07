@@ -1,0 +1,84 @@
+'.\" -*- nroff -*-
+.TH KAFS-V7 8 "2026-07-07" "kafs 0.4.0" "System Administration"
+.SH NAME
+kafs-v7 \- dedicated format v7 runtime entrypoint
+.SH SYNOPSIS
+.B kafs-v7
+.RB --image
+.I image
+.B --inspection-mount
+.I mountpoint
+.BR -o " " ro
+.RI [ FUSE\ options ]
+.PP
+.B kafs-v7
+.RB --image
+.I image
+.B --controlled-write-mount
+.I mountpoint
+.BR -o " " rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full
+.SH DESCRIPTION
+.B kafs-v7
+is the dedicated format v7 runtime entrypoint.
+It validates the format v7 CLI boundary, rejects legacy
+.B v6_*
+mount-option mode tokens, runs descriptor preflight, and then admits the
+selected descriptor-backed runtime contract.
+.PP
+Format v6 was an experimental implementation used to split the runtime
+entrypoint, descriptor admission, and controlled-write policy away from the
+production
+.BR kafs (1)
+binary.  Format v7 is the breaking-change continuation of that work.  The
+current v7 implementation has its own entrypoint/runtime/adapter source set;
+only the low-level descriptor scaffold helper still carries historical v6
+internal names pending a neutral rename.
+.PP
+The existing
+.B kafs
+binary remains the v4/v5 production runtime entrypoint and fails closed for
+format v6/v7 images.
+.SH OPTIONS
+.TP
+.BR -h ", " --help
+Show help and exit.
+.TP
+.BR --image " " <image>
+Specify the format v7 image path.
+.TP
+.BR --image= "<image>"
+Specify the format v7 image path using the inline form.
+.TP
+.B --inspection-mount
+Select the read-only v7 inspection contract.
+The request must include
+.BR -o " " ro .
+.TP
+.B --controlled-write-mount
+Select the experimental v7 controlled write contract.
+The request must include
+.BR -o " " rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full .
+.TP
+.BR --option " " <opt[,opt...]>
+Alias for FUSE
+.BR -o .
+.TP
+.BR --option= "<opt[,opt...]>"
+Inline form of
+.BR --option .
+.SH EXIT STATUS
+.TP
+.B 0
+Help was printed.
+.TP
+.B 2
+The request was invalid, the image was not format v7, descriptor preflight
+failed, or runtime admission failed.
+.SH SEE ALSO
+.BR kafs (1),
+.BR kafs-v6 (8),
+.BR mkfs.kafs (8),
+.BR fsck.kafs (8),
+.BR kafsdump (8)
+.SH AUTHOR
+kafs project.

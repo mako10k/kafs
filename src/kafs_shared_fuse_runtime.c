@@ -7057,7 +7057,8 @@ static void kafs_ctx_setup_meta_delta(kafs_context_t *ctx, kafs_blkcnt_t r_blkcn
 {
   if (!ctx)
     return;
-  if (ctx->c_superblock && kafs_sb_format_version_get(ctx->c_superblock) == KAFS_FORMAT_VERSION_V6)
+  if (ctx->c_superblock &&
+      kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(ctx->c_superblock)))
   {
     ctx->c_meta_delta_enabled = 0;
     ctx->c_meta_bitmap_words_enabled = 0;
@@ -12895,11 +12896,14 @@ static void kafs_main_validate_image_format(const char *image_path, uint32_t fmt
 {
   if (fmt_ver == KAFS_FORMAT_VERSION)
     return;
-  if (fmt_ver == KAFS_FORMAT_VERSION_V6)
+  if (kafs_format_uses_layout_descriptor(fmt_ver))
   {
-    fprintf(stderr, "unsupported format version: v6 runtime admission is owned by kafs-v6.\n"
-                    "Use kafs-v6 --inspection-mount for read-only v6 inspection or "
-                    "kafs-v6 --controlled-write-mount for the controlled write surface.\n");
+    const char *entrypoint = kafs_format_runtime_entrypoint(fmt_ver);
+    fprintf(stderr,
+            "unsupported format version: v%u runtime admission is owned by %s.\n"
+            "Use %s --inspection-mount for read-only v%u inspection or "
+            "%s --controlled-write-mount for the controlled write surface.\n",
+            fmt_ver, entrypoint, entrypoint, fmt_ver, entrypoint);
     exit(2);
   }
   if (fmt_ver == KAFS_FORMAT_VERSION_V2 || fmt_ver == KAFS_FORMAT_VERSION_V3)
@@ -13043,11 +13047,13 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
   uint32_t fmt_ver = kafs_sb_format_version_get(&sbdisk);
   kafs_inocnt_t inocnt = 0;
   kafs_blkcnt_t r_blkcnt = 0;
-  if (fmt_ver == KAFS_FORMAT_VERSION_V6)
+  if (kafs_format_uses_layout_descriptor(fmt_ver))
   {
     if (mount_read_only_requested)
-      fprintf(stderr, "format v6 inspection mount requires kafs-v6 --inspection-mount with "
-                      "-o ro; -o ro through kafs keeps v6 unsupported.\n");
+      fprintf(stderr,
+              "format v%u inspection mount requires %s --inspection-mount with "
+              "-o ro; -o ro through kafs keeps v%u unsupported.\n",
+              fmt_ver, kafs_format_runtime_entrypoint(fmt_ver), fmt_ver);
   }
   kafs_main_validate_image_format(image_path, fmt_ver, auto_migrate, migrate_yes);
   kafs_main_map_runtime_image(ctx, &sbdisk, fmt_ver, &inocnt, &r_blkcnt);

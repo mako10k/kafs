@@ -1,6 +1,6 @@
 AM_CPPFLAGS = -include $(srcdir)/kafs_config.h
 
-bin_PROGRAMS = kafs kafs-v6 mkfs.kafs fsck.kafs kafs-info kafsdump kafsimage kafsresize kafsctl kafs-front kafs-back
+bin_PROGRAMS = kafs kafs-v6 kafs-v7 mkfs.kafs fsck.kafs kafs-info kafsdump kafsimage kafsresize kafsctl kafs-front kafs-back
 sbin_SCRIPTS = mount.kafs
 EXTRA_DIST = mount.kafs.in
 CLEANFILES = $(sbin_SCRIPTS)
@@ -13,16 +13,22 @@ kafs_SOURCES = kafs.c kafs_shared_fuse_runtime.c kafs_hrl.c kafs_locks.c kafs_jo
 # Runtime source ownership:
 # - kafs is the production v4/v5 runtime and must not link kafs_v6_runtime.c.
 # - kafs_shared_fuse_runtime.c owns the shared FUSE operation implementation and
-#   request runner used by production kafs, kafs-v6, and internal control tools.
-# - kafs.c is the production kafs process entrypoint wrapper only; kafs-v6 must
+#   request runner used by production kafs, format-specific runtime entrypoints,
+#   and internal control tools.
+# - kafs.c is the production kafs process entrypoint wrapper only; kafs-v6/v7 must
 #   not link it.
-# - kafs-v6 is the dedicated v6 runtime entrypoint. It links the shared FUSE
-#   runtime source with KAFS_SHARED_FUSE_RUNNER_EXPORT while v6
-#   admission/open/init policy stays in v6-owned sources.
-# - kafs_v6_mount_options.* is the v6-only owner of -o token interpretation
-#   shared by the kafs-v6 CLI and entrypoint adapter.
-# - kafs_v6_entrypoint_adapter.* is a v6-only adapter from kafs-v6 CLI state to
-#   the shared FUSE runtime entrypoints. It is not a v5/v6 compatibility layer.
+# - kafs-v6 is the frozen experimental v6 runtime entrypoint.
+# - kafs-v7 is the next descriptor-backed runtime entrypoint. It has separate
+#   v7 entrypoint/runtime/adapter sources even while low-level descriptor
+#   scaffold helpers still carry historical v6 names.
+# - both format-specific entrypoints link the shared FUSE runtime source with
+#   KAFS_SHARED_FUSE_RUNNER_EXPORT while admission/open/init policy stays in
+#   format-entrypoint sources.
+# - kafs_v6_mount_options.* owns the frozen v6 -o token interpretation.
+# - kafs_v7_mount_options.* owns the v7 -o token interpretation.
+# - kafs_v6_entrypoint_adapter.* and kafs_v7_entrypoint_adapter.* adapt their
+#   matching CLI state to the shared FUSE runtime entrypoints. They are not a
+#   v5/v6/v7 compatibility layer.
 # - kafs_shared_fuse_runner.h is the request-based internal handoff to the
 #   shared FUSE runner / operation table in kafs_shared_fuse_runtime.c.
 kafs_v6_SOURCES = kafs_v6.c kafs_v6_runtime.c kafs_v6_mount_options.c \
@@ -31,6 +37,13 @@ kafs_v6_SOURCES = kafs_v6.c kafs_v6_runtime.c kafs_v6_mount_options.c \
 kafs_v6_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -DKAFS_NO_MAIN \
 	-DKAFS_SHARED_FUSE_RUNNER_EXPORT
 kafs_v6_LDADD = $(KAFS_LIBS)
+
+kafs_v7_SOURCES = kafs_v7.c kafs_v7_runtime.c kafs_v7_mount_options.c \
+	kafs_v7_entrypoint_adapter.c kafs_shared_fuse_runtime.c kafs_hrl.c kafs_locks.c \
+	kafs_journal.c kafs_rpc.c
+kafs_v7_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -DKAFS_NO_MAIN \
+	-DKAFS_SHARED_FUSE_RUNNER_EXPORT
+kafs_v7_LDADD = $(KAFS_LIBS)
 
 # new mkfs.kafs target
 mkfs_kafs_SOURCES = mkfs_kafs.c kafs_hrl.c kafs_locks.c
@@ -80,6 +93,7 @@ noinst_HEADERS = kafs_block.h kafs_config.h kafs_context.h kafs_dirent.h kafs_in
 	kafs_rpc.h kafs_core.h kafs_shared_fuse_runner.h \
 	kafs_v6_admission.h kafs_v6_fuse_init_policy.h kafs_v6_fuse_policy.h \
 	kafs_v6_layout.h kafs_v6_entrypoint_adapter.h kafs_v6_mount_options.h \
-	kafs_v6_runtime.h
+	kafs_v6_runtime.h kafs_v7_admission.h kafs_v7_entrypoint_adapter.h \
+	kafs_v7_mount_options.h kafs_v7_runtime.h
 
 CFLAGS = @CFLAGS@ -Wall -Werror -Wno-unused-function -Wno-unused-parameter

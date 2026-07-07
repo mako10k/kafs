@@ -1,7 +1,16 @@
 # KAFS format v6 runtime entrypoint plan
 
 Date: 2026-07-07
-Status: shared FUSE runtime source split from production kafs entrypoint
+Status: superseded for new format work by
+[sd-card-wear-format-v7-pivot.md](sd-card-wear-format-v7-pivot.md)
+
+## 2026-07-07 Update
+
+Format v6 is closed as an experimental implementation and stepping stone to
+format v7.  This document remains useful as the historical extraction record
+for the descriptor-backed runtime scaffold.  New breaking-change format work
+should target `kafs-v7` and format version 7 rather than growing the v6
+compatibility surface.
 
 ## Boundary
 

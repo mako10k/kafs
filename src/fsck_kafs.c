@@ -385,7 +385,7 @@ static const char *fsck_rc_to_text(int rc)
 static void fsck_report_v6_descriptor(const kafs_v6_layout_report_t *report)
 {
   fprintf(stderr,
-          "v6 descriptor: anchor_valid=%s selected=%s selected_replica=%" PRIu32
+          "layout descriptor: anchor_valid=%s selected=%s selected_replica=%" PRIu32
           " generation=%" PRIu64 " descriptor_bytes=%" PRIu32 " groups=%" PRIu32 " shards=%" PRIu32
           " replicas=%" PRIu32 "\n",
           report->anchor_valid ? "true" : "false", report->selected_found ? "true" : "false",
@@ -396,7 +396,7 @@ static void fsck_report_v6_descriptor(const kafs_v6_layout_report_t *report)
     const kafs_v6_replica_report_t *replica = &report->replicas[i];
     char summary[256];
     kafs_v6_replica_summary(summary, sizeof(summary), replica);
-    fprintf(stderr, "v6 descriptor replica[%" PRIu32 "]: %s\n", replica->replica_id, summary);
+    fprintf(stderr, "layout descriptor replica[%" PRIu32 "]: %s\n", replica->replica_id, summary);
   }
 }
 
@@ -548,24 +548,28 @@ static int fsck_handle_v6_image(const struct fsck_options *opts, const struct fs
   kafs_v6_journal_header_coverage_report_t journal_header_report;
   kafs_v6_journal_data_coverage_report_t journal_data_report;
   kafs_v6_journal_segment_report_t journal_segment_report;
+  uint32_t format_version = kafs_sb_format_version_get(&info->sb);
   int rc;
 
   if (want_write)
   {
-    fprintf(stderr, "format v6 repair/write modes are not supported yet; use detect-only "
-                    "`fsck.kafs --balanced-check <image>`.\n");
+    fprintf(stderr,
+            "format v%u repair/write modes are not supported yet; use detect-only "
+            "`fsck.kafs --balanced-check <image>`.\n",
+            format_version);
     return FSCK_EXIT_USAGE;
   }
-  fprintf(stderr, "format v6 fsck policy: detect-only validation; repair/write modes disabled.\n");
+  fprintf(stderr, "format v%u fsck policy: detect-only validation; repair/write modes disabled.\n",
+          format_version);
 
   rc = kafs_v6_discover_layout(info->fd, &info->sb, info->file_size, &report);
   fsck_report_v6_descriptor(&report);
   if (rc != 0)
   {
     if (rc == -ENOTSUP)
-      fprintf(stderr, "unsupported v6 layout descriptor\n");
+      fprintf(stderr, "unsupported format v%u layout descriptor\n", format_version);
     else
-      fprintf(stderr, "v6 descriptor discovery failed\n");
+      fprintf(stderr, "format v%u descriptor discovery failed\n", format_version);
     return FSCK_EXIT_V6_DESCRIPTOR_FAILED;
   }
 
@@ -620,12 +624,13 @@ static int fsck_handle_v6_image(const struct fsck_options *opts, const struct fs
   fsck_report_v6_journal_segments(&journal_segment_report, rc);
   if (rc != 0)
   {
-    fprintf(stderr, "v6 metadata shard validation failed\n");
+    fprintf(stderr, "format v%u metadata shard validation failed\n", format_version);
     return FSCK_EXIT_V6_DESCRIPTOR_FAILED;
   }
 
   if (opts->do_check_journal)
-    fprintf(stderr, "Journal check: v6 descriptor-backed segment health OK.\n");
+    fprintf(stderr, "Journal check: format v%u descriptor-backed segment health OK.\n",
+            format_version);
   return 0;
 }
 
@@ -2561,7 +2566,7 @@ int main(int argc, char **argv)
   if (fsck_open_image(&opts, want_write, &info) != 0)
     return 1;
 
-  if (kafs_sb_format_version_get(&info.sb) == KAFS_FORMAT_VERSION_V6)
+  if (kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(&info.sb)))
   {
     int v6_rc = fsck_handle_v6_image(&opts, &info, want_write);
     close(info.fd);

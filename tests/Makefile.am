@@ -15,6 +15,7 @@ noinst_HEADERS = test_utils.h
 AM_TESTS_ENVIRONMENT = \
 	KAFS_TEST_KAFS='$(abs_top_builddir)/src/kafs'; \
 	KAFS_TEST_KAFS_V6='$(abs_top_builddir)/src/kafs-v6'; \
+	KAFS_TEST_KAFS_V7='$(abs_top_builddir)/src/kafs-v7'; \
 	KAFS_TEST_KAFSCTL='$(abs_top_builddir)/src/kafsctl'; \
 	KAFS_TEST_MKFS='$(abs_top_builddir)/src/mkfs.kafs'; \
 	KAFS_TEST_FSCK='$(abs_top_builddir)/src/fsck.kafs'; \
@@ -22,14 +23,14 @@ AM_TESTS_ENVIRONMENT = \
 	KAFS_TEST_KAFSRESIZE='$(abs_top_builddir)/src/kafsresize'; \
 	KAFS_TEST_KAFSDUMP='$(abs_top_builddir)/src/kafsdump'; \
 	KAFS_TEST_KAFS_BACK='$(abs_top_builddir)/src/kafs-back'; \
-	export KAFS_TEST_KAFS KAFS_TEST_KAFS_V6 KAFS_TEST_KAFSCTL KAFS_TEST_MKFS KAFS_TEST_FSCK KAFS_TEST_KAFS_INFO KAFS_TEST_KAFSRESIZE KAFS_TEST_KAFSDUMP KAFS_TEST_KAFS_BACK;
+	export KAFS_TEST_KAFS KAFS_TEST_KAFS_V6 KAFS_TEST_KAFS_V7 KAFS_TEST_KAFSCTL KAFS_TEST_MKFS KAFS_TEST_FSCK KAFS_TEST_KAFS_INFO KAFS_TEST_KAFSRESIZE KAFS_TEST_KAFSDUMP KAFS_TEST_KAFS_BACK;
 
 # --- Tests ---
 # NOTE: stress_fs mounts in multithread mode and exercises heavier workloads.
 # To minimize any residual side effects on subsequent tests, run it last.
 check_PROGRAMS = tailmeta_parser hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured min_git_hooks fs_semantics \
 	v5_mount_smoketest v5_tail_smallfile_smoketest v5_tail_mixed_smoketest v5_default_promotion_smoketest \
-	v6_descriptor_smoketest v6_descriptor_validation \
+	v6_descriptor_smoketest v6_descriptor_validation v7_entrypoint_smoketest \
 	clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility \
 	prune_indirect_single prune_indirect_double prune_indirect_triple truncate_prune reflink_clone \
 	kafsctl_links bg_dedup_skip_dirs \
@@ -96,6 +97,11 @@ v6_descriptor_validation_SOURCES = tests_v6_descriptor_validation.c test_utils.c
 v6_descriptor_validation_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -pthread
 v6_descriptor_validation_LDADD = $(KAFS_LIBS)
 v6_descriptor_validation_LDFLAGS = -pthread
+
+v7_entrypoint_smoketest_SOURCES = tests_v7_entrypoint_smoketest.c test_utils.c \
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+v7_entrypoint_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+v7_entrypoint_smoketest_LDADD = $(KAFS_LIBS)
 
 clone_template_copy_SOURCES = tests_clone_template_copy.c test_utils.c \
 	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c

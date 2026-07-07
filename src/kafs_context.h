@@ -369,7 +369,7 @@ void kafs_ctx_init_diag_state(kafs_context_t *ctx, const char *image_path, kafs_
 
 static inline const char *kafs_ctx_v6_worker_policy_summary(void)
 {
-  return "v6 worker policy sealed "
+  return "descriptor-backed worker policy sealed "
          "(pending_worker=disabled tombstone_gc_worker=disabled "
          "bg_dedup_worker=disabled hotplug=disabled)";
 }
@@ -401,7 +401,7 @@ static inline int kafs_ctx_map_v6_runtime_admission_memory(kafs_context_t *ctx,
 static inline void kafs_ctx_v6_apply_delayed_mutation_policy(kafs_context_t *ctx)
 {
   if (!ctx || !ctx->c_superblock ||
-      kafs_u32_stoh(ctx->c_superblock->s_format_version) != KAFS_FORMAT_VERSION_V6)
+      !kafs_format_uses_layout_descriptor(kafs_u32_stoh(ctx->c_superblock->s_format_version)))
     return;
 
   ctx->c_pendinglog_enabled = 0u;
@@ -468,7 +468,7 @@ static inline int kafs_ctx_v6_hotplug_policy_sealed(const kafs_context_t *ctx)
 static inline int kafs_ctx_v6_validate_worker_policy(const kafs_context_t *ctx)
 {
   if (!ctx || !ctx->c_superblock ||
-      kafs_u32_stoh(ctx->c_superblock->s_format_version) != KAFS_FORMAT_VERSION_V6)
+      !kafs_format_uses_layout_descriptor(kafs_u32_stoh(ctx->c_superblock->s_format_version)))
     return -EINVAL;
   if (!ctx->c_v6_delayed_mutation_policy_applied)
     return -EPROTO;
@@ -488,7 +488,7 @@ static inline int kafs_ctx_v6_validate_worker_policy(const kafs_context_t *ctx)
 static inline int kafs_ctx_v6_validate_runtime_views(const kafs_context_t *ctx)
 {
   if (!ctx || !ctx->c_superblock ||
-      kafs_u32_stoh(ctx->c_superblock->s_format_version) != KAFS_FORMAT_VERSION_V6)
+      !kafs_format_uses_layout_descriptor(kafs_u32_stoh(ctx->c_superblock->s_format_version)))
     return -EINVAL;
   if (ctx->c_blkmasktbl || ctx->c_inotbl || ctx->c_mapsize != 0u)
     return -EPROTO;
@@ -523,7 +523,8 @@ static inline size_t kafs_ctx_inode_bytes(const kafs_context_t *ctx)
 
 static inline int kafs_ctx_v6_inode_mapping_enabled(const kafs_context_t *ctx)
 {
-  return ctx && ctx->c_superblock && kafs_ctx_inode_format(ctx) == KAFS_FORMAT_VERSION_V6 &&
+  return ctx && ctx->c_superblock &&
+         kafs_format_uses_layout_descriptor(kafs_ctx_inode_format(ctx)) &&
          ctx->c_v6_inode_mapping_enabled && ctx->c_v6_inode_shards &&
          ctx->c_v6_inode_shard_count > 0u && ctx->c_img_base && ctx->c_img_size > 0u;
 }

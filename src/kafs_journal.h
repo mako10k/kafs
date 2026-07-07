@@ -176,7 +176,7 @@ typedef struct kafs_journal
   void *mtx; // opaque to avoid leaking pthread headers
   // in-image journal fields
   int use_inimage;       // 1=use image-embedded journal
-  int descriptor_backed; // 1=v6 descriptor-backed header/data segment
+  int descriptor_backed; // 1=layout-descriptor-backed header/data segment
   uint64_t base_off;     // absolute file offset to journal header start
   uint64_t data_off;     // absolute file offset to journal data start (after header)
   uint64_t area_size;    // usable area size for records (ring capacity)

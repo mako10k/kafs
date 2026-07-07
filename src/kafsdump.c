@@ -93,10 +93,33 @@ static int load_superblock(int fd, kafs_ssuperblock_t *sb)
   return 0;
 }
 
-static const char *v6_bitmap_status(const kafs_ssuperblock_t *sb, const kafs_v6_layout_report_t *v6,
-                                    int rc_v6_bitmap)
+static int dump_has_layout_descriptor(const kafs_ssuperblock_t *sb)
 {
-  if (kafs_sb_format_version_get(sb) != KAFS_FORMAT_VERSION_V6)
+  return sb && kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(sb));
+}
+
+static const char *dump_layout_descriptor_key(const kafs_ssuperblock_t *sb)
+{
+  return sb && kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V7 ? "layout_descriptor"
+                                                                        : "v6_layout_descriptor";
+}
+
+static const char *dump_bitmap_shards_key(const kafs_ssuperblock_t *sb)
+{
+  return sb && kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V7 ? "bitmap_shards"
+                                                                        : "v6_bitmap_shards";
+}
+
+static const char *dump_journal_segments_key(const kafs_ssuperblock_t *sb)
+{
+  return sb && kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V7 ? "journal_segments"
+                                                                        : "v6_journal_segments";
+}
+
+static const char *descriptor_bitmap_status(const kafs_ssuperblock_t *sb,
+                                            const kafs_v6_layout_report_t *v6, int rc_v6_bitmap)
+{
+  if (!dump_has_layout_descriptor(sb))
     return "not_applicable";
   if (!v6->selected_found)
     return "descriptor_unavailable";
@@ -456,15 +479,12 @@ static void print_text(const struct dump_report *dump)
   printf("  tailmeta_offset: %" PRIu64 "\n", kafs_sb_tailmeta_offset_get(sb));
   printf("  tailmeta_size: %" PRIu64 "\n", kafs_sb_tailmeta_size_get(sb));
 
-  printf("v6_layout_descriptor:\n");
-  printf("  status: %s\n", (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6)
-                               ? rc_to_text(dump->rc_v6)
-                               : "not_applicable");
+  printf("%s:\n", dump_layout_descriptor_key(sb));
+  printf("  status: %s\n",
+         dump_has_layout_descriptor(sb) ? rc_to_text(dump->rc_v6) : "not_applicable");
   printf("  available: %s\n",
-         (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6 && v6->selected_found)
-             ? "true"
-             : "false");
-  if (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6)
+         (dump_has_layout_descriptor(sb) && v6->selected_found) ? "true" : "false");
+  if (dump_has_layout_descriptor(sb))
   {
     printf("  anchor_valid: %s\n", v6->anchor_valid ? "true" : "false");
     printf("  selected_replica: %" PRIu32 "\n", v6->selected_replica);
@@ -484,13 +504,12 @@ static void print_text(const struct dump_report *dump)
     print_v6_shards_text(dump);
   }
 
-  printf("v6_bitmap_shards:\n");
-  printf("  status: %s\n", v6_bitmap_status(sb, v6, dump->rc_v6_bitmap));
-  printf("  available: %s\n", (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6 &&
-                               v6->selected_found && v6_bitmap->available)
-                                  ? "true"
-                                  : "false");
-  if (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6 && v6->selected_found)
+  printf("%s:\n", dump_bitmap_shards_key(sb));
+  printf("  status: %s\n", descriptor_bitmap_status(sb, v6, dump->rc_v6_bitmap));
+  printf("  available: %s\n",
+         (dump_has_layout_descriptor(sb) && v6->selected_found && v6_bitmap->available) ? "true"
+                                                                                        : "false");
+  if (dump_has_layout_descriptor(sb) && v6->selected_found)
   {
     printf("  shard_count: %" PRIu32 "\n", v6_bitmap->shard_count);
     printf("  expected_start: %" PRIu64 "\n", v6_bitmap->expected_start);
@@ -514,15 +533,14 @@ static void print_text(const struct dump_report *dump)
     printf("  lookup_bitmap_bit: %" PRIu8 "\n", v6_bitmap->lookup.bitmap_bit);
   }
 
-  printf("v6_journal_segments:\n");
-  printf("  status: %s\n", (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6)
-                               ? rc_to_text(dump->rc_v6_journal_segments)
-                               : "not_applicable");
-  printf("  available: %s\n", (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6 &&
-                               v6->selected_found && v6_journal_segments->available)
-                                  ? "true"
-                                  : "false");
-  if (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6 && v6->selected_found)
+  printf("%s:\n", dump_journal_segments_key(sb));
+  printf("  status: %s\n", dump_has_layout_descriptor(sb) ? rc_to_text(dump->rc_v6_journal_segments)
+                                                          : "not_applicable");
+  printf("  available: %s\n",
+         (dump_has_layout_descriptor(sb) && v6->selected_found && v6_journal_segments->available)
+             ? "true"
+             : "false");
+  if (dump_has_layout_descriptor(sb) && v6->selected_found)
   {
     printf("  header_status: %s\n", rc_to_text(dump->rc_v6_journal_header));
     printf("  data_status: %s\n", rc_to_text(dump->rc_v6_journal_data));
@@ -654,14 +672,11 @@ static void print_json(const struct dump_report *dump)
   printf("    \"tailmeta_size\": %" PRIu64 "\n", kafs_sb_tailmeta_size_get(sb));
   printf("  },\n");
 
-  printf("  \"v6_layout_descriptor\": {\n");
-  printf("    \"status\": \"%s\",\n", (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6)
-                                          ? rc_to_text(dump->rc_v6)
-                                          : "not_applicable");
+  printf("  \"%s\": {\n", dump_layout_descriptor_key(sb));
+  printf("    \"status\": \"%s\",\n",
+         dump_has_layout_descriptor(sb) ? rc_to_text(dump->rc_v6) : "not_applicable");
   printf("    \"available\": %s,\n",
-         (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6 && v6->selected_found)
-             ? "true"
-             : "false");
+         (dump_has_layout_descriptor(sb) && v6->selected_found) ? "true" : "false");
   printf("    \"anchor_valid\": %s,\n", v6->anchor_valid ? "true" : "false");
   printf("    \"selected_replica\": %" PRIu32 ",\n", v6->selected_replica);
   printf("    \"generation\": %" PRIu64 ",\n", v6->selected_generation);
@@ -688,12 +703,11 @@ static void print_json(const struct dump_report *dump)
   printf("\n");
   printf("  },\n");
 
-  printf("  \"v6_bitmap_shards\": {\n");
-  printf("    \"status\": \"%s\",\n", v6_bitmap_status(sb, v6, dump->rc_v6_bitmap));
-  printf("    \"available\": %s,\n", (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6 &&
-                                      v6->selected_found && v6_bitmap->available)
-                                         ? "true"
-                                         : "false");
+  printf("  \"%s\": {\n", dump_bitmap_shards_key(sb));
+  printf("    \"status\": \"%s\",\n", descriptor_bitmap_status(sb, v6, dump->rc_v6_bitmap));
+  printf("    \"available\": %s,\n",
+         (dump_has_layout_descriptor(sb) && v6->selected_found && v6_bitmap->available) ? "true"
+                                                                                        : "false");
   printf("    \"shard_count\": %" PRIu32 ",\n", v6_bitmap->shard_count);
   printf("    \"expected_start\": %" PRIu64 ",\n", v6_bitmap->expected_start);
   printf("    \"expected_blocks\": %" PRIu64 ",\n", v6_bitmap->expected_count);
@@ -717,14 +731,14 @@ static void print_json(const struct dump_report *dump)
          v6_bitmap->lookup.bitmap_bit);
   printf("  },\n");
 
-  printf("  \"v6_journal_segments\": {\n");
-  printf("    \"status\": \"%s\",\n", (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6)
+  printf("  \"%s\": {\n", dump_journal_segments_key(sb));
+  printf("    \"status\": \"%s\",\n", dump_has_layout_descriptor(sb)
                                           ? rc_to_text(dump->rc_v6_journal_segments)
                                           : "not_applicable");
-  printf("    \"available\": %s,\n", (kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V6 &&
-                                      v6->selected_found && v6_journal_segments->available)
-                                         ? "true"
-                                         : "false");
+  printf("    \"available\": %s,\n",
+         (dump_has_layout_descriptor(sb) && v6->selected_found && v6_journal_segments->available)
+             ? "true"
+             : "false");
   printf("    \"header_status\": \"%s\",\n", rc_to_text(dump->rc_v6_journal_header));
   printf("    \"data_status\": \"%s\",\n", rc_to_text(dump->rc_v6_journal_data));
   printf("    \"header_shards\": %" PRIu32 ",\n", v6_journal_header->shard_count);
@@ -921,7 +935,7 @@ int main(int argc, char **argv)
   memset(&v6_journal_header, 0, sizeof(v6_journal_header));
   memset(&v6_journal_data, 0, sizeof(v6_journal_data));
   memset(&v6_journal_segments, 0, sizeof(v6_journal_segments));
-  if (kafs_sb_format_version_get(&sb) == KAFS_FORMAT_VERSION_V6)
+  if (dump_has_layout_descriptor(&sb))
   {
     rc_v6 = kafs_v6_discover_layout(fd, &sb, file_size, &v6);
     if (rc_v6 == 0)
@@ -960,14 +974,15 @@ int main(int argc, char **argv)
     fprintf(stderr, "warning: journal header unavailable: %s\n", rc_to_text(rc_journal));
   if (rc_tailmeta != 0)
     fprintf(stderr, "warning: tail metadata unavailable: %s\n", rc_to_text(rc_tailmeta));
-  if (kafs_sb_format_version_get(&sb) == KAFS_FORMAT_VERSION_V6 && rc_v6 != 0)
-    fprintf(stderr, "warning: v6 descriptor discovery failed: %s\n", rc_to_text(rc_v6));
-  if (kafs_sb_format_version_get(&sb) == KAFS_FORMAT_VERSION_V6 && rc_v6 == 0 && rc_v6_bitmap != 0)
-    fprintf(stderr, "warning: v6 bitmap shard validation failed: %s\n", rc_to_text(rc_v6_bitmap));
-  if (kafs_sb_format_version_get(&sb) == KAFS_FORMAT_VERSION_V6 && rc_v6 == 0 &&
-      rc_v6_journal_segments != 0)
-    fprintf(stderr, "warning: v6 journal segment validation failed: %s\n",
-            rc_to_text(rc_v6_journal_segments));
+  if (dump_has_layout_descriptor(&sb) && rc_v6 != 0)
+    fprintf(stderr, "warning: format v%u descriptor discovery failed: %s\n",
+            kafs_sb_format_version_get(&sb), rc_to_text(rc_v6));
+  if (dump_has_layout_descriptor(&sb) && rc_v6 == 0 && rc_v6_bitmap != 0)
+    fprintf(stderr, "warning: format v%u bitmap shard validation failed: %s\n",
+            kafs_sb_format_version_get(&sb), rc_to_text(rc_v6_bitmap));
+  if (dump_has_layout_descriptor(&sb) && rc_v6 == 0 && rc_v6_journal_segments != 0)
+    fprintf(stderr, "warning: format v%u journal segment validation failed: %s\n",
+            kafs_sb_format_version_get(&sb), rc_to_text(rc_v6_journal_segments));
 
   const struct dump_report dump = {
       .sb = &sb,

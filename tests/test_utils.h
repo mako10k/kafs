@@ -61,6 +61,9 @@ const char *kafs_test_kafs_bin(void);
 // If KAFS_TEST_KAFS_V6 is set, it is used; otherwise resolves kafs-v6 near the test binary.
 const char *kafs_test_kafs_v6_bin(void);
 
+// If KAFS_TEST_KAFS_V7 is set, it is used; otherwise resolves kafs-v7 near the test binary.
+const char *kafs_test_kafs_v7_bin(void);
+
 // If KAFS_TEST_MKFS is set, it is used; otherwise resolves mkfs.kafs near the test binary.
 const char *kafs_test_mkfs_bin(void);
 

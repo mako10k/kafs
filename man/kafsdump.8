@@ -35,13 +35,23 @@ In-image journal header fields and header CRC validation result.
 Offline metadata span summary used for SD-card wear diagnostics.
 .TP
 .B v6_layout_descriptor
-For format version 6 images, descriptor anchor status, selected replica,
-generation, descriptor geometry, and per-replica status.
+For descriptor-backed format version 6 images, descriptor anchor status,
+selected replica, generation, descriptor geometry, and per-replica status.  The
+key name is retained for compatibility with existing v6 diagnostic consumers.
+.TP
+.B layout_descriptor
+For descriptor-backed format version 7 images, descriptor anchor status,
+selected replica, generation, descriptor geometry, and per-replica status.
 .TP
 .B v6_bitmap_shards
-For format version 6 images with a selected descriptor, block bitmap shard
-coverage, gap/overlap flags, physical overlap flags, and a sample bitmap
-lookup.
+For descriptor-backed format version 6 images with a selected descriptor, block
+bitmap shard coverage, gap/overlap flags, physical overlap flags, and a sample
+bitmap lookup.
+.TP
+.B bitmap_shards
+For descriptor-backed format version 7 images with a selected descriptor, block
+bitmap shard coverage, gap/overlap flags, physical overlap flags, and a sample
+bitmap lookup.
 .SH OPTIONS
 .TP
 .B --json

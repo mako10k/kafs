@@ -347,9 +347,9 @@ static int expect_v6_migrate_destination_dump_json(const char *json)
 static int expect_v6_migrate_destination_fsck(const char *text)
 {
   return expect_text_contains("v6 destination fsck", text,
-                              "v6 descriptor: anchor_valid=true selected=true") ||
+                              "layout descriptor: anchor_valid=true selected=true") ||
          expect_text_contains("v6 destination fsck", text, "groups=1 shards=12 replicas=3") ||
-         expect_text_contains("v6 destination fsck", text, "v6 descriptor replica[0]:") ||
+         expect_text_contains("v6 destination fsck", text, "layout descriptor replica[0]:") ||
          expect_text_contains("v6 destination fsck", text,
                               "status=selected generation=1 crc_ok=true selected=true") ||
          expect_text_contains("v6 destination fsck", text,
@@ -371,7 +371,7 @@ static int expect_v6_migrate_destination_fsck(const char *text)
          expect_text_contains("v6 destination fsck", text,
                               "v6 journal segments: status=ok available=true") ||
          expect_text_contains("v6 destination fsck", text,
-                              "Journal check: v6 descriptor-backed segment health OK.");
+                              "Journal check: format v6 descriptor-backed segment health OK.");
 }
 
 static int expect_v6_migrate_destination_mount_rejection(const char *text)

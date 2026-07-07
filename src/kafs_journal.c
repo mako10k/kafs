@@ -675,7 +675,7 @@ static int kj_configure_v6_descriptor_segment(struct kafs_context *ctx, kafs_jou
 {
   if (!ctx || !ctx->c_superblock || !j)
     return -EINVAL;
-  if (kafs_sb_format_version_get(ctx->c_superblock) != KAFS_FORMAT_VERSION_V6)
+  if (!kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(ctx->c_superblock)))
     return -ENOENT;
   if (!ctx->c_v6_layout_desc || ctx->c_v6_layout_desc_bytes == 0u)
     return -EPROTONOSUPPORT;

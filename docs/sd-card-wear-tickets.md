@@ -1,6 +1,6 @@
 # KAFS SDカード劣化対策 バックログ
 
-最終更新: 2026-07-03
+最終更新: 2026-07-07
 
 計画: [sd-card-wear-plan.md](sd-card-wear-plan.md)
 
@@ -9,8 +9,12 @@
 - 実装順は固定で **Phase 1 -> Phase 2 -> Phase 3 -> Phase 4 -> Phase 5**。
 - チケットが format v6 を明示しない限り、既存 v4/v5 image の mount 互換を維持する。
 - metadata relocation は in-place ではなく offline migration を優先する。
-- format v6 の layout decision は実装前の design checkpoint として扱う。
+- format v6 は実験的実装として凍結し、descriptor-backed runtime entrypoint split と
+  controlled-write opt-in boundary の検証結果として扱う。
+- 破壊的変更を伴う descriptor-backed format work は、format v7 / `kafs-v7` を入口にする。
 - 各実装 PR では、関連する最小テストと metadata durability / wear-distribution 前提を明記する。
+- 現行の v7 方針は
+  [sd-card-wear-format-v7-pivot.md](sd-card-wear-format-v7-pivot.md) を正とする。
 
 ---
 
@@ -2180,15 +2184,58 @@
     `./scripts/test-cli-surface.sh`、`./scripts/static-checks.sh`、
     `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
 
+### SDW-V7RT-T1 format v7 pivot entrypoint and offline tooling
+
+- 目的: format v6 を実験的実装として凍結し、破壊的変更を伴う descriptor-backed work の
+  新しい入口を format v7 / `kafs-v7` に切り替える。
+- 変更:
+  - `KAFS_FORMAT_VERSION_V7` と descriptor-backed format 判定 helper を追加する。
+  - `src/Makefile.am` に `kafs-v7` target を追加し、v7 専用 entrypoint/runtime/adapter source set
+    を build できるようにする。
+  - `mkfs.kafs --format-version 7`、`fsck.kafs`、`kafsdump` が descriptor-backed v7 image を
+    offline に扱えるようにする。
+  - production `kafs` は v6/v7 descriptor-backed image を fail closed し、format に応じて
+    `kafs-v6` / `kafs-v7` guidance を出す。
+  - man page、completion、tool suite docs、v7 pivot ADR を更新する。
+- 完了条件:
+  - `kafs-v7 --help` が format v7 entrypoint として表示される。
+  - `mkfs.kafs --format-version 7` で作成した image を `fsck.kafs` / `kafsdump` が
+    descriptor-backed image として報告する。
+  - production `kafs` は v7 image を mount 成功 path に通さず、`kafs-v7` guidance で拒否する。
+  - `kafs-v7` は v6 image を拒否する。
+  - `lsp-cli --server-cmd clangd-18`、`./scripts/format.sh fix`、`autoreconf -fi`、
+    `./configure`、`make -j2`、`git diff --check`、targeted tests、`make check -j2` が
+    PASS している。
+- 実装結果:
+  - v7 は `kafs_v7.c`、`kafs_v7_runtime.*`、`kafs_v7_mount_options.*`、
+    `kafs_v7_entrypoint_adapter.*` を持つ独立 source set として実装した。
+  - 低レベル descriptor scaffold parser/builder は、次の中立名抽出まで歴史名の
+    `kafs_v6_layout.h` を参照する。
+  - v6 は frozen experimental entrypoint として残し、今後の破壊的 layout/policy work は
+    v7 側へ進める方針を文書化した。
+  - v6 の `v6_layout_descriptor` JSON key は report consumer 互換のため残し、v7 は
+    `layout_descriptor` key を使うようにした。
+- 検証:
+  - `lsp-cli --root . --server clangd --server-cmd clangd-18 --format pretty diagnostics src/kafs_v7_runtime.c`
+    と `tests/tests_v7_entrypoint_smoketest.c` は diagnostics 0 件だった。
+  - `./scripts/format.sh fix`、`autoreconf -fi`、`./configure`、`make -j2`、`git diff --check` が成功した。
+  - `make -C tests check TESTS=v7_entrypoint_smoketest`、
+    `make -C tests check TESTS=v6_descriptor_validation`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、
+    `make -C tests check TESTS=kafsresize` が成功した。
+  - `make check -j2` は 29 tests passed / 1 skipped で成功した。
+
 ---
 
-## 最初に着手するチケット
+## 次に着手する候補
 
-1. SDW-P1-T1 Journal header slot format
-2. SDW-P1-T2 Journal mount/fsck slot selection
-3. SDW-P1-T3 Rotating header update path
+1. v6 scaffold のうち、v7 継続作業で混乱しやすい内部名を neutral descriptor family 名へ分離する。
+2. `kafsresize --migrate-create --format-version 7` を追加し、v5 -> v7 offline migration path を
+   v7 entrypoint とつなぐ。
+3. `kafs-v7 --inspection-mount` の mount smoke を追加し、次に controlled-write proof へ進む。
 
-Phase 2 で metadata heatmap baseline を出せるまで、Phase 3 の format v6 実装には着手しない。
+履歴上の Phase 1/2 backlog は下記の直近実装メモに残す。現行の descriptor-backed format work は
+format v7 を入口にする。
 
 ---
 

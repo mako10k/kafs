@@ -1192,7 +1192,7 @@ static int test_descriptor_shard_physical_bounds_bad(void)
   char out[8192];
   char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)img, NULL};
   if (run_cmd_capture(fsck_argv, 13, out, sizeof(out)) != 0 ||
-      !strstr(out, "v6 descriptor discovery failed") || !strstr(out, "status=corrupt"))
+      !strstr(out, "format v6 descriptor discovery failed") || !strstr(out, "status=corrupt"))
     return -1;
   return 0;
 }
@@ -1312,7 +1312,7 @@ static int test_divergent_same_generation_rejected(void)
 
   char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)img, NULL};
   if (run_cmd_capture(fsck_argv, 13, out, sizeof(out)) != 0 ||
-      !strstr(out, "v6 descriptor discovery failed") || !strstr(out, "status=divergent"))
+      !strstr(out, "format v6 descriptor discovery failed") || !strstr(out, "status=divergent"))
     return -1;
   return 0;
 }
@@ -1349,7 +1349,7 @@ static int test_v6_repair_modes_rejected(void)
                        NULL};
   if (run_cmd_capture(check_argv, 0, out, sizeof(out)) != 0 ||
       !strstr(out, "format v6 fsck policy: detect-only validation") ||
-      !strstr(out, "Journal check: v6 descriptor-backed segment health OK"))
+      !strstr(out, "Journal check: format v6 descriptor-backed segment health OK"))
     return -1;
   return 0;
 }

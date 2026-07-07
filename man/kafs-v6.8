@@ -25,10 +25,12 @@ It validates the format v6 CLI boundary, rejects legacy
 mount-option mode tokens, runs descriptor preflight, and then admits the
 selected v6 runtime contract.
 .PP
-Future format v6 runtime admission and write-surface work should move behind
-this binary instead of broadening the production
+Format v6 is an experimental implementation used to split runtime entrypoint,
+descriptor admission, and controlled-write policy away from the production
 .BR kafs (1)
-binary.  The existing
+binary.  New breaking format work continues through
+.BR kafs-v7 (8)
+instead of expanding the v6 compatibility surface.  The existing
 .B kafs
 binary remains the v4/v5 production runtime entrypoint.
 .SH OPTIONS

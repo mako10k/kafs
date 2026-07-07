@@ -1333,7 +1333,7 @@ static inline int kafs_v6_bitmap_validate_coverage(const void *desc, uint32_t de
                                                    const kafs_ssuperblock_t *sb, uint64_t file_size,
                                                    kafs_v6_bitmap_coverage_report_t *report)
 {
-  if (!report)
+  if (!report || !sb)
     return -EINVAL;
   memset(report, 0, sizeof(*report));
 
@@ -1357,7 +1357,7 @@ static inline int kafs_v6_inode_validate_coverage(const void *desc, uint32_t des
     return -EINVAL;
   memset(report, 0, sizeof(*report));
 
-  uint32_t record_bytes = (uint32_t)kafs_inode_bytes_for_format(KAFS_FORMAT_VERSION_V6);
+  uint32_t record_bytes = (uint32_t)kafs_inode_bytes_for_format(kafs_sb_format_version_get(sb));
   int rc = kafs_v6_validate_coverage_prefix(
       desc, desc_bytes, sb, file_size, KAFS_META_REGION_INODE_TABLE, record_bytes,
       KAFS_V6_EXTENT_STORAGE_FIXED_RECORD, (uint64_t)kafs_sb_inocnt_get(sb), report);
