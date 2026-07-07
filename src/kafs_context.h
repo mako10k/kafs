@@ -43,6 +43,10 @@ typedef struct kafs_v6_hrl_runtime_shard
   uint32_t group_id;
 } kafs_v6_hrl_runtime_shard_t;
 
+typedef kafs_v6_inode_runtime_shard_t kafs_descriptor_inode_runtime_shard_t;
+typedef kafs_v6_alloc_summary_runtime_shard_t kafs_descriptor_alloc_summary_runtime_shard_t;
+typedef kafs_v6_hrl_runtime_shard_t kafs_descriptor_hrl_runtime_shard_t;
+
 /// @brief コンテキスト
 struct kafs_context
 {
@@ -203,7 +207,7 @@ struct kafs_context
   size_t c_meta_bitmap_wordcnt;
   size_t c_meta_bitmap_dirty_count;
 
-  // --- Format v6 descriptor bitmap mapping (dormant until v6 runtime admission) ---
+  // --- Descriptor-backed runtime mapping (introduced by experimental v6) ---
   uint32_t c_v6_bitmap_mapping_enabled;
   uint32_t c_v6_inode_mapping_enabled;
   uint32_t c_v6_alloc_summary_mapping_enabled;
@@ -374,6 +378,11 @@ static inline const char *kafs_ctx_v6_worker_policy_summary(void)
          "bg_dedup_worker=disabled hotplug=disabled)";
 }
 
+static inline const char *kafs_ctx_descriptor_worker_policy_summary(void)
+{
+  return kafs_ctx_v6_worker_policy_summary();
+}
+
 static inline int kafs_ctx_map_v6_runtime_admission_memory(kafs_context_t *ctx,
                                                            const kafs_ssuperblock_t *sbdisk,
                                                            uint64_t file_size, int prot)
@@ -398,6 +407,13 @@ static inline int kafs_ctx_map_v6_runtime_admission_memory(kafs_context_t *ctx,
   return 0;
 }
 
+static inline int kafs_ctx_map_descriptor_runtime_admission_memory(kafs_context_t *ctx,
+                                                                   const kafs_ssuperblock_t *sbdisk,
+                                                                   uint64_t file_size, int prot)
+{
+  return kafs_ctx_map_v6_runtime_admission_memory(ctx, sbdisk, file_size, prot);
+}
+
 static inline void kafs_ctx_v6_apply_delayed_mutation_policy(kafs_context_t *ctx)
 {
   if (!ctx || !ctx->c_superblock ||
@@ -413,6 +429,11 @@ static inline void kafs_ctx_v6_apply_delayed_mutation_policy(kafs_context_t *ctx
   ctx->c_bg_dedup_enabled = 0u;
   ctx->c_bg_dedup_worker_stop = 1;
   ctx->c_v6_delayed_mutation_policy_applied = 1u;
+}
+
+static inline void kafs_ctx_descriptor_apply_delayed_mutation_policy(kafs_context_t *ctx)
+{
+  kafs_ctx_v6_apply_delayed_mutation_policy(ctx);
 }
 
 static inline int kafs_ctx_v6_pending_policy_sealed(const kafs_context_t *ctx)
@@ -485,6 +506,11 @@ static inline int kafs_ctx_v6_validate_worker_policy(const kafs_context_t *ctx)
   return 0;
 }
 
+static inline int kafs_ctx_descriptor_validate_worker_policy(const kafs_context_t *ctx)
+{
+  return kafs_ctx_v6_validate_worker_policy(ctx);
+}
+
 static inline int kafs_ctx_v6_validate_runtime_views(const kafs_context_t *ctx)
 {
   if (!ctx || !ctx->c_superblock ||
@@ -497,6 +523,21 @@ static inline int kafs_ctx_v6_validate_runtime_views(const kafs_context_t *ctx)
       !ctx->c_v6_hrl_mapping_enabled)
     return -EPROTO;
   return 0;
+}
+
+static inline int kafs_ctx_descriptor_validate_runtime_views(const kafs_context_t *ctx)
+{
+  return kafs_ctx_v6_validate_runtime_views(ctx);
+}
+
+static inline const void *kafs_ctx_descriptor_layout_desc(const kafs_context_t *ctx)
+{
+  return ctx ? ctx->c_v6_layout_desc : NULL;
+}
+
+static inline uint32_t kafs_ctx_descriptor_layout_desc_bytes(const kafs_context_t *ctx)
+{
+  return ctx ? ctx->c_v6_layout_desc_bytes : 0u;
 }
 
 static inline void kafs_ctx_meta_write_count(kafs_context_t *ctx, uint32_t region, uint64_t bytes)

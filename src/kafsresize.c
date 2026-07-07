@@ -2,10 +2,10 @@
 #include "kafs_cli_opts.h"
 #include "kafs_hash.h"
 #include "kafs_inode.h"
+#include "kafs_descriptor_layout.h"
 #include "kafs_superblock.h"
 #include "kafs_tailmeta.h"
 #include "kafs_tool_util.h"
-#include "kafs_v6_layout.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -392,7 +392,7 @@ static void kafsresize_compute_mkfs_layout_once(uint32_t format_version, uint64_
   if (format_version == KAFS_FORMAT_VERSION_V6)
   {
     out->v6_desc_off = mapsize;
-    out->v6_desc_bytes = kafs_v6_descriptor_bytes_for_block((uint32_t)block_size);
+    out->v6_desc_bytes = kafs_descriptor_bytes_for_block((uint32_t)block_size);
     mapsize += out->v6_desc_bytes;
     mapsize = kafsresize_align_up_u64(mapsize, block_mask);
   }

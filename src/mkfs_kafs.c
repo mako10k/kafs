@@ -7,7 +7,7 @@
 #include "kafs_hash.h"
 #include "kafs_journal.h"
 #include "kafs_tailmeta.h"
-#include "kafs_v6_layout.h"
+#include "kafs_descriptor_layout.h"
 #include "kafs_cli_opts.h"
 #include "kafs_tool_util.h"
 
@@ -164,7 +164,7 @@ static void compute_layout(uint32_t format_version, kafs_blkcnt_t blkcnt,
   if (kafs_format_uses_layout_descriptor(format_version))
   {
     v6_desc_off = mapsize;
-    v6_desc_bytes = kafs_v6_descriptor_bytes_for_block(blksize);
+    v6_desc_bytes = kafs_descriptor_bytes_for_block(blksize);
     mapsize += (off_t)v6_desc_bytes;
     mapsize = (mapsize + blksizemask) & ~blksizemask;
   }
@@ -658,8 +658,8 @@ static void mkfs_init_superblock(kafs_context_t *ctx, uint32_t format_version,
   kafs_sb_feature_flags_set(ctx->c_superblock, mkfs_feature_flags_for_format(format_version));
   kafs_sb_compat_flags_set(ctx->c_superblock, 0);
   if (kafs_format_uses_layout_descriptor(format_version))
-    kafs_v6_anchor_init(ctx->c_superblock, (uint64_t)layout->v6_desc_off, layout->v6_desc_bytes,
-                        layout->v6_candidate_count);
+    kafs_descriptor_anchor_init(ctx->c_superblock, (uint64_t)layout->v6_desc_off,
+                                layout->v6_desc_bytes, layout->v6_candidate_count);
 
   ctx->c_superblock->s_inocnt = kafs_inocnt_htos(inocnt);
   kafs_sb_inocnt_free_set(ctx->c_superblock,
@@ -802,10 +802,10 @@ static int mkfs_write_v6_descriptor(kafs_context_t *ctx, const struct mkfs_layou
   uint64_t bitmap_bytes = ((uint64_t)kafs_sb_r_blkcnt_get(ctx->c_superblock) + 7u) >> 3;
   uint64_t inode_bytes =
       kafs_inode_table_bytes_for_format(format_version, kafs_sb_inocnt_get(ctx->c_superblock));
-  int rc = kafs_v6_build_mkfs_descriptor(desc, layout->v6_desc_bytes, ctx->c_superblock,
-                                         (uint64_t)total_bytes, (uint64_t *)layout->v6_candidates,
-                                         layout->v6_candidate_count, (uint64_t)layout->blkmask_off,
-                                         bitmap_bytes, (uint64_t)layout->inotbl_off, inode_bytes);
+  int rc = kafs_descriptor_build_mkfs_descriptor(
+      desc, layout->v6_desc_bytes, ctx->c_superblock, (uint64_t)total_bytes,
+      (uint64_t *)layout->v6_candidates, layout->v6_candidate_count, (uint64_t)layout->blkmask_off,
+      bitmap_bytes, (uint64_t)layout->inotbl_off, inode_bytes);
   if (rc != 0)
   {
     free(desc);

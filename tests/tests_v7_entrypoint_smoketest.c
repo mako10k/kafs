@@ -1,8 +1,8 @@
 #include "test_utils.h"
 
+#include "kafs_descriptor_layout.h"
 #include "kafs_offline_summary.h"
 #include "kafs_superblock.h"
-#include "kafs_v6_layout.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -113,9 +113,9 @@ static int check_v7_descriptor_direct(const char *img)
   if (rc == 0 && kafs_sb_format_version_get(&sb) != KAFS_FORMAT_VERSION_V7)
     rc = -EINVAL;
 
-  kafs_v6_layout_report_t report;
+  kafs_descriptor_layout_report_t report;
   if (rc == 0)
-    rc = kafs_v6_discover_layout(fd, &sb, file_size, &report);
+    rc = kafs_descriptor_discover_layout(fd, &sb, file_size, &report);
   close(fd);
   if (rc != 0)
     return rc;

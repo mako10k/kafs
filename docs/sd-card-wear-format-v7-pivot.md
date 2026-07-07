@@ -21,11 +21,17 @@ Format v7 is the breaking-change continuation of that work:
 
 ## Current Implementation Boundary
 
-The first v7 slice has a separate v7 entrypoint/runtime/adapter source set:
+The v7 runtime has a separate v7 entrypoint/runtime/adapter source set:
 `kafs_v7.c`, `kafs_v7_runtime.*`, `kafs_v7_mount_options.*`, and
-`kafs_v7_entrypoint_adapter.*`.  The remaining historical dependency is the
-low-level descriptor scaffold parser/builder in `kafs_v6_layout.h`; it is a
-temporary scaffold-family helper, not the public v7 runtime contract.
+`kafs_v7_entrypoint_adapter.*`.
+
+Descriptor-backed v7 and shared runtime code depend on the neutral
+`kafs_descriptor_layout.h` facade for descriptor discovery, selected-descriptor
+loading, coverage validation, journal segment validation, mkfs descriptor
+build, and superblock anchor initialization.  The backing wire scaffold is
+still the descriptor layout introduced by experimental v6, so the facade
+currently delegates to `kafs_v6_layout.h`; that delegation is an implementation
+detail, not the public v7 runtime contract.
 
 Diagnostic keys are format-specific:
 
@@ -54,8 +60,8 @@ User-facing entrypoints and on-disk format numbers are no longer ambiguous:
 
 ## Follow-Up Boundaries
 
-1. Move the remaining low-level descriptor scaffold names from `v6` to a
-   neutral descriptor family name where it reduces ambiguity.
+1. Move remaining diagnostic/report internals that still carry v6-only local
+   names to neutral descriptor-family names where it reduces ambiguity.
 2. Add `kafsresize --migrate-create --format-version 7` once the v7 mkfs and
    offline validation surface is stable.
 3. Prove `kafs-v7 --inspection-mount` and then controlled-write runtime paths

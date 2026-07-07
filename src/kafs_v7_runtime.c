@@ -410,7 +410,7 @@ int kafs_v7_runtime_admit_mount_context(kafs_context_t *ctx, const kafs_ssuperbl
               "inode/bitmap tables are not installed; %s; delayed/background mutations are "
               "disabled; FUSE mount is "
               "inspection-only and write admission remains disabled.\n",
-              KAFS_V7_TOOL_FORMAT_LABEL, kafs_ctx_v6_worker_policy_summary());
+              KAFS_V7_TOOL_FORMAT_LABEL, kafs_ctx_descriptor_worker_policy_summary());
     }
     else
     {
@@ -420,7 +420,7 @@ int kafs_v7_runtime_admit_mount_context(kafs_context_t *ctx, const kafs_ssuperbl
               "tables are not installed; %s; delayed/background mutations are disabled; FUSE "
               "write surface is limited "
               "to regular-file create/write/fsync/release.\n",
-              KAFS_V7_TOOL_FORMAT_LABEL, kafs_ctx_v6_worker_policy_summary());
+              KAFS_V7_TOOL_FORMAT_LABEL, kafs_ctx_descriptor_worker_policy_summary());
     }
   }
   else
@@ -449,9 +449,9 @@ int kafs_v7_runtime_init_mount_services(kafs_context_t *ctx, const char *image_p
   else if (mode != KAFS_V7_RUNTIME_MODE_INSPECTION)
     return -EINVAL;
 
-  int rc = kafs_ctx_v6_validate_runtime_views(ctx);
+  int rc = kafs_ctx_descriptor_validate_runtime_views(ctx);
   if (rc == 0)
-    rc = kafs_ctx_v6_validate_worker_policy(ctx);
+    rc = kafs_ctx_descriptor_validate_worker_policy(ctx);
   if (rc != 0)
   {
     char errbuf[128];

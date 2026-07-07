@@ -1,8 +1,8 @@
 #include "kafs_journal.h"
 #include "kafs_context.h"
+#include "kafs_descriptor_layout.h"
 #include "kafs_locks.h"
 #include "kafs_superblock.h"
-#include "kafs_v6_layout.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -671,13 +671,13 @@ static void kj_state_disable(struct kafs_context *ctx)
   g_state.j.gc_pending = 0;
 }
 
-static int kj_configure_v6_descriptor_segment(struct kafs_context *ctx, kafs_journal_t *j)
+static int kj_configure_descriptor_segment(struct kafs_context *ctx, kafs_journal_t *j)
 {
   if (!ctx || !ctx->c_superblock || !j)
     return -EINVAL;
   if (!kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(ctx->c_superblock)))
     return -ENOENT;
-  if (!ctx->c_v6_layout_desc || ctx->c_v6_layout_desc_bytes == 0u)
+  if (!kafs_ctx_descriptor_layout_desc(ctx) || kafs_ctx_descriptor_layout_desc_bytes(ctx) == 0u)
     return -EPROTONOSUPPORT;
 
   uint64_t file_size = 0;
@@ -685,16 +685,17 @@ static int kj_configure_v6_descriptor_segment(struct kafs_context *ctx, kafs_jou
   if (rc != 0)
     return rc;
 
-  kafs_v6_journal_segment_report_t report;
-  rc = kafs_v6_journal_validate_segments_fd(ctx->c_fd, ctx->c_v6_layout_desc,
-                                            ctx->c_v6_layout_desc_bytes, ctx->c_superblock,
-                                            file_size, &report);
+  kafs_descriptor_journal_segment_report_t report;
+  rc = kafs_descriptor_journal_validate_segments_fd(ctx->c_fd, kafs_ctx_descriptor_layout_desc(ctx),
+                                                    kafs_ctx_descriptor_layout_desc_bytes(ctx),
+                                                    ctx->c_superblock, file_size, &report);
   if (rc != 0)
     return rc;
 
-  kafs_v6_journal_segment_lookup_t lookup;
-  rc = kafs_v6_journal_segment_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes,
-                                      report.selected_segment_id, &lookup);
+  kafs_descriptor_journal_segment_lookup_t lookup;
+  rc = kafs_descriptor_journal_segment_lookup(kafs_ctx_descriptor_layout_desc(ctx),
+                                              kafs_ctx_descriptor_layout_desc_bytes(ctx),
+                                              report.selected_segment_id, &lookup);
   if (rc != 0)
     return rc;
   if (lookup.header.group_id != lookup.data.group_id || lookup.data.data_bytes == 0u)
@@ -743,7 +744,7 @@ static int kj_configure_context_journal(struct kafs_context *ctx, kafs_journal_t
   if (!ctx || !j)
     return -EINVAL;
 
-  int rc = kj_configure_v6_descriptor_segment(ctx, j);
+  int rc = kj_configure_descriptor_segment(ctx, j);
   if (rc != -ENOENT)
     return rc;
   return kj_configure_legacy_region(ctx, j);
