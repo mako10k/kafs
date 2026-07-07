@@ -16,6 +16,8 @@
   [sd-card-wear-format-v7-inception-deck.md](sd-card-wear-format-v7-inception-deck.md)
   の decision model / scope と metadata region coverage matrix を固め、HRL index/entry
   placement と recovery invariant を first-class に扱ってから仕様化する。
+- v7 RAW LAYOUT の作業 draft は
+  [sd-card-wear-format-v7-raw-layout.md](sd-card-wear-format-v7-raw-layout.md) に置く。
 - 各実装 PR では、関連する最小テストと metadata durability / wear-distribution 前提を明記する。
 - 現行の v7 方針は
   [sd-card-wear-format-v7-pivot.md](sd-card-wear-format-v7-pivot.md) を正とする。

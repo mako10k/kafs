@@ -16,6 +16,9 @@ specification.  `mkfs.kafs --format-version 7`, `fsck.kafs`, `kafsdump`, and
 `kafs-v7` should then be implemented against that v7-owned raw layout, not
 against an accidental copy of the v6 scaffold.
 
+The current raw layout draft is
+[sd-card-wear-format-v7-raw-layout.md](sd-card-wear-format-v7-raw-layout.md).
+
 ## Why Are We Here?
 
 KAFS needs an SD-card-friendly image layout that reduces metadata hot spots

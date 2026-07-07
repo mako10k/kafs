@@ -25,8 +25,9 @@ The raw image layout is not finalized by this pivot.  Before changing the v7
 raw layout or expanding the v7 mkfs/runtime behavior, use the decision model and
 scope in
 [sd-card-wear-format-v7-inception-deck.md](sd-card-wear-format-v7-inception-deck.md)
-to choose the v7 layout family, then record the accepted raw layout in a
-separate v7 layout specification.
+to choose the v7 layout family, then record the accepted raw layout in a v7
+layout specification.  The current working draft is
+[sd-card-wear-format-v7-raw-layout.md](sd-card-wear-format-v7-raw-layout.md).
 
 ## Current Implementation Boundary
 
