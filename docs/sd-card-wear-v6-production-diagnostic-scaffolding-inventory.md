@@ -1,7 +1,7 @@
 # KAFS format v6 production diagnostic scaffolding inventory
 
 Date: 2026-07-07
-Status: updated through SDW-V6RT-T54 legacy-token successful branch retirement
+Status: updated through SDW-V6RT-T55 admission handoff env gate retirement
 
 ## Boundary
 
@@ -34,14 +34,6 @@ depends on them:
   admission preflight and then exits through the offline-only gate. This keeps
   operator diagnostics for malformed v6 descriptors without admitting FUSE.
 
-## Diagnostic-Only Gates
-
-These surfaces are diagnostic scaffolding, not the target runtime contract:
-
-- `KAFS_V6_ADMISSION_HANDOFF=1` maps the full v6 image into the production
-  runtime context, validates descriptor-backed views and worker policy, unmaps
-  the image, and still exits through the offline-only gate.
-
 ## Retired By T53
 
 `KAFS_V6_READONLY_SMOKE=1` was removed from production `kafs`. It was an older
@@ -57,25 +49,29 @@ The legacy-token successful branches were removed from
 It no longer has a successful v6 inspection or controlled-write branch behind
 that fail-closed gate.
 
+## Retired By T55
+
+`KAFS_V6_ADMISSION_HANDOFF=1` was removed from production `kafs`. It was an
+env-only diagnostic gate that mapped the full v6 image into a production runtime
+context and still exited through the offline-only gate. Production `kafs` now
+uses the same plain-v6 admission preflight / offline-only path regardless of
+that environment variable.
+
 ## Retirement Candidates
 
 The safest next reductions are:
 
-1. Retire or explicitly quarantine `KAFS_V6_ADMISSION_HANDOFF` if the
-   descriptor-backed runtime-context diagnostic is no longer needed in
-   production `kafs`.
-2. Decide whether production `kafs` should keep descriptor
-   preflight for plain v6 image mounts or reduce it to direct `kafs-v6`
-   guidance. Removing that preflight would also remove production `kafs`'s
-   dependency on `kafs_v6_admission.h`.
+1. Decide whether production `kafs` should keep descriptor preflight for plain
+   v6 image mounts or reduce it to direct `kafs-v6` guidance. Removing that
+   preflight would also remove production `kafs`'s dependency on
+   `kafs_v6_admission.h`.
 
 ## Shared Helpers That Are Not Production Ownership
 
 `kafs_v6_admission.h` is a shared descriptor-admission helper used by both the
-production diagnostic scaffolding and `kafs_v6_runtime.c`. Its presence in
-production `kafs` is not successful v6 runtime ownership. Do not move this
-helper wholesale into production code; remove the production diagnostic use
-first if the goal is to shrink production's v6 surface.
+production plain-v6 preflight and `kafs_v6_runtime.c`. Its presence in
+production `kafs` is not successful v6 runtime ownership. Remove the production
+preflight use first if the goal is to shrink production's v6 surface further.
 
 ## Evidence
 
@@ -83,12 +79,10 @@ first if the goal is to shrink production's v6 surface.
 
 - `kafs_main_v6_admission_preflight()` is referenced only by its definition and
   the plain-v6 offline-only branch in `kafs_main_open_runtime_context()`.
-- `kafs_main_v6_admission_handoff_enabled()` and
-  `kafs_main_v6_admission_handoff()` are each referenced only by their
-  definition and the `KAFS_V6_ADMISSION_HANDOFF` branch.
 
-`rg` found current test coverage for `KAFS_V6_ADMISSION_HANDOFF`. After T53,
-`rg KAFS_V6_READONLY_SMOKE src tests` returns no matches. The read-only FUSE
-smoke uses `kafs-v6 --inspection-mount`.
+After T53, `rg KAFS_V6_READONLY_SMOKE src tests` returns no matches. The
+read-only FUSE smoke uses `kafs-v6 --inspection-mount`.
 After T54, `rg` finds no `kafs_main_v6_inspection_mount()` or
 `kafs_main_v6_controlled_write_mount()` symbol in `src/` or tests.
+After T55, `lsp-cli` reports no workspace symbol for
+`kafs_main_v6_admission_handoff` or `kafs_main_v6_runtime_admit_context`.

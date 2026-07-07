@@ -1671,21 +1671,13 @@ int main(void)
   if (run_cmd_capture_env(handoff_argv, 2, "KAFS_V6_ADMISSION_HANDOFF", "1", out, sizeof(out)) !=
       0)
   {
-    tlogf("v6 runtime handoff did not fail as expected: %s", out);
+    tlogf("v6 runtime mount with retired handoff env did not fail as expected: %s", out);
     return 1;
   }
-  if (!strstr(out, "admission handoff") || !strstr(out, "selected descriptor retained") ||
-      !strstr(out, "descriptor-backed runtime views active") ||
-      !strstr(out, "legacy contiguous inode/bitmap tables are not installed") ||
-      !strstr(out, "v6 worker policy sealed") || !strstr(out, "pending_worker=disabled") ||
-      !strstr(out, "tombstone_gc_worker=disabled") ||
-      !strstr(out, "bg_dedup_worker=disabled") || !strstr(out, "hotplug=disabled") ||
-      !strstr(out, "delayed/background mutations disabled") ||
-      !strstr(out, "pending_log=disabled") || !strstr(out, "tail_metadata=disabled") ||
-      !strstr(out, "tombstone_gc=disabled") || !strstr(out, "bg_dedup=disabled") ||
-      !strstr(out, "offline-only"))
+  if (!strstr(out, "admission preflight") || !strstr(out, "metadata checks OK") ||
+      !strstr(out, "offline-only") || strstr(out, "admission handoff"))
   {
-    tlogf("v6 runtime handoff error missing descriptor/offline-only guidance: %s", out);
+    tlogf("retired handoff env changed production v6 preflight output: %s", out);
     return 1;
   }
 

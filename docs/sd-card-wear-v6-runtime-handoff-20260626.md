@@ -153,6 +153,9 @@ Additional closeout after the original handoff:
   fail-closed gate. Legacy `v6_inspection_mount` / `v6_write_mount` tokens now
   exist only to produce `kafs-v6` guidance; successful v6 runtime admission is
   `kafs-v6`-owned.
+- T55 retires the production `KAFS_V6_ADMISSION_HANDOFF` environment gate.
+  Production `kafs` now treats v6 images through the plain-v6 admission preflight
+  / offline-only path regardless of that environment variable.
 
 ## 2026-07-02 closeout
 
@@ -698,6 +701,39 @@ Validation result:
 - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` completed with all 29 tests
   passed.
 
+## 2026-07-07 T55 validation
+
+Commands completed successfully:
+
+```sh
+./scripts/format.sh fix
+make -j2
+git diff --check
+./scripts/test-cli-surface.sh
+make -C tests check TESTS=v6_descriptor_smoketest
+./scripts/static-checks.sh
+KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2
+```
+
+Current T55 boundary:
+
+- Production `kafs` no longer has a `KAFS_V6_ADMISSION_HANDOFF` runtime-context
+  mapping diagnostic.
+- Setting `KAFS_V6_ADMISSION_HANDOFF=1` does not change production `kafs` v6
+  behavior; the path remains admission preflight plus offline-only guidance.
+- `kafs-v6 --inspection-mount` and `kafs-v6 --controlled-write-mount` remain the
+  only successful format-v6 runtime admission entrypoints.
+- Production `kafs` still keeps plain-v6 offline-only descriptor preflight as
+  diagnostic scaffolding.
+
+Validation result:
+
+- `lsp-cli` with `/usr/bin/clangd-18` returned no workspace symbol for
+  `kafs_main_v6_admission_handoff` or `kafs_main_v6_runtime_admit_context`.
+- `rg` returned no `KAFS_V6_ADMISSION_HANDOFF` match in production `src/kafs.c`.
+- `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` completed with all 29 tests
+  passed.
+
 ## Original validation run
 
 Commands completed successfully:
@@ -743,8 +779,8 @@ Start from the pressure points recorded in
 [sd-card-wear-v6-runtime-entrypoint-plan.md](sd-card-wear-v6-runtime-entrypoint-plan.md):
 
 - retirement of remaining v6 diagnostic scaffolding in `kafs`, next deciding
-  whether to keep `KAFS_V6_ADMISSION_HANDOFF` and plain-v6 offline-only
-  descriptor preflight;
+  whether to keep plain-v6 offline-only descriptor preflight or reduce
+  production `kafs` to direct `kafs-v6` guidance;
 - further reduction of the remaining shared FUSE runner / operation
   implementation boundaries, especially where production `kafs` and `kafs-v6`
   still meet in `src/kafs.c`, without duplicating filesystem logic.

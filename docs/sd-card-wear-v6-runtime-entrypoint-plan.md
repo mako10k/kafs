@@ -323,11 +323,18 @@ T54 retires the production `kafs` legacy-token successful branches:
   with `kafs-v6` guidance;
 - successful format-v6 runtime admission remains owned by `kafs-v6`.
 
+T55 retires the production `kafs` admission handoff environment gate:
+
+- `KAFS_V6_ADMISSION_HANDOFF` no longer changes production `kafs` behavior;
+- production `kafs` now uses plain-v6 admission preflight / offline-only
+  guidance for v6 images regardless of that environment variable;
+- descriptor-backed successful runtime admission remains owned by `kafs-v6`.
+
 The remaining pureification pressure points are:
 
 - retirement of remaining diagnostic scaffolding in production `kafs`, next
-  deciding whether to keep `KAFS_V6_ADMISSION_HANDOFF` and plain-v6
-  offline-only descriptor preflight;
+  deciding whether to keep plain-v6 offline-only descriptor preflight or reduce
+  production `kafs` to direct `kafs-v6` guidance;
 - further reduction of the shared FUSE common-object adapter path,
   especially around shared operation implementations,
   without duplicating filesystem logic.
@@ -416,14 +423,15 @@ successful branches as the next retirement candidates. T53 retires the
 `KAFS_V6_READONLY_SMOKE` env gate, leaving read-only v6 FUSE inspection owned by
 `kafs-v6 --inspection-mount`. T54 retires the production `kafs` legacy-token
 successful branches, so legacy v6 tokens now exist only as fail-closed guidance
-inputs and no longer reach a production successful v6 runtime path.
+inputs and no longer reach a production successful v6 runtime path. T55 retires
+the production `KAFS_V6_ADMISSION_HANDOFF` env gate, so production `kafs` keeps
+only plain-v6 admission preflight / offline-only diagnostics.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).
 The immediate next implementation boundary remains v6 runtime pureification,
 not write-surface expansion. The next production-v6 reduction is the remaining
-diagnostic surface: `KAFS_V6_ADMISSION_HANDOFF` and plain-v6 offline-only
-descriptor preflight.
+plain-v6 offline-only descriptor preflight.
 
 ## Smoke
 

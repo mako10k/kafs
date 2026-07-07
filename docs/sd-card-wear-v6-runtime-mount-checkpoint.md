@@ -17,8 +17,9 @@ mount 対象へ進める前に、最初に許可する mount mode と安全境�
 
 - 通常の v6 runtime mount は admission preflight で descriptor-backed metadata checks と journal
   segment health を確認した後、offline-only gate で exit 2 として fail closed する。
-- `KAFS_V6_ADMISSION_HANDOFF=1` は selected descriptor と shard maps を実 runtime context に保持できる
-  ことを診断するが、FUSE mount と write admission は有効化しない。
+- `KAFS_V6_ADMISSION_HANDOFF=1` は SDW-V6RT-T55 で production `kafs` から退役した。
+  production `kafs` は env の有無に関わらず plain-v6 admission preflight / offline-only gate で
+  fail closed する。
 - `kafs-v6 --inspection-mount -o ro` は supported inspection mount として admitted descriptor を保持する。
   image は read-only open / read-only mapping / read lock / FUSE `ro` で扱い、journal replay と
   background mutation workers は未起動、mutation operations は `EROFS` で拒否する。

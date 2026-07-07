@@ -13036,50 +13036,6 @@ static int kafs_main_v6_admission_preflight(int fd, const kafs_ssuperblock_t *sb
   return rc;
 }
 
-static int kafs_main_v6_admission_handoff_enabled(void)
-{
-  const char *value = getenv("KAFS_V6_ADMISSION_HANDOFF");
-  kafs_bool_t enabled = KAFS_FALSE;
-  kafs_main_apply_optional_bool_env(value, &enabled);
-  return enabled == KAFS_TRUE;
-}
-
-static int kafs_main_v6_runtime_admit_context(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk,
-                                              int prot)
-{
-  return kafs_v6_admission_runtime_context(ctx, sbdisk, prot);
-}
-
-static int kafs_main_v6_admission_handoff(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk)
-{
-  int rc = kafs_main_v6_runtime_admit_context(ctx, sbdisk, PROT_READ | PROT_WRITE);
-
-  if (rc == 0)
-  {
-    fprintf(stderr,
-            "format v6 admission handoff: selected descriptor retained in runtime context "
-            "(inode_shards=%u allocator_shards=%u hrl_index_shards=%u hrl_entry_shards=%u); "
-            "descriptor-backed runtime views active; legacy contiguous inode/bitmap tables are "
-            "not installed; %s; "
-            "delayed/background mutations disabled "
-            "(pending_log=disabled tail_metadata=disabled tombstone_gc=disabled "
-            "bg_dedup=disabled); "
-            "runtime mount remains offline-only.\n",
-            ctx->c_v6_inode_shard_count, ctx->c_v6_alloc_summary_shard_count,
-            ctx->c_v6_hrl_index_shard_count, ctx->c_v6_hrl_entry_shard_count,
-            kafs_ctx_v6_worker_policy_summary());
-  }
-  else
-  {
-    char errbuf[128];
-    fprintf(stderr, "format v6 admission handoff failed: %s.\n",
-            kafs_main_rc_text(rc, errbuf, sizeof(errbuf)));
-  }
-
-  kafs_ctx_unmap_image(ctx);
-  return rc;
-}
-
 static void kafs_main_map_runtime_memory(kafs_context_t *ctx, uint32_t fmt_ver, off_t imgsize,
                                          off_t mapsize, intptr_t blkmask_off, intptr_t inotbl_off)
 {
@@ -13185,10 +13141,7 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
   kafs_blkcnt_t r_blkcnt = 0;
   if (fmt_ver == KAFS_FORMAT_VERSION_V6)
   {
-    if (kafs_main_v6_admission_handoff_enabled())
-      (void)kafs_main_v6_admission_handoff(ctx, &sbdisk);
-    else
-      (void)kafs_main_v6_admission_preflight(ctx->c_fd, &sbdisk);
+    (void)kafs_main_v6_admission_preflight(ctx->c_fd, &sbdisk);
     if (mount_read_only_requested)
       fprintf(stderr, "format v6 inspection mount requires -o ro and -o v6_inspection_mount; "
                       "-o ro alone keeps v6 offline-only.\n");

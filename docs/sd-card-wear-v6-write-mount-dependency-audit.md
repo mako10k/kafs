@@ -17,11 +17,12 @@ metadata mutation path、journal、background worker、repair/fsck、locking の
 - `src/kafs.c` の runtime write guard は `c_runtime_read_only` の場合だけ `EROFS` を返す。
   つまり v6 を non-read-only context で admission すると、FUSE mutation operations は通常の write path
   に入る。
-- `kafs_main_v6_runtime_admit_context()` は selected descriptor を runtime context に保持し、
+- `kafs_v6_runtime_admit_context()` は selected descriptor を runtime context に保持し、
   bitmap、inode、allocator summary、HRL、journal segment health を validation できる。
-  ただし現行の supported path は `-o ro,v6_inspection_mount` の read-only admission だけである。
-- `KAFS_V6_ADMISSION_HANDOFF=1` は `PROT_READ | PROT_WRITE` mapping と descriptor retention を診断するが、
-  FUSE mount せず context を unmap する。
+  supported runtime entrypoint は `kafs-v6 --inspection-mount` と
+  `kafs-v6 --controlled-write-mount` に限定する。
+- production `kafs` の `KAFS_V6_ADMISSION_HANDOFF=1` runtime-context mapping 診断は
+  SDW-V6RT-T55 で退役した。
 - `kafs_journal_init()` / `kafs_journal_replay()` は context が v6 descriptor を保持している場合、
   selected descriptor-backed journal segment の header/data offsets を選ぶ dormant path を持つ。
 - `fsck.kafs` は v6 image で detect-only validation のみを supported path とし、repair/write option が

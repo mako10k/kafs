@@ -378,10 +378,10 @@ an unsupported-format error. It must not attempt to mount a v6 descriptor image 
 prefix layout. The CLI mount path runs a v6 admission preflight before that rejection: it discovers
 the selected descriptor, validates descriptor-backed bitmap/inode/allocator/HRL coverage plus journal
 segment health, reports the result, and then still exits through the offline-only gate.
-For runtime handoff testing only, `KAFS_V6_ADMISSION_HANDOFF=1` maps the full image into the real
-mount context, retains the selected descriptor and shard maps in `kafs_context`, validates journal
-segment health from that context, reports the handoff, releases the mapping, and still exits through
-the same offline-only gate. This does not enable FUSE mount or v6 write admission.
+The older `KAFS_V6_ADMISSION_HANDOFF=1` production-`kafs` runtime-context
+diagnostic was retired by SDW-V6RT-T55. Production `kafs` now uses the same
+admission preflight and offline-only gate for v6 images regardless of that
+environment variable.
 The supported first runtime path is the `kafs-v6 --inspection-mount` entrypoint
 with FUSE `-o ro`. It keeps the admitted descriptor in the real runtime context
 and permits FUSE access only for inspection. The image is opened without write
@@ -574,8 +574,9 @@ Journal distribution:
   controlled-write runtime path is owned by `kafs-v6 --controlled-write-mount`
   and remains limited by its explicit write-surface policy. The remaining
   production `kafs` checks are offline scaffold validation, dormant admission
-  validation, CLI mount preflight diagnostics, and the explicit
-  `KAFS_V6_ADMISSION_HANDOFF=1` runtime-context handoff diagnostic. The
+  validation, and CLI mount preflight diagnostics. The retired
+  `KAFS_V6_ADMISSION_HANDOFF=1` environment variable no longer changes
+  production `kafs` behavior. The
   `kafs-v6 --inspection-mount` path is limited to read-only `statfs`, root and
   nested metadata traversal, inline small-file `read`, symlink `readlink`, write
   rejection, and no-content-change smoke coverage. It does not enable v6 write

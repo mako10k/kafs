@@ -1977,6 +1977,44 @@
     `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
     `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
 
+### SDW-V6RT-T55 retire production kafs admission handoff env gate
+
+- 目的: production `kafs` に残る env-only diagnostic gate
+  `KAFS_V6_ADMISSION_HANDOFF` を削除し、production `kafs` の v6 image path を
+  plain-v6 admission preflight / offline-only guidance に統一する。successful
+  format-v6 runtime admission は引き続き `kafs-v6` が所有する。
+- 変更:
+  - `src/kafs.c` から `KAFS_V6_ADMISSION_HANDOFF` env 判定、
+    `kafs_main_v6_admission_handoff()`、production-local runtime-admit wrapper を削除する。
+  - `kafs_main_open_runtime_context()` の v6 branch は常に
+    `kafs_main_v6_admission_preflight()` を実行し、offline-only gate へ進む。
+  - `v6_descriptor_smoketest` は retired env を指定しても production `kafs` の
+    preflight/offline-only 出力が変わらず、handoff 出力が出ないことを確認する。
+  - inventory / handoff / runtime plan docs を、`KAFS_V6_ADMISSION_HANDOFF` retired として更新する。
+- 完了条件:
+  - `rg KAFS_V6_ADMISSION_HANDOFF src tests` が、retired-env no-op regression 以外に該当しない。
+  - `lsp-cli` workspace symbol で `kafs_main_v6_admission_handoff` と
+    `kafs_main_v6_runtime_admit_context` が no result になる。
+  - plain-v6 production `kafs` mount は引き続き admission preflight / offline-only guidance を出す。
+  - `kafs-v6 --inspection-mount` と `kafs-v6 --controlled-write-mount` は successful
+    v6 runtime admission entrypoint のまま維持される。
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS している。
+- 実装結果:
+  - production `kafs` の env-only handoff branch を削除した。
+  - production `kafs` の remaining v6 diagnostic surface は plain-v6 offline-only
+    descriptor preflight に限定された。
+  - `kafs_v6_admission.h` は production preflight と `kafs_v6_runtime.c` の
+    dedicated runtime admission helperで引き続き共有される。
+- 検証:
+  - `lsp-cli --server clangd --server-cmd /usr/bin/clangd-18 --root . --format pretty ws-symbols`
+    は `kafs_main_v6_admission_handoff` / `kafs_main_v6_runtime_admit_context` を no result とした。
+  - `rg` は production source に `KAFS_V6_ADMISSION_HANDOFF` と removed helper が残っていないことを示した。
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+
 ---
 
 ## 最初に着手するチケット

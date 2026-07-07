@@ -123,7 +123,6 @@ Keep this code local until retired or moved:
   `kafs-v6` guidance;
 - legacy `v6_write_mount` parsing in `kafs`, now fail-closed with `kafs-v6`
   guidance;
-- `KAFS_V6_ADMISSION_HANDOFF` as a diagnostic-only offline gate;
 - legacy v6 diagnostic messages emitted by `kafs`;
 - production auto-migration and v2/v3/v4/v5 compatibility gates.
 
@@ -319,10 +318,14 @@ Legacy `v6_inspection_mount` / `v6_write_mount` tokens are still parsed only so
 production `kafs` can fail closed with `kafs-v6` guidance; they no longer reach
 a production successful v6 runtime path.
 
-The next slice should decide whether to keep `KAFS_V6_ADMISSION_HANDOFF` and
-plain-v6 offline-only descriptor preflight, or reduce the remaining
-common-object adapter path around shared FUSE operation implementations. Do not
-add another runtime executable and do not broaden the controlled-write surface.
+`SDW-V6RT-T55` retires the production `KAFS_V6_ADMISSION_HANDOFF` gate.
+Production `kafs` now keeps only plain-v6 offline-only descriptor preflight as
+its remaining v6 diagnostic surface.
+
+The next slice should decide whether to keep plain-v6 offline-only descriptor
+preflight, or reduce the remaining common-object adapter path around shared FUSE
+operation implementations. Do not add another runtime executable and do not
+broaden the controlled-write surface.
 
 ## Validation Standard
 
