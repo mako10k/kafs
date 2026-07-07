@@ -149,6 +149,10 @@ Additional closeout after the original handoff:
 - T53 retires the production `KAFS_V6_READONLY_SMOKE` environment gate. Read-only
   v6 FUSE coverage is now owned only by `kafs-v6 --inspection-mount`; production
   `kafs` keeps legacy fail-closed guidance and offline diagnostics.
+- T54 retires the production `kafs` legacy-token successful branches behind the
+  fail-closed gate. Legacy `v6_inspection_mount` / `v6_write_mount` tokens now
+  exist only to produce `kafs-v6` guidance; successful v6 runtime admission is
+  `kafs-v6`-owned.
 
 ## 2026-07-02 closeout
 
@@ -661,6 +665,39 @@ Validation result:
 - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` completed with all 29 tests
   passed.
 
+## 2026-07-07 T54 validation
+
+Commands completed successfully:
+
+```sh
+./scripts/format.sh fix
+make -j2
+git diff --check
+./scripts/test-cli-surface.sh
+make -C tests check TESTS=v6_descriptor_smoketest
+./scripts/static-checks.sh
+KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2
+```
+
+Current T54 boundary:
+
+- Production `kafs` no longer has successful `v6_inspection_mount` or
+  `v6_write_mount` branches in `kafs_main_open_runtime_context()`.
+- Legacy v6 tokens remain parsed only so production `kafs` can fail closed with
+  `kafs-v6` guidance.
+- `kafs-v6 --inspection-mount` and `kafs-v6 --controlled-write-mount` remain the
+  only successful format-v6 runtime admission entrypoints.
+- Production `kafs` still keeps `KAFS_V6_ADMISSION_HANDOFF` and plain-v6
+  offline-only preflight as diagnostic scaffolding.
+
+Validation result:
+
+- `lsp-cli` with `/usr/bin/clangd-18` returned no workspace symbol for
+  `kafs_main_v6_inspection_mount` or `kafs_main_v6_controlled_write_mount`.
+- `rg` returned no removed helper / validator references in `src/` or tests.
+- `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` completed with all 29 tests
+  passed.
+
 ## Original validation run
 
 Commands completed successfully:
@@ -699,16 +736,15 @@ block this closeout.
 ## Current next boundary
 
 The next boundary remains v6 runtime pureification after the shared FUSE
-runtime compile guard naming and production diagnostic scaffolding inventory.
-Do not broaden the v6 write surface as
-the next step.
+runtime compile guard naming and production diagnostic scaffolding retirement.
+Do not broaden the v6 write surface as the next step.
 
 Start from the pressure points recorded in
 [sd-card-wear-v6-runtime-entrypoint-plan.md](sd-card-wear-v6-runtime-entrypoint-plan.md):
 
-- retirement of legacy v6 diagnostic scaffolding in `kafs`, next targeting the
-  legacy-token successful branches that are already shielded by production
-  `main()` fail-closed guidance;
+- retirement of remaining v6 diagnostic scaffolding in `kafs`, next deciding
+  whether to keep `KAFS_V6_ADMISSION_HANDOFF` and plain-v6 offline-only
+  descriptor preflight;
 - further reduction of the remaining shared FUSE runner / operation
   implementation boundaries, especially where production `kafs` and `kafs-v6`
   still meet in `src/kafs.c`, without duplicating filesystem logic.

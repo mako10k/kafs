@@ -315,11 +315,19 @@ T53 retires the production `kafs` readonly smoke environment gate:
 - `KAFS_V6_ADMISSION_HANDOFF` remains a diagnostic-only offline gate, and
   production `kafs` still fails closed for legacy v6 tokens.
 
+T54 retires the production `kafs` legacy-token successful branches:
+
+- `kafs_main_open_runtime_context()` no longer has successful
+  `v6_inspection_mount` or `v6_write_mount` branches;
+- production `kafs` still recognizes those legacy tokens only to fail closed
+  with `kafs-v6` guidance;
+- successful format-v6 runtime admission remains owned by `kafs-v6`.
+
 The remaining pureification pressure points are:
 
-- retirement of legacy v6 diagnostic scaffolding in production `kafs`, next
-  focusing on the legacy-token successful branches that are already shielded by
-  production `main()` fail-closed guidance;
+- retirement of remaining diagnostic scaffolding in production `kafs`, next
+  deciding whether to keep `KAFS_V6_ADMISSION_HANDOFF` and plain-v6
+  offline-only descriptor preflight;
 - further reduction of the shared FUSE common-object adapter path,
   especially around shared operation implementations,
   without duplicating filesystem logic.
@@ -406,12 +414,16 @@ it actually covers. T52 inventories production `kafs` legacy v6 diagnostic
 scaffolding and records `KAFS_V6_READONLY_SMOKE` plus the fail-closed legacy
 successful branches as the next retirement candidates. T53 retires the
 `KAFS_V6_READONLY_SMOKE` env gate, leaving read-only v6 FUSE inspection owned by
-`kafs-v6 --inspection-mount`.
+`kafs-v6 --inspection-mount`. T54 retires the production `kafs` legacy-token
+successful branches, so legacy v6 tokens now exist only as fail-closed guidance
+inputs and no longer reach a production successful v6 runtime path.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).
 The immediate next implementation boundary remains v6 runtime pureification,
-not write-surface expansion.
+not write-surface expansion. The next production-v6 reduction is the remaining
+diagnostic surface: `KAFS_V6_ADMISSION_HANDOFF` and plain-v6 offline-only
+descriptor preflight.
 
 ## Smoke
 

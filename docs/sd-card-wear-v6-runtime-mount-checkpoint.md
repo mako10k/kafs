@@ -19,9 +19,11 @@ mount 対象へ進める前に、最初に許可する mount mode と安全境�
   segment health を確認した後、offline-only gate で exit 2 として fail closed する。
 - `KAFS_V6_ADMISSION_HANDOFF=1` は selected descriptor と shard maps を実 runtime context に保持できる
   ことを診断するが、FUSE mount と write admission は有効化しない。
-- `-o ro,v6_inspection_mount` は supported inspection mount として admitted descriptor を保持する。
+- `kafs-v6 --inspection-mount -o ro` は supported inspection mount として admitted descriptor を保持する。
   image は read-only open / read-only mapping / read lock / FUSE `ro` で扱い、journal replay と
   background mutation workers は未起動、mutation operations は `EROFS` で拒否する。
+- production `kafs -o v6_inspection_mount` / `-o v6_write_mount` は SDW-V6RT-T54 で
+  successful branch が退役し、`kafs-v6` guidance で fail closed する。
 - `KAFS_V6_READONLY_SMOKE=1` は SDW-V6RT-T53 で production `kafs` から退役した。
   read-only v6 FUSE inspection は `kafs-v6 --inspection-mount` が所有する。
 - Phase 5 migration validation では、v6 destination が `kafsdump --json` と
@@ -49,8 +51,8 @@ B は production write cutover の期限が明確で、下記の write 条件を
 
 Admission:
 
-- v6 inspection mount は `-o ro,v6_inspection_mount` が明示指定された場合だけ許可する。通常の v6 mount は当面
-  fail closed を維持する。
+- v6 inspection mount は `kafs-v6 --inspection-mount -o ro` が明示指定された場合だけ許可する。
+  通常の production `kafs` v6 mount は当面 fail closed を維持する。
 - image open、mmap、FUSE option、image lock が read-only として揃っている。
   最低条件は read-only file descriptor または同等の write 不可能性、`PROT_READ` mapping、
   read lock、FUSE `ro` option。
@@ -135,7 +137,7 @@ Operator boundary:
 
 1. 最初の実装対象を A / B / C のどれにするか。決定: A。
 2. A の場合、read-only mount を `-o ro` だけで許可するか、専用 option も要求するか。決定:
-   `-o ro,v6_inspection_mount` を要求する。
+   dedicated entrypoint `kafs-v6 --inspection-mount` と FUSE `-o ro` を要求する。
 3. B の write admission は現時点では未選択。write mount に進む前の mutation path / journal / repair /
    lock policy の dependency audit は
    [sd-card-wear-v6-write-mount-dependency-audit.md](sd-card-wear-v6-write-mount-dependency-audit.md)

@@ -11548,8 +11548,6 @@ typedef struct kafs_main_options
   kafs_bool_t v6_inspection_mount;
   kafs_bool_t v6_write_mount;
   kafs_bool_t mount_read_only_requested;
-  kafs_bool_t mount_read_only_seen;
-  kafs_bool_t mount_read_write_requested;
   kafs_bool_t show_help;
   kafs_bool_t enable_mt;
   char hotplug_uds_opt[sizeof(((struct sockaddr_un *)0)->sun_path)];
@@ -12053,13 +12051,9 @@ static void kafs_main_note_mount_mode_token(kafs_main_options_t *opts, const cha
   if (strcmp(tok, "ro") == 0)
   {
     opts->mount_read_only_requested = KAFS_TRUE;
-    opts->mount_read_only_seen = KAFS_TRUE;
   }
   else if (strcmp(tok, "rw") == 0)
-  {
     opts->mount_read_only_requested = KAFS_FALSE;
-    opts->mount_read_write_requested = KAFS_TRUE;
-  }
 }
 
 static int kafs_main_handle_v6_inspection_token(kafs_main_options_t *opts, const char *tok)
@@ -12644,64 +12638,6 @@ static int kafs_main_filter_mount_options(kafs_main_options_t *opts, char **argv
   return 0;
 }
 
-static int kafs_main_validate_v6_runtime_options(const kafs_main_options_t *opts)
-{
-  if (!opts->v6_inspection_mount && !opts->v6_write_mount)
-    return 0;
-
-  if (opts->v6_write_mount)
-  {
-    if (opts->v6_inspection_mount)
-    {
-      fprintf(stderr,
-              "v6 write mount does not allow v6_inspection_mount; inspection is read-only.\n");
-      return 2;
-    }
-    if (opts->mount_read_only_seen)
-    {
-      fprintf(stderr, "v6 controlled write mount does not allow -o ro; use explicit -o rw.\n");
-      return 2;
-    }
-    if (!opts->mount_read_write_requested)
-    {
-      fprintf(stderr, "v6 controlled write mount requires explicit -o rw.\n");
-      return 2;
-    }
-    if (opts->writeback_cache_enabled)
-    {
-      fprintf(stderr,
-              "v6 write mount requires no_writeback_cache; writeback_cache is unsupported.\n");
-      return 2;
-    }
-    if (opts->trim_on_free_enabled)
-    {
-      fprintf(stderr, "v6 write mount requires no_trim_on_free; runtime TRIM is unsupported.\n");
-      return 2;
-    }
-    if (opts->bg_dedup_scan_enabled)
-    {
-      fprintf(stderr,
-              "v6 write mount requires bg_dedup_scan=off; background dedup is unsupported.\n");
-      return 2;
-    }
-    return 0;
-  }
-
-  if (!opts->mount_read_only_requested)
-  {
-    fprintf(stderr, "v6 inspection mount requires -o ro and -o v6_inspection_mount.\n");
-    return 2;
-  }
-  if (opts->writeback_cache_explicit && opts->writeback_cache_enabled)
-  {
-    fprintf(stderr,
-            "v6 inspection mount does not allow writeback_cache; use no_writeback_cache or omit "
-            "writeback_cache.\n");
-    return 2;
-  }
-  return 0;
-}
-
 static int kafs_main_validate_pending_options(const kafs_main_options_t *opts)
 {
   if (opts->pending_ttl_soft_ms > 0 && opts->pending_ttl_hard_ms > 0 &&
@@ -12733,8 +12669,7 @@ static int kafs_main_validate_bg_dedup_options(const kafs_main_options_t *opts)
 static int kafs_main_validate_options(const kafs_main_options_t *opts)
 {
   if (kafs_main_validate_pending_options(opts) != 0 ||
-      kafs_main_validate_bg_dedup_options(opts) != 0 ||
-      kafs_main_validate_v6_runtime_options(opts) != 0)
+      kafs_main_validate_bg_dedup_options(opts) != 0)
     return 2;
   return 0;
 }
@@ -13115,14 +13050,6 @@ static int kafs_main_v6_runtime_admit_context(kafs_context_t *ctx, const kafs_ss
   return kafs_v6_admission_runtime_context(ctx, sbdisk, prot);
 }
 
-static int kafs_main_v6_validate_controlled_write_runtime(const kafs_context_t *ctx)
-{
-  int rc = kafs_ctx_v6_validate_runtime_views(ctx);
-  if (rc == 0)
-    rc = kafs_ctx_v6_validate_worker_policy(ctx);
-  return rc;
-}
-
 static int kafs_main_v6_admission_handoff(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk)
 {
   int rc = kafs_main_v6_runtime_admit_context(ctx, sbdisk, PROT_READ | PROT_WRITE);
@@ -13150,64 +13077,6 @@ static int kafs_main_v6_admission_handoff(kafs_context_t *ctx, const kafs_ssuper
   }
 
   kafs_ctx_unmap_image(ctx);
-  return rc;
-}
-
-static int kafs_main_v6_controlled_write_mount(kafs_context_t *ctx,
-                                               const kafs_ssuperblock_t *sbdisk,
-                                               kafs_inocnt_t *inocnt_out,
-                                               kafs_blkcnt_t *r_blkcnt_out)
-{
-  int rc = kafs_main_v6_runtime_admit_context(ctx, sbdisk, PROT_READ | PROT_WRITE);
-  if (rc == 0)
-  {
-    ctx->c_v6_controlled_write_enabled = 1u;
-    if (inocnt_out)
-      *inocnt_out = kafs_inocnt_stoh(sbdisk->s_inocnt);
-    if (r_blkcnt_out)
-      *r_blkcnt_out = kafs_blkcnt_stoh(sbdisk->s_r_blkcnt);
-    fprintf(stderr,
-            "format v6 controlled write mount: selected descriptor retained in write runtime "
-            "context; descriptor-backed runtime views active; legacy contiguous inode/bitmap "
-            "tables are not installed; %s; delayed/background mutations are disabled; FUSE write "
-            "surface is limited "
-            "to regular-file create/write/fsync/release.\n",
-            kafs_ctx_v6_worker_policy_summary());
-  }
-  else
-  {
-    char errbuf[128];
-    fprintf(stderr, "format v6 controlled write mount admission failed: %s.\n",
-            kafs_main_rc_text(rc, errbuf, sizeof(errbuf)));
-  }
-  return rc;
-}
-
-static int kafs_main_v6_inspection_mount(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk,
-                                         kafs_inocnt_t *inocnt_out, kafs_blkcnt_t *r_blkcnt_out)
-{
-  int rc = kafs_main_v6_runtime_admit_context(ctx, sbdisk, PROT_READ);
-  if (rc == 0)
-  {
-    ctx->c_runtime_read_only = 1u;
-    if (inocnt_out)
-      *inocnt_out = kafs_inocnt_stoh(sbdisk->s_inocnt);
-    if (r_blkcnt_out)
-      *r_blkcnt_out = kafs_blkcnt_stoh(sbdisk->s_r_blkcnt);
-    fprintf(stderr,
-            "format v6 inspection mount: selected descriptor retained in read-only "
-            "runtime context; descriptor-backed runtime views active; legacy contiguous "
-            "inode/bitmap tables are not installed; %s; delayed/background mutations are "
-            "disabled; FUSE mount is "
-            "inspection-only and write admission remains disabled.\n",
-            kafs_ctx_v6_worker_policy_summary());
-  }
-  else
-  {
-    char errbuf[128];
-    fprintf(stderr, "format v6 inspection mount admission failed: %s.\n",
-            kafs_main_rc_text(rc, errbuf, sizeof(errbuf)));
-  }
   return rc;
 }
 
@@ -13286,12 +13155,9 @@ static void kafs_main_lock_runtime_image(kafs_context_t *ctx, const char *image_
 
 static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *image_path,
                                            kafs_bool_t auto_migrate, kafs_bool_t migrate_yes,
-                                           kafs_bool_t v6_inspection_mount,
-                                           kafs_bool_t v6_write_mount,
                                            kafs_bool_t mount_read_only_requested)
 {
-  int open_flags = v6_inspection_mount ? O_RDONLY : O_RDWR;
-  ctx->c_fd = open(image_path, open_flags, 0666);
+  ctx->c_fd = open(image_path, O_RDWR, 0666);
   if (ctx->c_fd < 0)
   {
     perror("open image");
@@ -13315,49 +13181,10 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
   }
 
   uint32_t fmt_ver = kafs_sb_format_version_get(&sbdisk);
-  if (v6_inspection_mount && fmt_ver != KAFS_FORMAT_VERSION_V6)
-  {
-    fprintf(stderr, "v6 inspection mount applies only to format v6 images (found v%u).\n", fmt_ver);
-    exit(2);
-  }
-  if (v6_write_mount && fmt_ver != KAFS_FORMAT_VERSION_V6)
-  {
-    fprintf(stderr, "v6 write mount applies only to format v6 images (found v%u).\n", fmt_ver);
-    exit(2);
-  }
-
   kafs_inocnt_t inocnt = 0;
   kafs_blkcnt_t r_blkcnt = 0;
   if (fmt_ver == KAFS_FORMAT_VERSION_V6)
   {
-    if (v6_write_mount)
-    {
-      int rc = kafs_main_v6_controlled_write_mount(ctx, &sbdisk, &inocnt, &r_blkcnt);
-      if (rc != 0)
-        exit(2);
-      kafs_main_init_runtime_diag(ctx, image_path, inocnt);
-      kafs_main_init_runtime_journal(ctx, image_path, r_blkcnt);
-      rc = kafs_main_v6_validate_controlled_write_runtime(ctx);
-      if (rc != 0)
-      {
-        char errbuf[128];
-        fprintf(stderr,
-                "format v6 controlled write runtime policy failed after journal init: %s.\n",
-                kafs_main_rc_text(rc, errbuf, sizeof(errbuf)));
-        exit(2);
-      }
-      kafs_main_lock_runtime_image(ctx, image_path);
-      return;
-    }
-    if (v6_inspection_mount)
-    {
-      int rc = kafs_main_v6_inspection_mount(ctx, &sbdisk, &inocnt, &r_blkcnt);
-      if (rc != 0)
-        exit(2);
-      kafs_main_init_runtime_diag(ctx, image_path, inocnt);
-      kafs_main_lock_runtime_image(ctx, image_path);
-      return;
-    }
     if (kafs_main_v6_admission_handoff_enabled())
       (void)kafs_main_v6_admission_handoff(ctx, &sbdisk);
     else
@@ -13495,17 +13322,11 @@ int main(int argc, char **argv)
       hotplug_uds_opt[0] != '\0' ? hotplug_uds_opt : getenv("KAFS_HOTPLUG_UDS");
   const char *hotplug_back_bin =
       hotplug_back_bin_opt[0] != '\0' ? hotplug_back_bin_opt : getenv("KAFS_HOTPLUG_BACK_BIN");
-  if (opts.v6_write_mount && hotplug_uds && *hotplug_uds)
-  {
-    fprintf(stderr, "v6 write mount does not allow hotplug delegated write path.\n");
-    return 2;
-  }
   if (kafs_main_start_hotplug(&ctx, image_path, hotplug_uds, hotplug_back_bin, hotplug_uds_path,
                               sizeof(hotplug_uds_path)) != 0)
     return 2;
 
   kafs_main_open_runtime_context(&ctx, image_path, auto_migrate, migrate_yes,
-                                 opts.v6_inspection_mount, opts.v6_write_mount,
                                  opts.mount_read_only_requested);
   if (ctx.c_runtime_read_only)
   {

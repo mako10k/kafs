@@ -1938,6 +1938,45 @@
   - clone strict source gate は 35 clones / 345 duplicated lines / 0.91% で閾値内だった。
   - `make check` は all 29 tests passed で完了した。
 
+### SDW-V6RT-T54 retire production kafs legacy-token successful branches
+
+- 目的: production `main()` の fail-closed gate より後ろに残っていた legacy
+  `v6_inspection_mount` / `v6_write_mount` successful branch を削除し、successful
+  format-v6 runtime admission の所有を `kafs-v6` に一本化する。legacy token の認識と
+  `kafs-v6` guidance は互換案内として維持する。
+- 変更:
+  - `src/kafs.c` から `kafs_main_v6_inspection_mount()`、
+    `kafs_main_v6_controlled_write_mount()`、および
+    `kafs_main_open_runtime_context()` の legacy-token successful branch を削除する。
+  - production `kafs` の v6 token validation は fail-closed guidance に一本化し、
+    `kafs_main_open_runtime_context()` は plain-v6 preflight / offline-only と
+    `KAFS_V6_ADMISSION_HANDOFF` diagnostic だけを扱う。
+  - inventory / handoff / runtime plan docs を、legacy-token successful branch retired として更新する。
+- 完了条件:
+  - `rg "kafs_main_v6_(inspection|controlled_write)_mount|kafs_main_v6_validate_controlled_write_runtime" src tests`
+    が該当なしになる。
+  - `kafs -o v6_inspection_mount` と `kafs -o v6_write_mount` は引き続き `kafs-v6`
+    guidance で fail closed する。
+  - `kafs-v6 --inspection-mount` と `kafs-v6 --controlled-write-mount` の focused smoke は維持される。
+  - production `kafs` の plain-v6 offline-only preflight と `KAFS_V6_ADMISSION_HANDOFF`
+    diagnostic の扱いは変更しない。
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS している。
+- 実装結果:
+  - production `kafs` から legacy-token successful branch と専用 runtime helper を削除した。
+  - legacy token parser / fail-closed guidance は維持し、production `kafs` が successful
+    v6 runtime path を持たない状態にした。
+  - 次の production v6 diagnostic reduction candidate は `KAFS_V6_ADMISSION_HANDOFF` と
+    plain-v6 offline-only preflight の扱いに移った。
+- 検証:
+  - `lsp-cli --server clangd --server-cmd /usr/bin/clangd-18 --root . --format pretty ws-symbols`
+    は `kafs_main_v6_inspection_mount` / `kafs_main_v6_controlled_write_mount` を no result とした。
+  - `rg` は removed helper / validator が `src/` と tests に残っていないことを示した。
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+
 ---
 
 ## 最初に着手するチケット

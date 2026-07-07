@@ -1,7 +1,7 @@
 # KAFS format v6 production diagnostic scaffolding inventory
 
 Date: 2026-07-07
-Status: updated through SDW-V6RT-T53 readonly smoke env gate retirement
+Status: updated through SDW-V6RT-T54 legacy-token successful branch retirement
 
 ## Boundary
 
@@ -48,17 +48,23 @@ These surfaces are diagnostic scaffolding, not the target runtime contract:
 debug gate for a read-only smoke path; current operator-facing read-only
 admission and current test coverage use `kafs-v6 --inspection-mount`.
 
+## Retired By T54
+
+The legacy-token successful branches were removed from
+`kafs_main_open_runtime_context()`. Production `kafs` still recognizes legacy
+`v6_inspection_mount` and `v6_write_mount` tokens only so
+`kafs_legacy_v6_reject_if_requested()` can fail closed with `kafs-v6` guidance.
+It no longer has a successful v6 inspection or controlled-write branch behind
+that fail-closed gate.
+
 ## Retirement Candidates
 
 The safest next reductions are:
 
-1. Remove the legacy-token successful branches from
-   `kafs_main_open_runtime_context()`. The production `main()` path rejects
-   legacy `v6_inspection_mount` and `v6_write_mount` before opening the runtime
-   context, so the `kafs_main_v6_inspection_mount()` and
-   `kafs_main_v6_controlled_write_mount()` call sites now read as historical
-   leftovers.
-2. After the above, decide whether production `kafs` should keep descriptor
+1. Retire or explicitly quarantine `KAFS_V6_ADMISSION_HANDOFF` if the
+   descriptor-backed runtime-context diagnostic is no longer needed in
+   production `kafs`.
+2. Decide whether production `kafs` should keep descriptor
    preflight for plain v6 image mounts or reduce it to direct `kafs-v6`
    guidance. Removing that preflight would also remove production `kafs`'s
    dependency on `kafs_v6_admission.h`.
@@ -80,10 +86,9 @@ first if the goal is to shrink production's v6 surface.
 - `kafs_main_v6_admission_handoff_enabled()` and
   `kafs_main_v6_admission_handoff()` are each referenced only by their
   definition and the `KAFS_V6_ADMISSION_HANDOFF` branch.
-- `kafs_main_v6_inspection_mount()` and
-  `kafs_main_v6_controlled_write_mount()` are referenced only by their
-  definitions and the legacy-token branches in `kafs_main_open_runtime_context()`.
 
 `rg` found current test coverage for `KAFS_V6_ADMISSION_HANDOFF`. After T53,
 `rg KAFS_V6_READONLY_SMOKE src tests` returns no matches. The read-only FUSE
 smoke uses `kafs-v6 --inspection-mount`.
+After T54, `rg` finds no `kafs_main_v6_inspection_mount()` or
+`kafs_main_v6_controlled_write_mount()` symbol in `src/` or tests.

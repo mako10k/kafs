@@ -314,10 +314,15 @@ branches as the next retirement candidates.
 format-v6 FUSE inspection is now owned by `kafs-v6 --inspection-mount`; the
 remaining production diagnostic gate is `KAFS_V6_ADMISSION_HANDOFF`.
 
-The next slice should retire the fail-closed legacy-token successful branches
-or reduce the remaining common-object adapter path around shared FUSE operation
-implementations. Do not add another runtime executable and do not broaden the
-controlled-write surface.
+`SDW-V6RT-T54` retires the production `kafs` legacy-token successful branches.
+Legacy `v6_inspection_mount` / `v6_write_mount` tokens are still parsed only so
+production `kafs` can fail closed with `kafs-v6` guidance; they no longer reach
+a production successful v6 runtime path.
+
+The next slice should decide whether to keep `KAFS_V6_ADMISSION_HANDOFF` and
+plain-v6 offline-only descriptor preflight, or reduce the remaining
+common-object adapter path around shared FUSE operation implementations. Do not
+add another runtime executable and do not broaden the controlled-write surface.
 
 ## Validation Standard
 
