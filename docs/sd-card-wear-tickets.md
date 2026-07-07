@@ -2055,6 +2055,44 @@
     `make -C tests check TESTS=v6_descriptor_validation`、`make -C tests check TESTS=kafsresize`、
     `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
 
+### SDW-V6RT-T57 retire production kafs legacy v6 token guidance
+
+- 目的: production `kafs` に残る legacy v6 token compatibility guidance を削除し、
+  production `kafs` の v6 image path を direct `kafs-v6` guidance だけにする。legacy
+  token rejection は dedicated entrypoint である `kafs-v6` の policy として残す。
+- 変更:
+  - `src/kafs.c` から `kafs_legacy_v6_failclosed.h` include、legacy v6 request
+    flags、`kafs_main_record_legacy_v6_request()`、`kafs_main_handle_v6_inspection_token()`、
+    `kafs_main_handle_v6_write_token()`、`kafs_legacy_v6_reject_if_requested()` call を削除する。
+  - `src/kafs_legacy_v6_failclosed.h` を削除し、`src/Makefile.am` の header list から外す。
+  - `kafs --help`、`man/kafs.1`、`completions/kafs` から production legacy v6 tokens を削除する。
+  - `v6_descriptor_smoketest` は production `kafs -o v6_inspection_mount` /
+    `-o v6_write_mount` が legacy-specific message ではなく direct `kafs-v6` guidance で
+    fail closed することを確認する。
+- 完了条件:
+  - `rg kafs_legacy_v6 src/kafs.c src/Makefile.am src/kafs_legacy_v6_failclosed.h` が
+    deleted file 以外に該当しない。
+  - `rg 'v6_inspection_mount|v6_write_mount' src/kafs.c man/kafs.1 completions/kafs` が
+    no match になる。
+  - `kafs-v6` 側の legacy token rejection は維持される。
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS している。
+- 実装結果:
+  - `src/kafs.c` から legacy v6 token 専用の request flags、token handlers、fail-closed
+    include/call を削除した。
+  - `src/kafs_legacy_v6_failclosed.h` を削除し、`src/Makefile.am` の header list から外した。
+  - `kafs --help`、`man/kafs.1`、`completions/kafs` から production legacy v6 tokens を削除した。
+  - `v6_descriptor_smoketest` は production `kafs -o v6_inspection_mount` /
+    `-o v6_write_mount` が plain v6 image と同じ direct `kafs-v6` guidance で
+    fail closed することを確認する。
+- 検証:
+  - `rg` は `src/kafs.c`、`src/Makefile.am`、`man/kafs.1`、`completions/kafs` から
+    `kafs_legacy_v6` と production legacy v6 tokens が消えたことを示した。
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+
 ---
 
 ## 最初に着手するチケット

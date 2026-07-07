@@ -33,9 +33,10 @@ kafs-v6 --controlled-write-mount <mountpoint> -o \
 ```
 
 Normal v6 mount attempts through production `kafs` still do not become implicit
-runtime admission. Legacy `kafs -o v6_inspection_mount` and
-`kafs -o v6_write_mount` fail closed with `kafs-v6` guidance. Controlled write
-admission is not a production default cutover path.
+runtime admission. Production `kafs` no longer has dedicated legacy
+`v6_inspection_mount` / `v6_write_mount` compatibility handling; v6 runtime
+admission is owned by `kafs-v6`. Controlled write admission is not a production
+default cutover path.
 
 Initial controlled write scope is intentionally narrow:
 
@@ -771,6 +772,38 @@ Validation result:
 - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` completed with all 29 tests
   passed.
 
+## 2026-07-07 T57 validation
+
+Commands completed successfully:
+
+```sh
+./scripts/format.sh fix
+make -j2
+git diff --check
+./scripts/test-cli-surface.sh
+make -C tests check TESTS=v6_descriptor_smoketest
+./scripts/static-checks.sh
+KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2
+```
+
+Validation result:
+
+- `rg` found no `kafs_legacy_v6`, `v6_inspection_mount`,
+  `v6_write_mount`, `--v6-inspection-mount`, or `--v6-write-mount` matches in
+  production `src/kafs.c`, `src/Makefile.am`, `man/kafs.1`, or
+  `completions/kafs`.
+- `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` passed all 29 tests.
+
+Current T57 boundary:
+
+- Production `kafs` no longer includes `kafs_legacy_v6_failclosed.h`.
+- Production `kafs` no longer records or rejects `v6_inspection_mount` /
+  `v6_write_mount` as dedicated legacy requests.
+- `kafs --help`, `man/kafs.1`, and `completions/kafs` no longer advertise
+  production legacy v6 tokens.
+- `kafs-v6` remains the owner of v6 runtime admission and still rejects legacy
+  v6 mount tokens on the dedicated entrypoint.
+
 ## Original validation run
 
 Commands completed successfully:
@@ -815,8 +848,6 @@ Do not broaden the v6 write surface as the next step.
 Start from the pressure points recorded in
 [sd-card-wear-v6-runtime-entrypoint-plan.md](sd-card-wear-v6-runtime-entrypoint-plan.md):
 
-- retirement of remaining legacy v6 token compatibility guidance in `kafs`
-  when operator compatibility no longer depends on it;
 - reduction of the shared FUSE common-object adapter path around shared
   operation implementations;
 - further reduction of the remaining shared FUSE runner / operation

@@ -22,8 +22,9 @@ mount 対象へ進める前に、最初に許可する mount mode と安全境�
 - `kafs-v6 --inspection-mount -o ro` は supported inspection mount として admitted descriptor を保持する。
   image は read-only open / read-only mapping / read lock / FUSE `ro` で扱い、journal replay と
   background mutation workers は未起動、mutation operations は `EROFS` で拒否する。
-- production `kafs -o v6_inspection_mount` / `-o v6_write_mount` は SDW-V6RT-T54 で
-  successful branch が退役し、`kafs-v6` guidance で fail closed する。
+- production `kafs -o v6_inspection_mount` / `-o v6_write_mount` の dedicated
+  compatibility guidance は SDW-V6RT-T57 で退役した。v6 image は通常の direct
+  `kafs-v6` guidance で fail closed する。
 - `KAFS_V6_READONLY_SMOKE=1` は SDW-V6RT-T53 で production `kafs` から退役した。
   read-only v6 FUSE inspection は `kafs-v6 --inspection-mount` が所有する。
 - Phase 5 migration validation では、v6 destination が `kafsdump --json` と

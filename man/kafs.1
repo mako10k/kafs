@@ -67,18 +67,6 @@ Deprecated alias of
 .TP
 .B --yes
 Skip interactive confirmation for migration.
-.TP
-.B --v6-inspection-mount
-Legacy format v6 inspection token.  The dedicated
-.BR kafs-v6 (8)
-entrypoint owns format v6 runtime admission.
-.TP
-.B --v6-write-mount
-Legacy format v6 controlled write token.  Use
-.BR kafs-v6 (8)
-with
-.B --controlled-write-mount
-for v6 write admission.
 .SS Cache And TRIM
 .TP
 .BR --writeback-cache
@@ -151,29 +139,6 @@ Defaults are unchanged unless this profile is explicitly selected.
 .BR -o " " sd-card-profile= "<none|conservative>"
 Alias for
 .BR sd_card_profile .
-.TP
-.BR -o " " v6_inspection_mount
-Legacy format v6 inspection token.  Use
-.BR kafs-v6 (8)
-with
-.B --inspection-mount
-instead.
-.TP
-.BR -o " " v6-inspection-mount
-Alias for
-.BR v6_inspection_mount .
-.TP
-.BR -o " " v6_write_mount
-Legacy format v6 controlled write token.  Use
-.BR kafs-v6 (8)
-with
-.B --controlled-write-mount
-and
-.BR -o " " rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full .
-.TP
-.BR -o " " v6-write-mount
-Alias for
-.BR v6_write_mount .
 .SS Threading And Worker Tuning
 .TP
 .BR "-o multi_thread" "[=N]"

@@ -12,7 +12,6 @@
 #include "kafs_rpc.h"
 #include "kafs_core.h"
 #include "kafs_crash_diag.h"
-#include "kafs_legacy_v6_failclosed.h"
 #include "kafs_shared_fuse_runner.h"
 #include "kafs_tailmeta.h"
 #include "kafs_v6_fuse_init_policy.h"
@@ -11147,8 +11146,6 @@ static void usage(const char *prog)
           "    --trim-on-free                    Enable TRIM on freed data blocks\n"
           "    --no-trim-on-free                 Disable TRIM on freed data blocks\n"
           "    --sd-card-profile[=conservative]  Enable low metadata-churn profile\n"
-          "    --v6-inspection-mount             Legacy v6 token; use kafs-v6\n"
-          "    --v6-write-mount                  Legacy v6 token; use kafs-v6\n"
           "    -o writeback_cache                Enable writeback cache (FUSE -o)\n"
           "    -o no_writeback_cache             Disable writeback cache (FUSE -o)\n"
           "    -o trim_on_free | trim-on-free    Enable TRIM (FUSE -o)\n"
@@ -11156,8 +11153,6 @@ static void usage(const char *prog)
           "                                      Disable TRIM (FUSE -o)\n"
           "    -o sd_card_profile=<none|conservative>\n"
           "                                      Apply SD-card profile settings (opt-in)\n"
-          "    -o v6_inspection_mount            Legacy v6 token; use kafs-v6\n"
-          "    -o v6_write_mount                 Legacy v6 token; use kafs-v6\n"
           "\n"
           "  [Threading]\n"
           "    -o multi_thread[=N]               Enable MT mode (alias: multi-thread, "
@@ -11544,8 +11539,6 @@ typedef struct kafs_main_options
   kafs_bool_t writeback_cache_explicit;
   kafs_bool_t trim_on_free_enabled;
   kafs_bool_t trim_on_free_explicit;
-  kafs_bool_t v6_inspection_mount;
-  kafs_bool_t v6_write_mount;
   kafs_bool_t mount_read_only_requested;
   kafs_bool_t show_help;
   kafs_bool_t enable_mt;
@@ -11813,22 +11806,6 @@ static int kafs_main_copy_cli_string_option(char *dst, size_t dst_size, const ch
   return 0;
 }
 
-static void kafs_main_record_legacy_v6_request(kafs_main_options_t *opts,
-                                               kafs_legacy_v6_request_t request)
-{
-  switch (request)
-  {
-  case KAFS_LEGACY_V6_REQUEST_INSPECTION:
-    opts->v6_inspection_mount = KAFS_TRUE;
-    break;
-  case KAFS_LEGACY_V6_REQUEST_CONTROLLED_WRITE:
-    opts->v6_write_mount = KAFS_TRUE;
-    break;
-  case KAFS_LEGACY_V6_REQUEST_NONE:
-    break;
-  }
-}
-
 static int kafs_main_handle_flag_arg(kafs_main_options_t *opts, const char *arg)
 {
   if (kafs_cli_is_help_arg(arg))
@@ -11878,12 +11855,6 @@ static int kafs_main_handle_flag_arg(kafs_main_options_t *opts, const char *arg)
   if (strcmp(arg, "--sd-card-profile") == 0)
   {
     kafs_main_apply_sd_card_profile(opts, KAFS_SD_CARD_PROFILE_CONSERVATIVE);
-    return 1;
-  }
-  kafs_legacy_v6_request_t legacy_v6 = KAFS_LEGACY_V6_REQUEST_NONE;
-  if (kafs_legacy_v6_flag_request(arg, &legacy_v6))
-  {
-    kafs_main_record_legacy_v6_request(opts, legacy_v6);
     return 1;
   }
   if (strncmp(arg, "--sd-card-profile=", 18) == 0)
@@ -12053,30 +12024,6 @@ static void kafs_main_note_mount_mode_token(kafs_main_options_t *opts, const cha
   }
   else if (strcmp(tok, "rw") == 0)
     opts->mount_read_only_requested = KAFS_FALSE;
-}
-
-static int kafs_main_handle_v6_inspection_token(kafs_main_options_t *opts, const char *tok)
-{
-  kafs_legacy_v6_request_t legacy_v6 = KAFS_LEGACY_V6_REQUEST_NONE;
-  if (kafs_legacy_v6_option_request(tok, &legacy_v6) &&
-      legacy_v6 == KAFS_LEGACY_V6_REQUEST_INSPECTION)
-  {
-    kafs_main_record_legacy_v6_request(opts, legacy_v6);
-    return 1;
-  }
-  return 0;
-}
-
-static int kafs_main_handle_v6_write_token(kafs_main_options_t *opts, const char *tok)
-{
-  kafs_legacy_v6_request_t legacy_v6 = KAFS_LEGACY_V6_REQUEST_NONE;
-  if (kafs_legacy_v6_option_request(tok, &legacy_v6) &&
-      legacy_v6 == KAFS_LEGACY_V6_REQUEST_CONTROLLED_WRITE)
-  {
-    kafs_main_record_legacy_v6_request(opts, legacy_v6);
-    return 1;
-  }
-  return 0;
 }
 
 static int kafs_main_handle_trim_on_free_token(kafs_main_options_t *opts, const char *tok)
@@ -12465,15 +12412,7 @@ static void kafs_main_append_filtered_token(char *filtered, size_t *used, const 
 
 static int kafs_main_handle_mount_token(kafs_main_options_t *opts, const char *tok, int *want_mt)
 {
-  int rc = kafs_main_handle_v6_inspection_token(opts, tok);
-  if (rc != 0)
-    return rc;
-
-  rc = kafs_main_handle_v6_write_token(opts, tok);
-  if (rc != 0)
-    return rc;
-
-  rc = kafs_main_handle_sd_card_profile_token(opts, tok);
+  int rc = kafs_main_handle_sd_card_profile_token(opts, tok);
   if (rc != 0)
     return rc;
 
@@ -13208,9 +13147,6 @@ int main(int argc, char **argv)
   }
 
   if (kafs_main_filter_mount_options(&opts, argv_clean, &argc_clean) != 0)
-    return 2;
-  if (kafs_legacy_v6_reject_if_requested(opts.v6_inspection_mount, opts.v6_write_mount, stderr) !=
-      0)
     return 2;
   if (kafs_main_validate_options(&opts) != 0)
     return 2;

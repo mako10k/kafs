@@ -31,7 +31,7 @@ that users can run is a product surface and needs its own CLI policy.
 
 | Target | Current shared sources | v6-specific sources | Boundary |
 | --- | --- | --- | --- |
-| `kafs` | `kafs_hrl.c`, `kafs_locks.c`, `kafs_journal.c`, `kafs_rpc.c` | none in `Makefile.am` | v4/v5 production runtime; legacy v6 inspection/write tokens fail closed with `kafs-v6` guidance |
+| `kafs` | `kafs_hrl.c`, `kafs_locks.c`, `kafs_journal.c`, `kafs_rpc.c` | none in `Makefile.am` | v4/v5 production runtime; v6 images fail closed with direct `kafs-v6` guidance |
 | `kafs-v6` | `kafs.c`, `kafs_hrl.c`, `kafs_locks.c`, `kafs_journal.c`, `kafs_rpc.c` through `KAFS_SHARED_FUSE_RUNNER_EXPORT` | `kafs_v6.c`, `kafs_v6_runtime.c`, `kafs_v6_entrypoint_adapter.c` | v6 CLI/admission owner; read-only inspection and controlled-write admission are active |
 | `kafsctl` / `kafs-back` | selected runtime support sources through `kafs.c` and RPC/HRL/journal helpers | none in `Makefile.am` | must not gain `kafs_v6_runtime.c` implicitly |
 | offline tools | mostly standalone source files plus header-only v6 layout helpers | header-only v6 descriptor logic | offline/staging tools, not runtime admission owners |
@@ -50,7 +50,6 @@ live in `kafs.c`; it is not a v5/v6 compatibility layer.
 | Source | Artifact class | Links into | Owns | Must not own |
 | --- | --- | --- | --- | --- |
 | `src/kafs.c` | production runtime plus temporary shared FUSE implementation | `kafs`, `kafs-v6`, `kafsctl`, `kafs-back` with per-target guards | v4/v5 runtime, production CLI/mount flow, shared FUSE operations, shared FUSE runner/cleanup wrapper | v6 admission policy, v6 mount-main preparation, v6 runtime open/admit/init ownership, legacy v6 guidance wording, v6 write-surface expansion |
-| `src/kafs_legacy_v6_failclosed.h` | production legacy v6 fail-closed helper | production `kafs` users of legacy tokens | legacy v6 token classification and `kafs-v6` guidance for production fail-closed paths | successful v6 runtime admission, v6 mount-main orchestration, shared FUSE operation implementation, installed ABI |
 | `src/kafs_v6.c` | v6 product entrypoint | `kafs-v6` only | `kafs-v6` CLI shape, mode selection, descriptor preflight handoff, admission signal | shared FUSE operation implementation, production `kafs` behavior |
 | `src/kafs_v6_runtime.c` | v6-only runtime policy/helper | `kafs-v6` only | v6 request reporting, image open, descriptor-backed runtime admission, service init | production `kafs` link surface, generic v4/v5 runtime context setup |
 | `src/kafs_v6_mount_options.[ch]` | v6-only mount option policy helper | `kafs-v6` only | v6-owned `-o` token vocabulary, runtime request token recording, FUSE passthrough filtering, `multi_thread` / `max_threads` handoff state | mount-main orchestration, context open/admit/init, shared FUSE operation implementation, installed ABI |
@@ -326,10 +325,13 @@ descriptor preflight as its remaining v6 diagnostic surface.
 Production `kafs` now rejects v6 images directly with `kafs-v6` guidance and no
 longer includes `kafs_v6_admission.h`.
 
+`SDW-V6RT-T57` retires production legacy v6 token compatibility guidance.
+Production `kafs` no longer includes `kafs_legacy_v6_failclosed.h` and no
+longer advertises legacy v6 tokens in help, man page, or shell completion.
+
 The next slice should reduce the remaining common-object adapter path around
-shared FUSE operation implementations, or retire legacy v6 token compatibility
-guidance when operators no longer need it. Do not add another runtime executable
-and do not broaden the controlled-write surface.
+shared FUSE operation implementations. Do not add another runtime executable and
+do not broaden the controlled-write surface.
 
 ## Validation Standard
 

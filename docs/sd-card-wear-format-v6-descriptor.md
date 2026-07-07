@@ -388,10 +388,11 @@ and permits FUSE access only for inspection. The image is opened without write
 access, mapped read-only, locked with a read lock, and passed to FUSE with `ro`.
 Journal replay and background mutation workers are not started,
 write/copy/metadata mutation operations return `EROFS`, and v6 write admission
-remains disabled. Production `kafs -o v6_inspection_mount` is a legacy token and
-fails closed with `kafs-v6` guidance. The older `KAFS_V6_READONLY_SMOKE=1`
-production-`kafs` debug gate was retired by SDW-V6RT-T53, and the legacy-token
-successful production branches were retired by SDW-V6RT-T54.
+remains disabled. Production `kafs -o v6_inspection_mount` compatibility
+guidance was retired by SDW-V6RT-T57; use `kafs-v6 --inspection-mount` instead.
+The older `KAFS_V6_READONLY_SMOKE=1` production-`kafs` debug gate was retired by
+SDW-V6RT-T53, and the legacy-token successful production branches were retired
+by SDW-V6RT-T54.
 Current inspection coverage injects only inline metadata/data into a v6 fixture and verifies root and
 nested `readdir` / `lookup` / `getattr`, small-file `read`, symlink `readlink`, mutation rejection,
 and no backing image content change across mount/unmount.

@@ -1359,6 +1359,19 @@ static int expect_v6_write_mount_rejected(const char *label, char *const argv[],
   return 0;
 }
 
+static int expect_production_kafs_v6_direct_guidance(const char *label, const char *out)
+{
+  if (!strstr(out, "unsupported format version: v6 runtime admission is owned by kafs-v6") ||
+      !strstr(out, "kafs-v6 --inspection-mount") ||
+      !strstr(out, "kafs-v6 --controlled-write-mount") ||
+      strstr(out, "legacy v6") || strstr(out, "admission preflight"))
+  {
+    tlogf("%s missing direct kafs-v6 guidance: %s", label, out);
+    return 1;
+  }
+  return 0;
+}
+
 static int check_v6_write_mount_fail_closed(const char *img, char *out, size_t out_sz)
 {
   char *missing_rw_argv[] = {
@@ -1464,9 +1477,12 @@ static int check_v6_write_mount_fail_closed(const char *img, char *out, size_t o
               "fsync_policy=full",
       NULL,
   };
-  if (expect_v6_write_mount_rejected("legacy kafs v6 write mount", legacy_kafs_argv,
-                                     "legacy v6 controlled write mount moved to kafs-v6", out,
-                                     out_sz) != 0)
+  if (run_cmd_capture(legacy_kafs_argv, 2, out, out_sz) != 0)
+  {
+    tlogf("production kafs v6 write-token mount did not fail as expected: %s", out);
+    return 1;
+  }
+  if (expect_production_kafs_v6_direct_guidance("production kafs v6 write-token mount", out) != 0)
     return 1;
 
   return 0;
@@ -1645,11 +1661,9 @@ int main(void)
     tlogf("v6 inspection mount without ro did not fail as expected: %s", out);
     return 1;
   }
-  if (!strstr(out, "legacy v6 inspection mount moved to kafs-v6"))
-  {
-    tlogf("legacy kafs v6 inspection mount missing kafs-v6 guidance: %s", out);
+  if (expect_production_kafs_v6_direct_guidance("production kafs v6 inspection-token mount",
+                                                out) != 0)
     return 1;
-  }
 
   char *inspection_writeback_argv[] = {
       (char *)kafs_test_kafs_bin(), (char *)img, (char *)"mnt", (char *)"-o",
@@ -1659,12 +1673,9 @@ int main(void)
     tlogf("v6 inspection mount with writeback_cache did not fail as expected: %s", out);
     return 1;
   }
-  if (!strstr(out, "legacy v6 inspection mount moved to kafs-v6"))
-  {
-    tlogf("legacy kafs v6 inspection mount with writeback_cache missing kafs-v6 guidance: %s",
-          out);
+  if (expect_production_kafs_v6_direct_guidance(
+          "production kafs v6 inspection-token writeback mount", out) != 0)
     return 1;
-  }
 
   if (check_v6_write_mount_fail_closed(img, out, sizeof(out)) != 0)
     return 1;

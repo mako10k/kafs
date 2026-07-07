@@ -105,7 +105,7 @@ Do not mount a v6 descriptor destination as a production write target in this
 phase. For optional inspection, use the explicit inspection mount:
 
 ```sh
-./kafs --image /var/lib/kafs/destination.img /mnt/kafs-v6-inspect -f -o ro,v6_inspection_mount
+./kafs-v6 --image /var/lib/kafs/destination.img --inspection-mount /mnt/kafs-v6-inspect -f -o ro
 ```
 
 This path is for inspection only. It keeps the image read-only, rejects
@@ -177,8 +177,8 @@ For v6 descriptor destinations, do not perform production cutover based on the
 experimental controlled write smoke alone. Production cutover still needs a
 separately scoped acceptance gate for real workload copy, rollback, and
 operations. The current safe endpoint is an offline-validated staged image,
-optionally inspected through `-o ro,v6_inspection_mount` and exercised by the
-controlled smoke helper.
+optionally inspected through `kafs-v6 --inspection-mount -o ro` and exercised by
+the controlled smoke helper.
 
 ## Controlled v6 Write Opt-In Boundary
 

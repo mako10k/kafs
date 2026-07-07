@@ -12,8 +12,6 @@ kafs_SOURCES = kafs.c kafs_hrl.c kafs_locks.c kafs_journal.c kafs_rpc.c
 
 # Runtime source ownership:
 # - kafs is the production v4/v5 runtime and must not link kafs_v6_runtime.c.
-# - kafs_legacy_v6_failclosed.h is the production kafs owner of legacy v6 token
-#   rejection and kafs-v6 guidance.
 # - kafs-v6 is the dedicated v6 runtime entrypoint. It temporarily links
 #   kafs.c with KAFS_SHARED_FUSE_RUNNER_EXPORT to reuse shared FUSE operations
 #   while v6 admission/open/init policy stays in v6-owned sources.
@@ -74,7 +72,7 @@ kafs_back_LDADD = $(KAFS_LIBS)
 
 noinst_HEADERS = kafs_block.h kafs_config.h kafs_context.h kafs_dirent.h kafs_inode.h \
 	kafs_meta_region.h kafs_profile.h kafs_superblock.h kafs.h kafs_ioctl.h kafs_journal.h \
-	kafs_rpc.h kafs_core.h kafs_legacy_v6_failclosed.h kafs_shared_fuse_runner.h \
+	kafs_rpc.h kafs_core.h kafs_shared_fuse_runner.h \
 	kafs_v6_admission.h kafs_v6_fuse_init_policy.h kafs_v6_fuse_policy.h \
 	kafs_v6_layout.h kafs_v6_entrypoint_adapter.h kafs_v6_mount_options.h \
 	kafs_v6_runtime.h

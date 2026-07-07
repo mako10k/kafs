@@ -1,16 +1,15 @@
 # KAFS format v6 runtime entrypoint plan
 
 Date: 2026-07-07
-Status: production plain-v6 descriptor preflight retired
+Status: production legacy v6 token guidance retired
 
 ## Boundary
 
 The dedicated format v6 runtime entrypoint is `kafs-v6`.
 
-`kafs` remains the production runtime entrypoint for v4/v5 images. Legacy v6
-inspection and controlled-write tokens in `kafs` now fail closed with
-`kafs-v6` guidance. New v6 runtime admission and write-surface expansion must
-move behind `kafs-v6`.
+`kafs` remains the production runtime entrypoint for v4/v5 images. It no longer
+special-cases legacy v6 inspection or controlled-write tokens; v6 runtime
+admission and write-surface expansion must move behind `kafs-v6`.
 
 Until v6 production cutover, v6 has no backward compatibility promise. The
 format and feature set may change drastically when the pure v6 target requires
@@ -109,9 +108,9 @@ while preserving the production `kafs` link surface:
   state, and admission messages;
 - `kafs_v6_runtime_init_mount_services()` now owns `kafs-v6` diag/journal
   service setup and post-init invariant revalidation;
-- production `kafs` still does not link `kafs_v6_runtime.c`; its legacy v6
-  diagnostic scaffolding uses the shared context helpers without becoming a
-  successful v6 runtime entrypoint.
+- production `kafs` still does not link `kafs_v6_runtime.c`; its then-current
+  legacy v6 diagnostic scaffolding used the shared context helpers without
+  becoming a successful v6 runtime entrypoint.
 
 T32 moved the entrypoint request policy reporter into the v6 runtime helper:
 
@@ -123,8 +122,8 @@ T32 moved the entrypoint request policy reporter into the v6 runtime helper:
 - the adapter builds a `kafs_v6_runtime_request_t` from filtered mount options
   and no longer carries ad hoc inspection / controlled-write option policy
   checks;
-- production `kafs` keeps its legacy v6 validation and fail-closed guidance
-  local to `kafs.c`.
+- production `kafs` kept its legacy v6 validation and fail-closed guidance
+  local to `kafs.c` until that compatibility surface was retired by T57.
 
 T33 narrows the remaining common-object adapter surface without changing FUSE
 operation semantics:
@@ -339,10 +338,16 @@ T56 retires the remaining production plain-v6 descriptor preflight:
 - descriptor validation and successful runtime admission remain owned by
   `fsck.kafs`, offline validation helpers, and `kafs-v6`.
 
+T57 retires production legacy v6 token compatibility guidance:
+
+- production `kafs` no longer includes `kafs_legacy_v6_failclosed.h`;
+- production `kafs` no longer records or rejects `v6_inspection_mount` /
+  `v6_write_mount` as dedicated legacy requests;
+- production `kafs` help, man page, and shell completion no longer advertise
+  legacy v6 tokens.
+
 The remaining pureification pressure points are:
 
-- retirement of legacy v6 token compatibility guidance in production `kafs`
-  when operator compatibility no longer depends on it;
 - further reduction of the shared FUSE common-object adapter path,
   especially around shared operation implementations,
   without duplicating filesystem logic.
@@ -435,14 +440,15 @@ inputs and no longer reach a production successful v6 runtime path. T55 retires
 the production `KAFS_V6_ADMISSION_HANDOFF` env gate, leaving only plain-v6
 admission preflight / offline-only diagnostics. T56 retires that remaining
 production preflight, so production `kafs` rejects v6 images directly with
-`kafs-v6` guidance and no longer includes `kafs_v6_admission.h`.
+`kafs-v6` guidance and no longer includes `kafs_v6_admission.h`. T57 retires
+production legacy v6 token compatibility guidance, so `kafs.c` no longer owns
+legacy v6 token vocabulary or a dedicated legacy-v6 reject gate.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).
 The immediate next implementation boundary remains v6 runtime pureification,
-not write-surface expansion. The next production-v6 reduction is the remaining
-legacy token compatibility guidance; the larger remaining implementation
-boundary is the shared FUSE common-object adapter path.
+not write-surface expansion. The next remaining implementation boundary is the
+shared FUSE common-object adapter path.
 
 ## Smoke
 
