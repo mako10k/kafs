@@ -301,10 +301,19 @@ rather than v6 admission or a v5/v6 compatibility layer.
 `kafs` main and the exported `kafs_shared_fuse_run()` handoff still share the
 same `fuse_main()` / cleanup path; only the local ownership wording changes.
 
-The next slice should reduce the remaining common-object adapter path around
-shared FUSE operation implementations, or retire legacy `kafs` v6 diagnostic
-scaffolding after operator workflows no longer depend on it. Do not add another
-runtime executable and do not broaden the controlled-write surface.
+`SDW-V6RT-T52` inventories production `kafs` legacy v6 diagnostic scaffolding
+in
+[sd-card-wear-v6-production-diagnostic-scaffolding-inventory.md](sd-card-wear-v6-production-diagnostic-scaffolding-inventory.md).
+The inventory keeps legacy token fail-closed guidance separate from successful
+`kafs-v6` admission, records `KAFS_V6_ADMISSION_HANDOFF` and
+`KAFS_V6_READONLY_SMOKE` as diagnostic-only gates, and identifies
+`KAFS_V6_READONLY_SMOKE` plus the already fail-closed legacy-token successful
+branches as the next retirement candidates.
+
+The next slice should retire those production diagnostic leftovers or reduce
+the remaining common-object adapter path around shared FUSE operation
+implementations. Do not add another runtime executable and do not broaden the
+controlled-write surface.
 
 ## Validation Standard
 

@@ -1871,6 +1871,41 @@
   - clone strict source gate は 35 clones / 345 duplicated lines / 0.91% で閾値内だった。
   - `make check` は all 29 tests passed で完了した。
 
+### SDW-V6RT-T52 production kafs legacy v6 diagnostic scaffolding inventory
+
+- 目的: production `kafs` に残る format-v6 diagnostic/admission scaffolding を棚卸しし、
+  `kafs-v6` が所有する successful v6 runtime admission と、production `kafs` が保持する
+  legacy fail-closed / diagnostic guidance を混同しないようにする。これは inventory slice であり、
+  runtime admission ownership や write surface は変更しない。
+- 変更:
+  - `docs/sd-card-wear-v6-production-diagnostic-scaffolding-inventory.md` を追加し、
+    retain / diagnostic-only / retirement-candidate の 3 分類で production `kafs` の v6 surface を記録する。
+  - `KAFS_V6_ADMISSION_HANDOFF` は現行 test coverage がある diagnostic gate として残す。
+  - `KAFS_V6_READONLY_SMOKE` は現行 operator/test path が `kafs-v6 --inspection-mount` へ移っているため、
+    次の retirement candidate として記録する。
+  - legacy `v6_inspection_mount` / `v6_write_mount` の successful branch は production `main()` の
+    fail-closed gate で遮断されている historical leftover として記録し、今回の slice では削除しない。
+- 完了条件:
+  - `lsp-cli` references と `rg` で production `kafs` 側の v6 diagnostic helper call scope を確認する。
+  - `kafs-v6` の successful v6 admission ownership と production `kafs` の legacy fail-closed guidance が
+    docs 上で分かれている。
+  - controlled-write write surface は既存の regular-file create/write/fsync/release 範囲から広げない。
+  - `git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest` が PASS している。
+- 実装結果:
+  - production `kafs` の retain surface は `kafs_legacy_v6_failclosed.h` と plain-v6 offline-only
+    preflight/guidance に限定して記録した。
+  - diagnostic-only surface は `KAFS_V6_ADMISSION_HANDOFF` と `KAFS_V6_READONLY_SMOKE` に分け、
+    latter を次の retirement candidate とした。
+  - legacy-token successful branches は、production `main()` の reject gate より後ろに残る
+    unreachable/historical branch として次の reduction candidate にした。
+- 検証:
+  - `lsp-cli` references は production v6 diagnostic helpers が定義と単一 call site に閉じていることを返した。
+  - `rg` は `KAFS_V6_ADMISSION_HANDOFF` の test coverage と、`KAFS_V6_READONLY_SMOKE` env を直接設定する
+    test がないことを示した。
+  - `git diff --check`、`./scripts/test-cli-surface.sh`、
+    `make -C tests check TESTS=v6_descriptor_smoketest` が成功した。
+
 ---
 
 ## 最初に着手するチケット

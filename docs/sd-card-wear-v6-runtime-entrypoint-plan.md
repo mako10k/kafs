@@ -1,7 +1,7 @@
 # KAFS format v6 runtime entrypoint plan
 
-Date: 2026-07-06
-Status: v6 entrypoint adapter naming and ownership clarified
+Date: 2026-07-07
+Status: production legacy v6 diagnostic scaffolding inventoried
 
 ## Boundary
 
@@ -297,10 +297,21 @@ surface:
   `KAFS_COMPILE_SHARED_FUSE_RUNTIME`, because the guard covers the shared FUSE
   runtime boundary rather than only the operation table.
 
+T52 inventories the production `kafs` legacy v6 diagnostic scaffolding in
+[sd-card-wear-v6-production-diagnostic-scaffolding-inventory.md](sd-card-wear-v6-production-diagnostic-scaffolding-inventory.md):
+
+- legacy `v6_inspection_mount` / `v6_write_mount` token handling remains
+  production-local only so `kafs` can fail closed with `kafs-v6` guidance;
+- `KAFS_V6_ADMISSION_HANDOFF` and `KAFS_V6_READONLY_SMOKE` are documented as
+  diagnostic-only gates, not operator entrypoints;
+- `KAFS_V6_READONLY_SMOKE` and the legacy-token successful branches left behind
+  `kafs_main_open_runtime_context()` are the next retirement candidates.
+
 The remaining pureification pressure points are:
 
-- removal or retirement plan for legacy v6 diagnostic scaffolding in `kafs`
-  after operator workflows no longer depend on it;
+- retirement of legacy v6 diagnostic scaffolding in production `kafs`, starting
+  with `KAFS_V6_READONLY_SMOKE` and the legacy-token successful branches that
+  are already shielded by production `main()` fail-closed guidance;
 - further reduction of the shared FUSE common-object adapter path,
   especially around shared operation implementations,
   without duplicating filesystem logic.
@@ -383,7 +394,9 @@ the v6 entrypoint does not apply. T49 and T50 rename the shared cleanup and
 runtime option logging helpers so those local helpers no longer read as
 production-main-owned. T51 renames the shared table/runner compile guard to
 `KAFS_COMPILE_SHARED_FUSE_RUNTIME`, matching the shared FUSE runtime boundary
-it actually covers.
+it actually covers. T52 inventories production `kafs` legacy v6 diagnostic
+scaffolding and records `KAFS_V6_READONLY_SMOKE` plus the fail-closed legacy
+successful branches as the next retirement candidates.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).
