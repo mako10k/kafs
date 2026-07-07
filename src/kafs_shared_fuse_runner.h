@@ -20,5 +20,13 @@ typedef struct kafs_shared_fuse_runtime_options
   kafs_bool_t trim_on_free_explicit;
 } kafs_shared_fuse_runtime_options_t;
 
-int kafs_shared_fuse_run(kafs_context_t *ctx, int argc_fuse, char **argv_fuse,
-                         const kafs_shared_fuse_runtime_options_t *opts);
+typedef struct kafs_shared_fuse_run_request
+{
+  kafs_context_t *ctx;
+  int argc_fuse;
+  char **argv_fuse;
+  char *hotplug_uds_path;
+  const kafs_shared_fuse_runtime_options_t *runtime_options;
+} kafs_shared_fuse_run_request_t;
+
+int kafs_shared_fuse_run_request(const kafs_shared_fuse_run_request_t *request);

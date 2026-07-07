@@ -335,7 +335,14 @@ int kafs_v6_entrypoint_adapter_mount_main(const char *image_path, const char *mo
 
   kafs_shared_fuse_runtime_options_t fuse_opts;
   kafs_v6_entrypoint_adapter_shared_options_from_mount(&fuse_opts, &ctx, opts);
-  int rc = kafs_shared_fuse_run(&ctx, argc_fuse, argv_fuse, &fuse_opts);
+  kafs_shared_fuse_run_request_t fuse_request = {
+      .ctx = &ctx,
+      .argc_fuse = argc_fuse,
+      .argv_fuse = argv_fuse,
+      .hotplug_uds_path = NULL,
+      .runtime_options = &fuse_opts,
+  };
+  int rc = kafs_shared_fuse_run_request(&fuse_request);
   kafs_v6_mount_options_free_owned(owned, owned_count);
   return rc;
 }

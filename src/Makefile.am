@@ -19,8 +19,8 @@ kafs_SOURCES = kafs.c kafs_hrl.c kafs_locks.c kafs_journal.c kafs_rpc.c
 #   shared by the kafs-v6 CLI and entrypoint adapter.
 # - kafs_v6_entrypoint_adapter.* is a v6-only adapter from kafs-v6 CLI state to
 #   the shared FUSE runtime entrypoints. It is not a v5/v6 compatibility layer.
-# - kafs_shared_fuse_runner.h is the narrow internal handoff to the shared FUSE
-#   operation table that still lives in kafs.c.
+# - kafs_shared_fuse_runner.h is the request-based internal handoff to the
+#   shared FUSE runner / operation table that still lives in kafs.c.
 kafs_v6_SOURCES = kafs_v6.c kafs_v6_runtime.c kafs_v6_mount_options.c \
 	kafs_v6_entrypoint_adapter.c kafs.c kafs_hrl.c kafs_locks.c kafs_journal.c kafs_rpc.c
 kafs_v6_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -DKAFS_NO_MAIN \

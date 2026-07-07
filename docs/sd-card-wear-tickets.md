@@ -2093,6 +2093,47 @@
     `./scripts/test-cli-surface.sh`、`make -C tests check TESTS=v6_descriptor_smoketest`、
     `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
 
+### SDW-V6RT-T58 shared FUSE runner request boundary
+
+- 目的: `src/kafs.c` に残る shared FUSE runner / operation table handoff を
+  request-based API に狭め、production `kafs` main と `kafs-v6` entrypoint adapter が同じ
+  shared runner request 経路を通るようにする。filesystem operation 実装の移動や v6 write
+  surface 拡張は行わない。
+- 変更:
+  - `src/kafs_shared_fuse_runner.h` に `kafs_shared_fuse_run_request_t` を追加し、
+    `ctx`、FUSE argv、optional hotplug socket path、runtime option summary を 1 つの
+    request として渡す。
+  - exported handoff を `kafs_shared_fuse_run()` から
+    `kafs_shared_fuse_run_request()` に置き換える。
+  - production `kafs` main と `kafs_v6_entrypoint_adapter.c` は同じ request 型を組み立て、
+    `src/kafs.c` 内の local shared runner に渡す。
+- 完了条件:
+  - `rg 'kafs_shared_fuse_run\\(' src` が no match になる。
+  - `rg kafs_shared_fuse_run_request src` が header、`kafs.c` export/local path、
+    `kafs_v6_entrypoint_adapter.c` call site、production main の local request call を示す。
+  - `lsp-cli --server-cmd clangd-18` で shared runner request 周辺の symbols/references を
+    確認できる。
+  - `./scripts/format.sh fix`、`make -j2`、`git diff --check`、
+    `make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が PASS している。
+- 実装結果:
+  - `src/kafs_shared_fuse_runner.h` に `kafs_shared_fuse_run_request_t` を追加し、
+    shared runner handoff を request-based API にした。
+  - `src/kafs.c` の exported handoff を `kafs_shared_fuse_run_request()` に置き換え、
+    local shared runner は同じ request object から runtime option logging、
+    `fuse_main()`、cleanup を実行する。
+  - production `kafs` main と `kafs_v6_entrypoint_adapter.c` は同じ request 型を組み立てて
+    shared runner に入る。
+- 検証:
+  - `lsp-cli --root . --server-cmd clangd-18` の `symbols` / `references` で
+    `src/kafs.c` の shared runner 周辺を確認した。
+  - `rg` は `src` から raw `kafs_shared_fuse_run(` call が消え、
+    `kafs_shared_fuse_run_request` の header / export / adapter / production main 経路が
+    残ることを示した。
+  - `./scripts/format.sh fix`、`autoreconf -fi && ./configure && make -j2`、
+    `git diff --check`、`make -C tests check TESTS=v6_descriptor_smoketest`、
+    `./scripts/static-checks.sh`、`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` が成功した。
+
 ---
 
 ## 最初に着手するチケット

@@ -346,10 +346,19 @@ T57 retires production legacy v6 token compatibility guidance:
 - production `kafs` help, man page, and shell completion no longer advertise
   legacy v6 tokens.
 
+T58 narrows the shared FUSE runner handoff into a request boundary:
+
+- `kafs_shared_fuse_runner.h` now exposes `kafs_shared_fuse_run_request_t`
+  instead of the raw `ctx` / FUSE argv / runtime option parameter list;
+- production `kafs` main and `kafs_v6_entrypoint_adapter.c` both build the same
+  request shape before entering the shared FUSE runner;
+- filesystem operation implementations and the operation table remain in
+  `src/kafs.c`.
+
 The remaining pureification pressure points are:
 
-- further reduction of the shared FUSE common-object adapter path,
-  especially around shared operation implementations,
+- further reduction of the shared FUSE common-object adapter path around shared
+  operation implementations,
   without duplicating filesystem logic.
 
 ## Shared implementation boundary
@@ -442,13 +451,16 @@ admission preflight / offline-only diagnostics. T56 retires that remaining
 production preflight, so production `kafs` rejects v6 images directly with
 `kafs-v6` guidance and no longer includes `kafs_v6_admission.h`. T57 retires
 production legacy v6 token compatibility guidance, so `kafs.c` no longer owns
-legacy v6 token vocabulary or a dedicated legacy-v6 reject gate.
+legacy v6 token vocabulary or a dedicated legacy-v6 reject gate. T58 narrows the
+shared FUSE runner handoff to a request object shared by production `kafs` main
+and the `kafs-v6` adapter while keeping operation implementations in `kafs.c`.
 
 The concrete shared artifact boundary is recorded in
 [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md).
 The immediate next implementation boundary remains v6 runtime pureification,
-not write-surface expansion. The next remaining implementation boundary is the
-shared FUSE common-object adapter path.
+not write-surface expansion. The next remaining implementation boundary is
+further reduction of the shared FUSE operation implementation common-object
+path.
 
 ## Smoke
 

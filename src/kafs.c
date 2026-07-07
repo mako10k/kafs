@@ -13057,7 +13057,8 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
   kafs_main_lock_runtime_image(ctx, image_path);
 }
 
-static int kafs_shared_fuse_cleanup_after_run(kafs_context_t *ctx, char *hotplug_uds_path, int rc)
+static int kafs_shared_fuse_cleanup_after_run(kafs_context_t *ctx, const char *hotplug_uds_path,
+                                              int rc)
 {
   kafs_bg_dedup_worker_stop(ctx);
   kafs_pending_worker_stop(ctx);
@@ -13065,7 +13066,7 @@ static int kafs_shared_fuse_cleanup_after_run(kafs_context_t *ctx, char *hotplug
   if (ctx->c_hotplug_fd >= 0)
     close(ctx->c_hotplug_fd);
   ctx->c_hotplug_active = 0;
-  if (hotplug_uds_path[0] != '\0')
+  if (hotplug_uds_path && hotplug_uds_path[0] != '\0')
     unlink(hotplug_uds_path);
   if (ctx->c_hotplug_lock_init)
     pthread_mutex_destroy(&ctx->c_hotplug_lock);
@@ -13089,28 +13090,27 @@ static int kafs_shared_fuse_cleanup_after_run(kafs_context_t *ctx, char *hotplug
 }
 
 #ifdef KAFS_COMPILE_SHARED_FUSE_RUNTIME
-static int kafs_shared_fuse_run_with_cleanup(kafs_context_t *ctx, int argc_fuse, char **argv_fuse,
-                                             char *hotplug_uds_path)
+static int kafs_shared_fuse_run_request_local(const kafs_shared_fuse_run_request_t *request)
 {
+  kafs_context_t *ctx = request->ctx;
+  if (request->runtime_options)
+    kafs_shared_fuse_log_runtime_options(ctx, request->runtime_options->writeback_cache_enabled,
+                                         request->runtime_options->writeback_cache_explicit,
+                                         request->runtime_options->trim_on_free_enabled,
+                                         request->runtime_options->trim_on_free_explicit,
+                                         request->argc_fuse, request->argv_fuse);
+
   fuse_set_log_func(kafs_fuse_log_func);
-  int rc = fuse_main(argc_fuse, argv_fuse, kafs_shared_fuse_operations(), ctx);
+  int rc = fuse_main(request->argc_fuse, request->argv_fuse, kafs_shared_fuse_operations(), ctx);
   fuse_set_log_func(NULL);
-  return kafs_shared_fuse_cleanup_after_run(ctx, hotplug_uds_path, rc);
+  return kafs_shared_fuse_cleanup_after_run(ctx, request->hotplug_uds_path, rc);
 }
 #endif
 
 #ifdef KAFS_SHARED_FUSE_RUNNER_EXPORT
-int kafs_shared_fuse_run(kafs_context_t *ctx, int argc_fuse, char **argv_fuse,
-                         const kafs_shared_fuse_runtime_options_t *opts)
+int kafs_shared_fuse_run_request(const kafs_shared_fuse_run_request_t *request)
 {
-  if (opts)
-    kafs_shared_fuse_log_runtime_options(ctx, opts->writeback_cache_enabled,
-                                         opts->writeback_cache_explicit, opts->trim_on_free_enabled,
-                                         opts->trim_on_free_explicit, argc_fuse, argv_fuse);
-
-  char hotplug_uds_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
-  hotplug_uds_path[0] = '\0';
-  return kafs_shared_fuse_run_with_cleanup(ctx, argc_fuse, argv_fuse, hotplug_uds_path);
+  return kafs_shared_fuse_run_request_local(request);
 }
 #endif
 
@@ -13197,9 +13197,19 @@ int main(int argc, char **argv)
                             mt_cnt_override_set, argv_fuse, &argc_fuse, mt_opt_buf,
                             sizeof(mt_opt_buf));
   kafs_main_apply_fuse_readonly_arg(&ctx, argv_fuse, &argc_fuse);
-  kafs_shared_fuse_log_runtime_options(&ctx, writeback_cache_enabled, writeback_cache_explicit,
-                                       trim_on_free_enabled, trim_on_free_explicit, argc_fuse,
-                                       argv_fuse);
-  return kafs_shared_fuse_run_with_cleanup(&ctx, argc_fuse, argv_fuse, hotplug_uds_path);
+  kafs_shared_fuse_runtime_options_t fuse_opts = {
+      .writeback_cache_enabled = writeback_cache_enabled,
+      .writeback_cache_explicit = writeback_cache_explicit,
+      .trim_on_free_enabled = trim_on_free_enabled,
+      .trim_on_free_explicit = trim_on_free_explicit,
+  };
+  kafs_shared_fuse_run_request_t fuse_request = {
+      .ctx = &ctx,
+      .argc_fuse = argc_fuse,
+      .argv_fuse = argv_fuse,
+      .hotplug_uds_path = hotplug_uds_path,
+      .runtime_options = &fuse_opts,
+  };
+  return kafs_shared_fuse_run_request_local(&fuse_request);
 }
 #endif

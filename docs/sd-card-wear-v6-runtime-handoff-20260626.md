@@ -161,6 +161,12 @@ Additional closeout after the original handoff:
 - T56 retires the production plain-v6 descriptor preflight. Production `kafs`
   now rejects v6 images directly with `kafs-v6` guidance and no longer includes
   `kafs_v6_admission.h`.
+- T57 retires production legacy v6 token compatibility guidance. Production
+  `kafs` no longer owns the legacy token vocabulary or a dedicated legacy-token
+  reject gate.
+- T58 narrows the shared FUSE runner handoff to
+  `kafs_shared_fuse_run_request_t`, so production `kafs` main and the
+  `kafs-v6` adapter enter the shared runner through the same request shape.
 
 ## 2026-07-02 closeout
 
@@ -804,6 +810,39 @@ Current T57 boundary:
 - `kafs-v6` remains the owner of v6 runtime admission and still rejects legacy
   v6 mount tokens on the dedicated entrypoint.
 
+## 2026-07-07 T58 validation
+
+Commands completed successfully:
+
+```sh
+./scripts/format.sh fix
+autoreconf -fi && ./configure && make -j2
+make -j2
+git diff --check
+make -C tests check TESTS=v6_descriptor_smoketest
+./scripts/static-checks.sh
+KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2
+```
+
+Validation result:
+
+- `lsp-cli --root . --server-cmd clangd-18` successfully served `symbols` and
+  `references` requests for the shared runner/table region.
+- `rg 'kafs_shared_fuse_run\(' src` returned no matches.
+- `rg kafs_shared_fuse_run_request src` showed only the request type, exported
+  handoff, local shared runner call sites, production main request, and
+  `kafs_v6_entrypoint_adapter.c` request.
+- `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` passed all 29 tests.
+
+Current T58 boundary:
+
+- `kafs_shared_fuse_runner.h` exposes `kafs_shared_fuse_run_request_t` as the
+  internal shared FUSE runner handoff.
+- Production `kafs` main and `kafs_v6_entrypoint_adapter.c` both assemble the
+  same shared runner request before entering `fuse_main()`.
+- Shared FUSE operation implementations and the operation table still live in
+  `src/kafs.c`; this slice does not broaden the v6 write surface.
+
 ## Original validation run
 
 Commands completed successfully:
@@ -842,17 +881,17 @@ block this closeout.
 ## Current next boundary
 
 The next boundary remains v6 runtime pureification after the shared FUSE
-runtime compile guard naming and production diagnostic scaffolding retirement.
-Do not broaden the v6 write surface as the next step.
+runner request boundary and production diagnostic scaffolding retirement. Do not
+broaden the v6 write surface as the next step.
 
 Start from the pressure points recorded in
 [sd-card-wear-v6-runtime-entrypoint-plan.md](sd-card-wear-v6-runtime-entrypoint-plan.md):
 
 - reduction of the shared FUSE common-object adapter path around shared
   operation implementations;
-- further reduction of the remaining shared FUSE runner / operation
-  implementation boundaries, especially where production `kafs` and `kafs-v6`
-  still meet in `src/kafs.c`, without duplicating filesystem logic.
+- further reduction of the remaining shared FUSE operation implementation
+  boundaries where production `kafs` and `kafs-v6` still meet in `src/kafs.c`,
+  without duplicating filesystem logic.
 
 Production cutover discussion stays behind that pureification and behind later
 v5-parity, workload-copy, power-loss or torn-write, rollback, and recovery
