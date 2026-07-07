@@ -110,6 +110,20 @@
 
 - New images default to on-disk format v5. Runtime mount continues to support existing v4 images.
 - Legacy v2/v3 images require explicit offline migration before use.
+- Treat v5-and-earlier, v6, and v7 as separate ownership boundaries. A
+  format-specific resource may not be directly reused by another format as a
+  shortcut.
+- Format v7 is a breaking-change boundary, not a v6 compatibility layer. Do
+  not preserve old v6 wire/API behavior in v7 unless the user explicitly asks
+  for a compatibility exception.
+- Format-specific entrypoints must remain explicit: production `kafs` owns
+  v4/v5, `kafs-v6` owns frozen experimental v6, and `kafs-v7` owns v7. Do not
+  route successful v7 admission through `kafs.c`, `kafs-v6`, or v6-owned
+  admission/layout entrypoints.
+- When v7 needs logic that currently lives in v5/v6-owned files, first copy it
+  into v7-owned files or extract a clearly neutral helper with no v5/v6 public
+  entrypoint dependency. Avoid premature "common" names until ownership is
+  clear.
 - For filesystem geometry changes such as size or inode count, prefer offline rebuild/migration via `kafsresize --migrate-create` over in-place metadata relocation.
 - Treat in-place inode-table expansion as out of scope unless the user explicitly asks for that high-risk migration path.
 - For performance optimization, prefer enabling LTO (`./configure --enable-lto`) before removing `static inline` hints wholesale.

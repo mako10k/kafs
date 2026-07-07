@@ -8,6 +8,8 @@
 #include "kafs_journal.h"
 #include "kafs_tailmeta.h"
 #include "kafs_descriptor_layout.h"
+#include "kafs_v6_layout.h"
+#include "kafs_v7_layout.h"
 #include "kafs_cli_opts.h"
 #include "kafs_tool_util.h"
 
@@ -60,6 +62,7 @@ static void usage(const char *prog)
       "    New images default to format version 5; use --format-version 4 for legacy v4 images.\n");
   fprintf(stderr, "    --format-version 6 creates an offline-only descriptor scaffold; runtime "
                   "mount support is not enabled yet.\n");
+  fprintf(stderr, "    --format-version 7 creates a descriptor-backed v7 image for kafs-v7.\n");
 }
 
 static int mkfs_confirm_overwrite_stdin(void)
@@ -657,9 +660,12 @@ static void mkfs_init_superblock(kafs_context_t *ctx, uint32_t format_version,
   kafs_sb_tailmeta_size_set(ctx->c_superblock, (uint64_t)layout->tailmeta_size);
   kafs_sb_feature_flags_set(ctx->c_superblock, mkfs_feature_flags_for_format(format_version));
   kafs_sb_compat_flags_set(ctx->c_superblock, 0);
-  if (kafs_format_uses_layout_descriptor(format_version))
-    kafs_descriptor_anchor_init(ctx->c_superblock, (uint64_t)layout->v6_desc_off,
-                                layout->v6_desc_bytes, layout->v6_candidate_count);
+  if (format_version == KAFS_FORMAT_VERSION_V6)
+    kafs_v6_anchor_init(ctx->c_superblock, (uint64_t)layout->v6_desc_off, layout->v6_desc_bytes,
+                        layout->v6_candidate_count);
+  else if (format_version == KAFS_FORMAT_VERSION_V7)
+    kafs_v7_anchor_init(ctx->c_superblock, (uint64_t)layout->v6_desc_off, layout->v6_desc_bytes,
+                        layout->v6_candidate_count);
 
   ctx->c_superblock->s_inocnt = kafs_inocnt_htos(inocnt);
   kafs_sb_inocnt_free_set(ctx->c_superblock,
@@ -788,8 +794,8 @@ static void mkfs_init_runtime_regions(kafs_context_t *ctx, const struct mkfs_lay
   }
 }
 
-static int mkfs_write_v6_descriptor(kafs_context_t *ctx, const struct mkfs_layout *layout,
-                                    off_t total_bytes)
+static int mkfs_write_descriptor_layout(kafs_context_t *ctx, const struct mkfs_layout *layout,
+                                        off_t total_bytes)
 {
   uint32_t format_version = kafs_sb_format_version_get(ctx->c_superblock);
   if (!kafs_format_uses_layout_descriptor(format_version))
@@ -802,10 +808,19 @@ static int mkfs_write_v6_descriptor(kafs_context_t *ctx, const struct mkfs_layou
   uint64_t bitmap_bytes = ((uint64_t)kafs_sb_r_blkcnt_get(ctx->c_superblock) + 7u) >> 3;
   uint64_t inode_bytes =
       kafs_inode_table_bytes_for_format(format_version, kafs_sb_inocnt_get(ctx->c_superblock));
-  int rc = kafs_descriptor_build_mkfs_descriptor(
-      desc, layout->v6_desc_bytes, ctx->c_superblock, (uint64_t)total_bytes,
-      (uint64_t *)layout->v6_candidates, layout->v6_candidate_count, (uint64_t)layout->blkmask_off,
-      bitmap_bytes, (uint64_t)layout->inotbl_off, inode_bytes);
+  int rc;
+  if (format_version == KAFS_FORMAT_VERSION_V6)
+    rc = kafs_v6_build_mkfs_descriptor(desc, layout->v6_desc_bytes, ctx->c_superblock,
+                                       (uint64_t)total_bytes, (uint64_t *)layout->v6_candidates,
+                                       layout->v6_candidate_count, (uint64_t)layout->blkmask_off,
+                                       bitmap_bytes, (uint64_t)layout->inotbl_off, inode_bytes);
+  else if (format_version == KAFS_FORMAT_VERSION_V7)
+    rc = kafs_v7_build_mkfs_descriptor(desc, layout->v6_desc_bytes, ctx->c_superblock,
+                                       (uint64_t)total_bytes, (uint64_t *)layout->v6_candidates,
+                                       layout->v6_candidate_count, (uint64_t)layout->blkmask_off,
+                                       bitmap_bytes, (uint64_t)layout->inotbl_off, inode_bytes);
+  else
+    rc = -EPROTONOSUPPORT;
   if (rc != 0)
   {
     free(desc);
@@ -875,7 +890,7 @@ int main(int argc, char **argv)
                        journal_flags, &layout);
   mkfs_init_root_inode(&ctx, format_version, mapsize);
   mkfs_init_runtime_regions(&ctx, &layout, journal_bytes, journal_flags, blksize, mapsize);
-  if (mkfs_write_v6_descriptor(&ctx, &layout, total_bytes) != 0)
+  if (mkfs_write_descriptor_layout(&ctx, &layout, total_bytes) != 0)
   {
     munmap(ctx.c_superblock, mapsize);
     close(ctx.c_fd);

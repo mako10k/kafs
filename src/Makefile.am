@@ -19,8 +19,12 @@ kafs_SOURCES = kafs.c kafs_shared_fuse_runtime.c kafs_hrl.c kafs_locks.c kafs_jo
 #   not link it.
 # - kafs-v6 is the frozen experimental v6 runtime entrypoint.
 # - kafs-v7 is the next descriptor-backed runtime entrypoint. It has separate
-#   v7 entrypoint/runtime/adapter sources and enters descriptor scaffold helpers
-#   through kafs_descriptor_layout.h instead of depending on v6 entrypoint names.
+#   v7 entrypoint/runtime/adapter sources. v7 layout wire ownership lives in
+#   kafs_v7_layout.h, which enters the neutral descriptor scaffold instead of
+#   depending on v6 entrypoint names.
+# - v7 must not directly reuse v5/v6-owned entrypoints, layout APIs, or
+#   admission paths as compatibility shortcuts. Copy behavior into v7-owned
+#   resources or extract a neutral helper before sharing it.
 # - both format-specific entrypoints link the shared FUSE runtime source with
 #   KAFS_SHARED_FUSE_RUNNER_EXPORT while admission/open/init policy stays in
 #   format-entrypoint sources.
@@ -94,6 +98,6 @@ noinst_HEADERS = kafs_block.h kafs_config.h kafs_context.h kafs_dirent.h kafs_in
 	kafs_v6_admission.h kafs_v6_fuse_init_policy.h kafs_v6_fuse_policy.h \
 	kafs_v6_layout.h kafs_v6_entrypoint_adapter.h kafs_v6_mount_options.h \
 	kafs_v6_runtime.h kafs_v7_admission.h kafs_v7_entrypoint_adapter.h \
-	kafs_v7_mount_options.h kafs_v7_runtime.h
+	kafs_v7_layout.h kafs_v7_mount_options.h kafs_v7_runtime.h
 
 CFLAGS = @CFLAGS@ -Wall -Werror -Wno-unused-function -Wno-unused-parameter

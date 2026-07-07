@@ -5,6 +5,7 @@
 #include "kafs_superblock.h"
 #include "kafs_locks.h"
 #include "kafs_descriptor_layout.h"
+#include "kafs_v7_layout.h"
 #include <assert.h>
 #include <stdio.h>
 #include <errno.h>
@@ -298,11 +299,16 @@ static int kafs_descriptor_mapping_read_fd(struct kafs_context *ctx, int fd, uin
 {
   if (!ctx || !ctx->c_superblock || fd < 0 || !out_desc || !out_desc_bytes)
     return -EINVAL;
-  if (!kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(ctx->c_superblock)))
-    return -EPROTONOSUPPORT;
 
+  uint32_t format_version = kafs_sb_format_version_get(ctx->c_superblock);
   kafs_descriptor_layout_report_t layout;
-  int rc = kafs_descriptor_discover_layout(fd, ctx->c_superblock, file_size, &layout);
+  int rc;
+  if (format_version == KAFS_FORMAT_VERSION_V6)
+    rc = kafs_v6_discover_layout(fd, ctx->c_superblock, file_size, &layout);
+  else if (format_version == KAFS_FORMAT_VERSION_V7)
+    rc = kafs_v7_discover_layout(fd, ctx->c_superblock, file_size, &layout);
+  else
+    return -EPROTONOSUPPORT;
   if (rc == 0)
     rc = kafs_descriptor_read_selected_descriptor(fd, &layout, out_desc, out_desc_bytes);
   return rc;
@@ -570,6 +576,18 @@ kafs_v6_descriptor_mapping_admit_fd(struct kafs_context *ctx, int fd, uint64_t f
                                     kafs_v6_allocator_summary_coverage_report_t *out_alloc_summary,
                                     kafs_v6_hrl_index_coverage_report_t *out_hrl_index,
                                     kafs_v6_hrl_entries_coverage_report_t *out_hrl_entries)
+{
+  return kafs_descriptor_mapping_admit_fd(ctx, fd, file_size, out_bitmap, out_inode,
+                                          out_alloc_summary, out_hrl_index, out_hrl_entries);
+}
+
+static int kafs_v7_descriptor_mapping_admit_fd(
+    struct kafs_context *ctx, int fd, uint64_t file_size,
+    kafs_descriptor_bitmap_coverage_report_t *out_bitmap,
+    kafs_descriptor_inode_coverage_report_t *out_inode,
+    kafs_descriptor_allocator_summary_coverage_report_t *out_alloc_summary,
+    kafs_descriptor_hrl_index_coverage_report_t *out_hrl_index,
+    kafs_descriptor_hrl_entries_coverage_report_t *out_hrl_entries)
 {
   return kafs_descriptor_mapping_admit_fd(ctx, fd, file_size, out_bitmap, out_inode,
                                           out_alloc_summary, out_hrl_index, out_hrl_entries);

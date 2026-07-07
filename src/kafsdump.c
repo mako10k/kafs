@@ -6,7 +6,9 @@
 #include "kafs_meta_region.h"
 #include "kafs_offline_summary.h"
 #include "kafs_tailmeta.h"
+#include "kafs_descriptor_layout.h"
 #include "kafs_v6_layout.h"
+#include "kafs_v7_layout.h"
 #include "kafs_cli_opts.h"
 #include "kafs_superblock.h"
 #include "kafs_tool_util.h"
@@ -114,6 +116,20 @@ static const char *dump_journal_segments_key(const kafs_ssuperblock_t *sb)
 {
   return sb && kafs_sb_format_version_get(sb) == KAFS_FORMAT_VERSION_V7 ? "journal_segments"
                                                                         : "v6_journal_segments";
+}
+
+static int dump_discover_descriptor_layout(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
+                                           kafs_descriptor_layout_report_t *report)
+{
+  if (!sb || !report)
+    return -EINVAL;
+
+  uint32_t format_version = kafs_sb_format_version_get(sb);
+  if (format_version == KAFS_FORMAT_VERSION_V6)
+    return kafs_v6_discover_layout(fd, sb, file_size, report);
+  if (format_version == KAFS_FORMAT_VERSION_V7)
+    return kafs_v7_discover_layout(fd, sb, file_size, report);
+  return -EPROTONOSUPPORT;
 }
 
 static const char *descriptor_bitmap_status(const kafs_ssuperblock_t *sb,
@@ -937,20 +953,20 @@ int main(int argc, char **argv)
   memset(&v6_journal_segments, 0, sizeof(v6_journal_segments));
   if (dump_has_layout_descriptor(&sb))
   {
-    rc_v6 = kafs_v6_discover_layout(fd, &sb, file_size, &v6);
+    rc_v6 = dump_discover_descriptor_layout(fd, &sb, file_size, &v6);
     if (rc_v6 == 0)
     {
-      rc_v6_bitmap = kafs_v6_read_selected_descriptor(fd, &v6, &v6_desc, &v6_desc_bytes);
+      rc_v6_bitmap = kafs_descriptor_read_selected_descriptor(fd, &v6, &v6_desc, &v6_desc_bytes);
       if (rc_v6_bitmap == 0)
       {
-        rc_v6_bitmap =
-            kafs_v6_bitmap_validate_coverage(v6_desc, v6_desc_bytes, &sb, file_size, &v6_bitmap);
-        rc_v6_journal_header = kafs_v6_journal_header_validate_coverage(
+        rc_v6_bitmap = kafs_descriptor_bitmap_validate_coverage(v6_desc, v6_desc_bytes, &sb,
+                                                                file_size, &v6_bitmap);
+        rc_v6_journal_header = kafs_descriptor_journal_header_validate_coverage(
             v6_desc, v6_desc_bytes, &sb, file_size, &v6_journal_header);
-        rc_v6_journal_data = kafs_v6_journal_data_validate_coverage(v6_desc, v6_desc_bytes, &sb,
-                                                                    file_size, &v6_journal_data);
+        rc_v6_journal_data = kafs_descriptor_journal_data_validate_coverage(
+            v6_desc, v6_desc_bytes, &sb, file_size, &v6_journal_data);
         if (rc_v6_journal_header == 0 && rc_v6_journal_data == 0)
-          rc_v6_journal_segments = kafs_v6_journal_validate_segments_fd(
+          rc_v6_journal_segments = kafs_descriptor_journal_validate_segments_fd(
               fd, v6_desc, v6_desc_bytes, &sb, file_size, &v6_journal_segments);
         else
           rc_v6_journal_segments =

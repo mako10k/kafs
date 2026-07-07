@@ -15,7 +15,7 @@ static inline int kafs_v7_admission_validate_descriptor_segments_fd(
   if (!ctx || fd < 0 || !sbdisk)
     return -EINVAL;
 
-  int rc = kafs_descriptor_mapping_admit_fd(ctx, fd, file_size, NULL, NULL, NULL, NULL, NULL);
+  int rc = kafs_v7_descriptor_mapping_admit_fd(ctx, fd, file_size, NULL, NULL, NULL, NULL, NULL);
   if (rc != 0)
     return rc;
 

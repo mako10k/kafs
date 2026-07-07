@@ -3,6 +3,7 @@
 #include "kafs_descriptor_layout.h"
 #include "kafs_offline_summary.h"
 #include "kafs_superblock.h"
+#include "kafs_v7_layout.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -115,7 +116,31 @@ static int check_v7_descriptor_direct(const char *img)
 
   kafs_descriptor_layout_report_t report;
   if (rc == 0)
-    rc = kafs_descriptor_discover_layout(fd, &sb, file_size, &report);
+  {
+    kafs_sdescriptor_superblock_anchor_t anchor;
+    memcpy(&anchor, sb.s_reserved, sizeof(anchor));
+    if (kafs_u32_stoh(anchor.va_magic) != KAFS_V7_SUPERBLOCK_ANCHOR_MAGIC)
+      rc = -EINVAL;
+  }
+  if (rc == 0)
+    rc = kafs_v7_discover_layout(fd, &sb, file_size, &report);
+  void *desc = NULL;
+  uint32_t desc_bytes = 0;
+  if (rc == 0)
+    rc = kafs_descriptor_read_selected_descriptor(fd, &report, &desc, &desc_bytes);
+  if (rc == 0)
+  {
+    if (desc_bytes < sizeof(kafs_sdescriptor_layout_desc_header_t))
+      rc = -ERANGE;
+    else
+    {
+      const kafs_sdescriptor_layout_desc_header_t *hdr =
+          (const kafs_sdescriptor_layout_desc_header_t *)desc;
+      if (kafs_u32_stoh(hdr->ld_magic) != KAFS_V7_LAYOUT_MAGIC)
+        rc = -EINVAL;
+    }
+  }
+  free(desc);
   close(fd);
   if (rc != 0)
     return rc;

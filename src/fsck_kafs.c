@@ -6,7 +6,9 @@
 #include "kafs_block.h"
 #include "kafs_cli_opts.h"
 #include "kafs_tool_util.h"
+#include "kafs_descriptor_layout.h"
 #include "kafs_v6_layout.h"
+#include "kafs_v7_layout.h"
 /* jscpd:ignore-start */
 #include <errno.h>
 #include <fcntl.h>
@@ -38,7 +40,7 @@
 #define FSCK_EXIT_INODE_BLOCKS_INCONSISTENT 10
 #define FSCK_EXIT_DIRENT_FORMAT_INCONSISTENT 11
 #define FSCK_EXIT_TAILMETA_INCONSISTENT 12
-#define FSCK_EXIT_V6_DESCRIPTOR_FAILED 13
+#define FSCK_EXIT_DESCRIPTOR_FAILED 13
 
 #define KAFS_PENDING_REF_FLAG 0x80000000u
 
@@ -382,7 +384,7 @@ static const char *fsck_rc_to_text(int rc)
   return "error";
 }
 
-static void fsck_report_v6_descriptor(const kafs_v6_layout_report_t *report)
+static void fsck_report_descriptor_layout(const kafs_descriptor_layout_report_t *report)
 {
   fprintf(stderr,
           "layout descriptor: anchor_valid=%s selected=%s selected_replica=%" PRIu32
@@ -393,17 +395,18 @@ static void fsck_report_v6_descriptor(const kafs_v6_layout_report_t *report)
           report->group_count, report->shard_count, report->replica_count);
   for (uint32_t i = 0; i < report->replica_count; ++i)
   {
-    const kafs_v6_replica_report_t *replica = &report->replicas[i];
+    const kafs_descriptor_replica_report_t *replica = &report->replicas[i];
     char summary[256];
-    kafs_v6_replica_summary(summary, sizeof(summary), replica);
+    kafs_descriptor_replica_summary(summary, sizeof(summary), replica);
     fprintf(stderr, "layout descriptor replica[%" PRIu32 "]: %s\n", replica->replica_id, summary);
   }
 }
 
-static void fsck_report_v6_extent_prefix(const char *label, const char *unit_label,
-                                         const void *report, int rc)
+static void fsck_report_descriptor_extent_prefix(const char *label, const char *unit_label,
+                                                 const void *report, int rc)
 {
-  const kafs_v6_extent_coverage_t *coverage = (const kafs_v6_extent_coverage_t *)report;
+  const kafs_descriptor_extent_coverage_t *coverage =
+      (const kafs_descriptor_extent_coverage_t *)report;
   fprintf(stderr,
           "%s: status=%s available=%s shards=%" PRIu32 " expected_start=%" PRIu64
           " expected_%s=%" PRIu64 " covered_%s=%" PRIu64
@@ -421,9 +424,12 @@ static void fsck_report_v6_extent_prefix(const char *label, const char *unit_lab
           coverage->first_physical_overlap_off, coverage->first_physical_overlap_bytes);
 }
 
-static void fsck_report_v6_bitmap(const kafs_v6_bitmap_coverage_report_t *report, int rc)
+static void fsck_report_descriptor_bitmap(const kafs_descriptor_bitmap_coverage_report_t *report,
+                                          int rc, const char *prefix)
 {
-  fsck_report_v6_extent_prefix("v6 bitmap shards", "blocks", report, rc);
+  char label[64];
+  snprintf(label, sizeof(label), "%s bitmap shards", prefix);
+  fsck_report_descriptor_extent_prefix(label, "blocks", report, rc);
   fprintf(stderr,
           " lookup_available=%s lookup_blo=%" PRIu64 " lookup_shard=%" PRIu32
           " bitmap_byte=%" PRIu64 " bitmap_bit=%" PRIu8 "\n",
@@ -431,9 +437,12 @@ static void fsck_report_v6_bitmap(const kafs_v6_bitmap_coverage_report_t *report
           report->lookup.shard_index, report->lookup.bitmap_byte_off, report->lookup.bitmap_bit);
 }
 
-static void fsck_report_v6_inode(const kafs_v6_inode_coverage_report_t *report, int rc)
+static void fsck_report_descriptor_inode(const kafs_descriptor_inode_coverage_report_t *report,
+                                         int rc, const char *prefix)
 {
-  fsck_report_v6_extent_prefix("v6 inode shards", "inodes", report, rc);
+  char label[64];
+  snprintf(label, sizeof(label), "%s inode shards", prefix);
+  fsck_report_descriptor_extent_prefix(label, "inodes", report, rc);
   fprintf(stderr,
           " root_lookup=%s root_shard=%" PRIu32 " root_inode_off=%" PRIu64
           " root_record_bytes=%" PRIu32 "\n",
@@ -441,10 +450,12 @@ static void fsck_report_v6_inode(const kafs_v6_inode_coverage_report_t *report, 
           report->root_lookup.inode_off, report->root_lookup.record_bytes);
 }
 
-static void fsck_report_v6_alloc_summary(const kafs_v6_allocator_summary_coverage_report_t *report,
-                                         int rc)
+static void fsck_report_descriptor_alloc_summary(
+    const kafs_descriptor_allocator_summary_coverage_report_t *report, int rc, const char *prefix)
 {
-  fsck_report_v6_extent_prefix("v6 allocator summary shards", "blocks", report, rc);
+  char label[64];
+  snprintf(label, sizeof(label), "%s allocator summary shards", prefix);
+  fsck_report_descriptor_extent_prefix(label, "blocks", report, rc);
   fprintf(stderr,
           " lookup_available=%s lookup_blo=%" PRIu64 " lookup_shard=%" PRIu32 " l1_byte=%" PRIu64
           " l2_byte=%" PRIu64 "\n",
@@ -452,9 +463,13 @@ static void fsck_report_v6_alloc_summary(const kafs_v6_allocator_summary_coverag
           report->lookup.shard_index, report->lookup.l1_byte_off, report->lookup.l2_byte_off);
 }
 
-static void fsck_report_v6_hrl_index(const kafs_v6_hrl_index_coverage_report_t *report, int rc)
+static void
+fsck_report_descriptor_hrl_index(const kafs_descriptor_hrl_index_coverage_report_t *report, int rc,
+                                 const char *prefix)
 {
-  fsck_report_v6_extent_prefix("v6 HRL index shards", "buckets", report, rc);
+  char label[64];
+  snprintf(label, sizeof(label), "%s HRL index shards", prefix);
+  fsck_report_descriptor_extent_prefix(label, "buckets", report, rc);
   fprintf(stderr,
           " lookup_available=%s lookup_bucket=%" PRIu64 " lookup_shard=%" PRIu32
           " lookup_group=%" PRIu32 " index_byte=%" PRIu64 "\n",
@@ -462,9 +477,13 @@ static void fsck_report_v6_hrl_index(const kafs_v6_hrl_index_coverage_report_t *
           report->lookup.shard_index, report->lookup.group_id, report->lookup.index_off);
 }
 
-static void fsck_report_v6_hrl_entries(const kafs_v6_hrl_entries_coverage_report_t *report, int rc)
+static void
+fsck_report_descriptor_hrl_entries(const kafs_descriptor_hrl_entries_coverage_report_t *report,
+                                   int rc, const char *prefix)
 {
-  fsck_report_v6_extent_prefix("v6 HRL entry shards", "entries", report, rc);
+  char label[64];
+  snprintf(label, sizeof(label), "%s HRL entry shards", prefix);
+  fsck_report_descriptor_extent_prefix(label, "entries", report, rc);
   fprintf(stderr,
           " lookup_available=%s lookup_entry=%" PRIu64 " lookup_shard=%" PRIu32
           " lookup_group=%" PRIu32 " entry_byte=%" PRIu64 "\n",
@@ -472,27 +491,30 @@ static void fsck_report_v6_hrl_entries(const kafs_v6_hrl_entries_coverage_report
           report->lookup.shard_index, report->lookup.group_id, report->lookup.entry_off);
 }
 
-static void fsck_report_v6_hrl_chains(const kafs_v6_hrl_chain_report_t *report, int rc)
+static void fsck_report_descriptor_hrl_chains(const kafs_descriptor_hrl_chain_report_t *report,
+                                              int rc, const char *prefix)
 {
-  fprintf(stderr,
-          "v6 HRL chains: status=%s available=%s buckets_checked=%" PRIu64
-          " entries_checked=%" PRIu64
-          " has_out_of_range=%s has_loop=%s has_wrong_entry_group=%s has_read_error=%s"
-          " first_bad_bucket=%" PRIu64 " first_bad_head_plus1=%" PRIu64 " first_bad_entry=%" PRIu64
-          " first_index_shard=%" PRIu32 " first_entry_shard=%" PRIu32 " first_index_group=%" PRIu32
-          " first_entry_group=%" PRIu32 "\n",
-          fsck_rc_to_text(rc), report->available ? "true" : "false", report->buckets_checked,
-          report->entries_checked, report->has_out_of_range ? "true" : "false",
-          report->has_loop ? "true" : "false", report->has_wrong_entry_group ? "true" : "false",
-          report->has_read_error ? "true" : "false", report->first_bad_bucket,
-          report->first_bad_head_plus1, report->first_bad_entry_id, report->first_index_shard,
-          report->first_entry_shard, report->first_index_group, report->first_entry_group);
+  fprintf(
+      stderr,
+      "%s HRL chains: status=%s available=%s buckets_checked=%" PRIu64 " entries_checked=%" PRIu64
+      " has_out_of_range=%s has_loop=%s has_wrong_entry_group=%s has_read_error=%s"
+      " first_bad_bucket=%" PRIu64 " first_bad_head_plus1=%" PRIu64 " first_bad_entry=%" PRIu64
+      " first_index_shard=%" PRIu32 " first_entry_shard=%" PRIu32 " first_index_group=%" PRIu32
+      " first_entry_group=%" PRIu32 "\n",
+      prefix, fsck_rc_to_text(rc), report->available ? "true" : "false", report->buckets_checked,
+      report->entries_checked, report->has_out_of_range ? "true" : "false",
+      report->has_loop ? "true" : "false", report->has_wrong_entry_group ? "true" : "false",
+      report->has_read_error ? "true" : "false", report->first_bad_bucket,
+      report->first_bad_head_plus1, report->first_bad_entry_id, report->first_index_shard,
+      report->first_entry_shard, report->first_index_group, report->first_entry_group);
 }
 
-static void fsck_report_v6_journal_header(const kafs_v6_journal_header_coverage_report_t *report,
-                                          int rc)
+static void fsck_report_descriptor_journal_header(
+    const kafs_descriptor_journal_header_coverage_report_t *report, int rc, const char *prefix)
 {
-  fsck_report_v6_extent_prefix("v6 journal header shards", "segments", report, rc);
+  char label[64];
+  snprintf(label, sizeof(label), "%s journal header shards", prefix);
+  fsck_report_descriptor_extent_prefix(label, "segments", report, rc);
   fprintf(stderr,
           " lookup_available=%s lookup_segment=%" PRIu64 " lookup_shard=%" PRIu32
           " lookup_group=%" PRIu32 " header_byte=%" PRIu64 "\n",
@@ -500,10 +522,13 @@ static void fsck_report_v6_journal_header(const kafs_v6_journal_header_coverage_
           report->lookup.shard_index, report->lookup.group_id, report->lookup.header_off);
 }
 
-static void fsck_report_v6_journal_data(const kafs_v6_journal_data_coverage_report_t *report,
-                                        int rc)
+static void
+fsck_report_descriptor_journal_data(const kafs_descriptor_journal_data_coverage_report_t *report,
+                                    int rc, const char *prefix)
 {
-  fsck_report_v6_extent_prefix("v6 journal data shards", "segments", report, rc);
+  char label[64];
+  snprintf(label, sizeof(label), "%s journal data shards", prefix);
+  fsck_report_descriptor_extent_prefix(label, "segments", report, rc);
   fprintf(stderr,
           " lookup_available=%s lookup_segment=%" PRIu64 " lookup_shard=%" PRIu32
           " lookup_group=%" PRIu32 " data_byte=%" PRIu64 " data_bytes=%" PRIu64 "\n",
@@ -512,11 +537,13 @@ static void fsck_report_v6_journal_data(const kafs_v6_journal_data_coverage_repo
           report->lookup.data_bytes);
 }
 
-static void fsck_report_v6_journal_segments(const kafs_v6_journal_segment_report_t *report, int rc)
+static void
+fsck_report_descriptor_journal_segments(const kafs_descriptor_journal_segment_report_t *report,
+                                        int rc, const char *prefix)
 {
   fprintf(
       stderr,
-      "v6 journal segments: status=%s available=%s segment_count=%" PRIu64 " checked=%" PRIu64
+      "%s journal segments: status=%s available=%s segment_count=%" PRIu64 " checked=%" PRIu64
       " valid=%" PRIu64 " records_checked=%" PRIu64 " selected_segment=%" PRIu64
       " selected_generation=%" PRIu64 " selected_seq=%" PRIu64 " selected_write_off=%" PRIu64
       " selected_header_shard=%" PRIu32 " selected_data_shard=%" PRIu32 " selected_group=%" PRIu32
@@ -524,7 +551,7 @@ static void fsck_report_v6_journal_segments(const kafs_v6_journal_segment_report
       " has_torn_data=%s has_read_error=%s first_bad_segment=%" PRIu64
       " first_bad_header_shard=%" PRIu32 " first_bad_data_shard=%" PRIu32
       " first_bad_header_group=%" PRIu32 " first_bad_data_group=%" PRIu32 "\n",
-      fsck_rc_to_text(rc), report->available ? "true" : "false", report->segment_count,
+      prefix, fsck_rc_to_text(rc), report->available ? "true" : "false", report->segment_count,
       report->segments_checked, report->valid_segments, report->records_checked,
       report->selected_segment_id, report->selected_generation, report->selected_seq,
       report->selected_write_off, report->selected_header_shard, report->selected_data_shard,
@@ -535,20 +562,36 @@ static void fsck_report_v6_journal_segments(const kafs_v6_journal_segment_report
       report->first_bad_header_group, report->first_bad_data_group);
 }
 
-static int fsck_handle_v6_image(const struct fsck_options *opts, const struct fsck_image_info *info,
-                                int want_write)
+static int fsck_discover_descriptor_layout(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
+                                           kafs_descriptor_layout_report_t *report)
 {
-  kafs_v6_layout_report_t report;
-  kafs_v6_bitmap_coverage_report_t bitmap_report;
-  kafs_v6_inode_coverage_report_t inode_report;
-  kafs_v6_allocator_summary_coverage_report_t alloc_summary_report;
-  kafs_v6_hrl_index_coverage_report_t hrl_index_report;
-  kafs_v6_hrl_entries_coverage_report_t hrl_entries_report;
-  kafs_v6_hrl_chain_report_t hrl_chain_report;
-  kafs_v6_journal_header_coverage_report_t journal_header_report;
-  kafs_v6_journal_data_coverage_report_t journal_data_report;
-  kafs_v6_journal_segment_report_t journal_segment_report;
+  if (!sb || !report)
+    return -EINVAL;
+
+  uint32_t format_version = kafs_sb_format_version_get(sb);
+  if (format_version == KAFS_FORMAT_VERSION_V6)
+    return kafs_v6_discover_layout(fd, sb, file_size, report);
+  if (format_version == KAFS_FORMAT_VERSION_V7)
+    return kafs_v7_discover_layout(fd, sb, file_size, report);
+  return -EPROTONOSUPPORT;
+}
+
+static int fsck_handle_descriptor_backed_image(const struct fsck_options *opts,
+                                               const struct fsck_image_info *info, int want_write)
+{
+  kafs_descriptor_layout_report_t report;
+  kafs_descriptor_bitmap_coverage_report_t bitmap_report;
+  kafs_descriptor_inode_coverage_report_t inode_report;
+  kafs_descriptor_allocator_summary_coverage_report_t alloc_summary_report;
+  kafs_descriptor_hrl_index_coverage_report_t hrl_index_report;
+  kafs_descriptor_hrl_entries_coverage_report_t hrl_entries_report;
+  kafs_descriptor_hrl_chain_report_t hrl_chain_report;
+  kafs_descriptor_journal_header_coverage_report_t journal_header_report;
+  kafs_descriptor_journal_data_coverage_report_t journal_data_report;
+  kafs_descriptor_journal_segment_report_t journal_segment_report;
   uint32_t format_version = kafs_sb_format_version_get(&info->sb);
+  const char *descriptor_report_prefix =
+      (format_version == KAFS_FORMAT_VERSION_V6) ? "v6" : "descriptor";
   int rc;
 
   if (want_write)
@@ -562,15 +605,15 @@ static int fsck_handle_v6_image(const struct fsck_options *opts, const struct fs
   fprintf(stderr, "format v%u fsck policy: detect-only validation; repair/write modes disabled.\n",
           format_version);
 
-  rc = kafs_v6_discover_layout(info->fd, &info->sb, info->file_size, &report);
-  fsck_report_v6_descriptor(&report);
+  rc = fsck_discover_descriptor_layout(info->fd, &info->sb, info->file_size, &report);
+  fsck_report_descriptor_layout(&report);
   if (rc != 0)
   {
     if (rc == -ENOTSUP)
       fprintf(stderr, "unsupported format v%u layout descriptor\n", format_version);
     else
       fprintf(stderr, "format v%u descriptor discovery failed\n", format_version);
-    return FSCK_EXIT_V6_DESCRIPTOR_FAILED;
+    return FSCK_EXIT_DESCRIPTOR_FAILED;
   }
 
   memset(&bitmap_report, 0, sizeof(bitmap_report));
@@ -584,48 +627,48 @@ static int fsck_handle_v6_image(const struct fsck_options *opts, const struct fs
   memset(&journal_segment_report, 0, sizeof(journal_segment_report));
   void *desc = NULL;
   uint32_t desc_bytes = 0;
-  rc = kafs_v6_read_selected_descriptor(info->fd, &report, &desc, &desc_bytes);
+  rc = kafs_descriptor_read_selected_descriptor(info->fd, &report, &desc, &desc_bytes);
   if (rc == 0)
-    rc = kafs_v6_bitmap_validate_coverage(desc, desc_bytes, &info->sb, info->file_size,
-                                          &bitmap_report);
+    rc = kafs_descriptor_bitmap_validate_coverage(desc, desc_bytes, &info->sb, info->file_size,
+                                                  &bitmap_report);
   if (rc == 0)
-    rc = kafs_v6_inode_validate_coverage(desc, desc_bytes, &info->sb, info->file_size,
-                                         &inode_report);
+    rc = kafs_descriptor_inode_validate_coverage(desc, desc_bytes, &info->sb, info->file_size,
+                                                 &inode_report);
   if (rc == 0)
-    rc = kafs_v6_allocator_summary_validate_coverage(desc, desc_bytes, &info->sb, info->file_size,
-                                                     &alloc_summary_report);
+    rc = kafs_descriptor_allocator_summary_validate_coverage(
+        desc, desc_bytes, &info->sb, info->file_size, &alloc_summary_report);
   if (rc == 0)
-    rc = kafs_v6_hrl_index_validate_coverage(desc, desc_bytes, &info->sb, info->file_size,
-                                             &hrl_index_report);
+    rc = kafs_descriptor_hrl_index_validate_coverage(desc, desc_bytes, &info->sb, info->file_size,
+                                                     &hrl_index_report);
   if (rc == 0)
-    rc = kafs_v6_hrl_entries_validate_coverage(desc, desc_bytes, &info->sb, info->file_size,
-                                               &hrl_entries_report);
+    rc = kafs_descriptor_hrl_entries_validate_coverage(desc, desc_bytes, &info->sb, info->file_size,
+                                                       &hrl_entries_report);
   if (rc == 0)
-    rc = kafs_v6_hrl_validate_chain_bounds_fd(info->fd, desc, desc_bytes, &info->sb,
-                                              info->file_size, &hrl_chain_report);
+    rc = kafs_descriptor_hrl_validate_chain_bounds_fd(info->fd, desc, desc_bytes, &info->sb,
+                                                      info->file_size, &hrl_chain_report);
   if (rc == 0)
-    rc = kafs_v6_journal_header_validate_coverage(desc, desc_bytes, &info->sb, info->file_size,
-                                                  &journal_header_report);
+    rc = kafs_descriptor_journal_header_validate_coverage(desc, desc_bytes, &info->sb,
+                                                          info->file_size, &journal_header_report);
   if (rc == 0)
-    rc = kafs_v6_journal_data_validate_coverage(desc, desc_bytes, &info->sb, info->file_size,
-                                                &journal_data_report);
+    rc = kafs_descriptor_journal_data_validate_coverage(desc, desc_bytes, &info->sb,
+                                                        info->file_size, &journal_data_report);
   if (rc == 0)
-    rc = kafs_v6_journal_validate_segments_fd(info->fd, desc, desc_bytes, &info->sb,
-                                              info->file_size, &journal_segment_report);
+    rc = kafs_descriptor_journal_validate_segments_fd(info->fd, desc, desc_bytes, &info->sb,
+                                                      info->file_size, &journal_segment_report);
   free(desc);
-  fsck_report_v6_bitmap(&bitmap_report, rc);
-  fsck_report_v6_inode(&inode_report, rc);
-  fsck_report_v6_alloc_summary(&alloc_summary_report, rc);
-  fsck_report_v6_hrl_index(&hrl_index_report, rc);
-  fsck_report_v6_hrl_entries(&hrl_entries_report, rc);
-  fsck_report_v6_hrl_chains(&hrl_chain_report, rc);
-  fsck_report_v6_journal_header(&journal_header_report, rc);
-  fsck_report_v6_journal_data(&journal_data_report, rc);
-  fsck_report_v6_journal_segments(&journal_segment_report, rc);
+  fsck_report_descriptor_bitmap(&bitmap_report, rc, descriptor_report_prefix);
+  fsck_report_descriptor_inode(&inode_report, rc, descriptor_report_prefix);
+  fsck_report_descriptor_alloc_summary(&alloc_summary_report, rc, descriptor_report_prefix);
+  fsck_report_descriptor_hrl_index(&hrl_index_report, rc, descriptor_report_prefix);
+  fsck_report_descriptor_hrl_entries(&hrl_entries_report, rc, descriptor_report_prefix);
+  fsck_report_descriptor_hrl_chains(&hrl_chain_report, rc, descriptor_report_prefix);
+  fsck_report_descriptor_journal_header(&journal_header_report, rc, descriptor_report_prefix);
+  fsck_report_descriptor_journal_data(&journal_data_report, rc, descriptor_report_prefix);
+  fsck_report_descriptor_journal_segments(&journal_segment_report, rc, descriptor_report_prefix);
   if (rc != 0)
   {
     fprintf(stderr, "format v%u metadata shard validation failed\n", format_version);
-    return FSCK_EXIT_V6_DESCRIPTOR_FAILED;
+    return FSCK_EXIT_DESCRIPTOR_FAILED;
   }
 
   if (opts->do_check_journal)
@@ -2568,9 +2611,9 @@ int main(int argc, char **argv)
 
   if (kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(&info.sb)))
   {
-    int v6_rc = fsck_handle_v6_image(&opts, &info, want_write);
+    int descriptor_rc = fsck_handle_descriptor_backed_image(&opts, &info, want_write);
     close(info.fd);
-    return v6_rc;
+    return descriptor_rc;
   }
 
   int rc = fsck_validate_regions(&info);

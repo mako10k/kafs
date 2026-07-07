@@ -15,6 +15,8 @@ Format v7 is the breaking-change continuation of that work:
 - new images may be created with `mkfs.kafs --format-version 7`;
 - format v7 runtime requests go through `kafs-v7`;
 - production `kafs` remains the v4/v5 runtime and fails closed for v6/v7;
+- v7 is not a v6 compatibility layer and should not preserve experimental v6
+  behavior unless a compatibility exception is explicitly accepted;
 - v6 remains available for existing experimental tests and images, but new
   layout or policy expansion should target v7 unless explicitly scoped as a v6
   regression fix.
@@ -25,13 +27,31 @@ The v7 runtime has a separate v7 entrypoint/runtime/adapter source set:
 `kafs_v7.c`, `kafs_v7_runtime.*`, `kafs_v7_mount_options.*`, and
 `kafs_v7_entrypoint_adapter.*`.
 
-Descriptor-backed v7 and shared runtime code depend on the neutral
-`kafs_descriptor_layout.h` facade for descriptor discovery, selected-descriptor
-loading, coverage validation, journal segment validation, mkfs descriptor
-build, and superblock anchor initialization.  The backing wire scaffold is
-still the descriptor layout introduced by experimental v6, so the facade
-currently delegates to `kafs_v6_layout.h`; that delegation is an implementation
-detail, not the public v7 runtime contract.
+Resource ownership is intentionally strict:
+
+- v5-and-earlier, v6, and v7 resources are separate ownership boundaries.
+- v7 code must not directly call v5/v6-owned public entrypoints to get a
+  successful v7 path.
+- If v7 needs behavior that currently lives behind a v5/v6-owned file or
+  function, copy it into v7-owned resources or extract a neutral helper first.
+- Neutral helpers must be named and documented as neutral scaffolding, not as a
+  bridge or compatibility layer between formats.
+- Entry surfaces remain format-specific: `kafs` owns v4/v5, `kafs-v6` owns
+  frozen experimental v6, and `kafs-v7` owns v7.
+
+Format v7 descriptor discovery, superblock anchor initialization, mkfs
+descriptor build, and v7 wire magic are owned by `kafs_v7_layout.h`.  The v7
+wire identifiers are separate from experimental v6: the superblock descriptor
+anchor uses `K7SA`, and the layout descriptor uses `K7LD`.
+
+The neutral `kafs_descriptor_layout.h` facade is a low-level descriptor
+scaffold shared by descriptor-backed formats.  It provides selected-descriptor
+loading, coverage validation, journal segment validation, and explicit-wire
+helper functions used by the v6/v7 layout entrypoints.  It is not the public v7
+layout entrypoint.  The backing in-memory structs still originate from the
+experimental v6 descriptor scaffold, so the facade currently delegates to
+`kafs_v6_layout.h`; that delegation is an implementation detail, not the
+public v7 runtime contract.
 
 Diagnostic keys are format-specific:
 
@@ -53,6 +73,9 @@ User-facing entrypoints and on-disk format numbers are no longer ambiguous:
 
 - Do not add old-v6 compatibility gates solely to preserve the experimental v6
   shape.
+- Do not directly reuse v5/v6-owned entrypoints, layout APIs, or admission
+  paths from v7 as a shortcut. Move the code into v7-owned resources or extract
+  a neutral helper first.
 - Do not widen production `kafs` to admit v6/v7 runtime mounts.
 - Do not rename the whole internal descriptor scaffold in the same slice as the
   v7 entrypoint unless that rename is independently validated by LSP-backed
