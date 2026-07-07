@@ -12,6 +12,10 @@
 - format v6 は実験的実装として凍結し、descriptor-backed runtime entrypoint split と
   controlled-write opt-in boundary の検証結果として扱う。
 - 破壊的変更を伴う descriptor-backed format work は、format v7 / `kafs-v7` を入口にする。
+- v7 の RAW LAYOUT は、まず
+  [sd-card-wear-format-v7-inception-deck.md](sd-card-wear-format-v7-inception-deck.md)
+  の decision model / scope と metadata region coverage matrix を固め、HRL index/entry
+  placement と recovery invariant を first-class に扱ってから仕様化する。
 - 各実装 PR では、関連する最小テストと metadata durability / wear-distribution 前提を明記する。
 - 現行の v7 方針は
   [sd-card-wear-format-v7-pivot.md](sd-card-wear-format-v7-pivot.md) を正とする。

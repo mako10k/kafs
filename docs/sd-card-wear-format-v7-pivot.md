@@ -21,6 +21,13 @@ Format v7 is the breaking-change continuation of that work:
   layout or policy expansion should target v7 unless explicitly scoped as a v6
   regression fix.
 
+The raw image layout is not finalized by this pivot.  Before changing the v7
+raw layout or expanding the v7 mkfs/runtime behavior, use the decision model and
+scope in
+[sd-card-wear-format-v7-inception-deck.md](sd-card-wear-format-v7-inception-deck.md)
+to choose the v7 layout family, then record the accepted raw layout in a
+separate v7 layout specification.
+
 ## Current Implementation Boundary
 
 The v7 runtime has a separate v7 entrypoint/runtime/adapter source set:
@@ -66,7 +73,7 @@ User-facing entrypoints and on-disk format numbers are no longer ambiguous:
 | `kafs` | Production v4/v5 runtime. Rejects v6/v7 descriptor-backed images. |
 | `kafs-v6` | Frozen experimental v6 runtime entrypoint. |
 | `kafs-v7` | Breaking-change descriptor-backed runtime entrypoint. |
-| `mkfs.kafs --format-version 7` | Creates a format v7 image using the current descriptor scaffold. |
+| `mkfs.kafs --format-version 7` | Current v7 image creation surface; final behavior must follow the accepted v7 raw layout spec. |
 | `fsck.kafs` / `kafsdump` | Validate/report descriptor-backed v6/v7 images offline. |
 
 ## Non-Goals
@@ -83,9 +90,13 @@ User-facing entrypoints and on-disk format numbers are no longer ambiguous:
 
 ## Follow-Up Boundaries
 
-1. Move remaining diagnostic/report internals that still carry v6-only local
+1. Accept the v7 inception deck decision model and write the v7 raw layout
+   specification, including every metadata region in the inception deck coverage
+   matrix and the HRL index/entry placement and recovery invariants,
+   before expanding v7 mkfs/runtime behavior.
+2. Move remaining diagnostic/report internals that still carry v6-only local
    names to neutral descriptor-family names where it reduces ambiguity.
-2. Add `kafsresize --migrate-create --format-version 7` once the v7 mkfs and
+3. Add `kafsresize --migrate-create --format-version 7` once the v7 mkfs and
    offline validation surface is stable.
-3. Prove `kafs-v7 --inspection-mount` and then controlled-write runtime paths
+4. Prove `kafs-v7 --inspection-mount` and then controlled-write runtime paths
    with mount tests before expanding the write surface.
