@@ -1,23 +1,22 @@
 # KAFS format v7 inception deck
 
 Date: 2026-07-07
-Status: draft
+Accepted: 2026-07-13
+Status: accepted
 
 ## Purpose
 
-This deck fixes the decision frame for the format v7 raw image layout before
-the layout is specified or implemented.  Format v7 exists because the v6 work
+This deck fixes the accepted decision frame for the format v7 raw image layout.
+Format v7 exists because the v6 work
 proved useful descriptor-backed entrypoint and validation boundaries, but also
 made clear that a long-lived raw layout should not grow by preserving
 experimental v6 shape or v5 prefix assumptions.
 
-The next accepted artifact after this deck should be a format v7 raw layout
-specification.  `mkfs.kafs --format-version 7`, `fsck.kafs`, `kafsdump`, and
-`kafs-v7` should then be implemented against that v7-owned raw layout, not
-against an accidental copy of the v6 scaffold.
-
-The current raw layout draft is
+The accepted raw layout specification is
 [sd-card-wear-format-v7-raw-layout.md](sd-card-wear-format-v7-raw-layout.md).
+`mkfs.kafs --format-version 7`, `fsck.kafs`, `kafsdump`, and `kafs-v7` must be
+implemented against its v7-owned descriptor version 2 records, not against the
+pre-specification version 1 scaffold.
 
 ## Why Are We Here?
 
@@ -113,6 +112,11 @@ resolved by the table order.
 | 2 | Small-image overhead | Keep overhead bounded, but do not let tiny-image efficiency force a global hot prefix. |
 | 1 | Legacy raw-layout compatibility | Compatibility belongs to offline migration, not v7 runtime admission. |
 
+Recoverability/fault tolerance and SD-card wear distribution are joint highest
+priorities.  Wear distribution cannot weaken the recovery-floor gate: when a
+placement cannot be recovered or rejected deterministically after a torn write,
+it is not an admissible wear-leveling design.
+
 ## Tradeoff Rules
 
 Use these rules when layout quality and implementation cost conflict:
@@ -159,8 +163,9 @@ after an explicit v7 decision:
 - v4/v5 prefix metadata makes the superblock the owner of contiguous bitmap,
   inode table, HRL, allocator, and journal geometry.
 - Superblock/checkpoint data is both a bootstrap dependency and a write
-  concentration risk.  v7 must separate the small discovery anchor from mutable
-  checkpoint/update state where possible.
+  concentration risk.  v7 separates replicated immutable root locators from
+  authoritative rotated mutable checkpoint replicas; mutable free counts do not
+  remain authoritative at offset 0.
 - Journal header/data placement is not solved by having a descriptor.  The raw
   layout must define segment pairing, generation ordering, checksums, and replay
   selection.
@@ -186,57 +191,59 @@ after an explicit v7 decision:
 
 ## Coverage Matrix
 
-The raw layout specification must make an explicit decision for every metadata
-region below.  "Not implemented in the first slice" is acceptable only when the
-successful v7 runtime path fails closed before using that region.
+The coverage matrix remains the conformance checklist for every implementation.
+The accepted raw layout makes an explicit decision for every region below.
+"Not implemented in the first slice" is acceptable only when the successful v7
+runtime path fails closed before using that region.
 
-| Region | Class | Required v7 decision |
+| Region | Class | Accepted v7 contract |
 | --- | --- | --- |
-| `superblock_checkpoint` | discovery/recovery gate | Root anchor location, checkpoint replicas, generation/checksum semantics, and which fields may remain mutable. |
-| `layout_descriptor` | discovery/recovery gate | Replica placement, descriptor generation, checksum, candidate selection, and descriptor update protocol. |
-| `block_bitmap` | write-admission gate | Exact block namespace coverage, shard ownership, update alignment, and bitmap/allocator consistency checks. |
-| `inode_table` | write-admission gate | Exact inode number coverage, root inode coverage, record size, and whether v7 keeps or replaces the current inode record shape. |
-| `allocator_summary` | write-admission gate | Relationship to bitmap/data groups, rebuild source, L1/L2 or v7-native summary shape, and stale-summary recovery. |
-| `hrl_index` | write-admission gate | Bucket coverage, group ownership, chain head lookup, and fsck validation. |
-| `hrl_entries` | write-admission gate | Entry-id coverage, record size/alignment, chain bounds, loop detection, and group consistency with index shards. |
-| `journal_header` | recovery gate | Segment id coverage, header record shape, generation/checksum, and pairing with journal data. |
-| `journal_data` | recovery gate | Segment byte-span coverage, replay scan order, torn-write handling, and selected-segment update rules. |
-| `pending_log` | explicit policy | Descriptor-owned placement and recovery rules, or explicit disabled/fail-closed policy for all users. |
-| `tail_metadata` | explicit policy | v7-native packing/normalization rules, or explicit retirement/disabled policy for all users. |
+| `superblock_checkpoint` | discovery/recovery gate | Immutable primary/tail `K7SA` roots plus 2-or-3 rotated `K7CP` replicas; legacy primary mutable fields are non-authoritative. |
+| `layout_descriptor` | discovery/recovery gate | Deterministic primary/tail/optional-midpoint `K7LD` replicas, generation/CRC validation, and byte-identical same-generation selection. |
+| `block_bitmap` | write-admission gate | Exact logical coverage with little-endian 64-bit words and paired allocator-summary validation. |
+| `inode_table` | write-admission gate | Exact `[0, s_inocnt)` coverage and a packed 128-byte v7 inode with logical-block-plus-one references. |
+| `allocator_summary` | write-admission gate | One L1/L2 summary per bitmap shard, exactly rebuildable from the authoritative bitmap. |
+| `hrl_index` | write-admission gate | Packed 4-byte bucket heads with exact coverage and group-local chain ownership. |
+| `hrl_entries` | write-admission gate | Packed 24-byte entries, exact entry-id coverage, bounded acyclic chains, and group-local data references. |
+| `journal_header` | recovery gate | At least two segment ids with rotating 64-byte `K7JH` slots and independently validated data prefixes. |
+| `journal_data` | recovery gate | Structured checksummed transactions merged across all valid segments by filesystem-global no-wrap sequence. |
+| `pending_log` | explicit policy | Shard absent; every dependent path fails before mutation. |
+| `tail_metadata` | explicit policy | Shard and inode tail payload absent/zero; packing, normalization, reclaim, and GC fail before mutation. |
 
 `unknown` remains a counter bucket, not an on-disk v7 region.
 
 ## Non-Metadata Raw Layout Decisions
 
-The v7 raw layout spec must also decide the following non-metadata shape before
-mkfs generation:
+The accepted v7 raw layout also fixes the following non-metadata shape; mkfs
+conformance must validate it before generating an admissible image:
 
-| Area | Required v7 decision |
+| Area | Accepted v7 contract |
 | --- | --- |
-| Data block address space | Logical filesystem block to physical span mapping, metadata reservations, group ownership, and whether data extents are contiguous inside each group. |
-| Feature/version flags | Which bits are incompatible, read-only-compatible, or debug-only, and how older tools fail closed. |
-| Byte order and alignment | Endianness, padding, block alignment, fixed-record alignment, and overflow rules for every v7-owned record. |
-| Update atomicity | Which records are copy-update, generation-selected, or rewritten in place, and which torn-write cases fsck must recover or reject. |
-| Small-image policy | Minimum viable image size, minimum group count, descriptor overhead bounds, and when mkfs must refuse a too-small v7 image. |
+| Data block address space | Group-local linear logical-to-physical mapping with contiguous data inside each group and exact non-overlap reservations. |
+| Feature/version flags | Six required incompat bits; missing required or unknown incompat bits fail closed. |
+| Byte order and alignment | Packed little-endian records, exact sizes/padding, block alignment, checked arithmetic, and one common CRC-32 algorithm. |
+| Update atomicity | Byte-identical descriptor/checkpoint replication plus write-ahead structured journal transactions; ambiguity fails closed. |
+| Small-image policy | At least two descriptor/checkpoint replicas, two journal segments, one group, and one usable data block; otherwise mkfs refuses the image. |
 
 ## Candidate Layout Families
 
 ### A. Descriptor-rooted grouped metadata
 
-This is the recommended baseline.  The image has a small deterministic v7
-anchor, one or more descriptor replicas, and descriptor-owned metadata groups.
+This is the accepted baseline.  The image has deterministic primary and tail
+v7 root locators, at least primary and tail descriptor/checkpoint replicas, and
+descriptor-owned metadata groups.
 Bitmap, inode, allocator summary, HRL, and journal regions are resolved through
-v7-owned descriptor records, with pending log and tail metadata either
-descriptor-owned or explicitly disabled.  The initial implementation may choose
+v7-owned descriptor records, with pending log and tail metadata absent and
+explicitly fail-closed.  The initial implementation may choose
 one group for containment only if the raw layout encodes it as a v7 metadata
 group, not as a v5 prefix compatibility mode.
 
-HRL must remain visible inside this family: the raw layout should describe HRL
+HRL remains visible inside this family: the raw layout describes HRL
 index and entry shards explicitly, including bucket coverage, entry-id coverage,
 and the recovery checks needed before `kafs-v7` admission.
 
-Journal and core mutation paths must remain equally visible: the raw layout
-should describe journal header/data segments, bitmap shards, inode shards, and
+Journal and core mutation paths remain equally visible: the raw layout
+describes journal header/data segments, bitmap shards, inode shards, and
 allocator summary shards with the same fail-closed coverage discipline used for
 HRL.
 
@@ -247,6 +254,8 @@ Expected consequences:
   admission;
 - later wear-distribution work can add placement policy without changing the
   entrypoint boundary;
+- the single-group offline slice proves the placement/recovery foundation but
+  does not claim that wear leveling is complete;
 - implementation must avoid treating the current v6 scaffold as the public v7
   layout.
 
@@ -285,17 +294,19 @@ Expected consequences:
 
 - practical first implementation path;
 - preserves the final direction if the single-group restriction is explicit;
-- still requires the raw layout spec before mkfs generation.
+- next requires offline mkfs/fsck/kafsdump conformance to the accepted raw-layout
+  specification before runtime admission.
 
-## Working Decision
+## Accepted Decision Order
 
-Use the following decision order unless the project explicitly changes
-direction:
+Use the following decision order unless the project explicitly accepts an
+incompatible direction change:
 
 1. reject candidates that fail any admission gate or leave a coverage-matrix
    region undecided;
-2. among passing candidates, optimize first for recoverability/fsck
-   determinism, then wear distribution;
+2. among passing candidates, jointly optimize fault tolerance/fsck determinism
+   and wear distribution, never accepting ambiguous recovery to gain placement
+   spread;
 3. next, prefer designs that make journal replay, core mutation routing, HRL
    durability, and root/checkpoint stability explicit in that order;
 4. use observability and runtime simplicity to choose between otherwise similar
@@ -306,48 +317,56 @@ direction:
 7. accept a staged first implementation only when it is encoded as a strict
    subset of the final v7 raw layout.
 
-Under this decision order, the next raw layout spec should start from candidate
-A, with candidate D allowed as the first implementation slice.
+Under this decision order, the accepted raw layout uses candidate A, with
+candidate D as the first implementation delivery.
 
-## Questions To Resolve Before The Raw Layout Spec
+## Accepted Raw-Layout Decisions
 
-- Is the v7 root anchor a reserved superblock field, a separate anchor block,
-  or both?
-- What is the descriptor replica placement policy for small and large images?
-- What is the metadata group placement algorithm, and how many groups are
-  created by default?
-- How are logical filesystem blocks mapped to physical data spans once metadata
-  groups reserve non-data space?
-- Are journal regions global descriptor-selected segments, per-group segments,
-  or both?
-- What journal segment generation/checksum and replay selection rules are part
-  of the v7 raw layout rather than inherited from v5/v6 code?
-- Are HRL index and entry shards colocated with the data/allocator group they
-  describe, separated into their own durability group, or selected by a distinct
-  wear-distribution policy?
-- What HRL bucket coverage, entry-id coverage, chain integrity, and checksum or
-  generation invariants must fsck validate?
-- Does v7 keep the existing inode record shape initially, or define a
-  v7-native inode record now?
-- Are bitmap shard logical starts and physical offsets word-aligned, or does v7
-  require byte-granular bitmap mutation logic?
-- Is allocator summary still the v3-style L1/L2 model per shard, or a new
-  v7-native summary record?
-- Are pending log and tail metadata descriptor-backed v7 features, disabled
-  runtime features, or retired from the v7 write surface?
-- What v7 feature flags, byte order, record alignment, and overflow rules are
-  part of the raw layout contract?
-- What exact coverage invariants must fsck validate before `kafs-v7` can admit
-  an image?
-- Is v5-to-v7 migration limited to offline rebuild through
-  `kafsresize --migrate-create --format-version 7`?
+The raw-layout questions are closed by the accepted specification:
+
+- byte-identical primary and reserved-final-block tail `K7SA` version 2 locators
+  remove offset 0 as the only descriptor-discovery root and carry the block size
+  needed for independent tail recovery;
+- accepted `K7LD` descriptor version 2 requires primary and tail descriptor and
+  checkpoint replicas, adding midpoint replicas whenever deterministic
+  non-overlap permits them;
+- explicit v7-owned 96-byte group and shard records describe metadata physical
+  spans, data logical/physical spans, storage class, and exact coverage;
+- group-local linear data mapping and fixed little-endian 64-bit bitmap words
+  replace platform-dependent or prefix-derived mapping;
+- rotated `K7CP` replicas own mutable free-count checkpoints; the primary
+  superblock remains immutable identity/discovery state;
+- journal header/data placement is group-local while segment sequence and replay
+  ordering are filesystem-global; all valid segments are merged rather than
+  selecting one highest-generation segment;
+- HRL bucket and entry chains must remain group-consistent and fsck-verifiable;
+- inode, allocator-summary, journal, and HRL records have self-contained v7
+  field offsets, sizes, little-endian semantics, and padding rules; no host or
+  v5/v6 wire typedef is normative;
+- the journal uses rotated 64-byte `K7JH` slots and structured, checksummed
+  begin/mutation/commit-or-abort records with filesystem-global no-wrap
+  sequences;
+- pending log and tail metadata are absent and fail-closed in descriptor version
+  2;
+- unknown flags, record types, storage classes, gaps, overlaps, overflow, and
+  same-generation divergence fail admission;
+- compatibility is an offline rebuild/migration concern, not v7 runtime
+  fallback.
+
+Deferred capabilities are not unresolved baseline behavior.  Cross-group HRL,
+multi-group transaction atomicity, pending/tail metadata, and non-linear data
+mapping each require an explicit incompatible flag or later format version plus
+their own mapping, recovery, and fsck proof.  Until then, affected runtime paths
+fail before mutation.
 
 ## Exit Criteria
 
-The inception deck is complete enough when maintainers can choose the layout
-family and decision order without reading implementation code.  The v7 raw
-layout spec is complete enough when `mkfs.kafs`, `fsck.kafs`, `kafsdump`, and
-`kafs-v7` can each list the exact v7-owned records they must produce, validate,
-report, or admit, including superblock/checkpoint, descriptor replicas, bitmap,
-inode, allocator summary, HRL index/entries, journal header/data, pending log,
-and tail metadata decisions.
+The decision-model exit criterion is met: the accepted specification lets
+`mkfs.kafs`, `fsck.kafs`, `kafsdump`, and `kafs-v7` list the exact v7-owned
+records they must produce, validate, report, or admit, including root locators,
+checkpoint and descriptor replicas, bitmap, inode, allocator summary, HRL
+index/entries, journal header/data, and explicit pending/tail rejection.
+
+Implementation conformance remains gated separately.  The current pre-spec
+scaffold is not accepted merely because these documents are accepted; each
+successful tool/runtime path must prove descriptor version 2 behavior first.
