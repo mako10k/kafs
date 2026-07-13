@@ -5,7 +5,6 @@
 #include "kafs_superblock.h"
 #include "kafs_locks.h"
 #include "kafs_descriptor_layout.h"
-#include "kafs_v7_layout.h"
 #include <assert.h>
 #include <stdio.h>
 #include <errno.h>
@@ -306,7 +305,8 @@ static int kafs_descriptor_mapping_read_fd(struct kafs_context *ctx, int fd, uin
   if (format_version == KAFS_FORMAT_VERSION_V6)
     rc = kafs_v6_discover_layout(fd, ctx->c_superblock, file_size, &layout);
   else if (format_version == KAFS_FORMAT_VERSION_V7)
-    rc = kafs_v7_discover_layout(fd, ctx->c_superblock, file_size, &layout);
+    /* Accepted v7 raw layouts are offline-only until the v7 runtime-view ticket lands. */
+    rc = -EPROTONOSUPPORT;
   else
     return -EPROTONOSUPPORT;
   if (rc == 0)

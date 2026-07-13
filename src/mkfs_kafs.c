@@ -663,9 +663,6 @@ static void mkfs_init_superblock(kafs_context_t *ctx, uint32_t format_version,
   if (format_version == KAFS_FORMAT_VERSION_V6)
     kafs_v6_anchor_init(ctx->c_superblock, (uint64_t)layout->v6_desc_off, layout->v6_desc_bytes,
                         layout->v6_candidate_count);
-  else if (format_version == KAFS_FORMAT_VERSION_V7)
-    kafs_v7_anchor_init(ctx->c_superblock, (uint64_t)layout->v6_desc_off, layout->v6_desc_bytes,
-                        layout->v6_candidate_count);
 
   ctx->c_superblock->s_inocnt = kafs_inocnt_htos(inocnt);
   kafs_sb_inocnt_free_set(ctx->c_superblock,
@@ -814,11 +811,6 @@ static int mkfs_write_descriptor_layout(kafs_context_t *ctx, const struct mkfs_l
                                        (uint64_t)total_bytes, (uint64_t *)layout->v6_candidates,
                                        layout->v6_candidate_count, (uint64_t)layout->blkmask_off,
                                        bitmap_bytes, (uint64_t)layout->inotbl_off, inode_bytes);
-  else if (format_version == KAFS_FORMAT_VERSION_V7)
-    rc = kafs_v7_build_mkfs_descriptor(desc, layout->v6_desc_bytes, ctx->c_superblock,
-                                       (uint64_t)total_bytes, (uint64_t *)layout->v6_candidates,
-                                       layout->v6_candidate_count, (uint64_t)layout->blkmask_off,
-                                       bitmap_bytes, (uint64_t)layout->inotbl_off, inode_bytes);
   else
     rc = -EPROTONOSUPPORT;
   if (rc != 0)
@@ -842,6 +834,86 @@ static int mkfs_write_descriptor_layout(kafs_context_t *ctx, const struct mkfs_l
   return 0;
 }
 
+static int mkfs_format_v7(const mkfs_options_t *opts)
+{
+  kafs_context_t ctx;
+  struct stat st;
+  int have_stat = 0;
+  off_t total_bytes = opts->total_bytes;
+  kafs_inocnt_t inocnt = opts->inocnt;
+
+  if (mkfs_open_target(&ctx, opts->img, &st, &have_stat) != 0)
+    return 1;
+  if (mkfs_resolve_total_bytes(&ctx, &st, opts->size_arg_provided, &total_bytes) != 0)
+    return 1;
+  if (!opts->inocnt_arg_provided)
+    inocnt = mkfs_default_inocnt_for_size(total_bytes);
+
+  if (total_bytes >= (off_t)sizeof(kafs_ssuperblock_t))
+  {
+    kafs_ssuperblock_t previous;
+    if (pread(ctx.c_fd, &previous, sizeof(previous), 0) == (ssize_t)sizeof(previous) &&
+        kafs_sb_magic_get(&previous) == KAFS_MAGIC &&
+        mkfs_format_version_is_supported(kafs_sb_format_version_get(&previous)))
+    {
+      fprintf(stderr, "warning: image appears formatted and will be overwritten: %s\n", opts->img);
+      if (!opts->assume_yes && !mkfs_confirm_overwrite_stdin())
+      {
+        fprintf(stderr, "mkfs.kafs: aborted\n");
+        close(ctx.c_fd);
+        return 1;
+      }
+    }
+  }
+
+  if (S_ISREG(st.st_mode))
+  {
+    if (ftruncate(ctx.c_fd, 0) != 0 || ftruncate(ctx.c_fd, total_bytes) != 0)
+    {
+      perror("ftruncate");
+      close(ctx.c_fd);
+      return 1;
+    }
+  }
+
+  kafs_v7_mkfs_options_t v7_options = {
+      .image_size_bytes = (uint64_t)total_bytes,
+      .block_size = (uint32_t)opts->blksize,
+      .inode_count = (uint32_t)inocnt,
+      .journal_bytes = opts->journal_bytes,
+      .hrl_entry_ratio = opts->hrl_entry_ratio,
+      .root_uid = (uint16_t)getuid(),
+      .root_gid = (uint16_t)getgid(),
+  };
+  kafs_v7_layout_report_t report;
+  int rc = kafs_v7_mkfs_fd(ctx.c_fd, &v7_options, &report);
+  if (rc != 0)
+  {
+    fprintf(stderr, "failed to create accepted format v7 raw layout: %s\n", strerror(-rc));
+    close(ctx.c_fd);
+    return rc == -ENOSPC || rc == -EINVAL ? 2 : 1;
+  }
+
+  if (opts->trim_data_area)
+  {
+    const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(&report);
+    int trim_rc = mkfs_trim_range(ctx.c_fd, (off_t)le64toh(groups[0].data_physical_off),
+                                  (off_t)le64toh(groups[0].data_physical_bytes));
+    if (trim_rc != 0)
+      fprintf(stderr, "warning: --trim-data-area failed rc=%d\n", trim_rc);
+  }
+
+  fprintf(stderr,
+          "Formatted %s: format=v7 size=%lld bytes, blksize=%u, physical_blocks=%u, "
+          "data_blocks=%" PRIu64 ", inodes=%u, replicas=%u\n",
+          opts->img, (long long)total_bytes, (unsigned)opts->blksize,
+          (unsigned)((uint64_t)total_bytes / opts->blksize), report.free_blocks, (unsigned)inocnt,
+          report.replica_count);
+  kafs_v7_layout_report_clear(&report);
+  close(ctx.c_fd);
+  return 0;
+}
+
 int main(int argc, char **argv)
 {
   mkfs_options_t opts;
@@ -852,6 +924,9 @@ int main(int argc, char **argv)
   mkfs_options_init(&opts);
   if (mkfs_collect_args(argc, argv, &opts) != 0)
     return 2;
+
+  if (opts.format_version == KAFS_FORMAT_VERSION_V7)
+    return mkfs_format_v7(&opts);
 
   const char *img = opts.img;
   uint32_t format_version = opts.format_version;

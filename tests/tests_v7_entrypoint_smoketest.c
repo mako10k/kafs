@@ -1,6 +1,5 @@
 #include "test_utils.h"
 
-#include "kafs_descriptor_layout.h"
 #include "kafs_offline_summary.h"
 #include "kafs_superblock.h"
 #include "kafs_v7_layout.h"
@@ -114,39 +113,20 @@ static int check_v7_descriptor_direct(const char *img)
   if (rc == 0 && kafs_sb_format_version_get(&sb) != KAFS_FORMAT_VERSION_V7)
     rc = -EINVAL;
 
-  kafs_descriptor_layout_report_t report;
+  kafs_v7_layout_report_t report;
   if (rc == 0)
-  {
-    kafs_sdescriptor_superblock_anchor_t anchor;
-    memcpy(&anchor, sb.s_reserved, sizeof(anchor));
-    if (kafs_u32_stoh(anchor.va_magic) != KAFS_V7_SUPERBLOCK_ANCHOR_MAGIC)
-      rc = -EINVAL;
-  }
-  if (rc == 0)
-    rc = kafs_v7_discover_layout(fd, &sb, file_size, &report);
-  void *desc = NULL;
-  uint32_t desc_bytes = 0;
-  if (rc == 0)
-    rc = kafs_descriptor_read_selected_descriptor(fd, &report, &desc, &desc_bytes);
-  if (rc == 0)
-  {
-    if (desc_bytes < sizeof(kafs_sdescriptor_layout_desc_header_t))
-      rc = -ERANGE;
-    else
-    {
-      const kafs_sdescriptor_layout_desc_header_t *hdr =
-          (const kafs_sdescriptor_layout_desc_header_t *)desc;
-      if (kafs_u32_stoh(hdr->ld_magic) != KAFS_V7_LAYOUT_MAGIC)
-        rc = -EINVAL;
-    }
-  }
-  free(desc);
+    rc = kafs_v7_validate_image_fd(fd, &sb, file_size, &report);
   close(fd);
   if (rc != 0)
     return rc;
-  if (!report.anchor_valid || !report.selected_found || report.replica_count != 3u ||
-      report.group_count != 1u || report.shard_count != 12u || report.descriptor_bytes == 0u)
+  if (!report.primary_locator_valid || !report.tail_locator_valid || !report.selected_found ||
+      report.replica_count != 2u || report.group_count != 1u || report.shard_count != 11u ||
+      report.descriptor_bytes == 0u || report.journal_segment_count != 2u)
+  {
+    kafs_v7_layout_report_clear(&report);
     return -EINVAL;
+  }
+  kafs_v7_layout_report_clear(&report);
   return 0;
 }
 
@@ -198,8 +178,10 @@ int main(void)
   }
   if (expect_contains("v7 kafsdump", out, "\"format_version\": 7") ||
       expect_contains("v7 kafsdump", out, "\"layout_descriptor\"") ||
+      expect_contains("v7 kafsdump", out, "\"root_locators\"") ||
+      expect_contains("v7 kafsdump", out, "\"checkpoints\"") ||
       expect_contains("v7 kafsdump", out, "\"status\": \"ok\"") ||
-      expect_contains("v7 kafsdump", out, "\"replica_count\": 3") ||
+      expect_contains("v7 kafsdump", out, "\"replica_count\": 2") ||
       expect_not_contains("v7 kafsdump", out, "\"v6_layout_descriptor\""))
     return 1;
 
@@ -212,6 +194,19 @@ int main(void)
   if (expect_contains("v7 fsck", out, "format v7 fsck policy") ||
       expect_contains("v7 fsck", out, "layout descriptor:") ||
       expect_contains("v7 fsck", out, "status=selected"))
+    return 1;
+
+  char *v7_mount_argv[] = {(char *)kafs_test_kafs_v7_bin(), (char *)"--image", (char *)img,
+                           (char *)"--inspection-mount", (char *)"mnt", (char *)"-o",
+                           (char *)"ro", NULL};
+  if (run_cmd_capture(v7_mount_argv, 2, out, sizeof(out)) != 0)
+  {
+    tlogf("kafs-v7 accepted a raw-layout runtime mount unexpectedly: %s", out);
+    return 1;
+  }
+  if (expect_contains("v7 runtime remains offline", out,
+                      "accepted raw-layout runtime mount remains offline-only") ||
+      expect_contains("v7 runtime remains offline", out, "kafsdump/fsck.kafs"))
     return 1;
 
   char *mount_argv[] = {(char *)kafs_test_kafs_bin(), (char *)img, (char *)"mnt", NULL};
