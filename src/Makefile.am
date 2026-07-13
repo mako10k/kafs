@@ -20,8 +20,7 @@ kafs_SOURCES = kafs.c kafs_shared_fuse_runtime.c kafs_hrl.c kafs_locks.c kafs_jo
 # - kafs-v6 is the frozen experimental v6 runtime entrypoint.
 # - kafs-v7 is the next descriptor-backed runtime entrypoint. It has separate
 #   v7 entrypoint/runtime/adapter sources. v7 layout wire ownership lives in
-#   kafs_v7_layout.h, which enters the neutral descriptor scaffold instead of
-#   depending on v6 entrypoint names.
+#   kafs_v7_layout.c/.h and is not a v6 descriptor compatibility facade.
 # - v7 must not directly reuse v5/v6-owned entrypoints, layout APIs, or
 #   admission paths as compatibility shortcuts. Copy behavior into v7-owned
 #   resources or extract a neutral helper before sharing it.
@@ -50,12 +49,12 @@ kafs_v7_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -DKAF
 kafs_v7_LDADD = $(KAFS_LIBS)
 
 # new mkfs.kafs target
-mkfs_kafs_SOURCES = mkfs_kafs.c kafs_hrl.c kafs_locks.c
+mkfs_kafs_SOURCES = mkfs_kafs.c kafs_v7_layout.c kafs_hrl.c kafs_locks.c
 mkfs_kafs_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 mkfs_kafs_LDADD = $(KAFS_LIBS)
 
 # fsck.kafs target (journal check/clear + orphan reclaim)
-fsck_kafs_SOURCES = fsck_kafs.c kafs_hrl.c kafs_locks.c kafs_journal.c
+fsck_kafs_SOURCES = fsck_kafs.c kafs_v7_layout.c kafs_hrl.c kafs_locks.c kafs_journal.c
 fsck_kafs_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 fsck_kafs_LDADD = $(KAFS_LIBS)
 
@@ -65,7 +64,7 @@ kafs_info_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 kafs_info_LDADD = $(KAFS_LIBS)
 
 # offline image dump tool
-kafsdump_SOURCES = kafsdump.c
+kafsdump_SOURCES = kafsdump.c kafs_v7_layout.c
 kafsdump_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 kafsdump_LDADD = $(KAFS_LIBS)
 

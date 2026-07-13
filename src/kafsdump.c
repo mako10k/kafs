@@ -127,8 +127,6 @@ static int dump_discover_descriptor_layout(int fd, const kafs_ssuperblock_t *sb,
   uint32_t format_version = kafs_sb_format_version_get(sb);
   if (format_version == KAFS_FORMAT_VERSION_V6)
     return kafs_v6_discover_layout(fd, sb, file_size, report);
-  if (format_version == KAFS_FORMAT_VERSION_V7)
-    return kafs_v7_discover_layout(fd, sb, file_size, report);
   return -EPROTONOSUPPORT;
 }
 
@@ -869,6 +867,135 @@ static void print_json(const struct dump_report *dump)
   printf("}\n");
 }
 
+static void print_v7_copy_json(const kafs_v7_copy_report_t *copy)
+{
+  printf("{\"replica_id\": %" PRIu32 ", \"role\": \"%s\", \"offset\": %" PRIu64
+         ", \"bytes\": %" PRIu32 ", \"status\": \"%s\", \"generation\": %" PRIu64
+         ", \"crc_ok\": %s, \"selected\": %s}",
+         copy->id, kafs_v7_replica_role_name(copy->role), copy->offset, copy->bytes,
+         kafs_v7_replica_status_name(copy->status), copy->generation,
+         copy->crc_ok ? "true" : "false", copy->selected ? "true" : "false");
+}
+
+static void print_v7_json(const kafs_ssuperblock_t *sb, const kafs_v7_layout_report_t *report,
+                          int rc)
+{
+  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(report);
+  const kafs_v7_shard_desc_t *shards = kafs_v7_report_shards(report);
+
+  printf("{\n");
+  printf("  \"superblock\": {\"magic\": %" PRIu32 ", \"format_version\": 7, "
+         "\"block_size\": %" PRIu32 ", \"inode_count\": %" PRIu64 ", \"physical_blocks\": %" PRIu64
+         ", \"logical_data_blocks\": %" PRIu64 "},\n",
+         kafs_sb_magic_get(sb), report->block_size, (uint64_t)kafs_sb_inocnt_get(sb),
+         (uint64_t)kafs_sb_blkcnt_get(sb), (uint64_t)kafs_sb_r_blkcnt_get(sb));
+  printf("  \"root_locators\": [\n");
+  printf("    {\"role\": \"primary\", \"status\": \"%s\", \"selected\": %s},\n",
+         report->primary_locator_valid ? "valid" : "invalid",
+         report->primary_locator_valid ? "true" : "false");
+  printf("    {\"role\": \"tail\", \"status\": \"%s\", \"selected\": %s}\n",
+         report->tail_locator_valid ? "valid" : "invalid",
+         !report->primary_locator_valid && report->tail_locator_valid ? "true" : "false");
+  printf("  ],\n");
+  printf("  \"layout_descriptor\": {\"status\": \"%s\", \"available\": %s, "
+         "\"selected_replica\": %" PRIu32 ", \"generation\": %" PRIu64
+         ", \"descriptor_bytes\": %" PRIu32 ", \"group_count\": %" PRIu32
+         ", \"shard_count\": %" PRIu32 ", \"replica_count\": %" PRIu32
+         ", \"selected\": %s, \"degraded\": %s},\n",
+         rc == 0 ? "ok" : rc_to_text(rc), report->selected_found ? "true" : "false",
+         report->selected_replica, report->selected_generation, report->descriptor_bytes,
+         report->group_count, report->shard_count, report->replica_count,
+         report->selected_found ? "true" : "false", report->degraded ? "true" : "false");
+  printf("  \"descriptor_replicas\": [");
+  for (uint32_t id = 0; id < report->replica_count; ++id)
+  {
+    printf("%s", id == 0 ? "" : ", ");
+    print_v7_copy_json(&report->descriptors[id]);
+  }
+  printf("],\n");
+  printf("  \"checkpoints\": [");
+  for (uint32_t id = 0; id < report->replica_count; ++id)
+  {
+    printf("%s", id == 0 ? "" : ", ");
+    print_v7_copy_json(&report->checkpoints[id]);
+  }
+  printf("],\n");
+  printf("  \"groups\": [");
+  if (groups)
+  {
+    for (uint32_t i = 0; i < report->group_count; ++i)
+    {
+      printf("%s{\"group_id\": %" PRIu32 ", \"metadata_physical_off\": %" PRIu64
+             ", \"metadata_physical_bytes\": %" PRIu64 ", \"data_logical_start\": %" PRIu64
+             ", \"data_logical_count\": %" PRIu64 ", \"data_physical_off\": %" PRIu64
+             ", \"data_physical_bytes\": %" PRIu64 ", \"first_shard\": %" PRIu32
+             ", \"shard_count\": %" PRIu32 "}",
+             i == 0 ? "" : ", ", le32toh(groups[i].group_id),
+             le64toh(groups[i].metadata_physical_off), le64toh(groups[i].metadata_physical_bytes),
+             le64toh(groups[i].data_logical_start), le64toh(groups[i].data_logical_count),
+             le64toh(groups[i].data_physical_off), le64toh(groups[i].data_physical_bytes),
+             le32toh(groups[i].first_shard_index), le32toh(groups[i].shard_count));
+    }
+  }
+  printf("],\n");
+  printf("  \"shards\": [");
+  if (shards)
+  {
+    for (uint32_t i = 0; i < report->shard_count; ++i)
+    {
+      uint16_t type = le16toh(shards[i].type);
+      printf("%s{\"index\": %" PRIu32 ", \"type_id\": %" PRIu16
+             ", \"type\": \"%s\", \"storage_class\": %" PRIu16 ", \"group_id\": %" PRIu32
+             ", \"logical_start\": %" PRIu64 ", \"logical_count\": %" PRIu64
+             ", \"physical_off\": %" PRIu64 ", \"physical_bytes\": %" PRIu64
+             ", \"record_bytes\": %" PRIu32 "}",
+             i == 0 ? "" : ", ", i, type, kafs_v7_shard_type_name(type),
+             le16toh(shards[i].storage_class), le32toh(shards[i].group_id),
+             le64toh(shards[i].logical_start), le64toh(shards[i].logical_count),
+             le64toh(shards[i].physical_off), le64toh(shards[i].physical_bytes),
+             le32toh(shards[i].record_bytes));
+    }
+  }
+  printf("],\n");
+  printf("  \"journal_segments\": {\"status\": \"%s\", \"segment_count\": %" PRIu32
+         ", \"checkpoint_sequence\": %" PRIu64 ", \"selected\": %s, "
+         "\"degraded\": %s}\n",
+         rc == 0 ? "ok" : rc_to_text(rc), report->journal_segment_count,
+         report->checkpoint_sequence, rc == 0 ? "true" : "false",
+         report->degraded ? "true" : "false");
+  printf("}\n");
+}
+
+static void print_v7_text(const kafs_ssuperblock_t *sb, const kafs_v7_layout_report_t *report,
+                          int rc)
+{
+  fprintf(stdout,
+          "format v7 raw layout: status=%s block_size=%" PRIu32 " physical_blocks=%" PRIu64
+          " data_blocks=%" PRIu64 "\n",
+          rc == 0 ? "ok" : rc_to_text(rc), report->block_size, (uint64_t)kafs_sb_blkcnt_get(sb),
+          (uint64_t)kafs_sb_r_blkcnt_get(sb));
+  fprintf(stdout, "root locators: primary=%s tail=%s degraded=%s\n",
+          report->primary_locator_valid ? "valid" : "invalid",
+          report->tail_locator_valid ? "valid" : "invalid", report->degraded ? "true" : "false");
+  fprintf(stdout,
+          "layout descriptor: status=%s selected_replica=%" PRIu32 " generation=%" PRIu64
+          " bytes=%" PRIu32 " groups=%" PRIu32 " shards=%" PRIu32 " replicas=%" PRIu32 "\n",
+          report->selected_found ? "selected" : "unavailable", report->selected_replica,
+          report->selected_generation, report->descriptor_bytes, report->group_count,
+          report->shard_count, report->replica_count);
+  for (uint32_t id = 0; id < report->replica_count; ++id)
+    fprintf(stdout, "descriptor replica[%" PRIu32 "]: status=%s selected=%s offset=%" PRIu64 "\n",
+            id, kafs_v7_replica_status_name(report->descriptors[id].status),
+            report->descriptors[id].selected ? "true" : "false", report->descriptors[id].offset);
+  fprintf(stdout,
+          "checkpoint: selected_replica=%" PRIu32 " generation=%" PRIu64 " sequence=%" PRIu64
+          " free_blocks=%" PRIu64 " free_inodes=%" PRIu64 "\n",
+          report->selected_checkpoint, report->checkpoint_generation, report->checkpoint_sequence,
+          report->free_blocks, report->free_inodes);
+  fprintf(stdout, "journal segments: status=%s count=%" PRIu32 "\n",
+          rc == 0 ? "ok" : rc_to_text(rc), report->journal_segment_count);
+}
+
 int main(int argc, char **argv)
 {
   int json = 0;
@@ -923,6 +1050,21 @@ int main(int argc, char **argv)
     fprintf(stderr, "failed to read superblock: %s\n", strerror(-rc));
     close(fd);
     return 1;
+  }
+
+  if (kafs_sb_format_version_get(&sb) == KAFS_FORMAT_VERSION_V7)
+  {
+    kafs_v7_layout_report_t v7;
+    int rc_v7 = kafs_v7_validate_image_fd(fd, &sb, file_size, &v7);
+    if (json)
+      print_v7_json(&sb, &v7, rc_v7);
+    else
+      print_v7_text(&sb, &v7, rc_v7);
+    if (rc_v7 != 0)
+      fprintf(stderr, "format v7 raw-layout validation failed: %s\n", rc_to_text(rc_v7));
+    kafs_v7_layout_report_clear(&v7);
+    close(fd);
+    return rc_v7 == 0 ? 0 : 1;
   }
 
   struct inode_summary ino;

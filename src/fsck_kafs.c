@@ -571,9 +571,50 @@ static int fsck_discover_descriptor_layout(int fd, const kafs_ssuperblock_t *sb,
   uint32_t format_version = kafs_sb_format_version_get(sb);
   if (format_version == KAFS_FORMAT_VERSION_V6)
     return kafs_v6_discover_layout(fd, sb, file_size, report);
-  if (format_version == KAFS_FORMAT_VERSION_V7)
-    return kafs_v7_discover_layout(fd, sb, file_size, report);
   return -EPROTONOSUPPORT;
+}
+
+static int fsck_handle_v7_raw_layout(const struct fsck_image_info *info)
+{
+  kafs_v7_layout_report_t report;
+  int rc = kafs_v7_validate_image_fd(info->fd, &info->sb, info->file_size, &report);
+
+  fprintf(stderr,
+          "format v7 raw-layout fsck: status=%s primary_locator=%s tail_locator=%s "
+          "degraded=%s\n",
+          fsck_rc_to_text(rc), report.primary_locator_valid ? "valid" : "invalid",
+          report.tail_locator_valid ? "valid" : "invalid", report.degraded ? "true" : "false");
+  fprintf(stderr,
+          "layout descriptor: status=%s selected_replica=%" PRIu32 " generation=%" PRIu64
+          " bytes=%" PRIu32 " groups=%" PRIu32 " shards=%" PRIu32 " replicas=%" PRIu32 "\n",
+          report.selected_found ? "selected" : "unavailable", report.selected_replica,
+          report.selected_generation, report.descriptor_bytes, report.group_count,
+          report.shard_count, report.replica_count);
+  for (uint32_t id = 0; id < report.replica_count; ++id)
+  {
+    fprintf(stderr,
+            "v7 descriptor replica[%" PRIu32 "]: status=%s selected=%s offset=%" PRIu64
+            " generation=%" PRIu64 "\n",
+            id, kafs_v7_replica_status_name(report.descriptors[id].status),
+            report.descriptors[id].selected ? "true" : "false", report.descriptors[id].offset,
+            report.descriptors[id].generation);
+    fprintf(stderr,
+            "v7 checkpoint replica[%" PRIu32 "]: status=%s selected=%s offset=%" PRIu64
+            " generation=%" PRIu64 "\n",
+            id, kafs_v7_replica_status_name(report.checkpoints[id].status),
+            report.checkpoints[id].selected ? "true" : "false", report.checkpoints[id].offset,
+            report.checkpoints[id].generation);
+  }
+  if (rc == 0)
+    fprintf(stderr,
+            "v7 recovered state: checkpoint_generation=%" PRIu64 " checkpoint_sequence=%" PRIu64
+            " free_blocks=%" PRIu64 " free_inodes=%" PRIu64 " journal_segments=%" PRIu32 "\n",
+            report.checkpoint_generation, report.checkpoint_sequence, report.free_blocks,
+            report.free_inodes, report.journal_segment_count);
+  else
+    fprintf(stderr, "format v7 raw-layout validation failed\n");
+  kafs_v7_layout_report_clear(&report);
+  return rc == 0 ? 0 : FSCK_EXIT_DESCRIPTOR_FAILED;
 }
 
 static int fsck_handle_descriptor_backed_image(const struct fsck_options *opts,
@@ -604,6 +645,9 @@ static int fsck_handle_descriptor_backed_image(const struct fsck_options *opts,
   }
   fprintf(stderr, "format v%u fsck policy: detect-only validation; repair/write modes disabled.\n",
           format_version);
+
+  if (format_version == KAFS_FORMAT_VERSION_V7)
+    return fsck_handle_v7_raw_layout(info);
 
   rc = fsck_discover_descriptor_layout(info->fd, &info->sb, info->file_size, &report);
   fsck_report_descriptor_layout(&report);

@@ -1,5 +1,5 @@
 '.\" -*- nroff -*-
-.TH KAFSDUMP 8 "2026-03-17" "kafs 0.4.0" "System Administration"
+.TH KAFSDUMP 8 "2026-07-13" "kafs 0.4.0" "System Administration"
 .SH NAME
 kafsdump \- inspect offline KAFS image metadata without mutation
 .SH SYNOPSIS
@@ -40,22 +40,47 @@ selected replica, generation, descriptor geometry, and per-replica status.  The
 key name is retained for compatibility with existing v6 diagnostic consumers.
 .TP
 .B layout_descriptor
-For descriptor-backed format version 7 images, descriptor anchor status,
-selected replica, generation, descriptor geometry, and per-replica status.
+For accepted format version 7 images, selected version 2 K7LD generation and
+geometry.  Version 1 pre-specification scaffolds fail the accepted-layout
+boundary.
+.TP
+.B root_locators
+Independent primary and tail K7SA status and locator selection.
+.TP
+.B descriptor_replicas
+Per-copy role, offset, generation, CRC status, selection, and
+valid/invalid/stale/divergent state.
+.TP
+.B checkpoints
+Per-copy K7CP status and selected durable free-count baseline.
+.TP
+.B groups
+Descriptor-owned metadata and logical/physical data spans.
+.TP
+.B shards
+V7-owned type, storage class, logical coverage, and physical coverage records.
+.TP
+.B journal_segments
+Group-local rotating-header segment count, selected state, and checkpoint
+sequence.
 .TP
 .B v6_bitmap_shards
 For descriptor-backed format version 6 images with a selected descriptor, block
 bitmap shard coverage, gap/overlap flags, physical overlap flags, and a sample
 bitmap lookup.
-.TP
-.B bitmap_shards
-For descriptor-backed format version 7 images with a selected descriptor, block
-bitmap shard coverage, gap/overlap flags, physical overlap flags, and a sample
-bitmap lookup.
 .SH OPTIONS
 .TP
 .B --json
-Emit machine-readable JSON instead of text output.
+Emit machine-readable JSON instead of text output.  Accepted v7 output has the
+stable top-level keys
+.BR root_locators ,
+.BR layout_descriptor ,
+.BR descriptor_replicas ,
+.BR checkpoints ,
+.BR groups ,
+.BR shards ,
+and
+.BR journal_segments .
 .SH EXIT STATUS
 .TP
 .B 0

@@ -486,8 +486,14 @@ int kafs_v7_runtime_admission_preflight_fd(int fd, const kafs_ssuperblock_t *sbd
   else
   {
     char errbuf[128];
-    fprintf(err, "format %s admission preflight failed: %s.\n", KAFS_V7_TOOL_FORMAT_LABEL,
-            kafs_v7_runtime_rc_text(rc, errbuf, sizeof(errbuf)));
+    if (rc == -EPROTONOSUPPORT)
+      fprintf(err,
+              "format %s accepted raw-layout runtime mount remains offline-only; use "
+              "kafsdump/fsck.kafs for inspection.\n",
+              KAFS_V7_TOOL_FORMAT_LABEL);
+    else
+      fprintf(err, "format %s admission preflight failed: %s.\n", KAFS_V7_TOOL_FORMAT_LABEL,
+              kafs_v7_runtime_rc_text(rc, errbuf, sizeof(errbuf)));
   }
   return rc;
 }
