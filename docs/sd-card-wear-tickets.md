@@ -1,6 +1,6 @@
 # KAFS SDカード劣化対策 バックログ
 
-最終更新: 2026-07-07
+最終更新: 2026-07-13
 
 計画: [sd-card-wear-plan.md](sd-card-wear-plan.md)
 
@@ -12,12 +12,13 @@
 - format v6 は実験的実装として凍結し、descriptor-backed runtime entrypoint split と
   controlled-write opt-in boundary の検証結果として扱う。
 - 破壊的変更を伴う descriptor-backed format work は、format v7 / `kafs-v7` を入口にする。
-- v7 の RAW LAYOUT は、まず
+- v7 の accepted RAW LAYOUT は、
   [sd-card-wear-format-v7-inception-deck.md](sd-card-wear-format-v7-inception-deck.md)
-  の decision model / scope と metadata region coverage matrix を固め、HRL index/entry
-  placement と recovery invariant を first-class に扱ってから仕様化する。
-- v7 RAW LAYOUT の作業 draft は
-  [sd-card-wear-format-v7-raw-layout.md](sd-card-wear-format-v7-raw-layout.md) に置く。
+  の accepted decision model / scope と metadata region coverage matrix、および
+  [sd-card-wear-format-v7-raw-layout.md](sd-card-wear-format-v7-raw-layout.md) の
+  `K7LD` descriptor version 2 contract を正とする。
+- v7 は wear distribution と fault tolerance / deterministic fsck recovery を同率最優先とし、
+  recovery が曖昧になる placement は採用しない。
 - 各実装 PR では、関連する最小テストと metadata durability / wear-distribution 前提を明記する。
 - 現行の v7 方針は
   [sd-card-wear-format-v7-pivot.md](sd-card-wear-format-v7-pivot.md) を正とする。
@@ -2217,6 +2218,8 @@
     `kafs_v7_entrypoint_adapter.*` を持つ独立 source set として実装した。
   - 低レベル descriptor scaffold parser/builder は、次の中立名抽出まで歴史名の
     `kafs_v6_layout.h` を参照する。
+  - この時点で生成する `K7LD` version 1 image は pre-specification scaffold であり、
+    2026-07-13 accepted raw-layout の descriptor version 2 image ではない。
   - v6 は frozen experimental entrypoint として残し、今後の破壊的 layout/policy work は
     v7 側へ進める方針を文書化した。
   - v6 の `v6_layout_descriptor` JSON key は report consumer 互換のため残し、v7 は
@@ -2231,14 +2234,138 @@
     `make -C tests check TESTS=kafsresize` が成功した。
   - `make check -j2` は 29 tests passed / 1 skipped で成功した。
 
+### SDW-V7RT-T2 v7 raw-layout decision closeout
+
+- 目的: wear distribution と fault tolerance / deterministic fsck recovery を同率最優先にし、
+  v7 raw-layout の implementation-blocking decision を code 変更前に accepted contract として閉じる。
+- 決定:
+  - accepted layout は pre-spec `K7LD` version 1 scaffold と wire meaning を共有せず、
+    v7-owned 96-byte group/shard record と replicated `K7CP` を持つ descriptor version 2 とする。
+  - group は metadata physical span と data logical/physical span を明示し、shard は
+    `storage_class` と physical/logical coverage を wire field として持つ。
+  - mutable free counts は rotated `K7CP` replica が authoritative であり、offset 0 superblock は
+    immutable identity/discovery state とする。
+  - journal header/data は同一 group に置き、segment sequence/replay order は filesystem-global
+    とする。multi-group transaction protocol がない path は mutation 前に fail closed する。
+  - HRL bucket/entry group consistency を必須とし、cross-group 対応は incompatible flag、
+    mapping、recovery、fsck proof を伴う将来の独立変更にする。
+  - valid image は primary/tail descriptor/checkpoint replica を必須とし、決定的に配置可能なら
+    midpoint replica も必須とする。one-replica test-image exception は設けない。
+  - offset 0 の locator 破損だけで offline discovery を失わないよう、final block 全体を予約し、
+    その final 32 bytes に block size を持つ byte-identical tail `K7SA` version 2 locator を置く。
+  - CRC は reflected polynomial `0xEDB88320` / init・final XOR `0xffffffff` に固定し、CRC 一致を
+    replica 同値判定には使わない。同世代 locator/descriptor/checkpoint は covered span の
+    byte-identical 比較で divergence を判定する。
+  - inode、bitmap、allocator、HRL、journal は size/offset/endianness/padding を v7-owned wire shape
+    として自己完結に固定する。journal は rotating `K7JH` slot と structured transaction を使い、
+    全 valid segment の transaction を global sequence で merge する。
+- 完了条件:
+  - inception deck と raw-layout specification が `Status: accepted` になり、open question が残らない。
+  - record size/offset、little-endian、alignment、overflow、type/class、generation/CRC、replica
+    selection/copy-update、same-generation divergence の扱いが一意に記録されている。
+  - pending log / tail metadata、cross-group HRL、multi-group atomic mutation は明示的に fail closed
+    または deferred であり、暗黙の v5/v6 fallback がない。
+  - accepted version 2 と現行 version 1 scaffold の境界、および次の offline implementation slice
+    が明記されている。
+- 実装結果:
+  - [sd-card-wear-format-v7-inception-deck.md](sd-card-wear-format-v7-inception-deck.md) と
+    [sd-card-wear-format-v7-raw-layout.md](sd-card-wear-format-v7-raw-layout.md) を accepted にした。
+  - [sd-card-wear-format-v7-pivot.md](sd-card-wear-format-v7-pivot.md) の current boundary と
+    follow-up order を accepted version 2 contract に合わせた。
+  - single-group は wear-leveling completion ではなく、multi-group placement と障害耐性検証の
+    foundation であることを明記した。
+- 検証:
+  - `git diff --check` が成功した。
+  - `rg -n '^(Accepted: 2026-07-13|Status: accepted)$|K7LD.*version 2|K7JH|SDW-V7RT-T3' docs/sd-card-wear-format-v7-*.md docs/sd-card-wear-tickets.md`
+    で accepted status、version 2 wire contract、journal header、T3 handoff を確認した。
+  - `! rg -n '^## (Open Questions|Questions To Resolve)$' docs/sd-card-wear-format-v7-*.md`
+    で未解決 question heading がないことを確認した。
+  - docs-only decision closeout のため build/test は実施していない。
+
+### SDW-V7RT-T3 v7-owned single-group raw-layout offline round trip
+
+- 目的: accepted descriptor version 2 の strict subset として `group_count == 1` の
+  `mkfs.kafs -> kafsdump -> fsck.kafs` offline round trip と replica failover を証明する。
+  これは wear leveling 完了ではなく、後続 multi-group placement の v7-owned foundation とする。
+- 変更:
+  - v7-owned `K7LD` header/group/shard/replica、`K7SA` version 2 locator、`K7CP` checkpoint の
+    encode/decode、CRC、coverage validator を実装する。`sizeof` / `offsetof` assertion を持ち、
+    successful v7 path は v6 wire typedef や v6 public layout entrypoint を通らない。
+  - `src/kafs_v7_layout.c` / `src/kafs_v7_layout.h` を accepted wire の所有元とし、
+    `scripts/check-v7-layout-ownership.sh` で v6 wire/layout facade への逆依存を拒否する。
+  - mkfs は group 0 の metadata/data physical/logical span、required shard、最低2組の
+    descriptor/checkpoint replica と最低2つの空 journal segment を構築し、決定式で配置可能な
+    image では midpoint も構築する。raw-layout の canonical seven-shard order と最大データ数の
+    fixed-point rule を使い、midpoint のために data block を減らさない。
+  - fsck/kafsdump は `K7SA -> K7LD -> K7CP/shards` の discovery chain、各 replica selection、
+    全shard coverage、journal pair/global order、HRL group invariant、recovered-state free counts を
+    v7-owned names で検証・報告する。
+  - `kafsdump --json` は `root_locators`、`layout_descriptor`、`descriptor_replicas`、
+    `checkpoints`、`groups`、`shards`、`journal_segments` key を持つ。各 replica の `status` は
+    `valid|invalid|stale|divergent`、選択・縮退は `selected` / `degraded` boolean で表す。
+  - `man/mkfs.kafs.8`、`man/fsck.kafs.8`、`man/kafsdump.8` を accepted v2 と pre-spec v1 の
+    境界に合わせ、JSON parse regression を dedicated test に含める。
+  - dedicated `v7_raw_layout_smoketest` を追加する。T3 完了後も
+    `kafs-v7 --inspection-mount` と controlled-write admission は後続 ticket まで明示的に拒否する。
+- 完了条件:
+  - valid image は primary identity と `K7SA -> K7LD -> K7CP/shards` だけから offline round trip が
+    成功する。legacy prefix offset/free-count field を non-authoritative 値へ変えても authoritative
+    state と admission/validation 結果は変わらないが、raw diagnostic 値の表示は変わってよい。
+  - locator、descriptor、checkpoint の各々について、primary 1本の破損から backup を選択でき、
+    same-generation non-byte-identical divergence を個別に拒否する。
+  - 全replica破損、同世代divergence、gap/overlap/out-of-bounds、unknown type/class/flag、
+    required incompat bit 欠落、reserved 非ゼロ、table/range 算術 overflow、unknown mapping policy、
+    non-zero mapping seed、unsupported block-size/hash id、primary `K7SA` offset/remaining
+    reserved-byte 違反、LE64 bitmap alignment/padding 違反、canonical free-inode/count 違反、
+    bitmap/checkpoint 不整合、journal free-count delta/sequence gap/divergence、HRL cross-group
+    corruption を決定的に拒否する。
+  - canonical single-group mkfs の2-replica geometry、midpoint slack を持つ valid 3-replica parser
+    fixture、too-small rejection を sparse image で検証し、pre-spec version 1 scaffold を accepted
+    layout として読まない。
+  - test workdir は `${TMPDIR:-/tmp}` 配下に作成し、成功・失敗の双方で repo tree を汚さない。
+  - v6 fixture/test と production `kafs` の v7 fail-closed behavior は変わらない。
+- 対象外:
+  - multi-group placement/wear proof、runtime mount、controlled write、multi-group atomicity、
+    cross-group HRL、pending/tail、v5-to-v7 migration、in-place relocation。
+- 完了時の検証:
+  - `./scripts/format.sh fix`
+  - `autoreconf -fi && ./configure && make -j2`
+  - `lsp-cli --root . --server clangd --server-cmd clangd-18 --format pretty symbols src/kafs_v7_layout.c`
+  - `lsp-cli --root . --server clangd --server-cmd clangd-18 --format pretty ws-symbols kafs_v7_layout`
+  - `lsp-cli --root . --server clangd --server-cmd clangd-18 --format pretty diagnostics src/kafs_v7_layout.c`
+  - `lsp-cli --root . --server clangd --server-cmd clangd-18 --format pretty diagnostics tests/tests_v7_raw_layout_smoketest.c`
+  - `./scripts/check-v7-layout-ownership.sh`
+  - `! rg -n 'kafs_sv6_|kafs_v6_|kafs_descriptor_layout|#include "kafs_v6_layout.h"' src/kafs_v7_layout.c src/kafs_v7_layout.h tests/tests_v7_raw_layout_smoketest.c`
+  - 上記 build/LSP/ownership check 後、次の同一 shell block で test 前後の status を比較する。未commitの
+    意図した T3変更自体ではなく、gateが新しいtracked/untracked artifactを増やしていないことを判定する。
+
+    ```sh
+    set -euo pipefail
+    status_before=$(mktemp "${TMPDIR:-/tmp}/kafs-t3-status-before.XXXXXX")
+    status_after=$(mktemp "${TMPDIR:-/tmp}/kafs-t3-status-after.XXXXXX")
+    trap 'rm -f "$status_before" "$status_after"' EXIT
+    git status --short --untracked-files=all >"$status_before"
+    make -C tests check TESTS=v7_raw_layout_smoketest
+    make -C tests check TESTS='v7_entrypoint_smoketest v6_descriptor_validation v6_descriptor_smoketest kafsresize'
+    ./scripts/lint.sh
+    ./scripts/clones.sh
+    ./scripts/static-checks.sh
+    KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2
+    git diff --check
+    git status --short --untracked-files=all >"$status_after"
+    diff -u "$status_before" "$status_after"
+    ```
+
 ---
 
 ## 次に着手する候補
 
-1. v6 scaffold のうち、v7 継続作業で混乱しやすい内部名を neutral descriptor family 名へ分離する。
-2. `kafsresize --migrate-create --format-version 7` を追加し、v5 -> v7 offline migration path を
-   v7 entrypoint とつなぐ。
-3. `kafs-v7 --inspection-mount` の mount smoke を追加し、次に controlled-write proof へ進む。
+1. `SDW-V7RT-T3` の v7-owned single-group offline round trip と fault matrix を実装する。
+2. accepted record を使う multi-group placement と wear-distribution proof を設計・実装する。
+3. `kafs-v7 --inspection-mount` の mount smoke を追加する。
+4. accepted offline surface 安定後に `kafsresize --migrate-create --format-version 7` を追加する。
+5. structured journal recovery、locking、mutation fault matrix を通してから controlled-write admission を
+   検討する。
 
 履歴上の Phase 1/2 backlog は下記の直近実装メモに残す。現行の descriptor-backed format work は
 format v7 を入口にする。

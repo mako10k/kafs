@@ -12,7 +12,9 @@ surface that future work should preserve.
 
 Format v7 is the breaking-change continuation of that work:
 
-- new images may be created with `mkfs.kafs --format-version 7`;
+- `mkfs.kafs --format-version 7` exists, but its current pre-specification
+  output is not an accepted v7 image; accepted creation begins only after the
+  descriptor version 2 offline round trip lands;
 - format v7 runtime requests go through `kafs-v7`;
 - production `kafs` remains the v4/v5 runtime and fails closed for v6/v7;
 - v7 is not a v6 compatibility layer and should not preserve experimental v6
@@ -21,13 +23,14 @@ Format v7 is the breaking-change continuation of that work:
   layout or policy expansion should target v7 unless explicitly scoped as a v6
   regression fix.
 
-The raw image layout is not finalized by this pivot.  Before changing the v7
-raw layout or expanding the v7 mkfs/runtime behavior, use the decision model and
-scope in
+The v7 decision model in
 [sd-card-wear-format-v7-inception-deck.md](sd-card-wear-format-v7-inception-deck.md)
-to choose the v7 layout family, then record the accepted raw layout in a v7
-layout specification.  The current working draft is
-[sd-card-wear-format-v7-raw-layout.md](sd-card-wear-format-v7-raw-layout.md).
+and the v7 raw layout in
+[sd-card-wear-format-v7-raw-layout.md](sd-card-wear-format-v7-raw-layout.md)
+were accepted on 2026-07-13.  They make fault tolerance and SD-card wear
+distribution the joint top priorities, with deterministic fsck recovery or
+rejection as a hard gate.  New v7 mkfs/runtime behavior must conform to the
+accepted `K7LD` descriptor version 2 contract.
 
 ## Current Implementation Boundary
 
@@ -61,6 +64,13 @@ experimental v6 descriptor scaffold, so the facade currently delegates to
 `kafs_v6_layout.h`; that delegation is an implementation detail, not the
 public v7 runtime contract.
 
+The current builder emits pre-specification `K7SA` locator / `K7LD` descriptor
+version 1 with that scaffold table shape.  Such images may be reported offline
+with recreate guidance, but they are not accepted raw-layout images and must not
+pass v7 runtime admission or repair.  The next implementation boundary replaces
+that path with version 2 root locators and v7-owned descriptor version 2 group,
+shard, checkpoint, and replica records.
+
 Diagnostic keys are format-specific:
 
 - v6 keeps `v6_layout_descriptor`, `v6_bitmap_shards`, and
@@ -74,7 +84,7 @@ User-facing entrypoints and on-disk format numbers are no longer ambiguous:
 | `kafs` | Production v4/v5 runtime. Rejects v6/v7 descriptor-backed images. |
 | `kafs-v6` | Frozen experimental v6 runtime entrypoint. |
 | `kafs-v7` | Breaking-change descriptor-backed runtime entrypoint. |
-| `mkfs.kafs --format-version 7` | Current v7 image creation surface; final behavior must follow the accepted v7 raw layout spec. |
+| `mkfs.kafs --format-version 7` | Currently emits the pre-spec version 1 scaffold; it becomes the accepted image creator only after descriptor version 2 conformance lands. |
 | `fsck.kafs` / `kafsdump` | Validate/report descriptor-backed v6/v7 images offline. |
 
 ## Non-Goals
@@ -91,13 +101,14 @@ User-facing entrypoints and on-disk format numbers are no longer ambiguous:
 
 ## Follow-Up Boundaries
 
-1. Accept the v7 inception deck decision model and write the v7 raw layout
-   specification, including every metadata region in the inception deck coverage
-   matrix and the HRL index/entry placement and recovery invariants,
-   before expanding v7 mkfs/runtime behavior.
-2. Move remaining diagnostic/report internals that still carry v6-only local
-   names to neutral descriptor-family names where it reduces ambiguity.
-3. Add `kafsresize --migrate-create --format-version 7` once the v7 mkfs and
-   offline validation surface is stable.
-4. Prove `kafs-v7 --inspection-mount` and then controlled-write runtime paths
-   with mount tests before expanding the write surface.
+1. Implement the accepted descriptor version 2 as a single-group, v7-owned
+   offline `mkfs -> kafsdump -> fsck` round trip with descriptor/checkpoint
+   fallback and corruption rejection.  Keep runtime admission fail-closed.
+2. Prove multi-group placement and wear distribution after the single-group
+   foundation, without weakening checkpoint, journal, or fsck invariants.
+3. Prove `kafs-v7 --inspection-mount` with mount tests while keeping the write
+   surface closed.
+4. Add `kafsresize --migrate-create --format-version 7` once the accepted v7
+   mkfs, offline validation, and inspection surfaces are stable.
+5. Prove controlled-write admission, structured-journal recovery, locking, and
+   mutation fault tests before expanding the write surface.
