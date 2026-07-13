@@ -2327,6 +2327,19 @@
 - 対象外:
   - multi-group placement/wear proof、runtime mount、controlled write、multi-group atomicity、
     cross-group HRL、pending/tail、v5-to-v7 migration、in-place relocation。
+- 実装結果:
+  - `src/kafs_v7_layout.c` / `src/kafs_v7_layout.h` に accepted version 2 の wire record、
+    checked geometry planner、CRC、single-group builder、independent replica selector/validator を実装した。
+    successful path は v6 public layout/wire entrypoint を使わない。mkfs publication は旧 root 無効化、
+    metadata、non-primary copy、primary copy、tail locator、primary root の順に flush boundary を持つ。
+  - `mkfs.kafs` は primary/tail の descriptor/checkpoint、canonical seven-shard group、2つの空 journal
+    segment を構築する。`kafsdump` / `fsck.kafs` は authoritative discovery chain と recovered count を
+    v7-owned path だけで検証・報告する。
+  - primary locator/descriptor/checkpoint の個別 failover、lower generation と descriptor-generation
+    mismatch の `stale` 扱い、same-generation divergence、3-replica parser fixture、unowned slack zero、
+    malformed descriptor/payload/root identity を dedicated regression に固定した。
+  - `kafs-v7 --inspection-mount`、production `kafs`、v6 entrypoint から accepted v7 layout への admission は
+    offline-only error で fail closed のままとした。runtime mount、write、cross-group HRL は有効化していない。
 - 完了時の検証:
   - `./scripts/format.sh fix`
   - `autoreconf -fi && ./configure && make -j2`
@@ -2355,17 +2368,37 @@
     git status --short --untracked-files=all >"$status_after"
     diff -u "$status_before" "$status_after"
     ```
+- 検証結果（2026-07-13）:
+  - `autoreconf -fi && ./configure && make -j2`、`./scripts/format.sh`、`./scripts/lint.sh`、
+    `git diff --check` は PASS。
+  - 指定した4つの LSP query は成功し、source/test diagnostics はともに 0 件。
+  - `./scripts/check-v7-layout-ownership.sh` と v6 facade 禁止 pattern check は PASS。
+  - dedicated `v7_raw_layout_smoketest` と `v7_entrypoint_smoketest` は 2/2 PASS。
+    `v7_entrypoint_smoketest v6_descriptor_validation v6_descriptor_smoketest kafsresize` は 4/4 PASS。
+    64 MiB sparse image の 1024-byte / 65536-byte block-size round trip も PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` は 30/31 PASS。今回の v7 test は PASS したが、
+    既存 v5/FUSE hotplug 経路の `e2e_hotplug` は全体実行と単独再実行の双方で
+    `hotplug connect timeout` となった。
+  - `./scripts/clones.sh` は 87 clones / 2.9% で 1.0% threshold を超え FAIL。基準 commit
+    `b737ce0` も 87 clones / 3.1% で FAIL しており、新規 `src/kafs_v7_layout.c` の clone は検出されない。
+    `./scripts/static-checks.sh` の唯一の non-passing step も同じ clone gate で、format/lint は PASS。
+  - test/gate 前後の `git status --short --untracked-files=all` は一致し、新しい tracked/untracked artifact は
+    増えていない。
 
 ---
 
 ## 次に着手する候補
 
-1. `SDW-V7RT-T3` の v7-owned single-group offline round trip と fault matrix を実装する。
-2. accepted record を使う multi-group placement と wear-distribution proof を設計・実装する。
+1. accepted record を使う multi-group placement と wear-distribution proof を設計・実装する。
+2. descriptor/checkpoint replica の位置分散・片系破損・同世代 divergence を実媒体想定の fault matrix で
+   拡張し、single-group foundation から障害耐性の証明を強める。
 3. `kafs-v7 --inspection-mount` の mount smoke を追加する。
 4. accepted offline surface 安定後に `kafsresize --migrate-create --format-version 7` を追加する。
 5. structured journal recovery、locking、mutation fault matrix を通してから controlled-write admission を
    検討する。
+
+cross-group HRL と multi-group atomic mutation は、まず group-local placement と recovery replica の
+wear/fault proof を固めた後に段階的に扱う。
 
 履歴上の Phase 1/2 backlog は下記の直近実装メモに残す。現行の descriptor-backed format work は
 format v7 を入口にする。
