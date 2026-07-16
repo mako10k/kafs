@@ -13,6 +13,20 @@ static int kafs_v7_mutation_target_type_known(uint16_t type)
          type == KAFS_V7_JOURNAL_TARGET_HRL_INDEX || type == KAFS_V7_JOURNAL_TARGET_HRL_ENTRY;
 }
 
+int kafs_v7_mutation_deltas_validate(uint16_t target_type, int64_t free_blocks_delta,
+                                     int64_t free_inodes_delta)
+{
+  if (!kafs_v7_mutation_target_type_known(target_type))
+    return -EINVAL;
+  if (target_type == KAFS_V7_JOURNAL_TARGET_BLOCK_BITMAP)
+    return free_blocks_delta >= -64 && free_blocks_delta <= 64 && free_inodes_delta == 0 ? 0
+                                                                                         : -EINVAL;
+  if (target_type == KAFS_V7_JOURNAL_TARGET_INODE)
+    return free_inodes_delta >= -1 && free_inodes_delta <= 1 && free_blocks_delta == 0 ? 0
+                                                                                       : -EINVAL;
+  return free_blocks_delta == 0 && free_inodes_delta == 0 ? 0 : -EINVAL;
+}
+
 static uint64_t kafs_v7_mutation_ceil_div8(uint64_t value)
 {
   return value / 8u + (value % 8u != 0u);

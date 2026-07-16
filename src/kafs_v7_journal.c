@@ -73,7 +73,7 @@ static int kafs_v7_journal_add_u32(uint32_t a, uint32_t b, uint32_t *out)
   return 0;
 }
 
-static int kafs_v7_journal_add_i64(int64_t a, int64_t b, int64_t *out)
+int kafs_v7_journal_delta_add(int64_t a, int64_t b, int64_t *out)
 {
   if (!out || (b > 0 && a > INT64_MAX - b) || (b < 0 && a < INT64_MIN - b))
     return -EOVERFLOW;
@@ -109,18 +109,6 @@ static int64_t kafs_v7_journal_i64(const void *wire)
   return (int64_t)le64toh(value);
 }
 
-static uint32_t kafs_v7_crc32_update(uint32_t crc, const void *buf, size_t bytes)
-{
-  const uint8_t *p = (const uint8_t *)buf;
-  for (size_t i = 0; i < bytes; ++i)
-  {
-    crc ^= p[i];
-    for (unsigned bit = 0; bit < 8u; ++bit)
-      crc = (crc >> 1u) ^ ((crc & 1u) ? UINT32_C(0xedb88320) : 0u);
-  }
-  return crc;
-}
-
 static uint32_t kafs_v7_record_crc(const kafs_v7_record_view_t *record)
 {
   static const uint8_t zero_crc[sizeof(uint32_t)] = {0};
@@ -148,6 +136,95 @@ static int kafs_v7_journal_all_zero(const void *buf, size_t bytes)
       return 0;
   }
   return 1;
+}
+
+int kafs_v7_journal_segment_read_fd(int fd, const kafs_v7_layout_report_t *layout,
+                                    uint32_t group_id, uint32_t local_segment,
+                                    kafs_v7_journal_segment_t *segment)
+{
+  if (fd < 0 || !layout || !layout->descriptor || !segment || group_id >= layout->group_count ||
+      layout->block_size < KAFS_V7_JOURNAL_HEADER_BYTES ||
+      layout->block_size % KAFS_V7_JOURNAL_HEADER_BYTES != 0u)
+    return -EINVAL;
+  const kafs_v7_shard_desc_t *shards = kafs_v7_report_shards(layout);
+  if (!shards)
+    return -EUCLEAN;
+  const kafs_v7_shard_desc_t *local = &shards[(uint64_t)group_id * KAFS_V7_GROUP_LOCAL_SHARDS];
+  const kafs_v7_shard_desc_t *header_shard = &local[5];
+  const kafs_v7_shard_desc_t *data_shard = &local[6];
+  uint64_t count = le64toh(header_shard->logical_count);
+  uint64_t start = le64toh(header_shard->logical_start);
+  uint64_t data_count = le64toh(data_shard->logical_count);
+  uint64_t header_bytes = le64toh(header_shard->physical_bytes);
+  uint64_t data_total_bytes = le64toh(data_shard->physical_bytes);
+  if (count == 0u || count != data_count || local_segment >= count || start > UINT32_MAX ||
+      count - 1u > UINT32_MAX - start || header_bytes / layout->block_size != count ||
+      header_bytes % layout->block_size != 0u || data_total_bytes % count != 0u)
+    return -EUCLEAN;
+  uint64_t segment_bytes = data_total_bytes / count;
+  uint64_t header_delta = (uint64_t)local_segment * layout->block_size;
+  uint64_t data_delta = (uint64_t)local_segment * segment_bytes;
+  uint64_t header_base = le64toh(header_shard->physical_off);
+  uint64_t data_base = le64toh(data_shard->physical_off);
+  if (header_delta > UINT64_MAX - header_base || data_delta > UINT64_MAX - data_base)
+    return -EOVERFLOW;
+  uint64_t header_block_off = header_base + header_delta;
+  uint64_t data_off = data_base + data_delta;
+  if (header_block_off > INT64_MAX || data_off > INT64_MAX)
+    return -ERANGE;
+
+  uint8_t *header_block = (uint8_t *)malloc(layout->block_size);
+  if (!header_block)
+    return -ENOMEM;
+  int rc = kafs_pread_all(fd, header_block, layout->block_size, (off_t)header_block_off);
+  uint64_t highest = 0u;
+  uint32_t selected_slot = 0u;
+  const kafs_v7_journal_header_t *selected = NULL;
+  uint32_t slot_count = layout->block_size / KAFS_V7_JOURNAL_HEADER_BYTES;
+  for (uint32_t slot = 0; rc == 0 && slot < slot_count; ++slot)
+  {
+    const kafs_v7_journal_header_t *header =
+        (const kafs_v7_journal_header_t *)(header_block +
+                                           (uint64_t)slot * KAFS_V7_JOURNAL_HEADER_BYTES);
+    if (kafs_v7_journal_all_zero(header, sizeof(*header)))
+      continue;
+    if (le32toh(header->magic) != KAFS_V7_JOURNAL_HEADER_MAGIC ||
+        le16toh(header->version) != KAFS_V7_JOURNAL_HEADER_VERSION || le16toh(header->flags) != 0 ||
+        le32toh(header->segment_id) != (uint32_t)start + local_segment ||
+        le32toh(header->slot_bytes) != KAFS_V7_JOURNAL_HEADER_BYTES ||
+        le64toh(header->generation) == 0 || le64toh(header->data_bytes) != segment_bytes ||
+        le64toh(header->write_bytes) > segment_bytes || le32toh(header->reserved) != 0 ||
+        le32toh(header->crc32) != kafs_v7_journal_header_crc(header) ||
+        (le64toh(header->generation) - 1u) % slot_count != slot)
+      continue;
+    uint64_t generation = le64toh(header->generation);
+    if (generation > highest)
+    {
+      highest = generation;
+      selected_slot = slot;
+      selected = header;
+    }
+    else if (generation == highest && selected && memcmp(selected, header, sizeof(*header)) != 0)
+      rc = -EUCLEAN;
+  }
+  if (rc == 0 && !selected)
+    rc = -EINVAL;
+  if (rc == 0)
+  {
+    kafs_v7_journal_segment_t result = {
+        .selected_header = *selected,
+        .header_block_off = header_block_off,
+        .data_off = data_off,
+        .data_bytes = segment_bytes,
+        .group_id = group_id,
+        .local_segment = local_segment,
+        .selected_slot = selected_slot,
+        .slot_count = slot_count,
+    };
+    *segment = result;
+  }
+  free(header_block);
+  return rc;
 }
 
 static int kafs_v7_journal_record(const uint8_t *prefix, size_t prefix_bytes, size_t off,
@@ -205,17 +282,7 @@ static int kafs_v7_validate_mutation(const kafs_v7_layout_report_t *layout, uint
                                              le64toh(mutation->logical_index), &route) != 0 ||
       target_bytes != route.target_bytes)
     return -EINVAL;
-  if (type == KAFS_V7_JOURNAL_TARGET_BLOCK_BITMAP)
-  {
-    if (*free_blocks_delta < -64 || *free_blocks_delta > 64 || *free_inodes_delta != 0)
-      return -EINVAL;
-  }
-  else if (type == KAFS_V7_JOURNAL_TARGET_INODE)
-  {
-    if (*free_inodes_delta < -1 || *free_inodes_delta > 1 || *free_blocks_delta != 0)
-      return -EINVAL;
-  }
-  else if (*free_blocks_delta != 0 || *free_inodes_delta != 0)
+  if (kafs_v7_mutation_deltas_validate(type, *free_blocks_delta, *free_inodes_delta) != 0)
     return -EINVAL;
   return 0;
 }
@@ -324,8 +391,8 @@ static int kafs_v7_parse_prefix(const kafs_v7_layout_report_t *layout, uint32_t 
                                     &block_delta, &inode_delta) != 0 ||
           kafs_v7_journal_add_u32(mutation_payload_bytes, record.payload_bytes,
                                   &mutation_payload_bytes) != 0 ||
-          kafs_v7_journal_add_i64(free_blocks_delta, block_delta, &free_blocks_delta) != 0 ||
-          kafs_v7_journal_add_i64(free_inodes_delta, inode_delta, &free_inodes_delta) != 0)
+          kafs_v7_journal_delta_add(free_blocks_delta, block_delta, &free_blocks_delta) != 0 ||
+          kafs_v7_journal_delta_add(free_inodes_delta, inode_delta, &free_inodes_delta) != 0)
         return -EINVAL;
       mutation_stream_crc =
           kafs_v7_crc32_update(mutation_stream_crc, record.payload, record.payload_bytes);
@@ -373,61 +440,20 @@ static int kafs_v7_select_and_parse_group(int fd, const kafs_v7_layout_report_t 
   const kafs_v7_shard_desc_t *shards = kafs_v7_report_shards(layout);
   const kafs_v7_shard_desc_t *local = &shards[(uint64_t)group_id * KAFS_V7_GROUP_LOCAL_SHARDS];
   const kafs_v7_shard_desc_t *header_shard = &local[5];
-  const kafs_v7_shard_desc_t *data_shard = &local[6];
   uint64_t count_u64 = le64toh(header_shard->logical_count);
   uint64_t start_u64 = le64toh(header_shard->logical_start);
   if (count_u64 == 0 || count_u64 > UINT32_MAX || start_u64 > UINT32_MAX ||
-      count_u64 > UINT32_MAX - start_u64)
+      count_u64 - 1u > UINT32_MAX - start_u64)
     return -ERANGE;
   uint32_t count = (uint32_t)count_u64;
-  uint32_t start = (uint32_t)start_u64;
-  uint64_t segment_bytes = le64toh(data_shard->physical_bytes) / count;
-  uint8_t *header_block = (uint8_t *)malloc(layout->block_size);
-  if (!header_block)
-    return -ENOMEM;
   int rc = 0;
   for (uint32_t local_id = 0; rc == 0 && local_id < count; ++local_id)
   {
-    uint64_t header_off =
-        le64toh(header_shard->physical_off) + (uint64_t)local_id * layout->block_size;
-    rc = kafs_pread_all(fd, header_block, layout->block_size, (off_t)header_off);
-    uint64_t highest = 0;
-    const kafs_v7_journal_header_t *selected = NULL;
-    for (uint32_t slot = 0; rc == 0 && slot < layout->block_size / KAFS_V7_JOURNAL_HEADER_BYTES;
-         ++slot)
-    {
-      const kafs_v7_journal_header_t *header =
-          (const kafs_v7_journal_header_t *)(header_block +
-                                             (uint64_t)slot * KAFS_V7_JOURNAL_HEADER_BYTES);
-      if (kafs_v7_journal_all_zero(header, sizeof(*header)))
-        continue;
-      if (le32toh(header->magic) != KAFS_V7_JOURNAL_HEADER_MAGIC ||
-          le16toh(header->version) != KAFS_V7_JOURNAL_HEADER_VERSION ||
-          le16toh(header->flags) != 0 || le32toh(header->segment_id) != start + local_id ||
-          le32toh(header->slot_bytes) != KAFS_V7_JOURNAL_HEADER_BYTES ||
-          le64toh(header->generation) == 0 || le64toh(header->data_bytes) != segment_bytes ||
-          le64toh(header->write_bytes) > segment_bytes || le32toh(header->reserved) != 0 ||
-          le32toh(header->crc32) != kafs_v7_journal_header_crc(header) ||
-          (le64toh(header->generation) - 1u) %
-                  (layout->block_size / KAFS_V7_JOURNAL_HEADER_BYTES) !=
-              slot)
-        continue;
-      uint64_t generation = le64toh(header->generation);
-      if (generation > highest)
-      {
-        highest = generation;
-        selected = header;
-      }
-      else if (generation == highest && selected && memcmp(selected, header, sizeof(*header)) != 0)
-        rc = -EUCLEAN;
-    }
+    kafs_v7_journal_segment_t segment;
+    rc = kafs_v7_journal_segment_read_fd(fd, layout, group_id, local_id, &segment);
     if (rc != 0)
       break;
-    if (!selected)
-    {
-      rc = -EINVAL;
-      break;
-    }
+    const kafs_v7_journal_header_t *selected = &segment.selected_header;
     uint64_t write_bytes = le64toh(selected->write_bytes);
     if ((write_bytes == 0 &&
          (le64toh(selected->first_sequence) != 0 || le64toh(selected->last_sequence) != 0)) ||
@@ -450,8 +476,7 @@ static int kafs_v7_select_and_parse_group(int fd, const kafs_v7_layout_report_t 
         rc = -ENOMEM;
         break;
       }
-      uint64_t data_off = le64toh(data_shard->physical_off) + (uint64_t)local_id * segment_bytes;
-      rc = kafs_pread_all(fd, prefix, (size_t)write_bytes, (off_t)data_off);
+      rc = kafs_pread_all(fd, prefix, (size_t)write_bytes, (off_t)segment.data_off);
       if (rc == 0 && report->selected_nonempty_segment_count == UINT32_MAX)
         rc = -EOVERFLOW;
       if (rc == 0)
@@ -462,7 +487,6 @@ static int kafs_v7_select_and_parse_group(int fd, const kafs_v7_layout_report_t 
                                 report);
     free(prefix);
   }
-  free(header_block);
   return rc;
 }
 

@@ -147,13 +147,21 @@ validated checkpoint/journal view, reserves exactly the next value while the
 composite transaction lock remains held, and consumes it only after fresh
 validation finds that exact sequence in the reserved group's selected journal
 prefix. A pre-header cancellation proves the sequence is absent before reuse;
-ambiguous publication poisons the state and blocks later reservations. The
-actual journal record encoder remains outside this slice.
+ambiguous publication poisons the state and blocks later reservations.
 
-Controlled write remains blocked by the v7 encoder and data-before-header
-publication path, plus runtime mutation integration that uses the documented
-cross-family lock order. The successful v7 path must also stop using the
-v6-named controlled-write policy flag and v6 FUSE policy helper.
+The v7-owned journal writer now encodes commit and abort transactions against
+the recovered overlay view, validates group-local routing and exact allocator
+deltas, and binds the opaque transaction to the active sequence token and
+thread. It appends to the eligible group segment with the lowest selected
+header generation, flushes transaction data, rotates one `K7JH` slot, and
+flushes that header. Unpublished data therefore remains outside the selected
+prefix, and multi-segment groups spread header generations before reusing a
+segment.
+
+Controlled write remains blocked by metadata apply/checkpoint/reclamation and
+runtime mutation integration that uses the documented cross-family lock order,
+plus the multi-group mutation fault matrix. The successful v7 path must also
+stop using the v6-named controlled-write policy flag and v6 FUSE policy helper.
 
 FTL/ECC correlated-failure injection is not in this implementation blocker
 list.  It is governed by the RC media-qualification boundary in the accepted
@@ -173,9 +181,9 @@ raw-layout specification and does not relax any software recovery gate.
 
 ## Follow-Up Boundaries
 
-1. Add the journal encoder/data-before-header writer, cross-family lock
-   integration, and multi-group mutation fault matrices before enabling
-   controlled-write admission.
+1. Add metadata apply/checkpoint/reclamation, cross-family lock integration,
+   and multi-group mutation fault matrices before enabling controlled-write
+   admission.
 2. Add `kafsresize --migrate-create --format-version 7` after the accepted
    offline and inspection surfaces are stable; migration does not outrank a
    blocker on the mount/write path.

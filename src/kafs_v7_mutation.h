@@ -31,3 +31,5 @@ int kafs_v7_mutation_route_transaction(const kafs_v7_layout_report_t *layout,
                                        const kafs_v7_mutation_request_t *requests,
                                        size_t request_count, kafs_v7_mutation_route_t *routes,
                                        uint32_t *group_id);
+int kafs_v7_mutation_deltas_validate(uint16_t target_type, int64_t free_blocks_delta,
+                                     int64_t free_inodes_delta);
