@@ -2643,12 +2643,50 @@
   - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは87件・2.78%で、直前baselineの
     87件・2.79%から件数増加はなく、新規checkpoint module由来のcloneは検出されていない。
 
+### SDW-V7RT-T10 ranked v7 write and checkpoint locking
+
+- 目的: runtime write admissionを広げず、v7 transactionとcheckpoint publicationを直列化する
+  v7-owned lock順序、bounded wait、stale-owner failureを固定する。
+- 変更:
+  - `src/kafs_v7_locks.*`が`v7_write_gate` rank 1、`v7_sequence` rank 2、`v7_group` rank 3を所有する。
+  - transaction composite APIはrank 1 -> 2 -> 3を取得し、逆順に解放する。groupはexactly oneに限定し、
+    nested/cross-group取得とunlock mismatchをfail closedにする。
+  - checkpoint publisherは`v7_write_gate`だけを取得し、進行中transactionと相互排他にする。
+  - lock待ちは設定可能なtimeoutと定期owner確認を持ち、contention/wait統計とtimeout診断を出す。
+    cancellationは保持中無効化し、Linux robust mutexのowner-deadはmutexを回復しても当該operationを
+    `EOWNERDEAD`で失敗させる。
+  - 正しさ優先のRC境界としてwrite gateは全transactionを直列化する。multi-group transaction、runtime
+    controlled write、journal encoderは有効化しない。
+  - v7 rank stackと既存metadata rank 10-50 stackは現時点で別管理であり、両familyを横断するadmitted pathは
+    ない。writer接続前にcross-family order checkと逆順拒否regressionを追加する。
+- 完了条件:
+  - composite lockの正順/逆順解放、invalid group、nested acquisition、wrong unlockを検証する。
+  - checkpoint holderとtransaction waiterのcontentionを実行し、待ち統計が増える。
+  - timeoutがboundedで`ETIMEDOUT`となり、owner-dead後は当該取得を`EOWNERDEAD`で失敗させた後に再取得
+    できる。
+  - checkpoint通常出版、1-copy resume、3-copy rotation、既存replica fault matrixが回帰しない。
+- 実装結果:
+  - v7-owned opaque lock state/composite APIとdedicated `v7_locks_smoketest`を追加した。
+  - checkpoint publisherはlock stateを必須とし、transaction中の再入を`EDEADLK`で拒否する。
+  - runtime mount/write境界は変更していない。
+- 検証結果（2026-07-16）:
+  - `autoreconf -fi && ./configure && make -j2`: PASS。
+  - `v7_locks_smoketest`、`v7_checkpoint_publication_smoketest`、
+    `v7_replica_fault_smoketest`: PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 38 PASS。
+  - `v7_locks_smoketest`と`v7_checkpoint_publication_smoketest`のValgrind definite/indirect leak gate:
+    PASS（0 error、0 leak）。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`./scripts/check-v7-layout-ownership.sh`、
+    `git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは87件・2.75%で件数増加はなく、
+    新規lock module由来のcloneは検出されていない。
+
 ---
 
 ## 次に着手する候補
 
-1. v7 locking、global sequence publication、journal encoder、multi-group mutation fault matrixを通してから
-   controlled-write admissionを検討する。
+1. global sequence publication、journal encoder/data-before-header writer、cross-family lock integration、
+   multi-group mutation fault matrixを通してからcontrolled-write admissionを検討する。
 2. accepted offline/inspection surface安定後に`kafsresize --migrate-create --format-version 7`を追加する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの

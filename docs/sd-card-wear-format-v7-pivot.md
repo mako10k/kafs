@@ -133,10 +133,20 @@ resumes an interrupted one-copy generation without advancing it. It retains
 the previous selected copy on three-replica images until two new copies exist;
 journal reclamation and runtime write admission remain outside this slice.
 
+The v7-owned locking primitive now serializes transactions through an exclusive
+write gate, then takes the filesystem sequence and exactly one group lock in
+ranks 1, 2, and 3. Checkpoint publication takes the write gate alone. The lock
+wait is bounded and observable, cancellation is disabled while held, and a
+stale owner fails the current operation instead of silently continuing. This
+correctness-first RC boundary deliberately does not provide concurrent
+cross-group transactions. No admitted path crosses into the existing ranks
+10-50 yet; that writer integration must add a cross-family order check.
+
 Controlled write remains blocked by the v7 encoder, data-before-header
-publication ordering, filesystem-global sequence serialization, and explicit
-locking ranks. The successful v7 path must also stop using the v6-named
-controlled-write policy flag and v6 FUSE policy helper.
+publication ordering, filesystem-global sequence allocation/publication, and
+the runtime mutation integration that uses the documented cross-family lock
+order. The successful v7 path must also stop using the v6-named controlled-write
+policy flag and v6 FUSE policy helper.
 
 FTL/ECC correlated-failure injection is not in this implementation blocker
 list.  It is governed by the RC media-qualification boundary in the accepted
@@ -156,9 +166,9 @@ raw-layout specification and does not relax any software recovery gate.
 
 ## Follow-Up Boundaries
 
-1. Add explicit v7 locking, global sequence publication, the journal encoder,
-   and multi-group mutation fault matrices before enabling controlled-write
-   admission.
+1. Add global sequence publication, the journal encoder/data-before-header
+   writer, cross-family lock integration, and multi-group mutation fault
+   matrices before enabling controlled-write admission.
 2. Add `kafsresize --migrate-create --format-version 7` after the accepted
    offline and inspection surfaces are stable; migration does not outrank a
    blocker on the mount/write path.

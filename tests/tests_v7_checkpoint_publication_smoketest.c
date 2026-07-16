@@ -21,6 +21,7 @@ typedef struct checkpoint_fixture
   uint64_t file_size;
   kafs_ssuperblock_t superblock;
   kafs_v7_layout_report_t layout;
+  kafs_v7_lock_state_t *locks;
 } checkpoint_fixture_t;
 
 static int run_command(char *const argv[])
@@ -69,8 +70,12 @@ static int fixture_open(checkpoint_fixture_t *fixture, const char *path, int fla
   if (rc == 0)
     rc = kafs_v7_validate_image_fd(fixture->fd, &fixture->superblock, fixture->file_size,
                                    &fixture->layout);
+  if (rc == 0)
+    rc = kafs_v7_locks_init(fixture->layout.group_count, 0u, &fixture->locks);
   if (rc != 0)
   {
+    kafs_v7_locks_destroy(fixture->locks);
+    kafs_v7_layout_report_clear(&fixture->layout);
     close(fixture->fd);
     fixture->fd = -1;
   }
@@ -83,6 +88,7 @@ static void fixture_close(checkpoint_fixture_t *fixture)
     return;
   if (fixture->fd >= 0)
     close(fixture->fd);
+  kafs_v7_locks_destroy(fixture->locks);
   kafs_v7_layout_report_clear(&fixture->layout);
   memset(fixture, 0, sizeof(*fixture));
   fixture->fd = -1;
@@ -139,8 +145,8 @@ static int test_two_copy_publication(void)
     rc = -1;
   kafs_v7_checkpoint_publish_result_t result;
   if (rc == 0)
-    rc = kafs_v7_checkpoint_publish_fd(fixture.fd, &fixture.superblock, fixture.file_size,
-                                       &result);
+    rc = kafs_v7_checkpoint_publish_fd(fixture.locks, fixture.fd, &fixture.superblock,
+                                       fixture.file_size, &result);
   if (rc == 0 && (result.generation != 2u || result.resumed ||
                   result.written_copy_count != 2u || result.verified_copy_count != 2u))
     rc = -1;
@@ -191,8 +197,8 @@ static int test_interrupted_publication_resume(void)
     rc = -1;
   kafs_v7_checkpoint_publish_result_t result;
   if (rc == 0)
-    rc = kafs_v7_checkpoint_publish_fd(fixture.fd, &fixture.superblock, fixture.file_size,
-                                       &result);
+    rc = kafs_v7_checkpoint_publish_fd(fixture.locks, fixture.fd, &fixture.superblock,
+                                       fixture.file_size, &result);
   if (rc == 0 && (result.generation != 2u || !result.resumed ||
                   result.written_copy_count != 1u || result.verified_copy_count != 2u))
     rc = -1;
@@ -225,15 +231,30 @@ static int test_plan_guards(void)
   if (rc == 0 && kafs_v7_checkpoint_plan(&fixture.layout, &plan) != -EOVERFLOW)
     rc = -1;
   kafs_v7_checkpoint_publish_result_t result;
-  if (rc == 0 && kafs_v7_checkpoint_publish_fd(fixture.fd, &fixture.superblock,
+  if (rc == 0 && kafs_v7_checkpoint_publish_fd(fixture.locks, fixture.fd, &fixture.superblock,
                                                 fixture.file_size, &result) != -EBADF)
     rc = -1;
   fixture_close(&fixture);
 
   if (fixture_open(&fixture, path, O_RDWR | O_APPEND) != 0)
     return -1;
-  if (rc == 0 && kafs_v7_checkpoint_publish_fd(fixture.fd, &fixture.superblock,
+  if (rc == 0 && kafs_v7_checkpoint_publish_fd(fixture.locks, fixture.fd, &fixture.superblock,
                                                 fixture.file_size, &result) != -EBADF)
+    rc = -1;
+  fixture_close(&fixture);
+
+  if (fixture_open(&fixture, path, O_RDWR) != 0)
+    return -1;
+  int transaction_locked = 0;
+  if (rc == 0)
+  {
+    rc = kafs_v7_transaction_lock(fixture.locks, 0u);
+    transaction_locked = rc == 0;
+  }
+  if (rc == 0 && kafs_v7_checkpoint_publish_fd(fixture.locks, fixture.fd, &fixture.superblock,
+                                                fixture.file_size, &result) != -EDEADLK)
+    rc = -1;
+  if (transaction_locked && kafs_v7_transaction_unlock(fixture.locks, 0u) != 0)
     rc = -1;
   fixture_close(&fixture);
   return rc;

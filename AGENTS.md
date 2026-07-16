@@ -133,11 +133,14 @@
 
 - Follow `.github/lock-policy.md`.
 - Acquire locks only in ascending rank order:
-  1. `hrl_global` rank 10
-  2. `inode_alloc` rank 20
-  3. `inode` rank 30
-  4. `hrl_bucket` rank 40
-  5. `bitmap` rank 50
+  1. `v7_write_gate` rank 1
+  2. `v7_sequence` rank 2
+  3. `v7_group` rank 3
+  4. `hrl_global` rank 10
+  5. `inode_alloc` rank 20
+  6. `inode` rank 30
+  7. `hrl_bucket` rank 40
+  8. `bitmap` rank 50
 - Unlock in strict reverse order.
 - New lock classes must declare an explicit rank and be inserted into the policy.
 - Never introduce lock-order inversions, silent infinite lock waits, or code paths that hide stale-owner diagnostics.
