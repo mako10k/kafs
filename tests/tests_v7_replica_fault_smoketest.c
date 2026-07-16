@@ -678,8 +678,12 @@ static int test_three_copy_checkpoint_rotation(const char *path)
                   plan.target_replicas[1] != 1u))
     rc = -1;
   kafs_v7_checkpoint_publish_result_t result;
+  kafs_v7_lock_state_t *locks = NULL;
   if (rc == 0)
-    rc = kafs_v7_checkpoint_publish_fd(fd, &sb, file_size, &result);
+    rc = kafs_v7_locks_init(report.group_count, 0u, &locks);
+  if (rc == 0)
+    rc = kafs_v7_checkpoint_publish_fd(locks, fd, &sb, file_size, &result);
+  kafs_v7_locks_destroy(locks);
   kafs_v7_layout_report_clear(&report);
   close(fd);
   if (rc != 0 || validate_image(path, &report) != 0)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "kafs_v7_layout.h"
+#include "kafs_v7_locks.h"
 
 #include <stdint.h>
 
@@ -35,5 +36,5 @@ int kafs_v7_checkpoint_plan(const kafs_v7_layout_report_t *layout, kafs_v7_check
  * each full checkpoint block separately, then require two byte-identical
  * read-back copies. Journal reclamation is intentionally a later operation.
  */
-int kafs_v7_checkpoint_publish_fd(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
-                                  kafs_v7_checkpoint_publish_result_t *result);
+int kafs_v7_checkpoint_publish_fd(kafs_v7_lock_state_t *locks, int fd, const kafs_ssuperblock_t *sb,
+                                  uint64_t file_size, kafs_v7_checkpoint_publish_result_t *result);

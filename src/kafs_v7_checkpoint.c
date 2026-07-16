@@ -133,8 +133,9 @@ static int kafs_v7_checkpoint_block_matches(int fd, const kafs_v7_copy_report_t 
   return rc;
 }
 
-int kafs_v7_checkpoint_publish_fd(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
-                                  kafs_v7_checkpoint_publish_result_t *result)
+static int kafs_v7_checkpoint_publish_unlocked_fd(int fd, const kafs_ssuperblock_t *sb,
+                                                  uint64_t file_size,
+                                                  kafs_v7_checkpoint_publish_result_t *result)
 {
   if (fd < 0 || !sb || !result)
     return -EINVAL;
@@ -202,4 +203,17 @@ int kafs_v7_checkpoint_publish_fd(int fd, const kafs_ssuperblock_t *sb, uint64_t
   free(block);
   kafs_v7_layout_report_clear(&layout);
   return rc;
+}
+
+int kafs_v7_checkpoint_publish_fd(kafs_v7_lock_state_t *locks, int fd, const kafs_ssuperblock_t *sb,
+                                  uint64_t file_size, kafs_v7_checkpoint_publish_result_t *result)
+{
+  if (!locks)
+    return -EINVAL;
+  int rc = kafs_v7_checkpoint_lock(locks);
+  if (rc != 0)
+    return rc;
+  rc = kafs_v7_checkpoint_publish_unlocked_fd(fd, sb, file_size, result);
+  int unlock_rc = kafs_v7_checkpoint_unlock(locks);
+  return rc != 0 ? rc : unlock_rc;
 }
