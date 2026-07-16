@@ -2681,12 +2681,52 @@
   - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは87件・2.75%で件数増加はなく、
     新規lock module由来のcloneは検出されていない。
 
+### SDW-V7RT-T11 filesystem-global sequence reservation and publication confirmation
+
+- 目的: journal encoderより先に、group-local journalへfilesystem-global sequenceをgapなく割り当て、
+  durable publicationを確認するstate machineをv7-owned APIで固定する。
+- 変更:
+  - `src/kafs_v7_sequence.*`はvalidated viewの`max(checkpoint_seq, journal.last_sequence)`から開始し、
+    composite transaction lockを保持したままexact next sequenceだけを予約する。
+  - 予約は同一threadで完了または取消する。完了はfresh image validationを行い、予約sequenceが予約groupの
+    selected journal prefixのlast sequenceとして見える場合だけ番号を消費する。
+  - header公開前の取消はfresh validationでvisible sequenceが変化していないことを証明し、同じ番号の再利用を
+    許す。確認不能、sequence/group不一致、validator failureはstateをpoisonし、後続予約を`EUCLEAN`で拒否する。
+  - process restart/reopenはfresh validated viewから次番号を再構築する。sequence/token overflowはfail closedに
+    する。
+  - `kafs_v7_journal_report_t`はselected global last sequenceのgroup idを保持し、checkpointだけの異常前進や
+    別groupへの誤出版をjournal公開成功と誤認しない。
+  - test fixtureのjournal publicationもdata write/flush -> header write/flush順へ強化した。
+  - journal record encoder、metadata apply、runtime controlled write admissionは有効化しない。
+- 完了条件:
+  - 未公開予約を取消すと同じsequenceを再予約できる。
+  - group 0のsequence 1を公開確認するまでgroup 1の予約はtimeoutし、確認後はgroup 1へsequence 2を予約・
+    公開できる。
+  - state再初期化後はdurable viewからsequence 3を予約できる。
+  - invalid group、sequence overflow、予約groupと公開groupの不一致をfail closedにし、不一致後のstateを
+    poisonする。
+- 実装結果:
+  - v7-owned sequence state/reservation APIを追加し、既存rank 1 -> 2 -> 3 composite lockと統合した。
+  - `v7_journal_replay_smoketest`へcancel/reuse、cross-group serialization、restart、overflow、poison matrixを
+    追加した。
+  - runtime mount/write境界は変更していない。
+- 検証結果（2026-07-16）:
+  - `autoreconf -fi && ./configure`と`kafs-v7`を含むbuild: PASS。
+  - `v7_journal_replay_smoketest`、`v7_raw_layout_smoketest`、
+    `v7_checkpoint_publication_smoketest`: PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 38 PASS。
+  - `v7_journal_replay_smoketest`のValgrind: PASS（0 error、0 leak）。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`./scripts/check-v7-layout-ownership.sh`、
+    `git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ87件・2.74%で、
+    新規sequence module由来のcloneは検出されていない。
+
 ---
 
 ## 次に着手する候補
 
-1. global sequence publication、journal encoder/data-before-header writer、cross-family lock integration、
-   multi-group mutation fault matrixを通してからcontrolled-write admissionを検討する。
+1. journal encoder/data-before-header writer、cross-family lock integration、multi-group mutation fault matrixを
+   通してからcontrolled-write admissionを検討する。
 2. accepted offline/inspection surface安定後に`kafsresize --migrate-create --format-version 7`を追加する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの

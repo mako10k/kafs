@@ -361,6 +361,8 @@ typedef struct kafs_v7_journal_report
   uint32_t replay_mutation_count;
   uint64_t first_sequence;
   uint64_t last_sequence;
+  uint32_t last_sequence_group_id;
+  uint32_t reserved;
 } kafs_v7_journal_report_t;
 
 typedef struct kafs_v7_layout_report
