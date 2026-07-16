@@ -4,7 +4,9 @@
 #include "kafs_offline_summary.h"
 #include "kafs_superblock.h"
 #include "kafs_tool_util.h"
+#include "kafs_v7_journal.h"
 #include "kafs_v7_layout.h"
+#include "kafs_v7_journal_writer.h"
 #include "kafs_v7_runtime_view.h"
 #include "kafs_v7_sequence.h"
 
@@ -976,6 +978,311 @@ static int test_third_target_state(void)
   return rc == 0 && validate_path(path, NULL) != 0 ? 0 : -1;
 }
 
+static void writer_patches_from_targets(const replay_transaction_fixture_t *targets,
+                                        kafs_v7_journal_patch_t patches[3])
+{
+  memset(patches, 0, 3u * sizeof(*patches));
+  for (size_t i = 0; i < 3u; ++i)
+  {
+    patches[i].target_type = targets->targets[i].type;
+    patches[i].logical_index = targets->targets[i].logical_index;
+    patches[i].patch_bytes = targets->targets[i].bytes;
+    patches[i].patch = targets->targets[i].after;
+    patches[i].free_blocks_delta = targets->targets[i].free_blocks_delta;
+    patches[i].free_inodes_delta = targets->targets[i].free_inodes_delta;
+  }
+}
+
+static int test_unpublished_data_is_invisible(void)
+{
+  const char *path = "v7-writer-data-only.img";
+  replay_image_fixture_t fixture;
+  replay_transaction_fixture_t transaction;
+  memset(&transaction, 0, sizeof(transaction));
+  if (open_fixture(path, &fixture) != 0 ||
+      build_transaction(&fixture, 0u, 1u, KAFS_V7_JOURNAL_COMMIT_TAG, &transaction) != 0)
+    return -1;
+  kafs_v7_journal_segment_t segment;
+  int rc = kafs_v7_journal_segment_read_fd(fixture.fd, &fixture.layout, 0u, 0u, &segment);
+  if (rc == 0)
+    rc = kafs_pwrite_all(fixture.fd, transaction.bytes, transaction.byte_count,
+                         (off_t)segment.data_off);
+  if (rc == 0 && fdatasync(fixture.fd) != 0)
+    rc = -errno;
+  kafs_v7_layout_report_t report;
+  memset(&report, 0, sizeof(report));
+  if (rc == 0)
+    rc = kafs_v7_validate_image_fd(fixture.fd, &fixture.sb, fixture.file_size, &report);
+  if (rc == 0 &&
+      (report.journal.record_count != 0u || report.journal.transaction_count != 0u ||
+       report.journal.last_sequence != 0u))
+    rc = -1;
+  kafs_v7_layout_report_clear(&report);
+  transaction_clear(&transaction);
+  close_fixture(&fixture);
+  return rc;
+}
+
+static int writer_publish_targets(replay_image_fixture_t *fixture,
+                                  kafs_v7_sequence_state_t *sequence_state,
+                                  kafs_v7_sequence_reservation_t *reservation,
+                                  const replay_transaction_fixture_t *targets, uint32_t terminal_tag,
+                                  kafs_v7_journal_publication_t *publication)
+{
+  kafs_v7_journal_patch_t patches[3];
+  writer_patches_from_targets(targets, patches);
+  kafs_v7_journal_transaction_t *transaction = NULL;
+  const char *phase = "encode";
+  int rc = kafs_v7_journal_transaction_encode_fd(fixture->fd, &fixture->layout, reservation,
+                                                  patches, 3u, terminal_tag, &transaction);
+  if (rc == 0)
+  {
+    phase = "publish";
+    rc = kafs_v7_journal_transaction_publish_fd(fixture->fd, &fixture->layout, reservation,
+                                                transaction, publication);
+  }
+  if (rc == 0)
+  {
+    phase = "confirm";
+    rc = kafs_v7_sequence_confirm_publication_fd(sequence_state, reservation, fixture->fd,
+                                                  &fixture->sb, fixture->file_size);
+  }
+  if (rc != 0)
+    fprintf(stderr, "v7 writer target %s failed: %d\n", phase, rc);
+  kafs_v7_journal_transaction_destroy(transaction);
+  return rc;
+}
+
+static int test_writer_publication_and_rotation(void)
+{
+  const char *path = "v7-writer-publication.img";
+  replay_image_fixture_t fixture;
+  if (open_fixture_with_groups(path, 2u, &fixture) != 0)
+    return -1;
+  kafs_v7_lock_state_t *locks = NULL;
+  kafs_v7_sequence_state_t *sequence_state = NULL;
+  kafs_v7_sequence_reservation_t reservation;
+  memset(&reservation, 0, sizeof(reservation));
+  replay_transaction_fixture_t group0;
+  replay_transaction_fixture_t group1;
+  memset(&group0, 0, sizeof(group0));
+  memset(&group1, 0, sizeof(group1));
+  int rc = prepare_targets(&fixture, 0u, &group0);
+  if (rc == 0)
+    rc = prepare_targets(&fixture, 1u, &group1);
+  if (rc == 0)
+    rc = kafs_v7_locks_init(fixture.layout.group_count, 50u, &locks);
+  if (rc == 0)
+    rc = kafs_v7_sequence_state_init(locks, &fixture.layout, &sequence_state);
+
+  kafs_v7_journal_publication_t first;
+  memset(&first, 0, sizeof(first));
+  if (rc == 0)
+    rc = kafs_v7_sequence_reserve(sequence_state, 0u, &reservation);
+  if (rc == 0)
+    rc = writer_publish_targets(&fixture, sequence_state, &reservation, &group0,
+                                KAFS_V7_JOURNAL_COMMIT_TAG, &first);
+  if (rc == 0 &&
+      (first.sequence != 1u || first.group_id != 0u || first.local_segment != 0u ||
+       first.header_generation != 2u || first.header_slot != 1u ||
+       first.previous_write_bytes != 0u || first.published_write_bytes == 0u))
+    rc = -1;
+
+  kafs_v7_journal_patch_t abort_patch;
+  memset(&abort_patch, 0, sizeof(abort_patch));
+  abort_patch.target_type = group0.targets[0].type;
+  abort_patch.logical_index = group0.targets[0].logical_index;
+  abort_patch.patch_bytes = group0.targets[0].bytes;
+  abort_patch.patch = group0.targets[0].after;
+  kafs_v7_journal_transaction_t *abort_transaction = NULL;
+  kafs_v7_journal_publication_t second;
+  memset(&second, 0, sizeof(second));
+  if (rc == 0)
+    rc = kafs_v7_sequence_reserve(sequence_state, 0u, &reservation);
+  if (rc == 0)
+    rc = kafs_v7_journal_transaction_encode_fd(fixture.fd, &fixture.layout, &reservation,
+                                                &abort_patch, 1u, KAFS_V7_JOURNAL_ABORT_TAG,
+                                                &abort_transaction);
+  kafs_v7_journal_publication_t unchanged;
+  memset(&unchanged, 0x5a, sizeof(unchanged));
+  kafs_v7_journal_publication_t expected_unchanged = unchanged;
+  kafs_v7_sequence_reservation_t wrong_reservation = reservation;
+  ++wrong_reservation.token;
+  if (rc == 0 &&
+      (kafs_v7_journal_transaction_publish_fd(fixture.fd, &fixture.layout, &wrong_reservation,
+                                              abort_transaction, &unchanged) != -EINVAL ||
+       memcmp(&unchanged, &expected_unchanged, sizeof(unchanged)) != 0))
+    rc = -1;
+  if (rc == 0)
+    rc = kafs_v7_journal_transaction_publish_fd(fixture.fd, &fixture.layout, &reservation,
+                                                abort_transaction, &second);
+  kafs_v7_journal_publication_t stale_output;
+  memset(&stale_output, 0xa5, sizeof(stale_output));
+  kafs_v7_journal_publication_t expected_stale_output = stale_output;
+  if (rc == 0 &&
+      (kafs_v7_journal_transaction_publish_fd(fixture.fd, &fixture.layout, &reservation,
+                                              abort_transaction, &stale_output) != -ESTALE ||
+       memcmp(&stale_output, &expected_stale_output, sizeof(stale_output)) != 0))
+    rc = -1;
+  if (rc == 0)
+    rc = kafs_v7_sequence_confirm_publication_fd(sequence_state, &reservation, fixture.fd,
+                                                  &fixture.sb, fixture.file_size);
+  if (rc == 0 &&
+      (second.sequence != 2u || second.group_id != 0u || second.local_segment != 0u ||
+       second.header_generation != 3u || second.header_slot != 2u))
+    rc = -1;
+  kafs_v7_journal_transaction_destroy(abort_transaction);
+  abort_transaction = NULL;
+
+  kafs_v7_journal_publication_t third;
+  memset(&third, 0, sizeof(third));
+  if (rc == 0)
+    rc = kafs_v7_sequence_reserve(sequence_state, 1u, &reservation);
+  if (rc == 0)
+    rc = writer_publish_targets(&fixture, sequence_state, &reservation, &group1,
+                                KAFS_V7_JOURNAL_COMMIT_TAG, &third);
+  if (rc == 0 &&
+      (third.sequence != 3u || third.group_id != 1u || third.local_segment != 0u ||
+       third.header_generation != 2u || third.header_slot != 1u))
+    rc = -1;
+
+  kafs_v7_journal_replay_t replay;
+  memset(&replay, 0, sizeof(replay));
+  if (rc == 0)
+    rc = kafs_v7_journal_analyze_fd(fixture.fd, &fixture.layout, &replay);
+  if (rc == 0 &&
+      (replay.report.last_sequence != 3u || replay.report.last_sequence_group_id != 1u ||
+       replay.report.committed_transaction_count != 2u ||
+       replay.report.aborted_transaction_count != 1u || replay.report.mutation_count != 6u))
+    rc = -1;
+  for (size_t i = 0; rc == 0 && i < 3u; ++i)
+  {
+    uint8_t *actual = (uint8_t *)malloc(group0.targets[i].bytes);
+    if (!actual)
+      rc = -ENOMEM;
+    if (rc == 0)
+      rc = kafs_v7_journal_overlay_pread(&replay, fixture.fd, actual, group0.targets[i].bytes,
+                                         group0.targets[i].physical_off);
+    if (rc == 0 && memcmp(actual, group0.targets[i].after, group0.targets[i].bytes) != 0)
+      rc = -1;
+    free(actual);
+  }
+  kafs_v7_journal_replay_clear(&replay);
+
+  kafs_v7_journal_transaction_t *cross_group = (kafs_v7_journal_transaction_t *)(uintptr_t)1u;
+  kafs_v7_journal_patch_t cross_patch;
+  memset(&cross_patch, 0, sizeof(cross_patch));
+  cross_patch.target_type = group1.targets[0].type;
+  cross_patch.logical_index = group1.targets[0].logical_index;
+  cross_patch.patch_bytes = group1.targets[0].bytes;
+  cross_patch.patch = group1.targets[0].after;
+  if (rc == 0)
+    rc = kafs_v7_sequence_reserve(sequence_state, 0u, &reservation);
+  kafs_v7_journal_patch_t invalid_delta = abort_patch;
+  invalid_delta.free_blocks_delta = -1;
+  kafs_v7_journal_transaction_t *invalid_transaction =
+      (kafs_v7_journal_transaction_t *)(uintptr_t)1u;
+  if (rc == 0 &&
+      (kafs_v7_journal_transaction_encode_fd(fixture.fd, &fixture.layout, &reservation,
+                                              &invalid_delta, 1u, KAFS_V7_JOURNAL_COMMIT_TAG,
+                                              &invalid_transaction) != -EINVAL ||
+       invalid_transaction != NULL))
+    rc = -1;
+  if (rc == 0 &&
+      (kafs_v7_journal_transaction_encode_fd(fixture.fd, &fixture.layout, &reservation,
+                                              &cross_patch, 1u, KAFS_V7_JOURNAL_COMMIT_TAG,
+                                              &cross_group) != -EXDEV ||
+       cross_group != NULL))
+    rc = -1;
+  if (reservation.active)
+  {
+    int cancel_rc = kafs_v7_sequence_cancel_reservation_fd(
+        sequence_state, &reservation, fixture.fd, &fixture.sb, fixture.file_size);
+    if (rc == 0)
+      rc = cancel_rc;
+  }
+
+  transaction_clear(&group0);
+  transaction_clear(&group1);
+  kafs_v7_sequence_state_destroy(sequence_state);
+  kafs_v7_locks_destroy(locks);
+  close_fixture(&fixture);
+  if (rc != 0)
+    fprintf(stderr,
+            "v7 writer state: rc=%d first=%" PRIu64 "/%" PRIu32 "/%" PRIu64
+            " second=%" PRIu64 "/%" PRIu32 "/%" PRIu64
+            " third=%" PRIu64 "/%" PRIu32 "/%" PRIu64 "\n",
+            rc, first.sequence, first.local_segment, first.header_generation, second.sequence,
+            second.local_segment, second.header_generation, third.sequence, third.local_segment,
+            third.header_generation);
+  return rc;
+}
+
+static int test_writer_segment_distribution(void)
+{
+  const char *path = "v7-writer-segment-distribution.img";
+  replay_image_fixture_t fixture;
+  if (open_fixture(path, &fixture) != 0)
+    return -1;
+  kafs_v7_lock_state_t *locks = NULL;
+  kafs_v7_sequence_state_t *sequence_state = NULL;
+  kafs_v7_sequence_reservation_t reservation;
+  memset(&reservation, 0, sizeof(reservation));
+  replay_transaction_fixture_t targets;
+  memset(&targets, 0, sizeof(targets));
+  int rc = prepare_targets(&fixture, 0u, &targets);
+  if (rc == 0)
+    rc = kafs_v7_locks_init(fixture.layout.group_count, 50u, &locks);
+  if (rc == 0)
+    rc = kafs_v7_sequence_state_init(locks, &fixture.layout, &sequence_state);
+  kafs_v7_journal_publication_t first;
+  memset(&first, 0, sizeof(first));
+  if (rc == 0)
+    rc = kafs_v7_sequence_reserve(sequence_state, 0u, &reservation);
+  if (rc == 0)
+    rc = writer_publish_targets(&fixture, sequence_state, &reservation, &targets,
+                                KAFS_V7_JOURNAL_COMMIT_TAG, &first);
+
+  kafs_v7_journal_patch_t abort_patch;
+  memset(&abort_patch, 0, sizeof(abort_patch));
+  abort_patch.target_type = targets.targets[0].type;
+  abort_patch.logical_index = targets.targets[0].logical_index;
+  abort_patch.patch_bytes = targets.targets[0].bytes;
+  abort_patch.patch = targets.targets[0].after;
+  kafs_v7_journal_transaction_t *abort_transaction = NULL;
+  kafs_v7_journal_publication_t second;
+  memset(&second, 0, sizeof(second));
+  if (rc == 0)
+    rc = kafs_v7_sequence_reserve(sequence_state, 0u, &reservation);
+  if (rc == 0)
+    rc = kafs_v7_journal_transaction_encode_fd(fixture.fd, &fixture.layout, &reservation,
+                                                &abort_patch, 1u, KAFS_V7_JOURNAL_ABORT_TAG,
+                                                &abort_transaction);
+  if (rc == 0)
+    rc = kafs_v7_journal_transaction_publish_fd(fixture.fd, &fixture.layout, &reservation,
+                                                abort_transaction, &second);
+  if (rc == 0)
+    rc = kafs_v7_sequence_confirm_publication_fd(sequence_state, &reservation, fixture.fd,
+                                                  &fixture.sb, fixture.file_size);
+  if (rc == 0 &&
+      (first.local_segment != 0u || first.header_generation != 2u ||
+       second.local_segment != 1u || second.header_generation != 2u))
+    rc = -1;
+  kafs_v7_journal_transaction_destroy(abort_transaction);
+  if (reservation.active)
+  {
+    int cancel_rc = kafs_v7_sequence_cancel_reservation_fd(
+        sequence_state, &reservation, fixture.fd, &fixture.sb, fixture.file_size);
+    if (rc == 0)
+      rc = cancel_rc;
+  }
+  transaction_clear(&targets);
+  kafs_v7_sequence_state_destroy(sequence_state);
+  kafs_v7_locks_destroy(locks);
+  close_fixture(&fixture);
+  return rc;
+}
+
 int main(void)
 {
   if (kafs_test_enter_tmpdir("v7-journal-replay") != 0)
@@ -1008,6 +1315,21 @@ int main(void)
   if (test_sequence_confirmation_poison() != 0)
   {
     fprintf(stderr, "v7 sequence confirmation poison gate failed\n");
+    return 1;
+  }
+  if (test_unpublished_data_is_invisible() != 0)
+  {
+    fprintf(stderr, "v7 journal unpublished data became visible\n");
+    return 1;
+  }
+  if (test_writer_publication_and_rotation() != 0)
+  {
+    fprintf(stderr, "v7 journal writer publication/rotation failed\n");
+    return 1;
+  }
+  if (test_writer_segment_distribution() != 0)
+  {
+    fprintf(stderr, "v7 journal writer segment distribution failed\n");
     return 1;
   }
   return 0;

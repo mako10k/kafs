@@ -2721,12 +2721,52 @@
   - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ87件・2.74%で、
     新規sequence module由来のcloneは検出されていない。
 
+### SDW-V7RT-T12 journal encoder and data-before-header publication
+
+- 目的: active filesystem-global sequence reservationをgroup-local journalのcanonical wire recordへ変換し、
+  crash時に未flush dataやtorn headerをselected prefixとして誤認しない順序で公開する。
+- 変更:
+  - `src/kafs_v7_journal_writer.*`は既存journal overlay後の論理targetをbefore stateとして読み、partial patch後の
+    before/after CRC、mutation stream CRC、control deltaを含む`K7JB/K7JM/K7JC/K7JA`をencodeする。
+  - encoderは既存mutation routerとreader共通のdelta validatorを使い、single-group、非重複target、bitmap/inode
+    のexact free counter deltaをheader公開前に検証する。
+  - opaque transactionはactive sequence/token/groupとencode threadへbindし、取消済み、別token、別threadの
+    publicationを拒否する。
+  - reader/writer共通のsegment snapshotは各header blockからCRC-validなhighest generationだけを選ぶ。
+  - publisherはfresh replayでexact next sequenceを再検証し、容量のあるsegmentのうちselected header generationが
+    最小のものへappendする。transaction data write -> `fdatasync` -> rotated `K7JH` write -> `fdatasync`の順を固定する。
+  - metadata target apply、checkpoint連携、journal reclamation、cross-family runtime lock integration、controlled-write
+    admissionは有効化しない。
+- 完了条件:
+  - COMMIT/ABORTをwriterだけで生成・公開し、fresh readerがglobal sequence、group、mutation/counter、overlay stateを
+    byte-exactに復元できる。
+  - dataだけをflushしてheaderを公開しないcrash stateはempty journalとして扱われる。
+  - single-groupの2 segmentは連続publicationで異なるsegmentを選び、1-segment-per-group geometryではheader slotを
+    generation順に回す。
+  - wrong token、in-rangeだが不正なexact delta、cross-group target、stale sequenceをimage/output不変で拒否する。
+- 実装結果:
+  - v7-owned encoder/publisher API、共有segment selector、incremental CRC/delta helperを追加した。
+  - `v7_journal_replay_smoketest`へdata-only crash、writer round-trip、COMMIT/ABORT、overlay chaining、segment/header
+    rotation、multi-group sequence、token/delta/routing rejectionを追加した。
+  - runtime mount/write境界は変更していない。
+- 検証結果（2026-07-16）:
+  - `autoreconf -fi && ./configure`、`kafs-v7` build: PASS。
+  - `make -C tests check TESTS=v7_journal_replay_smoketest`: 1 PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 37 PASS、FUSE mount権限依存の
+    `stress_fs` 1 test SKIP。
+  - `v7_journal_replay_smoketest`のValgrind: PASS（0 error、0 leak）。
+  - clangd diagnostics（writer、journal/layout/mutation、test）: 0件。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`./scripts/check-v7-layout-ownership.sh`、
+    `git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ87件・2.69%で、
+    writer由来のcloneは0件。writerのcomplexity warningは責務分割後0件。
+
 ---
 
 ## 次に着手する候補
 
-1. journal encoder/data-before-header writer、cross-family lock integration、multi-group mutation fault matrixを
-   通してからcontrolled-write admissionを検討する。
+1. metadata apply/checkpoint/reclamation、cross-family lock integration、multi-group mutation fault matrixを通してから
+   controlled-write admissionを検討する。
 2. accepted offline/inspection surface安定後に`kafsresize --migrate-create --format-version 7`を追加する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの

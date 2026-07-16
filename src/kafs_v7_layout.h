@@ -414,6 +414,8 @@ typedef struct kafs_v7_mkfs_options
 } kafs_v7_mkfs_options_t;
 
 uint32_t kafs_v7_crc32(const void *buf, size_t bytes);
+/* Extend an unfinalized CRC state; initialize with UINT32_MAX and xor on completion. */
+uint32_t kafs_v7_crc32_update(uint32_t crc, const void *buf, size_t bytes);
 const char *kafs_v7_replica_status_name(kafs_v7_replica_status_t status);
 const char *kafs_v7_replica_role_name(uint16_t role);
 const char *kafs_v7_shard_type_name(uint16_t type);

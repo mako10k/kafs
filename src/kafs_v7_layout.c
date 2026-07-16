@@ -131,18 +131,21 @@ static int kafs_v7_validate_zero_range(int fd, uint64_t off, uint64_t bytes)
   return 0;
 }
 
-uint32_t kafs_v7_crc32(const void *buf, size_t bytes)
+uint32_t kafs_v7_crc32_update(uint32_t crc, const void *buf, size_t bytes)
 {
   const uint8_t *p = (const uint8_t *)buf;
-  uint32_t crc = UINT32_MAX;
-
   for (size_t i = 0; i < bytes; ++i)
   {
     crc ^= p[i];
     for (unsigned bit = 0; bit < 8u; ++bit)
       crc = (crc >> 1u) ^ ((crc & 1u) ? UINT32_C(0xedb88320) : 0u);
   }
-  return crc ^ UINT32_MAX;
+  return crc;
+}
+
+uint32_t kafs_v7_crc32(const void *buf, size_t bytes)
+{
+  return kafs_v7_crc32_update(UINT32_MAX, buf, bytes) ^ UINT32_MAX;
 }
 
 const char *kafs_v7_replica_status_name(kafs_v7_replica_status_t status)
