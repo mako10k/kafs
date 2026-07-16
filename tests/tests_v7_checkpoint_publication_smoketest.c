@@ -3,10 +3,15 @@
 #include "kafs_offline_summary.h"
 #include "kafs_tool_util.h"
 #include "kafs_v7_checkpoint.h"
+#include "kafs_v7_journal_writer.h"
+#include "kafs_v7_mutation.h"
+#include "kafs_v7_sequence.h"
 
 #include <endian.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -94,6 +99,103 @@ static void fixture_close(checkpoint_fixture_t *fixture)
   fixture->fd = -1;
 }
 
+static int fixture_refresh(checkpoint_fixture_t *fixture)
+{
+  kafs_v7_layout_report_clear(&fixture->layout);
+  memset(&fixture->layout, 0, sizeof(fixture->layout));
+  return kafs_v7_validate_image_fd(fixture->fd, &fixture->superblock, fixture->file_size,
+                                   &fixture->layout);
+}
+
+static int publish_inode_patch(checkpoint_fixture_t *fixture, uint64_t inode, uint16_t uid,
+                               uint32_t terminal_tag)
+{
+  kafs_v7_mutation_route_t route;
+  int rc = kafs_v7_mutation_route_target(&fixture->layout, KAFS_V7_JOURNAL_TARGET_INODE, inode,
+                                         &route);
+  kafs_v7_sequence_state_t *sequence = NULL;
+  if (rc == 0)
+    rc = kafs_v7_sequence_state_init(fixture->locks, &fixture->layout, &sequence);
+  kafs_v7_sequence_reservation_t reservation;
+  memset(&reservation, 0, sizeof(reservation));
+  if (rc == 0)
+    rc = kafs_v7_sequence_reserve(sequence, route.group_id, &reservation);
+  uint16_t wire_uid = htole16(uid);
+  kafs_v7_journal_patch_t patch = {
+      .target_type = KAFS_V7_JOURNAL_TARGET_INODE,
+      .logical_index = inode,
+      .patch_off = offsetof(kafs_v7_inode_t, uid),
+      .patch_bytes = sizeof(wire_uid),
+      .patch = &wire_uid,
+  };
+  kafs_v7_journal_transaction_t *transaction = NULL;
+  if (rc == 0)
+    rc = kafs_v7_journal_transaction_encode_fd(fixture->fd, &fixture->layout, &reservation,
+                                                &patch, 1u, terminal_tag, &transaction);
+  kafs_v7_journal_publication_t publication;
+  if (rc == 0)
+    rc = kafs_v7_journal_transaction_publish_fd(fixture->fd, &fixture->layout, &reservation,
+                                                 transaction, &publication);
+  if (rc == 0)
+    rc = kafs_v7_sequence_confirm_publication_fd(sequence, &reservation, fixture->fd,
+                                                  &fixture->superblock, fixture->file_size);
+  else if (reservation.active)
+    (void)kafs_v7_sequence_cancel_reservation_fd(sequence, &reservation, fixture->fd,
+                                                  &fixture->superblock, fixture->file_size);
+  kafs_v7_journal_transaction_destroy(transaction);
+  kafs_v7_sequence_state_destroy(sequence);
+  return rc == 0 ? fixture_refresh(fixture) : rc;
+}
+
+static int read_inode_uid(const checkpoint_fixture_t *fixture, uint64_t inode, uint16_t *uid)
+{
+  kafs_v7_mutation_route_t route;
+  int rc = kafs_v7_mutation_route_target(&fixture->layout, KAFS_V7_JOURNAL_TARGET_INODE, inode,
+                                         &route);
+  kafs_v7_inode_t record;
+  if (rc == 0)
+    rc = kafs_pread_all(fixture->fd, &record, sizeof(record), (off_t)route.physical_off);
+  if (rc == 0)
+    *uid = le16toh(record.uid);
+  return rc;
+}
+
+static int find_inode_in_group(const checkpoint_fixture_t *fixture, uint32_t group_id,
+                               uint64_t *inode)
+{
+  uint64_t inode_count = kafs_sb_inocnt_get(&fixture->superblock);
+  for (uint64_t candidate = 2u; candidate < inode_count; ++candidate)
+  {
+    kafs_v7_mutation_route_t route;
+    if (kafs_v7_mutation_route_target(&fixture->layout, KAFS_V7_JOURNAL_TARGET_INODE, candidate,
+                                      &route) == 0 &&
+        route.group_id == group_id)
+    {
+      *inode = candidate;
+      return 0;
+    }
+  }
+  return -ENOENT;
+}
+
+static int apply_metadata_only(checkpoint_fixture_t *fixture,
+                               kafs_v7_journal_apply_result_t *result)
+{
+  int rc = kafs_v7_checkpoint_lock(fixture->locks);
+  if (rc != 0)
+    return rc;
+  kafs_v7_journal_replay_t replay;
+  memset(&replay, 0, sizeof(replay));
+  rc = kafs_v7_journal_analyze_fd(fixture->fd, &fixture->layout, &replay);
+  if (rc == 0)
+    rc = kafs_v7_journal_apply_fd(&replay, fixture->fd, result);
+  kafs_v7_journal_replay_clear(&replay);
+  int unlock_rc = kafs_v7_checkpoint_unlock(fixture->locks);
+  if (rc == 0)
+    rc = unlock_rc;
+  return rc == 0 ? fixture_refresh(fixture) : rc;
+}
+
 static uint32_t selected_generation_copies(const kafs_v7_layout_report_t *layout)
 {
   uint32_t count = 0;
@@ -127,6 +229,39 @@ static int checkpoint_blocks_equal(const checkpoint_fixture_t *fixture, uint32_t
   free(left_block);
   free(right_block);
   return rc;
+}
+
+static int reset_one_journal_segment(checkpoint_fixture_t *fixture, uint32_t group_id,
+                                     uint32_t local_segment)
+{
+  kafs_v7_journal_segment_t segment;
+  int rc = kafs_v7_journal_segment_read_fd(fixture->fd, &fixture->layout, group_id, local_segment,
+                                           &segment);
+  uint64_t generation = rc == 0 ? le64toh(segment.selected_header.generation) : 0u;
+  if (rc == 0 && (le64toh(segment.selected_header.write_bytes) == 0u ||
+                  generation == UINT64_MAX))
+    rc = -EINVAL;
+  if (rc != 0)
+    return rc;
+  ++generation;
+  uint32_t slot = (uint32_t)((generation - 1u) % segment.slot_count);
+  uint64_t header_off = segment.header_block_off +
+                        (uint64_t)slot * KAFS_V7_JOURNAL_HEADER_BYTES;
+  if (header_off > INT64_MAX)
+    return -ERANGE;
+  kafs_v7_journal_header_t empty;
+  memset(&empty, 0, sizeof(empty));
+  empty.magic = htole32(KAFS_V7_JOURNAL_HEADER_MAGIC);
+  empty.version = htole16(KAFS_V7_JOURNAL_HEADER_VERSION);
+  empty.segment_id = segment.selected_header.segment_id;
+  empty.slot_bytes = htole32(KAFS_V7_JOURNAL_HEADER_BYTES);
+  empty.generation = htole64(generation);
+  empty.data_bytes = segment.selected_header.data_bytes;
+  empty.crc32 = htole32(kafs_v7_crc32(&empty, sizeof(empty)));
+  rc = kafs_pwrite_all(fixture->fd, &empty, sizeof(empty), (off_t)header_off);
+  if (rc == 0 && fdatasync(fixture->fd) != 0)
+    rc = -errno;
+  return rc == 0 ? fixture_refresh(fixture) : rc;
 }
 
 static int test_two_copy_publication(void)
@@ -234,12 +369,19 @@ static int test_plan_guards(void)
   if (rc == 0 && kafs_v7_checkpoint_publish_fd(fixture.locks, fixture.fd, &fixture.superblock,
                                                 fixture.file_size, &result) != -EBADF)
     rc = -1;
+  kafs_v7_metadata_closeout_result_t closeout;
+  if (rc == 0 && kafs_v7_metadata_closeout_fd(fixture.locks, fixture.fd, &fixture.superblock,
+                                               fixture.file_size, &closeout) != -EBADF)
+    rc = -1;
   fixture_close(&fixture);
 
   if (fixture_open(&fixture, path, O_RDWR | O_APPEND) != 0)
     return -1;
   if (rc == 0 && kafs_v7_checkpoint_publish_fd(fixture.locks, fixture.fd, &fixture.superblock,
                                                 fixture.file_size, &result) != -EBADF)
+    rc = -1;
+  if (rc == 0 && kafs_v7_metadata_closeout_fd(fixture.locks, fixture.fd, &fixture.superblock,
+                                               fixture.file_size, &closeout) != -EBADF)
     rc = -1;
   fixture_close(&fixture);
 
@@ -260,15 +402,234 @@ static int test_plan_guards(void)
   return rc;
 }
 
+static int test_metadata_closeout_commit(void)
+{
+  const char *path = "v7-closeout-commit.img";
+  if (format_image(path) != 0)
+    return -1;
+  checkpoint_fixture_t fixture;
+  if (fixture_open(&fixture, path, O_RDWR) != 0)
+    return -1;
+  uint16_t before = 0u;
+  int rc = read_inode_uid(&fixture, 1u, &before);
+  uint16_t after = (uint16_t)(before ^ 1u);
+  if (rc == 0)
+    rc = publish_inode_patch(&fixture, 1u, after, KAFS_V7_JOURNAL_COMMIT_TAG);
+  uint16_t raw = 0u;
+  if (rc == 0)
+    rc = read_inode_uid(&fixture, 1u, &raw);
+  if (rc == 0 && (raw != before || fixture.layout.journal.replay_mutation_count != 1u ||
+                  fixture.layout.checkpoint_sequence != 0u))
+    rc = -1;
+  kafs_v7_metadata_closeout_result_t result;
+  if (rc == 0)
+    rc = kafs_v7_metadata_closeout_fd(fixture.locks, fixture.fd, &fixture.superblock,
+                                      fixture.file_size, &result);
+  if (rc == 0 &&
+      (result.apply.written_target_count != 1u || result.apply.applied_mutation_count != 1u ||
+       result.checkpoint_publication_count != 1u || result.checkpoint_resume_count != 0u ||
+       result.final_checkpoint_sequence != 1u || result.reclaim.reset_segment_count != 1u))
+    rc = -1;
+  if (rc == 0)
+    rc = fixture_refresh(&fixture);
+  if (rc == 0)
+    rc = read_inode_uid(&fixture, 1u, &raw);
+  if (rc == 0 && (raw != after || fixture.layout.checkpoint_sequence != 1u ||
+                  fixture.layout.journal.selected_nonempty_segment_count != 0u))
+    rc = -1;
+  uint64_t generation = fixture.layout.checkpoint_generation;
+  if (rc == 0)
+    rc = kafs_v7_metadata_closeout_fd(fixture.locks, fixture.fd, &fixture.superblock,
+                                      fixture.file_size, &result);
+  if (rc == 0 && (result.checkpoint_publication_count != 0u ||
+                  result.reclaim.reset_segment_count != 0u ||
+                  result.reclaim.already_empty_segment_count != fixture.layout.journal_segment_count ||
+                  result.final_checkpoint_generation != generation))
+    rc = -1;
+  fixture_close(&fixture);
+  return rc;
+}
+
+static int test_metadata_closeout_abort(void)
+{
+  const char *path = "v7-closeout-abort.img";
+  if (format_image(path) != 0)
+    return -1;
+  checkpoint_fixture_t fixture;
+  if (fixture_open(&fixture, path, O_RDWR) != 0)
+    return -1;
+  uint64_t inode = 0u;
+  int rc = find_inode_in_group(&fixture, 3u, &inode);
+  if (rc == 0)
+    rc = publish_inode_patch(&fixture, inode, 1u, KAFS_V7_JOURNAL_ABORT_TAG);
+  kafs_v7_metadata_closeout_result_t result;
+  if (rc == 0)
+    rc = kafs_v7_metadata_closeout_fd(fixture.locks, fixture.fd, &fixture.superblock,
+                                      fixture.file_size, &result);
+  uint16_t uid = UINT16_MAX;
+  if (rc == 0)
+    rc = fixture_refresh(&fixture);
+  if (rc == 0)
+    rc = read_inode_uid(&fixture, inode, &uid);
+  if (rc == 0 && (uid != 0u || result.apply.written_target_count != 0u ||
+                  result.apply.applied_mutation_count != 0u ||
+                  result.final_checkpoint_sequence != 1u ||
+                  fixture.layout.journal.selected_nonempty_segment_count != 0u))
+    rc = -1;
+  fixture_close(&fixture);
+  return rc;
+}
+
+static int test_metadata_apply_resume(void)
+{
+  const char *path = "v7-closeout-apply-resume.img";
+  if (format_image(path) != 0)
+    return -1;
+  checkpoint_fixture_t fixture;
+  if (fixture_open(&fixture, path, O_RDWR) != 0)
+    return -1;
+  uint16_t before = 0u;
+  int rc = read_inode_uid(&fixture, 1u, &before);
+  if (rc == 0)
+    rc = publish_inode_patch(&fixture, 1u, (uint16_t)(before ^ 1u),
+                             KAFS_V7_JOURNAL_COMMIT_TAG);
+  kafs_v7_journal_apply_result_t apply;
+  if (rc == 0)
+    rc = apply_metadata_only(&fixture, &apply);
+  if (rc == 0 && (apply.written_target_count != 1u ||
+                  fixture.layout.journal.already_applied_mutation_count != 1u ||
+                  fixture.layout.journal.replay_mutation_count != 0u ||
+                  fixture.layout.checkpoint_sequence != 0u))
+    rc = -1;
+  kafs_v7_metadata_closeout_result_t result;
+  if (rc == 0)
+    rc = kafs_v7_metadata_closeout_fd(fixture.locks, fixture.fd, &fixture.superblock,
+                                      fixture.file_size, &result);
+  if (rc == 0 && (result.apply.written_target_count != 0u ||
+                  result.apply.already_applied_mutation_count != 1u ||
+                  result.final_checkpoint_sequence != 1u || result.reclaim.reset_segment_count != 1u))
+    rc = -1;
+  fixture_close(&fixture);
+  return rc;
+}
+
+static int test_checkpoint_copy_resume_before_reclaim(void)
+{
+  const char *path = "v7-closeout-checkpoint-resume.img";
+  if (format_image(path) != 0)
+    return -1;
+  checkpoint_fixture_t fixture;
+  if (fixture_open(&fixture, path, O_RDWR) != 0)
+    return -1;
+  uint16_t before = 0u;
+  int rc = read_inode_uid(&fixture, 1u, &before);
+  if (rc == 0)
+    rc = publish_inode_patch(&fixture, 1u, (uint16_t)(before ^ 1u),
+                             KAFS_V7_JOURNAL_COMMIT_TAG);
+  kafs_v7_journal_apply_result_t apply;
+  if (rc == 0)
+    rc = apply_metadata_only(&fixture, &apply);
+  kafs_v7_checkpoint_plan_t plan;
+  if (rc == 0)
+    rc = kafs_v7_checkpoint_plan(&fixture.layout, &plan);
+  if (rc == 0)
+    rc = write_first_planned_copy(&fixture, &plan);
+  fixture_close(&fixture);
+  if (rc != 0 || fixture_open(&fixture, path, O_RDWR) != 0)
+    return -1;
+  if (fixture.layout.checkpoint_generation != 2u || selected_generation_copies(&fixture.layout) != 1u)
+    rc = -1;
+  kafs_v7_metadata_closeout_result_t result;
+  if (rc == 0)
+    rc = kafs_v7_metadata_closeout_fd(fixture.locks, fixture.fd, &fixture.superblock,
+                                      fixture.file_size, &result);
+  if (rc == 0 && (result.checkpoint_publication_count != 1u ||
+                  result.checkpoint_resume_count != 1u ||
+                  result.last_checkpoint_publication.generation != 2u ||
+                  result.final_checkpoint_sequence != 1u || result.reclaim.reset_segment_count != 1u))
+    rc = -1;
+  fixture_close(&fixture);
+  return rc;
+}
+
+static int test_reclaim_guards_and_partial_resume(void)
+{
+  const char *path = "v7-closeout-reclaim-resume.img";
+  if (format_image(path) != 0)
+    return -1;
+  checkpoint_fixture_t fixture;
+  if (fixture_open(&fixture, path, O_RDWR) != 0)
+    return -1;
+  uint16_t before = 0u;
+  int rc = read_inode_uid(&fixture, 1u, &before);
+  if (rc == 0)
+    rc = publish_inode_patch(&fixture, 1u, (uint16_t)(before ^ 1u),
+                             KAFS_V7_JOURNAL_COMMIT_TAG);
+  kafs_v7_journal_reclaim_result_t reclaim;
+  if (rc == 0 && kafs_v7_journal_reclaim_fd(fixture.fd, &fixture.layout, &reclaim) != -EBUSY)
+    rc = -1;
+  if (rc == 0)
+    rc = fixture_refresh(&fixture);
+  uint64_t abort_inode = 0u;
+  if (rc == 0)
+    rc = find_inode_in_group(&fixture, 3u, &abort_inode);
+  if (rc == 0)
+    rc = publish_inode_patch(&fixture, abort_inode, 1u, KAFS_V7_JOURNAL_ABORT_TAG);
+  kafs_v7_journal_apply_result_t apply;
+  if (rc == 0)
+    rc = apply_metadata_only(&fixture, &apply);
+  kafs_v7_checkpoint_publish_result_t publication;
+  if (rc == 0)
+    rc = kafs_v7_checkpoint_publish_fd(fixture.locks, fixture.fd, &fixture.superblock,
+                                       fixture.file_size, &publication);
+  if (rc == 0)
+    rc = fixture_refresh(&fixture);
+  if (rc == 0 && (fixture.layout.checkpoint_sequence != 2u ||
+                  fixture.layout.journal.selected_nonempty_segment_count != 2u))
+    rc = -1;
+  if (rc == 0)
+    rc = reset_one_journal_segment(&fixture, 0u, 0u);
+  if (rc == 0 && fixture.layout.journal.selected_nonempty_segment_count != 1u)
+    rc = -1;
+  kafs_v7_metadata_closeout_result_t result;
+  if (rc == 0)
+    rc = kafs_v7_metadata_closeout_fd(fixture.locks, fixture.fd, &fixture.superblock,
+                                      fixture.file_size, &result);
+  if (rc == 0 && (result.checkpoint_publication_count != 0u ||
+                  result.reclaim.reset_segment_count != 1u ||
+                  result.final_checkpoint_sequence != 2u))
+    rc = -1;
+  fixture_close(&fixture);
+  return rc;
+}
+
+static int run_test(const char *name, int (*test)(void))
+{
+  int rc = test();
+  if (rc != 0)
+    fprintf(stderr, "%s failed: %d\n", name, rc);
+  return rc;
+}
+
 int main(void)
 {
   if (kafs_test_enter_tmpdir("v7-checkpoint") != 0)
     return 1;
-  int rc = test_two_copy_publication();
+  int rc = run_test("two-copy publication", test_two_copy_publication);
   if (rc == 0)
-    rc = test_interrupted_publication_resume();
+    rc = run_test("interrupted publication resume", test_interrupted_publication_resume);
   if (rc == 0)
-    rc = test_plan_guards();
+    rc = run_test("plan guards", test_plan_guards);
+  if (rc == 0)
+    rc = run_test("metadata closeout commit", test_metadata_closeout_commit);
+  if (rc == 0)
+    rc = run_test("metadata closeout abort", test_metadata_closeout_abort);
+  if (rc == 0)
+    rc = run_test("metadata apply resume", test_metadata_apply_resume);
+  if (rc == 0)
+    rc = run_test("checkpoint copy resume", test_checkpoint_copy_resume_before_reclaim);
+  if (rc == 0)
+    rc = run_test("reclaim guards and partial resume", test_reclaim_guards_and_partial_resume);
   if (rc != 0)
     fprintf(stderr, "v7 checkpoint publication smoke test failed: %d\n", rc);
   return rc == 0 ? 0 : 1;

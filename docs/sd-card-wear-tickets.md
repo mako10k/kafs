@@ -2787,12 +2787,42 @@
   - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ
     87件・2.69%で、production `src/`は変更していない。
 
+### SDW-V7RT-T14 metadata apply/checkpoint/reclamation closeout
+
+- 目的: flushed journal transactionをmetadataへ冪等適用し、2-copy checkpointがそのsequenceを覆った後だけ
+  group-local journalを再利用可能にするdurability closeoutをv7-owned APIとして固定する。
+- 変更:
+  - replay解析時に各targetの現在chain stageを保持し、apply直前のraw target CRCが同じstageか再確認する。
+    committed after-imageをtarget単位で書き、metadata全体を`fdatasync`した後にread-backする。
+  - checkpoint/write gateを1回だけ保持するcoordinatorを追加した。selected-generation checkpointが1コピーなら
+    metadata変更前に同世代2コピーへ復旧し、metadata apply後にjournal最終sequenceを覆う新checkpointを2コピー
+    publishする。
+  - 全segmentを先にpreflightし、checkpointより新しいsequenceが1件でもあれば無変更でreclaimを拒否する。
+    covered segmentはdataを消去せず、generationを進めたempty `K7JH`を1segmentずつflush/read-backする。
+  - commit、abort-only、metadata apply直後、checkpoint 1コピー直後、checkpoint前reclaim拒否、1segmentだけ
+    reset済みの再開をfocused smokeへ追加した。closeoutの再実行はcheckpoint generationを不要に進めない。
+  - runtime mount/write admissionとcross-group atomic transactionは有効化していない。
+- 完了条件:
+  - `journal data/header -> metadata -> checkpoint replica 2 copies -> empty journal header`のdurability順を維持する。
+  - crash後のraw targetはmutation chain上のstageだけを受理し、第三状態はfail closedにする。
+  - checkpoint 2コピーが`last_sequence`を覆う前はjournal dataをreclaimしない。
+- 検証結果（2026-07-16）:
+  - `v7_checkpoint_publication_smoketest`: PASS。
+  - 同testのValgrind: PASS（0 error、0 leak、3,597 alloc/free）。
+  - clangd diagnostics（journal、checkpoint、layout、test）: 0件。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`./scripts/check-v7-layout-ownership.sh`、
+    `git diff --check`: PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 37 PASS、1 SKIP
+    （`stress_fs`: FUSE mount permission不足）。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ
+    87件・2.67%で、closeout由来のcloneとcomplexity warningは0件。
+
 ---
 
 ## 次に着手する候補
 
-1. metadata apply/checkpoint/reclamationとcross-family lock integrationを通してからcontrolled-write admissionを
-   検討する。
+1. cross-family lock integrationとv7-owned runtime mutation/admission policyを通してからcontrolled-write
+   admissionを検討する。
 2. accepted offline/inspection surface安定後に`kafsresize --migrate-create --format-version 7`を追加する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの

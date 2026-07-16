@@ -27,18 +27,6 @@ static void kafs_v7_checkpoint_build(kafs_v7_checkpoint_t *record, uint64_t gene
   record->crc32 = htole32(kafs_v7_crc32(record, sizeof(*record)));
 }
 
-static uint32_t kafs_v7_checkpoint_current_copies(const kafs_v7_layout_report_t *layout)
-{
-  uint32_t count = 0;
-  for (uint32_t id = 0; id < layout->replica_count; ++id)
-  {
-    if (layout->checkpoints[id].status == KAFS_V7_REPLICA_STATUS_VALID &&
-        layout->checkpoints[id].generation == layout->checkpoint_generation)
-      ++count;
-  }
-  return count;
-}
-
 static int kafs_v7_checkpoint_add_target(kafs_v7_checkpoint_plan_t *plan, uint32_t id)
 {
   if (plan->target_count >= 2u)
@@ -63,7 +51,7 @@ int kafs_v7_checkpoint_plan(const kafs_v7_layout_report_t *layout, kafs_v7_check
     return -EINVAL;
 
   memset(plan, 0, sizeof(*plan));
-  plan->existing_copy_count = kafs_v7_checkpoint_current_copies(layout);
+  plan->existing_copy_count = kafs_v7_layout_checkpoint_copy_count(layout);
   if (plan->existing_copy_count == 0u)
     return -EUCLEAN;
 
@@ -133,22 +121,30 @@ static int kafs_v7_checkpoint_block_matches(int fd, const kafs_v7_copy_report_t 
   return rc;
 }
 
+static int kafs_v7_checkpoint_require_writable_fd(int fd)
+{
+  if (fd < 0)
+    return -EINVAL;
+  int flags = fcntl(fd, F_GETFL);
+  if (flags < 0)
+    return -errno;
+  return (flags & O_ACCMODE) == O_RDONLY || (flags & O_APPEND) != 0 ? -EBADF : 0;
+}
+
 static int kafs_v7_checkpoint_publish_unlocked_fd(int fd, const kafs_ssuperblock_t *sb,
                                                   uint64_t file_size,
                                                   kafs_v7_checkpoint_publish_result_t *result)
 {
   if (fd < 0 || !sb || !result)
     return -EINVAL;
-  int flags = fcntl(fd, F_GETFL);
-  if (flags < 0)
-    return -errno;
-  if ((flags & O_ACCMODE) == O_RDONLY || (flags & O_APPEND) != 0)
-    return -EBADF;
+  int rc = kafs_v7_checkpoint_require_writable_fd(fd);
+  if (rc != 0)
+    return rc;
 
   memset(result, 0, sizeof(*result));
   kafs_v7_layout_report_t layout;
   memset(&layout, 0, sizeof(layout));
-  int rc = kafs_v7_validate_image_fd(fd, sb, file_size, &layout);
+  rc = kafs_v7_validate_image_fd(fd, sb, file_size, &layout);
   kafs_v7_checkpoint_plan_t plan;
   if (rc == 0)
     rc = kafs_v7_checkpoint_plan(&layout, &plan);
@@ -214,6 +210,151 @@ int kafs_v7_checkpoint_publish_fd(kafs_v7_lock_state_t *locks, int fd, const kaf
   if (rc != 0)
     return rc;
   rc = kafs_v7_checkpoint_publish_unlocked_fd(fd, sb, file_size, result);
+  int unlock_rc = kafs_v7_checkpoint_unlock(locks);
+  return rc != 0 ? rc : unlock_rc;
+}
+
+static uint32_t kafs_v7_descriptor_current_copies(const kafs_v7_layout_report_t *layout)
+{
+  uint32_t count = 0u;
+  for (uint32_t id = 0; id < layout->replica_count; ++id)
+  {
+    if (layout->descriptors[id].status == KAFS_V7_REPLICA_STATUS_VALID &&
+        layout->descriptors[id].generation == layout->selected_generation)
+      ++count;
+  }
+  return count;
+}
+
+static int kafs_v7_metadata_closeout_refresh(int fd, const kafs_ssuperblock_t *sb,
+                                             uint64_t file_size, kafs_v7_layout_report_t *layout)
+{
+  kafs_v7_layout_report_clear(layout);
+  memset(layout, 0, sizeof(*layout));
+  return kafs_v7_validate_image_fd(fd, sb, file_size, layout);
+}
+
+static void
+kafs_v7_metadata_closeout_record_checkpoint(kafs_v7_metadata_closeout_result_t *result,
+                                            const kafs_v7_checkpoint_publish_result_t *publication)
+{
+  ++result->checkpoint_publication_count;
+  if (publication->resumed)
+    ++result->checkpoint_resume_count;
+  result->last_checkpoint_publication = *publication;
+}
+
+static int kafs_v7_metadata_closeout_publish(kafs_v7_metadata_closeout_result_t *result, int fd,
+                                             const kafs_ssuperblock_t *sb, uint64_t file_size)
+{
+  kafs_v7_checkpoint_publish_result_t publication;
+  int rc = kafs_v7_checkpoint_publish_unlocked_fd(fd, sb, file_size, &publication);
+  if (rc == 0)
+    kafs_v7_metadata_closeout_record_checkpoint(result, &publication);
+  return rc;
+}
+
+static int kafs_v7_metadata_closeout_apply(int fd, const kafs_v7_layout_report_t *layout,
+                                           kafs_v7_metadata_closeout_result_t *result)
+{
+  kafs_v7_journal_replay_t replay;
+  memset(&replay, 0, sizeof(replay));
+  int rc = kafs_v7_journal_analyze_fd(fd, layout, &replay);
+  if (rc == 0)
+    rc = kafs_v7_journal_apply_fd(&replay, fd, &result->apply);
+  kafs_v7_journal_replay_clear(&replay);
+  return rc;
+}
+
+static int kafs_v7_metadata_closeout_redundancy(int fd, const kafs_ssuperblock_t *sb,
+                                                uint64_t file_size, kafs_v7_layout_report_t *layout,
+                                                kafs_v7_metadata_closeout_result_t *result)
+{
+  if (kafs_v7_descriptor_current_copies(layout) < 2u)
+    return -EUCLEAN;
+  int rc = 0;
+  if (kafs_v7_layout_checkpoint_copy_count(layout) < 2u)
+    rc = kafs_v7_metadata_closeout_publish(result, fd, sb, file_size);
+  if (rc == 0)
+    rc = kafs_v7_metadata_closeout_refresh(fd, sb, file_size, layout);
+  if (rc != 0)
+    return rc;
+  return kafs_v7_descriptor_current_copies(layout) < 2u ||
+                 kafs_v7_layout_checkpoint_copy_count(layout) < 2u
+             ? -EUCLEAN
+             : 0;
+}
+
+static int kafs_v7_metadata_closeout_checkpoint(int fd, const kafs_ssuperblock_t *sb,
+                                                uint64_t file_size, kafs_v7_layout_report_t *layout,
+                                                kafs_v7_metadata_closeout_result_t *result)
+{
+  int rc = 0;
+  if (layout->journal.last_sequence > layout->checkpoint_sequence)
+    rc = kafs_v7_metadata_closeout_apply(fd, layout, result);
+  if (rc == 0)
+    rc = kafs_v7_metadata_closeout_refresh(fd, sb, file_size, layout);
+  if (rc == 0 && layout->journal.replay_mutation_count != 0u)
+    rc = -EUCLEAN;
+  if (rc == 0 && layout->journal.last_sequence > layout->checkpoint_sequence)
+    rc = kafs_v7_metadata_closeout_publish(result, fd, sb, file_size);
+  if (rc == 0)
+    rc = kafs_v7_metadata_closeout_refresh(fd, sb, file_size, layout);
+  if (rc != 0)
+    return rc;
+  return kafs_v7_layout_checkpoint_copy_count(layout) < 2u ||
+                 layout->journal.last_sequence > layout->checkpoint_sequence
+             ? -EUCLEAN
+             : 0;
+}
+
+static int kafs_v7_metadata_closeout_reclaim(int fd, const kafs_ssuperblock_t *sb,
+                                             uint64_t file_size, kafs_v7_layout_report_t *layout,
+                                             kafs_v7_metadata_closeout_result_t *result)
+{
+  int rc = kafs_v7_journal_reclaim_fd(fd, layout, &result->reclaim);
+  if (rc == 0)
+    rc = kafs_v7_metadata_closeout_refresh(fd, sb, file_size, layout);
+  if (rc == 0 && layout->journal.selected_nonempty_segment_count != 0u)
+    rc = -EUCLEAN;
+  if (rc == 0)
+  {
+    result->final_checkpoint_generation = layout->checkpoint_generation;
+    result->final_checkpoint_sequence = layout->checkpoint_sequence;
+  }
+  return rc;
+}
+
+static int kafs_v7_metadata_closeout_unlocked_fd(int fd, const kafs_ssuperblock_t *sb,
+                                                 uint64_t file_size,
+                                                 kafs_v7_metadata_closeout_result_t *result)
+{
+  kafs_v7_layout_report_t layout;
+  memset(&layout, 0, sizeof(layout));
+  int rc = kafs_v7_validate_image_fd(fd, sb, file_size, &layout);
+  if (rc == 0)
+    rc = kafs_v7_metadata_closeout_redundancy(fd, sb, file_size, &layout, result);
+  if (rc == 0)
+    rc = kafs_v7_metadata_closeout_checkpoint(fd, sb, file_size, &layout, result);
+  if (rc == 0)
+    rc = kafs_v7_metadata_closeout_reclaim(fd, sb, file_size, &layout, result);
+  kafs_v7_layout_report_clear(&layout);
+  return rc;
+}
+
+int kafs_v7_metadata_closeout_fd(kafs_v7_lock_state_t *locks, int fd, const kafs_ssuperblock_t *sb,
+                                 uint64_t file_size, kafs_v7_metadata_closeout_result_t *result)
+{
+  if (!locks || fd < 0 || !sb || !result)
+    return -EINVAL;
+  int rc = kafs_v7_checkpoint_require_writable_fd(fd);
+  if (rc != 0)
+    return rc;
+  memset(result, 0, sizeof(*result));
+  rc = kafs_v7_checkpoint_lock(locks);
+  if (rc != 0)
+    return rc;
+  rc = kafs_v7_metadata_closeout_unlocked_fd(fd, sb, file_size, result);
   int unlock_rc = kafs_v7_checkpoint_unlock(locks);
   return rc != 0 ? rc : unlock_rc;
 }

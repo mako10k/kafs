@@ -161,11 +161,13 @@ v7_checkpoint_publication_smoketest_SOURCES = tests_v7_checkpoint_publication_sm
 	test_utils.c $(top_srcdir)/src/kafs_v7_checkpoint.c \
 	$(top_srcdir)/src/kafs_v7_layout.c $(top_srcdir)/src/kafs_v7_journal.c \
 	$(top_srcdir)/src/kafs_v7_locks.c $(top_srcdir)/src/kafs_v7_mutation.c \
+	$(top_srcdir)/src/kafs_v7_journal_writer.c $(top_srcdir)/src/kafs_v7_sequence.c \
 	$(top_srcdir)/src/kafs_hrl.c \
 	$(top_srcdir)/src/kafs_locks.c
 v7_checkpoint_publication_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function \
-	-Wno-unused-parameter
+	-Wno-unused-parameter -pthread
 v7_checkpoint_publication_smoketest_LDADD = $(KAFS_LIBS)
+v7_checkpoint_publication_smoketest_LDFLAGS = -pthread
 
 v7_locks_smoketest_SOURCES = tests_v7_locks_smoketest.c $(top_srcdir)/src/kafs_v7_locks.c
 v7_locks_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -pthread

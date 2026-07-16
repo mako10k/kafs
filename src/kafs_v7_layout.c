@@ -1523,6 +1523,20 @@ const kafs_v7_replica_desc_t *kafs_v7_report_replicas(const kafs_v7_layout_repor
                 : NULL;
 }
 
+uint32_t kafs_v7_layout_checkpoint_copy_count(const kafs_v7_layout_report_t *report)
+{
+  if (!report)
+    return 0u;
+  uint32_t count = 0u;
+  for (uint32_t id = 0; id < report->replica_count; ++id)
+  {
+    if (report->checkpoints[id].status == KAFS_V7_REPLICA_STATUS_VALID &&
+        report->checkpoints[id].generation == report->checkpoint_generation)
+      ++count;
+  }
+  return count;
+}
+
 static int kafs_v7_select_checkpoints(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
                                       kafs_v7_layout_report_t *report)
 {

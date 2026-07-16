@@ -6,6 +6,7 @@
 
 #include <endian.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +42,7 @@ typedef struct kafs_v7_replay_target
   kafs_v7_target_mutation_t *mutations;
   size_t mutation_count;
   size_t mutation_capacity;
+  size_t initial_applied_mutations;
   uint8_t *final_bytes;
 } kafs_v7_replay_target_t;
 
@@ -672,6 +674,7 @@ static int kafs_v7_replay_targets(int fd, kafs_v7_journal_state_t *state,
     if (stage > UINT32_MAX - report->already_applied_mutation_count ||
         target->mutation_count - stage > UINT32_MAX - report->replay_mutation_count)
       return -EOVERFLOW;
+    target->initial_applied_mutations = stage;
     report->already_applied_mutation_count += (uint32_t)stage;
     report->replay_mutation_count += (uint32_t)(target->mutation_count - stage);
     for (size_t mutation = stage; mutation < target->mutation_count; ++mutation)
@@ -777,6 +780,259 @@ int kafs_v7_journal_overlay_pread(const kafs_v7_journal_replay_t *replay, int fd
              (size_t)(overlap_end - overlap_start));
   }
   return 0;
+}
+
+static uint32_t kafs_v7_replay_target_stage_crc(const kafs_v7_replay_target_t *target, size_t stage)
+{
+  return stage == 0u ? target->first_before_crc32 : target->mutations[stage - 1u].after_crc32;
+}
+
+static int kafs_v7_journal_apply_preflight(const kafs_v7_journal_state_t *state, int fd)
+{
+  for (size_t id = 0; id < state->target_count; ++id)
+  {
+    const kafs_v7_replay_target_t *target = &state->targets[id];
+    if (target->initial_applied_mutations > target->mutation_count ||
+        target->physical_off > INT64_MAX)
+      return -EUCLEAN;
+    uint8_t *current = (uint8_t *)malloc(target->target_bytes);
+    if (!current)
+      return -ENOMEM;
+    int rc = kafs_pread_all(fd, current, target->target_bytes, (off_t)target->physical_off);
+    if (rc == 0 && kafs_v7_crc32(current, target->target_bytes) !=
+                       kafs_v7_replay_target_stage_crc(target, target->initial_applied_mutations))
+      rc = -ESTALE;
+    free(current);
+    if (rc != 0)
+      return rc;
+  }
+  return 0;
+}
+
+static int kafs_v7_journal_apply_targets(const kafs_v7_journal_state_t *state, int fd,
+                                         kafs_v7_journal_apply_result_t *result)
+{
+  uint32_t already_applied = 0u;
+  uint32_t pending_mutations = 0u;
+  for (size_t id = 0; id < state->target_count; ++id)
+  {
+    const kafs_v7_replay_target_t *target = &state->targets[id];
+    size_t pending = target->mutation_count - target->initial_applied_mutations;
+    if (target->initial_applied_mutations > UINT32_MAX - already_applied ||
+        pending > UINT32_MAX - pending_mutations)
+      return -EOVERFLOW;
+    already_applied += (uint32_t)target->initial_applied_mutations;
+    pending_mutations += (uint32_t)pending;
+  }
+  result->already_applied_mutation_count = already_applied;
+  int rc = 0;
+  for (size_t id = 0; rc == 0 && id < state->target_count; ++id)
+  {
+    const kafs_v7_replay_target_t *target = &state->targets[id];
+    size_t pending = target->mutation_count - target->initial_applied_mutations;
+    if (pending == 0u)
+      continue;
+    rc =
+        kafs_pwrite_all(fd, target->final_bytes, target->target_bytes, (off_t)target->physical_off);
+    if (rc == 0)
+    {
+      ++result->written_target_count;
+      result->applied_mutation_count += (uint32_t)pending;
+    }
+  }
+  if (result->written_target_count != 0u && fdatasync(fd) != 0 && rc == 0)
+    rc = -errno;
+  if (rc == 0 && result->applied_mutation_count != pending_mutations)
+    rc = -EUCLEAN;
+  return rc;
+}
+
+static int kafs_v7_journal_apply_verify(const kafs_v7_journal_state_t *state, int fd)
+{
+  for (size_t id = 0; id < state->target_count; ++id)
+  {
+    const kafs_v7_replay_target_t *target = &state->targets[id];
+    if (target->initial_applied_mutations == target->mutation_count)
+      continue;
+    uint8_t *current = (uint8_t *)malloc(target->target_bytes);
+    if (!current)
+      return -ENOMEM;
+    int rc = kafs_pread_all(fd, current, target->target_bytes, (off_t)target->physical_off);
+    if (rc == 0 && memcmp(current, target->final_bytes, target->target_bytes) != 0)
+      rc = -EIO;
+    free(current);
+    if (rc != 0)
+      return rc;
+  }
+  return 0;
+}
+
+int kafs_v7_journal_apply_fd(const kafs_v7_journal_replay_t *replay, int fd,
+                             kafs_v7_journal_apply_result_t *result)
+{
+  if (!replay || !replay->state || fd < 0 || !result)
+    return -EINVAL;
+  int flags = fcntl(fd, F_GETFL);
+  if (flags < 0)
+    return -errno;
+  if ((flags & O_ACCMODE) == O_RDONLY || (flags & O_APPEND) != 0)
+    return -EBADF;
+  const kafs_v7_journal_state_t *state = (const kafs_v7_journal_state_t *)replay->state;
+  if (state->target_count > UINT32_MAX)
+    return -EOVERFLOW;
+  memset(result, 0, sizeof(*result));
+  result->target_count = (uint32_t)state->target_count;
+  int rc = kafs_v7_journal_apply_preflight(state, fd);
+  if (rc == 0)
+    rc = kafs_v7_journal_apply_targets(state, fd, result);
+  if (rc == 0)
+    rc = kafs_v7_journal_apply_verify(state, fd);
+  return rc;
+}
+
+static int kafs_v7_journal_reclaim_header_validate(const kafs_v7_journal_header_t *header,
+                                                   uint64_t checkpoint_sequence, int *empty)
+{
+  uint64_t write_bytes = le64toh(header->write_bytes);
+  uint64_t first_sequence = le64toh(header->first_sequence);
+  uint64_t last_sequence = le64toh(header->last_sequence);
+  *empty = write_bytes == 0u;
+  if (*empty)
+    return first_sequence == 0u && last_sequence == 0u ? 0 : -EUCLEAN;
+  if ((write_bytes & 7u) != 0u || first_sequence == 0u || last_sequence == 0u ||
+      first_sequence > last_sequence)
+    return -EUCLEAN;
+  if (last_sequence > checkpoint_sequence)
+    return -EBUSY;
+  return le64toh(header->generation) == UINT64_MAX ? -EOVERFLOW : 0;
+}
+
+static int kafs_v7_journal_collect_segments(int fd, const kafs_v7_layout_report_t *layout,
+                                            kafs_v7_journal_segment_t *segments,
+                                            kafs_v7_journal_reclaim_result_t *result)
+{
+  const kafs_v7_shard_desc_t *shards = kafs_v7_report_shards(layout);
+  if (!shards)
+    return -EUCLEAN;
+  uint32_t out = 0u;
+  for (uint32_t group_id = 0; group_id < layout->group_count; ++group_id)
+  {
+    const kafs_v7_shard_desc_t *header_shard =
+        &shards[(uint64_t)group_id * KAFS_V7_GROUP_LOCAL_SHARDS + 5u];
+    uint64_t count = le64toh(header_shard->logical_count);
+    if (count > UINT32_MAX || out > layout->journal_segment_count ||
+        count > layout->journal_segment_count - out)
+      return -EUCLEAN;
+    for (uint32_t local = 0; local < (uint32_t)count; ++local)
+    {
+      int rc = kafs_v7_journal_segment_read_fd(fd, layout, group_id, local, &segments[out]);
+      if (rc != 0)
+        return rc;
+      int empty = 0;
+      rc = kafs_v7_journal_reclaim_header_validate(&segments[out].selected_header,
+                                                   layout->checkpoint_sequence, &empty);
+      if (rc != 0)
+        return rc;
+      if (empty)
+        ++result->already_empty_segment_count;
+      ++out;
+    }
+  }
+  return out == layout->journal_segment_count ? 0 : -EUCLEAN;
+}
+
+static int kafs_v7_journal_reset_segment(int fd, const kafs_v7_layout_report_t *layout,
+                                         const kafs_v7_journal_segment_t *expected)
+{
+  kafs_v7_journal_segment_t current;
+  int rc = kafs_v7_journal_segment_read_fd(fd, layout, expected->group_id, expected->local_segment,
+                                           &current);
+  if (rc != 0)
+    return rc;
+  if (memcmp(&current.selected_header, &expected->selected_header,
+             sizeof(current.selected_header)) != 0)
+    return -ESTALE;
+  uint64_t generation = le64toh(current.selected_header.generation) + 1u;
+  uint32_t slot = (uint32_t)((generation - 1u) % current.slot_count);
+  uint64_t slot_delta = (uint64_t)slot * KAFS_V7_JOURNAL_HEADER_BYTES;
+  if (slot_delta > UINT64_MAX - current.header_block_off)
+    return -EOVERFLOW;
+  uint64_t header_off = current.header_block_off + slot_delta;
+  if (header_off > INT64_MAX)
+    return -ERANGE;
+  kafs_v7_journal_header_t empty;
+  memset(&empty, 0, sizeof(empty));
+  empty.magic = htole32(KAFS_V7_JOURNAL_HEADER_MAGIC);
+  empty.version = htole16(KAFS_V7_JOURNAL_HEADER_VERSION);
+  empty.segment_id = current.selected_header.segment_id;
+  empty.slot_bytes = htole32(KAFS_V7_JOURNAL_HEADER_BYTES);
+  empty.generation = htole64(generation);
+  empty.data_bytes = current.selected_header.data_bytes;
+  empty.crc32 = htole32(kafs_v7_journal_header_crc(&empty));
+  rc = kafs_pwrite_all(fd, &empty, sizeof(empty), (off_t)header_off);
+  if (rc == 0 && fdatasync(fd) != 0)
+    rc = -errno;
+  if (rc == 0)
+  {
+    rc = kafs_v7_journal_segment_read_fd(fd, layout, expected->group_id, expected->local_segment,
+                                         &current);
+    if (rc == 0 && (le64toh(current.selected_header.generation) != generation ||
+                    memcmp(&current.selected_header, &empty, sizeof(empty)) != 0))
+      rc = -EIO;
+  }
+  return rc;
+}
+
+static int kafs_v7_journal_reclaim_request_validate(int fd, const kafs_v7_layout_report_t *layout,
+                                                    kafs_v7_journal_reclaim_result_t *result)
+{
+  if (fd < 0 || !layout || !layout->descriptor || !result || layout->journal_segment_count == 0u)
+    return -EINVAL;
+  if (layout->replica_count < 2u || kafs_v7_layout_checkpoint_copy_count(layout) < 2u)
+    return -EUCLEAN;
+  int flags = fcntl(fd, F_GETFL);
+  if (flags < 0)
+    return -errno;
+  return (flags & O_ACCMODE) == O_RDONLY || (flags & O_APPEND) != 0 ? -EBADF : 0;
+}
+
+static int kafs_v7_journal_reclaim_segments(int fd, const kafs_v7_layout_report_t *layout,
+                                            const kafs_v7_journal_segment_t *segments,
+                                            kafs_v7_journal_reclaim_result_t *result)
+{
+  int rc = 0;
+  for (uint32_t id = 0; rc == 0 && id < layout->journal_segment_count; ++id)
+  {
+    if (le64toh(segments[id].selected_header.write_bytes) == 0u)
+      continue;
+    rc = kafs_v7_journal_reset_segment(fd, layout, &segments[id]);
+    if (rc == 0)
+      ++result->reset_segment_count;
+  }
+  return rc;
+}
+
+int kafs_v7_journal_reclaim_fd(int fd, const kafs_v7_layout_report_t *layout,
+                               kafs_v7_journal_reclaim_result_t *result)
+{
+  int rc = kafs_v7_journal_reclaim_request_validate(fd, layout, result);
+  if (rc != 0)
+    return rc;
+  memset(result, 0, sizeof(*result));
+  result->segment_count = layout->journal_segment_count;
+#if SIZE_MAX <= UINT32_MAX
+  if (layout->journal_segment_count > SIZE_MAX / sizeof(kafs_v7_journal_segment_t))
+    return -EOVERFLOW;
+#endif
+  kafs_v7_journal_segment_t *segments =
+      (kafs_v7_journal_segment_t *)calloc(layout->journal_segment_count, sizeof(*segments));
+  if (!segments)
+    return -ENOMEM;
+  rc = kafs_v7_journal_collect_segments(fd, layout, segments, result);
+  if (rc == 0)
+    rc = kafs_v7_journal_reclaim_segments(fd, layout, segments, result);
+  free(segments);
+  return rc;
 }
 
 void kafs_v7_journal_replay_clear(kafs_v7_journal_replay_t *replay)

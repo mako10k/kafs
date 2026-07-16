@@ -429,3 +429,4 @@ const kafs_v7_layout_header_t *kafs_v7_report_header(const kafs_v7_layout_report
 const kafs_v7_group_desc_t *kafs_v7_report_groups(const kafs_v7_layout_report_t *report);
 const kafs_v7_shard_desc_t *kafs_v7_report_shards(const kafs_v7_layout_report_t *report);
 const kafs_v7_replica_desc_t *kafs_v7_report_replicas(const kafs_v7_layout_report_t *report);
+uint32_t kafs_v7_layout_checkpoint_copy_count(const kafs_v7_layout_report_t *report);
