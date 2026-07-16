@@ -1091,6 +1091,47 @@ Runtime inspection and write admission remain separate gates.  In particular,
 this planner does not introduce multi-group transaction atomicity or cross-group
 HRL behavior.
 
+## Recovery Replica Fault-Matrix Proof
+
+`v7_replica_fault_smoketest` fixes the offline recovery behavior on an
+eight-group image.  The normal 512 MiB fixture uses the primary and tail
+descriptor/checkpoint pairs emitted by mkfs.  The accepted three-copy fixture
+extends that sparse image to 1 GiB without moving its group/data geometry, then
+places the midpoint descriptor/checkpoint pair in the resulting zero slack.
+The latter proves the accepted parser and recovery selector; it does not claim
+that canonical mkfs geometry always has midpoint slack.
+
+The placement gate requires the primary and tail descriptor span to cover at
+least 95% of the image address range.  For three copies, the midpoint descriptor
+starts exactly at half the image size.  Every checkpoint remains in its
+specified adjacent block and all recovery ranges remain outside group metadata
+and data.
+
+The localized-loss matrix zeroes complete descriptor spans and checkpoint
+blocks independently.  It proves:
+
+- either primary or tail descriptor/checkpoint may be lost while the other
+  pair is selected with degraded status;
+- descriptor and checkpoint selection are independent, so their surviving
+  replica ids may differ;
+- a three-copy image remains offline-readable after loss of any one or any two
+  recovery neighborhoods, but loss of all descriptors or all checkpoints is
+  fatal;
+- one or two independently valid higher-generation checkpoints are selected
+  over stale copies;
+- a higher-generation descriptor without a checkpoint tied to that descriptor
+  generation fails closed, while a coordinated descriptor/checkpoint pair is
+  offline-readable as degraded;
+- non-byte-identical, independently shape-valid descriptors or structurally
+  valid checkpoints at the selected generation fail with divergence rather
+  than being resolved by majority.
+
+The damage zones above describe filesystem byte ranges only.  They do not
+model an SD controller's remapping, correlated internal failure, ECC behavior,
+or physical erase-block boundaries.  A single surviving copy is sufficient for
+offline diagnosis, but it does not satisfy the two-identical-checkpoint gate
+required by future controlled-write admission.
+
 ## Accepted Decision Closeout
 
 The five implementation-blocking questions were closed on 2026-07-13:

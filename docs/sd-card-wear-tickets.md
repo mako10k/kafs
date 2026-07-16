@@ -2436,16 +2436,55 @@
     strict clone gateは既存87件・2.9%が1.0%閾値を超えるためnon-passingだが、今回追加した
     `src/kafs_v7_layout.c` 内のcloneは0件で、変更前相当の87件へ戻した。
 
+### SDW-V7RT-T5 v7 recovery replica placement and fault-matrix proof
+
+- 目的: multi-group配置後のdescriptor/checkpoint recovery copyについて、filesystem address上の
+  primary/midpoint/tail分散、独立損傷、世代選択、同世代divergenceをoffline fixtureで固定する。
+  SD controller内部のFTL、ECC、erase-block相関故障を再現したとは主張しない。
+- 変更:
+  - `v7_replica_fault_smoketest` は512 MiB/8-groupのcanonical 2-copy imageと、それを1 GiBへ
+    sparse拡張してzero slackへmidpoint pairを置くaccepted 3-copy fixtureを使う。
+  - primary/tail spanはimage address rangeの95%以上、midpointはimage中央、各checkpointは対応する
+    descriptorの隣接block、全recovery rangeはgroup metadata/data外であることを確認する。
+  - descriptor spanとcheckpoint blockを独立にzero化し、2-copyの片系喪失、非対称損傷、全copy喪失、
+    3-copyの任意1/2 recovery neighborhood喪失を検証する。
+  - checkpointだけが新世代、descriptorだけが新世代、descriptor/checkpoint pairが協調して新世代、
+    3-copy中2-copyが新世代の各publication途中状態を検証する。
+  - independently shape-validな別geometry descriptorと、CRC-validな別checkpointを使い、
+    selected generationのnon-byte-identical copyがmajorityで解決されず`EUCLEAN`になることを固定する。
+- 完了条件:
+  - 2-copyは一方のdescriptor/checkpoint喪失からdegradedで復旧し、全descriptorまたは全checkpoint喪失を
+    fail closedにする。
+  - 3-copyは任意1/2 neighborhood喪失後もoffline読取可能で、残存descriptor/checkpointのreplica idが
+    異なる場合もそれぞれを独立選択する。全descriptorまたは全checkpoint喪失はfail closedにする。
+  - highest generationを選択し、descriptor generationに一致するcheckpointがないpublication途中は
+    fail closed、協調pairがあればdegradedでoffline読取可能とする。
+  - runtime inspection/write、repair、actual-media fault claim、cross-group HRL、multi-group mutationは
+    有効化しない。
+- 実装結果:
+  - 現行selectorがaccepted contractどおり動作することを専用回帰testで固定した。production selectorの
+    変更は不要だった。
+  - testは各caseで`${TMPDIR:-/tmp}`配下の独立sparse imageを使い、repo treeを汚さない。
+- 検証結果（2026-07-16）:
+  - `autoreconf -fi && ./configure` と clean `bear -- make -j2` は PASS。更新した
+    `compile_commands.json` に対する `tests/tests_v7_replica_fault_smoketest.c` の clangd diagnostics は0件。
+  - dedicated `make -C tests check TESTS=v7_replica_fault_smoketest` と
+    `./scripts/check-v7-layout-ownership.sh` は PASS。
+  - `v7_replica_fault_smoketest v7_multi_group_smoketest v7_raw_layout_smoketest
+    v7_entrypoint_smoketest` は4/4 PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` は33/33 PASSし、v5/v6/FUSEを含む全回帰も通過した。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`git diff --check`、complexity reportはPASS。
+    strict clone gateは既存87件・2.9%が1.0%閾値を超えるためnon-passingだが、production `src/`を
+    変更しておらず、既存baselineからcloneを増やしていない。
+
 ---
 
 ## 次に着手する候補
 
-1. descriptor/checkpoint replica の位置分散・片系破損・同世代 divergence を実媒体想定の fault matrix で
-   拡張し、multi-group placement後の障害耐性の証明を強める。
-2. `kafs-v7 --inspection-mount` の mount smoke を追加する。
-3. accepted offline surface 安定後に `kafsresize --migrate-create --format-version 7` を追加する。
-4. group-local structured journal recoveryとcrash fixtureをofflineで実装する。
-5. locking、multi-group mutation fault matrixを通してから controlled-write admission を
+1. `kafs-v7 --inspection-mount` の mount smoke を追加する。
+2. accepted offline surface 安定後に `kafsresize --migrate-create --format-version 7` を追加する。
+3. group-local structured journal recoveryとcrash fixtureをofflineで実装する。
+4. locking、multi-group mutation fault matrixを通してから controlled-write admission を
    検討する。
 
 cross-group HRL と multi-group atomic mutation は、まず group-local placement と recovery replica の

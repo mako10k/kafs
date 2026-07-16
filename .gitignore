@@ -118,6 +118,7 @@
 /tests/v7_entrypoint_smoketest
 /tests/v7_raw_layout_smoketest
 /tests/v7_multi_group_smoketest
+/tests/v7_replica_fault_smoketest
 
 ### Local mount/test workdirs (repo root)
 /mnt-*/
