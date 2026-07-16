@@ -1,6 +1,7 @@
 #include "kafs_locks.h"
 #include "kafs_block.h"
 #include "kafs_hash.h"
+#include "kafs_lock_order.h"
 #include <errno.h>
 #include <inttypes.h>
 #include <stdlib.h>
@@ -45,9 +46,6 @@ typedef enum
   KAFS_LOCK_RANK_BITMAP = 50,
 } kafs_lock_rank_t;
 
-static __thread int g_lock_rank_depth = 0;
-static __thread int g_lock_rank_stack[64];
-
 // Prevent thread cancellation while holding internal mutexes.
 // FUSE worker cancellation during a locked critical section can leave stale owners.
 static __thread int g_lock_cancel_depth = 0;
@@ -62,48 +60,51 @@ static void kafs_lock_dump_backtrace(void);
 static void kafs_lock_dump_rank_stack(void);
 static void kafs_inode_flush_deferred_hrl_refs(struct kafs_context *ctx);
 
-static KAFS_NOINLINE void kafs_lock_rank_enter(kafs_lock_rank_t rank, const char *name)
+static KAFS_NOINLINE void kafs_lock_rank_enter(kafs_lock_rank_t rank, const char *name,
+                                               const void *identity)
 {
-  if (g_lock_rank_depth > 0)
+  int rc = kafs_lock_order_acquired((uint32_t)rank, identity, 1);
+  if (rc == 0)
+    return;
+  if (rc == -EDEADLK)
   {
-    int cur = g_lock_rank_stack[g_lock_rank_depth - 1];
-    if ((int)rank < cur)
-    {
-      kafs_log(KAFS_LOG_ERR,
-               "lock-order-violation: acquire=%s rank=%d while-holding-rank=%d tid=%ld\n",
-               name ? name : "(null)", (int)rank, cur, kafs_lock_tid());
-      kafs_lock_dump_rank_stack();
-      kafs_lock_dump_backtrace();
-      abort();
-    }
+    uint32_t current = 0u;
+    uint32_t depth = kafs_lock_order_depth();
+    if (depth != 0u)
+      (void)kafs_lock_order_rank_at(depth - 1u, &current);
+    kafs_log(KAFS_LOG_ERR,
+             "lock-order-violation: acquire=%s rank=%d while-holding-rank=%u tid=%ld\n",
+             name ? name : "(null)", (int)rank, current, kafs_lock_tid());
   }
-  if (g_lock_rank_depth >= (int)(sizeof(g_lock_rank_stack) / sizeof(g_lock_rank_stack[0])))
-  {
-    kafs_log(KAFS_LOG_ERR, "lock-rank-stack-overflow: tid=%ld\n", kafs_lock_tid());
-    abort();
-  }
-  g_lock_rank_stack[g_lock_rank_depth++] = (int)rank;
+  else
+    kafs_log(KAFS_LOG_ERR, "lock-rank-stack-enter-failed: acquire=%s rank=%d tid=%ld rc=%d\n",
+             name ? name : "(null)", (int)rank, kafs_lock_tid(), rc);
+  kafs_lock_dump_rank_stack();
+  kafs_lock_dump_backtrace();
+  abort();
 }
 
-static KAFS_NOINLINE void kafs_lock_rank_leave(kafs_lock_rank_t rank, const char *name)
+static KAFS_NOINLINE void kafs_lock_rank_leave(kafs_lock_rank_t rank, const char *name,
+                                               const void *identity)
 {
-  if (g_lock_rank_depth <= 0)
+  int rc = kafs_lock_order_released((uint32_t)rank, identity);
+  if (rc == 0)
+    return;
+  if (kafs_lock_order_depth() == 0u)
   {
     kafs_log(KAFS_LOG_ERR, "lock-rank-stack-underflow: release=%s tid=%ld\n",
              name ? name : "(null)", kafs_lock_tid());
-    kafs_lock_dump_rank_stack();
-    abort();
   }
-  int top = g_lock_rank_stack[g_lock_rank_depth - 1];
-  if (top != (int)rank)
+  else
   {
-    kafs_log(KAFS_LOG_ERR, "lock-rank-mismatch: release=%s rank=%d top=%d tid=%ld\n",
+    uint32_t top = 0u;
+    (void)kafs_lock_order_rank_at(kafs_lock_order_depth() - 1u, &top);
+    kafs_log(KAFS_LOG_ERR, "lock-rank-mismatch: release=%s rank=%d top=%u tid=%ld\n",
              name ? name : "(null)", (int)rank, top, kafs_lock_tid());
-    kafs_lock_dump_rank_stack();
-    kafs_lock_dump_backtrace();
-    abort();
   }
-  g_lock_rank_depth--;
+  kafs_lock_dump_rank_stack();
+  kafs_lock_dump_backtrace();
+  abort();
 }
 
 static inline long kafs_mutex_owner_tid(const pthread_mutex_t *m)
@@ -183,9 +184,14 @@ static void kafs_lock_dump_backtrace(void)
 
 static void kafs_lock_dump_rank_stack(void)
 {
-  kafs_log(KAFS_LOG_ERR, "lock-rank-stack: depth=%d tid=%ld\n", g_lock_rank_depth, kafs_lock_tid());
-  for (int i = 0; i < g_lock_rank_depth; ++i)
-    kafs_log(KAFS_LOG_ERR, "lock-rank-stack[%d]=%d\n", i, g_lock_rank_stack[i]);
+  uint32_t depth = kafs_lock_order_depth();
+  kafs_log(KAFS_LOG_ERR, "lock-rank-stack: depth=%u tid=%ld\n", depth, kafs_lock_tid());
+  for (uint32_t i = 0; i < depth; ++i)
+  {
+    uint32_t rank = 0u;
+    if (kafs_lock_order_rank_at(i, &rank) == 0)
+      kafs_log(KAFS_LOG_ERR, "lock-rank-stack[%u]=%u\n", i, rank);
+  }
 }
 
 static void kafs_lock_panic(const char *op, const char *name, int rc)
@@ -334,7 +340,7 @@ static KAFS_NOINLINE void kafs_mutex_lock_stat(pthread_mutex_t *m, const char *n
   int tr = pthread_mutex_trylock(m);
   if (tr == 0)
   {
-    kafs_lock_rank_enter(rank, name);
+    kafs_lock_rank_enter(rank, name, m);
     kafs_lock_cancel_enter();
     return;
   }
@@ -346,7 +352,7 @@ static KAFS_NOINLINE void kafs_mutex_lock_stat(pthread_mutex_t *m, const char *n
     kafs_lock_dump_backtrace();
     kafs_mutex_mark_consistent_or_panic(m, name);
     __atomic_add_fetch(contended, 1u, __ATOMIC_RELAXED);
-    kafs_lock_rank_enter(rank, name);
+    kafs_lock_rank_enter(rank, name, m);
     kafs_lock_cancel_enter();
     return;
   }
@@ -366,7 +372,7 @@ static KAFS_NOINLINE void kafs_mutex_lock_stat(pthread_mutex_t *m, const char *n
       {
         uint64_t t1 = kafs_now_ns();
         __atomic_add_fetch(wait_ns, t1 - t0, __ATOMIC_RELAXED);
-        kafs_lock_rank_enter(rank, name);
+        kafs_lock_rank_enter(rank, name, m);
         kafs_lock_cancel_enter();
         return;
       }
@@ -379,7 +385,7 @@ static KAFS_NOINLINE void kafs_mutex_lock_stat(pthread_mutex_t *m, const char *n
                  name ? name : "(null)", kafs_lock_tid());
         kafs_lock_dump_backtrace();
         kafs_mutex_mark_consistent_or_panic(m, name);
-        kafs_lock_rank_enter(rank, name);
+        kafs_lock_rank_enter(rank, name, m);
         kafs_lock_cancel_enter();
         return;
       }
@@ -413,7 +419,7 @@ static KAFS_NOINLINE void kafs_mutex_lock_stat(pthread_mutex_t *m, const char *n
 static KAFS_NOINLINE void kafs_mutex_unlock_checked(pthread_mutex_t *m, const char *name,
                                                     kafs_lock_rank_t rank)
 {
-  kafs_lock_rank_leave(rank, name);
+  kafs_lock_rank_leave(rank, name, m);
   kafs_lock_cancel_leave();
   int rc = pthread_mutex_unlock(m);
   if (rc != 0)

@@ -3740,8 +3740,6 @@ static int kafs_ino_iblk_write_legacy(struct kafs_context *ctx, kafs_sinode_t *i
 
   if (old_raw != KAFS_BLO_NONE)
   {
-    uint32_t ino_idx = (uint32_t)kafs_ctx_ino_no(ctx, inoent);
-    kafs_inode_unlock(ctx, ino_idx);
     kafs_blkcnt_t old_blo = KAFS_BLO_NONE;
     if (kafs_ref_resolve_data_blo(ctx, old_raw, &old_blo) == 0 && old_blo != KAFS_BLO_NONE &&
         old_blo != new_blo)
@@ -3751,7 +3749,6 @@ static int kafs_ino_iblk_write_legacy(struct kafs_context *ctx, kafs_sinode_t *i
       uint64_t t_dec1 = kafs_now_ns();
       __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
     }
-    kafs_inode_lock(ctx, ino_idx);
   }
 
   return KAFS_SUCCESS;
@@ -8298,22 +8295,16 @@ static ssize_t kafs_copy_regular_range(kafs_context_t *ctx, kafs_sinode_t *ino_i
   if (ino_src == ino_dst)
     return 0;
 
-  if (ino_src < ino_dst)
-  {
-    kafs_inode_lock(ctx, ino_src);
-    kafs_inode_lock(ctx, ino_dst);
-  }
-  else
-  {
-    kafs_inode_lock(ctx, ino_dst);
-    kafs_inode_lock(ctx, ino_src);
-  }
+  uint32_t ino_first = ino_src < ino_dst ? ino_src : ino_dst;
+  uint32_t ino_second = ino_src < ino_dst ? ino_dst : ino_src;
+  kafs_inode_lock(ctx, ino_first);
+  kafs_inode_lock(ctx, ino_second);
 
   kafs_off_t src_size = kafs_ino_size_get(ino_in);
   if ((kafs_off_t)offset_in >= src_size)
   {
-    kafs_inode_unlock(ctx, ino_src);
-    kafs_inode_unlock(ctx, ino_dst);
+    kafs_inode_unlock(ctx, ino_second);
+    kafs_inode_unlock(ctx, ino_first);
     return 0;
   }
 
@@ -8331,8 +8322,8 @@ static ssize_t kafs_copy_regular_range(kafs_context_t *ctx, kafs_sinode_t *ino_i
   char *buf = (char *)malloc(bufsz);
   if (!buf)
   {
-    kafs_inode_unlock(ctx, ino_src);
-    kafs_inode_unlock(ctx, ino_dst);
+    kafs_inode_unlock(ctx, ino_second);
+    kafs_inode_unlock(ctx, ino_first);
     return -ENOMEM;
   }
 
@@ -8345,8 +8336,8 @@ static ssize_t kafs_copy_regular_range(kafs_context_t *ctx, kafs_sinode_t *ino_i
     if (src < 0)
     {
       free(buf);
-      kafs_inode_unlock(ctx, ino_src);
-      kafs_inode_unlock(ctx, ino_dst);
+      kafs_inode_unlock(ctx, ino_second);
+      kafs_inode_unlock(ctx, ino_first);
       return src;
     }
     if (src > 0)
@@ -8357,8 +8348,8 @@ static ssize_t kafs_copy_regular_range(kafs_context_t *ctx, kafs_sinode_t *ino_i
     if (w < 0)
     {
       free(buf);
-      kafs_inode_unlock(ctx, ino_src);
-      kafs_inode_unlock(ctx, ino_dst);
+      kafs_inode_unlock(ctx, ino_second);
+      kafs_inode_unlock(ctx, ino_first);
       return w;
     }
     if (w == 0)
@@ -8367,8 +8358,8 @@ static ssize_t kafs_copy_regular_range(kafs_context_t *ctx, kafs_sinode_t *ino_i
   }
 
   free(buf);
-  kafs_inode_unlock(ctx, ino_src);
-  kafs_inode_unlock(ctx, ino_dst);
+  kafs_inode_unlock(ctx, ino_second);
+  kafs_inode_unlock(ctx, ino_first);
   return (ssize_t)done;
 }
 

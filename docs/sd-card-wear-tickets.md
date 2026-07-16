@@ -2817,12 +2817,44 @@
   - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ
     87件・2.67%で、closeout由来のcloneとcomplexity warningは0件。
 
+### SDW-V7RT-T15 cross-family lock order integration
+
+- 目的: v7 rank 1-3と既存metadata rank 10-50を同一thread-local stackで検証し、将来のruntime
+  mutation pathが`v7_write_gate -> v7_sequence -> v7_group -> metadata locks`の順序を外れた場合に
+  mutex取得前にfail closedできるようにする。
+- 変更:
+  - format-neutral `kafs_lock_order` trackerへrankとmutex identityを記録する。v7 wrapperと既存metadata
+    wrapperは別々のrank stackを持たず、同じLIFO stackでcross-family acquisition/releaseを検証する。
+  - v7 rankは同rankのnested acquisitionを拒否し、既存metadata側は複数inodeなどの同rank acquisitionを
+    維持する。stack overflow、underflow、identity/rank mismatchも拒否する。
+  - metadata rankを保持したthreadからのv7 acquisitionはmutexを触る前に`EDEADLK`を返す。v7 transaction
+    保持中のmetadata rank 10-50取得は許可し、逆順解放を共通trackerで検証する。
+  - `v7_locks_smoketest`で`hrl_global`、`inode_alloc`、`inode`、`hrl_bucket`、`bitmap`の全classについて
+    逆順拒否と正順取得を実行する。runtime controlled-write admissionは有効化しない。
+- 完了条件:
+  - metadata rank 10-50のいずれかを保持中はv7 checkpoint/transaction開始を`EDEADLK`で拒否する。
+  - v7 composite transaction中は既存metadata lockを正順に取得・解放でき、最終stack depthが0になる。
+  - production、v6/v7、offline tool、全test targetが同じneutral tracker implementationをlinkする。
+- 検証結果（2026-07-16）:
+  - `v7_locks_smoketest`: PASS（全metadata rank classのcross-family orderを含む）。
+  - `make -C src kafs-v7 -j2`: PASS。
+  - shared trackerの全体適用で検出した既存の同rank inode解放順違反は、directory block置換時の
+    HRL参照をoutermost inode unlockまでdeferし、2-inode copyを取得順の厳密な逆順で解放するよう修正した。
+    strict identity LIFO検証は緩和していない。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 38 PASS。
+  - `v7_locks_smoketest`のValgrind: PASS（0 error、0 leak）。
+  - clangd diagnostics（neutral tracker、既存/v7 wrapper、test）: 0件。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`./scripts/check-v7-layout-ownership.sh`、
+    `git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ87件・2.66%で、
+    neutral tracker/v7 wrapper由来のcloneとcomplexity warningは0件。
+
 ---
 
 ## 次に着手する候補
 
-1. cross-family lock integrationとv7-owned runtime mutation/admission policyを通してからcontrolled-write
-   admissionを検討する。
+1. v6-named controlled-write flag/FUSE helperをv7-owned runtime mutation/admission policyへ置き換え、
+   bounded write surfaceをcross-family lock順序下のv7 transaction lifecycleへ接続する。
 2. accepted offline/inspection surface安定後に`kafsresize --migrate-create --format-version 7`を追加する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの

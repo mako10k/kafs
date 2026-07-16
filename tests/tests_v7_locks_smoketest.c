@@ -1,3 +1,5 @@
+#include "kafs_lock_order.h"
+#include "kafs_locks.h"
 #include "kafs_v7_locks.h"
 
 #include <errno.h>
@@ -13,6 +15,23 @@ typedef struct lock_worker
   uint32_t group_id;
   int rc;
 } lock_worker_t;
+
+typedef void (*metadata_lock_fn)(kafs_context_t *ctx);
+
+typedef struct metadata_lock_case
+{
+  const char *name;
+  metadata_lock_fn lock;
+  metadata_lock_fn unlock;
+} metadata_lock_case_t;
+
+static void metadata_inode_lock(kafs_context_t *ctx) { kafs_inode_lock(ctx, 0u); }
+
+static void metadata_inode_unlock(kafs_context_t *ctx) { kafs_inode_unlock(ctx, 0u); }
+
+static void metadata_bucket_lock(kafs_context_t *ctx) { kafs_hrl_bucket_lock(ctx, 0u); }
+
+static void metadata_bucket_unlock(kafs_context_t *ctx) { kafs_hrl_bucket_unlock(ctx, 0u); }
 
 static void *transaction_worker(void *opaque)
 {
@@ -112,6 +131,55 @@ static int test_checkpoint_transaction_contention(void)
   return rc;
 }
 
+static int test_cross_family_order(void)
+{
+  static const metadata_lock_case_t cases[] = {
+      {.name = "hrl_global", .lock = kafs_hrl_global_lock, .unlock = kafs_hrl_global_unlock},
+      {.name = "inode_alloc", .lock = kafs_inode_alloc_lock, .unlock = kafs_inode_alloc_unlock},
+      {.name = "inode", .lock = metadata_inode_lock, .unlock = metadata_inode_unlock},
+      {.name = "hrl_bucket", .lock = metadata_bucket_lock, .unlock = metadata_bucket_unlock},
+      {.name = "bitmap", .lock = kafs_bitmap_lock, .unlock = kafs_bitmap_unlock},
+  };
+  kafs_ssuperblock_t superblock;
+  kafs_context_t ctx;
+  memset(&superblock, 0, sizeof(superblock));
+  memset(&ctx, 0, sizeof(ctx));
+  ctx.c_superblock = &superblock;
+  ctx.c_hotplug_fd = -1;
+  if (kafs_ctx_locks_init(&ctx) != 0)
+    return -1;
+
+  kafs_v7_lock_state_t *state = NULL;
+  int rc = kafs_v7_locks_init(1u, 500u, &state);
+  for (size_t i = 0; rc == 0 && i < sizeof(cases) / sizeof(cases[0]); ++i)
+  {
+    cases[i].lock(&ctx);
+    int guard_rc = kafs_v7_checkpoint_lock(state);
+    cases[i].unlock(&ctx);
+    if (guard_rc != -EDEADLK)
+    {
+      if (guard_rc == 0)
+        (void)kafs_v7_checkpoint_unlock(state);
+      fprintf(stderr, "cross-family inverse guard failed: lock=%s rc=%d\n", cases[i].name,
+              guard_rc);
+      rc = -1;
+      break;
+    }
+
+    rc = kafs_v7_transaction_lock(state, 0u);
+    if (rc != 0)
+      break;
+    cases[i].lock(&ctx);
+    cases[i].unlock(&ctx);
+    rc = kafs_v7_transaction_unlock(state, 0u);
+  }
+  if (rc == 0 && kafs_lock_order_depth() != 0u)
+    rc = -1;
+  kafs_v7_locks_destroy(state);
+  kafs_ctx_locks_destroy(&ctx);
+  return rc;
+}
+
 static int test_bounded_timeout(void)
 {
   kafs_v7_lock_state_t *state = NULL;
@@ -177,6 +245,8 @@ static int test_owner_dead_recovery(void)
 int main(void)
 {
   int rc = test_order_and_stack_guards();
+  if (rc == 0)
+    rc = test_cross_family_order();
   if (rc == 0)
     rc = test_checkpoint_transaction_contention();
   if (rc == 0)

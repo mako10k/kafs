@@ -139,8 +139,11 @@ ranks 1, 2, and 3. Checkpoint publication takes the write gate alone. The lock
 wait is bounded and observable, cancellation is disabled while held, and a
 stale owner fails the current operation instead of silently continuing. This
 correctness-first RC boundary deliberately does not provide concurrent
-cross-group transactions. No admitted path crosses into the existing ranks
-10-50 yet; that writer integration must add a cross-family order check.
+cross-group transactions. The v7 and existing metadata wrappers now publish
+rank and lock identity to one format-neutral per-thread stack. Acquiring a v7
+rank while any metadata rank 10-50 is held returns `EDEADLK`; the forward v7
+rank 1-3 -> metadata rank 10-50 order remains permitted and must unwind in
+strict reverse order.
 
 The v7-owned global sequence state now derives the last visible sequence from a
 validated checkpoint/journal view, reserves exactly the next value while the
@@ -172,9 +175,10 @@ It restores an interrupted one-copy checkpoint before changing metadata and
 resumes cleanly after target apply, checkpoint publication, or a partial
 segment reset.
 
-Controlled write remains blocked by runtime mutation integration that uses the
-documented cross-family lock order. The successful v7 path must also stop using
-the v6-named controlled-write policy flag and v6 FUSE policy helper.
+Controlled write remains blocked by runtime mutation integration under this
+cross-family order. The successful v7 path must first stop using the v6-named
+controlled-write policy flag and v6 FUSE policy helper, then route each admitted
+mutation through the v7 transaction/writeback lifecycle.
 
 FTL/ECC correlated-failure injection is not in this implementation blocker
 list.  It is governed by the RC media-qualification boundary in the accepted
@@ -194,8 +198,9 @@ raw-layout specification and does not relax any software recovery gate.
 
 ## Follow-Up Boundaries
 
-1. Add cross-family lock integration and a v7-owned runtime mutation/admission
-   policy before enabling controlled-write admission.
+1. Add a v7-owned runtime mutation/admission policy and route the bounded write
+   surface through the established cross-family lock order before enabling
+   controlled-write admission.
 2. Add `kafsresize --migrate-create --format-version 7` after the accepted
    offline and inspection surfaces are stable; migration does not outrank a
    blocker on the mount/write path.

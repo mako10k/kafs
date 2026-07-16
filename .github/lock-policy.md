@@ -26,11 +26,12 @@ must not acquire a second `v7_group` lock.  If a v7 transaction also needs the
 existing metadata locks, it acquires them only after `v7_group` and releases
 them before the v7 composite unlock.
 
-The v7-owned and existing metadata wrappers currently maintain separate
-per-thread rank stacks.  No admitted runtime path crosses those wrapper
-families yet.  Before a v7 writer may do so, the integration must add a
-cross-family order check and a regression that rejects acquiring ranks 1-3
-while any rank 10-50 lock is held.
+The format-neutral `kafs_lock_order` tracker owns one per-thread rank stack for
+the v7-owned and existing metadata wrappers.  A v7 acquisition preflights this
+shared stack before touching its mutex and returns `EDEADLK` when any rank
+10-50 lock is already held.  Existing metadata wrappers publish their rank and
+mutex identity to the same stack, so the permitted v7 rank 1-3 -> metadata rank
+10-50 order and strict cross-family reverse release are checked at runtime.
 
 Rules:
 - Never acquire a lower rank while holding a higher rank.
