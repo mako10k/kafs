@@ -510,6 +510,7 @@ static int kafs_v7_deduplicate_transactions(kafs_v7_journal_state_t *state,
   report->transaction_count = (uint32_t)out;
   report->first_sequence = state->transactions[0].sequence;
   report->last_sequence = state->transactions[out - 1u].sequence;
+  report->last_sequence_group_id = state->transactions[out - 1u].group_id;
   return 0;
 }
 
@@ -712,6 +713,7 @@ int kafs_v7_journal_analyze_fd(int fd, const kafs_v7_layout_report_t *layout,
   if (fd < 0 || !layout || !layout->descriptor || !replay)
     return -EINVAL;
   memset(replay, 0, sizeof(*replay));
+  replay->report.last_sequence_group_id = UINT32_MAX;
   kafs_v7_journal_state_t *state = (kafs_v7_journal_state_t *)calloc(1u, sizeof(*state));
   if (!state)
     return -ENOMEM;
