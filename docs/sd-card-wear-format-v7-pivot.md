@@ -64,12 +64,11 @@ experimental v6 descriptor scaffold, so the facade currently delegates to
 `kafs_v6_layout.h`; that delegation is an implementation detail, not the
 public v7 runtime contract.
 
-The current builder emits pre-specification `K7SA` locator / `K7LD` descriptor
-version 1 with that scaffold table shape.  Such images may be reported offline
-with recreate guidance, but they are not accepted raw-layout images and must not
-pass v7 runtime admission or repair.  The next implementation boundary replaces
-that path with version 2 root locators and v7-owned descriptor version 2 group,
-shard, checkpoint, and replica records.
+The current builder emits accepted `K7SA` locator / `K7LD` descriptor version 2
+with v7-owned group, shard, checkpoint, and replica records.  It supports the
+canonical single- and multi-group offline geometry.  Pre-specification version
+1 scaffold images may be reported with recreate guidance, but they are not
+accepted raw-layout images and must not pass v7 runtime admission or repair.
 
 Diagnostic keys are format-specific:
 
@@ -84,7 +83,7 @@ User-facing entrypoints and on-disk format numbers are no longer ambiguous:
 | `kafs` | Production v4/v5 runtime. Rejects v6/v7 descriptor-backed images. |
 | `kafs-v6` | Frozen experimental v6 runtime entrypoint. |
 | `kafs-v7` | Breaking-change descriptor-backed runtime entrypoint. |
-| `mkfs.kafs --format-version 7` | Currently emits the pre-spec version 1 scaffold; it becomes the accepted image creator only after descriptor version 2 conformance lands. |
+| `mkfs.kafs --format-version 7` | Emits the accepted version 2 grouped raw layout for offline validation. |
 | `fsck.kafs` / `kafsdump` | Validate/report descriptor-backed v6/v7 images offline. |
 
 ## Non-Goals
@@ -101,14 +100,11 @@ User-facing entrypoints and on-disk format numbers are no longer ambiguous:
 
 ## Follow-Up Boundaries
 
-1. Implement the accepted descriptor version 2 as a single-group, v7-owned
-   offline `mkfs -> kafsdump -> fsck` round trip with descriptor/checkpoint
-   fallback and corruption rejection.  Keep runtime admission fail-closed.
-2. Prove multi-group placement and wear distribution after the single-group
-   foundation, without weakening checkpoint, journal, or fsck invariants.
-3. Prove `kafs-v7 --inspection-mount` with mount tests while keeping the write
+1. Extend descriptor/checkpoint replica placement and same-generation
+   divergence testing with a real-media-oriented fault matrix.
+2. Prove `kafs-v7 --inspection-mount` with mount tests while keeping the write
    surface closed.
-4. Add `kafsresize --migrate-create --format-version 7` once the accepted v7
+3. Add `kafsresize --migrate-create --format-version 7` once the accepted v7
    mkfs, offline validation, and inspection surfaces are stable.
-5. Prove controlled-write admission, structured-journal recovery, locking, and
+4. Prove controlled-write admission, structured-journal recovery, locking, and
    mutation fault tests before expanding the write surface.

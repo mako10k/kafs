@@ -171,7 +171,7 @@ static int test_round_trip_and_fallbacks(void)
       "%s --json %s | python3 -c 'import json,sys; d=json.load(sys.stdin); "
       "assert all(k in d for k in [\"root_locators\",\"layout_descriptor\","
       "\"descriptor_replicas\",\"checkpoints\",\"groups\",\"shards\","
-      "\"journal_segments\"])'",
+      "\"wear_distribution\",\"journal_segments\"])'",
       kafs_test_kafsdump_bin(), path);
   if (written < 0 || (size_t)written >= sizeof(json_command) || system(json_command) != 0)
     return -1;

@@ -1,5 +1,5 @@
 '.\" -*- nroff -*-
-.TH MKFS.KAFS 8 "2026-07-13" "kafs 0.4.0" "System Administration"
+.TH MKFS.KAFS 8 "2026-07-16" "kafs 0.4.0" "System Administration"
 .SH NAME
 mkfs.kafs \- create a KAFS filesystem image
 .SH SYNOPSIS
@@ -15,6 +15,8 @@ mkfs.kafs \- create a KAFS filesystem image
 .IR inodes ]
 .RB [ -J
 .IR journalsz ]
+.RB [ --v7-group-count
+.IR groups ]
 .RB [ --journal-header-rotation ]
 .RB [ --hrl-entry-ratio
 .IR ratio ]
@@ -47,10 +49,10 @@ split descriptor admission and runtime entrypoint policy away from the
 production runtime.
 Version 7 emits the accepted v7-owned raw layout: a version 2 K7SA root
 locator, replicated version 2 K7LD descriptor, replicated K7CP checkpoint,
-one metadata/data group, and at least two empty group-local journal segments.
-The canonical single-group builder writes primary and tail recovery replicas
-and adds the deterministic midpoint pair only when it fits existing unowned
-slack; it never removes a usable data block to create that replica.
+and descriptor-owned metadata/data groups with group-local journal segments.
+The canonical builder writes primary and tail recovery replicas and adds the
+deterministic midpoint pair only when it fits existing unowned slack; it never
+removes a usable data block to create that replica.
 Accepted v7 images are offline-only in this release and are inspected with
 .BR kafsdump (8)
 and
@@ -70,6 +72,12 @@ For the default 1GiB image size this yields 65536 inodes.
 .TP
 .BR -J ", " --journal-size-bytes "=" bytes
 Journal region size (default: 1MiB, minimum 4KiB). K/M/G suffixes are accepted.
+.TP
+.BR --v7-group-count " " groups
+Request an exact format v7 group count.  Valid values are powers of two from 1
+through 64.  The default chooses approximately one group per 64MiB of image,
+rounded down to a supported power of two, and reduces the count if the complete
+geometry does not fit.  The option is rejected for formats other than v7.
 .TP
 .B --journal-header-rotation
 Enable rotated journal header slots inside the journal region. This reduces

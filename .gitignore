@@ -117,6 +117,7 @@
 /tests/v6_descriptor_validation
 /tests/v7_entrypoint_smoketest
 /tests/v7_raw_layout_smoketest
+/tests/v7_multi_group_smoketest
 
 ### Local mount/test workdirs (repo root)
 /mnt-*/

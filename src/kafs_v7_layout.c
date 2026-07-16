@@ -12,6 +12,31 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+typedef struct kafs_v7_group_geometry
+{
+  uint64_t metadata_off;
+  uint64_t metadata_bytes;
+  uint64_t data_logical_start;
+  uint64_t data_off;
+  uint64_t data_bytes;
+  uint64_t data_blocks;
+  uint64_t bitmap_bytes;
+  uint64_t inode_logical_start;
+  uint64_t inode_count;
+  uint64_t inode_bytes;
+  uint64_t allocator_bytes;
+  uint64_t hrl_bucket_start;
+  uint64_t hrl_bucket_count;
+  uint64_t hrl_index_bytes;
+  uint64_t hrl_entry_start;
+  uint64_t hrl_entry_count;
+  uint64_t hrl_entry_bytes;
+  uint64_t journal_segment_start;
+  uint64_t journal_segment_count;
+  uint64_t journal_header_bytes;
+  uint64_t journal_data_bytes;
+} kafs_v7_group_geometry_t;
+
 typedef struct kafs_v7_geometry
 {
   uint64_t descriptor_bytes;
@@ -21,22 +46,15 @@ typedef struct kafs_v7_geometry
   uint64_t tail_desc_off;
   uint64_t midpoint_desc_off;
   uint64_t midpoint_checkpoint_off;
-  uint64_t metadata_off;
-  uint64_t metadata_bytes;
-  uint64_t data_off;
-  uint64_t data_bytes;
+  uint64_t first_group_off;
+  uint64_t groups_end;
   uint64_t data_blocks;
-  uint64_t bitmap_bytes;
-  uint64_t inode_bytes;
-  uint64_t allocator_bytes;
-  uint64_t hrl_index_bytes;
-  uint64_t hrl_entry_bytes;
-  uint64_t journal_header_bytes;
-  uint64_t journal_data_bytes;
   uint64_t journal_segment_bytes;
-  uint32_t hrl_bucket_count;
   uint32_t hrl_entry_count;
+  uint32_t journal_segment_count;
+  uint32_t group_count;
   uint32_t replica_count;
+  kafs_v7_group_geometry_t groups[KAFS_V7_GROUP_MAX_COUNT];
 } kafs_v7_geometry_t;
 
 typedef struct kafs_v7_descriptor_candidate
@@ -45,6 +63,9 @@ typedef struct kafs_v7_descriptor_candidate
   uint64_t generation;
   int valid;
 } kafs_v7_descriptor_candidate_t;
+
+#define KAFS_V7_AUTO_GROUP_TARGET_BYTES (UINT64_C(64) * 1024u * 1024u)
+#define KAFS_V7_HRL_BUCKET_COUNT 1024u
 
 static int kafs_v7_add_u64(uint64_t a, uint64_t b, uint64_t *out)
 {
@@ -259,88 +280,152 @@ static uint32_t kafs_v7_hrl_entry_count(uint64_t blocks, double ratio)
   return (uint32_t)count;
 }
 
+static int kafs_v7_group_count_supported(uint32_t group_count)
+{
+  return group_count != 0 && group_count <= KAFS_V7_GROUP_MAX_COUNT &&
+         (group_count & (group_count - 1u)) == 0 && KAFS_V7_HRL_BUCKET_COUNT % group_count == 0;
+}
+
+static void kafs_v7_partition_even(uint64_t total, uint32_t count, uint32_t id, uint64_t *start,
+                                   uint64_t *length)
+{
+  uint64_t base = total / count;
+  uint64_t remainder = total % count;
+
+  *start = (uint64_t)id * base + (id < remainder ? id : remainder);
+  *length = base + (id < remainder ? 1u : 0u);
+}
+
+static int kafs_v7_partition_data(uint64_t total, uint32_t group_count, uint32_t group_id,
+                                  uint64_t *start, uint64_t *length)
+{
+  uint64_t words = total / 64u;
+  uint64_t tail = total % 64u;
+  uint64_t word_start;
+  uint64_t word_count;
+
+  if (words < group_count)
+    return -ERANGE;
+  kafs_v7_partition_even(words, group_count, group_id, &word_start, &word_count);
+  *start = word_start * 64u;
+  *length = word_count * 64u;
+  if (group_id + 1u == group_count)
+    *length += tail;
+  return *length == 0 ? -ERANGE : 0;
+}
+
 static int kafs_v7_compute_metadata(const kafs_v7_mkfs_options_t *options,
                                     kafs_v7_geometry_t *geometry, uint64_t data_blocks)
 {
-  uint64_t bytes;
-  uint64_t l0_bytes;
-  uint64_t l1_bytes;
-  uint64_t l2_bytes;
-  uint64_t total = 0;
+  uint64_t cursor = geometry->first_group_off;
   const uint32_t block_size = options->block_size;
 
-  if (data_blocks == 0 || data_blocks > UINT32_MAX)
+  if (data_blocks == 0 || data_blocks > UINT32_MAX ||
+      options->inode_count < geometry->group_count * 2u)
     return -ERANGE;
   geometry->data_blocks = data_blocks;
-  geometry->hrl_bucket_count = 1024u;
   geometry->hrl_entry_count = kafs_v7_hrl_entry_count(data_blocks, options->hrl_entry_ratio);
+  if (geometry->hrl_entry_count < geometry->group_count)
+    return -ERANGE;
 
-  bytes = ((data_blocks + 63u) / 64u) * 8u;
-  if (kafs_v7_align_up(bytes, block_size, &geometry->bitmap_bytes) != 0)
-    return -EOVERFLOW;
-  if (kafs_v7_mul_u64(options->inode_count, KAFS_V7_INODE_BYTES, &bytes) != 0 ||
-      kafs_v7_align_up(bytes, block_size, &geometry->inode_bytes) != 0)
-    return -EOVERFLOW;
-  l0_bytes = (data_blocks + 7u) / 8u;
-  l1_bytes = (l0_bytes + 7u) / 8u;
-  l2_bytes = (l1_bytes + 7u) / 8u;
-  if (kafs_v7_add_u64(l1_bytes, l2_bytes, &bytes) != 0 ||
-      kafs_v7_align_up(bytes, block_size, &geometry->allocator_bytes) != 0)
-    return -EOVERFLOW;
-  if (kafs_v7_mul_u64(geometry->hrl_bucket_count, 4u, &bytes) != 0 ||
-      kafs_v7_align_up(bytes, block_size, &geometry->hrl_index_bytes) != 0)
-    return -EOVERFLOW;
-  if (kafs_v7_mul_u64(geometry->hrl_entry_count, KAFS_V7_HRL_ENTRY_BYTES, &bytes) != 0 ||
-      kafs_v7_align_up(bytes, block_size, &geometry->hrl_entry_bytes) != 0)
-    return -EOVERFLOW;
-  geometry->journal_header_bytes = 2u * (uint64_t)block_size;
-  if (kafs_v7_mul_u64(2u, geometry->journal_segment_bytes, &geometry->journal_data_bytes) != 0)
-    return -EOVERFLOW;
-
-  const uint64_t spans[] = {geometry->bitmap_bytes,      geometry->inode_bytes,
-                            geometry->allocator_bytes,   geometry->hrl_index_bytes,
-                            geometry->hrl_entry_bytes,   geometry->journal_header_bytes,
-                            geometry->journal_data_bytes};
-  for (size_t i = 0; i < sizeof(spans) / sizeof(spans[0]); ++i)
+  for (uint32_t id = 0; id < geometry->group_count; ++id)
   {
-    if (kafs_v7_add_u64(total, spans[i], &total) != 0)
+    kafs_v7_group_geometry_t *group = &geometry->groups[id];
+    uint64_t bytes;
+    uint64_t l0_bytes;
+    uint64_t l1_bytes;
+    uint64_t l2_bytes;
+    uint64_t total = 0;
+
+    memset(group, 0, sizeof(*group));
+    if (kafs_v7_partition_data(data_blocks, geometry->group_count, id, &group->data_logical_start,
+                               &group->data_blocks) != 0)
+      return -ERANGE;
+    kafs_v7_partition_even(options->inode_count, geometry->group_count, id,
+                           &group->inode_logical_start, &group->inode_count);
+    kafs_v7_partition_even(KAFS_V7_HRL_BUCKET_COUNT, geometry->group_count, id,
+                           &group->hrl_bucket_start, &group->hrl_bucket_count);
+    kafs_v7_partition_even(geometry->hrl_entry_count, geometry->group_count, id,
+                           &group->hrl_entry_start, &group->hrl_entry_count);
+    if (geometry->group_count == 1u)
+      group->journal_segment_count = geometry->journal_segment_count;
+    else
+    {
+      group->journal_segment_start = id;
+      group->journal_segment_count = 1u;
+    }
+
+    bytes = ((group->data_blocks + 63u) / 64u) * 8u;
+    if (kafs_v7_align_up(bytes, block_size, &group->bitmap_bytes) != 0 ||
+        kafs_v7_mul_u64(group->inode_count, KAFS_V7_INODE_BYTES, &bytes) != 0 ||
+        kafs_v7_align_up(bytes, block_size, &group->inode_bytes) != 0)
+      return -EOVERFLOW;
+    l0_bytes = (group->data_blocks + 7u) / 8u;
+    l1_bytes = (l0_bytes + 7u) / 8u;
+    l2_bytes = (l1_bytes + 7u) / 8u;
+    if (kafs_v7_add_u64(l1_bytes, l2_bytes, &bytes) != 0 ||
+        kafs_v7_align_up(bytes, block_size, &group->allocator_bytes) != 0 ||
+        kafs_v7_mul_u64(group->hrl_bucket_count, 4u, &bytes) != 0 ||
+        kafs_v7_align_up(bytes, block_size, &group->hrl_index_bytes) != 0 ||
+        kafs_v7_mul_u64(group->hrl_entry_count, KAFS_V7_HRL_ENTRY_BYTES, &bytes) != 0 ||
+        kafs_v7_align_up(bytes, block_size, &group->hrl_entry_bytes) != 0 ||
+        kafs_v7_mul_u64(group->journal_segment_count, block_size, &group->journal_header_bytes) !=
+            0 ||
+        kafs_v7_mul_u64(group->journal_segment_count, geometry->journal_segment_bytes,
+                        &group->journal_data_bytes) != 0)
+      return -EOVERFLOW;
+
+    const uint64_t spans[] = {group->bitmap_bytes,      group->inode_bytes,
+                              group->allocator_bytes,   group->hrl_index_bytes,
+                              group->hrl_entry_bytes,   group->journal_header_bytes,
+                              group->journal_data_bytes};
+    for (size_t span = 0; span < sizeof(spans) / sizeof(spans[0]); ++span)
+    {
+      if (kafs_v7_add_u64(total, spans[span], &total) != 0)
+        return -EOVERFLOW;
+    }
+    group->metadata_off = cursor;
+    group->metadata_bytes = total;
+    if (kafs_v7_add_u64(cursor, total, &group->data_off) != 0 ||
+        kafs_v7_mul_u64(group->data_blocks, block_size, &group->data_bytes) != 0 ||
+        kafs_v7_add_u64(group->data_off, group->data_bytes, &cursor) != 0)
       return -EOVERFLOW;
   }
-  geometry->metadata_bytes = total;
-  if (kafs_v7_add_u64(geometry->metadata_off, total, &geometry->data_off) != 0 ||
-      kafs_v7_mul_u64(data_blocks, block_size, &geometry->data_bytes) != 0)
-    return -EOVERFLOW;
+  geometry->groups_end = cursor;
   return 0;
 }
 
-static int kafs_v7_plan(const kafs_v7_mkfs_options_t *options, kafs_v7_geometry_t *geometry)
+static int kafs_v7_plan_group_count(const kafs_v7_mkfs_options_t *options, uint32_t group_count,
+                                    kafs_v7_geometry_t *geometry)
 {
   uint32_t descriptor_bytes;
   uint32_t unused_group_off;
   uint32_t unused_shard_off;
   uint32_t unused_replica_off;
-  uint64_t low = 1;
+  uint64_t shard_count;
+  uint64_t low = (uint64_t)group_count * 64u;
   uint64_t high;
   uint64_t best = 0;
 
-  if (!options || !geometry || !kafs_v7_supported_block_size(options->block_size) ||
-      options->inode_count < 2u || !isfinite(options->hrl_entry_ratio) ||
-      options->hrl_entry_ratio <= 0.0 || options->hrl_entry_ratio > 1.0 ||
-      options->image_size_bytes == 0 || options->image_size_bytes % options->block_size != 0 ||
-      options->image_size_bytes / options->block_size > UINT32_MAX)
+  if (!kafs_v7_group_count_supported(group_count) || options->inode_count < group_count * 2u ||
+      kafs_v7_mul_u64(group_count, KAFS_V7_GROUP_LOCAL_SHARDS, &shard_count) != 0 ||
+      kafs_v7_add_u64(shard_count, 4u, &shard_count) != 0 || shard_count > UINT32_MAX)
     return -EINVAL;
 
   memset(geometry, 0, sizeof(*geometry));
+  geometry->group_count = group_count;
   geometry->replica_count = 2u;
-  if (kafs_v7_descriptor_size(options->block_size, 1u, 11u, 2u, &descriptor_bytes,
-                              &unused_group_off, &unused_shard_off, &unused_replica_off) != 0)
+  geometry->journal_segment_count = group_count == 1u ? 2u : group_count;
+  if (kafs_v7_descriptor_size(options->block_size, group_count, (uint32_t)shard_count, 2u,
+                              &descriptor_bytes, &unused_group_off, &unused_shard_off,
+                              &unused_replica_off) != 0)
     return -EOVERFLOW;
   geometry->descriptor_bytes = descriptor_bytes;
   geometry->primary_desc_off = options->block_size;
   if (kafs_v7_add_u64(geometry->primary_desc_off, descriptor_bytes,
                       &geometry->primary_checkpoint_off) != 0 ||
       kafs_v7_add_u64(geometry->primary_checkpoint_off, options->block_size,
-                      &geometry->metadata_off) != 0)
+                      &geometry->first_group_off) != 0)
     return -EOVERFLOW;
   if (options->image_size_bytes <
       (uint64_t)options->block_size + descriptor_bytes + options->block_size)
@@ -349,35 +434,29 @@ static int kafs_v7_plan(const kafs_v7_mkfs_options_t *options, kafs_v7_geometry_
   if (geometry->tail_desc_off < options->block_size)
     return -ENOSPC;
   geometry->tail_checkpoint_off = geometry->tail_desc_off - options->block_size;
-  if (geometry->metadata_off >= geometry->tail_checkpoint_off)
+  if (geometry->first_group_off >= geometry->tail_checkpoint_off)
     return -ENOSPC;
 
   geometry->journal_segment_bytes =
-      ((options->journal_bytes / 2u) / options->block_size) * options->block_size;
+      ((options->journal_bytes / geometry->journal_segment_count) / options->block_size) *
+      options->block_size;
   if (geometry->journal_segment_bytes < options->block_size)
     return -ENOSPC;
 
-  high = (geometry->tail_checkpoint_off - geometry->metadata_off) / options->block_size;
+  high = (geometry->tail_checkpoint_off - geometry->first_group_off) / options->block_size;
   while (low <= high)
   {
     uint64_t mid = low + (high - low) / 2u;
     kafs_v7_geometry_t candidate = *geometry;
-    uint64_t end;
     int rc = kafs_v7_compute_metadata(options, &candidate, mid);
-    if (rc == 0)
-      rc = kafs_v7_add_u64(candidate.data_off, candidate.data_bytes, &end);
-    if (rc == 0 && end <= geometry->tail_checkpoint_off)
+    if (rc == 0 && candidate.groups_end <= geometry->tail_checkpoint_off)
     {
       best = mid;
       *geometry = candidate;
       low = mid + 1u;
     }
     else
-    {
-      if (mid == 0)
-        break;
       high = mid - 1u;
-    }
   }
   if (best == 0)
     return -ENOSPC;
@@ -388,13 +467,39 @@ static int kafs_v7_plan(const kafs_v7_mkfs_options_t *options, kafs_v7_geometry_
                       &geometry->midpoint_checkpoint_off) != 0)
     return -EOVERFLOW;
   uint64_t midpoint_end;
-  uint64_t data_end;
-  if (kafs_v7_add_u64(geometry->midpoint_checkpoint_off, options->block_size, &midpoint_end) != 0 ||
-      kafs_v7_add_u64(geometry->data_off, geometry->data_bytes, &data_end) != 0)
+  if (kafs_v7_add_u64(geometry->midpoint_checkpoint_off, options->block_size, &midpoint_end) != 0)
     return -EOVERFLOW;
-  if (geometry->midpoint_desc_off >= data_end && midpoint_end <= geometry->tail_checkpoint_off)
+  if (geometry->midpoint_desc_off >= geometry->groups_end &&
+      midpoint_end <= geometry->tail_checkpoint_off)
     geometry->replica_count = 3u;
   return 0;
+}
+
+static int kafs_v7_plan(const kafs_v7_mkfs_options_t *options, kafs_v7_geometry_t *geometry)
+{
+  if (!options || !geometry || !kafs_v7_supported_block_size(options->block_size) ||
+      options->inode_count < 2u || !isfinite(options->hrl_entry_ratio) ||
+      options->hrl_entry_ratio <= 0.0 || options->hrl_entry_ratio > 1.0 ||
+      options->image_size_bytes == 0 || options->image_size_bytes % options->block_size != 0 ||
+      options->image_size_bytes / options->block_size > UINT32_MAX ||
+      (options->group_count != 0 && !kafs_v7_group_count_supported(options->group_count)))
+    return -EINVAL;
+
+  if (options->group_count != 0)
+    return kafs_v7_plan_group_count(options, options->group_count, geometry);
+
+  uint64_t target_units = options->image_size_bytes / KAFS_V7_AUTO_GROUP_TARGET_BYTES;
+  uint32_t group_count = 1u;
+  while (group_count < KAFS_V7_GROUP_MAX_COUNT && (uint64_t)group_count * 2u <= target_units)
+    group_count *= 2u;
+  while (group_count != 0)
+  {
+    int rc = kafs_v7_plan_group_count(options, group_count, geometry);
+    if (rc == 0)
+      return 0;
+    group_count /= 2u;
+  }
+  return -ENOSPC;
 }
 
 static void kafs_v7_shard_set(kafs_v7_shard_desc_t *shard, uint16_t type, uint16_t storage_class,
@@ -437,9 +542,14 @@ static int kafs_v7_build_descriptor(const kafs_v7_mkfs_options_t *options,
   uint32_t group_off;
   uint32_t shard_off;
   uint32_t replica_off;
-  uint32_t shard_count = 7u + 2u * geometry->replica_count;
-  int rc = kafs_v7_descriptor_size(options->block_size, 1u, shard_count, geometry->replica_count,
-                                   &descriptor_bytes, &group_off, &shard_off, &replica_off);
+  uint64_t shard_count_u64 =
+      (uint64_t)KAFS_V7_GROUP_LOCAL_SHARDS * geometry->group_count + 2u * geometry->replica_count;
+  if (shard_count_u64 > UINT32_MAX)
+    return -EOVERFLOW;
+  uint32_t shard_count = (uint32_t)shard_count_u64;
+  int rc = kafs_v7_descriptor_size(options->block_size, geometry->group_count, shard_count,
+                                   geometry->replica_count, &descriptor_bytes, &group_off,
+                                   &shard_off, &replica_off);
   if (rc != 0 || descriptor_bytes != geometry->descriptor_bytes)
     return rc != 0 ? rc : -EINVAL;
 
@@ -459,7 +569,7 @@ static int kafs_v7_build_descriptor(const kafs_v7_mkfs_options_t *options,
   header->generation = htole64(1u);
   header->image_size_bytes = htole64(options->image_size_bytes);
   header->block_size = htole32(options->block_size);
-  header->group_count = htole32(1u);
+  header->group_count = htole32(geometry->group_count);
   header->group_desc_off = htole32(group_off);
   header->group_desc_bytes = htole16(KAFS_V7_GROUP_DESC_BYTES);
   header->mapping_policy = htole16(0u);
@@ -471,40 +581,53 @@ static int kafs_v7_build_descriptor(const kafs_v7_mkfs_options_t *options,
   header->replica_desc_bytes = htole16(KAFS_V7_REPLICA_DESC_BYTES);
   header->incompat_flags = htole64(KAFS_V7_REQUIRED_INCOMPAT_FLAGS);
 
-  groups[0].group_id = htole32(0u);
-  groups[0].first_shard_index = htole32(0u);
-  groups[0].shard_count = htole32(KAFS_V7_SINGLE_GROUP_LOCAL_SHARDS);
-  groups[0].metadata_physical_off = htole64(geometry->metadata_off);
-  groups[0].metadata_physical_bytes = htole64(geometry->metadata_bytes);
-  groups[0].data_logical_start = htole64(0u);
-  groups[0].data_logical_count = htole64(geometry->data_blocks);
-  groups[0].data_physical_off = htole64(geometry->data_off);
-  groups[0].data_physical_bytes = htole64(geometry->data_bytes);
+  for (uint32_t id = 0; id < geometry->group_count; ++id)
+  {
+    const kafs_v7_group_geometry_t *group = &geometry->groups[id];
+    uint32_t first_shard = id * KAFS_V7_GROUP_LOCAL_SHARDS;
+    uint64_t off = group->metadata_off;
 
-  uint64_t off = geometry->metadata_off;
-  kafs_v7_shard_set(&shards[0], KAFS_V7_SHARD_BLOCK_BITMAP, KAFS_V7_STORAGE_BIT_PACKED, 0u, off,
-                    geometry->bitmap_bytes, 0u, geometry->data_blocks, 8u);
-  off += geometry->bitmap_bytes;
-  kafs_v7_shard_set(&shards[1], KAFS_V7_SHARD_INODE_TABLE, KAFS_V7_STORAGE_FIXED_RECORD, 0u, off,
-                    geometry->inode_bytes, 0u, options->inode_count, KAFS_V7_INODE_BYTES);
-  off += geometry->inode_bytes;
-  kafs_v7_shard_set(&shards[2], KAFS_V7_SHARD_ALLOCATOR_SUMMARY, KAFS_V7_STORAGE_ALLOCATOR_SUMMARY,
-                    0u, off, geometry->allocator_bytes, 0u, geometry->data_blocks, 0u);
-  off += geometry->allocator_bytes;
-  kafs_v7_shard_set(&shards[3], KAFS_V7_SHARD_HRL_INDEX, KAFS_V7_STORAGE_FIXED_RECORD, 0u, off,
-                    geometry->hrl_index_bytes, 0u, geometry->hrl_bucket_count, 4u);
-  off += geometry->hrl_index_bytes;
-  kafs_v7_shard_set(&shards[4], KAFS_V7_SHARD_HRL_ENTRIES, KAFS_V7_STORAGE_FIXED_RECORD, 0u, off,
-                    geometry->hrl_entry_bytes, 0u, geometry->hrl_entry_count,
-                    KAFS_V7_HRL_ENTRY_BYTES);
-  off += geometry->hrl_entry_bytes;
-  kafs_v7_shard_set(&shards[5], KAFS_V7_SHARD_JOURNAL_HEADER, KAFS_V7_STORAGE_FIXED_RECORD, 0u, off,
-                    geometry->journal_header_bytes, 0u, 2u, options->block_size);
-  off += geometry->journal_header_bytes;
-  kafs_v7_shard_set(&shards[6], KAFS_V7_SHARD_JOURNAL_DATA, KAFS_V7_STORAGE_BYTE_SPAN, 0u, off,
-                    geometry->journal_data_bytes, 0u, 2u, 0u);
+    groups[id].group_id = htole32(id);
+    groups[id].first_shard_index = htole32(first_shard);
+    groups[id].shard_count = htole32(KAFS_V7_GROUP_LOCAL_SHARDS);
+    groups[id].metadata_physical_off = htole64(group->metadata_off);
+    groups[id].metadata_physical_bytes = htole64(group->metadata_bytes);
+    groups[id].data_logical_start = htole64(group->data_logical_start);
+    groups[id].data_logical_count = htole64(group->data_blocks);
+    groups[id].data_physical_off = htole64(group->data_off);
+    groups[id].data_physical_bytes = htole64(group->data_bytes);
 
-  uint32_t shard_index = KAFS_V7_SINGLE_GROUP_LOCAL_SHARDS;
+    kafs_v7_shard_set(&shards[first_shard], KAFS_V7_SHARD_BLOCK_BITMAP, KAFS_V7_STORAGE_BIT_PACKED,
+                      id, off, group->bitmap_bytes, group->data_logical_start, group->data_blocks,
+                      8u);
+    off += group->bitmap_bytes;
+    kafs_v7_shard_set(&shards[first_shard + 1u], KAFS_V7_SHARD_INODE_TABLE,
+                      KAFS_V7_STORAGE_FIXED_RECORD, id, off, group->inode_bytes,
+                      group->inode_logical_start, group->inode_count, KAFS_V7_INODE_BYTES);
+    off += group->inode_bytes;
+    kafs_v7_shard_set(&shards[first_shard + 2u], KAFS_V7_SHARD_ALLOCATOR_SUMMARY,
+                      KAFS_V7_STORAGE_ALLOCATOR_SUMMARY, id, off, group->allocator_bytes,
+                      group->data_logical_start, group->data_blocks, 0u);
+    off += group->allocator_bytes;
+    kafs_v7_shard_set(&shards[first_shard + 3u], KAFS_V7_SHARD_HRL_INDEX,
+                      KAFS_V7_STORAGE_FIXED_RECORD, id, off, group->hrl_index_bytes,
+                      group->hrl_bucket_start, group->hrl_bucket_count, 4u);
+    off += group->hrl_index_bytes;
+    kafs_v7_shard_set(&shards[first_shard + 4u], KAFS_V7_SHARD_HRL_ENTRIES,
+                      KAFS_V7_STORAGE_FIXED_RECORD, id, off, group->hrl_entry_bytes,
+                      group->hrl_entry_start, group->hrl_entry_count, KAFS_V7_HRL_ENTRY_BYTES);
+    off += group->hrl_entry_bytes;
+    kafs_v7_shard_set(&shards[first_shard + 5u], KAFS_V7_SHARD_JOURNAL_HEADER,
+                      KAFS_V7_STORAGE_FIXED_RECORD, id, off, group->journal_header_bytes,
+                      group->journal_segment_start, group->journal_segment_count,
+                      options->block_size);
+    off += group->journal_header_bytes;
+    kafs_v7_shard_set(&shards[first_shard + 6u], KAFS_V7_SHARD_JOURNAL_DATA,
+                      KAFS_V7_STORAGE_BYTE_SPAN, id, off, group->journal_data_bytes,
+                      group->journal_segment_start, group->journal_segment_count, 0u);
+  }
+
+  uint32_t shard_index = geometry->group_count * KAFS_V7_GROUP_LOCAL_SHARDS;
   for (uint32_t id = 0; id < geometry->replica_count; ++id)
   {
     uint64_t descriptor_off = kafs_v7_replica_offset(geometry, id);
@@ -548,49 +671,53 @@ static int kafs_v7_write_zeroes(int fd, uint64_t off, uint64_t bytes, uint32_t b
 
 static int kafs_v7_sync_fd(int fd) { return fdatasync(fd) == 0 ? 0 : -errno; }
 
-static int kafs_v7_write_metadata(int fd, const kafs_v7_mkfs_options_t *options,
-                                  const kafs_v7_geometry_t *geometry)
+static int kafs_v7_write_group_metadata(int fd, const kafs_v7_mkfs_options_t *options,
+                                        const kafs_v7_geometry_t *geometry,
+                                        const kafs_v7_group_geometry_t *group)
 {
   int rc;
-  uint8_t *bitmap = (uint8_t *)malloc((size_t)geometry->bitmap_bytes);
+  uint8_t *bitmap = (uint8_t *)malloc((size_t)group->bitmap_bytes);
   if (!bitmap)
     return -ENOMEM;
-  memset(bitmap, 0xff, (size_t)geometry->bitmap_bytes);
-  uint64_t bitmap_payload = ((geometry->data_blocks + 63u) / 64u) * 8u;
+  memset(bitmap, 0xff, (size_t)group->bitmap_bytes);
+  uint64_t bitmap_payload = ((group->data_blocks + 63u) / 64u) * 8u;
   memset(bitmap, 0, (size_t)bitmap_payload);
-  uint32_t trailing = (uint32_t)(geometry->data_blocks & 63u);
+  uint32_t trailing = (uint32_t)(group->data_blocks & 63u);
   if (trailing != 0)
   {
     uint64_t valid_mask = (UINT64_C(1) << trailing) - 1u;
     uint64_t invalid_mask = htole64(~valid_mask);
     memcpy(bitmap + bitmap_payload - 8u, &invalid_mask, sizeof(invalid_mask));
   }
-  rc = kafs_pwrite_all(fd, bitmap, (size_t)geometry->bitmap_bytes, (off_t)geometry->metadata_off);
+  rc = kafs_pwrite_all(fd, bitmap, (size_t)group->bitmap_bytes, (off_t)group->metadata_off);
   free(bitmap);
   if (rc != 0)
     return rc;
 
-  uint64_t inode_off = geometry->metadata_off + geometry->bitmap_bytes;
-  void *inode_area = calloc(1u, (size_t)geometry->inode_bytes);
+  uint64_t inode_off = group->metadata_off + group->bitmap_bytes;
+  void *inode_area = calloc(1u, (size_t)group->inode_bytes);
   if (!inode_area)
     return -ENOMEM;
-  kafs_v7_inode_t *inodes = (kafs_v7_inode_t *)inode_area;
-  inodes[1].mode = htole16((uint16_t)(S_IFDIR | 0755));
-  inodes[1].uid = htole16(options->root_uid);
-  inodes[1].gid = htole16(options->root_gid);
-  inodes[1].link_count = htole16(1u);
-  rc = kafs_pwrite_all(fd, inode_area, (size_t)geometry->inode_bytes, (off_t)inode_off);
+  if (group->inode_logical_start <= 1u && 1u < group->inode_logical_start + group->inode_count)
+  {
+    kafs_v7_inode_t *inodes = (kafs_v7_inode_t *)inode_area;
+    uint64_t root_index = 1u - group->inode_logical_start;
+    inodes[root_index].mode = htole16((uint16_t)(S_IFDIR | 0755));
+    inodes[root_index].uid = htole16(options->root_uid);
+    inodes[root_index].gid = htole16(options->root_gid);
+    inodes[root_index].link_count = htole16(1u);
+  }
+  rc = kafs_pwrite_all(fd, inode_area, (size_t)group->inode_bytes, (off_t)inode_off);
   free(inode_area);
   if (rc != 0)
     return rc;
 
-  uint64_t allocator_off = inode_off + geometry->inode_bytes;
-  uint8_t *allocator = (uint8_t *)calloc(1u, (size_t)geometry->allocator_bytes);
+  uint64_t allocator_off = inode_off + group->inode_bytes;
+  uint8_t *allocator = (uint8_t *)calloc(1u, (size_t)group->allocator_bytes);
   if (!allocator)
     return -ENOMEM;
-  uint64_t l0_bytes = (geometry->data_blocks + 7u) / 8u;
+  uint64_t l0_bytes = (group->data_blocks + 7u) / 8u;
   uint64_t l1_bytes = (l0_bytes + 7u) / 8u;
-  uint64_t l2_bytes = (l1_bytes + 7u) / 8u;
   for (uint64_t i = 0; i < l0_bytes; ++i)
     allocator[i / 8u] |= (uint8_t)(1u << (i % 8u));
   for (uint64_t i = 0; i < l1_bytes; ++i)
@@ -598,29 +725,27 @@ static int kafs_v7_write_metadata(int fd, const kafs_v7_mkfs_options_t *options,
     if (allocator[i] != 0)
       allocator[l1_bytes + i / 8u] |= (uint8_t)(1u << (i % 8u));
   }
-  (void)l2_bytes;
-  rc = kafs_pwrite_all(fd, allocator, (size_t)geometry->allocator_bytes, (off_t)allocator_off);
+  rc = kafs_pwrite_all(fd, allocator, (size_t)group->allocator_bytes, (off_t)allocator_off);
   free(allocator);
   if (rc != 0)
     return rc;
 
-  uint64_t hrl_index_off = allocator_off + geometry->allocator_bytes;
-  rc =
-      kafs_v7_write_zeroes(fd, hrl_index_off, geometry->hrl_index_bytes + geometry->hrl_entry_bytes,
-                           options->block_size);
+  uint64_t hrl_index_off = allocator_off + group->allocator_bytes;
+  rc = kafs_v7_write_zeroes(fd, hrl_index_off, group->hrl_index_bytes + group->hrl_entry_bytes,
+                            options->block_size);
   if (rc != 0)
     return rc;
 
-  uint64_t journal_header_off =
-      hrl_index_off + geometry->hrl_index_bytes + geometry->hrl_entry_bytes;
-  void *journal_headers = calloc(1u, (size_t)geometry->journal_header_bytes);
+  uint64_t journal_header_off = hrl_index_off + group->hrl_index_bytes + group->hrl_entry_bytes;
+  void *journal_headers = calloc(1u, (size_t)group->journal_header_bytes);
   if (!journal_headers)
     return -ENOMEM;
-  for (uint32_t segment = 0; segment < 2u; ++segment)
+  for (uint32_t local = 0; local < group->journal_segment_count; ++local)
   {
+    uint32_t segment = (uint32_t)group->journal_segment_start + local;
     kafs_v7_journal_header_t *header =
         (kafs_v7_journal_header_t *)((uint8_t *)journal_headers +
-                                     (uint64_t)segment * options->block_size);
+                                     (uint64_t)local * options->block_size);
     header->magic = htole32(KAFS_V7_JOURNAL_HEADER_MAGIC);
     header->version = htole16(KAFS_V7_JOURNAL_HEADER_VERSION);
     header->segment_id = htole32(segment);
@@ -629,13 +754,25 @@ static int kafs_v7_write_metadata(int fd, const kafs_v7_mkfs_options_t *options,
     header->data_bytes = htole64(geometry->journal_segment_bytes);
     header->crc32 = htole32(kafs_v7_journal_header_crc(header));
   }
-  rc = kafs_pwrite_all(fd, journal_headers, (size_t)geometry->journal_header_bytes,
+  rc = kafs_pwrite_all(fd, journal_headers, (size_t)group->journal_header_bytes,
                        (off_t)journal_header_off);
   free(journal_headers);
   if (rc != 0)
     return rc;
-  return kafs_v7_write_zeroes(fd, journal_header_off + geometry->journal_header_bytes,
-                              geometry->journal_data_bytes, options->block_size);
+  return kafs_v7_write_zeroes(fd, journal_header_off + group->journal_header_bytes,
+                              group->journal_data_bytes, options->block_size);
+}
+
+static int kafs_v7_write_metadata(int fd, const kafs_v7_mkfs_options_t *options,
+                                  const kafs_v7_geometry_t *geometry)
+{
+  for (uint32_t id = 0; id < geometry->group_count; ++id)
+  {
+    int rc = kafs_v7_write_group_metadata(fd, options, geometry, &geometry->groups[id]);
+    if (rc != 0)
+      return rc;
+  }
+  return 0;
 }
 
 int kafs_v7_mkfs_fd(int fd, const kafs_v7_mkfs_options_t *options, kafs_v7_layout_report_t *report)
@@ -702,9 +839,9 @@ int kafs_v7_mkfs_fd(int fd, const kafs_v7_mkfs_options_t *options, kafs_v7_layou
     rc = kafs_v7_sync_fd(fd);
   if (rc == 0)
     rc = kafs_v7_write_metadata(fd, options, &geometry);
-  uint64_t data_end = geometry.data_off + geometry.data_bytes;
-  if (rc == 0 && data_end < geometry.tail_checkpoint_off)
-    rc = kafs_v7_write_zeroes(fd, data_end, geometry.tail_checkpoint_off - data_end,
+  if (rc == 0 && geometry.groups_end < geometry.tail_checkpoint_off)
+    rc = kafs_v7_write_zeroes(fd, geometry.groups_end,
+                              geometry.tail_checkpoint_off - geometry.groups_end,
                               options->block_size);
   if (rc == 0)
     rc = kafs_v7_sync_fd(fd);
@@ -815,68 +952,156 @@ static int kafs_v7_expected_replica_offsets(uint64_t file_size, uint32_t block_s
   return 0;
 }
 
-static int kafs_v7_validate_descriptor_shape(const void *descriptor, uint32_t descriptor_bytes,
-                                             const kafs_ssuperblock_t *sb, uint64_t file_size,
-                                             const kafs_v7_root_locator_t *locator)
+typedef struct kafs_v7_descriptor_view
 {
-  if (!descriptor || descriptor_bytes < sizeof(kafs_v7_layout_header_t))
-    return -EINVAL;
-  const kafs_v7_layout_header_t *header = (const kafs_v7_layout_header_t *)descriptor;
-  uint32_t group_count = le32toh(header->group_count);
-  uint32_t shard_count = le32toh(header->shard_count);
-  uint32_t replica_count = le32toh(header->replica_count);
-  uint32_t expected_bytes;
-  uint32_t expected_group_off;
-  uint32_t expected_shard_off;
-  uint32_t expected_replica_off;
+  const uint8_t *bytes;
+  const kafs_v7_layout_header_t *header;
+  const kafs_v7_group_desc_t *groups;
+  const kafs_v7_shard_desc_t *shards;
+  const kafs_v7_replica_desc_t *replicas;
+  uint32_t group_count;
+  uint32_t shard_count;
+  uint32_t replica_count;
+  uint32_t block_size;
+  uint32_t group_off;
+  uint32_t shard_off;
+  uint32_t replica_off;
+} kafs_v7_descriptor_view_t;
 
-  if (le32toh(header->magic) != KAFS_V7_LAYOUT_MAGIC ||
-      le16toh(header->version) != KAFS_V7_LAYOUT_VERSION ||
-      le16toh(header->header_bytes) != KAFS_V7_LAYOUT_HEADER_BYTES ||
-      le32toh(header->descriptor_bytes) != descriptor_bytes || le32toh(header->flags) != 0 ||
-      le64toh(header->generation) == 0 || le64toh(header->image_size_bytes) != file_size ||
-      le32toh(header->block_size) != le32toh(locator->block_size) || group_count != 1u ||
-      shard_count != 7u + 2u * replica_count ||
-      replica_count != le32toh(locator->candidate_count) ||
-      le16toh(header->group_desc_bytes) != KAFS_V7_GROUP_DESC_BYTES ||
-      le16toh(header->mapping_policy) != 0 ||
-      le16toh(header->shard_desc_bytes) != KAFS_V7_SHARD_DESC_BYTES ||
-      le16toh(header->replica_desc_bytes) != KAFS_V7_REPLICA_DESC_BYTES ||
-      le16toh(header->reserved0) != 0 || le16toh(header->reserved1) != 0 ||
-      le64toh(header->feature_flags) != 0 ||
-      le64toh(header->incompat_flags) != KAFS_V7_REQUIRED_INCOMPAT_FLAGS ||
-      le64toh(header->ro_compat_flags) != 0 || le64toh(header->mapping_seed) != 0 ||
-      le32toh(header->reserved2) != 0 || le64toh(header->reserved3) != 0 ||
-      le64toh(header->reserved4) != 0 ||
-      le32toh(header->descriptor_crc32) !=
+static int kafs_v7_descriptor_view_init(const void *descriptor, uint32_t descriptor_bytes,
+                                        uint64_t file_size, const kafs_v7_root_locator_t *locator,
+                                        kafs_v7_descriptor_view_t *view)
+{
+  if (!descriptor || descriptor_bytes < sizeof(kafs_v7_layout_header_t) || !locator || !view)
+    return -EINVAL;
+  memset(view, 0, sizeof(*view));
+  view->bytes = (const uint8_t *)descriptor;
+  view->header = (const kafs_v7_layout_header_t *)descriptor;
+  view->group_count = le32toh(view->header->group_count);
+  view->shard_count = le32toh(view->header->shard_count);
+  view->replica_count = le32toh(view->header->replica_count);
+  view->block_size = le32toh(view->header->block_size);
+  uint64_t expected_shards =
+      (uint64_t)view->group_count * KAFS_V7_GROUP_LOCAL_SHARDS + 2u * view->replica_count;
+
+  if (!kafs_v7_group_count_supported(view->group_count) || expected_shards > UINT32_MAX ||
+      view->shard_count != expected_shards ||
+      le32toh(view->header->magic) != KAFS_V7_LAYOUT_MAGIC ||
+      le16toh(view->header->version) != KAFS_V7_LAYOUT_VERSION ||
+      le16toh(view->header->header_bytes) != KAFS_V7_LAYOUT_HEADER_BYTES ||
+      le32toh(view->header->descriptor_bytes) != descriptor_bytes ||
+      le32toh(view->header->flags) != 0 || le64toh(view->header->generation) == 0 ||
+      le64toh(view->header->image_size_bytes) != file_size ||
+      view->block_size != le32toh(locator->block_size) ||
+      view->replica_count != le32toh(locator->candidate_count) ||
+      le16toh(view->header->group_desc_bytes) != KAFS_V7_GROUP_DESC_BYTES ||
+      le16toh(view->header->mapping_policy) != 0 ||
+      le16toh(view->header->shard_desc_bytes) != KAFS_V7_SHARD_DESC_BYTES ||
+      le16toh(view->header->replica_desc_bytes) != KAFS_V7_REPLICA_DESC_BYTES ||
+      le16toh(view->header->reserved0) != 0 || le16toh(view->header->reserved1) != 0 ||
+      le64toh(view->header->feature_flags) != 0 ||
+      le64toh(view->header->incompat_flags) != KAFS_V7_REQUIRED_INCOMPAT_FLAGS ||
+      le64toh(view->header->ro_compat_flags) != 0 || le64toh(view->header->mapping_seed) != 0 ||
+      le32toh(view->header->reserved2) != 0 || le64toh(view->header->reserved3) != 0 ||
+      le64toh(view->header->reserved4) != 0 ||
+      le32toh(view->header->descriptor_crc32) !=
           kafs_v7_descriptor_crc((void *)descriptor, descriptor_bytes))
     return -EINVAL;
-  if (kafs_v7_descriptor_size(le32toh(header->block_size), group_count, shard_count, replica_count,
-                              &expected_bytes, &expected_group_off, &expected_shard_off,
-                              &expected_replica_off) != 0 ||
-      expected_bytes != descriptor_bytes || le32toh(header->group_desc_off) != expected_group_off ||
-      le32toh(header->shard_desc_off) != expected_shard_off ||
-      le32toh(header->replica_desc_off) != expected_replica_off ||
-      kafs_v7_table_bounds(expected_group_off, group_count, KAFS_V7_GROUP_DESC_BYTES,
-                           descriptor_bytes) != 0 ||
-      kafs_v7_table_bounds(expected_shard_off, shard_count, KAFS_V7_SHARD_DESC_BYTES,
-                           descriptor_bytes) != 0 ||
-      kafs_v7_table_bounds(expected_replica_off, replica_count, KAFS_V7_REPLICA_DESC_BYTES,
-                           descriptor_bytes) != 0)
-    return -ERANGE;
 
-  const uint8_t *bytes = (const uint8_t *)descriptor;
-  const kafs_v7_group_desc_t *group = (const kafs_v7_group_desc_t *)(bytes + expected_group_off);
-  const kafs_v7_shard_desc_t *shards = (const kafs_v7_shard_desc_t *)(bytes + expected_shard_off);
-  const kafs_v7_replica_desc_t *replicas =
-      (const kafs_v7_replica_desc_t *)(bytes + expected_replica_off);
-  const uint32_t block_size = le32toh(header->block_size);
-  const uint64_t data_blocks = le64toh(group->data_logical_count);
+  uint32_t expected_bytes;
+  int rc = kafs_v7_descriptor_size(view->block_size, view->group_count, view->shard_count,
+                                   view->replica_count, &expected_bytes, &view->group_off,
+                                   &view->shard_off, &view->replica_off);
+  if (rc != 0 || expected_bytes != descriptor_bytes ||
+      le32toh(view->header->group_desc_off) != view->group_off ||
+      le32toh(view->header->shard_desc_off) != view->shard_off ||
+      le32toh(view->header->replica_desc_off) != view->replica_off ||
+      kafs_v7_table_bounds(view->group_off, view->group_count, KAFS_V7_GROUP_DESC_BYTES,
+                           descriptor_bytes) != 0 ||
+      kafs_v7_table_bounds(view->shard_off, view->shard_count, KAFS_V7_SHARD_DESC_BYTES,
+                           descriptor_bytes) != 0 ||
+      kafs_v7_table_bounds(view->replica_off, view->replica_count, KAFS_V7_REPLICA_DESC_BYTES,
+                           descriptor_bytes) != 0)
+    return rc != 0 ? rc : -ERANGE;
+
+  view->groups = (const kafs_v7_group_desc_t *)(view->bytes + view->group_off);
+  view->shards = (const kafs_v7_shard_desc_t *)(view->bytes + view->shard_off);
+  view->replicas = (const kafs_v7_replica_desc_t *)(view->bytes + view->replica_off);
+  return 0;
+}
+
+static int kafs_v7_validate_recovery_records(const kafs_v7_descriptor_view_t *view,
+                                             uint32_t descriptor_bytes, uint64_t file_size,
+                                             uint64_t groups_end)
+{
   uint64_t replica_offsets[3];
   uint64_t checkpoint_offsets[3];
-  if (kafs_v7_expected_replica_offsets(file_size, block_size, descriptor_bytes, replica_offsets,
-                                       checkpoint_offsets) != 0)
+  int rc = kafs_v7_expected_replica_offsets(file_size, view->block_size, descriptor_bytes,
+                                            replica_offsets, checkpoint_offsets);
+  if (rc != 0 || groups_end > checkpoint_offsets[1])
     return -ERANGE;
+
+  uint32_t recovery_start = view->group_count * KAFS_V7_GROUP_LOCAL_SHARDS;
+  for (uint32_t id = 0; id < view->replica_count; ++id)
+  {
+    const kafs_v7_replica_desc_t *replica = &view->replicas[id];
+    const kafs_v7_shard_desc_t *layout_shard = &view->shards[recovery_start + id * 2u];
+    const kafs_v7_shard_desc_t *checkpoint_shard = &view->shards[recovery_start + id * 2u + 1u];
+    if (le32toh(replica->replica_id) != id || le16toh(replica->role) != id ||
+        le16toh(replica->flags) != 0 || le64toh(replica->physical_off) != replica_offsets[id] ||
+        le32toh(replica->descriptor_bytes) != descriptor_bytes ||
+        le32toh(replica->reserved0) != 0 || le64toh(replica->reserved1) != 0 ||
+        le16toh(layout_shard->type) != KAFS_V7_SHARD_LAYOUT_DESCRIPTOR ||
+        le16toh(layout_shard->storage_class) != KAFS_V7_STORAGE_BYTE_SPAN ||
+        le32toh(layout_shard->flags) != 0 || le32toh(layout_shard->group_id) != UINT32_MAX ||
+        le32toh(layout_shard->reserved0) != 0 ||
+        le64toh(layout_shard->physical_off) != replica_offsets[id] ||
+        le64toh(layout_shard->physical_bytes) != descriptor_bytes ||
+        le64toh(layout_shard->logical_start) != id || le64toh(layout_shard->logical_count) != 1u ||
+        le32toh(layout_shard->record_bytes) != 0 || le32toh(layout_shard->header_bytes) != 0 ||
+        le64toh(layout_shard->generation_floor) != 0 || le64toh(layout_shard->mapping_seed) != 0 ||
+        le64toh(layout_shard->reserved1) != 0 || le64toh(layout_shard->reserved2) != 0 ||
+        le64toh(layout_shard->reserved3) != 0 ||
+        le16toh(checkpoint_shard->type) != KAFS_V7_SHARD_SUPERBLOCK_CHECKPOINT ||
+        le16toh(checkpoint_shard->storage_class) != KAFS_V7_STORAGE_FIXED_RECORD ||
+        le32toh(checkpoint_shard->flags) != 0 ||
+        le32toh(checkpoint_shard->group_id) != UINT32_MAX ||
+        le32toh(checkpoint_shard->reserved0) != 0 ||
+        le64toh(checkpoint_shard->physical_off) != checkpoint_offsets[id] ||
+        le64toh(checkpoint_shard->physical_bytes) != view->block_size ||
+        le64toh(checkpoint_shard->logical_start) != id ||
+        le64toh(checkpoint_shard->logical_count) != 1u ||
+        le32toh(checkpoint_shard->record_bytes) != KAFS_V7_CHECKPOINT_BYTES ||
+        le32toh(checkpoint_shard->header_bytes) != 0 ||
+        le64toh(checkpoint_shard->generation_floor) != 0 ||
+        le64toh(checkpoint_shard->mapping_seed) != 0 || le64toh(checkpoint_shard->reserved1) != 0 ||
+        le64toh(checkpoint_shard->reserved2) != 0 || le64toh(checkpoint_shard->reserved3) != 0)
+      return -EINVAL;
+  }
+
+  uint64_t midpoint_end;
+  if (kafs_v7_add_u64(checkpoint_offsets[2], view->block_size, &midpoint_end) != 0)
+    return -EOVERFLOW;
+  int midpoint_fits = replica_offsets[2] >= groups_end && midpoint_end <= checkpoint_offsets[1];
+  if ((view->replica_count == 3u) != midpoint_fits)
+    return -EINVAL;
+
+  uint32_t live_shard_end = view->shard_off + view->shard_count * KAFS_V7_SHARD_DESC_BYTES;
+  uint32_t live_replica_end = view->replica_off + view->replica_count * KAFS_V7_REPLICA_DESC_BYTES;
+  if (!kafs_v7_all_bytes(view->bytes + live_shard_end, view->replica_off - live_shard_end, 0) ||
+      !kafs_v7_all_bytes(view->bytes + live_replica_end, descriptor_bytes - live_replica_end, 0))
+    return -EINVAL;
+  return 0;
+}
+
+static int kafs_v7_validate_single_group_view(const kafs_v7_descriptor_view_t *view,
+                                              uint32_t descriptor_bytes,
+                                              const kafs_ssuperblock_t *sb, uint64_t file_size)
+{
+  const kafs_v7_group_desc_t *group = view->groups;
+  const kafs_v7_shard_desc_t *shards = view->shards;
+  const uint32_t block_size = view->block_size;
+  const uint64_t data_blocks = le64toh(group->data_logical_count);
 
   if (le32toh(group->group_id) != 0 || le32toh(group->flags) != 0 ||
       le32toh(group->first_shard_index) != 0 ||
@@ -953,59 +1178,173 @@ static int kafs_v7_validate_descriptor_shape(const void *descriptor, uint32_t de
       expected_off != le64toh(group->data_physical_off))
     return -EINVAL;
   uint64_t data_end;
-  if (kafs_v7_add_u64(expected_off, le64toh(group->data_physical_bytes), &data_end) != 0 ||
-      data_end > checkpoint_offsets[1])
+  if (kafs_v7_add_u64(expected_off, le64toh(group->data_physical_bytes), &data_end) != 0)
     return -ERANGE;
+  return kafs_v7_validate_recovery_records(view, descriptor_bytes, file_size, data_end);
+}
 
-  for (uint32_t id = 0; id < replica_count; ++id)
+typedef struct kafs_v7_group_coverage
+{
+  uint64_t physical;
+  uint64_t data_blocks;
+  uint64_t inodes;
+  uint64_t hrl_buckets;
+  uint64_t hrl_entries;
+  uint64_t journal_segments;
+} kafs_v7_group_coverage_t;
+
+static int kafs_v7_validate_group_descriptor(uint32_t group_id, const kafs_v7_group_desc_t *group,
+                                             const kafs_v7_shard_desc_t *shards,
+                                             uint32_t block_size, uint64_t file_size,
+                                             kafs_v7_group_coverage_t *coverage)
+{
+  static const uint16_t types[KAFS_V7_GROUP_LOCAL_SHARDS] = {
+      KAFS_V7_SHARD_BLOCK_BITMAP, KAFS_V7_SHARD_INODE_TABLE, KAFS_V7_SHARD_ALLOCATOR_SUMMARY,
+      KAFS_V7_SHARD_HRL_INDEX,    KAFS_V7_SHARD_HRL_ENTRIES, KAFS_V7_SHARD_JOURNAL_HEADER,
+      KAFS_V7_SHARD_JOURNAL_DATA};
+  static const uint16_t classes[KAFS_V7_GROUP_LOCAL_SHARDS] = {
+      KAFS_V7_STORAGE_BIT_PACKED,   KAFS_V7_STORAGE_FIXED_RECORD, KAFS_V7_STORAGE_ALLOCATOR_SUMMARY,
+      KAFS_V7_STORAGE_FIXED_RECORD, KAFS_V7_STORAGE_FIXED_RECORD, KAFS_V7_STORAGE_FIXED_RECORD,
+      KAFS_V7_STORAGE_BYTE_SPAN};
+  uint64_t expected_sizes[KAFS_V7_GROUP_LOCAL_SHARDS];
+  uint64_t logical_starts[KAFS_V7_GROUP_LOCAL_SHARDS];
+  uint64_t logical_counts[KAFS_V7_GROUP_LOCAL_SHARDS];
+  const uint32_t record_bytes[KAFS_V7_GROUP_LOCAL_SHARDS] = {
+      8u, KAFS_V7_INODE_BYTES, 0u, 4u, KAFS_V7_HRL_ENTRY_BYTES, block_size, 0u};
+  uint64_t data_start = le64toh(group->data_logical_start);
+  uint64_t data_count = le64toh(group->data_logical_count);
+  uint64_t inode_count = le64toh(shards[1].logical_count);
+  uint64_t bucket_count = le64toh(shards[3].logical_count);
+  uint64_t entry_count = le64toh(shards[4].logical_count);
+  uint64_t segment_count = le64toh(shards[5].logical_count);
+  uint64_t l0_bytes;
+  uint64_t l1_bytes;
+  uint64_t l2_bytes;
+  uint64_t bytes;
+  uint64_t expected_off = coverage->physical;
+
+  if (le32toh(group->group_id) != group_id || le32toh(group->flags) != 0 ||
+      le32toh(group->first_shard_index) != group_id * KAFS_V7_GROUP_LOCAL_SHARDS ||
+      le32toh(group->shard_count) != KAFS_V7_GROUP_LOCAL_SHARDS ||
+      le64toh(group->metadata_physical_off) != expected_off ||
+      le64toh(group->metadata_physical_bytes) == 0 || data_start != coverage->data_blocks ||
+      data_count == 0 || (group_id != 0 && (data_start & 63u) != 0) ||
+      le64toh(group->data_physical_bytes) != data_count * (uint64_t)block_size ||
+      le64toh(group->generation_floor) != 0 || le64toh(group->reserved0) != 0 ||
+      le64toh(group->reserved1) != 0 || le64toh(group->reserved2) != 0 || inode_count == 0 ||
+      bucket_count == 0 || entry_count == 0 || segment_count == 0 ||
+      le64toh(shards[6].logical_start) != coverage->journal_segments ||
+      le64toh(shards[6].logical_count) != segment_count)
+    return -EINVAL;
+  if (group_id == 0 && inode_count < 2u)
+    return -EINVAL;
+
+  if (kafs_v7_align_up(((data_count + 63u) / 64u) * 8u, block_size, &expected_sizes[0]) != 0 ||
+      kafs_v7_mul_u64(inode_count, KAFS_V7_INODE_BYTES, &bytes) != 0 ||
+      kafs_v7_align_up(bytes, block_size, &expected_sizes[1]) != 0)
+    return -EOVERFLOW;
+  l0_bytes = (data_count + 7u) / 8u;
+  l1_bytes = (l0_bytes + 7u) / 8u;
+  l2_bytes = (l1_bytes + 7u) / 8u;
+  if (kafs_v7_add_u64(l1_bytes, l2_bytes, &bytes) != 0 ||
+      kafs_v7_align_up(bytes, block_size, &expected_sizes[2]) != 0 ||
+      kafs_v7_mul_u64(bucket_count, 4u, &bytes) != 0 ||
+      kafs_v7_align_up(bytes, block_size, &expected_sizes[3]) != 0 ||
+      kafs_v7_mul_u64(entry_count, KAFS_V7_HRL_ENTRY_BYTES, &bytes) != 0 ||
+      kafs_v7_align_up(bytes, block_size, &expected_sizes[4]) != 0 ||
+      kafs_v7_mul_u64(segment_count, block_size, &expected_sizes[5]) != 0)
+    return -EOVERFLOW;
+  expected_sizes[6] = le64toh(shards[6].physical_bytes);
+  if (expected_sizes[6] < expected_sizes[5] || expected_sizes[6] % segment_count != 0 ||
+      (expected_sizes[6] / segment_count) % block_size != 0)
+    return -EINVAL;
+
+  logical_starts[0] = data_start;
+  logical_starts[1] = coverage->inodes;
+  logical_starts[2] = data_start;
+  logical_starts[3] = coverage->hrl_buckets;
+  logical_starts[4] = coverage->hrl_entries;
+  logical_starts[5] = coverage->journal_segments;
+  logical_starts[6] = coverage->journal_segments;
+  logical_counts[0] = data_count;
+  logical_counts[1] = inode_count;
+  logical_counts[2] = data_count;
+  logical_counts[3] = bucket_count;
+  logical_counts[4] = entry_count;
+  logical_counts[5] = segment_count;
+  logical_counts[6] = segment_count;
+
+  for (uint32_t index = 0; index < KAFS_V7_GROUP_LOCAL_SHARDS; ++index)
   {
-    if (le32toh(replicas[id].replica_id) != id || le16toh(replicas[id].role) != id ||
-        le16toh(replicas[id].flags) != 0 ||
-        le64toh(replicas[id].physical_off) != replica_offsets[id] ||
-        le32toh(replicas[id].descriptor_bytes) != descriptor_bytes ||
-        le32toh(replicas[id].reserved0) != 0 || le64toh(replicas[id].reserved1) != 0)
+    const kafs_v7_shard_desc_t *shard = &shards[index];
+    if (le16toh(shard->type) != types[index] || le16toh(shard->storage_class) != classes[index] ||
+        le32toh(shard->flags) != 0 || le32toh(shard->group_id) != group_id ||
+        le32toh(shard->reserved0) != 0 || le64toh(shard->physical_off) != expected_off ||
+        le64toh(shard->physical_bytes) != expected_sizes[index] ||
+        le64toh(shard->logical_start) != logical_starts[index] ||
+        le64toh(shard->logical_count) != logical_counts[index] ||
+        le32toh(shard->record_bytes) != record_bytes[index] || le32toh(shard->header_bytes) != 0 ||
+        le64toh(shard->generation_floor) != 0 || le64toh(shard->mapping_seed) != 0 ||
+        le64toh(shard->reserved1) != 0 || le64toh(shard->reserved2) != 0 ||
+        le64toh(shard->reserved3) != 0 ||
+        !kafs_v7_range_ok(expected_off, expected_sizes[index], file_size))
       return -EINVAL;
-    const kafs_v7_shard_desc_t *layout_shard = &shards[7u + id * 2u];
-    const kafs_v7_shard_desc_t *checkpoint_shard = &shards[8u + id * 2u];
-    if (le16toh(layout_shard->type) != KAFS_V7_SHARD_LAYOUT_DESCRIPTOR ||
-        le16toh(layout_shard->storage_class) != KAFS_V7_STORAGE_BYTE_SPAN ||
-        le32toh(layout_shard->flags) != 0 || le32toh(layout_shard->group_id) != UINT32_MAX ||
-        le32toh(layout_shard->reserved0) != 0 ||
-        le64toh(layout_shard->physical_off) != replica_offsets[id] ||
-        le64toh(layout_shard->physical_bytes) != descriptor_bytes ||
-        le64toh(layout_shard->logical_start) != id || le64toh(layout_shard->logical_count) != 1u ||
-        le32toh(layout_shard->record_bytes) != 0 || le32toh(layout_shard->header_bytes) != 0 ||
-        le64toh(layout_shard->generation_floor) != 0 || le64toh(layout_shard->mapping_seed) != 0 ||
-        le64toh(layout_shard->reserved1) != 0 || le64toh(layout_shard->reserved2) != 0 ||
-        le64toh(layout_shard->reserved3) != 0 ||
-        le16toh(checkpoint_shard->type) != KAFS_V7_SHARD_SUPERBLOCK_CHECKPOINT ||
-        le16toh(checkpoint_shard->storage_class) != KAFS_V7_STORAGE_FIXED_RECORD ||
-        le32toh(checkpoint_shard->flags) != 0 ||
-        le32toh(checkpoint_shard->group_id) != UINT32_MAX ||
-        le32toh(checkpoint_shard->reserved0) != 0 ||
-        le64toh(checkpoint_shard->physical_off) != checkpoint_offsets[id] ||
-        le64toh(checkpoint_shard->physical_bytes) != block_size ||
-        le64toh(checkpoint_shard->logical_start) != id ||
-        le64toh(checkpoint_shard->logical_count) != 1u ||
-        le32toh(checkpoint_shard->record_bytes) != KAFS_V7_CHECKPOINT_BYTES ||
-        le32toh(checkpoint_shard->header_bytes) != 0 ||
-        le64toh(checkpoint_shard->generation_floor) != 0 ||
-        le64toh(checkpoint_shard->mapping_seed) != 0 || le64toh(checkpoint_shard->reserved1) != 0 ||
-        le64toh(checkpoint_shard->reserved2) != 0 || le64toh(checkpoint_shard->reserved3) != 0)
-      return -EINVAL;
+    expected_off += expected_sizes[index];
   }
-  uint64_t midpoint_end = checkpoint_offsets[2] + block_size;
-  int midpoint_fits = replica_offsets[2] >= data_end && midpoint_end <= checkpoint_offsets[1];
-  if ((replica_count == 3u) != midpoint_fits)
-    return -EINVAL;
 
-  uint32_t live_shard_end = expected_shard_off + shard_count * KAFS_V7_SHARD_DESC_BYTES;
-  if (!kafs_v7_all_bytes(bytes + live_shard_end, expected_replica_off - live_shard_end, 0) ||
-      !kafs_v7_all_bytes(
-          bytes + expected_replica_off + replica_count * KAFS_V7_REPLICA_DESC_BYTES,
-          descriptor_bytes - expected_replica_off - replica_count * KAFS_V7_REPLICA_DESC_BYTES, 0))
-    return -EINVAL;
+  uint64_t metadata_end;
+  uint64_t data_end;
+  if (kafs_v7_add_u64(le64toh(group->metadata_physical_off),
+                      le64toh(group->metadata_physical_bytes), &metadata_end) != 0 ||
+      metadata_end != expected_off || le64toh(group->data_physical_off) != expected_off ||
+      kafs_v7_add_u64(expected_off, le64toh(group->data_physical_bytes), &data_end) != 0 ||
+      !kafs_v7_range_ok(expected_off, le64toh(group->data_physical_bytes), file_size) ||
+      kafs_v7_add_u64(coverage->data_blocks, data_count, &coverage->data_blocks) != 0 ||
+      kafs_v7_add_u64(coverage->inodes, inode_count, &coverage->inodes) != 0 ||
+      kafs_v7_add_u64(coverage->hrl_buckets, bucket_count, &coverage->hrl_buckets) != 0 ||
+      kafs_v7_add_u64(coverage->hrl_entries, entry_count, &coverage->hrl_entries) != 0 ||
+      kafs_v7_add_u64(coverage->journal_segments, segment_count, &coverage->journal_segments) != 0)
+    return -EOVERFLOW;
+  coverage->physical = data_end;
   return 0;
+}
+
+static int kafs_v7_validate_multi_group_view(const kafs_v7_descriptor_view_t *view,
+                                             uint32_t descriptor_bytes,
+                                             const kafs_ssuperblock_t *sb, uint64_t file_size)
+{
+  kafs_v7_group_coverage_t coverage = {
+      .physical = (uint64_t)view->block_size + descriptor_bytes + view->block_size,
+  };
+  for (uint32_t id = 0; id < view->group_count; ++id)
+  {
+    int rc = kafs_v7_validate_group_descriptor(id, &view->groups[id],
+                                               &view->shards[id * KAFS_V7_GROUP_LOCAL_SHARDS],
+                                               view->block_size, file_size, &coverage);
+    if (rc != 0)
+      return rc;
+  }
+  if (coverage.data_blocks != kafs_sb_r_blkcnt_get(sb) ||
+      coverage.inodes != kafs_sb_inocnt_get(sb) || coverage.hrl_buckets == 0 ||
+      coverage.hrl_buckets > (UINT64_C(1) << 32u) ||
+      (coverage.hrl_buckets & (coverage.hrl_buckets - 1u)) != 0 || coverage.hrl_entries == 0 ||
+      coverage.hrl_entries > UINT32_MAX || coverage.journal_segments < view->group_count ||
+      coverage.journal_segments < 2u)
+    return -EINVAL;
+  return kafs_v7_validate_recovery_records(view, descriptor_bytes, file_size, coverage.physical);
+}
+
+static int kafs_v7_validate_descriptor_shape(const void *descriptor, uint32_t descriptor_bytes,
+                                             const kafs_ssuperblock_t *sb, uint64_t file_size,
+                                             const kafs_v7_root_locator_t *locator)
+{
+  kafs_v7_descriptor_view_t view;
+  int rc = kafs_v7_descriptor_view_init(descriptor, descriptor_bytes, file_size, locator, &view);
+  if (rc != 0)
+    return rc;
+  if (view.group_count == 1u)
+    return kafs_v7_validate_single_group_view(&view, descriptor_bytes, sb, file_size);
+  return kafs_v7_validate_multi_group_view(&view, descriptor_bytes, sb, file_size);
 }
 
 static int kafs_v7_validate_recovery_roots(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
@@ -1347,7 +1686,7 @@ static int kafs_v7_validate_bitmap_allocator(int fd, const kafs_v7_shard_desc_t 
   free(bitmap);
   free(allocator);
   if (rc == 0)
-    *free_blocks = free_count;
+    rc = kafs_v7_add_u64(*free_blocks, free_count, free_blocks);
   (void)l2_bytes;
   return rc;
 }
@@ -1359,18 +1698,28 @@ static int kafs_v7_validate_inodes(int fd, const kafs_v7_shard_desc_t *shard, ui
   if (rc != 0)
     return rc;
   uint64_t count = le64toh(shard->logical_count);
+  uint64_t start = le64toh(shard->logical_start);
   const kafs_v7_inode_t *inodes = (const kafs_v7_inode_t *)area;
   uint64_t free_count = 0;
-  if (!kafs_v7_all_bytes(&inodes[0], sizeof(inodes[0]), 0) || le16toh(inodes[1].mode) == 0)
-    rc = -EINVAL;
-  for (uint64_t i = 1; rc == 0 && i < count; ++i)
+  for (uint64_t i = 0; rc == 0 && i < count; ++i)
   {
+    uint64_t inode = start + i;
     int zero = kafs_v7_all_bytes(&inodes[i], sizeof(inodes[i]), 0);
-    if (le16toh(inodes[i].mode) == 0)
+    if (inode == 0)
     {
       if (!zero)
         rc = -EINVAL;
-      else if (i >= 2u)
+    }
+    else if (inode == 1)
+    {
+      if (le16toh(inodes[i].mode) == 0)
+        rc = -EINVAL;
+    }
+    else if (le16toh(inodes[i].mode) == 0)
+    {
+      if (!zero)
+        rc = -EINVAL;
+      else
         free_count++;
     }
     else if (!kafs_v7_all_bytes(inodes[i].disabled_tail_bytes,
@@ -1383,7 +1732,7 @@ static int kafs_v7_validate_inodes(int fd, const kafs_v7_shard_desc_t *shard, ui
     rc = -EINVAL;
   free(area);
   if (rc == 0)
-    *free_inodes = free_count;
+    rc = kafs_v7_add_u64(*free_inodes, free_count, free_inodes);
   return rc;
 }
 
@@ -1400,7 +1749,8 @@ static uint64_t kafs_v7_fnv1a64(const void *data, size_t bytes)
 }
 
 static int kafs_v7_validate_hrl(int fd, const kafs_v7_shard_desc_t *shards,
-                                const kafs_v7_group_desc_t *group, uint32_t block_size)
+                                const kafs_v7_group_desc_t *group, uint32_t block_size,
+                                uint64_t total_bucket_count)
 {
   void *index_area = NULL;
   void *entry_area = NULL;
@@ -1413,7 +1763,11 @@ static int kafs_v7_validate_hrl(int fd, const kafs_v7_shard_desc_t *shards,
     return rc;
   }
   uint64_t bucket_count = le64toh(shards[3].logical_count);
+  uint64_t bucket_start = le64toh(shards[3].logical_start);
   uint64_t entry_count = le64toh(shards[4].logical_count);
+  uint64_t entry_start = le64toh(shards[4].logical_start);
+  uint64_t data_start = le64toh(group->data_logical_start);
+  uint64_t data_count = le64toh(group->data_logical_count);
   uint8_t *seen = (uint8_t *)calloc(1u, (size_t)entry_count);
   void *data = malloc(block_size);
   if (!seen || !data)
@@ -1426,35 +1780,38 @@ static int kafs_v7_validate_hrl(int fd, const kafs_v7_shard_desc_t *shards,
   }
   const uint32_t *index = (const uint32_t *)index_area;
   const kafs_v7_hrl_entry_t *entries = (const kafs_v7_hrl_entry_t *)entry_area;
-  for (uint64_t bucket = 0; rc == 0 && bucket < bucket_count; ++bucket)
+  for (uint64_t local_bucket = 0; rc == 0 && local_bucket < bucket_count; ++local_bucket)
   {
-    uint32_t next = le32toh(index[bucket]);
+    uint64_t bucket = bucket_start + local_bucket;
+    uint32_t next = le32toh(index[local_bucket]);
     uint64_t steps = 0;
-    while (next != 0)
+    while (rc == 0 && next != 0)
     {
       uint64_t id = (uint64_t)next - 1u;
-      if (id >= entry_count || seen[id] || ++steps > entry_count)
+      if (id < entry_start || id - entry_start >= entry_count || seen[id - entry_start] ||
+          ++steps > entry_count)
       {
         rc = -EINVAL;
         break;
       }
-      seen[id] = 1;
-      uint32_t logical_plus1 = le32toh(entries[id].logical_block_plus1);
-      if (le32toh(entries[id].ref_count) == 0 || logical_plus1 == 0 ||
-          logical_plus1 - 1u >= le64toh(group->data_logical_count) ||
-          le32toh(entries[id].reserved) != 0)
+      uint64_t local_id = id - entry_start;
+      seen[local_id] = 1;
+      uint32_t logical_plus1 = le32toh(entries[local_id].logical_block_plus1);
+      uint64_t logical = logical_plus1 == 0 ? UINT64_MAX : (uint64_t)logical_plus1 - 1u;
+      if (le32toh(entries[local_id].ref_count) == 0 || logical_plus1 == 0 || logical < data_start ||
+          logical - data_start >= data_count || le32toh(entries[local_id].reserved) != 0)
       {
         rc = -EINVAL;
         break;
       }
       uint64_t data_off =
-          le64toh(group->data_physical_off) + (uint64_t)(logical_plus1 - 1u) * block_size;
+          le64toh(group->data_physical_off) + (logical - data_start) * (uint64_t)block_size;
       rc = kafs_pread_all(fd, data, block_size, (off_t)data_off);
       uint64_t hash = rc == 0 ? kafs_v7_fnv1a64(data, block_size) : 0;
-      if (rc == 0 &&
-          (hash != le64toh(entries[id].fast_hash) || (hash & (bucket_count - 1u)) != bucket))
+      if (rc == 0 && (hash != le64toh(entries[local_id].fast_hash) ||
+                      (hash & (total_bucket_count - 1u)) != bucket))
         rc = -EINVAL;
-      next = le32toh(entries[id].next_entry_id_plus1);
+      next = le32toh(entries[local_id].next_entry_id_plus1);
     }
   }
   for (uint64_t id = 0; rc == 0 && id < entry_count; ++id)
@@ -1489,11 +1846,21 @@ static int kafs_v7_validate_journal(int fd, const kafs_v7_shard_desc_t *shards, 
   int rc = kafs_v7_read_shard(fd, &shards[5], &headers);
   if (rc != 0)
     return rc;
-  uint32_t count = (uint32_t)le64toh(shards[5].logical_count);
-  uint64_t segment_bytes = le64toh(shards[6].physical_bytes) / count;
-  for (uint32_t segment = 0; rc == 0 && segment < count; ++segment)
+  uint64_t count_u64 = le64toh(shards[5].logical_count);
+  uint64_t start_u64 = le64toh(shards[5].logical_start);
+  if (count_u64 > UINT32_MAX || start_u64 > UINT32_MAX || count_u64 > UINT32_MAX - start_u64 ||
+      count_u64 > UINT32_MAX - *segment_count)
   {
-    const uint8_t *block = (const uint8_t *)headers + (uint64_t)segment * block_size;
+    free(headers);
+    return -ERANGE;
+  }
+  uint32_t count = (uint32_t)count_u64;
+  uint32_t start = (uint32_t)start_u64;
+  uint64_t segment_bytes = le64toh(shards[6].physical_bytes) / count;
+  for (uint32_t local = 0; rc == 0 && local < count; ++local)
+  {
+    uint32_t segment = start + local;
+    const uint8_t *block = (const uint8_t *)headers + (uint64_t)local * block_size;
     uint64_t highest = 0;
     const kafs_v7_journal_header_t *selected = NULL;
     for (uint32_t slot = 0; slot < block_size / KAFS_V7_JOURNAL_HEADER_BYTES; ++slot)
@@ -1531,7 +1898,7 @@ static int kafs_v7_validate_journal(int fd, const kafs_v7_shard_desc_t *shards, 
   }
   free(headers);
   if (rc == 0)
-    *segment_count = count;
+    *segment_count += count;
   return rc;
 }
 
@@ -1545,8 +1912,24 @@ static int kafs_v7_validate_payloads(int fd, const kafs_ssuperblock_t *sb,
   uint64_t data_end;
   uint64_t free_blocks = 0;
   uint64_t free_inodes = 0;
-  int rc = kafs_v7_add_u64(le64toh(groups[0].data_physical_off),
-                           le64toh(groups[0].data_physical_bytes), &data_end);
+  uint64_t total_bucket_count = 0;
+  uint64_t first_metadata_off = le64toh(groups[0].metadata_physical_off);
+  uint64_t last_metadata_off = le64toh(groups[report->group_count - 1u].metadata_physical_off);
+  uint64_t min_data_blocks = UINT64_MAX;
+  uint64_t max_data_blocks = 0;
+  int rc =
+      kafs_v7_add_u64(le64toh(groups[report->group_count - 1u].data_physical_off),
+                      le64toh(groups[report->group_count - 1u].data_physical_bytes), &data_end);
+  for (uint32_t group_id = 0; rc == 0 && group_id < report->group_count; ++group_id)
+  {
+    const kafs_v7_shard_desc_t *local = &shards[(uint64_t)group_id * KAFS_V7_GROUP_LOCAL_SHARDS];
+    rc = kafs_v7_add_u64(total_bucket_count, le64toh(local[3].logical_count), &total_bucket_count);
+    uint64_t data_blocks = le64toh(groups[group_id].data_logical_count);
+    if (data_blocks < min_data_blocks)
+      min_data_blocks = data_blocks;
+    if (data_blocks > max_data_blocks)
+      max_data_blocks = data_blocks;
+  }
   if (rc == 0)
     rc = kafs_v7_expected_replica_offsets(kafs_sb_blkcnt_get(sb) * (uint64_t)report->block_size,
                                           report->block_size, report->descriptor_bytes,
@@ -1561,19 +1944,31 @@ static int kafs_v7_validate_payloads(int fd, const kafs_ssuperblock_t *sb,
   }
   else if (rc == 0)
     rc = kafs_v7_validate_zero_range(fd, data_end, checkpoint_offsets[1] - data_end);
-  if (rc == 0)
-    rc = kafs_v7_validate_bitmap_allocator(fd, shards, &free_blocks);
-  if (rc == 0)
-    rc = kafs_v7_validate_inodes(fd, &shards[1], &free_inodes);
-  if (rc == 0)
-    rc = kafs_v7_validate_hrl(fd, shards, groups, report->block_size);
-  if (rc == 0)
-    rc = kafs_v7_validate_journal(fd, shards, report->block_size, report->checkpoint_sequence,
-                                  &report->journal_segment_count);
+  report->journal_segment_count = 0;
+  for (uint32_t group_id = 0; rc == 0 && group_id < report->group_count; ++group_id)
+  {
+    const kafs_v7_group_desc_t *group = &groups[group_id];
+    const kafs_v7_shard_desc_t *local = &shards[(uint64_t)group_id * KAFS_V7_GROUP_LOCAL_SHARDS];
+    rc = kafs_v7_validate_bitmap_allocator(fd, local, &free_blocks);
+    if (rc == 0)
+      rc = kafs_v7_validate_inodes(fd, &local[1], &free_inodes);
+    if (rc == 0)
+      rc = kafs_v7_validate_hrl(fd, local, group, report->block_size, total_bucket_count);
+    if (rc == 0)
+      rc = kafs_v7_validate_journal(fd, local, report->block_size, report->checkpoint_sequence,
+                                    &report->journal_segment_count);
+  }
   if (rc == 0 &&
       (free_blocks != report->free_blocks || free_inodes != report->free_inodes ||
        free_blocks > kafs_sb_r_blkcnt_get(sb) || free_inodes > kafs_sb_inocnt_get(sb) - 2u))
     rc = -EUCLEAN;
+  if (rc == 0)
+  {
+    report->placement_span_bytes = last_metadata_off - first_metadata_off;
+    report->placement_arena_bytes = data_end - first_metadata_off;
+    report->min_group_data_blocks = min_data_blocks;
+    report->max_group_data_blocks = max_data_blocks;
+  }
   return rc;
 }
 

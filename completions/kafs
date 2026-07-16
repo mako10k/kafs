@@ -186,9 +186,9 @@ _mkfs_kafs() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local opts="-h --help -s --size-bytes -b --blksize-log -i --inodes -J --journal-size-bytes --hrl-entry-ratio --yes --trim-data-area"
+  local opts="-h --help -s --size-bytes -b --blksize-log --format-version -i --inodes -J --journal-size-bytes --v7-group-count --journal-header-rotation --hrl-entry-ratio --yes --trim-data-area"
 
-  if [[ "${prev}" == "-s" || "${prev}" == "--size-bytes" || "${prev}" == "-b" || "${prev}" == "--blksize-log" || "${prev}" == "-i" || "${prev}" == "--inodes" || "${prev}" == "-J" || "${prev}" == "--journal-size-bytes" || "${prev}" == "--hrl-entry-ratio" ]]; then
+  if [[ "${prev}" == "-s" || "${prev}" == "--size-bytes" || "${prev}" == "-b" || "${prev}" == "--blksize-log" || "${prev}" == "--format-version" || "${prev}" == "-i" || "${prev}" == "--inodes" || "${prev}" == "-J" || "${prev}" == "--journal-size-bytes" || "${prev}" == "--v7-group-count" || "${prev}" == "--hrl-entry-ratio" ]]; then
     return
   fi
 
