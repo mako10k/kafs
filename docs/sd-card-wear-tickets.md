@@ -2477,15 +2477,61 @@
     strict clone gateは既存87件・2.9%が1.0%閾値を超えるためnon-passingだが、production `src/`を
     変更しておらず、既存baselineからcloneを増やしていない。
 
+### SDW-V7RT-T6 v7-owned read-only runtime views and inspection mount
+
+- 目的: FTL/ECC相関故障をRC media qualification制約として切り離したうえで、accepted v7 imageを
+  legacy/v6 wire assumptionで誤読せず、意味のあるread-only FUSE inspectionへadmitする。
+- 確認済みblocker:
+  - `src/kafs_block.h`のdescriptor runtime-view loaderはaccepted v7を`-EPROTONOSUPPORT`で拒否する。
+    単にgateを外すとv6 descriptor parser/shapeへ流れるため、v7-owned successful pathにならない。
+  - shared block readはlogical blockを`logical_block << log_blksize`でimage offsetへ直結するが、v7は
+    group descriptorによるlogical-to-physical mappingがauthoritativeである。
+  - v7 inode/indirect block referenceはzeroが未割当、`N+1`がlogical block `N`だが、shared pathは旧raw
+    block numberとして解釈する。
+  - shared `statfs`/counter pathはoffset 0のlegacy mutable fieldsを読むが、v7はselected `K7CP`の
+    recovered countsと`s_r_blkcnt`がauthoritativeである。
+  - accepted v7 specはinode payloadまで定義済みだが、filesystem directory payloadを明示していない。
+    空rootだけのmountではnested/block-backed readを証明できない。
+  - 現行v7 journal validatorは`checkpoint_seq == 0`かつempty segmentだけを受理する。
+- 変更:
+  - 実装前に既存`KDIR` version 1 payload shapeをv7が意図的に採用するdirectory wire contractとして
+    accepted raw-layoutへ明記する。暗黙のv4/v5/v6 compatibility shortcutにはしない。
+  - `kafs_v7_validate_image_fd()`が選んだdescriptor/checkpointを保持し、v7-owned inode shard map、
+    group data map、plus-one block-reference decoder、recovered-state viewをruntime contextへ構築する。
+  - 初回admissionは`checkpoint_seq == 0`/empty journalに限定し、それ以外は理由付きでfail closedにする。
+  - backing imageは`O_RDONLY`、mappingはread-only、FUSEは`ro`、runtime mutation guardは`EROFS`とする。
+  - accepted multi-group fixtureへnested directory、inline file、block-backed file/symlinkを配置し、
+    actual mount smokeでlookup/readdir/getattr/read/readlink/statfs/unmountを検証する。
+  - `kafs-v7 --help`と`man/kafs-v7.8`を、実際に有効なinspection surfaceとoffline-only制限へ揃える。
+- 完了条件:
+  - successful v7 pathがv6 public wire/layout entrypointへ依存せず、ownership checkを通過する。
+  - pristine multi-group imageのinline/block-backed dataを正しいgroup physical rangeから読める。
+  - selected `K7CP` recovered countsが`statfs`へ反映され、legacy zero countsを表示しない。
+  - single surviving recovery copyはdegraded inspection可能、same-generation divergence/malformed mapは
+    FUSE開始前にfail closedとなる。
+  - create/write/truncate/unlink/rename/link/mkdir/rmdir/chmod/chown/utimens/xattr/fallocate/copy-range等の
+    mutation surfaceが`EROFS`で、image hashがmount前後で不変である。
+  - dedicated mount regression、全v7 regression、full `make check -j2`、ownership/static gateがPASSする。
+- 対象外:
+  - non-empty journal replay、repair、controlled write、checkpoint publication、multi-group atomic mutation、
+    cross-group HRL、migration、FTL/ECC physical-failure-domain proof。
+
 ---
 
 ## 次に着手する候補
 
-1. `kafs-v7 --inspection-mount` の mount smoke を追加する。
-2. accepted offline surface 安定後に `kafsresize --migrate-create --format-version 7` を追加する。
-3. group-local structured journal recoveryとcrash fixtureをofflineで実装する。
-4. locking、multi-group mutation fault matrixを通してから controlled-write admission を
-   検討する。
+1. `SDW-V7RT-T6`としてv7 namespace contract、read-only runtime views、group data mapping、plus-one
+   decode、recovered `statfs`を実装してから、意味のある`kafs-v7 --inspection-mount`を通す。
+2. group-local structured journal parse/replayとcrash fixtureをofflineで実装する。
+3. v7-owned mutation routing、2-copy checkpoint publication、locking、multi-group mutation fault matrixを
+   通してからcontrolled-write admissionを検討する。
+4. accepted offline/inspection surface安定後に`kafsresize --migrate-create --format-version 7`を追加する。
+
+FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
+既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の
+format/mount/unmount/remount/fsckと独立reviewを必須とし、controlled writeを含むRCではさらに
+write/full-fsync/controlled power-interruption cycleを必須とする。stable/GAではphysical
+failure-domainの残存riskを再評価する。
 
 cross-group HRL と multi-group atomic mutation は、まず group-local placement と recovery replica の
 wear/fault proof を固めた後に段階的に扱う。
