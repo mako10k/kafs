@@ -121,9 +121,14 @@ implemented in v7-owned code. They validate rotating selected prefixes,
 transaction control and mutation records, global sequence gaps/divergence,
 before/after target chains, and recovered counters without writing the image.
 
+The v7-owned mutation router is also implemented. It resolves every canonical
+bitmap, inode, allocator-summary, HRL-index, and HRL-entry identity through the
+selected descriptor to one group and one physical target. Transaction planning
+is output-atomic and rejects cross-group or aliased targets before a journal
+begin record can be emitted.
+
 Controlled write remains blocked by the v7 encoder, data-before-header
-publication ordering, byte-identical two-copy `K7CP` publication, v7-owned
-bitmap/allocator/HRL mutation accessors, group-local transaction routing,
+publication ordering, byte-identical two-copy `K7CP` publication,
 filesystem-global sequence serialization, and explicit locking ranks. The
 successful v7 path must also stop using the v6-named controlled-write policy
 flag and v6 FUSE policy helper.
@@ -146,8 +151,11 @@ raw-layout specification and does not relax any software recovery gate.
 
 ## Follow-Up Boundaries
 
-1. Implement v7-owned mutation routing, checkpoint publication, locking, and
-   multi-group fault matrices before enabling controlled-write admission.
-2. Add `kafsresize --migrate-create --format-version 7` after the accepted
+1. Implement byte-identical two-copy `K7CP` checkpoint publication without
+   widening runtime write admission.
+2. Add explicit v7 locking, global sequence publication, the journal encoder,
+   and multi-group mutation fault matrices before enabling controlled-write
+   admission.
+3. Add `kafsresize --migrate-create --format-version 7` after the accepted
    offline and inspection surfaces are stable; migration does not outrank a
    blocker on the mount/write path.

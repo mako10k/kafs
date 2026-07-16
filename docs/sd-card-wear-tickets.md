@@ -2578,13 +2578,47 @@
   - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ87件・2.81%が
     1.0%閾値を超えたが、新規journal実装由来のcloneは検出されていない。
 
+### SDW-V7RT-T8 v7-owned mutation routing proof
+
+- 目的: journal encoderやruntime write admissionより先に、全v7 metadata targetをselected descriptorから
+  canonicalなgroup-local物理範囲へ解決し、cross-group operationをjournal begin前に拒否する。
+- 変更:
+  - `src/kafs_v7_mutation.*`がblock bitmap word、inode、allocator summary、HRL index、HRL entryの
+    global logical identityを、一意な`group_id`、shard、`physical_off`、`target_bytes`へ解決する。
+  - bitmap wordの64-block canonical alignment、allocator summaryのgroup bitmap start identity、各fixed
+    record幅、shard storage class、物理境界を検証する。
+  - transaction plannerは全requestが同じgroupに属する場合だけrouteをoutputへ確定し、cross-groupは
+    `EXDEV`、duplicate/overlapはfail closedにする。失敗時はroute/group出力を変更しない。
+  - journal parser/replayのtarget検証も同じv7-owned resolverへ統合し、readerと将来writerの解決規則を
+    分岐させない。
+  - image mutation、journal record生成、checkpoint更新、runtime controlled write admissionは有効化しない。
+- 完了条件:
+  - 4-group imageの全groupについて5 target typeの先頭/末尾identityが正しいgroup/shard/物理範囲へ
+    解決される。
+  - 同一groupの5 target transactionは成功し、cross-group、duplicate、非canonical bitmap、範囲外identity、
+    unknown typeを確実に拒否する。
+  - 既存journal replay matrixが同じresolverを使用した状態で回帰しない。
+- 実装結果:
+  - v7-owned target/transaction routing APIとdedicated `v7_mutation_routing_smoketest`を追加した。
+  - runtime mount/write境界は変更していない。
+- 検証結果（2026-07-16）:
+  - `autoreconf -fi && ./configure && make -j2`: PASS。
+  - `v7_mutation_routing_smoketest`と`v7_journal_replay_smoketest`: PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 34 PASS、FUSE権限依存の2 test SKIP。
+  - `v7_mutation_routing_smoketest`のValgrind definite/indirect leak gate: PASS。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`./scripts/check-v7-layout-ownership.sh`、
+    `git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ87件・2.79%が
+    1.0%閾値を超えたが、新規mutation router由来のcloneは検出されていない。
+
 ---
 
 ## 次に着手する候補
 
-1. v7-owned mutation routing、2-copy checkpoint publication、locking、multi-group mutation fault matrixを
-   通してからcontrolled-write admissionを検討する。
-2. accepted offline/inspection surface安定後に`kafsresize --migrate-create --format-version 7`を追加する。
+1. byte-identical 2-copy `K7CP` checkpoint publicationを実装する。
+2. v7 locking、global sequence publication、journal encoder、multi-group mutation fault matrixを通してから
+   controlled-write admissionを検討する。
+3. accepted offline/inspection surface安定後に`kafsresize --migrate-create --format-version 7`を追加する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の
