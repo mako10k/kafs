@@ -143,6 +143,23 @@
 - Never introduce lock-order inversions, silent infinite lock waits, or code paths that hide stale-owner diagnostics.
 - Do not use `KAFS_CALL` after acquiring a lock; capture `rc` and use a single unlock path.
 
+## Review And Commit Workflow
+
+- Follow the reviewed-scope WIP workflow in `.github/github-dev-rules.md` for
+  implementation work.
+- Review changes in explicit file or hunk units. Once a unit is reviewed, stage
+  only that unit and create a `WIP: review <scope>` commit whose body records a
+  `Reviewed-scope:` file/function/section description and relevant
+  `Validation:` evidence.
+- Do not mix unreviewed changes into a reviewed-scope WIP commit.
+- When one logical final commit unit is complete, consolidate its WIP commits
+  with squash/fixup, amend, or interactive rebase, re-review the resulting
+  diff, rerun proportional validation, and replace the WIP history with a
+  normal final commit.
+- Do not leave `WIP:` commits in PR-ready history. Rewrite history only on an
+  unshared working branch unless the user explicitly approves rewriting the
+  identified shared commits.
+
 ## Git And Safety
 
 - Respect `.github/github-dev-rules.md` for branch, commit, PR, CI, review, and release expectations.
