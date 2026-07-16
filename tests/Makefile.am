@@ -46,57 +46,57 @@ tailmeta_parser_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-paramet
 tailmeta_parser_LDADD = $(KAFS_LIBS)
 
 hrl_smoketest_SOURCES = tests_hrl_smoketest.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 hrl_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 hrl_smoketest_LDADD = $(KAFS_LIBS)
 
 hrl_dec_ref_by_blo_SOURCES = tests_hrl_dec_ref_by_blo.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 hrl_dec_ref_by_blo_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 hrl_dec_ref_by_blo_LDADD = $(KAFS_LIBS)
 
 hrl_unconfigured_SOURCES = tests_hrl_unconfigured.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 hrl_unconfigured_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 hrl_unconfigured_LDADD = $(KAFS_LIBS)
 
 min_git_hooks_SOURCES = tests_min_git_hooks.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 min_git_hooks_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 min_git_hooks_LDADD = $(KAFS_LIBS)
 
 fs_semantics_SOURCES = tests_fs_semantics.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 fs_semantics_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 fs_semantics_LDADD = $(KAFS_LIBS)
 
 v5_mount_smoketest_SOURCES = tests_v5_mount_smoketest.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 v5_mount_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 v5_mount_smoketest_LDADD = $(KAFS_LIBS)
 
 v5_tail_smallfile_smoketest_SOURCES = tests_v5_tail_smallfile_smoketest.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 v5_tail_smallfile_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 v5_tail_smallfile_smoketest_LDADD = $(KAFS_LIBS)
 
 v5_tail_mixed_smoketest_SOURCES = tests_v5_tail_mixed_smoketest.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 v5_tail_mixed_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 v5_tail_mixed_smoketest_LDADD = $(KAFS_LIBS)
 
 v5_default_promotion_smoketest_SOURCES = tests_v5_default_promotion_smoketest.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 v5_default_promotion_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 v5_default_promotion_smoketest_LDADD = $(KAFS_LIBS)
 
 v6_descriptor_smoketest_SOURCES = tests_v6_descriptor_smoketest.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 v6_descriptor_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 v6_descriptor_smoketest_LDADD = $(KAFS_LIBS)
 
 v6_descriptor_validation_SOURCES = tests_v6_descriptor_validation.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 v6_descriptor_validation_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -pthread
 v6_descriptor_validation_LDADD = $(KAFS_LIBS)
 v6_descriptor_validation_LDFLAGS = -pthread
@@ -105,21 +105,21 @@ v7_entrypoint_smoketest_SOURCES = tests_v7_entrypoint_smoketest.c test_utils.c \
 	$(top_srcdir)/src/kafs_v7_layout.c $(top_srcdir)/src/kafs_v7_journal.c \
 	$(top_srcdir)/src/kafs_v7_mutation.c \
 	$(top_srcdir)/src/kafs_v7_runtime_view.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 v7_entrypoint_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 v7_entrypoint_smoketest_LDADD = $(KAFS_LIBS)
 
 v7_raw_layout_smoketest_SOURCES = tests_v7_raw_layout_smoketest.c test_utils.c \
 	$(top_srcdir)/src/kafs_v7_layout.c $(top_srcdir)/src/kafs_v7_journal.c \
 	$(top_srcdir)/src/kafs_v7_mutation.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 v7_raw_layout_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 v7_raw_layout_smoketest_LDADD = $(KAFS_LIBS)
 
 v7_multi_group_smoketest_SOURCES = tests_v7_multi_group_smoketest.c test_utils.c \
 	$(top_srcdir)/src/kafs_v7_layout.c $(top_srcdir)/src/kafs_v7_journal.c \
 	$(top_srcdir)/src/kafs_v7_mutation.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 v7_multi_group_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 v7_multi_group_smoketest_LDADD = $(KAFS_LIBS)
 
@@ -127,14 +127,14 @@ v7_replica_fault_smoketest_SOURCES = tests_v7_replica_fault_smoketest.c test_uti
 	$(top_srcdir)/src/kafs_v7_checkpoint.c $(top_srcdir)/src/kafs_v7_layout.c \
 	$(top_srcdir)/src/kafs_v7_journal.c $(top_srcdir)/src/kafs_v7_locks.c \
 	$(top_srcdir)/src/kafs_v7_mutation.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 v7_replica_fault_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 v7_replica_fault_smoketest_LDADD = $(KAFS_LIBS)
 
 v7_inspection_mount_smoketest_SOURCES = tests_v7_inspection_mount_smoketest.c test_utils.c \
 	$(top_srcdir)/src/kafs_v7_layout.c $(top_srcdir)/src/kafs_v7_journal.c \
 	$(top_srcdir)/src/kafs_v7_mutation.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 v7_inspection_mount_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 v7_inspection_mount_smoketest_LDADD = $(KAFS_LIBS)
 
@@ -144,7 +144,7 @@ v7_journal_replay_smoketest_SOURCES = tests_v7_journal_replay_smoketest.c test_u
 	$(top_srcdir)/src/kafs_v7_mutation.c $(top_srcdir)/src/kafs_v7_runtime_view.c \
 	$(top_srcdir)/src/kafs_v7_journal_writer.c $(top_srcdir)/src/kafs_v7_sequence.c \
 	$(top_srcdir)/src/kafs_hrl.c \
-	$(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 v7_journal_replay_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter \
 	-pthread
 v7_journal_replay_smoketest_LDADD = $(KAFS_LIBS)
@@ -153,7 +153,7 @@ v7_journal_replay_smoketest_LDFLAGS = -pthread
 v7_mutation_routing_smoketest_SOURCES = tests_v7_mutation_routing_smoketest.c test_utils.c \
 	$(top_srcdir)/src/kafs_v7_layout.c $(top_srcdir)/src/kafs_v7_journal.c \
 	$(top_srcdir)/src/kafs_v7_mutation.c $(top_srcdir)/src/kafs_hrl.c \
-	$(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 v7_mutation_routing_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 v7_mutation_routing_smoketest_LDADD = $(KAFS_LIBS)
 
@@ -163,76 +163,78 @@ v7_checkpoint_publication_smoketest_SOURCES = tests_v7_checkpoint_publication_sm
 	$(top_srcdir)/src/kafs_v7_locks.c $(top_srcdir)/src/kafs_v7_mutation.c \
 	$(top_srcdir)/src/kafs_v7_journal_writer.c $(top_srcdir)/src/kafs_v7_sequence.c \
 	$(top_srcdir)/src/kafs_hrl.c \
-	$(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 v7_checkpoint_publication_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function \
 	-Wno-unused-parameter -pthread
 v7_checkpoint_publication_smoketest_LDADD = $(KAFS_LIBS)
 v7_checkpoint_publication_smoketest_LDFLAGS = -pthread
 
-v7_locks_smoketest_SOURCES = tests_v7_locks_smoketest.c $(top_srcdir)/src/kafs_v7_locks.c
+v7_locks_smoketest_SOURCES = tests_v7_locks_smoketest.c $(top_srcdir)/src/kafs_v7_locks.c \
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c \
+	$(top_srcdir)/src/kafs_locks.c
 v7_locks_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -pthread
 v7_locks_smoketest_LDADD = $(KAFS_LIBS)
 v7_locks_smoketest_LDFLAGS = -pthread
 
 clone_template_copy_SOURCES = tests_clone_template_copy.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 clone_template_copy_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 clone_template_copy_LDADD = $(KAFS_LIBS)
 
 git_template_copy_mt_SOURCES = tests_git_template_copy_mt.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 git_template_copy_mt_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -pthread
 git_template_copy_mt_LDADD = $(KAFS_LIBS)
 git_template_copy_mt_LDFLAGS = -pthread
 
 rename_overwrite_dirfsync_SOURCES = tests_rename_overwrite_dirfsync.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 rename_overwrite_dirfsync_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 rename_overwrite_dirfsync_LDADD = $(KAFS_LIBS)
 
 open_unlink_visibility_SOURCES = tests_open_unlink_visibility.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 open_unlink_visibility_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 open_unlink_visibility_LDADD = $(KAFS_LIBS)
 
 prune_indirect_single_SOURCES = tests_prune_indirect_single.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 prune_indirect_single_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 prune_indirect_single_LDADD = $(KAFS_LIBS)
 
 prune_indirect_double_SOURCES = tests_prune_indirect_double.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 prune_indirect_double_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 prune_indirect_double_LDADD = $(KAFS_LIBS)
 
 prune_indirect_triple_SOURCES = tests_prune_indirect_triple.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 prune_indirect_triple_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 prune_indirect_triple_LDADD = $(KAFS_LIBS)
 
 truncate_prune_SOURCES = tests_truncate_prune.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 truncate_prune_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 truncate_prune_LDADD = $(KAFS_LIBS)
 
 reflink_clone_SOURCES = tests_reflink_clone.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 reflink_clone_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 reflink_clone_LDADD = $(KAFS_LIBS)
 
 kafsctl_links_SOURCES = tests_kafsctl_links.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 kafsctl_links_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 kafsctl_links_LDADD = $(KAFS_LIBS)
 
 bg_dedup_skip_dirs_SOURCES = tests_bg_dedup_skip_dirs.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c \
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c \
 	$(top_srcdir)/src/kafs_journal.c $(top_srcdir)/src/kafs_rpc.c
 bg_dedup_skip_dirs_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 bg_dedup_skip_dirs_LDADD = $(KAFS_LIBS)
 
 stress_fs_SOURCES = tests_stress_fs.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 stress_fs_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -pthread
 stress_fs_LDADD = $(KAFS_LIBS)
 stress_fs_LDFLAGS = -pthread
@@ -242,24 +244,24 @@ hotplug_rpc_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 hotplug_rpc_LDADD = $(KAFS_LIBS)
 
 e2e_hotplug_SOURCES = tests_e2e_hotplug.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 
 e2e_hotplug_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 
 e2e_hotplug_LDADD = $(KAFS_LIBS)
 
 kafsresize_SOURCES = tests_kafsresize.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 kafsresize_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 kafsresize_LDADD = $(KAFS_LIBS)
 
 journal_boundary_SOURCES = tests_journal_boundary.c test_utils.c \
-	$(top_srcdir)/src/kafs_journal.c $(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_journal.c $(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 journal_boundary_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 journal_boundary_LDADD = $(KAFS_LIBS)
 
 fallocate_lseek_block_SOURCES = tests_fallocate_lseek_block.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 fallocate_lseek_block_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 fallocate_lseek_block_LDADD = $(KAFS_LIBS)
 

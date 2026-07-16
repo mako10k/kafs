@@ -1,5 +1,7 @@
 #include "kafs_v7_locks.h"
 
+#include "kafs_lock_order.h"
+
 #include <errno.h>
 #include <inttypes.h>
 #include <pthread.h>
@@ -14,7 +16,6 @@
 #include <sys/syscall.h>
 #endif
 
-#define KAFS_V7_LOCK_STACK_MAX 8u
 #define KAFS_V7_LOCK_POLL_MS 200u
 
 typedef struct kafs_v7_mutex
@@ -36,14 +37,6 @@ struct kafs_v7_lock_state
   kafs_v7_lock_stats_t stats;
 };
 
-typedef struct kafs_v7_lock_stack_entry
-{
-  const kafs_v7_mutex_t *lock;
-  uint32_t rank;
-} kafs_v7_lock_stack_entry_t;
-
-static _Thread_local kafs_v7_lock_stack_entry_t g_v7_lock_stack[KAFS_V7_LOCK_STACK_MAX];
-static _Thread_local uint32_t g_v7_lock_depth;
 static _Thread_local uint32_t g_v7_cancel_depth;
 static _Thread_local int g_v7_cancel_oldstate = PTHREAD_CANCEL_ENABLE;
 #ifndef __linux__
@@ -97,11 +90,9 @@ static int kafs_v7_lock_owner_alive(uint64_t tid)
 
 static int kafs_v7_lock_stack_can_push(const kafs_v7_mutex_t *lock)
 {
-  if (!lock || g_v7_lock_depth >= KAFS_V7_LOCK_STACK_MAX)
-    return -EOVERFLOW;
-  if (g_v7_lock_depth != 0u && lock->rank <= g_v7_lock_stack[g_v7_lock_depth - 1u].rank)
-    return -EDEADLK;
-  return 0;
+  if (!lock)
+    return -EINVAL;
+  return kafs_lock_order_can_acquire(lock->rank, 0);
 }
 
 static void kafs_v7_lock_cancel_enter(void)
@@ -236,9 +227,14 @@ static int kafs_v7_mutex_lock(kafs_v7_lock_state_t *state, kafs_v7_mutex_t *lock
     return -rc;
   }
 
+  rc = kafs_lock_order_acquired(lock->rank, lock, 0);
+  if (rc != 0)
+  {
+    (void)pthread_mutex_unlock(&lock->mutex);
+    kafs_v7_lock_cancel_leave();
+    return rc;
+  }
   __atomic_store_n(&lock->owner_tid, kafs_v7_lock_tid(), __ATOMIC_RELEASE);
-  g_v7_lock_stack[g_v7_lock_depth++] =
-      (kafs_v7_lock_stack_entry_t){.lock = lock, .rank = lock->rank};
   __atomic_add_fetch(acquisitions, 1u, __ATOMIC_RELAXED);
   uint64_t finished = 0u;
   if (kafs_v7_lock_now_ns(&finished) == 0)
@@ -258,16 +254,21 @@ static void kafs_v7_mutex_destroy_or_abort(kafs_v7_mutex_t *lock)
 
 static int kafs_v7_mutex_unlock(kafs_v7_mutex_t *lock)
 {
-  if (!lock || g_v7_lock_depth == 0u || g_v7_lock_stack[g_v7_lock_depth - 1u].lock != lock)
-    return -EPERM;
+  if (!lock)
+    return -EINVAL;
+  int rc = kafs_lock_order_can_release(lock->rank, lock);
+  if (rc != 0)
+    return rc;
   __atomic_store_n(&lock->owner_tid, 0u, __ATOMIC_RELEASE);
-  int rc = pthread_mutex_unlock(&lock->mutex);
+  rc = pthread_mutex_unlock(&lock->mutex);
   if (rc != 0)
   {
     __atomic_store_n(&lock->owner_tid, kafs_v7_lock_tid(), __ATOMIC_RELEASE);
     return -rc;
   }
-  --g_v7_lock_depth;
+  rc = kafs_lock_order_released(lock->rank, lock);
+  if (rc != 0)
+    abort();
   kafs_v7_lock_cancel_leave();
   return 0;
 }
@@ -346,9 +347,9 @@ int kafs_v7_transaction_lock(kafs_v7_lock_state_t *state, uint32_t group_id)
     rc = kafs_v7_mutex_lock(state, &state->groups[group_id], &state->stats.group_acquisitions);
   if (rc != 0)
   {
-    if (g_v7_lock_depth != 0u && g_v7_lock_stack[g_v7_lock_depth - 1u].lock == &state->sequence)
+    if (kafs_lock_order_can_release(state->sequence.rank, &state->sequence) == 0)
       (void)kafs_v7_mutex_unlock(&state->sequence);
-    if (g_v7_lock_depth != 0u && g_v7_lock_stack[g_v7_lock_depth - 1u].lock == &state->write_gate)
+    if (kafs_lock_order_can_release(state->write_gate.rank, &state->write_gate) == 0)
       (void)kafs_v7_mutex_unlock(&state->write_gate);
   }
   return rc;
