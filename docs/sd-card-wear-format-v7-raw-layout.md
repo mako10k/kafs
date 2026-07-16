@@ -680,6 +680,56 @@ from `free_inodes`.  Inode 1 is the allocated root.  `K7CP.free_inodes` is the
 number of canonical-zero records in `[2, s_inocnt)`.  Checked fixed-record
 sizing and block padding follow the common shard rule.
 
+#### Namespace payloads
+
+Descriptor version 2 intentionally adopts the existing `KDIR` version 1 byte
+shape as a **v7-owned wire contract**.  This adoption does not permit a
+successful v7 path to call a v4/v5/v6 directory-layout or admission entrypoint;
+v7 code parses these bytes through its own admission/runtime boundary.  All
+multi-byte values below are little-endian.
+
+Every directory payload starts with this 24-byte header:
+
+```text
++0   u32  magic = 0x4b444952 ('KDIR')
++4   u16  version = 1               +6   u16  flags = 0
++8   u32  live_count                +12  u32  tombstone_count
++16  u32  record_bytes              +20  u32  reserved = 0
+```
+
+Exactly `record_bytes` bytes follow the header, and the inode size is exactly
+`24 + record_bytes`.  An empty directory therefore has a 24-byte header rather
+than a zero-length payload.  The records form an exact, gap-free cover of those
+bytes.  Each record is:
+
+```text
++0   u16  record_length             +2   u16  flags
++4   u32  inode                     +8   u16  name_bytes
++10  u32  name_hash                 +14  u8   name[name_bytes]
+```
+
+`record_length` is exactly `14 + name_bytes`.  `name_bytes` is in `[1, 255]`;
+the name has no trailing NUL and contains neither NUL nor `/`.  `name_hash` is
+FNV-1a 32 over exactly those name bytes, initialized to `2166136261` and using
+prime `16777619`.  Record flags are either zero or bit 0 (`tombstone`), with no
+other bits set.  A live record has a non-zero, allocated, in-range inode and a
+name unique among live records in that directory.  A tombstone retains its
+inode, name, and hash but is ignored by lookup/readdir.  Header live and
+tombstone counts equal the parsed record counts.
+
+`.` is synthesized and is never stored.  The root directory stores no `..`
+record.  Every other directory stores exactly one live `..` record naming its
+parent.  No other live record is named `.` or `..`.  Inode 1 is a directory and
+is the root of the reachable namespace.  The initial inspection slice admits
+reachable directory, regular-file, and symbolic-link inodes; another reachable
+inode type fails admission until its v7 behavior is specified.
+
+Regular-file bytes and symbolic-link target bytes use the inode payload rule
+above: at most 60 bytes are inline, and larger payloads use the v7 plus-one
+block-reference tree.  A symbolic-link target is non-empty, contains no NUL,
+and is not NUL-terminated on disk.  Namespace payload validation is read-only;
+it never canonicalizes or repairs malformed bytes during mount admission.
+
 ### Allocator summary
 
 An `allocator_summary` shard has `storage_class=allocator_summary`,

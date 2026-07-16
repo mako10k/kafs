@@ -449,9 +449,9 @@ int kafs_v7_runtime_init_mount_services(kafs_context_t *ctx, const char *image_p
   else if (mode != KAFS_V7_RUNTIME_MODE_INSPECTION)
     return -EINVAL;
 
-  int rc = kafs_ctx_descriptor_validate_runtime_views(ctx);
+  int rc = kafs_v7_runtime_view_validate(ctx);
   if (rc == 0)
-    rc = kafs_ctx_descriptor_validate_worker_policy(ctx);
+    rc = kafs_v7_runtime_view_validate_policy(ctx);
   if (rc != 0)
   {
     char errbuf[128];
@@ -479,21 +479,15 @@ int kafs_v7_runtime_admission_preflight_fd(int fd, const kafs_ssuperblock_t *sbd
   if (rc == 0)
   {
     fprintf(err,
-            "format %s admission preflight: descriptor-backed metadata checks OK; "
-            "runtime mount remains offline-only.\n",
+            "format %s admission preflight: v7 descriptor/checkpoint recovery and "
+            "read-only runtime views OK; inspection mount eligible.\n",
             KAFS_V7_TOOL_FORMAT_LABEL);
   }
   else
   {
     char errbuf[128];
-    if (rc == -EPROTONOSUPPORT)
-      fprintf(err,
-              "format %s accepted raw-layout runtime mount remains offline-only; use "
-              "kafsdump/fsck.kafs for inspection.\n",
-              KAFS_V7_TOOL_FORMAT_LABEL);
-    else
-      fprintf(err, "format %s admission preflight failed: %s.\n", KAFS_V7_TOOL_FORMAT_LABEL,
-              kafs_v7_runtime_rc_text(rc, errbuf, sizeof(errbuf)));
+    fprintf(err, "format %s admission preflight failed: %s.\n", KAFS_V7_TOOL_FORMAT_LABEL,
+            kafs_v7_runtime_rc_text(rc, errbuf, sizeof(errbuf)));
   }
   return rc;
 }

@@ -24,6 +24,11 @@
 #define KAFS_V7_INODE_BYTES 128u
 #define KAFS_V7_HRL_ENTRY_BYTES 24u
 #define KAFS_V7_JOURNAL_HEADER_BYTES 64u
+#define KAFS_V7_KDIR_HEADER_BYTES 24u
+#define KAFS_V7_KDIR_RECORD_PREFIX_BYTES 14u
+#define KAFS_V7_KDIR_MAGIC 0x4B444952u /* KDIR */
+#define KAFS_V7_KDIR_VERSION 1u
+#define KAFS_V7_KDIR_FLAG_TOMBSTONE 0x0001u
 #define KAFS_V7_LAYOUT_MAX_BYTES (16u * 1024u * 1024u)
 #define KAFS_V7_REPLICA_MAX_COUNT 3u
 #define KAFS_V7_GROUP_MAX_COUNT 64u
@@ -208,6 +213,27 @@ typedef struct kafs_v7_inode
   uint8_t disabled_tail_bytes[14];
 } __attribute__((packed)) kafs_v7_inode_t;
 
+typedef struct kafs_v7_kdir_header
+{
+  uint32_t magic;
+  uint16_t version;
+  uint16_t flags;
+  uint32_t live_count;
+  uint32_t tombstone_count;
+  uint32_t record_bytes;
+  uint32_t reserved;
+} __attribute__((packed)) kafs_v7_kdir_header_t;
+
+typedef struct kafs_v7_kdir_record
+{
+  uint16_t record_length;
+  uint16_t flags;
+  uint32_t inode;
+  uint16_t name_bytes;
+  uint32_t name_hash;
+  uint8_t name[];
+} __attribute__((packed)) kafs_v7_kdir_record_t;
+
 typedef struct kafs_v7_hrl_entry
 {
   uint32_t ref_count;
@@ -238,6 +264,10 @@ _Static_assert(sizeof(kafs_v7_inode_t) == KAFS_V7_INODE_BYTES, "v7 inode wire si
 _Static_assert(offsetof(kafs_v7_inode_t, inline_or_block_refs) == 54,
                "v7 inode inline data offset");
 _Static_assert(sizeof(kafs_v7_hrl_entry_t) == KAFS_V7_HRL_ENTRY_BYTES, "v7 HRL entry wire size");
+_Static_assert(sizeof(kafs_v7_kdir_header_t) == KAFS_V7_KDIR_HEADER_BYTES,
+               "v7 KDIR header wire size");
+_Static_assert(sizeof(kafs_v7_kdir_record_t) == KAFS_V7_KDIR_RECORD_PREFIX_BYTES,
+               "v7 KDIR record prefix wire size");
 
 typedef enum kafs_v7_replica_status
 {

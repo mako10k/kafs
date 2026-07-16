@@ -32,6 +32,7 @@ check_PROGRAMS = tailmeta_parser hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigur
 	v5_mount_smoketest v5_tail_smallfile_smoketest v5_tail_mixed_smoketest v5_default_promotion_smoketest \
 	v6_descriptor_smoketest v6_descriptor_validation v7_entrypoint_smoketest \
 	v7_raw_layout_smoketest v7_multi_group_smoketest v7_replica_fault_smoketest \
+	v7_inspection_mount_smoketest \
 	clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility \
 	prune_indirect_single prune_indirect_double prune_indirect_triple truncate_prune reflink_clone \
 	kafsctl_links bg_dedup_skip_dirs \
@@ -100,7 +101,8 @@ v6_descriptor_validation_LDADD = $(KAFS_LIBS)
 v6_descriptor_validation_LDFLAGS = -pthread
 
 v7_entrypoint_smoketest_SOURCES = tests_v7_entrypoint_smoketest.c test_utils.c \
-	$(top_srcdir)/src/kafs_v7_layout.c $(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+	$(top_srcdir)/src/kafs_v7_layout.c $(top_srcdir)/src/kafs_v7_runtime_view.c \
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
 v7_entrypoint_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 v7_entrypoint_smoketest_LDADD = $(KAFS_LIBS)
 
@@ -118,6 +120,11 @@ v7_replica_fault_smoketest_SOURCES = tests_v7_replica_fault_smoketest.c test_uti
 	$(top_srcdir)/src/kafs_v7_layout.c $(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
 v7_replica_fault_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 v7_replica_fault_smoketest_LDADD = $(KAFS_LIBS)
+
+v7_inspection_mount_smoketest_SOURCES = tests_v7_inspection_mount_smoketest.c test_utils.c \
+	$(top_srcdir)/src/kafs_v7_layout.c $(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
+v7_inspection_mount_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+v7_inspection_mount_smoketest_LDADD = $(KAFS_LIBS)
 
 clone_template_copy_SOURCES = tests_clone_template_copy.c test_utils.c \
 	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c

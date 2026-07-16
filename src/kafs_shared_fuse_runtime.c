@@ -894,11 +894,18 @@ __attribute_maybe_unused__ static int kafs_ref_pending_encode(uint64_t pending_i
 static int kafs_ref_resolve_data_blo(struct kafs_context *ctx, kafs_blkcnt_t ref,
                                      kafs_blkcnt_t *out_blo)
 {
-  if (!out_blo)
+  if (!ctx || !out_blo)
     return -EINVAL;
   if (ref == KAFS_BLO_NONE)
   {
     *out_blo = KAFS_BLO_NONE;
+    return 0;
+  }
+  if (ctx->c_superblock && kafs_sb_format_version_get(ctx->c_superblock) == KAFS_FORMAT_VERSION_V7)
+  {
+    if (!ctx->c_v7_runtime_view_enabled || (uint64_t)ref > kafs_sb_r_blkcnt_get(ctx->c_superblock))
+      return -EIO;
+    *out_blo = ref;
     return 0;
   }
   if (!kafs_ref_is_pending(ref))
@@ -2779,6 +2786,72 @@ static void kafs_bg_dedup_worker_stop(struct kafs_context *ctx)
 // BLOCK OPERATIONS
 // ---------------------------------------------------------
 
+static int kafs_blk_validate_ref(struct kafs_context *ctx, kafs_blkcnt_t blo, const char *caller,
+                                 int *v7_view_out, int *invalid_ref_out)
+{
+  if (!ctx || !ctx->c_superblock || !v7_view_out)
+    return -EINVAL;
+  if (invalid_ref_out)
+    *invalid_ref_out = 0;
+
+  kafs_blkcnt_t max_blo = kafs_sb_r_blkcnt_get(ctx->c_superblock);
+  int v7_view = ctx->c_v7_runtime_view_enabled &&
+                kafs_sb_format_version_get(ctx->c_superblock) == KAFS_FORMAT_VERSION_V7;
+  *v7_view_out = v7_view;
+  if (blo != KAFS_BLO_NONE && ((!v7_view && blo >= max_blo) || (v7_view && blo > max_blo)))
+  {
+    kafs_log(KAFS_LOG_ERR, "%s: invalid block ref blo=%" PRIuFAST32 " (max=%" PRIuFAST32 ")\n",
+             caller ? caller : __func__, blo, max_blo);
+    if (invalid_ref_out)
+      *invalid_ref_out = 1;
+    return -EIO;
+  }
+  return 0;
+}
+
+static int kafs_blk_resolve_offset(struct kafs_context *ctx, kafs_blkcnt_t blo, int v7_view,
+                                   uint64_t *off_out)
+{
+  if (!ctx || !off_out)
+    return -EINVAL;
+  *off_out = 0;
+  if (blo == KAFS_BLO_NONE)
+    return 0;
+  if (v7_view)
+    return kafs_ctx_v7_data_ref_physical_offset(ctx, blo, off_out);
+
+  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
+  *off_out = (uint64_t)blo << log_blksize;
+  return 0;
+}
+
+static int kafs_blk_resolve_physical_range(struct kafs_context *ctx, kafs_blkcnt_t blo,
+                                           const char *caller, uint64_t *off_out,
+                                           kafs_blksize_t *blksize_out, int *invalid_ref_out)
+{
+  if (!off_out || !blksize_out)
+    return -EINVAL;
+  int v7_view = 0;
+  int rc = kafs_blk_validate_ref(ctx, blo, caller, &v7_view, invalid_ref_out);
+  if (rc != 0)
+    return rc;
+
+  uint64_t off = 0;
+  rc = kafs_blk_resolve_offset(ctx, blo, v7_view, &off);
+  if (rc != 0)
+    return rc;
+  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+  if (blo != KAFS_BLO_NONE)
+  {
+    if (off > ctx->c_img_size || (uint64_t)blksize > ctx->c_img_size - off)
+      return -EIO;
+  }
+
+  *off_out = off;
+  *blksize_out = blksize;
+  return 0;
+}
+
 /// @brief ブロック単位でデータを読み出す
 /// @param ctx コンテキスト
 /// @param blo ブロック番号
@@ -2791,11 +2864,12 @@ static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
   kafs_dlog(3, "%s(blo = %" PRIuFAST32 ")\n", __func__, blo);
   assert(ctx != NULL);
   assert(buf != NULL);
-  kafs_blkcnt_t max_blo = kafs_sb_r_blkcnt_get(ctx->c_superblock);
-  if (blo != KAFS_BLO_NONE && blo >= max_blo)
+  uint64_t off = 0;
+  kafs_blksize_t blksize = 0;
+  int invalid_ref = 0;
+  int rc = kafs_blk_resolve_physical_range(ctx, blo, __func__, &off, &blksize, &invalid_ref);
+  if (invalid_ref)
   {
-    kafs_log(KAFS_LOG_ERR, "%s: invalid block ref blo=%" PRIuFAST32 " (max=%" PRIuFAST32 ")\n",
-             __func__, blo, max_blo);
 #ifdef __linux__
     uint32_t c = __atomic_fetch_add(&s_invalid_blkref_bt_emitted, 1u, __ATOMIC_RELAXED);
     if (c < 3u)
@@ -2811,19 +2885,15 @@ static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
       }
     }
 #endif
-    return -EIO;
   }
-  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
-  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+  if (rc != 0)
+    return rc;
   if (blo == KAFS_BLO_NONE)
   {
     memset(buf, 0, blksize);
     return KAFS_SUCCESS;
   }
-  off_t off = (off_t)blo << log_blksize;
-  if ((size_t)off + (size_t)blksize > ctx->c_img_size)
-    return -EIO;
-  memcpy(buf, kafs_img_ptr(ctx, off, (size_t)blksize), (size_t)blksize);
+  memcpy(buf, (const char *)ctx->c_img_base + (size_t)off, (size_t)blksize);
   return KAFS_SUCCESS;
 }
 
@@ -2911,22 +2981,17 @@ static int kafs_blk_write(struct kafs_context *ctx, kafs_blkcnt_t blo, const voi
   assert(ctx != NULL);
   assert(buf != NULL);
   assert(blo != KAFS_INO_NONE);
-  kafs_blkcnt_t max_blo = kafs_sb_r_blkcnt_get(ctx->c_superblock);
-  if (blo != KAFS_BLO_NONE && blo >= max_blo)
-  {
-    kafs_log(KAFS_LOG_ERR, "%s: invalid block ref blo=%" PRIuFAST32 " (max=%" PRIuFAST32 ")\n",
-             __func__, blo, max_blo);
-    return -EIO;
-  }
-  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
-  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+  if (ctx->c_runtime_read_only)
+    return -EROFS;
+  uint64_t off = 0;
+  kafs_blksize_t blksize = 0;
+  int rc = kafs_blk_resolve_physical_range(ctx, blo, __func__, &off, &blksize, NULL);
+  if (rc != 0)
+    return rc;
   if (blo == KAFS_BLO_NONE)
     return KAFS_SUCCESS;
-  off_t off = (off_t)blo << log_blksize;
-  if ((size_t)off + (size_t)blksize > ctx->c_img_size)
-    return -EIO;
   kafs_diag_log_live_dir_block0_write(ctx, blo, buf, (size_t)blksize);
-  memcpy(kafs_img_ptr(ctx, off, (size_t)blksize), buf, (size_t)blksize);
+  memcpy((char *)ctx->c_img_base + (size_t)off, buf, (size_t)blksize);
   return KAFS_SUCCESS;
 }
 
@@ -3444,6 +3509,9 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
   assert(ctx != NULL);
   assert(pblo != NULL);
   assert(inoent != NULL);
+  if (ctx->c_runtime_read_only && ifunc != KAFS_IBLKREF_FUNC_GET &&
+      ifunc != KAFS_IBLKREF_FUNC_GET_RAW)
+    return -EROFS;
   kafs_dlog(3, "ibrk_run: iblo=%" PRIuFAST32 " ifunc=%d (size=%" PRIuFAST64 ")\n", iblo, (int)ifunc,
             kafs_ino_size_get(inoent));
 
@@ -3893,6 +3961,8 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
   assert(buf != NULL);
   assert(inoent != NULL);
   assert(kafs_ino_get_usage(inoent));
+  if (ctx->c_runtime_read_only)
+    return -EROFS;
   // Directory metadata is frequently rewritten and can cross the inline/block-backed boundary.
   // Keep that path synchronous so shrink-to-inline and unlink do not race with pendinglog writes.
   if (ctx->c_pendinglog_enabled && ctx->c_pending_worker_running &&
@@ -5025,6 +5095,8 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
   assert(buf != NULL);
   assert(inoent != NULL);
   assert(kafs_ino_get_usage(inoent));
+  if (ctx->c_runtime_read_only)
+    return -EROFS;
 
   kafs_off_t filesize = kafs_ino_size_get(inoent);
   kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
@@ -5353,6 +5425,8 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
   assert(ctx != NULL);
   assert(inoent != NULL);
   assert(kafs_ino_get_usage(inoent));
+  if (ctx->c_runtime_read_only)
+    return -EROFS;
   kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
   kafs_off_t filesize_orig = kafs_ino_size_get(inoent);
@@ -6923,6 +6997,7 @@ static void kafs_ctx_close_fd(kafs_context_t *ctx)
 static void kafs_ctx_reset_mapping(kafs_context_t *ctx)
 {
   kafs_bitmap_descriptor_mapping_clear(ctx);
+  kafs_ctx_v7_runtime_view_clear(ctx);
   ctx->c_img_base = NULL;
   ctx->c_img_size = 0;
   ctx->c_superblock = NULL;
@@ -7591,12 +7666,25 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
   memset(st, 0, sizeof(*st));
 
   const unsigned blksize = (unsigned)kafs_sb_blksize_get(ctx->c_superblock);
-  const kafs_blkcnt_t blocks = kafs_sb_blkcnt_get(ctx->c_superblock);
-  kafs_bitmap_lock(ctx);
-  const kafs_blkcnt_t bfree = kafs_sb_blkcnt_free_get(ctx->c_superblock);
-  kafs_bitmap_unlock(ctx);
+  kafs_blkcnt_t blocks;
+  kafs_blkcnt_t bfree;
   const kafs_inocnt_t files = kafs_sb_inocnt_get(ctx->c_superblock);
-  const kafs_inocnt_t ffree = (kafs_inocnt_t)kafs_sb_inocnt_free_get(ctx->c_superblock);
+  kafs_inocnt_t ffree;
+  if (ctx->c_v7_runtime_view_enabled &&
+      kafs_sb_format_version_get(ctx->c_superblock) == KAFS_FORMAT_VERSION_V7)
+  {
+    blocks = kafs_sb_r_blkcnt_get(ctx->c_superblock);
+    bfree = (kafs_blkcnt_t)ctx->c_v7_recovered_free_blocks;
+    ffree = (kafs_inocnt_t)ctx->c_v7_recovered_free_inodes;
+  }
+  else
+  {
+    blocks = kafs_sb_blkcnt_get(ctx->c_superblock);
+    kafs_bitmap_lock(ctx);
+    bfree = kafs_sb_blkcnt_free_get(ctx->c_superblock);
+    kafs_bitmap_unlock(ctx);
+    ffree = (kafs_inocnt_t)kafs_sb_inocnt_free_get(ctx->c_superblock);
+  }
 
   st->f_bsize = blksize;
   st->f_frsize = blksize;
@@ -13081,6 +13169,7 @@ static int kafs_shared_fuse_cleanup_after_run(kafs_context_t *ctx, const char *h
     pthread_mutex_destroy(&ctx->c_hotplug_wait_lock);
   }
   kafs_bitmap_descriptor_mapping_clear(ctx);
+  kafs_ctx_v7_runtime_view_clear(ctx);
   free(ctx->c_meta_bitmap_words);
   free(ctx->c_meta_bitmap_dirty);
   free(ctx->c_ino_epoch);

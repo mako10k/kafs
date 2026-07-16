@@ -706,6 +706,12 @@ static int kafs_v7_write_group_metadata(int fd, const kafs_v7_mkfs_options_t *op
     inodes[root_index].uid = htole16(options->root_uid);
     inodes[root_index].gid = htole16(options->root_gid);
     inodes[root_index].link_count = htole16(1u);
+    inodes[root_index].size = htole64(KAFS_V7_KDIR_HEADER_BYTES);
+    kafs_v7_kdir_header_t root_directory = {
+        .magic = htole32(KAFS_V7_KDIR_MAGIC),
+        .version = htole16(KAFS_V7_KDIR_VERSION),
+    };
+    memcpy(inodes[root_index].inline_or_block_refs, &root_directory, sizeof(root_directory));
   }
   rc = kafs_pwrite_all(fd, inode_area, (size_t)group->inode_bytes, (off_t)inode_off);
   free(inode_area);
