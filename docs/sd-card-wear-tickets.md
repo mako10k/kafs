@@ -2761,12 +2761,38 @@
   - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ87件・2.69%で、
     writer由来のcloneは0件。writerのcomplexity warningは責務分割後0件。
 
+### SDW-V7RT-T13 multi-group mutation fault matrix
+
+- 目的: group-local journalがfilesystem-global sequenceで連結される条件を4 groupで固定し、1 groupの
+  payload/header損失やforeign-group mutationを部分成功として扱わずfail closedにする。
+- 変更:
+  - group順`0,3,1,2`、sequence順`1,2,3,4`の正常interleaveを追加し、4 groupのrecovered counterと
+    last-sequence ownerを検証した。
+  - 異なるgroupに同一sequenceを置くcollisionと、groupをまたぐsequence gapを拒否するmatrixを追加した。
+  - sequence 1/2/3の中央groupについて、mutation payload corruptionとlatest header CRC corruptionを注入した。
+    header corruptionでは旧empty headerへのfallback後にglobal sequence gapとしてfail closedになることを固定した。
+  - mutationのgroup idをforeign groupへ変更し、mutation-stream/control/record CRCを再計算した入力も拒否する。
+  - cross-group atomic transactionは有効化せず、transactionは引き続きexactly one groupに限定する。
+- 完了条件:
+  - 正常interleaveだけがreplay可能で、collision、gap、中央group data/header loss、checksum-consistent foreign
+    mutationは全image validationを失敗させる。
+  - runtime mount/write境界とcross-group HRL policyは変更しない。
+- 検証結果（2026-07-16）:
+  - `v7_journal_replay_smoketest`: PASS。
+  - 同testのValgrind: PASS（0 error、0 leak、2,273 alloc/free）。
+  - clangd diagnostics: 0件。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`./scripts/check-v7-layout-ownership.sh`、
+    `git diff --check`: PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 38 PASS（`stress_fs`を含む）。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ
+    87件・2.69%で、production `src/`は変更していない。
+
 ---
 
 ## 次に着手する候補
 
-1. metadata apply/checkpoint/reclamation、cross-family lock integration、multi-group mutation fault matrixを通してから
-   controlled-write admissionを検討する。
+1. metadata apply/checkpoint/reclamationとcross-family lock integrationを通してからcontrolled-write admissionを
+   検討する。
 2. accepted offline/inspection surface安定後に`kafsresize --migrate-create --format-version 7`を追加する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの

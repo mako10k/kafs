@@ -428,6 +428,120 @@ static int build_transaction(replay_image_fixture_t *fixture, uint32_t group_id,
   return rc;
 }
 
+static int refresh_transaction_record_crcs(replay_transaction_fixture_t *transaction)
+{
+  size_t off = 0u;
+  while (off < transaction->byte_count)
+  {
+    if (transaction->byte_count - off < KAFS_V7_JOURNAL_RECORD_HEADER_BYTES)
+      return -EINVAL;
+    kafs_v7_journal_record_header_t *header =
+        (kafs_v7_journal_record_header_t *)(transaction->bytes + off);
+    uint32_t payload_bytes = le32toh(header->payload_bytes);
+    size_t record_bytes = KAFS_V7_JOURNAL_RECORD_HEADER_BYTES + (size_t)payload_bytes;
+    size_t padded_bytes = (record_bytes + 7u) & ~(size_t)7u;
+    if (padded_bytes > transaction->byte_count - off)
+      return -EINVAL;
+    header->crc32 = 0u;
+    header->crc32 = htole32(kafs_v7_crc32(header, record_bytes));
+    off += padded_bytes;
+  }
+  return off == transaction->byte_count ? 0 : -EINVAL;
+}
+
+static int retarget_transaction_mutation_group(replay_transaction_fixture_t *transaction,
+                                               uint32_t mutation_index, uint32_t foreign_group)
+{
+  kafs_v7_journal_control_t *begin = NULL;
+  kafs_v7_journal_control_t *terminal = NULL;
+  uint32_t stream_crc = UINT32_MAX;
+  uint32_t seen = 0u;
+  int retargeted = 0;
+  size_t off = 0u;
+  while (off < transaction->byte_count)
+  {
+    if (transaction->byte_count - off < KAFS_V7_JOURNAL_RECORD_HEADER_BYTES)
+      return -EINVAL;
+    kafs_v7_journal_record_header_t *header =
+        (kafs_v7_journal_record_header_t *)(transaction->bytes + off);
+    uint32_t tag = le32toh(header->tag);
+    uint32_t payload_bytes = le32toh(header->payload_bytes);
+    size_t record_bytes = KAFS_V7_JOURNAL_RECORD_HEADER_BYTES + (size_t)payload_bytes;
+    size_t padded_bytes = (record_bytes + 7u) & ~(size_t)7u;
+    if (padded_bytes > transaction->byte_count - off)
+      return -EINVAL;
+    uint8_t *payload = transaction->bytes + off + KAFS_V7_JOURNAL_RECORD_HEADER_BYTES;
+    if (tag == KAFS_V7_JOURNAL_BEGIN_TAG)
+    {
+      if (begin || payload_bytes != KAFS_V7_JOURNAL_CONTROL_BYTES)
+        return -EINVAL;
+      begin = (kafs_v7_journal_control_t *)payload;
+    }
+    else if (tag == KAFS_V7_JOURNAL_MUTATION_TAG)
+    {
+      if (payload_bytes < KAFS_V7_JOURNAL_MUTATION_HEADER_BYTES)
+        return -EINVAL;
+      if (seen == mutation_index)
+      {
+        ((kafs_v7_journal_mutation_t *)payload)->group_id = htole32(foreign_group);
+        retargeted = 1;
+      }
+      stream_crc = crc32_update(stream_crc, payload, payload_bytes);
+      ++seen;
+    }
+    else if (tag == KAFS_V7_JOURNAL_COMMIT_TAG || tag == KAFS_V7_JOURNAL_ABORT_TAG)
+    {
+      if (terminal || payload_bytes != KAFS_V7_JOURNAL_CONTROL_BYTES)
+        return -EINVAL;
+      terminal = (kafs_v7_journal_control_t *)payload;
+    }
+    else
+      return -EINVAL;
+    off += padded_bytes;
+  }
+  if (!begin || !terminal || !retargeted || off != transaction->byte_count)
+    return -EINVAL;
+  begin->mutation_stream_crc32 = htole32(stream_crc ^ UINT32_MAX);
+  terminal->mutation_stream_crc32 = begin->mutation_stream_crc32;
+  return refresh_transaction_record_crcs(transaction);
+}
+
+static int publish_prefix(replay_image_fixture_t *fixture, uint32_t group_id,
+                          uint32_t local_segment, const void *prefix, size_t prefix_bytes,
+                          uint64_t first_sequence, uint64_t last_sequence);
+
+static int publish_group_transaction(replay_image_fixture_t *fixture, uint32_t group_id,
+                                     uint64_t sequence,
+                                     replay_transaction_fixture_t *transaction_out)
+{
+  replay_transaction_fixture_t transaction;
+  memset(&transaction, 0, sizeof(transaction));
+  int rc = build_transaction(fixture, group_id, sequence, KAFS_V7_JOURNAL_COMMIT_TAG,
+                             &transaction);
+  if (rc == 0)
+    rc = publish_prefix(fixture, group_id, 0u, transaction.bytes, transaction.byte_count,
+                        sequence, sequence);
+  if (rc == 0 && transaction_out)
+    *transaction_out = transaction;
+  else
+    transaction_clear(&transaction);
+  return rc;
+}
+
+static int xor_image_byte(int fd, uint64_t off)
+{
+  uint8_t byte = 0u;
+  if (off > INT64_MAX)
+    return -ERANGE;
+  int rc = kafs_pread_all(fd, &byte, sizeof(byte), (off_t)off);
+  if (rc == 0)
+  {
+    byte ^= 0x5au;
+    rc = kafs_pwrite_all(fd, &byte, sizeof(byte), (off_t)off);
+  }
+  return rc;
+}
+
 static int publish_prefix(replay_image_fixture_t *fixture, uint32_t group_id,
                           uint32_t local_segment, const void *prefix, size_t prefix_bytes,
                           uint64_t first_sequence, uint64_t last_sequence)
@@ -707,6 +821,143 @@ static int test_global_sequence_and_duplicates(void)
           report.free_inodes + 2u == checkpoint_inodes;
   kafs_v7_layout_report_clear(&report);
   return valid ? 0 : -1;
+}
+
+static int test_multi_group_interleave(void)
+{
+  const char *path = "v7-journal-four-group-interleave.img";
+  const uint32_t group_order[] = {0u, 3u, 1u, 2u};
+  replay_image_fixture_t fixture;
+  if (open_fixture_with_groups(path, 4u, &fixture) != 0)
+    return -1;
+  uint64_t checkpoint_blocks = fixture.layout.checkpoint_free_blocks;
+  uint64_t checkpoint_inodes = fixture.layout.checkpoint_free_inodes;
+  int rc = 0;
+  for (size_t i = 0; rc == 0 && i < sizeof(group_order) / sizeof(group_order[0]); ++i)
+    rc = publish_group_transaction(&fixture, group_order[i], i + 1u, NULL);
+  close_fixture(&fixture);
+
+  kafs_v7_layout_report_t report;
+  if (rc != 0 || validate_path(path, &report) != 0)
+    return -1;
+  int valid = report.journal.selected_nonempty_segment_count == 4u &&
+              report.journal.first_sequence == 1u && report.journal.last_sequence == 4u &&
+              report.journal.last_sequence_group_id == 2u &&
+              report.journal.transaction_count == 4u &&
+              report.journal.committed_transaction_count == 4u &&
+              report.journal.mutation_count == 12u &&
+              report.free_blocks + 256u == checkpoint_blocks &&
+              report.free_inodes + 4u == checkpoint_inodes;
+  kafs_v7_layout_report_clear(&report);
+  return valid ? 0 : -1;
+}
+
+static int test_multi_group_sequence_collision(void)
+{
+  const char *path = "v7-journal-cross-group-collision.img";
+  replay_image_fixture_t fixture;
+  if (open_fixture_with_groups(path, 4u, &fixture) != 0)
+    return -1;
+  int rc = publish_group_transaction(&fixture, 0u, 1u, NULL);
+  if (rc == 0)
+    rc = publish_group_transaction(&fixture, 3u, 1u, NULL);
+  close_fixture(&fixture);
+  return rc == 0 && validate_path(path, NULL) != 0 ? 0 : -1;
+}
+
+static int test_multi_group_sequence_gap(void)
+{
+  const char *path = "v7-journal-cross-group-gap.img";
+  replay_image_fixture_t fixture;
+  if (open_fixture_with_groups(path, 4u, &fixture) != 0)
+    return -1;
+  int rc = publish_group_transaction(&fixture, 0u, 1u, NULL);
+  if (rc == 0)
+    rc = publish_group_transaction(&fixture, 3u, 3u, NULL);
+  close_fixture(&fixture);
+  return rc == 0 && validate_path(path, NULL) != 0 ? 0 : -1;
+}
+
+static int publish_three_group_prefixes(replay_image_fixture_t *fixture)
+{
+  int rc = publish_group_transaction(fixture, 0u, 1u, NULL);
+  if (rc == 0)
+    rc = publish_group_transaction(fixture, 3u, 2u, NULL);
+  if (rc == 0)
+    rc = publish_group_transaction(fixture, 1u, 3u, NULL);
+  return rc;
+}
+
+static int test_multi_group_payload_corruption(void)
+{
+  const char *path = "v7-journal-middle-group-data-loss.img";
+  replay_image_fixture_t fixture;
+  if (open_fixture_with_groups(path, 4u, &fixture) != 0)
+    return -1;
+  int rc = publish_three_group_prefixes(&fixture);
+  kafs_v7_journal_segment_t segment;
+  if (rc == 0)
+    rc = kafs_v7_journal_segment_read_fd(fixture.fd, &fixture.layout, 3u, 0u, &segment);
+  size_t begin_bytes =
+      (KAFS_V7_JOURNAL_RECORD_HEADER_BYTES + KAFS_V7_JOURNAL_CONTROL_BYTES + 7u) & ~(size_t)7u;
+  if (rc == 0)
+    rc = xor_image_byte(fixture.fd,
+                        segment.data_off + begin_bytes + KAFS_V7_JOURNAL_RECORD_HEADER_BYTES +
+                            offsetof(kafs_v7_journal_mutation_t, group_id));
+  if (rc == 0 && fdatasync(fixture.fd) != 0)
+    rc = -errno;
+  close_fixture(&fixture);
+  return rc == 0 && validate_path(path, NULL) != 0 ? 0 : -1;
+}
+
+static int test_multi_group_header_loss(void)
+{
+  const char *path = "v7-journal-middle-group-header-loss.img";
+  replay_image_fixture_t fixture;
+  if (open_fixture_with_groups(path, 4u, &fixture) != 0)
+    return -1;
+  int rc = publish_three_group_prefixes(&fixture);
+  kafs_v7_journal_segment_t segment;
+  if (rc == 0)
+    rc = kafs_v7_journal_segment_read_fd(fixture.fd, &fixture.layout, 3u, 0u, &segment);
+  if (rc == 0)
+    rc = xor_image_byte(fixture.fd,
+                        segment.header_block_off +
+                            (uint64_t)segment.selected_slot * KAFS_V7_JOURNAL_HEADER_BYTES +
+                            offsetof(kafs_v7_journal_header_t, crc32));
+  if (rc == 0 && fdatasync(fixture.fd) != 0)
+    rc = -errno;
+  close_fixture(&fixture);
+  return rc == 0 && validate_path(path, NULL) != 0 ? 0 : -1;
+}
+
+static int test_multi_group_foreign_mutation(void)
+{
+  const char *path = "v7-journal-foreign-group-mutation.img";
+  replay_image_fixture_t fixture;
+  replay_transaction_fixture_t transaction;
+  memset(&transaction, 0, sizeof(transaction));
+  if (open_fixture_with_groups(path, 4u, &fixture) != 0)
+    return -1;
+  int rc = build_transaction(&fixture, 0u, 1u, KAFS_V7_JOURNAL_COMMIT_TAG, &transaction);
+  if (rc == 0)
+    rc = retarget_transaction_mutation_group(&transaction, 1u, 3u);
+  if (rc == 0)
+    rc = publish_prefix(&fixture, 0u, 0u, transaction.bytes, transaction.byte_count, 1u, 1u);
+  transaction_clear(&transaction);
+  close_fixture(&fixture);
+  return rc == 0 && validate_path(path, NULL) != 0 ? 0 : -1;
+}
+
+static int test_multi_group_mutation_fault_matrix(void)
+{
+  return test_multi_group_interleave() == 0 && test_multi_group_sequence_collision() == 0 &&
+                 test_multi_group_sequence_gap() == 0 &&
+                 test_multi_group_payload_corruption() == 0 &&
+                 test_multi_group_header_loss() == 0 &&
+                 test_multi_group_foreign_mutation() == 0
+             ? 0
+             : -1;
 }
 
 static int test_abort_torn_and_corruption(void)
@@ -1295,6 +1546,11 @@ int main(void)
   if (test_global_sequence_and_duplicates() != 0)
   {
     fprintf(stderr, "v7 journal global sequence/duplicate matrix failed\n");
+    return 1;
+  }
+  if (test_multi_group_mutation_fault_matrix() != 0)
+  {
+    fprintf(stderr, "v7 journal multi-group mutation fault matrix failed\n");
     return 1;
   }
   if (test_abort_torn_and_corruption() != 0)

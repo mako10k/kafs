@@ -158,10 +158,17 @@ flushes that header. Unpublished data therefore remains outside the selected
 prefix, and multi-segment groups spread header generations before reusing a
 segment.
 
+The multi-group mutation fault matrix now fixes four-group interleaving and
+global fail-closed behavior. It accepts group-local transactions ordered
+0,3,1,2 by their filesystem-global sequence, and rejects cross-group sequence
+collision/gap, loss of a middle group's selected payload/header, and a
+checksum-consistent mutation that claims a foreign group. This does not enable
+cross-group atomic transactions.
+
 Controlled write remains blocked by metadata apply/checkpoint/reclamation and
-runtime mutation integration that uses the documented cross-family lock order,
-plus the multi-group mutation fault matrix. The successful v7 path must also
-stop using the v6-named controlled-write policy flag and v6 FUSE policy helper.
+runtime mutation integration that uses the documented cross-family lock order.
+The successful v7 path must also stop using the v6-named controlled-write
+policy flag and v6 FUSE policy helper.
 
 FTL/ECC correlated-failure injection is not in this implementation blocker
 list.  It is governed by the RC media-qualification boundary in the accepted
@@ -181,9 +188,8 @@ raw-layout specification and does not relax any software recovery gate.
 
 ## Follow-Up Boundaries
 
-1. Add metadata apply/checkpoint/reclamation, cross-family lock integration,
-   and multi-group mutation fault matrices before enabling controlled-write
-   admission.
+1. Add metadata apply/checkpoint/reclamation and cross-family lock integration
+   before enabling controlled-write admission.
 2. Add `kafsresize --migrate-create --format-version 7` after the accepted
    offline and inspection surfaces are stable; migration does not outrank a
    blocker on the mount/write path.
