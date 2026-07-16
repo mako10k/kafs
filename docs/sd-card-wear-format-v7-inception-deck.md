@@ -252,10 +252,10 @@ Expected consequences:
 - best alignment with the decision model;
 - fsck can validate descriptor replicas and group coverage before runtime
   admission;
-- later wear-distribution work can add placement policy without changing the
-  entrypoint boundary;
-- the single-group offline slice proves the placement/recovery foundation but
-  does not claim that wear leveling is complete;
+- the canonical multi-group planner adds filesystem-level placement spread
+  without changing the entrypoint or accepted wire boundary;
+- the placement proof does not claim visibility into an SD controller's FTL or
+  physical erase-block wear;
 - implementation must avoid treating the current v6 scaffold as the public v7
   layout.
 

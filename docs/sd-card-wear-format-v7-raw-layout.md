@@ -68,9 +68,9 @@ offset 0
   [reserved final block; tail K7SA root-locator in its final 32 bytes]
 ```
 
-For the first implementation slice, `group_count == 1` is allowed.  Even then,
-all metadata is found through descriptor and shard records, not through v5/v6
-prefix offsets.
+Small images may retain `group_count == 1`.  Larger images use the canonical
+multi-group planner below.  In both cases all metadata is found through
+descriptor and shard records, not through v5/v6 prefix offsets.
 
 ## Primary Superblock And Anchor
 
@@ -1028,18 +1028,68 @@ changed by an implementation's choice of group order:
    no data block is removed merely to create a midpoint copy.
 
 The v7 parser/validator still accepts a correctly described three-replica image
-created by a future planner or a test fixture.  Multi-group placement gets its
-own deterministic planner and wear-distribution proof in the following ticket;
-it must preserve these wire and recovery rules rather than reusing the
-single-group order accidentally.
+created by a future planner or a test fixture.
 
-This delivery proves only the offline `mkfs -> kafsdump -> fsck` round trip,
-descriptor/checkpoint fallback, and deterministic rejection of corruption.  It
-does not claim that single-group placement completes wear leveling.  It provides
-the v7-owned placement and recovery foundation for later multi-group wear tests.
+The initial single-group delivery proved the offline
+`mkfs -> kafsdump -> fsck` round trip, descriptor/checkpoint fallback, and
+deterministic rejection of corruption.  It did not claim that single-group
+placement completed wear leveling; it provided the v7-owned placement and
+recovery foundation extended by the multi-group planner below.
 `kafs-v7 --inspection-mount` remains fail-closed for descriptor version 2 until
 a following mount-smoke slice proves the accepted layout; controlled-write
 admission remains later still.
+
+## Canonical Multi-Group Physical Planner
+
+The multi-group builder extends the same version 2 wire contract without
+changing record sizes, mapping policy, or recovery selection:
+
+1. Group counts are powers of two from 1 through 64 and must divide the 1024
+   HRL buckets.  `mkfs.kafs --v7-group-count N` requests an exact supported
+   count.  With no override, mkfs starts with the largest supported power of
+   two no greater than one group per 64 MiB of image and halves the count until
+   the complete checked geometry fits.  It never silently substitutes a
+   different count for an explicit request.
+2. The fixed-point planner reserves the primary and tail recovery spans first,
+   then chooses the largest logical data-block count that fits all groups.  It
+   requires at least one complete 64-bit bitmap word per group.  Complete
+   64-block units are distributed by quotient and remainder; any final partial
+   word belongs only to the last group.  Thus every internal logical group
+   boundary is 64-block aligned and group data counts differ by at most 64
+   blocks.
+3. Inodes and HRL entries exact-cover their global namespaces by quotient and
+   remainder, with lower group ids receiving the remainder.  HRL buckets
+   exact-cover the fixed 1024-bucket namespace equally.  Inode 0 and the root
+   inode remain in group 0.  All group-local HRL chains and referenced logical
+   data blocks must remain in that same group; cross-group chains fail closed.
+4. A multi-group image has one journal segment per group.  A single-group image
+   retains two segments.  The requested total journal bytes are divided into
+   equal, non-zero, block-aligned segment spans; header and data for each
+   global segment id remain in its owning group.
+5. Physical placement is canonical and interleaved in ascending group-id order:
+   `[group N seven metadata shards][group N data]`.  This spreads bitmap,
+   inode, allocator, HRL, and journal locations through the filesystem-owned
+   placement arena instead of concentrating every mutable metadata shard at a
+   common prefix.  Each group container is still exactly the concatenation of
+   the seven shard spans in the single-group order.
+6. Midpoint recovery is evaluated only after every group has its maximum-size
+   data span.  It is emitted only if the fixed midpoint descriptor/checkpoint
+   pair lies wholly in remaining zero slack.  The planner never removes a data
+   block or changes a group boundary to manufacture that replica.
+
+`kafsdump` reports `wear_distribution` with group count, first-to-last metadata
+placement span, total filesystem placement arena, and the minimum/maximum
+group data-block counts.  These values prove filesystem-level address
+distribution only.  They do not claim knowledge of an SD card controller's
+flash translation layer, erase-block mapping, or physical-media wear leveling.
+`scripts/check-v7-wear-distribution.sh` fixes the current sparse-image proof at
+512 MiB: eight groups, no more than 64 blocks of data-count skew, monotonically
+distributed metadata starts, and metadata placement spanning at least 70% of
+the filesystem placement arena.
+
+Runtime inspection and write admission remain separate gates.  In particular,
+this planner does not introduce multi-group transaction atomicity or cross-group
+HRL behavior.
 
 ## Accepted Decision Closeout
 

@@ -1,6 +1,6 @@
 # KAFS SDカード劣化対策 バックログ
 
-最終更新: 2026-07-13
+最終更新: 2026-07-16
 
 計画: [sd-card-wear-plan.md](sd-card-wear-plan.md)
 
@@ -2385,16 +2385,67 @@
   - test/gate 前後の `git status --short --untracked-files=all` は一致し、新しい tracked/untracked artifact は
     増えていない。
 
+### SDW-V7RT-T4 v7 multi-group placement and filesystem wear-distribution proof
+
+- 目的: accepted version 2 record の group-local mapping を実際の multi-group geometry に広げ、
+  mutable metadata を image prefix 一箇所へ集中させない filesystem-level placement と、group 境界破損を
+  deterministic に拒否する offline proof を追加する。SD controller の FTL/erase-block 配置を観測したとは
+  主張しない。
+- 変更:
+  - canonical group count は power-of-two の 1..64 とし、1024 HRL bucket を等分する。
+    自動選択は image 64 MiB あたり1 group を上限に supported power-of-two へ丸め、geometry 不成立時は
+    半減する。`mkfs.kafs --v7-group-count N` は exact override であり、別 count への fallback を行わない。
+  - logical data は完全な64-block bitmap wordを quotient/remainder で分け、末尾 partial word は最終 group
+    だけに置く。inode/HRL entry は exact coverage、HRL bucket は等分し、multi-group journal は1 group
+    1 segment とする。
+  - physical order は group-id 順の `[seven metadata shards][data]` interleave とし、midpoint replica は
+    最大 data geometry 後の zero slack に自然に収まる場合だけ追加する。
+  - validator は全 group の logical/physical coverage、canonical shard owner/order/size、inode/free count、
+    bitmap/allocator、HRL、journal segment id を集計する。cross-group HRL head/chain は引き続き fail closed。
+  - `kafsdump` に `wear_distribution` を追加し、group count、metadata placement span/arena、group data
+    min/max を text/JSON で報告する。`scripts/check-v7-wear-distribution.sh` は512 MiB sparse imageで
+    8 group、data skew 64 blocks 以下、metadata span 70%以上を固定する。
+  - `v7_multi_group_smoketest` は自動8 group、明示4 group、invalid/too-small/non-v7 CLI rejection、
+    logical gap、physical overlap、group owner偽装、journal logical gap、cross-group HRL headを検証する。
+- 完了条件:
+  - `mkfs.kafs --format-version 7` の512 MiB imageが8 groupで offline round tripし、全 group の free
+    block/inode/journal countが selected checkpoint と一致する。
+  - internal data logical boundaryは64-block alignment、group data skewは64 blocks以下、physical metadata
+    startはgroup順に分散する。
+  - group descriptor/shardのgap、overlap、owner、logical coverage、およびcross-group HRL破損を
+    descriptor replicaがbyte-identicalでも確実に拒否する。
+  - v6 public wire/layout entrypointへの依存を追加せず、runtime inspection/write admission、cross-group HRL、
+    multi-group atomic mutationを有効化しない。
+- 実装結果:
+  - `src/kafs_v7_layout.*` のplanner/builder/validatorを最大64 groupへ拡張し、single-group accepted imageと
+    既存 fault/recovery behaviorを維持した。
+  - `mkfs.kafs` に自動 policy と exact `--v7-group-count`、全 group data spanのtrimを追加した。
+  - `kafsdump` と dedicated script/test からfilesystem placement分散を観測可能にした。
+- 検証結果（2026-07-16）:
+  - `autoreconf -fi && ./configure` と clean `bear -- make -j2` は PASS。更新した
+    `compile_commands.json` に対する `clangd` diagnostics は layout、mkfs、kafsdump、multi-group test の
+    4ファイルすべて0件。
+  - `./scripts/check-v7-layout-ownership.sh` は PASS。
+    `./scripts/check-v7-wear-distribution.sh` は
+    `groups=8 span=469684224/536838144 data_blocks=16128..16192` で PASS。
+  - dedicated `v7_multi_group_smoketest v7_raw_layout_smoketest` は2/2 PASS。
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` は32/32 PASSし、v5/v6/FUSEを含む全回帰も通過した。
+  - 512 MiB sparse imageの1024-byte / 65536-byte block-size双方で、自動8 groupの
+    `mkfs.kafs -> fsck.kafs -> kafsdump` round tripがPASSした。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`git diff --check`、complexity reportはPASS。
+    strict clone gateは既存87件・2.9%が1.0%閾値を超えるためnon-passingだが、今回追加した
+    `src/kafs_v7_layout.c` 内のcloneは0件で、変更前相当の87件へ戻した。
+
 ---
 
 ## 次に着手する候補
 
-1. accepted record を使う multi-group placement と wear-distribution proof を設計・実装する。
-2. descriptor/checkpoint replica の位置分散・片系破損・同世代 divergence を実媒体想定の fault matrix で
-   拡張し、single-group foundation から障害耐性の証明を強める。
-3. `kafs-v7 --inspection-mount` の mount smoke を追加する。
-4. accepted offline surface 安定後に `kafsresize --migrate-create --format-version 7` を追加する。
-5. structured journal recovery、locking、mutation fault matrix を通してから controlled-write admission を
+1. descriptor/checkpoint replica の位置分散・片系破損・同世代 divergence を実媒体想定の fault matrix で
+   拡張し、multi-group placement後の障害耐性の証明を強める。
+2. `kafs-v7 --inspection-mount` の mount smoke を追加する。
+3. accepted offline surface 安定後に `kafsresize --migrate-create --format-version 7` を追加する。
+4. group-local structured journal recoveryとcrash fixtureをofflineで実装する。
+5. locking、multi-group mutation fault matrixを通してから controlled-write admission を
    検討する。
 
 cross-group HRL と multi-group atomic mutation は、まず group-local placement と recovery replica の

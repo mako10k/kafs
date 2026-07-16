@@ -84,6 +84,7 @@
   - `-b, --blksize-log L` ブロックサイズの log2（既定 12=4096B）
   - `-i, --inodes I` inode 数（既定 65536）
   - `-J, --journal-size-bytes J` ジャーナル領域サイズ（既定 1MiB、最小 4KiB）
+  - `--v7-group-count N` v7 group 数の明示指定（power-of-two、1..64。既定は image size から自動）
 - `kafs`（または `mount.kafs`）
   - `-f` フォアグラウンド、`-o allow_other,ro,...` FUSE オプション。
   - 環境変数: `KAFS_MT`、`KAFS_MAX_THREADS`、`KAFS_JOURNAL_GC_NS`。

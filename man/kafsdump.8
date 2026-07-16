@@ -1,5 +1,5 @@
 '.\" -*- nroff -*-
-.TH KAFSDUMP 8 "2026-07-13" "kafs 0.4.0" "System Administration"
+.TH KAFSDUMP 8 "2026-07-16" "kafs 0.4.0" "System Administration"
 .SH NAME
 kafsdump \- inspect offline KAFS image metadata without mutation
 .SH SYNOPSIS
@@ -60,6 +60,12 @@ Descriptor-owned metadata and logical/physical data spans.
 .B shards
 V7-owned type, storage class, logical coverage, and physical coverage records.
 .TP
+.B wear_distribution
+Format v7 filesystem-level group placement policy, placement span/arena bytes,
+and minimum/maximum group data-block counts.  This reports logical/physical
+image address distribution; it does not infer flash translation layer or
+physical erase-block wear.
+.TP
 .B journal_segments
 Group-local rotating-header segment count, selected state, and checkpoint
 sequence.
@@ -79,6 +85,7 @@ stable top-level keys
 .BR checkpoints ,
 .BR groups ,
 .BR shards ,
+.BR wear_distribution ,
 and
 .BR journal_segments .
 .SH EXIT STATUS

@@ -26,8 +26,9 @@
 #define KAFS_V7_JOURNAL_HEADER_BYTES 64u
 #define KAFS_V7_LAYOUT_MAX_BYTES (16u * 1024u * 1024u)
 #define KAFS_V7_REPLICA_MAX_COUNT 3u
+#define KAFS_V7_GROUP_MAX_COUNT 64u
 #define KAFS_V7_SINGLE_GROUP_LOCAL_SHARDS 7u
-#define KAFS_V7_SINGLE_GROUP_MAX_SHARDS 13u
+#define KAFS_V7_GROUP_LOCAL_SHARDS 7u
 
 #define KAFS_V7_HASH_FAST_FNV1A64 2u
 #define KAFS_V7_HASH_STRONG_NONE 0u
@@ -281,6 +282,10 @@ typedef struct kafs_v7_layout_report
   uint64_t checkpoint_sequence;
   uint64_t free_blocks;
   uint64_t free_inodes;
+  uint64_t placement_span_bytes;
+  uint64_t placement_arena_bytes;
+  uint64_t min_group_data_blocks;
+  uint64_t max_group_data_blocks;
   kafs_v7_root_locator_t locator;
   kafs_v7_copy_report_t descriptors[KAFS_V7_REPLICA_MAX_COUNT];
   kafs_v7_copy_report_t checkpoints[KAFS_V7_REPLICA_MAX_COUNT];
@@ -296,6 +301,7 @@ typedef struct kafs_v7_mkfs_options
   double hrl_entry_ratio;
   uint16_t root_uid;
   uint16_t root_gid;
+  uint32_t group_count;
 } kafs_v7_mkfs_options_t;
 
 uint32_t kafs_v7_crc32(const void *buf, size_t bytes);

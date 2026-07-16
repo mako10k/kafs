@@ -43,6 +43,8 @@ static void usage(const char *prog)
       "    -i, --inodes <I>                  Inode count (default: 1 inode per 16KiB, min: 256)\n");
   fprintf(stderr,
           "    -J, --journal-size-bytes <J>      Journal size (default: 1MiB, min: 4KiB)\n");
+  fprintf(stderr, "    --v7-group-count <N>              v7 groups (default: auto, power of 2, "
+                  "1..64)\n");
   fprintf(stderr, "    --journal-header-rotation         Rotate journal header slots inside the "
                   "journal area\n");
   fprintf(stderr, "    --hrl-entry-ratio <R>             HRL entries/data-block ratio (default: "
@@ -321,11 +323,13 @@ typedef struct mkfs_options
   off_t total_bytes;
   kafs_inocnt_t inocnt;
   size_t journal_bytes;
+  uint32_t v7_group_count;
   double hrl_entry_ratio;
   int size_arg_provided;
   int inocnt_arg_provided;
   int trim_data_area;
   int journal_header_rotation;
+  int v7_group_count_arg_provided;
   int assume_yes;
 } mkfs_options_t;
 
@@ -378,6 +382,22 @@ static int mkfs_parse_format_version_option(const char *value, uint32_t *format_
   return 0;
 }
 
+static int mkfs_parse_v7_group_count_option(const char *value, uint32_t *group_count)
+{
+  char *end = NULL;
+  errno = 0;
+  unsigned long parsed = strtoul(value, &end, 0);
+  if (errno != 0 || !end || *end != '\0' || parsed == 0 || parsed > KAFS_V7_GROUP_MAX_COUNT ||
+      (parsed & (parsed - 1u)) != 0)
+  {
+    fprintf(stderr, "invalid v7 group count (expected power of 2 in 1..%u): %s\n",
+            KAFS_V7_GROUP_MAX_COUNT, value);
+    return 2;
+  }
+  *group_count = (uint32_t)parsed;
+  return 0;
+}
+
 static int mkfs_handle_arg(int argc, char **argv, int *index, mkfs_options_t *opts)
 {
   const char *arg = argv[*index];
@@ -412,6 +432,14 @@ static int mkfs_handle_arg(int argc, char **argv, int *index, mkfs_options_t *op
   {
     *index += 1;
     return mkfs_parse_journal_size_option(argv[*index], &opts->journal_bytes);
+  }
+  if (strcmp(arg, "--v7-group-count") == 0 && *index + 1 < argc)
+  {
+    *index += 1;
+    if (mkfs_parse_v7_group_count_option(argv[*index], &opts->v7_group_count) != 0)
+      return 2;
+    opts->v7_group_count_arg_provided = 1;
+    return 0;
   }
   if (strcmp(arg, "--journal-header-rotation") == 0)
   {
@@ -460,6 +488,11 @@ static int mkfs_collect_args(int argc, char **argv, mkfs_options_t *opts)
   if (!opts->img)
   {
     usage(argv[0]);
+    return 2;
+  }
+  if (opts->v7_group_count_arg_provided && opts->format_version != KAFS_FORMAT_VERSION_V7)
+  {
+    fprintf(stderr, "--v7-group-count requires --format-version 7\n");
     return 2;
   }
   return 0;
@@ -881,6 +914,7 @@ static int mkfs_format_v7(const mkfs_options_t *opts)
       .block_size = (uint32_t)opts->blksize,
       .inode_count = (uint32_t)inocnt,
       .journal_bytes = opts->journal_bytes,
+      .group_count = opts->v7_group_count,
       .hrl_entry_ratio = opts->hrl_entry_ratio,
       .root_uid = (uint16_t)getuid(),
       .root_gid = (uint16_t)getgid(),
@@ -897,18 +931,22 @@ static int mkfs_format_v7(const mkfs_options_t *opts)
   if (opts->trim_data_area)
   {
     const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(&report);
-    int trim_rc = mkfs_trim_range(ctx.c_fd, (off_t)le64toh(groups[0].data_physical_off),
-                                  (off_t)le64toh(groups[0].data_physical_bytes));
-    if (trim_rc != 0)
-      fprintf(stderr, "warning: --trim-data-area failed rc=%d\n", trim_rc);
+    for (uint32_t group_id = 0; group_id < report.group_count; ++group_id)
+    {
+      int trim_rc = mkfs_trim_range(ctx.c_fd, (off_t)le64toh(groups[group_id].data_physical_off),
+                                    (off_t)le64toh(groups[group_id].data_physical_bytes));
+      if (trim_rc != 0)
+        fprintf(stderr, "warning: --trim-data-area failed for v7 group %u rc=%d\n", group_id,
+                trim_rc);
+    }
   }
 
   fprintf(stderr,
           "Formatted %s: format=v7 size=%lld bytes, blksize=%u, physical_blocks=%u, "
-          "data_blocks=%" PRIu64 ", inodes=%u, replicas=%u\n",
+          "data_blocks=%" PRIu64 ", inodes=%u, groups=%u, replicas=%u\n",
           opts->img, (long long)total_bytes, (unsigned)opts->blksize,
           (unsigned)((uint64_t)total_bytes / opts->blksize), report.free_blocks, (unsigned)inocnt,
-          report.replica_count);
+          report.group_count, report.replica_count);
   kafs_v7_layout_report_clear(&report);
   close(ctx.c_fd);
   return 0;

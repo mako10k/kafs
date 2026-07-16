@@ -957,6 +957,14 @@ static void print_v7_json(const kafs_ssuperblock_t *sb, const kafs_v7_layout_rep
     }
   }
   printf("],\n");
+  printf("  \"wear_distribution\": {\"status\": \"%s\", "
+         "\"policy\": \"group-local-linear\", \"scope\": \"filesystem-placement\", "
+         "\"distributed\": %s, \"group_count\": %" PRIu32 ", \"placement_span_bytes\": %" PRIu64
+         ", \"placement_arena_bytes\": %" PRIu64 ", \"min_group_data_blocks\": %" PRIu64
+         ", \"max_group_data_blocks\": %" PRIu64 "},\n",
+         rc == 0 ? "ok" : rc_to_text(rc), rc == 0 && report->group_count > 1u ? "true" : "false",
+         report->group_count, report->placement_span_bytes, report->placement_arena_bytes,
+         report->min_group_data_blocks, report->max_group_data_blocks);
   printf("  \"journal_segments\": {\"status\": \"%s\", \"segment_count\": %" PRIu32
          ", \"checkpoint_sequence\": %" PRIu64 ", \"selected\": %s, "
          "\"degraded\": %s}\n",
@@ -992,6 +1000,13 @@ static void print_v7_text(const kafs_ssuperblock_t *sb, const kafs_v7_layout_rep
           " free_blocks=%" PRIu64 " free_inodes=%" PRIu64 "\n",
           report->selected_checkpoint, report->checkpoint_generation, report->checkpoint_sequence,
           report->free_blocks, report->free_inodes);
+  fprintf(stdout,
+          "wear distribution: policy=group-local-linear scope=filesystem-placement "
+          "distributed=%s span_bytes=%" PRIu64 " arena_bytes=%" PRIu64 " group_data_blocks=%" PRIu64
+          "..%" PRIu64 "\n",
+          rc == 0 && report->group_count > 1u ? "true" : "false", report->placement_span_bytes,
+          report->placement_arena_bytes, report->min_group_data_blocks,
+          report->max_group_data_blocks);
   fprintf(stdout, "journal segments: status=%s count=%" PRIu32 "\n",
           rc == 0 ? "ok" : rc_to_text(rc), report->journal_segment_count);
 }
