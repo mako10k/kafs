@@ -42,7 +42,7 @@ kafs_v6_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -DKAF
 kafs_v6_LDADD = $(KAFS_LIBS)
 
 kafs_v7_SOURCES = kafs_v7.c kafs_v7_runtime.c kafs_v7_runtime_view.c kafs_v7_layout.c \
-	kafs_v7_journal.c \
+	kafs_v7_journal.c kafs_v7_mutation.c \
 	kafs_v7_mount_options.c kafs_v7_entrypoint_adapter.c kafs_shared_fuse_runtime.c \
 	kafs_hrl.c kafs_locks.c kafs_journal.c kafs_rpc.c
 kafs_v7_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -DKAFS_NO_MAIN \
@@ -50,13 +50,14 @@ kafs_v7_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -DKAF
 kafs_v7_LDADD = $(KAFS_LIBS)
 
 # new mkfs.kafs target
-mkfs_kafs_SOURCES = mkfs_kafs.c kafs_v7_layout.c kafs_v7_journal.c kafs_hrl.c kafs_locks.c
+mkfs_kafs_SOURCES = mkfs_kafs.c kafs_v7_layout.c kafs_v7_journal.c kafs_v7_mutation.c \
+	kafs_hrl.c kafs_locks.c
 mkfs_kafs_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 mkfs_kafs_LDADD = $(KAFS_LIBS)
 
 # fsck.kafs target (journal check/clear + orphan reclaim)
-fsck_kafs_SOURCES = fsck_kafs.c kafs_v7_layout.c kafs_v7_journal.c kafs_hrl.c kafs_locks.c \
-	kafs_journal.c
+fsck_kafs_SOURCES = fsck_kafs.c kafs_v7_layout.c kafs_v7_journal.c kafs_v7_mutation.c \
+	kafs_hrl.c kafs_locks.c kafs_journal.c
 fsck_kafs_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 fsck_kafs_LDADD = $(KAFS_LIBS)
 
@@ -66,7 +67,7 @@ kafs_info_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 kafs_info_LDADD = $(KAFS_LIBS)
 
 # offline image dump tool
-kafsdump_SOURCES = kafsdump.c kafs_v7_layout.c kafs_v7_journal.c
+kafsdump_SOURCES = kafsdump.c kafs_v7_layout.c kafs_v7_journal.c kafs_v7_mutation.c
 kafsdump_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 kafsdump_LDADD = $(KAFS_LIBS)
 
@@ -99,7 +100,7 @@ noinst_HEADERS = kafs_block.h kafs_config.h kafs_context.h kafs_dirent.h kafs_in
 	kafs_v6_admission.h kafs_v6_fuse_init_policy.h kafs_v6_fuse_policy.h \
 	kafs_v6_layout.h kafs_v6_entrypoint_adapter.h kafs_v6_mount_options.h \
 	kafs_v6_runtime.h kafs_v7_admission.h kafs_v7_entrypoint_adapter.h \
-	kafs_v7_journal.h kafs_v7_layout.h kafs_v7_mount_options.h kafs_v7_runtime.h \
+	kafs_v7_journal.h kafs_v7_layout.h kafs_v7_mount_options.h kafs_v7_mutation.h kafs_v7_runtime.h \
 	kafs_v7_runtime_view.h
 
 CFLAGS = @CFLAGS@ -Wall -Werror -Wno-unused-function -Wno-unused-parameter

@@ -1,5 +1,7 @@
 #include "kafs_v7_journal.h"
 
+#include "kafs_v7_mutation.h"
+
 #include "kafs_tool_util.h"
 
 #include <endian.h>
@@ -178,69 +180,6 @@ static int kafs_v7_journal_record(const uint8_t *prefix, size_t prefix_bytes, si
   return 0;
 }
 
-static int kafs_v7_journal_target(const kafs_v7_layout_report_t *layout, uint16_t type,
-                                  uint32_t group_id, uint64_t logical_index, uint32_t target_bytes,
-                                  uint64_t *physical_off)
-{
-  if (!layout || !layout->descriptor || !physical_off || group_id >= layout->group_count)
-    return -EINVAL;
-  const kafs_v7_shard_desc_t *shards = kafs_v7_report_shards(layout);
-  const kafs_v7_shard_desc_t *local = &shards[(uint64_t)group_id * KAFS_V7_GROUP_LOCAL_SHARDS];
-  const kafs_v7_shard_desc_t *shard = NULL;
-  uint64_t start;
-  uint64_t count;
-  uint64_t index;
-  uint64_t bytes;
-  switch (type)
-  {
-  case KAFS_V7_JOURNAL_TARGET_BLOCK_BITMAP:
-    shard = &local[0];
-    start = le64toh(shard->logical_start);
-    count = le64toh(shard->logical_count);
-    if (target_bytes != 8u || logical_index < start || (logical_index - start) % 64u != 0 ||
-        logical_index - start >= count)
-      return -EINVAL;
-    index = (logical_index - start) / 64u;
-    *physical_off = le64toh(shard->physical_off) + index * 8u;
-    return 0;
-  case KAFS_V7_JOURNAL_TARGET_INODE:
-    shard = &local[1];
-    bytes = KAFS_V7_INODE_BYTES;
-    break;
-  case KAFS_V7_JOURNAL_TARGET_ALLOCATOR_SUMMARY:
-  {
-    uint64_t bitmap_count = le64toh(local[0].logical_count);
-    uint64_t l0_bytes = (bitmap_count + 7u) / 8u;
-    uint64_t l1_bytes = (l0_bytes + 7u) / 8u;
-    uint64_t l2_bytes = (l1_bytes + 7u) / 8u;
-    if (logical_index != le64toh(local[0].logical_start) || l1_bytes > UINT32_MAX - l2_bytes ||
-        target_bytes != l1_bytes + l2_bytes)
-      return -EINVAL;
-    *physical_off = le64toh(local[2].physical_off);
-    return 0;
-  }
-  case KAFS_V7_JOURNAL_TARGET_HRL_INDEX:
-    shard = &local[3];
-    bytes = 4u;
-    break;
-  case KAFS_V7_JOURNAL_TARGET_HRL_ENTRY:
-    shard = &local[4];
-    bytes = KAFS_V7_HRL_ENTRY_BYTES;
-    break;
-  default:
-    return -EINVAL;
-  }
-  start = le64toh(shard->logical_start);
-  count = le64toh(shard->logical_count);
-  if (target_bytes != bytes || logical_index < start || logical_index - start >= count)
-    return -EINVAL;
-  index = logical_index - start;
-  if (index > (UINT64_MAX - le64toh(shard->physical_off)) / bytes)
-    return -EOVERFLOW;
-  *physical_off = le64toh(shard->physical_off) + index * bytes;
-  return 0;
-}
-
 static int kafs_v7_validate_mutation(const kafs_v7_layout_report_t *layout, uint32_t group_id,
                                      const uint8_t *payload, uint32_t payload_bytes,
                                      int64_t *free_blocks_delta, int64_t *free_inodes_delta)
@@ -253,7 +192,7 @@ static int kafs_v7_validate_mutation(const kafs_v7_layout_report_t *layout, uint
   uint32_t target_bytes = le32toh(mutation->target_bytes);
   uint32_t patch_off = le32toh(mutation->patch_off);
   uint32_t patch_bytes = le32toh(mutation->patch_bytes);
-  uint64_t physical_off;
+  kafs_v7_mutation_route_t route;
   *free_blocks_delta =
       kafs_v7_journal_i64(payload + offsetof(kafs_v7_journal_mutation_t, free_blocks_delta));
   *free_inodes_delta =
@@ -262,10 +201,10 @@ static int kafs_v7_validate_mutation(const kafs_v7_layout_report_t *layout, uint
       le32toh(mutation->reserved) != 0 || patch_bytes == 0 ||
       patch_bytes != payload_bytes - KAFS_V7_JOURNAL_MUTATION_HEADER_BYTES ||
       patch_off > target_bytes || patch_bytes > target_bytes - patch_off ||
-      kafs_v7_journal_target(layout, type, group_id, le64toh(mutation->logical_index), target_bytes,
-                             &physical_off) != 0)
+      kafs_v7_mutation_route_target_in_group(layout, type, group_id,
+                                             le64toh(mutation->logical_index), &route) != 0 ||
+      target_bytes != route.target_bytes)
     return -EINVAL;
-  (void)physical_off;
   if (type == KAFS_V7_JOURNAL_TARGET_BLOCK_BITMAP)
   {
     if (*free_blocks_delta < -64 || *free_blocks_delta > 64 || *free_inodes_delta != 0)
@@ -583,11 +522,10 @@ static int kafs_v7_append_target_mutation(kafs_v7_journal_state_t *state,
   uint32_t group_id = le32toh(mutation->group_id);
   uint64_t logical_index = le64toh(mutation->logical_index);
   uint32_t target_bytes = le32toh(mutation->target_bytes);
-  uint64_t physical_off;
-  int rc =
-      kafs_v7_journal_target(layout, type, group_id, logical_index, target_bytes, &physical_off);
-  if (rc != 0)
-    return rc;
+  kafs_v7_mutation_route_t route;
+  int rc = kafs_v7_mutation_route_target_in_group(layout, type, group_id, logical_index, &route);
+  if (rc != 0 || target_bytes != route.target_bytes)
+    return rc != 0 ? rc : -EINVAL;
   kafs_v7_replay_target_t *target = NULL;
   for (size_t i = 0; i < state->target_count; ++i)
   {
@@ -595,8 +533,8 @@ static int kafs_v7_append_target_mutation(kafs_v7_journal_state_t *state,
     if (candidate->type == type && candidate->group_id == group_id &&
         candidate->logical_index == logical_index)
       target = candidate;
-    else if (physical_off < candidate->physical_off + candidate->target_bytes &&
-             candidate->physical_off < physical_off + target_bytes)
+    else if (route.physical_off < candidate->physical_off + candidate->target_bytes &&
+             candidate->physical_off < route.physical_off + target_bytes)
       return -EUCLEAN;
   }
   if (!target)
@@ -617,7 +555,7 @@ static int kafs_v7_append_target_mutation(kafs_v7_journal_state_t *state,
         .type = type,
         .group_id = group_id,
         .logical_index = logical_index,
-        .physical_off = physical_off,
+        .physical_off = route.physical_off,
         .target_bytes = target_bytes,
         .first_before_crc32 = le32toh(mutation->before_crc32),
     };
@@ -627,7 +565,7 @@ static int kafs_v7_append_target_mutation(kafs_v7_journal_state_t *state,
     uint32_t preceding_crc = target->mutation_count == 0
                                  ? target->first_before_crc32
                                  : target->mutations[target->mutation_count - 1u].after_crc32;
-    if (target->target_bytes != target_bytes || target->physical_off != physical_off ||
+    if (target->target_bytes != target_bytes || target->physical_off != route.physical_off ||
         preceding_crc != le32toh(mutation->before_crc32))
       return -EUCLEAN;
   }
