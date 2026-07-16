@@ -9,6 +9,7 @@ owned_files=(
   src/kafs_v7_layout.h
   tests/tests_v7_raw_layout_smoketest.c
   tests/tests_v7_multi_group_smoketest.c
+  tests/tests_v7_replica_fault_smoketest.c
 )
 
 for file in "${owned_files[@]}"; do
@@ -26,5 +27,6 @@ rg -q '^fsck_kafs_SOURCES = .*kafs_v7_layout\.c' src/Makefile.am
 rg -q '^kafsdump_SOURCES = .*kafs_v7_layout\.c' src/Makefile.am
 rg -q '^v7_raw_layout_smoketest_SOURCES = ' tests/Makefile.am
 rg -q '^v7_multi_group_smoketest_SOURCES = ' tests/Makefile.am
+rg -q '^v7_replica_fault_smoketest_SOURCES = ' tests/Makefile.am
 
 echo "v7 raw-layout ownership check: PASS"

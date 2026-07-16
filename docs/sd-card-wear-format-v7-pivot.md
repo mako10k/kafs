@@ -70,6 +70,13 @@ canonical single- and multi-group offline geometry.  Pre-specification version
 1 scaffold images may be reported with recreate guidance, but they are not
 accepted raw-layout images and must not pass v7 runtime admission or repair.
 
+The offline recovery proof covers primary/tail copies emitted by mkfs and an
+accepted three-copy sparse fixture with a midpoint recovery neighborhood.  It
+exercises independent descriptor/checkpoint loss, one- and two-neighborhood
+loss, asymmetric surviving copies, interrupted generation publication, and
+same-generation divergence.  These are filesystem-offset fault domains, not a
+claim about an SD controller's physical erase-block or FTL placement.
+
 Diagnostic keys are format-specific:
 
 - v6 keeps `v6_layout_descriptor`, `v6_bitmap_shards`, and
@@ -100,11 +107,10 @@ User-facing entrypoints and on-disk format numbers are no longer ambiguous:
 
 ## Follow-Up Boundaries
 
-1. Extend descriptor/checkpoint replica placement and same-generation
-   divergence testing with a real-media-oriented fault matrix.
-2. Prove `kafs-v7 --inspection-mount` with mount tests while keeping the write
+1. Prove `kafs-v7 --inspection-mount` with mount tests while keeping the write
    surface closed.
-3. Add `kafsresize --migrate-create --format-version 7` once the accepted v7
+2. Add `kafsresize --migrate-create --format-version 7` once the accepted v7
    mkfs, offline validation, and inspection surfaces are stable.
-4. Prove controlled-write admission, structured-journal recovery, locking, and
-   mutation fault tests before expanding the write surface.
+3. Prove group-local structured-journal recovery and crash fixtures offline.
+4. Prove controlled-write admission, locking, and multi-group mutation fault
+   tests before expanding the write surface.
