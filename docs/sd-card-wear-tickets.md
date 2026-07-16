@@ -2611,14 +2611,45 @@
   - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ87件・2.79%が
     1.0%閾値を超えたが、新規mutation router由来のcloneは検出されていない。
 
+### SDW-V7RT-T9 replicated K7CP publication
+
+- 目的: runtime write admissionを広げず、accepted raw-layoutの2-copy checkpoint publication順序と
+  power-loss再開規則をv7-owned APIで固定する。
+- 変更:
+  - `src/kafs_v7_checkpoint.*`がfresh validationから出版計画を作り、先行metadata/journalをflush後、
+    full checkpoint blockを1 copyずつwrite/flushする。
+  - canonical 2-copyでは両copyを更新する。3-copyではselected old generationを残したまま、循環順の
+    他2 copyへbyte-identicalな新世代を出版する。
+  - 各write後のflushと全replica再読込を行い、同一blockが2 copy以上確認できた時だけ成功する。
+  - power lossで新世代が1 copyだけ残った場合はgenerationを進めず、同じK7CP recordの2-copy目を
+    補完する。未適用journal mutation、generation overflow、read-only FDはfail closedにする。
+  - journal reclaim、concurrent writer locking、runtime controlled write admissionは有効化しない。
+- 完了条件:
+  - canonical 2-copyの通常出版後に新世代が2 copy一致し、image validatorが非degradedで再読込できる。
+  - 1-copy出版直後を模擬したimageがdegradedで選択され、publisherが同世代を2-copyへ復旧する。
+  - 3-copy出版ではold selected copyを保持したまま、他2 copyが新世代として選択される。
+  - guard matrixと既存descriptor/checkpoint fault matrixが回帰しない。
+- 実装結果:
+  - v7-owned plan/publish APIとdedicated `v7_checkpoint_publication_smoketest`を追加した。
+  - 既存`v7_replica_fault_smoketest`へ3-copy rotation proofを追加した。
+  - runtime mount/write境界は変更していない。
+- 検証結果（2026-07-16）:
+  - `autoreconf -fi && ./configure && make -j2`: PASS。
+  - `v7_checkpoint_publication_smoketest`と`v7_replica_fault_smoketest`: PASS。
+  - `v7_checkpoint_publication_smoketest`のValgrind definite/indirect leak gate: PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 37 PASS。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`./scripts/check-v7-layout-ownership.sh`、
+    `git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは87件・2.78%で、直前baselineの
+    87件・2.79%から件数増加はなく、新規checkpoint module由来のcloneは検出されていない。
+
 ---
 
 ## 次に着手する候補
 
-1. byte-identical 2-copy `K7CP` checkpoint publicationを実装する。
-2. v7 locking、global sequence publication、journal encoder、multi-group mutation fault matrixを通してから
+1. v7 locking、global sequence publication、journal encoder、multi-group mutation fault matrixを通してから
    controlled-write admissionを検討する。
-3. accepted offline/inspection surface安定後に`kafsresize --migrate-create --format-version 7`を追加する。
+2. accepted offline/inspection surface安定後に`kafsresize --migrate-create --format-version 7`を追加する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の

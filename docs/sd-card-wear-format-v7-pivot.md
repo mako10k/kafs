@@ -127,11 +127,16 @@ selected descriptor to one group and one physical target. Transaction planning
 is output-atomic and rejects cross-group or aliased targets before a journal
 begin record can be emitted.
 
+The v7-owned checkpoint publisher now writes and flushes full `K7CP` blocks one
+at a time, verifies at least two byte-identical selected-generation copies, and
+resumes an interrupted one-copy generation without advancing it. It retains
+the previous selected copy on three-replica images until two new copies exist;
+journal reclamation and runtime write admission remain outside this slice.
+
 Controlled write remains blocked by the v7 encoder, data-before-header
-publication ordering, byte-identical two-copy `K7CP` publication,
-filesystem-global sequence serialization, and explicit locking ranks. The
-successful v7 path must also stop using the v6-named controlled-write policy
-flag and v6 FUSE policy helper.
+publication ordering, filesystem-global sequence serialization, and explicit
+locking ranks. The successful v7 path must also stop using the v6-named
+controlled-write policy flag and v6 FUSE policy helper.
 
 FTL/ECC correlated-failure injection is not in this implementation blocker
 list.  It is governed by the RC media-qualification boundary in the accepted
@@ -151,11 +156,9 @@ raw-layout specification and does not relax any software recovery gate.
 
 ## Follow-Up Boundaries
 
-1. Implement byte-identical two-copy `K7CP` checkpoint publication without
-   widening runtime write admission.
-2. Add explicit v7 locking, global sequence publication, the journal encoder,
+1. Add explicit v7 locking, global sequence publication, the journal encoder,
    and multi-group mutation fault matrices before enabling controlled-write
    admission.
-3. Add `kafsresize --migrate-create --format-version 7` after the accepted
+2. Add `kafsresize --migrate-create --format-version 7` after the accepted
    offline and inspection surfaces are stable; migration does not outrank a
    blocker on the mount/write path.
