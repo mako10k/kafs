@@ -1,6 +1,7 @@
 #include "kafs_v7_layout.h"
 
 #include "kafs_tool_util.h"
+#include "kafs_v7_journal.h"
 
 #include <endian.h>
 #include <errno.h>
@@ -1608,14 +1609,17 @@ static int kafs_v7_select_checkpoints(int fd, const kafs_ssuperblock_t *sb, uint
   report->selected_checkpoint = selected;
   report->checkpoint_generation = highest;
   report->checkpoint_sequence = le64toh(records[selected].checkpoint_seq);
-  report->free_blocks = le64toh(records[selected].free_blocks);
-  report->free_inodes = le64toh(records[selected].free_inodes);
+  report->checkpoint_free_blocks = le64toh(records[selected].free_blocks);
+  report->checkpoint_free_inodes = le64toh(records[selected].free_inodes);
+  report->free_blocks = report->checkpoint_free_blocks;
+  report->free_inodes = report->checkpoint_free_inodes;
   if (equivalent < report->replica_count)
     report->degraded = 1;
   return 0;
 }
 
-static int kafs_v7_read_shard(int fd, const kafs_v7_shard_desc_t *shard, void **out)
+static int kafs_v7_read_shard(int fd, const kafs_v7_shard_desc_t *shard,
+                              const kafs_v7_journal_replay_t *replay, void **out)
 {
   uint64_t bytes = le64toh(shard->physical_bytes);
   if (!out || bytes == 0 || bytes > SIZE_MAX)
@@ -1623,7 +1627,9 @@ static int kafs_v7_read_shard(int fd, const kafs_v7_shard_desc_t *shard, void **
   void *buf = malloc((size_t)bytes);
   if (!buf)
     return -ENOMEM;
-  int rc = kafs_pread_all(fd, buf, (size_t)bytes, (off_t)le64toh(shard->physical_off));
+  int rc = replay ? kafs_v7_journal_overlay_pread(replay, fd, buf, (size_t)bytes,
+                                                  le64toh(shard->physical_off))
+                  : kafs_pread_all(fd, buf, (size_t)bytes, (off_t)le64toh(shard->physical_off));
   if (rc != 0)
   {
     free(buf);
@@ -1634,11 +1640,12 @@ static int kafs_v7_read_shard(int fd, const kafs_v7_shard_desc_t *shard, void **
 }
 
 static int kafs_v7_validate_bitmap_allocator(int fd, const kafs_v7_shard_desc_t *shards,
+                                             const kafs_v7_journal_replay_t *replay,
                                              uint64_t *free_blocks)
 {
   void *bitmap = NULL;
   void *allocator = NULL;
-  int rc = kafs_v7_read_shard(fd, &shards[0], &bitmap);
+  int rc = kafs_v7_read_shard(fd, &shards[0], replay, &bitmap);
   if (rc != 0)
     return rc;
   uint64_t blocks = le64toh(shards[0].logical_count);
@@ -1658,7 +1665,7 @@ static int kafs_v7_validate_bitmap_allocator(int fd, const kafs_v7_shard_desc_t 
       return -EINVAL;
     }
   }
-  rc = kafs_v7_read_shard(fd, &shards[2], &allocator);
+  rc = kafs_v7_read_shard(fd, &shards[2], replay, &allocator);
   if (rc != 0)
   {
     free(bitmap);
@@ -1697,10 +1704,11 @@ static int kafs_v7_validate_bitmap_allocator(int fd, const kafs_v7_shard_desc_t 
   return rc;
 }
 
-static int kafs_v7_validate_inodes(int fd, const kafs_v7_shard_desc_t *shard, uint64_t *free_inodes)
+static int kafs_v7_validate_inodes(int fd, const kafs_v7_shard_desc_t *shard,
+                                   const kafs_v7_journal_replay_t *replay, uint64_t *free_inodes)
 {
   void *area = NULL;
-  int rc = kafs_v7_read_shard(fd, shard, &area);
+  int rc = kafs_v7_read_shard(fd, shard, replay, &area);
   if (rc != 0)
     return rc;
   uint64_t count = le64toh(shard->logical_count);
@@ -1756,13 +1764,13 @@ static uint64_t kafs_v7_fnv1a64(const void *data, size_t bytes)
 
 static int kafs_v7_validate_hrl(int fd, const kafs_v7_shard_desc_t *shards,
                                 const kafs_v7_group_desc_t *group, uint32_t block_size,
-                                uint64_t total_bucket_count)
+                                uint64_t total_bucket_count, const kafs_v7_journal_replay_t *replay)
 {
   void *index_area = NULL;
   void *entry_area = NULL;
-  int rc = kafs_v7_read_shard(fd, &shards[3], &index_area);
+  int rc = kafs_v7_read_shard(fd, &shards[3], replay, &index_area);
   if (rc == 0)
-    rc = kafs_v7_read_shard(fd, &shards[4], &entry_area);
+    rc = kafs_v7_read_shard(fd, &shards[4], replay, &entry_area);
   if (rc != 0)
   {
     free(index_area);
@@ -1845,69 +1853,6 @@ static int kafs_v7_validate_hrl(int fd, const kafs_v7_shard_desc_t *shards,
   return rc;
 }
 
-static int kafs_v7_validate_journal(int fd, const kafs_v7_shard_desc_t *shards, uint32_t block_size,
-                                    uint64_t checkpoint_sequence, uint32_t *segment_count)
-{
-  void *headers = NULL;
-  int rc = kafs_v7_read_shard(fd, &shards[5], &headers);
-  if (rc != 0)
-    return rc;
-  uint64_t count_u64 = le64toh(shards[5].logical_count);
-  uint64_t start_u64 = le64toh(shards[5].logical_start);
-  if (count_u64 > UINT32_MAX || start_u64 > UINT32_MAX || count_u64 > UINT32_MAX - start_u64 ||
-      count_u64 > UINT32_MAX - *segment_count)
-  {
-    free(headers);
-    return -ERANGE;
-  }
-  uint32_t count = (uint32_t)count_u64;
-  uint32_t start = (uint32_t)start_u64;
-  uint64_t segment_bytes = le64toh(shards[6].physical_bytes) / count;
-  for (uint32_t local = 0; rc == 0 && local < count; ++local)
-  {
-    uint32_t segment = start + local;
-    const uint8_t *block = (const uint8_t *)headers + (uint64_t)local * block_size;
-    uint64_t highest = 0;
-    const kafs_v7_journal_header_t *selected = NULL;
-    for (uint32_t slot = 0; slot < block_size / KAFS_V7_JOURNAL_HEADER_BYTES; ++slot)
-    {
-      const kafs_v7_journal_header_t *header =
-          (const kafs_v7_journal_header_t *)(block + slot * KAFS_V7_JOURNAL_HEADER_BYTES);
-      if (kafs_v7_all_bytes(header, sizeof(*header), 0))
-        continue;
-      if (le32toh(header->magic) != KAFS_V7_JOURNAL_HEADER_MAGIC ||
-          le16toh(header->version) != KAFS_V7_JOURNAL_HEADER_VERSION ||
-          le16toh(header->flags) != 0 || le32toh(header->segment_id) != segment ||
-          le32toh(header->slot_bytes) != KAFS_V7_JOURNAL_HEADER_BYTES ||
-          le64toh(header->generation) == 0 || le64toh(header->data_bytes) != segment_bytes ||
-          le64toh(header->write_bytes) > segment_bytes || le32toh(header->reserved) != 0 ||
-          le32toh(header->crc32) != kafs_v7_journal_header_crc(header) ||
-          (le64toh(header->generation) - 1u) % (block_size / KAFS_V7_JOURNAL_HEADER_BYTES) != slot)
-        continue;
-      uint64_t generation = le64toh(header->generation);
-      if (generation > highest)
-      {
-        highest = generation;
-        selected = header;
-      }
-      else if (generation == highest && selected && memcmp(selected, header, sizeof(*header)) != 0)
-      {
-        rc = -EUCLEAN;
-        break;
-      }
-    }
-    if (rc == 0 && !selected)
-      rc = -EINVAL;
-    if (rc == 0 && (le64toh(selected->write_bytes) != 0 || le64toh(selected->first_sequence) != 0 ||
-                    le64toh(selected->last_sequence) != 0 || checkpoint_sequence != 0))
-      rc = -ENOTSUP;
-  }
-  free(headers);
-  if (rc == 0)
-    *segment_count += count;
-  return rc;
-}
-
 static int kafs_v7_validate_payloads(int fd, const kafs_ssuperblock_t *sb,
                                      kafs_v7_layout_report_t *report)
 {
@@ -1923,6 +1868,8 @@ static int kafs_v7_validate_payloads(int fd, const kafs_ssuperblock_t *sb,
   uint64_t last_metadata_off = le64toh(groups[report->group_count - 1u].metadata_physical_off);
   uint64_t min_data_blocks = UINT64_MAX;
   uint64_t max_data_blocks = 0;
+  kafs_v7_journal_replay_t replay;
+  memset(&replay, 0, sizeof(replay));
   int rc =
       kafs_v7_add_u64(le64toh(groups[report->group_count - 1u].data_physical_off),
                       le64toh(groups[report->group_count - 1u].data_physical_bytes), &data_end);
@@ -1930,6 +1877,12 @@ static int kafs_v7_validate_payloads(int fd, const kafs_ssuperblock_t *sb,
   {
     const kafs_v7_shard_desc_t *local = &shards[(uint64_t)group_id * KAFS_V7_GROUP_LOCAL_SHARDS];
     rc = kafs_v7_add_u64(total_bucket_count, le64toh(local[3].logical_count), &total_bucket_count);
+    uint64_t segment_count = le64toh(local[5].logical_count);
+    if (rc == 0 &&
+        (segment_count > UINT32_MAX || segment_count > UINT32_MAX - report->journal_segment_count))
+      rc = -ERANGE;
+    if (rc == 0)
+      report->journal_segment_count += (uint32_t)segment_count;
     uint64_t data_blocks = le64toh(groups[group_id].data_logical_count);
     if (data_blocks < min_data_blocks)
       min_data_blocks = data_blocks;
@@ -1950,19 +1903,23 @@ static int kafs_v7_validate_payloads(int fd, const kafs_ssuperblock_t *sb,
   }
   else if (rc == 0)
     rc = kafs_v7_validate_zero_range(fd, data_end, checkpoint_offsets[1] - data_end);
-  report->journal_segment_count = 0;
+  if (rc == 0)
+    rc = kafs_v7_journal_analyze_fd(fd, report, &replay);
+  if (rc == 0)
+  {
+    report->journal = replay.report;
+    report->free_blocks = replay.recovered_free_blocks;
+    report->free_inodes = replay.recovered_free_inodes;
+  }
   for (uint32_t group_id = 0; rc == 0 && group_id < report->group_count; ++group_id)
   {
     const kafs_v7_group_desc_t *group = &groups[group_id];
     const kafs_v7_shard_desc_t *local = &shards[(uint64_t)group_id * KAFS_V7_GROUP_LOCAL_SHARDS];
-    rc = kafs_v7_validate_bitmap_allocator(fd, local, &free_blocks);
+    rc = kafs_v7_validate_bitmap_allocator(fd, local, &replay, &free_blocks);
     if (rc == 0)
-      rc = kafs_v7_validate_inodes(fd, &local[1], &free_inodes);
+      rc = kafs_v7_validate_inodes(fd, &local[1], &replay, &free_inodes);
     if (rc == 0)
-      rc = kafs_v7_validate_hrl(fd, local, group, report->block_size, total_bucket_count);
-    if (rc == 0)
-      rc = kafs_v7_validate_journal(fd, local, report->block_size, report->checkpoint_sequence,
-                                    &report->journal_segment_count);
+      rc = kafs_v7_validate_hrl(fd, local, group, report->block_size, total_bucket_count, &replay);
   }
   if (rc == 0 &&
       (free_blocks != report->free_blocks || free_inodes != report->free_inodes ||
@@ -1975,6 +1932,7 @@ static int kafs_v7_validate_payloads(int fd, const kafs_ssuperblock_t *sb,
     report->min_group_data_blocks = min_data_blocks;
     report->max_group_data_blocks = max_data_blocks;
   }
+  kafs_v7_journal_replay_clear(&replay);
   return rc;
 }
 

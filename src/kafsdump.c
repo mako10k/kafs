@@ -966,11 +966,26 @@ static void print_v7_json(const kafs_ssuperblock_t *sb, const kafs_v7_layout_rep
          report->group_count, report->placement_span_bytes, report->placement_arena_bytes,
          report->min_group_data_blocks, report->max_group_data_blocks);
   printf("  \"journal_segments\": {\"status\": \"%s\", \"segment_count\": %" PRIu32
-         ", \"checkpoint_sequence\": %" PRIu64 ", \"selected\": %s, "
+         ", \"nonempty_segment_count\": %" PRIu32 ", \"checkpoint_sequence\": %" PRIu64
+         ", \"first_sequence\": %" PRIu64 ", \"last_sequence\": %" PRIu64
+         ", \"record_count\": %" PRIu32 ", \"transaction_count\": %" PRIu32
+         ", \"pending_transaction_count\": %" PRIu32 ", \"committed_transaction_count\": %" PRIu32
+         ", \"aborted_transaction_count\": %" PRIu32 ", \"duplicate_transaction_count\": %" PRIu32
+         ", \"mutation_count\": %" PRIu32 ", \"already_applied_mutation_count\": %" PRIu32
+         ", \"replay_mutation_count\": %" PRIu32 ", \"checkpoint_free_blocks\": %" PRIu64
+         ", \"checkpoint_free_inodes\": %" PRIu64 ", \"recovered_free_blocks\": %" PRIu64
+         ", \"recovered_free_inodes\": %" PRIu64 ", \"selected\": %s, "
          "\"degraded\": %s}\n",
          rc == 0 ? "ok" : rc_to_text(rc), report->journal_segment_count,
-         report->checkpoint_sequence, rc == 0 ? "true" : "false",
-         report->degraded ? "true" : "false");
+         report->journal.selected_nonempty_segment_count, report->checkpoint_sequence,
+         report->journal.first_sequence, report->journal.last_sequence,
+         report->journal.record_count, report->journal.transaction_count,
+         report->journal.pending_transaction_count, report->journal.committed_transaction_count,
+         report->journal.aborted_transaction_count, report->journal.duplicate_transaction_count,
+         report->journal.mutation_count, report->journal.already_applied_mutation_count,
+         report->journal.replay_mutation_count, report->checkpoint_free_blocks,
+         report->checkpoint_free_inodes, report->free_blocks, report->free_inodes,
+         rc == 0 ? "true" : "false", report->degraded ? "true" : "false");
   printf("}\n");
 }
 
@@ -997,9 +1012,11 @@ static void print_v7_text(const kafs_ssuperblock_t *sb, const kafs_v7_layout_rep
             report->descriptors[id].selected ? "true" : "false", report->descriptors[id].offset);
   fprintf(stdout,
           "checkpoint: selected_replica=%" PRIu32 " generation=%" PRIu64 " sequence=%" PRIu64
-          " free_blocks=%" PRIu64 " free_inodes=%" PRIu64 "\n",
+          " free_blocks=%" PRIu64 " free_inodes=%" PRIu64 " recovered_free_blocks=%" PRIu64
+          " recovered_free_inodes=%" PRIu64 "\n",
           report->selected_checkpoint, report->checkpoint_generation, report->checkpoint_sequence,
-          report->free_blocks, report->free_inodes);
+          report->checkpoint_free_blocks, report->checkpoint_free_inodes, report->free_blocks,
+          report->free_inodes);
   fprintf(stdout,
           "wear distribution: policy=group-local-linear scope=filesystem-placement "
           "distributed=%s span_bytes=%" PRIu64 " arena_bytes=%" PRIu64 " group_data_blocks=%" PRIu64
@@ -1007,8 +1024,18 @@ static void print_v7_text(const kafs_ssuperblock_t *sb, const kafs_v7_layout_rep
           rc == 0 && report->group_count > 1u ? "true" : "false", report->placement_span_bytes,
           report->placement_arena_bytes, report->min_group_data_blocks,
           report->max_group_data_blocks);
-  fprintf(stdout, "journal segments: status=%s count=%" PRIu32 "\n",
-          rc == 0 ? "ok" : rc_to_text(rc), report->journal_segment_count);
+  fprintf(stdout,
+          "journal replay: status=%s segments=%" PRIu32 " nonempty=%" PRIu32 " sequence=%" PRIu64
+          "..%" PRIu64 " records=%" PRIu32 " transactions=%" PRIu32 " pending=%" PRIu32
+          " committed=%" PRIu32 " aborted=%" PRIu32 " duplicates=%" PRIu32 " mutations=%" PRIu32
+          " already_applied=%" PRIu32 " replay=%" PRIu32 "\n",
+          rc == 0 ? "ok" : rc_to_text(rc), report->journal_segment_count,
+          report->journal.selected_nonempty_segment_count, report->journal.first_sequence,
+          report->journal.last_sequence, report->journal.record_count,
+          report->journal.transaction_count, report->journal.pending_transaction_count,
+          report->journal.committed_transaction_count, report->journal.aborted_transaction_count,
+          report->journal.duplicate_transaction_count, report->journal.mutation_count,
+          report->journal.already_applied_mutation_count, report->journal.replay_mutation_count);
 }
 
 int main(int argc, char **argv)

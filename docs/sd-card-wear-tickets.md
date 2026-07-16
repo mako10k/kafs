@@ -2540,14 +2540,51 @@
     `./scripts/static-checks.sh`はcloneだけnon-passingで、strict gateは既存baselineと同じ87件・2.9%が
     1.0%閾値を超えた。実装中に増えた3 cloneはneutral helper抽出で解消し、baselineへ戻した。
 
+### SDW-V7RT-T7 group-local structured journal offline replay proof
+
+- 目的: selected `K7JH` prefix の非空 journal を v7-owned wire parser で検証し、元imageを書き換えずに
+  committed transaction の最終metadata/counterへ収束できることを crash fixture で証明する。
+- 変更:
+  - `src/kafs_v7_journal.*` が `K7JB/K7JM/K7JC/K7JA` record CRC、padding、control一致、mutation stream
+    CRC、group-local target identity/deltaを検証する。
+  - 各segment内のsequence単調増加とheaderのfirst/lastを検証し、filesystem-globalにbyte-identical duplicateを
+    dedupeする。checkpoint後のgap、同一sequenceのdivergence、commit/abort不一致はfail closedにする。
+  - committed mutationをtarget単位のbefore/after CRC chainへまとめ、current targetがinitialまたは任意の
+    after stateであることを確認して残りのpatchをmemory overlayへ適用する。aborted mutationはtransitionへ
+    加えず、そのbefore stateがcommitted chainと一致することだけを要求する。
+  - overlay後のbitmap/allocator、inode、HRLを既存v7 semantic validatorで再検証し、checkpoint counterへ
+    committed deltaを一度だけ加えたrecovered counterと照合する。元imageへのrepair/writeは行わない。
+  - `fsck.kafs`と`kafsdump`はnonempty segment、transaction、duplicate、commit/abort、already-applied/replay
+    mutation、checkpoint/recovered counterを報告する。
+  - runtime inspection admissionはselected nonempty segmentを引き続き`ENOTSUP`で拒否する。
+- 完了条件:
+  - 未適用、bitmapのみ適用、bitmap+allocator summary適用、全target適用の同一transaction fixtureが、同じ
+    recovered metadata/counterへoffline収束する。
+  - torn selected prefix、record CRC破損、sequence gap、divergent duplicate、targetの第三状態を確実に拒否する。
+  - byte-identical duplicateとabortはsequenceを正しく消費し、abortのdelta/patchをrecovered stateへ適用しない。
+  - v6 public wire/layout entrypointへ依存せず、nonempty runtime mount、repair、controlled writeを有効化しない。
+- 実装結果:
+  - v7-owned packed wire recordsとcompile-time size/offset assertion、offline parser、global replay planner、
+    memory overlayを追加した。
+  - dedicated `v7_journal_replay_smoketest`が上記crash/rejection matrixとruntime fail-closed、fsck/dump reportを
+    固定する。
+- 検証結果（2026-07-16）:
+  - `autoreconf -fi && ./configure && make -j2`: PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 35 PASS。
+  - v7 entrypoint/raw-layout/multi-group/replica-fault/inspection-mount/journal-replayの6 smoke test: PASS。
+  - `v7_journal_replay_smoketest`のValgrind definite/indirect leak gate: PASS。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`./scripts/check-v7-layout-ownership.sh`、
+    `git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ87件・2.81%が
+    1.0%閾値を超えたが、新規journal実装由来のcloneは検出されていない。
+
 ---
 
 ## 次に着手する候補
 
-1. group-local structured journal parse/replayとcrash fixtureをofflineで実装する。
-2. v7-owned mutation routing、2-copy checkpoint publication、locking、multi-group mutation fault matrixを
+1. v7-owned mutation routing、2-copy checkpoint publication、locking、multi-group mutation fault matrixを
    通してからcontrolled-write admissionを検討する。
-3. accepted offline/inspection surface安定後に`kafsresize --migrate-create --format-version 7`を追加する。
+2. accepted offline/inspection surface安定後に`kafsresize --migrate-create --format-version 7`を追加する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の

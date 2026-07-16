@@ -890,7 +890,9 @@ The mutation payload is:
 ```
 
 `target_type` is one of block bitmap, inode, allocator summary, HRL index, or
-HRL entries.  Target identity is canonical: bitmap uses the word's
+HRL entries.  The wire values are respectively `1`, `2`, `3`, `4`, and `5`,
+matching the corresponding v7-owned shard type ids; no other value is
+accepted.  Target identity is canonical: bitmap uses the word's
 64-block-aligned first logical block, inode uses the inode number, allocator
 summary uses its paired bitmap shard's `logical_start`, HRL index uses the
 bucket id, and HRL entry uses the entry id.  The descriptor resolves that value
