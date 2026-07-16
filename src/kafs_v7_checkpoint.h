@@ -1,5 +1,6 @@
 #pragma once
 
+#include "kafs_v7_journal.h"
 #include "kafs_v7_layout.h"
 #include "kafs_v7_locks.h"
 
@@ -24,6 +25,17 @@ typedef struct kafs_v7_checkpoint_publish_result
   uint8_t resumed;
 } kafs_v7_checkpoint_publish_result_t;
 
+typedef struct kafs_v7_metadata_closeout_result
+{
+  kafs_v7_journal_apply_result_t apply;
+  kafs_v7_journal_reclaim_result_t reclaim;
+  kafs_v7_checkpoint_publish_result_t last_checkpoint_publication;
+  uint64_t final_checkpoint_generation;
+  uint64_t final_checkpoint_sequence;
+  uint32_t checkpoint_publication_count;
+  uint32_t checkpoint_resume_count;
+} kafs_v7_metadata_closeout_result_t;
+
 /*
  * Build the next publication plan from a freshly validated layout report.
  * A report with only one selected-generation copy resumes that generation;
@@ -38,3 +50,13 @@ int kafs_v7_checkpoint_plan(const kafs_v7_layout_report_t *layout, kafs_v7_check
  */
 int kafs_v7_checkpoint_publish_fd(kafs_v7_lock_state_t *locks, int fd, const kafs_ssuperblock_t *sb,
                                   uint64_t file_size, kafs_v7_checkpoint_publish_result_t *result);
+
+/*
+ * Under one checkpoint/write-gate hold, restore checkpoint redundancy when
+ * needed, materialize committed metadata, publish a covering checkpoint, and
+ * reset only journal segments covered by that checkpoint. The operation is
+ * crash-resumable at every durability boundary and does not grant runtime
+ * controlled-write admission.
+ */
+int kafs_v7_metadata_closeout_fd(kafs_v7_lock_state_t *locks, int fd, const kafs_ssuperblock_t *sb,
+                                 uint64_t file_size, kafs_v7_metadata_closeout_result_t *result);

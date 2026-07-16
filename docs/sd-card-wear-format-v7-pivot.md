@@ -165,10 +165,16 @@ collision/gap, loss of a middle group's selected payload/header, and a
 checksum-consistent mutation that claims a foreign group. This does not enable
 cross-group atomic transactions.
 
-Controlled write remains blocked by metadata apply/checkpoint/reclamation and
-runtime mutation integration that uses the documented cross-family lock order.
-The successful v7 path must also stop using the v6-named controlled-write
-policy flag and v6 FUSE policy helper.
+The v7 metadata closeout now materializes replay after-images, flushes and
+read-backs those targets, publishes two byte-identical covering checkpoints,
+and only then rotates covered group-local segments to flushed empty headers.
+It restores an interrupted one-copy checkpoint before changing metadata and
+resumes cleanly after target apply, checkpoint publication, or a partial
+segment reset.
+
+Controlled write remains blocked by runtime mutation integration that uses the
+documented cross-family lock order. The successful v7 path must also stop using
+the v6-named controlled-write policy flag and v6 FUSE policy helper.
 
 FTL/ECC correlated-failure injection is not in this implementation blocker
 list.  It is governed by the RC media-qualification boundary in the accepted
@@ -188,8 +194,8 @@ raw-layout specification and does not relax any software recovery gate.
 
 ## Follow-Up Boundaries
 
-1. Add metadata apply/checkpoint/reclamation and cross-family lock integration
-   before enabling controlled-write admission.
+1. Add cross-family lock integration and a v7-owned runtime mutation/admission
+   policy before enabling controlled-write admission.
 2. Add `kafsresize --migrate-create --format-version 7` after the accepted
    offline and inspection surfaces are stable; migration does not outrank a
    blocker on the mount/write path.
