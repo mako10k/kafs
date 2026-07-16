@@ -89,36 +89,30 @@ User-facing entrypoints and on-disk format numbers are no longer ambiguous:
 | --- | --- |
 | `kafs` | Production v4/v5 runtime. Rejects v6/v7 descriptor-backed images. |
 | `kafs-v6` | Frozen experimental v6 runtime entrypoint. |
-| `kafs-v7` | Breaking-change descriptor-backed runtime entrypoint. |
-| `mkfs.kafs --format-version 7` | Emits the accepted version 2 grouped raw layout for offline validation. |
+| `kafs-v7` | Breaking-change descriptor-backed entrypoint; admits accepted v7 images for read-only inspection. |
+| `mkfs.kafs --format-version 7` | Emits the accepted version 2 grouped raw layout for offline validation and inspection. |
 | `fsck.kafs` / `kafsdump` | Validate/report descriptor-backed v6/v7 images offline. |
 
-## Runtime Enablement Blockers
+## Runtime Inspection Status
 
-The 2026-07-16 source/docs audit found that the next work is not merely a mount
-smoke.  Accepted v7 images are intentionally rejected in the descriptor
-runtime-view loader, and removing that rejection alone would make the shared
-runtime interpret incompatible v7 state through v6/legacy assumptions.
+The read-only inspection blockers identified by the 2026-07-16 source/docs
+audit are now closed for the bounded initial runtime surface:
 
-Read-only inspection is blocked by all of the following:
-
-1. The accepted `K7LD`/`K7CP` selection must be retained in a v7-owned runtime
-   view without using the v6 descriptor parser or v6-owned public entrypoint.
-2. The accepted namespace payload must explicitly adopt a v7-owned directory
-   wire contract.  The existing `KDIR` version 1 shape is the preferred proven
-   shape, but implicit reuse is not an accepted v7 contract.
-3. Inode shard lookup, `N+1` block-reference decoding, and group-local logical
-   data-block to physical-offset mapping must be routed through v7-owned or
-   clearly neutral helpers.  The shared `logical_block << log_blksize` mapping
-   is invalid for grouped v7 images.
-4. `statfs` and runtime counters must use `s_r_blkcnt` and the selected `K7CP`
-   recovered counts, not legacy mutable fields in the primary superblock.
-5. The first inspection slice may admit only `checkpoint_seq == 0` with empty
-   journal segments.  Non-empty structured journal state remains fail-closed
-   until replay/simulation is implemented.
-6. A successful mount regression must prove nested lookup/readdir, inline and
-   block-backed reads, degraded replica inspection, malformed admission
-   rejection, and `EROFS` for every mutation surface.
+1. The validator-selected `K7LD`/`K7CP` state is retained in a v7-owned runtime
+   view without using a v6 public wire/layout entrypoint.
+2. The accepted raw-layout specification explicitly owns the `KDIR` version 1
+   namespace contract for v7; mkfs emits a canonical empty root payload.
+3. Inode shard lookup, retained `N+1` references, and group-local logical data
+   mapping are used by the shared read path. Logical block zero remains
+   distinguishable from a zero/hole reference.
+4. `statfs` reports `s_r_blkcnt` and the selected `K7CP` recovered counters.
+5. Admission is intentionally bounded to `checkpoint_seq == 0` with empty
+   journal segments. The image is opened and mapped read-only and runtime
+   mutation guards return `EROFS`.
+6. The mount regression covers multi-group nested lookup/readdir, inline and
+   block-backed reads, symlinks, degraded recovery-pair inspection, unpaired
+   publication rejection before FUSE, mutation rejection, and an unchanged
+   image digest after unmount.
 
 Controlled write is additionally blocked by the v7 `K7JB/K7JM/K7JC/K7JA`
 encoder/parser/replay, data-before-header publication ordering, byte-identical
@@ -145,14 +139,10 @@ raw-layout specification and does not relax any software recovery gate.
 
 ## Follow-Up Boundaries
 
-1. Define the explicit v7 namespace payload and implement v7-owned read-only
-   runtime views, data mapping, block-reference decoding, recovered `statfs`,
-   and meaningful `kafs-v7 --inspection-mount` tests while keeping the write
-   surface closed.
-2. Prove group-local structured-journal parsing/replay and crash fixtures
+1. Prove group-local structured-journal parsing/replay and crash fixtures
    offline, including non-empty images produced after controlled interruption.
-3. Implement v7-owned mutation routing, checkpoint publication, locking, and
+2. Implement v7-owned mutation routing, checkpoint publication, locking, and
    multi-group fault matrices before enabling controlled-write admission.
-4. Add `kafsresize --migrate-create --format-version 7` after the accepted
+3. Add `kafsresize --migrate-create --format-version 7` after the accepted
    offline and inspection surfaces are stable; migration does not outrank a
    blocker on the mount/write path.

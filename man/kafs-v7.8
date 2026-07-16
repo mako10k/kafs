@@ -1,5 +1,5 @@
 '.\" -*- nroff -*-
-.TH KAFS-V7 8 "2026-07-07" "kafs 0.4.0" "System Administration"
+.TH KAFS-V7 8 "2026-07-16" "kafs 0.4.0" "System Administration"
 .SH NAME
 kafs-v7 \- dedicated format v7 runtime entrypoint
 .SH SYNOPSIS
@@ -10,29 +10,36 @@ kafs-v7 \- dedicated format v7 runtime entrypoint
 .I mountpoint
 .BR -o " " ro
 .RI [ FUSE\ options ]
-.PP
-.B kafs-v7
-.RB --image
-.I image
-.B --controlled-write-mount
-.I mountpoint
-.BR -o " " rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full
 .SH DESCRIPTION
 .B kafs-v7
 is the dedicated format v7 runtime entrypoint.
 It validates the format v7 CLI boundary, rejects legacy
 .B v6_*
-mount-option mode tokens, runs descriptor preflight, and then admits the
-selected descriptor-backed runtime contract.
+mount-option mode tokens, runs descriptor/checkpoint preflight, and admits an
+accepted format v7 image for read-only inspection.
+.PP
+Inspection admission is limited to a selected descriptor/checkpoint pair at
+.B checkpoint_seq=0
+with empty journal segments.  A single surviving valid recovery pair may be
+mounted in degraded inspection mode.  Divergent or unpaired state fails closed
+before FUSE starts.
+.PP
+The backing image is opened read-only, mapped read-only, and mounted with FUSE
+.BR ro .
+Mutation requests fail with
+.BR EROFS ,
+and the selected checkpoint's recovered free-block and free-inode counters are
+reported by
+.BR statfs (2).
 .PP
 Format v6 was an experimental implementation used to split the runtime
 entrypoint, descriptor admission, and controlled-write policy away from the
 production
 .BR kafs (1)
 binary.  Format v7 is the breaking-change continuation of that work.  The
-current v7 implementation has its own entrypoint/runtime/adapter source set;
-only the low-level descriptor scaffold helper still carries historical v6
-internal names pending a neutral rename.
+current v7 implementation has its own entrypoint, admission, selected runtime
+view, layout, and adapter source set and does not route successful admission
+through the v6 public wire/layout entrypoint.
 .PP
 The existing
 .B kafs
@@ -55,9 +62,8 @@ The request must include
 .BR -o " " ro .
 .TP
 .B --controlled-write-mount
-Select the experimental v7 controlled write contract.
-The request must include
-.BR -o " " rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full .
+Reserved for a future v7 controlled-write contract.  The option is recognized,
+but current runtime admission fails closed and does not modify the image.
 .TP
 .BR --option " " <opt[,opt...]>
 Alias for FUSE
@@ -66,6 +72,10 @@ Alias for FUSE
 .BR --option= "<opt[,opt...]>"
 Inline form of
 .BR --option .
+.SH CURRENT LIMITS
+Non-empty journal replay, repair, controlled write, checkpoint publication,
+multi-group mutation, cross-group HRL mutation, migration, and hotplug write
+delegation are not enabled by this entrypoint.
 .SH EXIT STATUS
 .TP
 .B 0

@@ -32,8 +32,6 @@ static void usage(const char *prog)
   fprintf(stderr,
           "Usage:\n"
           "  %s --image <image> --inspection-mount <mountpoint> -o ro [FUSE options...]\n"
-          "  %s --image <image> --controlled-write-mount <mountpoint> \\\n"
-          "      -o rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full\n"
           "  %s <image> <mountpoint> --inspection-mount -o ro [FUSE options...]\n"
           "\n"
           "Options:\n"
@@ -43,18 +41,19 @@ static void usage(const char *prog)
           " image path (inline form)\n"
           "  --inspection-mount         Select the read-only " KAFS_V7_TOOL_FORMAT_LABEL
           " inspection contract\n"
-          "  --controlled-write-mount   Select the experimental " KAFS_V7_TOOL_FORMAT_LABEL
-          " controlled write contract\n"
+          "  --controlled-write-mount   Reserved; controlled-write admission is not yet enabled\n"
           "  --option <opt[,opt...]>    Alias for FUSE -o\n"
           "  --option=<opt[,opt...]>    Inline form of --option\n"
           "\n"
           "Notes:\n"
           "  This is the dedicated format " KAFS_V7_TOOL_FORMAT_LABEL
           " runtime entrypoint. It owns " KAFS_V7_TOOL_FORMAT_LABEL " CLI\n"
-          "  admission, rejects legacy v7_* mount tokens, and admits read-only\n"
-          "  inspection or controlled-write mounts after descriptor preflight.\n"
-          "  Controlled write requires the explicit conservative policy shape.\n",
-          prog, prog, prog);
+          "  admission and rejects legacy v6_* mount tokens. Inspection accepts only\n"
+          "  a validated descriptor/checkpoint pair at checkpoint_seq=0 with empty\n"
+          "  journal segments. The image is opened and mapped read-only, and all\n"
+          "  mutation operations fail with EROFS. Non-empty journal replay, repair,\n"
+          "  and controlled write remain unavailable and fail closed.\n",
+          prog, prog);
 }
 
 static void kafs_v7_options_init(kafs_v7_options_t *opts, char **fuse_args, int fuse_arg_cap)

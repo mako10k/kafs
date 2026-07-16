@@ -2515,17 +2515,39 @@
 - 対象外:
   - non-empty journal replay、repair、controlled write、checkpoint publication、multi-group atomic mutation、
     cross-group HRL、migration、FTL/ECC physical-failure-domain proof。
+- 実装結果:
+  - accepted raw-layoutへv7-owned `KDIR` version 1 contractを追加し、mkfsのroot inodeはcanonical empty
+    directory payloadを持つようにした。
+  - validatorが選択したdescriptor/checkpoint、inode shard map、group data map、recovered countersを
+    `kafs_v7_runtime_view`が保持し、successful admissionはv6 public wire/layout entrypointを通らない。
+  - `N+1` data referenceはlogical block 0をholeと区別するため物理offset解決まで保持し、group mapから
+    authoritative physical rangeへ解決する。`statfs`は`s_r_blkcnt`とselected `K7CP` counterを使う。
+  - inspection imageを`O_RDONLY`/read-only mapping/FUSE `ro`で扱い、shared mutation guardと低level
+    write defenseは`EROFS`を返す。controlled-write admissionは引き続きfail closedである。
+  - 4-group fixtureのactual FUSE mountでnested traversal、inline file、group 3のblock-backed file、symlink、
+    recovered `statfs`、mutation `EROFS`、unmount後image digest不変を確認した。primary descriptor/checkpoint
+    lossはdegraded mountでき、unpaired higher descriptor generationはFUSE開始前に拒否する。
+- 検証結果（2026-07-16）:
+  - `make -C tests -j2 v7_inspection_mount_smoketest`と専用test直接実行はPASSし、pristine/degradedの
+    2回とも実FUSE mountを通過した。
+  - v7回帰5本と`./scripts/check-v7-layout-ownership.sh`、`git diff --check`はPASSした。
+  - clean `bear -- make -j2`で`compile_commands.json`を更新し、v7 runtime view、shared FUSE runtime、
+    inspection mount testのclangd diagnosticsは0件だった。
+  - refactor前のfull `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`は34/34 PASS。最終codeでは
+    33 PASS / `stress_fs` 1 SKIPでexit 0となり、SKIP理由は一時的なmount失敗だった。直後の
+    `make -C tests check TESTS=stress_fs`はPASSし、全34 testのPASSを確認した。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、complexity、ownership、`git diff --check`はPASS。
+    `./scripts/static-checks.sh`はcloneだけnon-passingで、strict gateは既存baselineと同じ87件・2.9%が
+    1.0%閾値を超えた。実装中に増えた3 cloneはneutral helper抽出で解消し、baselineへ戻した。
 
 ---
 
 ## 次に着手する候補
 
-1. `SDW-V7RT-T6`としてv7 namespace contract、read-only runtime views、group data mapping、plus-one
-   decode、recovered `statfs`を実装してから、意味のある`kafs-v7 --inspection-mount`を通す。
-2. group-local structured journal parse/replayとcrash fixtureをofflineで実装する。
-3. v7-owned mutation routing、2-copy checkpoint publication、locking、multi-group mutation fault matrixを
+1. group-local structured journal parse/replayとcrash fixtureをofflineで実装する。
+2. v7-owned mutation routing、2-copy checkpoint publication、locking、multi-group mutation fault matrixを
    通してからcontrolled-write admissionを検討する。
-4. accepted offline/inspection surface安定後に`kafsresize --migrate-create --format-version 7`を追加する。
+3. accepted offline/inspection surface安定後に`kafsresize --migrate-create --format-version 7`を追加する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の

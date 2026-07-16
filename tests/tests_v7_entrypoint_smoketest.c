@@ -3,6 +3,7 @@
 #include "kafs_offline_summary.h"
 #include "kafs_superblock.h"
 #include "kafs_v7_layout.h"
+#include "kafs_v7_runtime_view.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -11,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -130,6 +132,62 @@ static int check_v7_descriptor_direct(const char *img)
   return 0;
 }
 
+static int check_v7_runtime_view_direct(const char *img)
+{
+  int fd = open(img, O_RDONLY);
+  if (fd < 0)
+    return -errno;
+
+  kafs_ssuperblock_t sb;
+  uint64_t file_size = 0;
+  int rc = kafs_pread_all(fd, &sb, sizeof(sb), 0);
+  if (rc == 0)
+    rc = kafs_offline_detect_file_size(fd, &file_size);
+  void *base = MAP_FAILED;
+  if (rc == 0)
+  {
+    base = mmap(NULL, (size_t)file_size, PROT_READ, MAP_SHARED, fd, 0);
+    if (base == MAP_FAILED)
+      rc = -errno;
+  }
+
+  kafs_context_t ctx;
+  memset(&ctx, 0, sizeof(ctx));
+  ctx.c_fd = fd;
+  ctx.c_hotplug_fd = -1;
+  ctx.c_hotplug_state = KAFS_HOTPLUG_STATE_DISABLED;
+  if (rc == 0)
+  {
+    ctx.c_img_base = base;
+    ctx.c_img_size = (size_t)file_size;
+    ctx.c_superblock = (kafs_ssuperblock_t *)base;
+    rc = kafs_v7_runtime_view_admit_fd(&ctx, fd, ctx.c_superblock, file_size);
+  }
+  if (rc == 0)
+    rc = kafs_v7_runtime_view_validate(&ctx);
+  if (rc == 0)
+  {
+    kafs_v7_runtime_view_seal_mutations(&ctx);
+    rc = kafs_v7_runtime_view_validate_policy(&ctx);
+  }
+  if (rc == 0 &&
+      (!kafs_ctx_inode_const(&ctx, KAFS_INO_ROOTDIR) || ctx.c_v7_layout_desc_bytes == 0u ||
+       ctx.c_v7_inode_shard_count != 1u || ctx.c_v7_data_group_count != 1u ||
+       ctx.c_v7_checkpoint_sequence != 0u || ctx.c_v7_recovered_free_blocks == 0u))
+    rc = -EINVAL;
+  uint64_t data_off = 0;
+  if (rc == 0)
+    rc = kafs_ctx_v7_data_ref_physical_offset(&ctx, 1u, &data_off);
+  if (rc == 0 && data_off != ctx.c_v7_data_groups[0].physical_off)
+    rc = -EINVAL;
+
+  kafs_ctx_v7_runtime_view_clear(&ctx);
+  if (base != MAP_FAILED)
+    munmap(base, (size_t)file_size);
+  close(fd);
+  return rc;
+}
+
 int main(void)
 {
   if (kafs_test_enter_tmpdir("v7-entrypoint") != 0)
@@ -152,7 +210,8 @@ int main(void)
   }
   if (expect_contains("kafs-v7 help", out, "format v7 runtime entrypoint") ||
       expect_contains("kafs-v7 help", out, "Format v7 image path") ||
-      expect_contains("kafs-v7 help", out, "controlled write contract"))
+      expect_contains("kafs-v7 help", out, "controlled-write admission is not yet enabled") ||
+      expect_contains("kafs-v7 help", out, "mutation operations fail with EROFS"))
     return 1;
 
   const char *img = "v7.img";
@@ -167,6 +226,30 @@ int main(void)
   if (check_v7_descriptor_direct(img) != 0)
   {
     tlogf("direct v7 descriptor discovery failed");
+    return 1;
+  }
+  if (check_v7_runtime_view_direct(img) != 0)
+  {
+    tlogf("direct v7 runtime view admission failed");
+    return 1;
+  }
+
+  char *v7_write_argv[] = {
+      (char *)kafs_test_kafs_v7_bin(),
+      (char *)"--image",
+      (char *)img,
+      (char *)"--controlled-write-mount",
+      (char *)"missing-mnt",
+      (char *)"-o",
+      (char *)"rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
+      NULL,
+  };
+  if (run_cmd_capture(v7_write_argv, 2, out, sizeof(out)) != 0 ||
+      expect_contains("v7 controlled write closed", out,
+                      "controlled write mount admission failed") ||
+      expect_not_contains("v7 controlled write closed", out, "bad mount point"))
+  {
+    tlogf("kafs-v7 controlled write did not fail closed before FUSE: %s", out);
     return 1;
   }
 
@@ -197,16 +280,16 @@ int main(void)
     return 1;
 
   char *v7_mount_argv[] = {(char *)kafs_test_kafs_v7_bin(), (char *)"--image", (char *)img,
-                           (char *)"--inspection-mount", (char *)"mnt", (char *)"-o",
+                           (char *)"--inspection-mount", (char *)"missing-mnt", (char *)"-o",
                            (char *)"ro", NULL};
-  if (run_cmd_capture(v7_mount_argv, 2, out, sizeof(out)) != 0)
+  if (run_cmd_capture(v7_mount_argv, 1, out, sizeof(out)) != 0)
   {
-    tlogf("kafs-v7 accepted a raw-layout runtime mount unexpectedly: %s", out);
+    tlogf("kafs-v7 did not reach FUSE after runtime-view admission: %s", out);
     return 1;
   }
-  if (expect_contains("v7 runtime remains offline", out,
-                      "accepted raw-layout runtime mount remains offline-only") ||
-      expect_contains("v7 runtime remains offline", out, "kafsdump/fsck.kafs"))
+  if (expect_contains("v7 runtime view", out, "inspection mount eligible") ||
+      expect_contains("v7 runtime view", out, "selected descriptor retained") ||
+      expect_contains("v7 runtime view", out, "bad mount point"))
     return 1;
 
   char *mount_argv[] = {(char *)kafs_test_kafs_bin(), (char *)img, (char *)"mnt", NULL};
