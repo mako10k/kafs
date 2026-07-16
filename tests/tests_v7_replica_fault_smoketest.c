@@ -3,6 +3,7 @@
 #include "kafs_offline_summary.h"
 #include "kafs_superblock.h"
 #include "kafs_tool_util.h"
+#include "kafs_v7_checkpoint.h"
 #include "kafs_v7_layout.h"
 
 #include <endian.h>
@@ -658,6 +659,40 @@ static int test_three_copy_generation_matrix(void)
   return 0;
 }
 
+static int test_three_copy_checkpoint_rotation(const char *path)
+{
+  int fd = open(path, O_RDWR);
+  if (fd < 0)
+    return -errno;
+  kafs_ssuperblock_t sb;
+  uint64_t file_size = 0;
+  kafs_v7_layout_report_t report;
+  memset(&report, 0, sizeof(report));
+  int rc = load_superblock_and_size(fd, &sb, &file_size);
+  if (rc == 0)
+    rc = kafs_v7_validate_image_fd(fd, &sb, file_size, &report);
+  kafs_v7_checkpoint_plan_t plan;
+  if (rc == 0)
+    rc = kafs_v7_checkpoint_plan(&report, &plan);
+  if (rc == 0 && (plan.target_count != 2u || plan.target_replicas[0] != 2u ||
+                  plan.target_replicas[1] != 1u))
+    rc = -1;
+  kafs_v7_checkpoint_publish_result_t result;
+  if (rc == 0)
+    rc = kafs_v7_checkpoint_publish_fd(fd, &sb, file_size, &result);
+  kafs_v7_layout_report_clear(&report);
+  close(fd);
+  if (rc != 0 || validate_image(path, &report) != 0)
+    return -1;
+  int valid = result.generation == 2u && result.verified_copy_count == 2u &&
+              report.checkpoint_generation == 2u && report.selected_checkpoint == 1u &&
+              report.checkpoints[0].status == KAFS_V7_REPLICA_STATUS_STALE &&
+              report.checkpoints[1].status == KAFS_V7_REPLICA_STATUS_VALID &&
+              report.checkpoints[2].status == KAFS_V7_REPLICA_STATUS_VALID;
+  kafs_v7_layout_report_clear(&report);
+  return valid ? 0 : -1;
+}
+
 int main(void)
 {
   if (kafs_test_enter_tmpdir("v7-replica-fault") != 0)
@@ -671,7 +706,8 @@ int main(void)
   }
   const char *three_copy = "v7-three-placement.img";
   if (build_three_copy_fixture(three_copy) != 0 ||
-      check_placement(three_copy, 3u, THREE_COPY_IMAGE_BYTES / 2u) != 0)
+      check_placement(three_copy, 3u, THREE_COPY_IMAGE_BYTES / 2u) != 0 ||
+      test_three_copy_checkpoint_rotation(three_copy) != 0)
   {
     fprintf(stderr, "v7 three-copy recovery placement failed\n");
     return 1;

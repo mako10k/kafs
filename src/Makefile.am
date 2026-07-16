@@ -42,7 +42,7 @@ kafs_v6_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -DKAF
 kafs_v6_LDADD = $(KAFS_LIBS)
 
 kafs_v7_SOURCES = kafs_v7.c kafs_v7_runtime.c kafs_v7_runtime_view.c kafs_v7_layout.c \
-	kafs_v7_journal.c kafs_v7_mutation.c \
+	kafs_v7_checkpoint.c kafs_v7_journal.c kafs_v7_mutation.c \
 	kafs_v7_mount_options.c kafs_v7_entrypoint_adapter.c kafs_shared_fuse_runtime.c \
 	kafs_hrl.c kafs_locks.c kafs_journal.c kafs_rpc.c
 kafs_v7_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -DKAFS_NO_MAIN \
@@ -100,7 +100,8 @@ noinst_HEADERS = kafs_block.h kafs_config.h kafs_context.h kafs_dirent.h kafs_in
 	kafs_v6_admission.h kafs_v6_fuse_init_policy.h kafs_v6_fuse_policy.h \
 	kafs_v6_layout.h kafs_v6_entrypoint_adapter.h kafs_v6_mount_options.h \
 	kafs_v6_runtime.h kafs_v7_admission.h kafs_v7_entrypoint_adapter.h \
-	kafs_v7_journal.h kafs_v7_layout.h kafs_v7_mount_options.h kafs_v7_mutation.h kafs_v7_runtime.h \
+	kafs_v7_checkpoint.h kafs_v7_journal.h kafs_v7_layout.h kafs_v7_mount_options.h \
+	kafs_v7_mutation.h kafs_v7_runtime.h \
 	kafs_v7_runtime_view.h
 
 CFLAGS = @CFLAGS@ -Wall -Werror -Wno-unused-function -Wno-unused-parameter

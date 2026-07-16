@@ -33,6 +33,7 @@ check_PROGRAMS = tailmeta_parser hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigur
 	v6_descriptor_smoketest v6_descriptor_validation v7_entrypoint_smoketest \
 	v7_raw_layout_smoketest v7_multi_group_smoketest v7_replica_fault_smoketest \
 	v7_inspection_mount_smoketest v7_journal_replay_smoketest v7_mutation_routing_smoketest \
+	v7_checkpoint_publication_smoketest \
 	clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility \
 	prune_indirect_single prune_indirect_double prune_indirect_triple truncate_prune reflink_clone \
 	kafsctl_links bg_dedup_skip_dirs \
@@ -123,7 +124,8 @@ v7_multi_group_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unuse
 v7_multi_group_smoketest_LDADD = $(KAFS_LIBS)
 
 v7_replica_fault_smoketest_SOURCES = tests_v7_replica_fault_smoketest.c test_utils.c \
-	$(top_srcdir)/src/kafs_v7_layout.c $(top_srcdir)/src/kafs_v7_journal.c \
+	$(top_srcdir)/src/kafs_v7_checkpoint.c $(top_srcdir)/src/kafs_v7_layout.c \
+	$(top_srcdir)/src/kafs_v7_journal.c \
 	$(top_srcdir)/src/kafs_v7_mutation.c \
 	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
 v7_replica_fault_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
@@ -150,6 +152,15 @@ v7_mutation_routing_smoketest_SOURCES = tests_v7_mutation_routing_smoketest.c te
 	$(top_srcdir)/src/kafs_locks.c
 v7_mutation_routing_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 v7_mutation_routing_smoketest_LDADD = $(KAFS_LIBS)
+
+v7_checkpoint_publication_smoketest_SOURCES = tests_v7_checkpoint_publication_smoketest.c \
+	test_utils.c $(top_srcdir)/src/kafs_v7_checkpoint.c \
+	$(top_srcdir)/src/kafs_v7_layout.c $(top_srcdir)/src/kafs_v7_journal.c \
+	$(top_srcdir)/src/kafs_v7_mutation.c $(top_srcdir)/src/kafs_hrl.c \
+	$(top_srcdir)/src/kafs_locks.c
+v7_checkpoint_publication_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function \
+	-Wno-unused-parameter
+v7_checkpoint_publication_smoketest_LDADD = $(KAFS_LIBS)
 
 clone_template_copy_SOURCES = tests_clone_template_copy.c test_utils.c \
 	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_locks.c
