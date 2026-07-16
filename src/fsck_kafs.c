@@ -608,9 +608,18 @@ static int fsck_handle_v7_raw_layout(const struct fsck_image_info *info)
   if (rc == 0)
     fprintf(stderr,
             "v7 recovered state: checkpoint_generation=%" PRIu64 " checkpoint_sequence=%" PRIu64
-            " free_blocks=%" PRIu64 " free_inodes=%" PRIu64 " journal_segments=%" PRIu32 "\n",
-            report.checkpoint_generation, report.checkpoint_sequence, report.free_blocks,
-            report.free_inodes, report.journal_segment_count);
+            " checkpoint_free_blocks=%" PRIu64 " checkpoint_free_inodes=%" PRIu64
+            " recovered_free_blocks=%" PRIu64 " recovered_free_inodes=%" PRIu64
+            " journal_segments=%" PRIu32 " nonempty_segments=%" PRIu32 " transactions=%" PRIu32
+            " pending=%" PRIu32 " committed=%" PRIu32 " aborted=%" PRIu32 " duplicates=%" PRIu32
+            " mutations=%" PRIu32 " already_applied=%" PRIu32 " replay=%" PRIu32 "\n",
+            report.checkpoint_generation, report.checkpoint_sequence, report.checkpoint_free_blocks,
+            report.checkpoint_free_inodes, report.free_blocks, report.free_inodes,
+            report.journal_segment_count, report.journal.selected_nonempty_segment_count,
+            report.journal.transaction_count, report.journal.pending_transaction_count,
+            report.journal.committed_transaction_count, report.journal.aborted_transaction_count,
+            report.journal.duplicate_transaction_count, report.journal.mutation_count,
+            report.journal.already_applied_mutation_count, report.journal.replay_mutation_count);
   else
     fprintf(stderr, "format v7 raw-layout validation failed\n");
   kafs_v7_layout_report_clear(&report);

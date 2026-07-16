@@ -14,6 +14,10 @@
 #define KAFS_V7_CHECKPOINT_VERSION 1u
 #define KAFS_V7_JOURNAL_HEADER_MAGIC 0x4B374A48u /* K7JH */
 #define KAFS_V7_JOURNAL_HEADER_VERSION 1u
+#define KAFS_V7_JOURNAL_BEGIN_TAG 0x4B374A42u    /* K7JB */
+#define KAFS_V7_JOURNAL_MUTATION_TAG 0x4B374A4Du /* K7JM */
+#define KAFS_V7_JOURNAL_COMMIT_TAG 0x4B374A43u   /* K7JC */
+#define KAFS_V7_JOURNAL_ABORT_TAG 0x4B374A41u    /* K7JA */
 
 #define KAFS_V7_ROOT_LOCATOR_BYTES 32u
 #define KAFS_V7_LAYOUT_HEADER_BYTES 128u
@@ -24,6 +28,9 @@
 #define KAFS_V7_INODE_BYTES 128u
 #define KAFS_V7_HRL_ENTRY_BYTES 24u
 #define KAFS_V7_JOURNAL_HEADER_BYTES 64u
+#define KAFS_V7_JOURNAL_RECORD_HEADER_BYTES 20u
+#define KAFS_V7_JOURNAL_CONTROL_BYTES 32u
+#define KAFS_V7_JOURNAL_MUTATION_HEADER_BYTES 56u
 #define KAFS_V7_KDIR_HEADER_BYTES 24u
 #define KAFS_V7_KDIR_RECORD_PREFIX_BYTES 14u
 #define KAFS_V7_KDIR_MAGIC 0x4B444952u /* KDIR */
@@ -69,6 +76,15 @@ enum kafs_v7_replica_role
   KAFS_V7_REPLICA_PRIMARY = 0,
   KAFS_V7_REPLICA_TAIL = 1,
   KAFS_V7_REPLICA_MIDPOINT = 2,
+};
+
+enum kafs_v7_journal_target_type
+{
+  KAFS_V7_JOURNAL_TARGET_BLOCK_BITMAP = KAFS_V7_SHARD_BLOCK_BITMAP,
+  KAFS_V7_JOURNAL_TARGET_INODE = KAFS_V7_SHARD_INODE_TABLE,
+  KAFS_V7_JOURNAL_TARGET_ALLOCATOR_SUMMARY = KAFS_V7_SHARD_ALLOCATOR_SUMMARY,
+  KAFS_V7_JOURNAL_TARGET_HRL_INDEX = KAFS_V7_SHARD_HRL_INDEX,
+  KAFS_V7_JOURNAL_TARGET_HRL_ENTRY = KAFS_V7_SHARD_HRL_ENTRIES,
 };
 
 typedef struct kafs_v7_root_locator
@@ -196,6 +212,40 @@ typedef struct kafs_v7_journal_header
   uint32_t reserved;
 } __attribute__((packed)) kafs_v7_journal_header_t;
 
+typedef struct kafs_v7_journal_record_header
+{
+  uint32_t tag;
+  uint32_t payload_bytes;
+  uint64_t sequence;
+  uint32_t crc32;
+} __attribute__((packed)) kafs_v7_journal_record_header_t;
+
+typedef struct kafs_v7_journal_control
+{
+  uint32_t group_id;
+  uint32_t mutation_count;
+  uint32_t mutation_payload_bytes;
+  uint32_t mutation_stream_crc32;
+  int64_t free_blocks_delta;
+  int64_t free_inodes_delta;
+} __attribute__((packed)) kafs_v7_journal_control_t;
+
+typedef struct kafs_v7_journal_mutation
+{
+  uint16_t target_type;
+  uint16_t flags;
+  uint32_t group_id;
+  uint64_t logical_index;
+  uint32_t target_bytes;
+  uint32_t patch_off;
+  uint32_t patch_bytes;
+  uint32_t before_crc32;
+  uint32_t after_crc32;
+  uint32_t reserved;
+  int64_t free_blocks_delta;
+  int64_t free_inodes_delta;
+} __attribute__((packed)) kafs_v7_journal_mutation_t;
+
 typedef struct kafs_v7_inode
 {
   uint16_t mode;
@@ -260,6 +310,14 @@ _Static_assert(offsetof(kafs_v7_checkpoint_t, crc32) == 56, "v7 checkpoint crc o
 _Static_assert(sizeof(kafs_v7_journal_header_t) == KAFS_V7_JOURNAL_HEADER_BYTES,
                "v7 journal header wire size");
 _Static_assert(offsetof(kafs_v7_journal_header_t, crc32) == 56, "v7 journal header crc offset");
+_Static_assert(sizeof(kafs_v7_journal_record_header_t) == KAFS_V7_JOURNAL_RECORD_HEADER_BYTES,
+               "v7 journal record header wire size");
+_Static_assert(offsetof(kafs_v7_journal_record_header_t, crc32) == 16,
+               "v7 journal record crc offset");
+_Static_assert(sizeof(kafs_v7_journal_control_t) == KAFS_V7_JOURNAL_CONTROL_BYTES,
+               "v7 journal control wire size");
+_Static_assert(sizeof(kafs_v7_journal_mutation_t) == KAFS_V7_JOURNAL_MUTATION_HEADER_BYTES,
+               "v7 journal mutation header wire size");
 _Static_assert(sizeof(kafs_v7_inode_t) == KAFS_V7_INODE_BYTES, "v7 inode wire size");
 _Static_assert(offsetof(kafs_v7_inode_t, inline_or_block_refs) == 54,
                "v7 inode inline data offset");
@@ -289,6 +347,22 @@ typedef struct kafs_v7_copy_report
   kafs_v7_replica_status_t status;
 } kafs_v7_copy_report_t;
 
+typedef struct kafs_v7_journal_report
+{
+  uint32_t selected_nonempty_segment_count;
+  uint32_t record_count;
+  uint32_t transaction_count;
+  uint32_t pending_transaction_count;
+  uint32_t committed_transaction_count;
+  uint32_t aborted_transaction_count;
+  uint32_t duplicate_transaction_count;
+  uint32_t mutation_count;
+  uint32_t already_applied_mutation_count;
+  uint32_t replay_mutation_count;
+  uint64_t first_sequence;
+  uint64_t last_sequence;
+} kafs_v7_journal_report_t;
+
 typedef struct kafs_v7_layout_report
 {
   uint8_t primary_identity_valid;
@@ -310,6 +384,8 @@ typedef struct kafs_v7_layout_report
   uint64_t selected_generation;
   uint64_t checkpoint_generation;
   uint64_t checkpoint_sequence;
+  uint64_t checkpoint_free_blocks;
+  uint64_t checkpoint_free_inodes;
   uint64_t free_blocks;
   uint64_t free_inodes;
   uint64_t placement_span_bytes;
@@ -319,6 +395,7 @@ typedef struct kafs_v7_layout_report
   kafs_v7_root_locator_t locator;
   kafs_v7_copy_report_t descriptors[KAFS_V7_REPLICA_MAX_COUNT];
   kafs_v7_copy_report_t checkpoints[KAFS_V7_REPLICA_MAX_COUNT];
+  kafs_v7_journal_report_t journal;
   void *descriptor;
 } kafs_v7_layout_report_t;
 

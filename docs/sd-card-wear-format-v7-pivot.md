@@ -107,19 +107,26 @@ audit are now closed for the bounded initial runtime surface:
    distinguishable from a zero/hole reference.
 4. `statfs` reports `s_r_blkcnt` and the selected `K7CP` recovered counters.
 5. Admission is intentionally bounded to `checkpoint_seq == 0` with empty
-   journal segments. The image is opened and mapped read-only and runtime
-   mutation guards return `EROFS`.
+   journal segments. Offline validation can parse and simulate non-empty
+   journals, but runtime admission still rejects any selected non-empty
+   segment. The image is opened and mapped read-only and runtime mutation
+   guards return `EROFS`.
 6. The mount regression covers multi-group nested lookup/readdir, inline and
    block-backed reads, symlinks, degraded recovery-pair inspection, unpaired
    publication rejection before FUSE, mutation rejection, and an unchanged
    image digest after unmount.
 
-Controlled write is additionally blocked by the v7 `K7JB/K7JM/K7JC/K7JA`
-encoder/parser/replay, data-before-header publication ordering, byte-identical
-two-copy `K7CP` publication, v7-owned bitmap/allocator/HRL mutation accessors,
-group-local transaction routing, filesystem-global sequence serialization,
-and explicit locking ranks.  The successful v7 path must also stop using the
-v6-named controlled-write policy flag and v6 FUSE policy helper.
+The offline `K7JB/K7JM/K7JC/K7JA` parser and idempotent replay simulation are
+implemented in v7-owned code. They validate rotating selected prefixes,
+transaction control and mutation records, global sequence gaps/divergence,
+before/after target chains, and recovered counters without writing the image.
+
+Controlled write remains blocked by the v7 encoder, data-before-header
+publication ordering, byte-identical two-copy `K7CP` publication, v7-owned
+bitmap/allocator/HRL mutation accessors, group-local transaction routing,
+filesystem-global sequence serialization, and explicit locking ranks. The
+successful v7 path must also stop using the v6-named controlled-write policy
+flag and v6 FUSE policy helper.
 
 FTL/ECC correlated-failure injection is not in this implementation blocker
 list.  It is governed by the RC media-qualification boundary in the accepted
@@ -139,10 +146,8 @@ raw-layout specification and does not relax any software recovery gate.
 
 ## Follow-Up Boundaries
 
-1. Prove group-local structured-journal parsing/replay and crash fixtures
-   offline, including non-empty images produced after controlled interruption.
-2. Implement v7-owned mutation routing, checkpoint publication, locking, and
+1. Implement v7-owned mutation routing, checkpoint publication, locking, and
    multi-group fault matrices before enabling controlled-write admission.
-3. Add `kafsresize --migrate-create --format-version 7` after the accepted
+2. Add `kafsresize --migrate-create --format-version 7` after the accepted
    offline and inspection surfaces are stable; migration does not outrank a
    blocker on the mount/write path.

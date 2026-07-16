@@ -116,7 +116,7 @@ int kafs_v7_runtime_view_admit_fd(kafs_context_t *ctx, int fd, const kafs_ssuper
   int rc = kafs_v7_validate_image_fd(fd, sbdisk, file_size, &report);
   if (rc != 0)
     return rc;
-  if (report.checkpoint_sequence != 0u)
+  if (report.checkpoint_sequence != 0u || report.journal.selected_nonempty_segment_count != 0u)
   {
     kafs_v7_layout_report_clear(&report);
     return -ENOTSUP;
