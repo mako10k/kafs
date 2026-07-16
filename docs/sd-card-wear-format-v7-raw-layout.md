@@ -1132,6 +1132,30 @@ or physical erase-block boundaries.  A single surviving copy is sufficient for
 offline diagnosis, but it does not satisfy the two-identical-checkpoint gate
 required by future controlled-write admission.
 
+## RC Media Qualification Boundary
+
+Deterministically injecting a correlated FTL/ECC failure is not a normal
+implementation or runtime-admission gate.  It is an explicit RC qualification
+constraint and residual risk: the filesystem-offset replica proof above must
+not be described as proof that copies occupy independent NAND erase blocks or
+controller failure domains.
+
+An RC that exposes format v7 remains an explicit `kafs-v7` opt-in and requires
+independent review of recorded real-SD-card qualification evidence.  The
+qualification plan must cover every enabled surface on the agreed
+card/controller sample set: format, mount, unmount, remount, and fsck are the
+baseline; an RC exposing controlled write additionally requires write, full
+fsync, and controlled power-interruption cycles.  Release notes must state the
+unproven physical-failure-domain boundary.  Stable/GA promotion must reassess
+that residual risk rather than inheriting the RC qualification unchanged.
+
+This RC boundary does not waive software correctness gates.  Descriptor and
+checkpoint selection, logical-to-physical mapping, journal ordering/replay,
+checkpoint publication, locking, mutation routing, crash recovery, and
+fail-closed behavior remain blockers for the corresponding mount/write mode.
+Controlled-write admission continues to require at least two byte-identical
+valid descriptor and checkpoint copies at the selected generation.
+
 ## Accepted Decision Closeout
 
 The five implementation-blocking questions were closed on 2026-07-13:
