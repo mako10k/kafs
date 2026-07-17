@@ -2849,12 +2849,41 @@
   - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ87件・2.66%で、
     neutral tracker/v7 wrapper由来のcloneとcomplexity warningは0件。
 
+### SDW-V7RT-T16 v7-owned runtime mutation/admission policy
+
+- 目的: v7 controlled-write context setupからv6-owned state/helper依存を除去し、write admissionを開く前に
+  v7固有のfail-closed policy境界を固定する。
+- 変更:
+  - `kafs_context`へ`c_v7_controlled_write_enabled`を追加し、`kafs_v7_runtime_admit_mount_context()`は
+    v6 flagを変更せず、v7-owned helperだけでpolicy stateを初期化・設定する。
+  - `kafs_v7_fuse_policy.h`はpolicy無効時を`EROFS`、未知operationを`EOPNOTSUPP`とし、将来接続する
+    surfaceを`create` / regular-file `write` / `fsync` / `release`の4操作だけに限定する。
+  - `check-v7-runtime-policy-ownership.sh`でv7 runtime/policyへのv6 controlled-write flag/helper/include再混入を
+    拒否する。v6の既存state/helper/entrypoint behaviorは変更しない。
+  - v7 controlled-write entrypointは引き続きFUSE開始前に拒否する。4操作のpolicy許可は将来の接続境界であり、
+    このticketではruntime image mutationを有効化しない。
+- 完了条件:
+  - v7 policy有効化がv6 flagを変更せず、無効・未知・許可対象のdecision matrixをfocused testで検証する。
+  - v7 runtime/policy ownership gate、v7/v6 admission regression、full regressionがPASSする。
+  - write admissionと未列挙mutation surfaceはfail closedのままとする。
+- 検証結果（2026-07-17）:
+  - `autoreconf -fi && ./configure && make -j2`: PASS（`-Wall -Werror` build）。
+  - `v7_entrypoint_smoketest v6_descriptor_smoketest`: 2/2 PASS。
+  - `v7_entrypoint_smoketest`のValgrind: PASS（0 error、0 leak、39 allocs/39 frees）。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 38/38 PASS。
+  - clangd diagnostics（v7 policy、v7 runtime、focused test）: 0件。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`./scripts/check-v7-layout-ownership.sh`、
+    `./scripts/check-v7-runtime-policy-ownership.sh`、`git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ87件・2.66%で、
+    v7 policy由来のcloneとcomplexity warningは0件。
+
 ---
 
 ## 次に着手する候補
 
-1. v6-named controlled-write flag/FUSE helperをv7-owned runtime mutation/admission policyへ置き換え、
-   bounded write surfaceをcross-family lock順序下のv7 transaction lifecycleへ接続する。
+1. bounded `create` / regular-file `write` / `fsync` / `release` surfaceを、rank 1-3からmetadata rank
+   10-50へ進むv7 transaction lifecycleへ接続する。end-to-end durability/fault regressionが揃うまで
+   controlled-write admissionはfail closedを維持する。
 2. accepted offline/inspection surface安定後に`kafsresize --migrate-create --format-version 7`を追加する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
