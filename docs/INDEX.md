@@ -51,6 +51,7 @@ historical investigations and deep design notes.
 - [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md)
 - [sd-card-wear-v6-runtime-entrypoint-plan.md](sd-card-wear-v6-runtime-entrypoint-plan.md)
 - [sd-card-wear-v6-runtime-handoff-20260626.md](sd-card-wear-v6-runtime-handoff-20260626.md)
+- [sd-card-wear-v7-runtime-handoff-20260716.md](sd-card-wear-v7-runtime-handoff-20260716.md): current v7 runtime handoff through T19 and the next milestone
 - [write-performance-ideas.md](write-performance-ideas.md)
 - [bottleneck-measurement-plan.md](bottleneck-measurement-plan.md)
 - [perf-evaluation-20260228.md](perf-evaluation-20260228.md)
