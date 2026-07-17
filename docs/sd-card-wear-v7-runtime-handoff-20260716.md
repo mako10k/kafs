@@ -11,9 +11,8 @@ Repository checkpoint for this update:
 
 - Branch: `feat/v7-runtime-admission-foundation`
 - Push target: `origin/feat/v7-runtime-admission-foundation`
-- Latest predecessor: `acdfb41 feat: add v7 data COW allocator planner`
-- T19 implementation and this handoff update are consolidated in the commit
-  containing this file.
+- Implementation checkpoint: `a332343 feat: retire v7 retained data blocks`
+- This handoff snapshot is documentation-only and makes no runtime changes.
 
 Relevant implementation checkpoints:
 
@@ -27,6 +26,7 @@ Relevant implementation checkpoints:
 - `2b3a17d refactor: give v7 its own write policy`
 - `b01ea23 feat: add v7 runtime transaction coordinator`
 - `acdfb41 feat: add v7 data COW allocator planner`
+- `a332343 feat: retire v7 retained data blocks`
 
 ## Current Runtime Boundary
 
@@ -66,6 +66,26 @@ Cross-group atomic transactions remain disabled. Transactions own exactly one
 group, while filesystem-global sequence validation joins group-local journal
 prefixes and fails closed on collision, gap, middle-group loss, or a
 checksum-consistent foreign-group mutation.
+
+## Milestone Snapshot
+
+| Milestone | Scope | Status |
+| --- | --- | --- |
+| M0 | T1-T2: v7 format design and accepted wire contract | Complete |
+| M1 | T3-T5: offline tooling, wear model, and fault model | Complete |
+| M2 | T6: explicit read-only runtime inspection | Complete |
+| M3 | T7-T15: journal, checkpoint, locking, and crash recovery foundation | Complete |
+| M4 | T16-T17: mount-lifetime coordinator and fail-closed runtime boundary | Complete |
+| M5 | T18-T19: internal full-block data COW and retained-block retirement | Complete |
+| M6 | Existing-file aligned full-block direct overwrite through v7 FUSE | Next; not started |
+| M7 | Controlled-write RC qualification and independent review | Later; not started |
+| M8 | Partial writes, growth, create, indirect/multi-block writes, and wider mutation | Later; not started |
+
+The implementation is at the M5/M6 boundary: M5 is complete and M6 is the next
+bounded slice. The six completed milestones out of nine are a scope count, not
+a writable-readiness percentage. V7 is practical today for image creation,
+offline validation, and read-only inspection; mounted write admission remains
+intentionally unavailable.
 
 ## T15 Closeout
 
@@ -308,7 +328,7 @@ power-interruption recovery prove the complete path.
 ## Resume Checklist
 
 1. Fetch and check out `origin/feat/v7-runtime-admission-foundation`.
-2. Confirm `2b3a17d` is an ancestor and inspect the commits after it.
+2. Confirm `a332343` is an ancestor and inspect any commits after it.
 3. Confirm `git status --short --branch` is clean.
 4. Read, in order:
    - this handoff;
