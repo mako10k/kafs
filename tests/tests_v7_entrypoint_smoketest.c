@@ -2,6 +2,7 @@
 
 #include "kafs_offline_summary.h"
 #include "kafs_superblock.h"
+#include "kafs_v7_fuse_policy.h"
 #include "kafs_v7_layout.h"
 #include "kafs_v7_runtime_view.h"
 
@@ -101,6 +102,49 @@ static int expect_not_contains(const char *label, const char *text, const char *
   return 1;
 }
 
+static int check_v7_fuse_policy_direct(void)
+{
+  kafs_context_t ctx;
+  memset(&ctx, 0, sizeof(ctx));
+
+  if (kafs_v7_fuse_policy_controlled_write_active(NULL) ||
+      kafs_v7_fuse_policy_check_controlled_write(
+          NULL, KAFS_V7_CONTROLLED_WRITE_OP_CREATE) != -EROFS ||
+      kafs_v7_fuse_policy_controlled_write_active(&ctx) ||
+      kafs_v7_fuse_policy_check_controlled_write(
+          &ctx, KAFS_V7_CONTROLLED_WRITE_OP_WRITE) != -EROFS)
+    return -EINVAL;
+
+  kafs_v7_fuse_policy_set_controlled_write(&ctx, 1);
+  if (!kafs_v7_fuse_policy_controlled_write_active(&ctx) ||
+      ctx.c_v6_controlled_write_enabled != 0u)
+    return -EINVAL;
+
+  const kafs_v7_controlled_write_op_t allowed[] = {
+      KAFS_V7_CONTROLLED_WRITE_OP_CREATE,
+      KAFS_V7_CONTROLLED_WRITE_OP_WRITE,
+      KAFS_V7_CONTROLLED_WRITE_OP_FSYNC,
+      KAFS_V7_CONTROLLED_WRITE_OP_RELEASE,
+  };
+  for (size_t i = 0; i < sizeof(allowed) / sizeof(allowed[0]); ++i)
+  {
+    if (kafs_v7_fuse_policy_check_controlled_write(&ctx, allowed[i]) != 0)
+      return -EINVAL;
+  }
+  if (kafs_v7_fuse_policy_check_controlled_write(
+          &ctx, KAFS_V7_CONTROLLED_WRITE_OP_INVALID) != -EOPNOTSUPP ||
+      kafs_v7_fuse_policy_check_controlled_write(
+          &ctx, (kafs_v7_controlled_write_op_t)UINT32_MAX) != -EOPNOTSUPP)
+    return -EINVAL;
+
+  kafs_v7_fuse_policy_set_controlled_write(&ctx, 0);
+  if (kafs_v7_fuse_policy_controlled_write_active(&ctx) ||
+      kafs_v7_fuse_policy_check_controlled_write(
+          &ctx, KAFS_V7_CONTROLLED_WRITE_OP_RELEASE) != -EROFS)
+    return -EINVAL;
+  return 0;
+}
+
 static int check_v7_descriptor_direct(const char *img)
 {
   int fd = open(img, O_RDONLY);
@@ -190,6 +234,12 @@ static int check_v7_runtime_view_direct(const char *img)
 
 int main(void)
 {
+  if (check_v7_fuse_policy_direct() != 0)
+  {
+    tlogf("direct v7 FUSE policy check failed");
+    return 1;
+  }
+
   if (kafs_test_enter_tmpdir("v7-entrypoint") != 0)
   {
     tlogf("failed to enter tmpdir");

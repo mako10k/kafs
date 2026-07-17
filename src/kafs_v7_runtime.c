@@ -2,6 +2,7 @@
 
 #include "kafs_context.h"
 #include "kafs_v7_admission.h"
+#include "kafs_v7_fuse_policy.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -387,13 +388,14 @@ int kafs_v7_runtime_admit_mount_context(kafs_context_t *ctx, const kafs_ssuperbl
   if (!ctx || !sbdisk)
     return -EINVAL;
 
+  kafs_v7_fuse_policy_set_controlled_write(ctx, 0);
   int rc = kafs_v7_runtime_admit_context(ctx, sbdisk, mode);
   if (rc == 0)
   {
     if (mode == KAFS_V7_RUNTIME_MODE_INSPECTION)
       ctx->c_runtime_read_only = 1u;
     else if (mode == KAFS_V7_RUNTIME_MODE_CONTROLLED_WRITE)
-      ctx->c_v6_controlled_write_enabled = 1u;
+      kafs_v7_fuse_policy_set_controlled_write(ctx, 1);
     else
       return -EINVAL;
 

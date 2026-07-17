@@ -214,6 +214,7 @@ struct kafs_context
   uint32_t c_runtime_read_only;
   uint32_t c_v6_controlled_write_enabled;
   uint32_t c_v6_delayed_mutation_policy_applied;
+  uint32_t c_v7_controlled_write_enabled;
 
   // --- Phase2 meta delta (runtime batching) ---
   uint32_t c_meta_delta_enabled;

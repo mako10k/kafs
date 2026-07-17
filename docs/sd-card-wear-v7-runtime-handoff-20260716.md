@@ -3,9 +3,9 @@
 ## Scope
 
 This handoff covers the format v7 runtime foundation through
-`SDW-V7RT-T15 cross-family lock order integration`. It is intended to make the
-next runtime mutation/admission slice resumable from another host without
-reopening the accepted wear-leveling and fault-tolerance decisions.
+`SDW-V7RT-T16 v7-owned runtime mutation/admission policy`. It is intended to
+make the next runtime mutation/admission slice resumable from another host
+without reopening the accepted wear-leveling and fault-tolerance decisions.
 
 Repository checkpoint before this handoff WIP commit:
 
@@ -22,6 +22,7 @@ Relevant implementation checkpoints:
 - `b96d4e4 test: add v7 multi-group mutation fault matrix`
 - `80ad365 feat: close out v7 metadata transactions`
 - `bccb26b feat: enforce cross-family lock order`
+- `47367f0 docs: add v7 runtime handoff`
 
 ## Current Runtime Boundary
 
@@ -81,6 +82,23 @@ were fixed without weakening the tracker:
 - regular-file copy releases its two inode locks in the strict reverse of their
   deterministic acquisition order on every exit path.
 
+## T16 Closeout
+
+T16 removed the v7 runtime admission dependency on the v6 controlled-write
+state. `kafs_v7_runtime_admit_mount_context()` now initializes and sets only
+`c_v7_controlled_write_enabled` through `kafs_v7_fuse_policy.h`; it no longer
+sets `c_v6_controlled_write_enabled`.
+
+The v7-owned policy remains fail closed. An inactive policy returns `EROFS`, an
+unknown operation returns `EOPNOTSUPP`, and the only operations represented for
+the later bounded write slice are `create`, regular-file `write`, `fsync`, and
+`release`. This policy vocabulary does not admit controlled write: the CLI
+entrypoint still rejects that mode before FUSE starts.
+
+`scripts/check-v7-runtime-policy-ownership.sh` rejects reintroduction of the v6
+controlled-write flag, helper names, or policy include into the v7 runtime and
+policy files. Frozen v6 behavior was left unchanged.
+
 ## Validation Evidence
 
 Completed against implementation commit `bccb26b` on 2026-07-16:
@@ -116,12 +134,20 @@ Results:
   non-passing step; the new tracker and v7 wrapper added no complexity warning.
 - Final worktree after `make clean`: clean.
 
+T16 validation completed on 2026-07-17:
+
+- `autoreconf -fi`, `./configure`, and `make -j2`: PASS.
+- Focused `v7_entrypoint_smoketest v6_descriptor_smoketest`: 2/2 PASS.
+- `v7_entrypoint_smoketest` under Valgrind: 0 errors, 0 leaks; 39 allocations
+  and 39 frees.
+- `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: all 38 tests passed.
+- Formatting, lint, both v7 ownership checks, Git whitespace, and clangd
+  diagnostics for the v7 policy/runtime/focused test: PASS.
+- The strict clone gate remained at the existing 87 clones and 1,246 duplicated
+  lines (2.66%); no new v7 policy clone or complexity warning was reported.
+
 ## Remaining Risks And Constraints
 
-- The v7 controlled-write context-admission code still sets the v6-named
-  `c_v6_controlled_write_enabled` context field and reaches policy helpers in
-  `kafs_v6_fuse_policy.h`. This ownership leak must be removed before write
-  admission.
 - No FUSE mutation is yet routed through the complete v7 lock, sequence,
   journal publication, metadata apply, checkpoint, and reclamation lifecycle.
 - The first admitted write surface must remain bounded; do not infer support
@@ -137,44 +163,21 @@ Results:
 
 ## Recommended Next Slice
 
-First create a v7-owned runtime mutation/admission policy while keeping v7
-controlled write fail closed. This ownership extraction should be one logical
-commit before attempting end-to-end FUSE mutation routing.
-
-Primary pressure points:
-
-- `src/kafs_v7_runtime.c` currently sets the v6-named context flag;
-- `src/kafs_context.h` owns that shared flag;
-- `src/kafs_v6_fuse_policy.h` owns the current operation vocabulary and guards;
-- `src/kafs_shared_fuse_runtime.c` calls the v6 policy helpers from shared FUSE
-  operations;
-- `tests/tests_v7_entrypoint_smoketest.c` fixes the current v7 fail-closed CLI
-  contract;
-- `tests/tests_v6_descriptor_smoketest.c` protects the frozen v6 behavior.
-
-For the first slice:
-
-1. Define v7-owned policy state and operation decisions in v7-owned files.
-2. Stop v7 controlled-write context setup from setting the v6-owned flag.
-3. Preserve v6 behavior and keep the v7 controlled-write entrypoint rejected.
-4. Add focused tests proving v7 policy ownership and unchanged v6/v7 admission
-   boundaries.
-5. Do not introduce a generic `common` policy unless it is genuinely
-   format-neutral and has no v5/v6 public-entrypoint dependency.
-
-Only a later slice should route the bounded `create` / regular-file `write` /
-`fsync` / `release` surface through the full v7 transaction lifecycle. That
+Route the bounded `create` / regular-file `write` / `fsync` / `release` surface
+through the full v7 transaction lifecycle. That
 path must acquire v7 ranks 1-3 before metadata ranks 10-50, avoid `KAFS_CALL`
-while locked, and retain one cleanup path with strict reverse unlock.
+while locked, and retain one cleanup path with strict reverse unlock. Keep the
+controlled-write entrypoint fail closed until end-to-end durability, recovery,
+and fault regression proves the complete path.
 
 ## Resume Checklist
 
 1. Fetch and check out `origin/feat/v7-runtime-admission-foundation`.
-2. Confirm `bccb26b` is an ancestor and inspect the handoff WIP at branch HEAD.
+2. Confirm `47367f0` is an ancestor and inspect the commits after that handoff.
 3. Confirm `git status --short --branch` is clean.
 4. Read, in order:
    - this handoff;
-   - [sd-card-wear-tickets.md](sd-card-wear-tickets.md) at T14/T15 and the next
+   - [sd-card-wear-tickets.md](sd-card-wear-tickets.md) at T14-T16 and the next
      candidates;
    - [sd-card-wear-format-v7-pivot.md](sd-card-wear-format-v7-pivot.md);
    - [.github/lock-policy.md](../.github/lock-policy.md).
@@ -187,9 +190,7 @@ while locked, and retain one cleanup path with strict reverse unlock.
    make -C tests check TESTS='v7_entrypoint_smoketest v7_locks_smoketest v6_descriptor_smoketest'
    ```
 
-6. Start with the v7-owned policy extraction. Do not enable controlled write in
-   that commit.
+6. Start with bounded FUSE-to-v7 transaction routing. Do not enable controlled
+   write until the complete lifecycle and fault matrix pass.
 7. Follow the reviewed file/hunk WIP workflow in
-   [github-dev-rules.md](../.github/github-dev-rules.md). Because this handoff
-   WIP is intentionally published by user request, do not rewrite it after
-   push without explicit approval.
+   [github-dev-rules.md](../.github/github-dev-rules.md).
