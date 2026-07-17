@@ -1,18 +1,20 @@
-# KAFS format v7 runtime handoff 2026-07-16
+# KAFS format v7 runtime handoff (updated 2026-07-17)
 
 ## Scope
 
 This handoff covers the format v7 runtime foundation through
-`SDW-V7RT-T16 v7-owned runtime mutation/admission policy`. It is intended to
+`SDW-V7RT-T17 mount-lifetime transaction coordinator and fail-closed FUSE
+boundary`. It is intended to
 make the next runtime mutation/admission slice resumable from another host
 without reopening the accepted wear-leveling and fault-tolerance decisions.
 
-Repository checkpoint before this handoff WIP commit:
+Repository checkpoint for this update:
 
 - Branch: `feat/v7-runtime-admission-foundation`
 - Push target: `origin/feat/v7-runtime-admission-foundation`
-- Latest implementation commit: `bccb26b feat: enforce cross-family lock order`
-- Worktree after implementation validation and `make clean`: clean
+- Latest predecessor: `2b3a17d refactor: give v7 its own write policy`
+- T17 implementation and this handoff update are consolidated in the commit
+  containing this file.
 
 Relevant implementation checkpoints:
 
@@ -23,6 +25,7 @@ Relevant implementation checkpoints:
 - `80ad365 feat: close out v7 metadata transactions`
 - `bccb26b feat: enforce cross-family lock order`
 - `47367f0 docs: add v7 runtime handoff`
+- `2b3a17d refactor: give v7 its own write policy`
 
 ## Current Runtime Boundary
 
@@ -33,7 +36,11 @@ The accepted v7 surface currently provides:
 - detect-only validation through `fsck.kafs`;
 - explicit read-only inspection admission through `kafs-v7`;
 - v7-owned journal encoding, replay, metadata apply, checkpoint publication,
-  and journal reclamation APIs exercised by focused regression tests.
+  and journal reclamation APIs exercised by focused regression tests;
+- a mount-lifetime v7 transaction coordinator that serializes global sequence
+  publication and runs the complete metadata closeout lifecycle;
+- v7-only FUSE `fsync` / `release` closeout barriers with every legacy mutation
+  path still rejected.
 
 Runtime controlled write is still fail closed. The `kafs-v7`
 controlled-write token is recognized for boundary testing, but it is rejected
@@ -99,6 +106,28 @@ entrypoint still rejects that mode before FUSE starts.
 controlled-write flag, helper names, or policy include into the v7 runtime and
 policy files. Frozen v6 behavior was left unchanged.
 
+## T17 Closeout
+
+T17 combines the previously separate v7 lock, sequence, journal writer, and
+metadata closeout APIs behind `kafs_v7_runtime_transaction`. One service owns
+the rank 1-3 lock state and global sequence state for the mount lifetime. A
+commit accepts metadata patches from exactly one group and returns only after
+journal publication/confirmation, metadata apply, two-copy checkpoint
+publication, and covered journal reclamation.
+
+The service rejects read-only and `O_APPEND` descriptors before publication.
+The shared positional-write FD contract is in `kafs_v7_io.h` and is also used
+by checkpoint publication. Focused regression proves consecutive sequence 1
+and 2 commits through one service, idempotent closeout barriers, and
+cross-group `EXDEV` rejection without image mutation.
+
+Only the `kafs-v7` build receives `KAFS_V7_RUNTIME_ENTRYPOINT`. In a v7
+controlled context the common legacy mutation guard returns `EOPNOTSUPP`,
+including for create/write, `O_TRUNC`, control-plane open, and `fsyncdir`.
+Regular-file `fsync` and `release` call the v7 closeout barrier. This wiring is
+dormant in production because controlled-write admission still fails before
+FUSE starts.
+
 ## Validation Evidence
 
 Completed against implementation commit `bccb26b` on 2026-07-16:
@@ -146,10 +175,26 @@ T16 validation completed on 2026-07-17:
 - The strict clone gate remained at the existing 87 clones and 1,246 duplicated
   lines (2.66%); no new v7 policy clone or complexity warning was reported.
 
+T17 validation completed on 2026-07-17:
+
+- `autoreconf -fi`, `./configure`, and `make -j2`: PASS.
+- Focused `v7_checkpoint_publication_smoketest v7_entrypoint_smoketest
+  v6_descriptor_smoketest`: 3/3 PASS.
+- `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: all 38 tests passed.
+- `v7_checkpoint_publication_smoketest` under Valgrind: 0 errors, 0 leaks;
+  5,151 allocations and 5,151 frees.
+- Formatting, lint, both v7 ownership checks, Git whitespace, and clangd
+  diagnostics for the coordinator, policy, FUSE wiring, and focused tests:
+  PASS.
+- The strict clone gate is the existing 87 clones and 1,246 duplicated lines
+  (2.64%). `static-checks.sh` completed with clone as its single non-passing
+  step; the new coordinator and I/O helper add no clone or complexity warning.
+
 ## Remaining Risks And Constraints
 
-- No FUSE mutation is yet routed through the complete v7 lock, sequence,
-  journal publication, metadata apply, checkpoint, and reclamation lifecycle.
+- No data-block or directory-record mutation planner is yet routed through the
+  complete v7 transaction lifecycle. The current FUSE connection is a
+  closeout-only barrier.
 - The first admitted write surface must remain bounded; do not infer support
   for truncate, fallocate, unlink, rename, link, symlink, copy/reflink,
   control-plane write, hotplug delegated write, runtime TRIM, writeback cache,
@@ -163,21 +208,23 @@ T16 validation completed on 2026-07-17:
 
 ## Recommended Next Slice
 
-Route the bounded `create` / regular-file `write` / `fsync` / `release` surface
-through the full v7 transaction lifecycle. That
-path must acquire v7 ranks 1-3 before metadata ranks 10-50, avoid `KAFS_CALL`
-while locked, and retain one cleanup path with strict reverse unlock. Keep the
-controlled-write entrypoint fail closed until end-to-end durability, recovery,
-and fault regression proves the complete path.
+Add a v7-owned data-block COW/allocator planner before connecting FUSE data
+mutation. New data must be written, read back, and flushed before the metadata
+journal publishes the pointer/counter transition; overwrite must not destroy
+the only old copy before a covering checkpoint. Prove allocation, torn-data,
+and power-loss order with focused fault regression, then route bounded
+`create` / regular-file `write` through the T17 coordinator. Keep the
+controlled-write entrypoint fail closed until the complete recovery matrix
+passes.
 
 ## Resume Checklist
 
 1. Fetch and check out `origin/feat/v7-runtime-admission-foundation`.
-2. Confirm `47367f0` is an ancestor and inspect the commits after that handoff.
+2. Confirm `2b3a17d` is an ancestor and inspect the commits after it.
 3. Confirm `git status --short --branch` is clean.
 4. Read, in order:
    - this handoff;
-   - [sd-card-wear-tickets.md](sd-card-wear-tickets.md) at T14-T16 and the next
+   - [sd-card-wear-tickets.md](sd-card-wear-tickets.md) at T14-T17 and the next
      candidates;
    - [sd-card-wear-format-v7-pivot.md](sd-card-wear-format-v7-pivot.md);
    - [.github/lock-policy.md](../.github/lock-policy.md).
@@ -190,7 +237,7 @@ and fault regression proves the complete path.
    make -C tests check TESTS='v7_entrypoint_smoketest v7_locks_smoketest v6_descriptor_smoketest'
    ```
 
-6. Start with bounded FUSE-to-v7 transaction routing. Do not enable controlled
-   write until the complete lifecycle and fault matrix pass.
+6. Start with the v7 data-block COW/durability planner. Do not enable controlled
+   write until data-before-metadata ordering and the complete fault matrix pass.
 7. Follow the reviewed file/hunk WIP workflow in
    [github-dev-rules.md](../.github/github-dev-rules.md).

@@ -66,6 +66,8 @@ typedef struct kafs_v7_data_runtime_group
   uint32_t group_id;
 } kafs_v7_data_runtime_group_t;
 
+struct kafs_v7_runtime_transaction_service;
+
 /// @brief コンテキスト
 struct kafs_context
 {
@@ -215,6 +217,7 @@ struct kafs_context
   uint32_t c_v6_controlled_write_enabled;
   uint32_t c_v6_delayed_mutation_policy_applied;
   uint32_t c_v7_controlled_write_enabled;
+  struct kafs_v7_runtime_transaction_service *c_v7_runtime_transactions;
 
   // --- Phase2 meta delta (runtime batching) ---
   uint32_t c_meta_delta_enabled;
