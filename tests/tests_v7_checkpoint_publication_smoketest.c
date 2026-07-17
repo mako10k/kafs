@@ -3,6 +3,7 @@
 #include "kafs_offline_summary.h"
 #include "kafs_tool_util.h"
 #include "kafs_v7_checkpoint.h"
+#include "kafs_v7_data_cow.h"
 #include "kafs_v7_journal_writer.h"
 #include "kafs_v7_mutation.h"
 #include "kafs_v7_runtime_transaction.h"
@@ -189,6 +190,69 @@ static int block_is_allocated(const checkpoint_fixture_t *fixture, uint64_t logi
     uint64_t bit = logical_block - word_logical;
     *allocated = (word[bit / 8u] & (uint8_t)(1u << (bit % 8u))) != 0u;
   }
+  return rc;
+}
+
+static int publish_retirement_without_closeout(checkpoint_fixture_t *fixture, uint32_t group_id,
+                                               uint64_t logical_block, uint64_t *sequence_out)
+{
+  kafs_v7_sequence_state_t *sequence = NULL;
+  kafs_v7_sequence_reservation_t reservation;
+  kafs_v7_journal_replay_t replay;
+  kafs_v7_data_cow_plan_t plan;
+  kafs_v7_journal_transaction_t *transaction = NULL;
+  memset(&reservation, 0, sizeof(reservation));
+  memset(&replay, 0, sizeof(replay));
+  memset(&plan, 0, sizeof(plan));
+  int rc = kafs_v7_sequence_state_init(fixture->locks, &fixture->layout, &sequence);
+  if (rc == 0)
+    rc = kafs_v7_sequence_reserve(sequence, group_id, &reservation);
+  if (rc == 0)
+    rc = kafs_v7_journal_analyze_fd(fixture->fd, &fixture->layout, &replay);
+  if (rc == 0)
+  {
+    kafs_v7_data_retirement_plan_request_t request = {
+        .layout = &fixture->layout,
+        .replay = &replay,
+        .group_id = group_id,
+        .logical_block = logical_block,
+    };
+    rc = kafs_v7_data_retirement_plan_fd(fixture->fd, &request, &plan);
+  }
+  kafs_v7_journal_patch_t patches[KAFS_V7_DATA_COW_ALLOCATOR_PATCH_COUNT];
+  if (rc == 0)
+    rc = kafs_v7_data_cow_plan_patches(&plan, patches);
+  if (rc == 0)
+  {
+    rc = kafs_v7_journal_transaction_encode_fd(
+        fixture->fd, &fixture->layout, &reservation, patches,
+        KAFS_V7_DATA_COW_ALLOCATOR_PATCH_COUNT, KAFS_V7_JOURNAL_COMMIT_TAG, &transaction);
+  }
+  kafs_v7_journal_publication_t publication;
+  memset(&publication, 0, sizeof(publication));
+  if (rc == 0)
+  {
+    rc = kafs_v7_journal_transaction_publish_fd(fixture->fd, &fixture->layout, &reservation,
+                                                 transaction, &publication);
+  }
+  if (rc == 0)
+  {
+    rc = kafs_v7_sequence_confirm_publication_fd(sequence, &reservation, fixture->fd,
+                                                  &fixture->superblock, fixture->file_size);
+  }
+  if (reservation.active)
+  {
+    int cancel_rc = kafs_v7_sequence_cancel_reservation_fd(
+        sequence, &reservation, fixture->fd, &fixture->superblock, fixture->file_size);
+    if (rc == 0)
+      rc = cancel_rc;
+  }
+  if (rc == 0 && sequence_out)
+    *sequence_out = publication.sequence;
+  kafs_v7_journal_transaction_destroy(transaction);
+  kafs_v7_data_cow_plan_clear(&plan);
+  kafs_v7_journal_replay_clear(&replay);
+  kafs_v7_sequence_state_destroy(sequence);
   return rc;
 }
 
@@ -652,6 +716,201 @@ static int test_runtime_transaction_rejects_cross_group(void)
   return rc;
 }
 
+typedef struct data_retirement_test_state
+{
+  checkpoint_fixture_t *fixture;
+  kafs_v7_runtime_transaction_service_t **service;
+  kafs_v7_inode_t *inode_record;
+  uint8_t *data;
+  uint64_t inode;
+  uint64_t initial_free_blocks;
+  uint64_t retired_block;
+  uint64_t current_block;
+} data_retirement_test_state_t;
+
+static void data_retirement_inode_reference_set(kafs_v7_inode_t *inode, uint32_t slot,
+                                                uint64_t logical_block)
+{
+  uint32_t reference =
+      logical_block == UINT64_MAX ? 0u : htole32((uint32_t)logical_block + 1u);
+  memcpy(inode->inline_or_block_refs + slot * sizeof(reference), &reference, sizeof(reference));
+}
+
+static int data_retirement_inode_commit(data_retirement_test_state_t *state,
+                                        kafs_v7_runtime_transaction_result_t *result)
+{
+  kafs_v7_journal_patch_t patch = {
+      .target_type = KAFS_V7_JOURNAL_TARGET_INODE,
+      .logical_index = state->inode,
+      .patch_bytes = sizeof(*state->inode_record),
+      .patch = state->inode_record,
+  };
+  return kafs_v7_runtime_transaction_commit(*state->service, &patch, 1u, result);
+}
+
+static int data_retirement_reference_guards(data_retirement_test_state_t *state)
+{
+  kafs_v7_runtime_transaction_result_t transaction;
+  data_retirement_inode_reference_set(state->inode_record, 1u, state->retired_block);
+  state->inode_record->blocks = htole32(2u);
+  int rc = data_retirement_inode_commit(state, &transaction);
+  if (rc == 0 && transaction.publication.sequence != 4u)
+    rc = -1;
+  kafs_v7_runtime_data_retirement_request_t request = {
+      .group_id = 2u,
+      .logical_block = state->retired_block,
+  };
+  kafs_v7_runtime_data_retirement_result_t result;
+  if (rc == 0 && kafs_v7_runtime_data_retire(*state->service, &request, &result) != -EBUSY)
+    rc = -1;
+
+  data_retirement_inode_reference_set(state->inode_record, 1u, UINT64_MAX);
+  data_retirement_inode_reference_set(state->inode_record, 12u, state->current_block);
+  if (rc == 0)
+    rc = data_retirement_inode_commit(state, &transaction);
+  if (rc == 0 && transaction.publication.sequence != 5u)
+    rc = -1;
+  if (rc == 0 && kafs_v7_runtime_data_retire(*state->service, &request, &result) != -EOPNOTSUPP)
+    rc = -1;
+
+  data_retirement_inode_reference_set(state->inode_record, 12u, UINT64_MAX);
+  state->inode_record->blocks = htole32(1u);
+  if (rc == 0)
+    rc = data_retirement_inode_commit(state, &transaction);
+  if (rc == 0 && transaction.publication.sequence != 6u)
+    rc = -1;
+  request.group_id = 1u;
+  if (rc == 0 && kafs_v7_runtime_data_retire(*state->service, &request, &result) != -EXDEV)
+    rc = -1;
+  return rc;
+}
+
+static int data_retirement_verify_closed(data_retirement_test_state_t *state,
+                                         uint64_t checkpoint_sequence)
+{
+  int rc = fixture_refresh(state->fixture);
+  int allocated = 1;
+  if (rc == 0)
+    rc = block_is_allocated(state->fixture, state->retired_block, &allocated);
+  if (rc == 0 && allocated)
+    rc = -1;
+  if (rc == 0)
+    rc = block_is_allocated(state->fixture, state->current_block, &allocated);
+  if (rc == 0 && (!allocated || state->fixture->layout.checkpoint_sequence != checkpoint_sequence ||
+                  state->fixture->layout.free_blocks != state->initial_free_blocks - 1u ||
+                  state->fixture->layout.journal.selected_nonempty_segment_count != 0u))
+    rc = -1;
+  return rc;
+}
+
+static int data_retirement_verify_pending(data_retirement_test_state_t *state,
+                                          uint64_t published_sequence)
+{
+  int rc = fixture_refresh(state->fixture);
+  if (rc == 0 &&
+      (published_sequence != 9u || state->fixture->layout.checkpoint_sequence != 8u ||
+       state->fixture->layout.journal.selected_nonempty_segment_count != 1u ||
+       state->fixture->layout.free_blocks != state->initial_free_blocks - 1u))
+    rc = -1;
+  return rc;
+}
+
+static int data_retirement_commit_and_retry(data_retirement_test_state_t *state)
+{
+  kafs_v7_runtime_data_retirement_request_t request = {
+      .group_id = 2u,
+      .logical_block = state->retired_block,
+  };
+  kafs_v7_runtime_data_retirement_result_t result;
+  int rc = kafs_v7_runtime_data_retire(*state->service, &request, &result);
+  if (rc == 0 &&
+      (result.group_id != request.group_id || result.logical_block != request.logical_block ||
+       result.transaction.publication.sequence != 7u ||
+       result.transaction.checkpoint_sequence != 7u ||
+       result.transaction.recovered_free_blocks != state->initial_free_blocks - 1u))
+    rc = -1;
+  if (rc == 0)
+    rc = data_retirement_verify_closed(state, 7u);
+  if (rc == 0 && kafs_v7_runtime_data_retire(*state->service, &request, &result) != -EALREADY)
+    rc = -1;
+  return rc;
+}
+
+static int data_retirement_replace_current(data_retirement_test_state_t *state)
+{
+  kafs_v7_runtime_data_cow_request_t request = {
+      .group_id = 2u,
+      .retained_logical_block = state->current_block,
+  };
+  kafs_v7_runtime_data_cow_t *operation = NULL;
+  kafs_v7_runtime_data_cow_plan_t plan;
+  int rc = kafs_v7_runtime_data_cow_prepare(*state->service, &request, &operation, &plan);
+  if (rc == 0 && (plan.sequence != 8u || plan.logical_block == state->current_block))
+    rc = -1;
+  if (rc == 0)
+  {
+    memset(state->data, 0xc3, plan.block_size);
+    rc = kafs_v7_runtime_data_cow_stage(operation, state->data, plan.block_size);
+  }
+  if (rc == 0)
+    data_retirement_inode_reference_set(state->inode_record, 0u, plan.logical_block);
+  kafs_v7_journal_patch_t inode_patch = {
+      .target_type = KAFS_V7_JOURNAL_TARGET_INODE,
+      .logical_index = state->inode,
+      .patch_bytes = sizeof(*state->inode_record),
+      .patch = state->inode_record,
+  };
+  kafs_v7_runtime_data_cow_result_t result;
+  if (rc == 0)
+    rc = kafs_v7_runtime_data_cow_commit(&operation, &inode_patch, 1u, &result);
+  if (rc == 0 && (result.transaction.publication.sequence != 8u ||
+                  result.transaction.recovered_free_blocks != state->initial_free_blocks - 2u))
+    rc = -1;
+  if (rc == 0)
+  {
+    state->retired_block = state->current_block;
+    state->current_block = plan.logical_block;
+  }
+  if (operation)
+    (void)kafs_v7_runtime_data_cow_abort(&operation);
+  return rc;
+}
+
+static int data_retirement_restart_retry(data_retirement_test_state_t *state)
+{
+  int rc = data_retirement_replace_current(state);
+  if (rc == 0)
+    rc = fixture_refresh(state->fixture);
+  if (rc == 0)
+  {
+    kafs_v7_runtime_transaction_service_destroy(*state->service);
+    *state->service = NULL;
+  }
+  uint64_t published_sequence = 0u;
+  if (rc == 0)
+  {
+    rc = publish_retirement_without_closeout(state->fixture, 2u, state->retired_block,
+                                             &published_sequence);
+  }
+  if (rc == 0)
+    rc = data_retirement_verify_pending(state, published_sequence);
+  if (rc == 0)
+  {
+    rc = kafs_v7_runtime_transaction_service_init(
+        state->fixture->fd, &state->fixture->superblock, state->fixture->file_size, state->service);
+  }
+  kafs_v7_runtime_data_retirement_request_t request = {
+      .group_id = 2u,
+      .logical_block = state->retired_block,
+  };
+  kafs_v7_runtime_data_retirement_result_t result;
+  if (rc == 0 && kafs_v7_runtime_data_retire(*state->service, &request, &result) != -EALREADY)
+    rc = -1;
+  if (rc == 0)
+    rc = data_retirement_verify_closed(state, 9u);
+  return rc;
+}
+
 static int test_runtime_data_cow_planner(void)
 {
   const char *path = "v7-runtime-data-cow.img";
@@ -877,6 +1136,23 @@ static int test_runtime_data_cow_planner(void)
     rc = -1;
   if (rc == 0 && operation != NULL)
     rc = -1;
+
+  data_retirement_test_state_t retirement = {
+      .fixture = &fixture,
+      .service = &service,
+      .inode_record = &file_inode,
+      .data = data,
+      .inode = inode,
+      .initial_free_blocks = initial_free_blocks,
+      .retired_block = committed_block,
+      .current_block = replacement_block,
+  };
+  if (rc == 0)
+    rc = data_retirement_reference_guards(&retirement);
+  if (rc == 0)
+    rc = data_retirement_commit_and_retry(&retirement);
+  if (rc == 0)
+    rc = data_retirement_restart_retry(&retirement);
 
   if (operation)
     (void)kafs_v7_runtime_data_cow_abort(&operation);

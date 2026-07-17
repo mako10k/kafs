@@ -2943,14 +2943,47 @@
   - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineの87件・1,246行
     （2.60%）で、新規data COW/transaction module由来のcloneは0件。新規2 moduleのlizard threshold warningも0件。
 
+### SDW-V7RT-T19 retained data-block retirement and retry closeout
+
+- 目的: T18 overwrite後に保持した旧data blockを、covering checkpoint後の独立transactionで安全に解放し、
+  allocation/COW/retirement lifecycleを閉じる。
+- 変更:
+  - `kafs_v7_data_cow`のallocator after-image生成をallocation/retirementで共有し、retirementでは対象groupの
+    allocated bitだけをclearしてcomplete L1/L2 summaryを再構築する。bitmap patchは
+    `free_blocks_delta=+1`となり、既にfreeなら`EALREADY`、foreign-group blockなら`EXDEV`を返す。
+  - runtime retirementは最初に既存durable journal prefixをcloseoutし、rank 1 -> 2 -> 3 reservation下で
+    fresh layout/replayを検証する。journalが空で2-copy checkpointが揃う場合だけretirementを計画する。
+  - 全groupのinode tableとHRL entriesをjournal overlay経由で走査する。対象へのlive direct/HRL referenceは
+    `EBUSY`、どこかに非0 indirect rootがある場合はindirect traversal実装まで`EOPNOTSUPP`でfail closedとする。
+  - 参照なしを確認したbitmap/summary patchをsingle-group transactionとしてpublishし、metadata apply、
+    2-copy checkpoint、journal reclamationまで完了してから成功を返す。公開済みretirementを伴う再起動後の
+    retryはpreflight closeoutで収束し、その後`EALREADY`を返す。
+  - regressionはlive direct guard、indirect guard、cross-group guard、正常解放と空き数回復、同一process retry、
+    journal公開後かつcloseout前の再起動retryを固定する。FUSE controlled-write admissionは変更しない。
+- 完了条件:
+  - allocatedかつ全direct/HRL参照から外れたgroup-local blockだけが解放され、bitmap、summary、free counterが
+    同じcovering checkpointで一致する。
+  - live reference、indirect root、foreign-group、already-freeの各状態でallocator metadataを変更しない。
+  - retirement transaction公開後の中断を再起動時にcloseoutでき、二重解放やcounter二重加算が起きない。
+- 検証結果（2026-07-17）:
+  - `make -j2`: PASS（`-Wall -Werror` build）。
+  - `v7_checkpoint_publication_smoketest`: PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 36 PASS / 2 SKIP。`min_git_hooks`と`stress_fs`は
+    この環境のFUSE mount権限不足でSKIPした。
+  - `v7_checkpoint_publication_smoketest`のValgrind: PASS（0 error、0 leak、12,471 allocs/frees）。
+  - clangd-18 diagnostics（allocator/retirement、runtime transaction、両header、focused test）: 0件。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、両v7 ownership check、`git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineの87件・1,246行
+    （2.58%）で、今回変更したmodule由来のcloneは0件。新規retirement関数のlizard threshold warningも0件。
+
 ---
 
 ## 次に着手する候補
 
-1. covering checkpoint後のv7 retained data-block retirementを追加する。旧blockが参照されていないことをfresh
-   overlayで検証し、bitmap clear、allocator summary、`free_blocks_delta=+1`を独立transactionとしてcloseoutする。
-   abort/crash/retry fault matrixを固定した後にbounded `create` / regular-file direct writeをT17/T18 coordinatorへ
-   接続する。end-to-end recoveryが揃うまでcontrolled-write admissionはfail closedを維持する。
+1. 既存regular fileのaligned full-block direct overwriteだけをv7-owned FUSE adapterからT17-T19 coordinatorへ
+   接続する。partial-block merge、file growth、indirect/multi-block write、`create`は別sliceに残し、mount/write/
+   full-fsync/unmount/remount/fsckとpower-interruption recovery matrixが揃うまでcontrolled-write admissionは
+   fail closedを維持する。
 2. accepted offline/inspection surface安定後に`kafsresize --migrate-create --format-version 7`を追加する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの

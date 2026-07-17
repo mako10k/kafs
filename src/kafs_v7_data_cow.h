@@ -21,6 +21,7 @@ typedef struct kafs_v7_data_cow_plan
   uint8_t bitmap_after[8];
   uint8_t *allocator_after;
   uint32_t allocator_bytes;
+  int64_t free_blocks_delta;
 } kafs_v7_data_cow_plan_t;
 
 typedef struct kafs_v7_data_cow_plan_request
@@ -32,6 +33,14 @@ typedef struct kafs_v7_data_cow_plan_request
   uint64_t retained_logical_block;
 } kafs_v7_data_cow_plan_request_t;
 
+typedef struct kafs_v7_data_retirement_plan_request
+{
+  const kafs_v7_layout_report_t *layout;
+  const kafs_v7_journal_replay_t *replay;
+  uint32_t group_id;
+  uint64_t logical_block;
+} kafs_v7_data_retirement_plan_request_t;
+
 /*
  * Plan one group-local allocation against the journal-overlay view. The
  * caller must retain the v7 rank 1 -> 2 -> 3 transaction reservation until
@@ -39,6 +48,8 @@ typedef struct kafs_v7_data_cow_plan_request
  */
 int kafs_v7_data_cow_plan_fd(int fd, const kafs_v7_data_cow_plan_request_t *request,
                              kafs_v7_data_cow_plan_t *plan);
+int kafs_v7_data_retirement_plan_fd(int fd, const kafs_v7_data_retirement_plan_request_t *request,
+                                    kafs_v7_data_cow_plan_t *plan);
 void kafs_v7_data_cow_plan_clear(kafs_v7_data_cow_plan_t *plan);
 
 int kafs_v7_data_cow_plan_patches(

@@ -184,14 +184,17 @@ transaction entrypoint.
 The v7-owned data COW/allocator planner now selects a group-local free block
 from the authoritative bitmap/L1/L2 overlay, writes and flushes one full block,
 reads it back, and re-verifies it before publishing a caller-owned direct inode
-reference with the bitmap and allocator-summary after-images. A replaced old
-block remains allocated after the covering checkpoint; explicit retirement is
-the next required slice.
+reference with the bitmap and allocator-summary after-images. The independent
+retirement path first closes any durable prefix, rejects live direct/HRL
+references and all untraversed indirect roots, then clears the retained block
+with `free_blocks_delta=+1`. A published-before-closeout retry converges through
+preflight closeout and `EALREADY` without double free.
 
 Controlled write remains blocked. The planner is not connected to FUSE
-`create` or `write`, and indirect, multi-block, directory, and retained-block
-retirement paths are not implemented. The v7 policy state and helpers are
-v7-owned; production `kafs` and frozen `kafs-v6` behavior remain separate.
+`create` or `write`; indirect traversal, multi-block writes, partial-block
+merge, file growth, and directory mutation are not implemented. The v7 policy
+state and helpers are v7-owned; production `kafs` and frozen `kafs-v6`
+behavior remain separate.
 
 FTL/ECC correlated-failure injection is not in this implementation blocker
 list.  It is governed by the RC media-qualification boundary in the accepted
@@ -211,9 +214,11 @@ raw-layout specification and does not relax any software recovery gate.
 
 ## Follow-Up Boundaries
 
-1. Add a v7-owned runtime mutation/admission policy and route the bounded write
-   surface through the established cross-family lock order before enabling
-   controlled-write admission.
+1. Route an existing regular file's aligned full-block direct overwrite through
+   a v7-owned FUSE adapter and the established T17-T19 coordinator. Keep
+   partial-block merge, file growth, indirect/multi-block write, and `create`
+   outside that slice, and keep controlled-write admission closed until the
+   mount/recovery matrix passes.
 2. Add `kafsresize --migrate-create --format-version 7` after the accepted
    offline and inspection surfaces are stable; migration does not outrank a
    blocker on the mount/write path.

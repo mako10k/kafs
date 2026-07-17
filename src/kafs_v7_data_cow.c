@@ -210,22 +210,17 @@ static int kafs_v7_data_allocator_request_validate(const kafs_v7_data_allocator_
   return (view->bitmap[local / 8u] & (uint8_t)(1u << (local % 8u))) != 0u ? 0 : -ENOENT;
 }
 
-static int kafs_v7_data_allocator_plan_build(int fd, const kafs_v7_data_cow_plan_request_t *request,
-                                             const kafs_v7_data_allocator_view_t *view,
-                                             kafs_v7_data_cow_plan_t *plan)
+static int kafs_v7_data_allocator_mutation_build(int fd,
+                                                 const kafs_v7_data_cow_plan_request_t *request,
+                                                 const kafs_v7_data_allocator_view_t *view,
+                                                 uint64_t selected, int allocate,
+                                                 kafs_v7_data_cow_plan_t *plan)
 {
-  uint64_t selected = 0u;
-  int rc = kafs_v7_data_find_free(view->bitmap, view->summary, view->logical_count,
-                                  request->allocation_cursor - view->logical_start, &selected);
-  if (rc != 0)
-    return rc;
-  view->bitmap[selected / 8u] |= (uint8_t)(1u << (selected % 8u));
-
   uint64_t word_local = selected & ~UINT64_C(63);
   kafs_v7_mutation_route_t bitmap_word;
-  rc = kafs_v7_mutation_route_target_in_group(request->layout, KAFS_V7_JOURNAL_TARGET_BLOCK_BITMAP,
-                                              request->group_id, view->logical_start + word_local,
-                                              &bitmap_word);
+  int rc = kafs_v7_mutation_route_target_in_group(
+      request->layout, KAFS_V7_JOURNAL_TARGET_BLOCK_BITMAP, request->group_id,
+      view->logical_start + word_local, &bitmap_word);
   if (rc == 0)
   {
     rc = kafs_v7_journal_overlay_pread(request->replay, fd, plan->bitmap_after,
@@ -234,7 +229,11 @@ static int kafs_v7_data_allocator_plan_build(int fd, const kafs_v7_data_cow_plan
   if (rc == 0)
   {
     uint64_t word_bit = selected - word_local;
-    plan->bitmap_after[word_bit / 8u] |= (uint8_t)(1u << (word_bit % 8u));
+    uint8_t mask = (uint8_t)(1u << (word_bit % 8u));
+    if (allocate)
+      plan->bitmap_after[word_bit / 8u] |= mask;
+    else
+      plan->bitmap_after[word_bit / 8u] &= (uint8_t)~mask;
     plan->allocator_after = (uint8_t *)malloc(view->allocator_route.target_bytes);
     if (!plan->allocator_after)
       rc = -ENOMEM;
@@ -256,8 +255,22 @@ static int kafs_v7_data_allocator_plan_build(int fd, const kafs_v7_data_cow_plan
     plan->bitmap_word_logical = view->logical_start + word_local;
     plan->allocator_logical = view->logical_start;
     plan->allocator_bytes = view->allocator_route.target_bytes;
+    plan->free_blocks_delta = allocate ? -1 : 1;
   }
   return rc;
+}
+
+static int kafs_v7_data_allocator_plan_build(int fd, const kafs_v7_data_cow_plan_request_t *request,
+                                             kafs_v7_data_allocator_view_t *view,
+                                             kafs_v7_data_cow_plan_t *plan)
+{
+  uint64_t selected = 0u;
+  int rc = kafs_v7_data_find_free(view->bitmap, view->summary, view->logical_count,
+                                  request->allocation_cursor - view->logical_start, &selected);
+  if (rc != 0)
+    return rc;
+  view->bitmap[selected / 8u] |= (uint8_t)(1u << (selected % 8u));
+  return kafs_v7_data_allocator_mutation_build(fd, request, view, selected, 1, plan);
 }
 
 int kafs_v7_data_cow_plan_fd(int fd, const kafs_v7_data_cow_plan_request_t *request,
@@ -284,6 +297,62 @@ int kafs_v7_data_cow_plan_fd(int fd, const kafs_v7_data_cow_plan_request_t *requ
   return rc;
 }
 
+static int
+kafs_v7_data_retirement_request_validate(int fd,
+                                         const kafs_v7_data_retirement_plan_request_t *request,
+                                         const kafs_v7_data_cow_plan_t *plan)
+{
+  if (fd < 0 || !request || !plan || !request->layout || !request->layout->descriptor ||
+      request->layout->block_size == 0u || !request->replay || !request->replay->state)
+    return -EINVAL;
+  return 0;
+}
+
+static int kafs_v7_data_retirement_view_local(const kafs_v7_data_allocator_view_t *view,
+                                              uint64_t logical_block, uint64_t *local)
+{
+  if (!view || !local)
+    return -EINVAL;
+  if (logical_block < view->logical_start ||
+      logical_block - view->logical_start >= view->logical_count)
+    return -EXDEV;
+  *local = logical_block - view->logical_start;
+  if ((view->bitmap[*local / 8u] & (uint8_t)(1u << (*local % 8u))) == 0u)
+    return -EALREADY;
+  return 0;
+}
+
+int kafs_v7_data_retirement_plan_fd(int fd, const kafs_v7_data_retirement_plan_request_t *request,
+                                    kafs_v7_data_cow_plan_t *plan)
+{
+  int rc = kafs_v7_data_retirement_request_validate(fd, request, plan);
+  if (rc != 0)
+    return rc;
+  memset(plan, 0, sizeof(*plan));
+  plan->retained_logical_block = KAFS_V7_DATA_COW_NO_BLOCK;
+  kafs_v7_data_cow_plan_request_t allocator_request = {
+      .layout = request->layout,
+      .replay = request->replay,
+      .group_id = request->group_id,
+      .retained_logical_block = KAFS_V7_DATA_COW_NO_BLOCK,
+  };
+  kafs_v7_data_allocator_view_t view;
+  memset(&view, 0, sizeof(view));
+  rc = kafs_v7_data_allocator_view_load(fd, &allocator_request, &view);
+  uint64_t local = 0u;
+  if (rc == 0)
+    rc = kafs_v7_data_retirement_view_local(&view, request->logical_block, &local);
+  if (rc == 0)
+  {
+    view.bitmap[local / 8u] &= (uint8_t) ~(1u << (local % 8u));
+    rc = kafs_v7_data_allocator_mutation_build(fd, &allocator_request, &view, local, 0, plan);
+  }
+  kafs_v7_data_allocator_view_clear(&view);
+  if (rc != 0)
+    kafs_v7_data_cow_plan_clear(plan);
+  return rc;
+}
+
 void kafs_v7_data_cow_plan_clear(kafs_v7_data_cow_plan_t *plan)
 {
   if (!plan)
@@ -296,7 +365,8 @@ int kafs_v7_data_cow_plan_patches(
     const kafs_v7_data_cow_plan_t *plan,
     kafs_v7_journal_patch_t patches[KAFS_V7_DATA_COW_ALLOCATOR_PATCH_COUNT])
 {
-  if (!plan || !patches || !plan->allocator_after || plan->allocator_bytes == 0u)
+  if (!plan || !patches || !plan->allocator_after || plan->allocator_bytes == 0u ||
+      (plan->free_blocks_delta != -1 && plan->free_blocks_delta != 1))
     return -EINVAL;
   memset(patches, 0, KAFS_V7_DATA_COW_ALLOCATOR_PATCH_COUNT * sizeof(*patches));
   patches[0] = (kafs_v7_journal_patch_t){
@@ -304,7 +374,7 @@ int kafs_v7_data_cow_plan_patches(
       .logical_index = plan->bitmap_word_logical,
       .patch_bytes = sizeof(plan->bitmap_after),
       .patch = plan->bitmap_after,
-      .free_blocks_delta = -1,
+      .free_blocks_delta = plan->free_blocks_delta,
   };
   patches[1] = (kafs_v7_journal_patch_t){
       .target_type = KAFS_V7_JOURNAL_TARGET_ALLOCATOR_SUMMARY,
