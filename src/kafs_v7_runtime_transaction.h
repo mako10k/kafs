@@ -47,6 +47,21 @@ typedef struct kafs_v7_runtime_data_cow_result
   kafs_v7_runtime_transaction_result_t transaction;
 } kafs_v7_runtime_data_cow_result_t;
 
+typedef struct kafs_v7_runtime_data_retirement_request
+{
+  uint32_t group_id;
+  uint32_t reserved;
+  uint64_t logical_block;
+} kafs_v7_runtime_data_retirement_request_t;
+
+typedef struct kafs_v7_runtime_data_retirement_result
+{
+  uint32_t group_id;
+  uint32_t reserved;
+  uint64_t logical_block;
+  kafs_v7_runtime_transaction_result_t transaction;
+} kafs_v7_runtime_data_retirement_result_t;
+
 /*
  * Own the mount-lifetime rank 1-3 lock and global-sequence state. The caller
  * retains ownership of fd and must stop transaction users before destroy.
@@ -84,6 +99,15 @@ int kafs_v7_runtime_data_cow_commit(kafs_v7_runtime_data_cow_t **operation,
                                     size_t metadata_patch_count,
                                     kafs_v7_runtime_data_cow_result_t *result);
 int kafs_v7_runtime_data_cow_abort(kafs_v7_runtime_data_cow_t **operation);
+
+/*
+ * Retire one allocated, unreferenced direct-only block after first closing any
+ * durable journal prefix. A live direct/HRL reference returns EBUSY; any
+ * indirect root returns EOPNOTSUPP until indirect traversal is implemented.
+ */
+int kafs_v7_runtime_data_retire(kafs_v7_runtime_transaction_service_t *service,
+                                const kafs_v7_runtime_data_retirement_request_t *request,
+                                kafs_v7_runtime_data_retirement_result_t *result);
 
 /* Finish any durable journal prefix without publishing a new transaction. */
 int kafs_v7_runtime_transaction_barrier(kafs_v7_runtime_transaction_service_t *service,

@@ -519,6 +519,237 @@ int kafs_v7_runtime_data_cow_abort(kafs_v7_runtime_data_cow_t **operation_ptr)
   return kafs_v7_runtime_data_cow_cancel(operation);
 }
 
+static int kafs_v7_runtime_group_shard(const kafs_v7_layout_report_t *layout, uint32_t group_id,
+                                       uint16_t type, const kafs_v7_shard_desc_t **shard_out)
+{
+  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(layout);
+  const kafs_v7_shard_desc_t *shards = kafs_v7_report_shards(layout);
+  if (!groups || !shards || group_id >= layout->group_count || !shard_out)
+    return -EINVAL;
+  uint32_t first = le32toh(groups[group_id].first_shard_index);
+  uint32_t count = le32toh(groups[group_id].shard_count);
+  if (le32toh(groups[group_id].group_id) != group_id || first > layout->shard_count ||
+      count > layout->shard_count - first)
+    return -EUCLEAN;
+  const kafs_v7_shard_desc_t *found = NULL;
+  for (uint32_t local = 0; local < count; ++local)
+  {
+    const kafs_v7_shard_desc_t *candidate = &shards[first + local];
+    if (le16toh(candidate->type) != type)
+      continue;
+    if (found || le32toh(candidate->group_id) != group_id)
+      return -EUCLEAN;
+    found = candidate;
+  }
+  if (!found)
+    return -EUCLEAN;
+  *shard_out = found;
+  return 0;
+}
+
+typedef struct kafs_v7_runtime_data_retirement_scan
+{
+  const kafs_v7_runtime_transaction_service_t *service;
+  const kafs_v7_layout_report_t *layout;
+  const kafs_v7_journal_replay_t *replay;
+  uint32_t expected;
+  int has_indirect;
+} kafs_v7_runtime_data_retirement_scan_t;
+
+static int
+kafs_v7_runtime_data_retirement_read_shard(const kafs_v7_runtime_data_retirement_scan_t *scan,
+                                           uint32_t group_id, uint16_t type, size_t record_bytes,
+                                           void **records, uint64_t *record_count)
+{
+  if (!scan || record_bytes == 0u || !records || !record_count)
+    return -EINVAL;
+  *records = NULL;
+  *record_count = 0u;
+  const kafs_v7_shard_desc_t *shard = NULL;
+  int rc = kafs_v7_runtime_group_shard(scan->layout, group_id, type, &shard);
+  uint64_t count = rc == 0 ? le64toh(shard->logical_count) : 0u;
+  if (rc == 0 && (count == 0u || count > SIZE_MAX / record_bytes))
+    rc = -EUCLEAN;
+  size_t bytes = rc == 0 ? (size_t)count * record_bytes : 0u;
+  void *loaded = rc == 0 ? malloc(bytes) : NULL;
+  if (rc == 0 && !loaded)
+    rc = -ENOMEM;
+  if (rc == 0)
+  {
+    rc = kafs_v7_journal_overlay_pread(scan->replay, scan->service->fd, loaded, bytes,
+                                       le64toh(shard->physical_off));
+  }
+  if (rc != 0)
+  {
+    free(loaded);
+    return rc;
+  }
+  *records = loaded;
+  *record_count = count;
+  return 0;
+}
+
+static int kafs_v7_runtime_data_retirement_scan_inodes(kafs_v7_runtime_data_retirement_scan_t *scan,
+                                                       uint32_t group_id)
+{
+  kafs_v7_inode_t *inodes = NULL;
+  uint64_t count = 0u;
+  int rc = kafs_v7_runtime_data_retirement_read_shard(scan, group_id, KAFS_V7_SHARD_INODE_TABLE,
+                                                      sizeof(*inodes), (void **)&inodes, &count);
+  for (uint64_t inode = 0; rc == 0 && inode < count; ++inode)
+  {
+    if (le16toh(inodes[inode].mode) == 0u || le64toh(inodes[inode].size) <= 60u)
+      continue;
+    for (uint32_t slot = 0; slot < 15u; ++slot)
+    {
+      uint32_t reference = 0u;
+      memcpy(&reference, inodes[inode].inline_or_block_refs + slot * sizeof(reference),
+             sizeof(reference));
+      reference = le32toh(reference);
+      if (reference == scan->expected)
+      {
+        rc = -EBUSY;
+        break;
+      }
+      if (slot >= 12u && reference != 0u)
+        scan->has_indirect = 1;
+    }
+  }
+  free(inodes);
+  return rc;
+}
+
+static int
+kafs_v7_runtime_data_retirement_scan_hrl(const kafs_v7_runtime_data_retirement_scan_t *scan,
+                                         uint32_t group_id)
+{
+  kafs_v7_hrl_entry_t *entries = NULL;
+  uint64_t count = 0u;
+  int rc = kafs_v7_runtime_data_retirement_read_shard(scan, group_id, KAFS_V7_SHARD_HRL_ENTRIES,
+                                                      sizeof(*entries), (void **)&entries, &count);
+  for (uint64_t entry = 0; rc == 0 && entry < count; ++entry)
+  {
+    if (le32toh(entries[entry].ref_count) != 0u &&
+        le32toh(entries[entry].logical_block_plus1) == scan->expected)
+      rc = -EBUSY;
+  }
+  free(entries);
+  return rc;
+}
+
+static int kafs_v7_runtime_data_retirement_validate_unreferenced(
+    const kafs_v7_runtime_transaction_service_t *service, const kafs_v7_layout_report_t *layout,
+    const kafs_v7_journal_replay_t *replay, uint64_t logical_block)
+{
+  if (logical_block >= UINT32_MAX)
+    return -ERANGE;
+  kafs_v7_runtime_data_retirement_scan_t scan = {
+      .service = service,
+      .layout = layout,
+      .replay = replay,
+      .expected = (uint32_t)logical_block + 1u,
+  };
+  int rc = 0;
+  for (uint32_t group_id = 0; rc == 0 && group_id < layout->group_count; ++group_id)
+    rc = kafs_v7_runtime_data_retirement_scan_inodes(&scan, group_id);
+  for (uint32_t group_id = 0; rc == 0 && group_id < layout->group_count; ++group_id)
+    rc = kafs_v7_runtime_data_retirement_scan_hrl(&scan, group_id);
+  return rc != 0 ? rc : scan.has_indirect ? -EOPNOTSUPP : 0;
+}
+
+static int kafs_v7_runtime_data_retirement_publish(kafs_v7_runtime_transaction_service_t *service,
+                                                   const kafs_v7_layout_report_t *layout,
+                                                   kafs_v7_sequence_reservation_t *reservation,
+                                                   const kafs_v7_data_cow_plan_t *plan,
+                                                   kafs_v7_runtime_transaction_result_t *result)
+{
+  kafs_v7_journal_patch_t patches[KAFS_V7_DATA_COW_ALLOCATOR_PATCH_COUNT];
+  int rc = kafs_v7_data_cow_plan_patches(plan, patches);
+  if (rc == 0)
+  {
+    rc = kafs_v7_runtime_transaction_publish_reserved(
+        service, layout, reservation, patches, KAFS_V7_DATA_COW_ALLOCATOR_PATCH_COUNT, result);
+  }
+  return rc;
+}
+
+static int kafs_v7_runtime_data_retirement_prepare(
+    kafs_v7_runtime_transaction_service_t *service,
+    const kafs_v7_runtime_data_retirement_request_t *request,
+    kafs_v7_sequence_reservation_t *reservation, kafs_v7_layout_report_t *layout,
+    kafs_v7_journal_replay_t *replay, kafs_v7_data_cow_plan_t *plan)
+{
+  int rc = kafs_v7_sequence_reserve(service->sequence, request->group_id, reservation);
+  if (rc == 0)
+    rc = kafs_v7_validate_image_fd(service->fd, &service->superblock, service->file_size, layout);
+  if (rc == 0 && (layout->journal.selected_nonempty_segment_count != 0u ||
+                  kafs_v7_layout_checkpoint_copy_count(layout) < 2u))
+    rc = -EUCLEAN;
+  if (rc == 0)
+    rc = kafs_v7_journal_analyze_fd(service->fd, layout, replay);
+  if (rc == 0)
+  {
+    kafs_v7_data_retirement_plan_request_t plan_request = {
+        .layout = layout,
+        .replay = replay,
+        .group_id = request->group_id,
+        .logical_block = request->logical_block,
+    };
+    rc = kafs_v7_data_retirement_plan_fd(service->fd, &plan_request, plan);
+  }
+  if (rc == 0)
+  {
+    rc = kafs_v7_runtime_data_retirement_validate_unreferenced(service, layout, replay,
+                                                               request->logical_block);
+  }
+  return rc;
+}
+
+int kafs_v7_runtime_data_retire(kafs_v7_runtime_transaction_service_t *service,
+                                const kafs_v7_runtime_data_retirement_request_t *request,
+                                kafs_v7_runtime_data_retirement_result_t *result)
+{
+  if (!service || !request || request->reserved != 0u || !result ||
+      request->group_id >= service->group_count)
+    return -EINVAL;
+  memset(result, 0, sizeof(*result));
+  kafs_v7_runtime_transaction_result_t preflight;
+  memset(&preflight, 0, sizeof(preflight));
+  int rc = kafs_v7_runtime_transaction_closeout(service, &preflight);
+
+  kafs_v7_sequence_reservation_t reservation;
+  kafs_v7_layout_report_t layout;
+  kafs_v7_journal_replay_t replay;
+  kafs_v7_data_cow_plan_t plan;
+  memset(&reservation, 0, sizeof(reservation));
+  memset(&layout, 0, sizeof(layout));
+  memset(&replay, 0, sizeof(replay));
+  memset(&plan, 0, sizeof(plan));
+  if (rc == 0)
+    rc = kafs_v7_runtime_data_retirement_prepare(service, request, &reservation, &layout, &replay,
+                                                 &plan);
+  if (rc == 0)
+  {
+    result->group_id = request->group_id;
+    result->logical_block = request->logical_block;
+    rc = kafs_v7_runtime_data_retirement_publish(service, &layout, &reservation, &plan,
+                                                 &result->transaction);
+  }
+  if (reservation.active)
+  {
+    int cancel_rc = kafs_v7_sequence_cancel_reservation_fd(
+        service->sequence, &reservation, service->fd, &service->superblock, service->file_size);
+    if (cancel_rc != 0)
+      rc = cancel_rc;
+  }
+  kafs_v7_data_cow_plan_clear(&plan);
+  kafs_v7_journal_replay_clear(&replay);
+  kafs_v7_layout_report_clear(&layout);
+  if (rc == 0)
+    rc = kafs_v7_runtime_transaction_closeout(service, &result->transaction);
+  return rc;
+}
+
 int kafs_v7_runtime_transaction_barrier(kafs_v7_runtime_transaction_service_t *service,
                                         kafs_v7_runtime_transaction_result_t *result)
 {
