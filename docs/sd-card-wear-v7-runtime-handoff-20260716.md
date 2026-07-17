@@ -3,8 +3,7 @@
 ## Scope
 
 This handoff covers the format v7 runtime foundation through
-`SDW-V7RT-T17 mount-lifetime transaction coordinator and fail-closed FUSE
-boundary`. It is intended to
+`SDW-V7RT-T18 v7-owned data-block COW and allocator planner`. It is intended to
 make the next runtime mutation/admission slice resumable from another host
 without reopening the accepted wear-leveling and fault-tolerance decisions.
 
@@ -12,8 +11,8 @@ Repository checkpoint for this update:
 
 - Branch: `feat/v7-runtime-admission-foundation`
 - Push target: `origin/feat/v7-runtime-admission-foundation`
-- Latest predecessor: `2b3a17d refactor: give v7 its own write policy`
-- T17 implementation and this handoff update are consolidated in the commit
+- Latest predecessor: `b01ea23 feat: add v7 runtime transaction coordinator`
+- T18 implementation and this handoff update are consolidated in the commit
   containing this file.
 
 Relevant implementation checkpoints:
@@ -26,6 +25,7 @@ Relevant implementation checkpoints:
 - `bccb26b feat: enforce cross-family lock order`
 - `47367f0 docs: add v7 runtime handoff`
 - `2b3a17d refactor: give v7 its own write policy`
+- `b01ea23 feat: add v7 runtime transaction coordinator`
 
 ## Current Runtime Boundary
 
@@ -39,6 +39,8 @@ The accepted v7 surface currently provides:
   and journal reclamation APIs exercised by focused regression tests;
 - a mount-lifetime v7 transaction coordinator that serializes global sequence
   publication and runs the complete metadata closeout lifecycle;
+- a v7-owned group-local data-block COW/allocator planner that durably stages
+  and re-verifies one full block before publishing its direct inode reference;
 - v7-only FUSE `fsync` / `release` closeout barriers with every legacy mutation
   path still rejected.
 
@@ -128,6 +130,31 @@ Regular-file `fsync` and `release` call the v7 closeout barrier. This wiring is
 dormant in production because controlled-write admission still fails before
 FUSE starts.
 
+## T18 Closeout
+
+T18 adds `kafs_v7_data_cow` as a v7-only allocator and full-block staging
+module. It reads the authoritative bitmap and complete unpadded L1/L2 allocator
+summary through the journal overlay, rejects any mismatch, and searches from a
+per-group mount-lifetime cursor. A successful stage writes one full block,
+flushes it, reads it back, and advances the cursor even if the later metadata
+publication is aborted. This avoids repeatedly staging failed attempts on the
+same physical location.
+
+The transaction service keeps the same rank 1-3 reservation from planning
+through durable data staging and journal publication. Commit re-verifies the
+staged bytes and requires a caller-owned direct inode-slot patch that names the
+selected block. For overwrite, the same slot's overlay before-image must name
+the supplied retained block. The bitmap word and allocator summary after-images
+are prepended to that metadata transaction, so no allocator state becomes
+visible before data durability.
+
+After a successful overwrite, both the new and old blocks remain allocated.
+The covering two-copy checkpoint protects the pointer transition, but T18 does
+not yet retire the old block. Abort or pre-publication failure leaves only
+unreferenced bytes in a still-free data span. Indirect references, multi-block
+writes, directory mutation, and FUSE create/write admission remain outside the
+implemented boundary.
+
 ## Validation Evidence
 
 Completed against implementation commit `bccb26b` on 2026-07-16:
@@ -190,11 +217,30 @@ T17 validation completed on 2026-07-17:
   (2.64%). `static-checks.sh` completed with clone as its single non-passing
   step; the new coordinator and I/O helper add no clone or complexity warning.
 
+T18 validation completed on 2026-07-17:
+
+- `autoreconf -fi`, `./configure`, and `make -j2`: PASS.
+- Focused `v7_checkpoint_publication_smoketest v7_entrypoint_smoketest
+  v6_descriptor_smoketest`: 3/3 PASS.
+- `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: all 38 tests passed.
+- `v7_checkpoint_publication_smoketest` under Valgrind: 0 errors, 0 leaks;
+  7,439 allocations and 7,439 frees.
+- Formatting, lint, both v7 ownership checks, Git whitespace, and clangd-18
+  diagnostics for the COW planner, transaction service, headers, and focused
+  test: PASS.
+- The strict clone gate remains at 87 clones and 1,246 duplicated lines
+  (2.60%). No new COW/transaction clone was reported. `static-checks.sh`
+  completed with clone as its single non-passing step; the two new/modified
+  modules have no lizard threshold warning.
+
 ## Remaining Risks And Constraints
 
-- No data-block or directory-record mutation planner is yet routed through the
-  complete v7 transaction lifecycle. The current FUSE connection is a
-  closeout-only barrier.
+- Repeated successful overwrite through the internal planner would retain old
+  blocks indefinitely. FUSE write remains blocked until a post-checkpoint
+  retirement transaction closes this allocation lifecycle.
+- The planner supports one full block and direct inode slots only. Indirect
+  references, multi-block writes, partial-block merge policy, and
+  directory-record mutation are not implemented.
 - The first admitted write surface must remain bounded; do not infer support
   for truncate, fallocate, unlink, rename, link, symlink, copy/reflink,
   control-plane write, hotplug delegated write, runtime TRIM, writeback cache,
@@ -208,13 +254,13 @@ T17 validation completed on 2026-07-17:
 
 ## Recommended Next Slice
 
-Add a v7-owned data-block COW/allocator planner before connecting FUSE data
-mutation. New data must be written, read back, and flushed before the metadata
-journal publishes the pointer/counter transition; overwrite must not destroy
-the only old copy before a covering checkpoint. Prove allocation, torn-data,
-and power-loss order with focused fault regression, then route bounded
-`create` / regular-file `write` through the T17 coordinator. Keep the
-controlled-write entrypoint fail closed until the complete recovery matrix
+Add v7 retained data-block retirement after the covering checkpoint. A fresh
+overlay view must prove the old direct block is no longer referenced before an
+independent bitmap-clear, allocator-summary, and `free_blocks_delta=+1`
+transaction is closed out. Prove crash/retry idempotence and fail closed on a
+still-live or foreign-group reference. Then route bounded `create` and
+single-block regular-file direct write through the T17/T18 coordinator. Keep
+the controlled-write entrypoint fail closed until the complete recovery matrix
 passes.
 
 ## Resume Checklist
@@ -224,7 +270,7 @@ passes.
 3. Confirm `git status --short --branch` is clean.
 4. Read, in order:
    - this handoff;
-   - [sd-card-wear-tickets.md](sd-card-wear-tickets.md) at T14-T17 and the next
+   - [sd-card-wear-tickets.md](sd-card-wear-tickets.md) at T14-T18 and the next
      candidates;
    - [sd-card-wear-format-v7-pivot.md](sd-card-wear-format-v7-pivot.md);
    - [.github/lock-policy.md](../.github/lock-policy.md).
@@ -237,7 +283,8 @@ passes.
    make -C tests check TESTS='v7_entrypoint_smoketest v7_locks_smoketest v6_descriptor_smoketest'
    ```
 
-6. Start with the v7 data-block COW/durability planner. Do not enable controlled
-   write until data-before-metadata ordering and the complete fault matrix pass.
+6. Start with retained data-block retirement after a covering checkpoint. Do
+   not enable controlled write until the allocation lifecycle and complete
+   fault matrix pass.
 7. Follow the reviewed file/hunk WIP workflow in
    [github-dev-rules.md](../.github/github-dev-rules.md).

@@ -7,6 +7,8 @@ cd "$repo_root"
 owned_files=(
   src/kafs_v7_fuse_policy.h
   src/kafs_v7_runtime.c
+  src/kafs_v7_data_cow.c
+  src/kafs_v7_data_cow.h
   src/kafs_v7_runtime_transaction.c
   src/kafs_v7_runtime_transaction.h
 )
@@ -25,6 +27,7 @@ rg -q 'c_v7_controlled_write_enabled' src/kafs_context.h
 rg -q 'c_v7_runtime_transactions' src/kafs_context.h
 rg -q 'kafs_v7_fuse_policy.h' src/Makefile.am
 rg -q 'kafs_v7_runtime_transaction.c' src/Makefile.am
+rg -q 'kafs_v7_data_cow.c' src/Makefile.am
 rg -q 'KAFS_V7_RUNTIME_ENTRYPOINT' src/Makefile.am
 rg -q 'kafs_v7_fuse_policy_reject_legacy_mutation' src/kafs_shared_fuse_runtime.c
 rg -q 'kafs_v7_runtime_transaction_barrier_context' src/kafs_shared_fuse_runtime.c
