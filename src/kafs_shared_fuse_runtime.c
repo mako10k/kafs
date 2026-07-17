@@ -15,6 +15,10 @@
 #include "kafs_tailmeta.h"
 #include "kafs_v6_fuse_init_policy.h"
 #include "kafs_v6_fuse_policy.h"
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+#include "kafs_v7_fuse_policy.h"
+#include "kafs_v7_runtime_transaction.h"
+#endif
 
 #include <fuse.h>
 #include <fuse_log.h>
@@ -7593,8 +7597,26 @@ static int kafs_is_ctl_path(const char *path);
 
 static int kafs_runtime_write_guard(const kafs_context_t *ctx)
 {
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  int v7_rc = kafs_v7_fuse_policy_reject_legacy_mutation(ctx);
+  if (v7_rc != 0)
+    return v7_rc;
+#endif
   return (ctx && ctx->c_runtime_read_only) ? -EROFS : 0;
 }
+
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+static int kafs_v7_fuse_closeout_barrier(kafs_context_t *ctx, kafs_v7_controlled_write_op_t op)
+{
+  if (!kafs_v7_fuse_policy_controlled_write_active(ctx))
+    return 0;
+  int rc = kafs_v7_fuse_policy_check_controlled_write(ctx, op);
+  if (rc != 0)
+    return rc;
+  kafs_v7_runtime_transaction_result_t result;
+  return kafs_v7_runtime_transaction_barrier_context(ctx, &result);
+}
+#endif
 
 static int kafs_mutation_path_context(const char *path, struct fuse_context **fctx_out,
                                       struct kafs_context **ctx_out)
@@ -9034,6 +9056,14 @@ static int kafs_op_open(const char *path, struct fuse_file_info *fi)
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
   int accmode = fi->flags & O_ACCMODE;
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (kafs_is_ctl_path(path) || (fi->flags & O_TRUNC) != 0)
+  {
+    int v7_rc = kafs_v7_fuse_policy_reject_legacy_mutation(ctx);
+    if (v7_rc != 0)
+      return v7_rc;
+  }
+#endif
   if (ctx && ctx->c_runtime_read_only &&
       (kafs_is_ctl_path(path) || accmode == O_WRONLY || accmode == O_RDWR ||
        (fi->flags & O_TRUNC) != 0))
@@ -10970,6 +11000,11 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
     kafs_dlog(2, "%s: exit rc=0 (no backing fd) path=%s\n", __func__, path ? path : "(null)");
     return 0;
   }
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  int v7_barrier = kafs_v7_fuse_closeout_barrier(ctx, KAFS_V7_CONTROLLED_WRITE_OP_FSYNC);
+  if (v7_barrier != 0 || kafs_v7_fuse_policy_controlled_write_active(ctx))
+    return v7_barrier;
+#endif
   if (ctx->c_runtime_read_only)
     return 0;
 
@@ -11005,6 +11040,11 @@ static int kafs_op_fsyncdir(const char *path, int isdatasync, struct fuse_file_i
 {
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx ? fctx->private_data : NULL;
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  int v7_rc = kafs_v7_fuse_policy_reject_legacy_mutation(ctx);
+  if (v7_rc != 0)
+    return v7_rc;
+#endif
   int gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_FSYNCDIR);
   if (gate != 0)
     return gate;
@@ -11129,6 +11169,14 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
     return 0;
 
   kafs_inocnt_t ino = fi->fh;
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (kafs_v7_fuse_policy_controlled_write_active(ctx))
+  {
+    if (ctx->c_open_cnt)
+      (void)__atomic_sub_fetch(&ctx->c_open_cnt[ino], 1u, __ATOMIC_RELAXED);
+    return kafs_v7_fuse_closeout_barrier(ctx, KAFS_V7_CONTROLLED_WRITE_OP_RELEASE);
+  }
+#endif
   if (ctx && ctx->c_runtime_read_only)
   {
     if (ctx->c_open_cnt)

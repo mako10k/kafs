@@ -2877,13 +2877,45 @@
   - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ87件・2.66%で、
     v7 policy由来のcloneとcomplexity warningは0件。
 
+### SDW-V7RT-T17 mount-lifetime transaction coordinator and fail-closed FUSE boundary
+
+- 目的: T10-T16で個別に固定したlock、sequence、journal publication、metadata closeoutをmount-lifetimeの
+  v7-owned serviceへ統合し、FUSE接続前にlegacy mutationへのfallthroughを閉じる。
+- 変更:
+  - `kafs_v7_runtime_transaction`はmountごとにrank 1-3 lock stateとfilesystem-global sequence stateを保持する。
+    transactionをexactly one groupへrouteし、journal publish/confirm後にmetadata apply、2-copy checkpoint、
+    covered journal reclamationまで完了してから成功を返す。read-onlyまたは`O_APPEND` FDは初期化時に拒否する。
+  - controlled-write service初期化からlegacy v4/v5 runtime journalを除去し、v7 coordinatorの生成・破棄を
+    `kafs-v7` adapter lifetimeへ接続した。production `kafs`とfrozen `kafs-v6`にはv7 source/macroをlinkしない。
+  - v7 controlled contextのshared FUSE legacy mutation guardは`EOPNOTSUPP`を返す。`O_TRUNC`、control-plane open、
+    `fsyncdir`もfail closedとし、regular-file `fsync` / `release`だけをv7 closeout barrierへ接続した。
+    `create` / regular-file `write`はv7 data/metadata plannerが完成するまでlegacy実装へ進めない。
+  - focused regressionは同一serviceでsequence 1/2を連続commitし、各commitのmetadata反映、checkpoint世代前進、
+    journal空化とbarrier冪等性を検証する。cross-group patchは`EXDEV`かつimage無変更に固定した。
+  - checkpointとcoordinatorに重複していたpositional-write FD条件を`kafs_v7_io.h`へ抽出し、新規clone増分を除去した。
+- 完了条件:
+  - single-group transactionのdurability順が
+    `journal data/header -> metadata -> 2-copy checkpoint -> journal reclaim`を外れない。
+  - 同一mountのsequence stateを継続利用でき、cross-group、read-only、append FDはpublication前にfail closedとなる。
+  - v7 controlled contextからlegacy mutation実装へ到達せず、v4/v5/v6 runtime behaviorを変更しない。
+  - controlled-write entrypointは引き続きFUSE開始前に拒否し、runtime data writeを有効化しない。
+- 検証結果（2026-07-17）:
+  - `autoreconf -fi && ./configure && make -j2`: PASS（`-Wall -Werror` build）。
+  - `v7_checkpoint_publication_smoketest v7_entrypoint_smoketest v6_descriptor_smoketest`: 3/3 PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 38/38 PASS。
+  - `v7_checkpoint_publication_smoketest`のValgrind: PASS（0 error、0 leak、5,151 allocs/frees）。
+  - clangd diagnostics（coordinator、policy、runtime/FUSE接続、focused tests）: 0件。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、両v7 ownership check、`git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineの87件・1,246行
+    （2.64%）で、新規v7 coordinator/IO helper由来のcloneとcomplexity warningは0件。
+
 ---
 
 ## 次に着手する候補
 
-1. bounded `create` / regular-file `write` / `fsync` / `release` surfaceを、rank 1-3からmetadata rank
-   10-50へ進むv7 transaction lifecycleへ接続する。end-to-end durability/fault regressionが揃うまで
-   controlled-write admissionはfail closedを維持する。
+1. v7 data-block COW/allocator plannerを追加し、new data write/read-back/flushがmetadata journal publicationより
+   先にdurableとなるcontractをfault regressionで固定する。その後にbounded `create` / regular-file `write`を
+   T17 coordinatorへ接続する。end-to-end recoveryが揃うまでcontrolled-write admissionはfail closedを維持する。
 2. accepted offline/inspection surface安定後に`kafsresize --migrate-create --format-version 7`を追加する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの

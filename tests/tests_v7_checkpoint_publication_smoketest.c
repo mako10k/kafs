@@ -5,6 +5,7 @@
 #include "kafs_v7_checkpoint.h"
 #include "kafs_v7_journal_writer.h"
 #include "kafs_v7_mutation.h"
+#include "kafs_v7_runtime_transaction.h"
 #include "kafs_v7_sequence.h"
 
 #include <endian.h>
@@ -373,6 +374,12 @@ static int test_plan_guards(void)
   if (rc == 0 && kafs_v7_metadata_closeout_fd(fixture.locks, fixture.fd, &fixture.superblock,
                                                fixture.file_size, &closeout) != -EBADF)
     rc = -1;
+  kafs_v7_runtime_transaction_service_t *service = NULL;
+  if (rc == 0 &&
+      (kafs_v7_runtime_transaction_service_init(fixture.fd, &fixture.superblock,
+                                                fixture.file_size, &service) != -EBADF ||
+       service != NULL))
+    rc = -1;
   fixture_close(&fixture);
 
   if (fixture_open(&fixture, path, O_RDWR | O_APPEND) != 0)
@@ -382,6 +389,11 @@ static int test_plan_guards(void)
     rc = -1;
   if (rc == 0 && kafs_v7_metadata_closeout_fd(fixture.locks, fixture.fd, &fixture.superblock,
                                                fixture.file_size, &closeout) != -EBADF)
+    rc = -1;
+  if (rc == 0 &&
+      (kafs_v7_runtime_transaction_service_init(fixture.fd, &fixture.superblock,
+                                                fixture.file_size, &service) != -EBADF ||
+       service != NULL))
     rc = -1;
   fixture_close(&fixture);
 
@@ -476,6 +488,135 @@ static int test_metadata_closeout_abort(void)
                   result.final_checkpoint_sequence != 1u ||
                   fixture.layout.journal.selected_nonempty_segment_count != 0u))
     rc = -1;
+  fixture_close(&fixture);
+  return rc;
+}
+
+static int test_runtime_transaction_coordinator(void)
+{
+  const char *path = "v7-runtime-transaction.img";
+  if (format_image(path) != 0)
+    return -1;
+  checkpoint_fixture_t fixture;
+  if (fixture_open(&fixture, path, O_RDWR) != 0)
+    return -1;
+
+  kafs_v7_runtime_transaction_service_t *service = NULL;
+  int rc = kafs_v7_runtime_transaction_service_init(
+      fixture.fd, &fixture.superblock, fixture.file_size, &service);
+  uint16_t before = 0u;
+  if (rc == 0)
+    rc = read_inode_uid(&fixture, 1u, &before);
+  uint16_t wire_uid = htole16((uint16_t)(before ^ 1u));
+  kafs_v7_journal_patch_t patch = {
+      .target_type = KAFS_V7_JOURNAL_TARGET_INODE,
+      .logical_index = 1u,
+      .patch_off = offsetof(kafs_v7_inode_t, uid),
+      .patch_bytes = sizeof(wire_uid),
+      .patch = &wire_uid,
+  };
+  kafs_v7_runtime_transaction_result_t result;
+  if (rc == 0)
+    rc = kafs_v7_runtime_transaction_commit(service, &patch, 1u, &result);
+  if (rc == 0 &&
+      (result.publication.sequence != 1u || result.closeout.apply.written_target_count != 1u ||
+       result.closeout.checkpoint_publication_count != 1u ||
+       result.closeout.reclaim.reset_segment_count != 1u || result.checkpoint_generation != 2u ||
+       result.checkpoint_sequence != 1u))
+    rc = -1;
+  if (rc == 0)
+    rc = fixture_refresh(&fixture);
+  uint16_t after = 0u;
+  if (rc == 0)
+    rc = read_inode_uid(&fixture, 1u, &after);
+  if (rc == 0 &&
+      (after != (uint16_t)(before ^ 1u) ||
+       fixture.layout.journal.selected_nonempty_segment_count != 0u))
+    rc = -1;
+
+  if (rc == 0)
+    rc = kafs_v7_runtime_transaction_barrier(service, &result);
+  if (rc == 0 &&
+      (result.closeout.checkpoint_publication_count != 0u ||
+       result.closeout.reclaim.reset_segment_count != 0u || result.checkpoint_sequence != 1u))
+    rc = -1;
+
+  wire_uid = htole16(before);
+  if (rc == 0)
+    rc = kafs_v7_runtime_transaction_commit(service, &patch, 1u, &result);
+  if (rc == 0 &&
+      (result.publication.sequence != 2u || result.closeout.apply.written_target_count != 1u ||
+       result.closeout.checkpoint_publication_count != 1u ||
+       result.closeout.reclaim.reset_segment_count != 1u || result.checkpoint_generation != 3u ||
+       result.checkpoint_sequence != 2u))
+    rc = -1;
+  if (rc == 0)
+    rc = fixture_refresh(&fixture);
+  if (rc == 0)
+    rc = read_inode_uid(&fixture, 1u, &after);
+  if (rc == 0 &&
+      (after != before || fixture.layout.journal.selected_nonempty_segment_count != 0u))
+    rc = -1;
+  kafs_v7_runtime_transaction_service_destroy(service);
+  fixture_close(&fixture);
+  return rc;
+}
+
+static int test_runtime_transaction_rejects_cross_group(void)
+{
+  const char *path = "v7-runtime-cross-group.img";
+  if (format_image(path) != 0)
+    return -1;
+  checkpoint_fixture_t fixture;
+  if (fixture_open(&fixture, path, O_RDWR) != 0)
+    return -1;
+
+  uint64_t inodes[2] = {0u, 0u};
+  int rc = find_inode_in_group(&fixture, 0u, &inodes[0]);
+  if (rc == 0)
+    rc = find_inode_in_group(&fixture, 3u, &inodes[1]);
+  uint16_t before[2] = {0u, 0u};
+  if (rc == 0)
+    rc = read_inode_uid(&fixture, inodes[0], &before[0]);
+  if (rc == 0)
+    rc = read_inode_uid(&fixture, inodes[1], &before[1]);
+
+  uint16_t wire_uids[2] = {
+      htole16((uint16_t)(before[0] ^ 1u)),
+      htole16((uint16_t)(before[1] ^ 1u)),
+  };
+  kafs_v7_journal_patch_t patches[2];
+  memset(patches, 0, sizeof(patches));
+  for (size_t i = 0; i < 2u; ++i)
+  {
+    patches[i].target_type = KAFS_V7_JOURNAL_TARGET_INODE;
+    patches[i].logical_index = inodes[i];
+    patches[i].patch_off = offsetof(kafs_v7_inode_t, uid);
+    patches[i].patch_bytes = sizeof(wire_uids[i]);
+    patches[i].patch = &wire_uids[i];
+  }
+  kafs_v7_runtime_transaction_service_t *service = NULL;
+  if (rc == 0)
+  {
+    rc = kafs_v7_runtime_transaction_service_init(
+        fixture.fd, &fixture.superblock, fixture.file_size, &service);
+  }
+  kafs_v7_runtime_transaction_result_t result;
+  if (rc == 0 && kafs_v7_runtime_transaction_commit(service, patches, 2u, &result) != -EXDEV)
+    rc = -1;
+  if (rc == 0)
+    rc = fixture_refresh(&fixture);
+  uint16_t after[2] = {UINT16_MAX, UINT16_MAX};
+  if (rc == 0)
+    rc = read_inode_uid(&fixture, inodes[0], &after[0]);
+  if (rc == 0)
+    rc = read_inode_uid(&fixture, inodes[1], &after[1]);
+  if (rc == 0 &&
+      (after[0] != before[0] || after[1] != before[1] ||
+       fixture.layout.checkpoint_sequence != 0u ||
+       fixture.layout.journal.selected_nonempty_segment_count != 0u))
+    rc = -1;
+  kafs_v7_runtime_transaction_service_destroy(service);
   fixture_close(&fixture);
   return rc;
 }
@@ -624,6 +765,11 @@ int main(void)
     rc = run_test("metadata closeout commit", test_metadata_closeout_commit);
   if (rc == 0)
     rc = run_test("metadata closeout abort", test_metadata_closeout_abort);
+  if (rc == 0)
+    rc = run_test("runtime transaction coordinator", test_runtime_transaction_coordinator);
+  if (rc == 0)
+    rc = run_test("runtime transaction cross-group guard",
+                  test_runtime_transaction_rejects_cross_group);
   if (rc == 0)
     rc = run_test("metadata apply resume", test_metadata_apply_resume);
   if (rc == 0)

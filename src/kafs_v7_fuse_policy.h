@@ -24,6 +24,16 @@ static inline int kafs_v7_fuse_policy_controlled_write_active(const kafs_context
   return ctx && ctx->c_v7_controlled_write_enabled;
 }
 
+/*
+ * Shared v4/v5 mutation implementations may never serve a v7 controlled-write
+ * context. A future v7 planner must bypass this guard only after it has built a
+ * complete v7-owned transaction.
+ */
+static inline int kafs_v7_fuse_policy_reject_legacy_mutation(const kafs_context_t *ctx)
+{
+  return kafs_v7_fuse_policy_controlled_write_active(ctx) ? -EOPNOTSUPP : 0;
+}
+
 static inline int kafs_v7_fuse_policy_check_controlled_write(const kafs_context_t *ctx,
                                                              kafs_v7_controlled_write_op_t op)
 {

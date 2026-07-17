@@ -3,6 +3,7 @@
 #include "kafs_context.h"
 #include "kafs_v7_admission.h"
 #include "kafs_v7_fuse_policy.h"
+#include "kafs_v7_runtime_transaction.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -446,22 +447,36 @@ int kafs_v7_runtime_init_mount_services(kafs_context_t *ctx, const char *image_p
 
   kafs_ctx_init_diag_state(ctx, image_path, inocnt);
   ctx->c_alloc_v3_summary_dirty = 1;
-  if (mode == KAFS_V7_RUNTIME_MODE_CONTROLLED_WRITE)
-    kafs_ctx_init_runtime_journal(ctx, image_path, r_blkcnt, 0);
-  else if (mode != KAFS_V7_RUNTIME_MODE_INSPECTION)
+  if (mode != KAFS_V7_RUNTIME_MODE_INSPECTION && mode != KAFS_V7_RUNTIME_MODE_CONTROLLED_WRITE)
     return -EINVAL;
 
   int rc = kafs_v7_runtime_view_validate(ctx);
   if (rc == 0)
     rc = kafs_v7_runtime_view_validate_policy(ctx);
+  if (rc == 0 && mode == KAFS_V7_RUNTIME_MODE_CONTROLLED_WRITE)
+  {
+    rc = kafs_v7_runtime_transaction_service_init(ctx->c_fd, ctx->c_superblock, ctx->c_img_size,
+                                                  &ctx->c_v7_runtime_transactions);
+  }
   if (rc != 0)
   {
+    kafs_v7_runtime_transaction_service_destroy(ctx->c_v7_runtime_transactions);
+    ctx->c_v7_runtime_transactions = NULL;
     char errbuf[128];
     fprintf(err, "%s %s runtime policy failed after service init: %s.\n", KAFS_V7_TOOL_NAME,
             mode == KAFS_V7_RUNTIME_MODE_CONTROLLED_WRITE ? "controlled write" : "inspection",
             kafs_v7_runtime_rc_text(rc, errbuf, sizeof(errbuf)));
   }
+  (void)r_blkcnt;
   return rc;
+}
+
+void kafs_v7_runtime_destroy_mount_services(kafs_context_t *ctx)
+{
+  if (!ctx)
+    return;
+  kafs_v7_runtime_transaction_service_destroy(ctx->c_v7_runtime_transactions);
+  ctx->c_v7_runtime_transactions = NULL;
 }
 
 static void kafs_v7_runtime_preflight_message_prefix(FILE *err, const char *tool_name)

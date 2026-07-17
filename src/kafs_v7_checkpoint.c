@@ -1,10 +1,10 @@
 #include "kafs_v7_checkpoint.h"
 
 #include "kafs_tool_util.h"
+#include "kafs_v7_io.h"
 
 #include <endian.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -121,23 +121,13 @@ static int kafs_v7_checkpoint_block_matches(int fd, const kafs_v7_copy_report_t 
   return rc;
 }
 
-static int kafs_v7_checkpoint_require_writable_fd(int fd)
-{
-  if (fd < 0)
-    return -EINVAL;
-  int flags = fcntl(fd, F_GETFL);
-  if (flags < 0)
-    return -errno;
-  return (flags & O_ACCMODE) == O_RDONLY || (flags & O_APPEND) != 0 ? -EBADF : 0;
-}
-
 static int kafs_v7_checkpoint_publish_unlocked_fd(int fd, const kafs_ssuperblock_t *sb,
                                                   uint64_t file_size,
                                                   kafs_v7_checkpoint_publish_result_t *result)
 {
   if (fd < 0 || !sb || !result)
     return -EINVAL;
-  int rc = kafs_v7_checkpoint_require_writable_fd(fd);
+  int rc = kafs_v7_io_require_positional_writes(fd);
   if (rc != 0)
     return rc;
 
@@ -347,7 +337,7 @@ int kafs_v7_metadata_closeout_fd(kafs_v7_lock_state_t *locks, int fd, const kafs
 {
   if (!locks || fd < 0 || !sb || !result)
     return -EINVAL;
-  int rc = kafs_v7_checkpoint_require_writable_fd(fd);
+  int rc = kafs_v7_io_require_positional_writes(fd);
   if (rc != 0)
     return rc;
   memset(result, 0, sizeof(*result));

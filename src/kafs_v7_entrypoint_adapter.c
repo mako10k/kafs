@@ -346,6 +346,7 @@ int kafs_v7_entrypoint_adapter_mount_main(const char *image_path, const char *mo
       .runtime_options = &fuse_opts,
   };
   int rc = kafs_shared_fuse_run_request(&fuse_request);
+  kafs_v7_runtime_destroy_mount_services(&ctx);
   kafs_v7_entrypoint_adapter_close_context_fd(&ctx);
   kafs_v7_mount_options_free_owned(owned, owned_count);
   return rc;

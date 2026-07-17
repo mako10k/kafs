@@ -110,13 +110,16 @@ static int check_v7_fuse_policy_direct(void)
   if (kafs_v7_fuse_policy_controlled_write_active(NULL) ||
       kafs_v7_fuse_policy_check_controlled_write(
           NULL, KAFS_V7_CONTROLLED_WRITE_OP_CREATE) != -EROFS ||
+      kafs_v7_fuse_policy_reject_legacy_mutation(NULL) != 0 ||
       kafs_v7_fuse_policy_controlled_write_active(&ctx) ||
       kafs_v7_fuse_policy_check_controlled_write(
-          &ctx, KAFS_V7_CONTROLLED_WRITE_OP_WRITE) != -EROFS)
+          &ctx, KAFS_V7_CONTROLLED_WRITE_OP_WRITE) != -EROFS ||
+      kafs_v7_fuse_policy_reject_legacy_mutation(&ctx) != 0)
     return -EINVAL;
 
   kafs_v7_fuse_policy_set_controlled_write(&ctx, 1);
   if (!kafs_v7_fuse_policy_controlled_write_active(&ctx) ||
+      kafs_v7_fuse_policy_reject_legacy_mutation(&ctx) != -EOPNOTSUPP ||
       ctx.c_v6_controlled_write_enabled != 0u)
     return -EINVAL;
 
