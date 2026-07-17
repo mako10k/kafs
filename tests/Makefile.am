@@ -162,6 +162,7 @@ v7_checkpoint_publication_smoketest_SOURCES = tests_v7_checkpoint_publication_sm
 	$(top_srcdir)/src/kafs_v7_layout.c $(top_srcdir)/src/kafs_v7_journal.c \
 	$(top_srcdir)/src/kafs_v7_locks.c $(top_srcdir)/src/kafs_v7_mutation.c \
 	$(top_srcdir)/src/kafs_v7_journal_writer.c $(top_srcdir)/src/kafs_v7_sequence.c \
+	$(top_srcdir)/src/kafs_v7_data_cow.c \
 	$(top_srcdir)/src/kafs_v7_runtime_transaction.c \
 	$(top_srcdir)/src/kafs_hrl.c \
 	$(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c

@@ -175,10 +175,23 @@ It restores an interrupted one-copy checkpoint before changing metadata and
 resumes cleanly after target apply, checkpoint publication, or a partial
 segment reset.
 
-Controlled write remains blocked by runtime mutation integration under this
-cross-family order. The successful v7 path must first stop using the v6-named
-controlled-write policy flag and v6 FUSE policy helper, then route each admitted
-mutation through the v7 transaction/writeback lifecycle.
+The v7-owned mount-lifetime transaction coordinator now holds this rank 1-3
+state across sequence reservation and group-local journal publication, then
+runs metadata apply, two-copy checkpoint publication, and covered journal
+reclamation before returning success. It does not route through a v5/v6
+transaction entrypoint.
+
+The v7-owned data COW/allocator planner now selects a group-local free block
+from the authoritative bitmap/L1/L2 overlay, writes and flushes one full block,
+reads it back, and re-verifies it before publishing a caller-owned direct inode
+reference with the bitmap and allocator-summary after-images. A replaced old
+block remains allocated after the covering checkpoint; explicit retirement is
+the next required slice.
+
+Controlled write remains blocked. The planner is not connected to FUSE
+`create` or `write`, and indirect, multi-block, directory, and retained-block
+retirement paths are not implemented. The v7 policy state and helpers are
+v7-owned; production `kafs` and frozen `kafs-v6` behavior remain separate.
 
 FTL/ECC correlated-failure injection is not in this implementation blocker
 list.  It is governed by the RC media-qualification boundary in the accepted

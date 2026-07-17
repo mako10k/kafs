@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -158,6 +159,36 @@ static int read_inode_uid(const checkpoint_fixture_t *fixture, uint64_t inode, u
     rc = kafs_pread_all(fixture->fd, &record, sizeof(record), (off_t)route.physical_off);
   if (rc == 0)
     *uid = le16toh(record.uid);
+  return rc;
+}
+
+static int read_inode(const checkpoint_fixture_t *fixture, uint64_t inode,
+                      kafs_v7_inode_t *record)
+{
+  kafs_v7_mutation_route_t route;
+  int rc = kafs_v7_mutation_route_target(&fixture->layout, KAFS_V7_JOURNAL_TARGET_INODE, inode,
+                                         &route);
+  if (rc == 0)
+    rc = kafs_pread_all(fixture->fd, record, sizeof(*record), (off_t)route.physical_off);
+  return rc;
+}
+
+static int block_is_allocated(const checkpoint_fixture_t *fixture, uint64_t logical_block,
+                              int *allocated)
+{
+  kafs_v7_mutation_route_t route;
+  uint64_t word_logical = logical_block & ~UINT64_C(63);
+  int rc = kafs_v7_mutation_route_target(&fixture->layout,
+                                         KAFS_V7_JOURNAL_TARGET_BLOCK_BITMAP, word_logical,
+                                         &route);
+  uint8_t word[8];
+  if (rc == 0)
+    rc = kafs_pread_all(fixture->fd, word, sizeof(word), (off_t)route.physical_off);
+  if (rc == 0)
+  {
+    uint64_t bit = logical_block - word_logical;
+    *allocated = (word[bit / 8u] & (uint8_t)(1u << (bit % 8u))) != 0u;
+  }
   return rc;
 }
 
@@ -621,6 +652,241 @@ static int test_runtime_transaction_rejects_cross_group(void)
   return rc;
 }
 
+static int test_runtime_data_cow_planner(void)
+{
+  const char *path = "v7-runtime-data-cow.img";
+  if (format_image(path) != 0)
+    return -1;
+  checkpoint_fixture_t fixture;
+  if (fixture_open(&fixture, path, O_RDWR) != 0)
+    return -1;
+
+  uint64_t initial_free_blocks = fixture.layout.free_blocks;
+  uint64_t initial_free_inodes = fixture.layout.free_inodes;
+  uint64_t inode = 0u;
+  int rc = find_inode_in_group(&fixture, 2u, &inode);
+  kafs_v7_runtime_transaction_service_t *service = NULL;
+  if (rc == 0)
+  {
+    rc = kafs_v7_runtime_transaction_service_init(fixture.fd, &fixture.superblock,
+                                                   fixture.file_size, &service);
+  }
+
+  kafs_v7_inode_t file_inode;
+  memset(&file_inode, 0, sizeof(file_inode));
+  file_inode.mode = htole16((uint16_t)(S_IFREG | 0644));
+  file_inode.size = htole64(1u);
+  file_inode.link_count = htole16(1u);
+  file_inode.inline_or_block_refs[0] = 'x';
+  kafs_v7_journal_patch_t inode_patch = {
+      .target_type = KAFS_V7_JOURNAL_TARGET_INODE,
+      .logical_index = inode,
+      .patch_bytes = sizeof(file_inode),
+      .patch = &file_inode,
+      .free_inodes_delta = -1,
+  };
+  kafs_v7_runtime_transaction_result_t transaction;
+  if (rc == 0)
+    rc = kafs_v7_runtime_transaction_commit(service, &inode_patch, 1u, &transaction);
+  if (rc == 0 && (transaction.publication.sequence != 1u ||
+                  transaction.recovered_free_blocks != initial_free_blocks ||
+                  transaction.recovered_free_inodes != initial_free_inodes - 1u))
+    rc = -1;
+  if (rc == 0)
+    rc = fixture_refresh(&fixture);
+
+  kafs_v7_runtime_data_cow_request_t request = {
+      .group_id = 2u,
+      .retained_logical_block = KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK,
+  };
+  kafs_v7_runtime_data_cow_t *operation = NULL;
+  kafs_v7_runtime_data_cow_plan_t plan;
+  if (rc == 0)
+    rc = kafs_v7_runtime_data_cow_prepare(service, &request, &operation, &plan);
+  if (rc == 0 && (plan.sequence != 2u || plan.group_id != request.group_id ||
+                  plan.block_size != fixture.layout.block_size ||
+                  plan.retained_logical_block != KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK))
+    rc = -1;
+  int allocated = 1;
+  if (rc == 0)
+    rc = block_is_allocated(&fixture, plan.logical_block, &allocated);
+  if (rc == 0 && allocated)
+    rc = -1;
+
+  uint8_t *data = calloc(1u, plan.block_size);
+  uint8_t *readback = calloc(1u, plan.block_size);
+  if (rc == 0 && (!data || !readback))
+    rc = -ENOMEM;
+  if (data)
+  {
+    for (uint32_t i = 0; i < plan.block_size; ++i)
+      data[i] = (uint8_t)(i * 17u + 3u);
+  }
+  if (rc == 0)
+    rc = kafs_v7_runtime_data_cow_stage(operation, data, plan.block_size);
+  if (rc == 0)
+    rc = kafs_pread_all(fixture.fd, readback, plan.block_size, (off_t)plan.physical_off);
+  if (rc == 0 && memcmp(data, readback, plan.block_size) != 0)
+    rc = -1;
+  if (rc == 0)
+    rc = fixture_refresh(&fixture);
+  if (rc == 0)
+    rc = block_is_allocated(&fixture, plan.logical_block, &allocated);
+  if (rc == 0 && (allocated || fixture.layout.checkpoint_sequence != 1u ||
+                  fixture.layout.free_blocks != initial_free_blocks))
+    rc = -1;
+
+  file_inode.size = htole64(plan.block_size);
+  file_inode.blocks = htole32(1u);
+  memset(file_inode.inline_or_block_refs, 0, sizeof(file_inode.inline_or_block_refs));
+  uint32_t reference = htole32((uint32_t)plan.logical_block + 1u);
+  memcpy(file_inode.inline_or_block_refs, &reference, sizeof(reference));
+  inode_patch.free_inodes_delta = 0;
+  kafs_v7_runtime_data_cow_result_t cow_result;
+  if (rc == 0)
+    rc = kafs_v7_runtime_data_cow_commit(&operation, &inode_patch, 1u, &cow_result);
+  if (rc == 0 &&
+      (operation != NULL || cow_result.transaction.publication.sequence != 2u ||
+       cow_result.transaction.checkpoint_sequence != 2u ||
+       cow_result.transaction.recovered_free_blocks != initial_free_blocks - 1u ||
+       cow_result.data.logical_block != plan.logical_block ||
+       cow_result.data.retained_logical_block != KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK))
+    rc = -1;
+  if (rc == 0)
+    rc = fixture_refresh(&fixture);
+  kafs_v7_inode_t observed_inode;
+  if (rc == 0)
+    rc = read_inode(&fixture, inode, &observed_inode);
+  if (rc == 0)
+    rc = block_is_allocated(&fixture, plan.logical_block, &allocated);
+  if (rc == 0 && (!allocated || memcmp(&file_inode, &observed_inode, sizeof(file_inode)) != 0 ||
+                  fixture.layout.journal.selected_nonempty_segment_count != 0u))
+    rc = -1;
+
+  uint64_t committed_block = plan.logical_block;
+  request.retained_logical_block = committed_block;
+  if (rc == 0)
+    rc = kafs_v7_runtime_data_cow_prepare(service, &request, &operation, &plan);
+  if (rc == 0 && (plan.sequence != 3u || plan.logical_block == committed_block ||
+                  plan.retained_logical_block != committed_block))
+    rc = -1;
+  if (rc == 0 &&
+      kafs_v7_runtime_data_cow_commit(&operation, &inode_patch, 1u, &cow_result) != -EAGAIN)
+    rc = -1;
+  if (rc == 0 && !operation)
+    rc = -1;
+  if (rc == 0)
+  {
+    memset(data, 0xa5, plan.block_size);
+    rc = kafs_v7_runtime_data_cow_stage(operation, data, plan.block_size);
+  }
+  if (rc == 0 &&
+      kafs_v7_runtime_data_cow_commit(&operation, &inode_patch, 1u, &cow_result) != -EINVAL)
+    rc = -1;
+  if (rc == 0 && !operation)
+    rc = -1;
+  if (rc == 0)
+    rc = kafs_v7_runtime_data_cow_abort(&operation);
+  if (rc == 0)
+    rc = fixture_refresh(&fixture);
+  if (rc == 0)
+    rc = block_is_allocated(&fixture, plan.logical_block, &allocated);
+  if (rc == 0 && (allocated || fixture.layout.checkpoint_sequence != 2u ||
+                  fixture.layout.free_blocks != initial_free_blocks - 1u))
+    rc = -1;
+  uint64_t aborted_block = plan.logical_block;
+  if (rc == 0)
+    rc = kafs_v7_runtime_data_cow_prepare(service, &request, &operation, &plan);
+  if (rc == 0 && plan.logical_block == aborted_block)
+    rc = -1;
+  if (rc == 0)
+  {
+    reference = htole32((uint32_t)plan.logical_block + 1u);
+    memcpy(file_inode.inline_or_block_refs, &reference, sizeof(reference));
+  }
+  if (rc == 0)
+  {
+    memset(data, 0x5a, plan.block_size);
+    rc = kafs_v7_runtime_data_cow_stage(operation, data, plan.block_size);
+  }
+  uint8_t torn = 0u;
+  if (rc == 0)
+    rc = kafs_pwrite_all(fixture.fd, &torn, sizeof(torn), (off_t)plan.physical_off);
+  if (rc == 0 && fdatasync(fixture.fd) != 0)
+    rc = -errno;
+  if (rc == 0)
+  {
+    int torn_rc = kafs_v7_runtime_data_cow_commit(&operation, &inode_patch, 1u, &cow_result);
+    if (torn_rc != -EIO)
+      rc = -1;
+  }
+  if (rc == 0 && operation != NULL)
+    rc = -1;
+  if (rc == 0)
+    rc = fixture_refresh(&fixture);
+  if (rc == 0 && (fixture.layout.checkpoint_sequence != 2u ||
+                  fixture.layout.journal.selected_nonempty_segment_count != 0u ||
+                  fixture.layout.free_blocks != initial_free_blocks - 1u))
+    rc = -1;
+
+  uint64_t torn_block = plan.logical_block;
+  if (rc == 0)
+    rc = kafs_v7_runtime_data_cow_prepare(service, &request, &operation, &plan);
+  if (rc == 0 &&
+      (plan.sequence != 3u || plan.logical_block == committed_block ||
+       plan.logical_block == torn_block || plan.retained_logical_block != committed_block))
+    rc = -1;
+  if (rc == 0)
+  {
+    reference = htole32((uint32_t)plan.logical_block + 1u);
+    memcpy(file_inode.inline_or_block_refs, &reference, sizeof(reference));
+    memset(data, 0x3c, plan.block_size);
+    rc = kafs_v7_runtime_data_cow_stage(operation, data, plan.block_size);
+  }
+  if (rc == 0)
+    rc = kafs_v7_runtime_data_cow_commit(&operation, &inode_patch, 1u, &cow_result);
+  if (rc == 0 &&
+      (operation != NULL || cow_result.transaction.publication.sequence != 3u ||
+       cow_result.transaction.checkpoint_sequence != 3u ||
+       cow_result.transaction.recovered_free_blocks != initial_free_blocks - 2u ||
+       cow_result.data.retained_logical_block != committed_block))
+    rc = -1;
+  uint64_t replacement_block = plan.logical_block;
+  if (rc == 0)
+    rc = fixture_refresh(&fixture);
+  if (rc == 0)
+    rc = read_inode(&fixture, inode, &observed_inode);
+  if (rc == 0)
+    rc = block_is_allocated(&fixture, committed_block, &allocated);
+  if (rc == 0 && !allocated)
+    rc = -1;
+  if (rc == 0)
+    rc = block_is_allocated(&fixture, replacement_block, &allocated);
+  if (rc == 0 &&
+      (!allocated || memcmp(&file_inode, &observed_inode, sizeof(file_inode)) != 0 ||
+       fixture.layout.free_blocks != initial_free_blocks - 2u ||
+       fixture.layout.journal.selected_nonempty_segment_count != 0u))
+    rc = -1;
+
+  kafs_v7_runtime_data_cow_request_t cross_group = {
+      .group_id = 1u,
+      .retained_logical_block = replacement_block,
+  };
+  if (rc == 0 &&
+      kafs_v7_runtime_data_cow_prepare(service, &cross_group, &operation, &plan) != -EXDEV)
+    rc = -1;
+  if (rc == 0 && operation != NULL)
+    rc = -1;
+
+  if (operation)
+    (void)kafs_v7_runtime_data_cow_abort(&operation);
+  free(readback);
+  free(data);
+  kafs_v7_runtime_transaction_service_destroy(service);
+  fixture_close(&fixture);
+  return rc;
+}
+
 static int test_metadata_apply_resume(void)
 {
   const char *path = "v7-closeout-apply-resume.img";
@@ -770,6 +1036,8 @@ int main(void)
   if (rc == 0)
     rc = run_test("runtime transaction cross-group guard",
                   test_runtime_transaction_rejects_cross_group);
+  if (rc == 0)
+    rc = run_test("runtime data COW planner", test_runtime_data_cow_planner);
   if (rc == 0)
     rc = run_test("metadata apply resume", test_metadata_apply_resume);
   if (rc == 0)

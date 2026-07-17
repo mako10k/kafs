@@ -2909,13 +2909,48 @@
   - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineの87件・1,246行
     （2.64%）で、新規v7 coordinator/IO helper由来のcloneとcomplexity warningは0件。
 
+### SDW-V7RT-T18 v7-owned data-block COW and allocator planner
+
+- 目的: v7 group-local data allocationとfull-block COWをT17 coordinatorのrank 1-3 reservation内で計画し、
+  new dataがmetadata pointer/allocator publicationより先にdurableとなる境界を固定する。
+- 変更:
+  - `kafs_v7_data_cow`はjournal overlay上のauthoritative bitmapとcomplete unpadded L1/L2 allocator summaryを
+    読み、両者の一致を検証してからgroup-local free blockをmount-lifetime cursor起点で巡回選択する。
+    bitmap wordとallocator summaryのafter-imageを1つのsingle-group transactionへ追加する。
+  - runtime coordinatorはallocation planningからfull-block write、`fdatasync`、read-back、metadata journal
+    publicationまで同じrank 1 -> 2 -> 3 reservationを保持する。publication直前にもstaged dataを再読し、
+    callerのdirect inode slot patchが選択blockを指すことを確認する。
+  - overwriteでは同じinode direct slotのbefore-imageが指定旧blockを指すことを確認する。旧blockはnew pointerを
+    覆う2-copy checkpoint後もallocatedのまま残し、このticketでは解放しない。abortまたはdata検証失敗時は
+    metadata/bitmapを変更せず、free data spanに残ったstaged bytesは参照不能のままとする。
+  - cursorはdata stage成功時に進めるため、abortやpublication前failureでも同一physical blockを繰り返し叩かない。
+    indirect reference、multi-block write、directory mutation、FUSE `create` / `write` admissionは有効化しない。
+  - 既存metadata-only transactionもreservation取得後にlayoutをfresh validateし直し、pre-lock viewをpublicationに
+    使用しないようにした。
+- 完了条件:
+  - data write/read-back/flush前にはbitmap、inode、checkpointが変化せず、commit後だけ選択blockとdirect inode
+    referenceが同じcovering checkpointで可視になる。
+  - abort、missing/wrong direct reference、cross-group retained block、publication前のstaged-data corruptionを
+    fail closedにし、journal/allocator counterを進めない。
+  - 成功overwrite後はnew/old両blockがallocatedで、旧blockの解放は次ticketの明示的retirementだけが行う。
+- 検証結果（2026-07-17）:
+  - `autoreconf -fi && ./configure && make -j2`: PASS（`-Wall -Werror` build）。
+  - `v7_checkpoint_publication_smoketest v7_entrypoint_smoketest v6_descriptor_smoketest`: 3/3 PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 38/38 PASS。
+  - `v7_checkpoint_publication_smoketest`のValgrind: PASS（0 error、0 leak、7,439 allocs/frees）。
+  - clangd-18 diagnostics（data COW、runtime transaction、公開header、focused test）: 0件。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、両v7 ownership check、`git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineの87件・1,246行
+    （2.60%）で、新規data COW/transaction module由来のcloneは0件。新規2 moduleのlizard threshold warningも0件。
+
 ---
 
 ## 次に着手する候補
 
-1. v7 data-block COW/allocator plannerを追加し、new data write/read-back/flushがmetadata journal publicationより
-   先にdurableとなるcontractをfault regressionで固定する。その後にbounded `create` / regular-file `write`を
-   T17 coordinatorへ接続する。end-to-end recoveryが揃うまでcontrolled-write admissionはfail closedを維持する。
+1. covering checkpoint後のv7 retained data-block retirementを追加する。旧blockが参照されていないことをfresh
+   overlayで検証し、bitmap clear、allocator summary、`free_blocks_delta=+1`を独立transactionとしてcloseoutする。
+   abort/crash/retry fault matrixを固定した後にbounded `create` / regular-file direct writeをT17/T18 coordinatorへ
+   接続する。end-to-end recoveryが揃うまでcontrolled-write admissionはfail closedを維持する。
 2. accepted offline/inspection surface安定後に`kafsresize --migrate-create --format-version 7`を追加する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
