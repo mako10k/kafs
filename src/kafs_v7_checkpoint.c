@@ -2,6 +2,7 @@
 
 #include "kafs_tool_util.h"
 #include "kafs_v7_io.h"
+#include "kafs_v7_test_fault.h"
 
 #include <endian.h>
 #include <errno.h>
@@ -161,9 +162,8 @@ static int kafs_v7_checkpoint_publish_unlocked_fd(int fd, const kafs_ssuperblock
       rc = kafs_pwrite_all(fd, block, layout.block_size, (off_t)off);
     if (rc == 0 && fdatasync(fd) != 0)
       rc = -errno;
-    const char *crash_after_copy = getenv("KAFS_V7_TEST_CRASH_AFTER_CHECKPOINT_COPY");
-    if (rc == 0 && target == 0u && crash_after_copy && strcmp(crash_after_copy, "1") == 0)
-      _exit(87);
+    if (rc == 0 && target == 0u)
+      kafs_v7_test_fault_maybe_crash(KAFS_V7_TEST_FAULT_CHECKPOINT_COPY);
   }
 
   uint32_t verified = 0;
@@ -285,10 +285,8 @@ static int kafs_v7_metadata_closeout_checkpoint(int fd, const kafs_ssuperblock_t
   int rc = 0;
   if (layout->journal.last_sequence > layout->checkpoint_sequence)
     rc = kafs_v7_metadata_closeout_apply(fd, layout, result);
-  const char *crash_after_apply = getenv("KAFS_V7_TEST_CRASH_AFTER_METADATA_APPLY");
-  if (rc == 0 && result->apply.written_target_count != 0u && crash_after_apply &&
-      strcmp(crash_after_apply, "1") == 0)
-    _exit(88);
+  if (rc == 0 && result->apply.written_target_count != 0u)
+    kafs_v7_test_fault_maybe_crash(KAFS_V7_TEST_FAULT_METADATA_APPLY);
   if (rc == 0)
     rc = kafs_v7_metadata_closeout_refresh(fd, sb, file_size, layout);
   if (rc == 0 && layout->journal.replay_mutation_count != 0u)
