@@ -3253,12 +3253,26 @@
   - successful openの時点でinodeはsize 0かつblocks 0で、旧direct blocksはretirement済みである。
   - journal/checkpoint recoveryはT35のsize-0を含むtruncate transaction contractを再利用する。
 
+### SDW-V7RT-T37 bounded empty regular-file create
+
+- 目的: 1 direct block内に追記余地がある親directoryへ空regular fileをatomicに作成する。
+- 変更:
+  - 親directoryと同じgroupの空inodeを選び、directory block COW、親inode reference/size、新regular inode、
+    `free_inodes_delta=-1`をsingle-group transactionでpublishする。
+  - handle/open countはtransaction完了後にのみ公開し、旧directory blockはcheckpoint後にretireする。
+  - 初期境界は1 direct blockの親、既存block内へのrecord追記、同group inode allocationに限定する。
+  - 実FUSE smokeは`O_CREAT|O_EXCL`、offline fsck、read-only remount後のdirectory entry、regular mode、size 0を
+    検証する。
+- 完了条件:
+  - directory record、新inode、free-inode counterの一部だけが可視になる状態を通常closeoutで残さない。
+  - inline directory、directory growth、cross-group inode allocation、mkdir、create直後write連結は未対応とする。
+
 ---
 
 ## 次に着手する候補
 
-1. M8-Bの最初のsliceとして、空regular inode作成と親directory record追加をsingle-group transactionへ載せ、
-   create/openのhandle公開、free-inode counter、全closeout中断点からのrecoveryを検証する。
+1. M8-Bの次sliceとして、empty create transactionの全closeout中断点recoveryを追加し、create直後のdirect writeを
+   同じopen handleから成立させる。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の

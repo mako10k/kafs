@@ -116,8 +116,11 @@ Inline form of
 Controlled-write mounts support shrinking existing direct-only regular files
 through truncate, ftruncate, and write-access opens using O_TRUNC.  Truncate
 growth is rejected.
-Holes, requests beyond the twelve direct blocks, indirect blocks, file
-creation, and other metadata mutations are rejected.  Offline repair,
+Empty regular-file creation is supported when the parent occupies one direct
+block with record space and a free inode exists in the same group.  Directory
+growth, inline parents, cross-group allocation, holes, requests beyond the
+twelve direct blocks, indirect blocks, and other metadata mutations are
+rejected.  Offline repair,
 cross-group HRL mutation, and hotplug write delegation are not enabled.
 .SH EXIT STATUS
 .TP
