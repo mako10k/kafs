@@ -49,6 +49,11 @@ blocks are retired.  Full
 .BR fsync (2)
 is required for the supported durability contract.
 .PP
+Atomicity applies to one request delivered to the FUSE write callback.  With
+writeback caching disabled, the kernel may split a large or unaligned
+application write into multiple FUSE requests; the entrypoint does not claim
+application-system-call atomicity across those requests.
+.PP
 If a prior controlled write stopped after journal publication, metadata apply,
 one checkpoint copy, or partial journal reclaim, the next controlled-write
 admission resumes closeout before FUSE starts.  Invalid or incomplete journal
