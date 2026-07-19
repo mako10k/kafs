@@ -3139,13 +3139,29 @@
   - source/destination block sizeが異なる場合もdata capacityをbytesで比較する。
   - 作成されたdestinationはaccepted offline/inspection surfaceで検証可能で、source imageを変更しない。
 
+### SDW-V7RT-T30 bounded partial-block overwrite
+
+- 目的: v7 controlled-writeを既存allocated direct block内のpartial overwriteへ拡張し、既存byteを保持した
+  read-modify-COWをfull-block transactionと同じdurability contractで実行する。
+- 変更:
+  - write validationは1 direct block内、現在のfile size内、nonzero existing referenceに限定してpartial rangeを許可する。
+    block境界跨ぎ、hole、indirect block、file growthは引き続き`EOPNOTSUPP`/`EFBIG`で拒否する。
+  - partial writeはretained blockをpositional readし、request rangeだけをmergeしたfull-block bufferをdata COWへstageする。
+    journal publication、inode reference replacement、checkpoint、retained block retirementの順序は変更しない。
+  - unit smokeでprefix/suffix保持、new logical block、old block retirement、full-block互換、境界拒否を検証する。
+  - 実FUSE smokeでpartial write/full fsync/offline readback/inspection remountを検証し、journal publication、
+    metadata apply、checkpoint copy、journal reclaimの全中断段階をpartial payloadで再実行する。
+- 完了条件:
+  - request外byteがretained blockと一致し、request内byteだけが置換される。
+  - partial transactionはpower interruption後もexactly-onceに収束し、fsckとrecovery diagnosticsがPASSする。
+  - full-block overwriteを維持し、file growth、multi-block、indirect writeを暗黙に許可しない。
+
 ---
 
 ## 次に着手する候補
 
-1. 既存allocated blockに限定したpartial-block overwrite mergeをv7 transactionへ追加し、read-modify-COW、
-   full fsync、power-interruption recoveryを実FUSEで検証する。file growth、indirect/multi-block write、
-   `create`は引き続き別slice。
+1. 既存direct blockだけで完結するmulti-block overwriteを単一transactionへまとめ、全data COW publication後に
+   inode referencesをatomicに切り替える。file growth、indirect write、`create`は引き続き別slice。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の

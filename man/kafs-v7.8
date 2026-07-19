@@ -1,5 +1,5 @@
 '.\" -*- nroff -*-
-.TH KAFS-V7 8 "2026-07-16" "kafs 0.4.0" "System Administration"
+.TH KAFS-V7 8 "2026-07-19" "kafs 0.4.0" "System Administration"
 .SH NAME
 kafs-v7 \- dedicated format v7 runtime entrypoint
 .SH SYNOPSIS
@@ -10,19 +10,26 @@ kafs-v7 \- dedicated format v7 runtime entrypoint
 .I mountpoint
 .BR -o " " ro
 .RI [ FUSE\ options ]
+.br
+.B kafs-v7
+.RB --image
+.I image
+.B --controlled-write-mount
+.I mountpoint
+.BR -o " " rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full
 .SH DESCRIPTION
 .B kafs-v7
 is the dedicated format v7 runtime entrypoint.
 It validates the format v7 CLI boundary, rejects legacy
 .B v6_*
 mount-option mode tokens, runs descriptor/checkpoint preflight, and admits an
-accepted format v7 image for read-only inspection.
+accepted format v7 image for read-only inspection or explicitly bounded
+controlled write.
 .PP
-Inspection admission is limited to a selected descriptor/checkpoint pair at
-.B checkpoint_seq=0
-with empty journal segments.  A single surviving valid recovery pair may be
-mounted in degraded inspection mode.  Divergent or unpaired state fails closed
-before FUSE starts.
+Inspection admission requires a selected descriptor/checkpoint pair and empty
+journal segments.  A clean nonzero checkpoint and a single surviving valid
+recovery pair may be mounted read-only.  Divergent or unpaired state fails
+closed before FUSE starts.
 .PP
 The backing image is opened read-only, mapped read-only, and mounted with FUSE
 .BR ro .
@@ -31,6 +38,21 @@ Mutation requests fail with
 and the selected checkpoint's recovered free-block and free-inode counters are
 reported by
 .BR statfs (2).
+.PP
+Controlled-write admission opens the image read-write and requires the explicit
+safe option set shown in the synopsis.  It permits only overwrites of existing,
+allocated direct blocks in regular files.  A request may replace a full block
+or a byte range wholly contained in one block and the current file size.
+Partial requests use read-modify-COW, publish the full replacement block and
+inode reference through the v7 journal, checkpoint it, and retire the old
+block.  Full
+.BR fsync (2)
+is required for the supported durability contract.
+.PP
+If a prior controlled write stopped after journal publication, metadata apply,
+one checkpoint copy, or partial journal reclaim, the next controlled-write
+admission resumes closeout before FUSE starts.  Invalid or incomplete journal
+state fails closed.
 .PP
 Format v6 was an experimental implementation used to split the runtime
 entrypoint, descriptor admission, and controlled-write policy away from the
@@ -62,8 +84,13 @@ The request must include
 .BR -o " " ro .
 .TP
 .B --controlled-write-mount
-Reserved for a future v7 controlled-write contract.  The option is recognized,
-but current runtime admission fails closed and does not modify the image.
+Select the bounded v7 controlled-write contract.  The request must include
+.BR rw ,
+.BR no_writeback_cache ,
+.BR no_trim_on_free ,
+.BR bg_dedup_scan=off ,
+and
+.BR fsync_policy=full .
 .TP
 .BR --option " " <opt[,opt...]>
 Alias for FUSE
@@ -73,9 +100,9 @@ Alias for FUSE
 Inline form of
 .BR --option .
 .SH CURRENT LIMITS
-Non-empty journal replay, repair, controlled write, checkpoint publication,
-multi-group mutation, cross-group HRL mutation, migration, and hotplug write
-delegation are not enabled by this entrypoint.
+File growth, holes, block-boundary-spanning or multi-block requests, indirect
+blocks, file creation, and other metadata mutations are rejected.  Offline
+repair, cross-group HRL mutation, and hotplug write delegation are not enabled.
 .SH EXIT STATUS
 .TP
 .B 0

@@ -120,7 +120,7 @@ static int seed_regular_file(kafs_context_t *ctx, kafs_inocnt_t ino, uint32_t gr
   return rc;
 }
 
-static int test_aligned_direct_overwrite(void)
+static int test_direct_overwrite(void)
 {
   const char *path = "v7-fuse-write.img";
   if (format_image(path) != 0)
@@ -178,24 +178,49 @@ static int test_aligned_direct_overwrite(void)
     if (rc != 0)
       fprintf(stderr, "regular file seed failed: %d\n", rc);
   }
-  if (rc == 0 && kafs_v7_fuse_write_aligned_direct(&ctx, ino, after,
-                                                    ctx.c_v7_block_size - 1u, 0u, NULL) !=
-                     -EOPNOTSUPP)
+  if (rc == 0 &&
+      kafs_v7_fuse_write_direct(&ctx, ino, after, 2u, ctx.c_v7_block_size - 1u, NULL) !=
+          -EOPNOTSUPP)
+    rc = -1;
+  if (rc == 0 &&
+      kafs_v7_fuse_write_direct(&ctx, ino, after, 1u, ctx.c_v7_block_size, NULL) != -EFBIG)
     rc = -1;
   kafs_v7_fuse_write_result_t result;
+  uint64_t physical_off = 0u;
   if (rc == 0)
-    rc = kafs_v7_fuse_write_aligned_direct(&ctx, ino, after, ctx.c_v7_block_size, 0u, &result);
+  {
+    uint8_t patch[17];
+    memset(patch, 0xc3, sizeof(patch));
+    memcpy(after, before, ctx.c_v7_block_size);
+    memcpy(after + 31u, patch, sizeof(patch));
+    rc = kafs_v7_fuse_write_direct(&ctx, ino, patch, sizeof(patch), 31u, &result);
+  }
   if (rc < 0)
-    fprintf(stderr, "aligned overwrite failed: %d\n", rc);
+    fprintf(stderr, "partial overwrite failed: %d\n", rc);
+  if (rc == 17)
+    rc = 0;
+  if (rc == 0 && (result.retained_logical_block != retained || result.retirement_rc != 0 ||
+                  result.new_logical_block == retained))
+    rc = -1;
+  if (rc == 0)
+    rc = kafs_ctx_v7_data_ref_physical_offset(&ctx, (kafs_blkcnt_t)result.new_logical_block + 1u,
+                                              &physical_off);
+  if (rc == 0 && memcmp((uint8_t *)image + physical_off, after, ctx.c_v7_block_size) != 0)
+    rc = -1;
+  const kafs_v7_inode_t *inode = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(&ctx, ino);
+  if (rc == 0 && (!inode || get_direct_reference(inode, 0u) != result.new_logical_block))
+    rc = -1;
+  retained = result.new_logical_block;
+  if (rc == 0)
+  {
+    memset(after, 0xa5, ctx.c_v7_block_size);
+    rc = kafs_v7_fuse_write_direct(&ctx, ino, after, ctx.c_v7_block_size, 0u, &result);
+  }
   if (rc == (int)ctx.c_v7_block_size)
     rc = 0;
   if (rc == 0 && (result.retained_logical_block != retained || result.retirement_rc != 0 ||
                   result.new_logical_block == retained))
     rc = -1;
-  const kafs_v7_inode_t *inode = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(&ctx, ino);
-  if (rc == 0 && (!inode || get_direct_reference(inode, 0u) != result.new_logical_block))
-    rc = -1;
-  uint64_t physical_off = 0u;
   if (rc == 0)
     rc = kafs_ctx_v7_data_ref_physical_offset(&ctx, (kafs_blkcnt_t)result.new_logical_block + 1u,
                                               &physical_off);
@@ -219,7 +244,7 @@ int main(void)
 {
   if (kafs_test_enter_tmpdir("v7-fuse-write") != 0)
     return 1;
-  int rc = test_aligned_direct_overwrite();
+  int rc = test_direct_overwrite();
   if (rc != 0)
     fprintf(stderr, "v7 FUSE write smoke test failed: %d\n", rc);
   return rc == 0 ? 0 : 1;

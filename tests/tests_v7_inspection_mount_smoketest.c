@@ -942,20 +942,19 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
   int fd = open(path, O_RDWR);
   uint8_t *payload = malloc(block_size);
   int rc = fd < 0 || !payload ? -1 : 0;
+  const uint32_t patch_offset = 127u;
+  const uint32_t patch_bytes = 73u;
   if (rc == 0)
   {
-    for (uint32_t i = 0; i < block_size; ++i)
-      payload[i] = (uint8_t)(i * 29u + 7u);
-    errno = 0;
-    if (pwrite(fd, payload, block_size - 1u, 0) != -1 || errno != EOPNOTSUPP)
-    {
-      fprintf(stderr, "partial controlled write returned unexpected result: errno=%d\n", errno);
-      rc = -1;
-    }
+    memset(payload, 0, block_size);
+    memcpy(payload, k_block_payload, strlen(k_block_payload));
+    for (uint32_t i = 0; i < patch_bytes; ++i)
+      payload[patch_offset + i] = (uint8_t)(i * 29u + 7u);
   }
-  if (rc == 0 && pwrite(fd, payload, block_size, 0) != (ssize_t)block_size)
+  if (rc == 0 &&
+      pwrite(fd, payload + patch_offset, patch_bytes, patch_offset) != (ssize_t)patch_bytes)
   {
-    fprintf(stderr, "full controlled write failed: errno=%d\n", errno);
+    fprintf(stderr, "partial controlled write failed: errno=%d\n", errno);
     rc = -1;
   }
   if (rc == 0 && fsync(fd) != 0)
@@ -1018,15 +1017,20 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
     return -1;
 
   uint8_t *payload = malloc(block_size);
+  uint8_t patch[97];
+  const uint32_t patch_offset = 211u;
   char path[PATH_MAX];
   snprintf(path, sizeof(path), "%s/block", mnt);
   int fd = open(path, O_RDWR);
   int rc = fd < 0 || !payload ? -1 : 0;
   if (rc == 0)
   {
-    for (uint32_t i = 0; i < block_size; ++i)
-      payload[i] = (uint8_t)(i * 37u + seed);
-    if (pwrite(fd, payload, block_size, 0) >= 0)
+    memset(payload, 0, block_size);
+    memcpy(payload, k_block_payload, strlen(k_block_payload));
+    for (uint32_t i = 0; i < sizeof(patch); ++i)
+      patch[i] = (uint8_t)(i * 37u + seed);
+    memcpy(payload + patch_offset, patch, sizeof(patch));
+    if (pwrite(fd, patch, sizeof(patch), patch_offset) >= 0)
       rc = -1;
   }
   if (fd >= 0)
