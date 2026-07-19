@@ -3333,11 +3333,25 @@
   - 2-block directory追記が両data blocks、親inode、子inode、allocator stateの部分更新を残さない。
   - 初期境界は既存2 blocks内の追記に限定し、2 blocksから3 blocksへの追加成長は未対応とする。
 
+### SDW-V7RT-T43 two-to-three-block directory growth on create
+
+- 目的: record余地のない2-block direct directoryを3 direct blocksへ伸長し、createとatomicに公開する。
+- 変更:
+  - 2-block追記の容量不足時に既存batch予約をabortし、旧2 blocksの置換と3番目の新規block割当を
+    same-group 3-block batchとして再計画する。
+  - 3 blocksをstageして親inodeの3 references、size/blocks、同group子inode、allocator bitmap/summaryを
+    single transactionでpublishし、covering checkpoint後に旧2 blocksのみをretireする。
+  - 実FUSE smokeはcleanな2-block directoryをtombstone recordsで満たし、通常createとjournal publish、
+    metadata apply、checkpoint copyの各中断点から新entry、子inode、free counters、offline fsckを検証する。
+- 完了条件:
+  - 3つの新data blocks、親inode、子inode、allocator stateの部分的なvisibilityを残さない。
+  - 初期境界は2 blocksから3 blocksへの成長に限定し、既存3-block directoryへの追記は未対応とする。
+
 ---
 
 ## 次に着手する候補
 
-1. M8-Bの次sliceとして、満杯の2-block direct directoryを3 blocksへ伸長し、directory growthとcreateを
+1. M8-Bの次sliceとして、既存3-block direct directoryの空き領域へrecordを追記し、3-block COWとcreateを
    1 transactionへ載せる。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
