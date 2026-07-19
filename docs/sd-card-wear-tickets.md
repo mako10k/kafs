@@ -3364,8 +3364,13 @@
 
 ## 次に着手する候補
 
-1. M8-Bの次sliceとして、満杯の3-block direct directoryを4 blocksへ伸長し、directory growthとcreateを
-   1 transactionへ載せる。
+1. `KAFS-INC-2026-07-19-01`の是正として、block数別のcreate分岐をdirect上限までの`N`-block append/growth
+   algorithmへ統合し、direct/indirect reference境界をnamed constantsへ集約する。
+2. inline、1、2、3、direct上限直前、direct上限のfixtureをtable-driven化し、append/growth/上限拒否の
+   recovery equivalence classesを検証する。
+
+RCAは`docs/incidents/2026-07-19-v7-directory-cardinality-rca.md`を参照する。是正完了まではblock数を1つずつ
+増やすfeature ticketを追加しない。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の
