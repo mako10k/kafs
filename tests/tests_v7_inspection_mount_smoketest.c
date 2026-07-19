@@ -113,6 +113,40 @@ static int read_recovery_log(const char *path, kafs_v7_recovery_diagnostic_t *di
   return rc;
 }
 
+static int check_fuse_contract_log(const char *path, const char *expected_mode, uint32_t block_size,
+                                   int writable)
+{
+  FILE *fp = fopen(path, "r");
+  if (!fp)
+    return -errno;
+  char line[1024];
+  int rc = -ENOENT;
+  while (fgets(line, sizeof(line), fp))
+  {
+    char mode[32];
+    unsigned kernel = 0u;
+    unsigned negotiated = 0u;
+    unsigned atomic = 0u;
+    unsigned logged_block_size = 0u;
+    unsigned direct_blocks = 0u;
+    if (sscanf(line,
+               "kafs-v7-fuse-contract mode=%31s kernel_max_write=%u negotiated_max_write=%u "
+               "atomic_write_max=%u block_size=%u direct_blocks=%u",
+               mode, &kernel, &negotiated, &atomic, &logged_block_size, &direct_blocks) != 6)
+      continue;
+    uint64_t cap = (uint64_t)block_size * 12u;
+    unsigned expected_negotiated = writable && kernel > cap ? (unsigned)cap : kernel;
+    unsigned expected_atomic = writable ? expected_negotiated : 0u;
+    rc = strcmp(mode, expected_mode) == 0 && negotiated == expected_negotiated &&
+                 atomic == expected_atomic && logged_block_size == block_size && direct_blocks == 12u
+             ? 0
+             : -EINVAL;
+    break;
+  }
+  fclose(fp);
+  return rc;
+}
+
 static int check_recovery_cli(const char *path, const kafs_v7_recovery_diagnostic_t *diagnostic)
 {
   char output[4096];
@@ -867,6 +901,8 @@ static int check_mount(const char *image, const char *mnt, const char *log_path,
     rc = -1;
 
   kafs_test_stop_kafs(mnt, pid);
+  if (rc == 0 && check_fuse_contract_log(log_path, "inspection", fixture->block_size, 0) != 0)
+    rc = -1;
   uint64_t after = 0;
   if (file_digest(image, &after) != 0 || after != before)
     rc = -1;
@@ -981,6 +1017,11 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
   if (fd >= 0 && close(fd) != 0 && rc == 0)
     rc = -1;
   kafs_test_stop_kafs(mnt, pid);
+  if (rc == 0 && check_fuse_contract_log(log_path, "controlled-write", block_size, 1) != 0)
+  {
+    fprintf(stderr, "controlled write FUSE contract diagnostic failed\n");
+    rc = -1;
+  }
   if (rc != 0)
     kafs_test_dump_log(log_path, "v7 controlled-write operation failed");
 

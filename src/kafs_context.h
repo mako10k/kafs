@@ -217,6 +217,9 @@ struct kafs_context
   uint32_t c_v6_controlled_write_enabled;
   uint32_t c_v6_delayed_mutation_policy_applied;
   uint32_t c_v7_controlled_write_enabled;
+  uint32_t c_v7_fuse_kernel_max_write;
+  uint32_t c_v7_fuse_negotiated_max_write;
+  uint32_t c_v7_atomic_write_max;
   struct kafs_v7_runtime_transaction_service *c_v7_runtime_transactions;
 
   // --- Phase2 meta delta (runtime batching) ---

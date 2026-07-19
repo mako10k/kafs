@@ -54,6 +54,13 @@ writeback caching disabled, the kernel may split a large or unaligned
 application write into multiple FUSE requests; the entrypoint does not claim
 application-system-call atomicity across those requests.
 .PP
+At FUSE initialization the controlled-write entrypoint caps the negotiated
+.B max_write
+at twelve v7 blocks.  It reports the kernel value, negotiated value, and
+per-request atomic limit in a
+.B kafs-v7-fuse-contract
+startup diagnostic.  Inspection mounts report an atomic write limit of zero.
+.PP
 If a prior controlled write stopped after journal publication, metadata apply,
 one checkpoint copy, or partial journal reclaim, the next controlled-write
 admission resumes closeout before FUSE starts.  Invalid or incomplete journal

@@ -3192,12 +3192,28 @@
   - allocator bitmap/summary/free-block counterと3-block payloadがoffline fsck/readbackで一致する。
   - request分割を跨ぐapplication syscall全体のatomicityを暗黙に保証しない。
 
+### SDW-V7RT-T33 FUSE atomic request negotiation
+
+- 目的: controlled-writeのatomicity上限をkernel FUSE negotiationへ反映し、実際に合意した値を安定した
+  startup diagnosticとしてoperatorとtestへ公開する。
+- 変更:
+  - FUSE initはkernel提示`max_write`を保存し、controlled-writeでは`12 * v7 block_size`との小さい方へ
+    `conn->max_write`を制限する。inspection mountはkernel値を変更せずatomic write上限を0とする。
+  - runtime contextへkernel max、negotiated max、atomic write maxを保持する。
+  - `kafs-v7-fuse-contract`診断はmode、3つのsize、block size、direct block数を1行で出力する。
+  - 実FUSE smokeはinspection/controlled-write両方のlogをparseし、negotiated値とatomic上限が計算規則に
+    一致することを検証する。
+- 完了条件:
+  - 1 FUSE write requestがv7 direct range上限を超えず、advertised atomic上限と実装上限が一致する。
+  - inspection modeは書き込みatomicityをadvertiseしない。
+  - kernelがさらに小さい上限を提示した場合はその値を尊重する。
+
 ---
 
 ## 次に着手する候補
 
-1. 既存direct blocks内のwrite request分割境界を明示的に観測・制御するmount negotiationを追加し、
-   supported atomic request sizeを起動ログとinspection surfaceへ公開する。
+1. M6.1完了後の判断点として、bounded direct-overwrite surfaceを実媒体RC qualificationへ進めるか、
+   M8-Aの既存inode growth・追加direct block allocationを先に実装するかを決定する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の
