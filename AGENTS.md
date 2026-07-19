@@ -72,6 +72,17 @@
 - Use history and `git blame` only as BlameCheck evidence for design intent,
   constraints, and change context. Never use authorship, age, or provenance to
   transfer responsibility, lower priority, or exclude a finding.
+- When executing countermeasures from a completed RCA, keep the already accepted
+  product goal as an input; do not reopen goal selection or require a
+  comprehensive current-capability inventory before recovery can start.
+  Inventory the RCA actions and plausible same-cause impact first, use only the
+  capability context needed to measure their distance to the goal, and then
+  derive waves from that evidence.
+- Recovery-wave boundaries are not fixed inputs. Merge, split, remove, or add
+  waves when doing so closes goal-relevant dependencies with less rework. Keep
+  off-path RCA findings owned and deferred with a disposition rather than
+  excluding them. After the necessary RCA countermeasures close, perform the
+  comprehensive capability rebaseline and derive subsequent product work.
 
 ## Build And Test
 

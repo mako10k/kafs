@@ -66,6 +66,10 @@
 - 各wave終了時に依存graphをcurrent evidenceから再計算し、局所改善を次waveへ機械的に継続しない。
 - `git blame`と履歴は設計意図・制約・変更文脈を確認するBlameCheckに限定し、責任転嫁、優先度低下、
   対応除外には使用しない。
+- 完了済みRCAの対策実行では、accepted product goalを入力として維持し、goal再選択や包括的なcurrent
+  capability棚卸しを対策開始の前提にしない。RCA対策と同根影響を先に収集し、goalまでの距離と
+  correctness/durability制約からwaveを統合・分割・廃止・追加する。必要なRCA対策を閉じた後に、
+  current capabilityの包括的な再baselineと後続product計画を行う。
 
 ## ラベル運用 (推奨)
 

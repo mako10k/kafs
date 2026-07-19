@@ -1,246 +1,177 @@
-# V7 recovery investigation and critical-path plan
+# V7 RCA countermeasure detail and recovery waves
 
 - Date: 2026-07-19
-- Baseline: `b25b09e` on `feat/v7-aligned-direct-overwrite`
+- Baseline: `e76a0d1` on `feat/v7-aligned-direct-overwrite`
 - Related incident: `KAFS-INC-2026-07-19-01`
-- Status: investigation complete; create-inclusive bounded RC selected as the
-  evidence-based shortest path to an operator-usable controlled-write result
+- Status: countermeasure procedure fixed; recovery waves re-derived below
 
-## Task Start Record
+## Scope And Sequence
 
-### Current evidence
+The RCA is complete. This document details and orders its countermeasures; it
+does not reopen the causal analysis or select a new product goal.
 
-- The worktree was clean at `b25b09e` before this investigation began.
-- The accepted v7 design makes fault tolerance and SD-card write distribution
-  the joint top priorities. Deterministic fsck recovery or rejection is a hard
-  gate, and compatibility is provided by offline migration.
-- The accepted release boundary defines an explicit-opt-in v7 RC and requires
-  independent real-media qualification. Every enabled software surface must
-  still pass its corresponding correctness and recovery gates.
-- M6 and M6.1 are implemented. The current branch also enables bounded M8-A
-  growth/truncate and an M8-B create surface through three direct directory
-  blocks.
-- The handoff records an unresolved product decision after M6.1: qualify the
-  bounded controlled-write surface through M7, or continue writable-surface
-  implementation first. Later implementation did not state a decision rule for
-  that choice.
-- The accepted stakeholders include operators who need an offline migration
-  path. The current v7 migration implementation creates and validates an empty
-  destination but does not copy source data; full data migration remains M9.
-- Therefore, without create admission, the normal operator surfaces cannot put
-  a regular file into a newly created v7 image for the bounded write path to
-  modify. Such a build remains useful as an internal recovery prototype but is
-  not a self-contained operator-usable controlled-write RC.
-- Repository-wide static analysis currently reports 97 source clone groups,
-  1,351 duplicated source lines (2.69%), and 101 complexity warnings. Cppcheck
-  reports 19 findings. These are escape and risk evidence, not a priority
-  ordering by themselves.
+Use this sequence:
 
-### Assumption audit
+1. Keep the accepted v7 goal as an input.
+2. Inventory the RCA actions and plausible same-cause impact without narrowing
+   the search to the incident function or commits.
+3. Use the minimum capability context needed to evaluate which countermeasures
+   block or shorten the path to that goal. Do not require a comprehensive
+   current-capability inventory first.
+4. Derive recovery waves from those dependencies. Existing wave boundaries are
+   candidates and may be merged, split, removed, or supplemented.
+5. After each wave, re-evaluate the remaining RCA impact and its distance to the
+   goal. Keep deferred findings owned with an explicit disposition.
+6. After the necessary RCA countermeasures close, rebaseline current capability
+   comprehensively and derive subsequent product work.
 
-- The handoff's next candidate is not treated as authorization or as the
-  definition of done.
-- Ticket order is not assumed to be a capability dependency order.
-- The already implemented create surface is not assumed to be required for the
-  nearest RC merely because it exists.
-- Conversely, unreleased code is not assumed disposable merely because it can
-  be removed. Removal and refactoring are alternative recovery strategies whose
-  distance to the accepted delivery goal must be compared.
-- Static findings outside `kafs_v7_fuse_write.c` remain owned by this repository.
-  They require a recorded disposition even when they are not on the selected
-  wave's critical path.
+## Fixed Inputs
 
-### Delivery decision rule
+- The accepted v7 priorities remain fault tolerance and SD-card write
+  distribution, with deterministic recovery or rejection as a hard constraint.
+- The RCA established that block cardinality was incorrectly treated as a
+  production-state boundary even though generic batch COW, generic multi-block
+  direct write/growth, and the twelve-slot direct boundary were already present.
+- The correct directory states are `inline -> inline`, `inline -> direct(1)`,
+  `direct(N) -> direct(N)`, `direct(N) -> direct(N + 1)`, and direct-limit
+  rejection.
+- Recovery fixtures may select cardinalities, but fixture cardinality must not
+  create production branches or implementation waves.
+- Static analysis is detection evidence. It does not determine priority, but
+  every finding remains owned and correctness, data-integrity, and durability
+  findings constrain every applicable goal path.
 
-The next delivery must satisfy this minimum operator workflow using supported
-entrypoints rather than hand-built fixtures:
+## Countermeasure Inventory
 
-```text
-create or migrate a v7 image
-  -> mount through kafs-v7 controlled-write admission
-  -> create a regular file
-  -> write/grow/truncate and full-fsync it
-  -> unmount/remount
-  -> validate it with fsck.kafs and inspect it with kafsdump
-```
+| RCA action or same-cause evidence | Required disposition |
+| --- | --- |
+| 1/2/3-block branches in `kafs_v7_fuse_create_in_direct_directory` | Replace with the semantic transition model over bounded `N` |
+| Literal 12/15 reference roles and arrays sized for 2/3 cases | Introduce named direct/indirect roles and size runtime work from the direct limit |
+| Cardinality-named create recovery setup and repeated orchestration | Replace with transition-class tables and boundary representatives |
+| Single versus batch paths in `kafs_v7_fuse_write_direct` | Use one cardinality-independent production path unless an invariant proves a distinct state |
+| Single versus batch COW lifecycle duplication in `kafs_v7_runtime_transaction.c` | Provide one internal operation model; wrappers may remain only as adapters |
+| Same-file clones in `kafs_shared_fuse_runtime.c` | Map to semantic states and close those touching the recovered direct-write/create path; retain the rest with a disposition |
+| v6/v7 cross-format clones | Use BlameCheck and invariant comparison; preserve format ownership unless mechanics are genuinely neutral |
+| Cppcheck layout-selector index-order warnings | Prove bounds and move the bound check before indexing |
+| Remaining cppcheck warnings, including fsck `void *` arithmetic | Fix semantic/portability findings; record proof for any retained diagnostic |
+| `scripts/static-checks.sh` exits zero after a failed constituent step | Preserve full report collection and return a failing aggregate status |
+| Source clone gate at 2.69% against 1% | Remove semantic duplication and justify only true ownership or boilerplate exceptions |
+| Informational test clones at 18.49% | Consolidate after production transitions are fixed so tests do not dictate abstractions |
 
-A candidate that cannot introduce a regular file through a supported surface
-fails this workflow even if overwrite recovery passes on test fixtures.
+No item is classified as unrelated. Deferred means owned and scheduled after a
+closer dependency, not exempt.
 
-### Start decision
+## Dependency And Goal-Proximity Analysis
 
-- `PASS`: repository-wide investigation and recovery planning.
-- `PASS`: Option B corrective product implementation, because generic bounded
-  create is the shortest missing dependency for the minimum operator workflow.
-- `REPLAN`: Option A as an RC path. It is valid only if the accepted delivery is
-  explicitly changed from an operator-usable RC to an internal recovery
-  prototype.
-
-## Accepted Goal And Capability Position
-
-The accepted architectural goal is a v7 format that distributes SD-card writes
-without weakening deterministic recovery. The nearest delivery boundary is an
-explicit-opt-in, operator-usable controlled-write RC with real-media
-qualification. "Operator-usable" means that the supported surface can complete
-the minimum workflow above; it does not imply general writable-filesystem
-parity.
-
-Current capability position:
+The nearest RCA obstruction to the accepted v7 goal is not one function's CCN.
+It is the absence of a single cardinality-independent direct COW mutation
+capability shared by the already enabled direct write/growth and create paths.
+That obstruction spans transaction mechanics, FUSE adapters, inode reference
+roles, and recovery evidence. Treating those as separate cleanup waves would
+repeat the local file-oriented decomposition that the RCA rejects.
 
 ```text
-accepted v7 wire format and offline recovery
-  -> read-only inspection
-  -> journal/checkpoint/locking transaction foundation
-  -> bounded controlled overwrite and recovery
-  -> FUSE atomic-request negotiation
-  -> bounded direct growth/truncate
-  -> bounded direct-file create (implemented, structurally non-accepted)
+cardinality-independent direct COW operation model
+  -> generic direct write and directory mutation adapters
+  -> semantic-transition recovery matrix
+  -> enabled-path correctness/durability closure
+  -> remaining RCA finding dispositions
+  -> comprehensive capability rebaseline and next product plan
 ```
 
-The last capability is behaviorally tested but its production decomposition is
-not accepted. It cannot be carried into qualification unchanged.
+The aggregate static exit status improves detection but does not enable the
+generic mutation capability, so it must not precede the primary correction.
+Conversely, correctness or durability evidence found in the underlying COW,
+journal, checkpoint, allocator, or retirement path is pulled into the primary
+wave because the recovered capability cannot close without it.
 
-## Capability Dependency Graph
+## Re-Derived Recovery Waves
 
-```text
-accepted operator workflow
-  -> supported data-introduction path
-       -> M9 full data migration (larger alternative, not implemented)
-       -> generic bounded create (selected shortest dependency)
-            -> generic direct-directory mutation primitive
-            -> direct(N) append/growth/limit recovery proof
-            -> accepted bounded M8-B create surface
-  -> enabled-path correctness/control closure
-  -> create-inclusive M7 RC qualification
+### R1: Cardinality-independent direct mutation
 
-selected path -> static finding disposition ledger
-              -> blocking correctness/durability fixes for every enabled surface
-              -> aggregate gate exit-status correction
-              -> independent review and real-media qualification
-```
+This wave merges the previously separated production refactor, adjacent
+single/batch review, named-boundary cleanup, and recovery-test rewrite because
+they close one capability and must agree on one state model.
 
-M8-C indirect COW, M9 data migration, and M10 cross-group mutation are not
-prerequisites for either bounded RC option. They remain owned future
-capabilities and must not be pulled ahead of the selected RC path without a new
-accepted delivery goal.
+Scope:
 
-## Escaped-Impact Investigation
+- define named direct and indirect inode-reference roles;
+- consolidate single and batch COW lifecycle mechanics behind one internal
+  operation model capable of `N >= 1`;
+- route regular-file direct write/growth and direct-directory append/growth
+  through cardinality-independent adapters;
+- preserve `inline -> direct(1)` as a separate representation transition;
+- replace cardinality-driven create tests with transition-class tables covering
+  representative interior and boundary values;
+- inspect and fix any enabled-path correctness or durability finding exposed by
+  this consolidation.
 
-The incident's reasoning failure was not confined to the four create commits.
-The repository-wide analysis found the following connected impact and control
-weaknesses:
+Exit criteria:
 
-| Evidence | Current disposition | Path relationship |
-| --- | --- | --- |
-| `kafs_v7_fuse_create_in_direct_directory` is 375 NLOC with CCN 103 and contains separate 1-, 2-, and 3-block control flows | Must be removed or replaced by one semantic-transition implementation | Mandatory before any RC containing create |
-| Direct-directory code uses arrays sized 2/3 and literal slot boundaries 12/15 | Centralize named direct/indirect reference roles before generic directory mutation | Prerequisite to accepted M8-B refactor |
-| Create recovery fixtures and scenarios are named by cardinality and repeat orchestration | Convert to transition-class tables covering inline append, inline-to-direct, direct append, direct growth, and direct-limit rejection | Mandatory evidence for refactored M8-B |
-| `kafs_v7_fuse_write_direct` has separate single and batch paths (CCN 69) | Investigate unifying on the batch primitive; retain a split only with a demonstrated semantic invariant | Adjacent same-cause candidate on every enabled write path |
-| Single and batch COW lifecycle implementations in `kafs_v7_runtime_transaction.c` repeat prepare/publish/finish mechanics | Derive one internal cardinality-independent operation model, then keep compatibility wrappers only if needed | Durability-sensitive prerequisite if FUSE unification reaches this layer |
-| Same-file clones are concentrated in `kafs_shared_fuse_runtime.c` | Map each clone to an operation-state pair and test whether one shared transition helper preserves lock and error semantics | Owned investigation; blocking only where it affects the selected enabled surface |
-| v6/v7 layout, mount-option, runtime, entrypoint, and CLI clones cross format ownership boundaries | Perform intent-oriented BlameCheck plus invariant comparison; extract only genuinely format-neutral mechanics | Owned investigation; format ownership forbids clone-count-driven merging |
-| Layout selector cppcheck warnings appear in both v6 and neutral descriptor helpers | Prove loop bounds and reorder the bound check before indexing even if currently safe | Correctness hardening before release gate |
-| Unsigned `<= 0`, shadowing, const suggestions, and fsck `void *` arithmetic | Fix the portable pointer arithmetic and audit each remaining warning for semantic effect; record suppressions only with proof | Owned release-gate cleanup |
-| `scripts/static-checks.sh` reports failed steps but exits zero | Return nonzero when any required step fails while preserving complete report generation | Mandatory control correction before relying on the aggregate gate |
-| Source clone gate is at 2.69% against a 1% policy | Reduce confirmed semantic duplication and explicitly justify only true ownership/boilerplate exceptions | Repository release constraint, not a reason to reorder capability work by clone count |
-| Test clones are 18.49% in the informational pass | Consolidate recovery orchestration after production state classes are fixed | Evidence maintainability; must not drive production abstraction |
+1. One production control flow covers every admitted direct `N`; no 1/2/3-block
+   branch or 2/3-sized production array remains.
+2. Single-item APIs, if retained, are adapters to the common lifecycle rather
+   than separate prepare/publish/finish implementations.
+3. Direct-limit rejection publishes no transaction and changes no allocator,
+   inode, directory, counter, or retirement state.
+4. Inline representation growth remains separate and has explicit allocation,
+   publication, and retirement invariants.
+5. Transition-class recovery tests cover inline append, inline growth, direct
+   append, direct growth, and direct-limit rejection at representative minimum,
+   interior, limit-minus-one, and limit values.
+6. The full interruption matrix converges to one transaction generation and
+   passes offline fsck/readback.
+7. The RCA effectiveness replay rejects a one-to-two-only task boundary and
+   retains inline-to-direct as a valid distinct transition.
 
-No row is labeled unrelated or exempt. "Owned investigation" means its priority
-will be recomputed against the selected goal and its final disposition will be
-recorded; it does not transfer responsibility elsewhere.
+Downstream unlock: the direct write/create surface has one evidence-backed
+semantic model, allowing remaining findings to be assessed against a stable
+implementation rather than against cardinality-specific branches.
 
-## Alternative Ordering Comparison
+### R2: Recovery-surface structural and control closure
 
-### Option A: fixture-backed recovery prototype
+This wave combines the findings that must be resolved before the RCA recovery
+can be considered operationally enforced, but that do not define the R1
+production state model.
 
-1. Remove create admission and the incomplete M8-B implementation from the
-   surface while preserving accepted M6/M6.1 and explicitly selected M8-A
-   behavior.
-2. Fix correctness/durability findings that affect that enabled surface and
-   make the aggregate static gate fail correctly.
-3. Retain the result as internal recovery evidence rather than labeling it an
-   operator-usable RC.
+Scope:
 
-This is shorter only if the deliverable is explicitly an internal prototype.
-It fails the minimum operator workflow because v7 destination creation does not
-copy source data and the admitted surface cannot create a regular file. It is
-therefore rejected as the default RC route. Removing the incident code would
-still leave M8-B as an owned future capability rather than declaring it
-acceptable.
+- disposition same-cause clones in the shared FUSE runtime and format-owned
+  v6/v7 surfaces, extracting only invariant-preserving neutral mechanics;
+- close remaining cppcheck semantic and portability findings;
+- make aggregate static-check failure machine-detectable while retaining all
+  reports;
+- reduce or explicitly justify source clones under the repository policy;
+- consolidate test orchestration only after production transitions are stable.
 
-### Option B: create-inclusive bounded v7 RC
+Exit criteria:
 
-1. Introduce named inode reference roles and one `direct(N)` directory mutation
-   plan covering append, one-block growth, and direct-limit rejection.
-2. Reuse a cardinality-independent COW lifecycle and remove the specialized
-   production branches.
-3. Replace cardinality-driven recovery orchestration with transition-class and
-   boundary tables, then run the complete interruption matrix.
-4. Fix correctness/durability findings affecting the enabled surface and the
-   aggregate gate, then perform M7 qualification.
+1. Every repository-wide static finding has an owner, evidence, and disposition.
+2. No enabled-path correctness, data-integrity, or durability finding remains
+   deferred.
+3. A deliberately failing constituent static step makes the aggregate command
+   nonzero after all reports are produced.
+4. Source clone policy passes or every retained exception is narrowly justified
+   by an accepted ownership/invariant boundary.
+5. Full build, tests, format, lint, ownership checks, clone/complexity checks,
+   cppcheck, and Git checks have explicit results.
 
-This is the selected shortest route to an operator-usable controlled-write RC.
-The larger alternative is implementing M9 full data migration first; that adds
-a new copying/rebuild and cutover proof when bounded create already supplies the
-missing data-introduction capability.
+Downstream unlock: RCA countermeasures and their detection controls are closed
+well enough to perform a clean capability rebaseline.
 
-### Rejected first waves
+## Deferred Until RCA Countermeasure Closure
 
-- Continuing to four-block create is a local continuation of the incident and
-  does not close a capability dependency.
-- Starting M8-C, M9, or M10 increases distance to either bounded RC before the
-  enabled create surface is resolved.
-- Reducing the largest clone count first lets a detector choose product order
-  and does not establish which capability becomes releasable.
-- Refactoring all v6/v7 cross-format clones first risks violating accepted
-  ownership boundaries and is not a prerequisite for either bounded RC.
-
-## Recovery Waves
-
-### Wave 1: generic direct-directory recovery
-
-Replace block-count-specific production flow with the
-five semantic transitions in the RCA. The wave closes the M8-B structural
-correctness dependency and unlocks create-inclusive recovery qualification.
-
-### Wave 2: enabled-path correctness and control closure
-
-Review the single/batch COW model and all static findings touching the selected
-surface, fix the aggregate static exit status, and give every repository-wide
-finding a disposition. Ordering within this wave follows data-integrity and
-durability dependencies, not finding counts.
-
-### Wave 3: M7 qualification
-
-Run full software recovery tests, independent review, and the accepted
-real-media format/mount/unmount/remount/fsck evidence. A controlled-write RC
-also requires write, full fsync, and controlled power-interruption cycles.
-
-## Wave 1 Exit Criteria
-
-1. One production control flow handles `direct(N) -> direct(N)` and
-   `direct(N) -> direct(N + 1)` for every admitted `N` below the named direct
-   limit.
-2. Inline append and inline-to-direct conversion remain separate because their
-   representation and retirement invariants differ.
-3. The direct limit rejects growth without publishing a journal transaction or
-   changing allocator, inode, directory, or free-space state.
-4. Parent blocks, parent inode, child inode, allocator state, and counters are
-   atomically published for every admitted transition; only replaced old blocks
-   are retired after the covering checkpoint.
-5. Recovery tests cover representative interior cardinalities and both direct
-   boundaries through the common fault-point API, without creating production
-   branches for fixtures.
-6. The analogous regular-file single/batch path and transaction lifecycle have
-   a written disposition based on invariants, not proximity or authorship.
-7. Full build/tests, format, lint, ownership checks, clone/complexity checks,
-   cppcheck, and Git whitespace checks have explicit PASS/FAIL results.
+Do not use this document to choose among M7, M8-C, M9, or M10. After R1 and R2,
+re-read current code, tests, specifications, and accepted decisions, establish
+the actual capability position, and derive the next product plan through a new
+Task Start and Goal And Critical Path Gate.
 
 ## Local-Optimum Check
 
-Wave 1 closes the nearest missing dependency in the minimum operator workflow.
-Removing create would shorten the code path but not the path to an
-operator-usable result; implementing M9 first would introduce a larger data-copy
-and cutover capability to solve the same data-introduction prerequisite. After
-every wave, the capability graph must be rebuilt from current code, tests,
-specifications, and the delivery decision rule before selecting the next wave.
+- R1 is capability-shaped, not file-shaped: it joins the operation model,
+  adapters, boundaries, and recovery proof that must change together.
+- R2 does not precede R1 merely because its scripts or warnings are smaller.
+- R1 may pull a finding forward only when it blocks the same mutation capability
+  or its correctness/durability proof.
+- At each closeout, re-evaluate the remaining RCA inventory. Split or merge the
+  next work if current evidence changes the dependency structure.
