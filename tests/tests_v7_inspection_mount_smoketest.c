@@ -911,7 +911,10 @@ static int run_fsck(const char *image)
 {
   char output[8192];
   char *argv[] = {(char *)kafs_test_fsck_bin(), (char *)"--check", (char *)image, NULL};
-  return run_command(argv, 0, output, sizeof(output));
+  int rc = run_command(argv, 0, output, sizeof(output));
+  if (rc != 0)
+    fprintf(stderr, "fsck failed for %s:\n%s\n", image, output);
+  return rc;
 }
 
 static int check_persisted_blocks(const char *image, uint32_t ino, const void *expected,
@@ -1029,6 +1032,16 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
     memset(payload + truncate_size, 0, 3u * block_size - (size_t)truncate_size);
   if (fd >= 0 && close(fd) != 0 && rc == 0)
     rc = -1;
+  if (rc == 0)
+  {
+    snprintf(path, sizeof(path), "%s/created", mnt);
+    int created_fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0640);
+    if (created_fd < 0 || close(created_fd) != 0)
+    {
+      fprintf(stderr, "controlled create failed: errno=%d\n", errno);
+      rc = -1;
+    }
+  }
   kafs_test_stop_kafs(mnt, pid);
   if (rc == 0 && check_fuse_contract_log(log_path, "controlled-write", block_size, 1) != 0)
   {
@@ -1041,7 +1054,10 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
   if (rc == 0 && run_fsck(image) != 0)
     rc = -1;
   if (rc == 0 && check_persisted_blocks(image, ino, payload, truncate_size, block_size, 3u) != 0)
+  {
+    fprintf(stderr, "controlled persisted block check failed\n");
     rc = -1;
+  }
   if (rc == 0)
   {
     kafs_test_mount_options_t inspect = {
@@ -1056,7 +1072,18 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
     {
       snprintf(path, sizeof(path), "%s/block", "mnt-controlled-remount");
       if (read_block_equals(path, payload, (size_t)truncate_size) != 0)
+      {
+        fprintf(stderr, "controlled block remount read failed\n");
         rc = -1;
+      }
+      snprintf(path, sizeof(path), "%s/created", "mnt-controlled-remount");
+      struct stat created_st;
+      if (rc == 0 && (stat(path, &created_st) != 0 || !S_ISREG(created_st.st_mode) ||
+                      created_st.st_size != 0))
+      {
+        fprintf(stderr, "controlled created file remount read failed\n");
+        rc = -1;
+      }
       kafs_test_stop_kafs("mnt-controlled-remount", pid);
     }
   }

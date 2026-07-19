@@ -84,7 +84,7 @@ checksum-consistent foreign-group mutation.
 | M6.1 | FUSE request negotiation and supported atomic-request observability | Next |
 | M7 | Controlled-write RC qualification, real-media power interruption, and independent review | Not started |
 | M8-A | Existing-inode growth, allocation, hole policy, and truncate | Complete for bounded direct files |
-| M8-B | Create and directory-record mutation | Not started |
+| M8-B | Create and directory-record mutation | In progress: bounded empty regular-file create complete |
 | M8-C | Indirect-block COW, traversal, and retirement | Not started |
 | M9 | v5-to-v7 data migration beyond destination creation | Not started |
 | M10 | Cross-group HRL and multi-group atomic mutation | Not started |
@@ -92,9 +92,11 @@ checksum-consistent foreign-group mutation.
 The implementation has completed the bounded direct-file portion of M8-A. V7
 is practical for image creation, offline validation, read-only inspection, and
 controlled overwrite, contiguous growth, shrinking truncate, and O_TRUNC of
-existing direct-only files. This is not general writable filesystem readiness:
-create, indirect blocks, holes, and most metadata mutation remain outside the
-admitted contract.
+existing direct-only files. It also supports bounded empty regular-file
+creation in one-block same-group directories. This is not general writable
+filesystem readiness.
+Directory growth, general create placement, indirect blocks, holes, and most
+metadata mutation remain outside the admitted contract.
 
 After M6.1 there is an explicit product decision point. A bounded
 direct-overwrite release can enter M7 qualification, or implementation can

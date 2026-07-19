@@ -9406,10 +9406,61 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
 
 static int kafs_op_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
+  struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = NULL;
-  int gate = kafs_mutation_path_context(path, NULL, &ctx);
+  ctx = fctx ? fctx->private_data : NULL;
+  int gate = 0;
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (!kafs_v7_fuse_policy_controlled_write_active(ctx))
+#endif
+    gate = kafs_mutation_path_context(path, NULL, &ctx);
   if (gate != 0)
     return gate;
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (kafs_v7_fuse_policy_controlled_write_active(ctx))
+  {
+    int policy =
+        kafs_v7_fuse_policy_check_controlled_write(ctx, KAFS_V7_CONTROLLED_WRITE_OP_CREATE);
+    if (policy != 0)
+      return policy;
+    if (!path || path[0] != '/' || path[1] == '\0' || kafs_is_ctl_path(path))
+      return -EINVAL;
+    int exists = kafs_access(fctx, ctx, path, NULL, F_OK, NULL);
+    if (exists == 0)
+      return -EEXIST;
+    if (exists != -ENOENT)
+      return exists;
+    char path_copy[strlen(path) + 1u];
+    strcpy(path_copy, path);
+    const char *dirpath = NULL;
+    char *basepath = NULL;
+    kafs_create_split_path(path_copy, &dirpath, &basepath);
+    kafs_sinode_t *parent = NULL;
+    int parent_rc = kafs_access(fctx, ctx, dirpath, NULL, W_OK, &parent);
+    if (parent_rc != 0)
+      return parent_rc;
+    if (!S_ISDIR(kafs_ino_mode_get(parent)))
+      return -ENOTDIR;
+    kafs_inocnt_t parent_ino = kafs_ctx_ino_no(ctx, parent);
+    kafs_inocnt_t ino_new = 0u;
+    int retirement_rc = 0;
+    kafs_inode_lock(ctx, (uint32_t)parent_ino);
+    int create_rc = kafs_v7_fuse_create_in_direct_directory(
+        ctx, parent_ino, basepath, (uint16_t)mode, (uint16_t)fctx->uid, (uint16_t)fctx->gid,
+        &ino_new, &retirement_rc);
+    kafs_inode_unlock(ctx, (uint32_t)parent_ino);
+    if (create_rc != 0)
+      return create_rc;
+    if (retirement_rc != 0)
+      kafs_log(KAFS_LOG_WARNING,
+               "%s: v7 directory block retirement deferred path=%s ino=%" PRIuFAST32 " rc=%d\n",
+               __func__, path, (uint32_t)parent_ino, retirement_rc);
+    fi->fh = ino_new;
+    if (ctx->c_open_cnt)
+      __atomic_add_fetch(&ctx->c_open_cnt[ino_new], 1u, __ATOMIC_RELAXED);
+    return 0;
+  }
+#endif
   kafs_inocnt_t ino_new;
   KAFS_CALL(kafs_create, path, mode | S_IFREG, 0, NULL, &ino_new);
   if (ctx)
