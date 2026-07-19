@@ -525,7 +525,7 @@ static inline int kafs_descriptor_discover_layout_wire(int fd, const kafs_ssuper
     if (!valid[i].valid)
       continue;
     if (selected == UINT32_MAX || valid[i].generation > valid[selected].generation ||
-        (valid[i].generation == valid[selected].generation && i < selected))
+        (i < selected && valid[i].generation == valid[selected].generation))
       selected = i;
   }
 
