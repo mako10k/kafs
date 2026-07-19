@@ -6,6 +6,7 @@
 #include "kafs_v7_layout.h"
 #include "kafs_v7_locks.h"
 #include "kafs_v7_mutation.h"
+#include "kafs_v7_recovery_diagnostic.h"
 #include "kafs_v7_sequence.h"
 #include "kafs_v7_test_fault.h"
 
@@ -102,48 +103,61 @@ static int run_command(char *const argv[], int expected_exit, char *output, size
   return WEXITSTATUS(status) == expected_exit ? 0 : -1;
 }
 
-static int log_contains(const char *path, const char *first, const char *second, const char *third,
-                        const char *fourth)
+static int read_recovery_log(const char *path, kafs_v7_recovery_diagnostic_t *diagnostic)
 {
   FILE *fp = fopen(path, "r");
   if (!fp)
     return -errno;
-  char text[16384];
-  size_t used = fread(text, 1u, sizeof(text) - 1u, fp);
-  int rc = ferror(fp) ? -EIO : 0;
+  char line[2048];
+  int rc = -ENOENT;
+  while (fgets(line, sizeof(line), fp))
+  {
+    if (strncmp(line, "kafs-v7-recovery ", strlen("kafs-v7-recovery ")) == 0)
+    {
+      rc = kafs_v7_recovery_diagnostic_parse(line, diagnostic);
+      break;
+    }
+  }
+  if (ferror(fp))
+    rc = -EIO;
   fclose(fp);
-  text[used] = '\0';
-  if (rc == 0 &&
-      (!strstr(text, first) || !strstr(text, second) || !strstr(text, third) ||
-       !strstr(text, fourth)))
-    rc = -EINVAL;
   return rc;
 }
 
 static int check_recovery_log(const char *path, kafs_v7_test_fault_point_t fault)
 {
-  const char *stage_counter = NULL;
+  kafs_v7_recovery_diagnostic_t diagnostic;
+  if (read_recovery_log(path, &diagnostic) != 0 || diagnostic.final_nonempty_segments != 0u)
+    return -1;
   switch (fault)
   {
   case KAFS_V7_TEST_FAULT_JOURNAL_PUBLISH:
-    stage_counter = "applied_targets=2 applied_mutations=2 already_applied_mutations=1";
-    break;
+    return diagnostic.resume_from == KAFS_V7_RECOVERY_RESUME_JOURNAL_PUBLISH &&
+                   diagnostic.applied_targets == 2u && diagnostic.applied_mutations == 2u &&
+                   diagnostic.already_applied_mutations == 1u
+               ? 0
+               : -1;
   case KAFS_V7_TEST_FAULT_METADATA_APPLY:
-    stage_counter = "applied_targets=0 applied_mutations=0 already_applied_mutations=3";
-    break;
+    return diagnostic.resume_from == KAFS_V7_RECOVERY_RESUME_METADATA_APPLY &&
+                   diagnostic.applied_targets == 0u && diagnostic.applied_mutations == 0u &&
+                   diagnostic.already_applied_mutations == 3u
+               ? 0
+               : -1;
   case KAFS_V7_TEST_FAULT_CHECKPOINT_COPY:
-    stage_counter = "checkpoint_publications=1 checkpoint_resumes=1";
-    break;
+    return diagnostic.resume_from == KAFS_V7_RECOVERY_RESUME_CHECKPOINT_COPY &&
+                   diagnostic.checkpoint_publications == 1u &&
+                   diagnostic.checkpoint_resumes == 1u
+               ? 0
+               : -1;
   case KAFS_V7_TEST_FAULT_JOURNAL_RECLAIM:
-    stage_counter = "checkpoint_publications=0 checkpoint_resumes=0 reclaimed_segments=1";
-    break;
+    return diagnostic.resume_from == KAFS_V7_RECOVERY_RESUME_JOURNAL_RECLAIM &&
+                   diagnostic.checkpoint_publications == 0u &&
+                   diagnostic.checkpoint_resumes == 0u && diagnostic.reclaimed_segments == 1u
+               ? 0
+               : -1;
   default:
     return -EINVAL;
   }
-  char resume_from[64];
-  snprintf(resume_from, sizeof(resume_from), "resume_from=%s", kafs_v7_test_fault_name(fault));
-  return log_contains(path, "kafs-v7-recovery status=completed", resume_from,
-                      "final_nonempty_segments=0", stage_counter);
 }
 
 static int format_image(const char *path)

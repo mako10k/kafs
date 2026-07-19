@@ -3090,12 +3090,28 @@
   - counterはidempotent replayを含む実際の処理量を表し、各fault caseの期待値と一致する。
   - recoveryを伴わないmountの出力とdurability順を変更しない。
 
+### SDW-V7RT-T27 recovery diagnostic contract API
+
+- 目的: T26のmachine-readable recovery summaryをproductionとtestが共有する型付きcontractへ移し、
+  診断形式の意図しないdriftを検出する。
+- 変更:
+  - `kafs_v7_recovery_diagnostic`へresume stage enum、summary struct、writer、strict parserを集約する。
+  - parserは全必須key、固定status/format/trigger、resume stage、unsigned数値範囲を検証し、keyの重複、欠落、
+    未知key/value、不正tokenを拒否する。
+  - production recoveryは型付きsummaryをwriterへ渡し、実FUSE smokeはlogをparserで読み戻してcounterを照合する。
+    独立contract testはround-tripとmalformed input matrixを検証する。
+- 完了条件:
+  - productionとtestに診断key/valueの手書きparserまたはformatterを残さない。
+  - duplicate/missing/unknown/range overflowをfail closedで拒否する。
+  - T26の全4stage recovery logが同じAPIでparseされ、期待counterと一致する。
+
 ---
 
 ## 次に着手する候補
 
-1. machine-readable recovery summaryを専用parser/APIへ切り出し、診断keyの重複、欠落、未知値を検出する
-   contract testを追加する。partial-block merge、file growth、indirect/multi-block write、`create`は引き続き別slice。
+1. recovery diagnostic parserをoperator-facing offline inspectionへ接続し、保存済みlogをsummary/JSONとして
+   検証できるread-only経路を追加する。partial-block merge、file growth、indirect/multi-block write、`create`は
+   引き続き別slice。
 2. power-interruption recovery matrixを完了した後、accepted offline/inspection surfaceに
    `kafsresize --migrate-create --format-version 7`を追加する。
 
