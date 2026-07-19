@@ -584,6 +584,100 @@ static int seed_fixture(const char *path, v7_fixture_t *fixture)
   return rc;
 }
 
+static int seed_full_root_directory(const char *path, const char *next_name)
+{
+  int fd = open(path, O_RDWR);
+  if (fd < 0)
+    return -errno;
+  kafs_ssuperblock_t sb;
+  uint64_t file_size = 0u;
+  kafs_v7_layout_report_t report = {0};
+  int rc = validate_image_fd(fd, &sb, &file_size, &report);
+  kafs_v7_inode_t root;
+  if (rc == 0)
+    rc = read_inode(fd, &report, KAFS_INO_ROOTDIR, &root);
+  uint32_t reference = 0u;
+  if (rc == 0)
+  {
+    memcpy(&reference, root.inline_or_block_refs, sizeof(reference));
+    reference = le32toh(reference);
+    if (le32toh(root.blocks) != 1u || reference == 0u)
+      rc = -EINVAL;
+  }
+
+  const kafs_v7_group_desc_t *block_group = NULL;
+  uint64_t logical = reference == 0u ? 0u : (uint64_t)reference - 1u;
+  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(&report);
+  for (uint32_t i = 0u; rc == 0 && i < report.group_count; ++i)
+  {
+    uint64_t start = le64toh(groups[i].data_logical_start);
+    uint64_t count = le64toh(groups[i].data_logical_count);
+    if (logical >= start && logical - start < count)
+      block_group = &groups[i];
+  }
+  if (rc == 0 && !block_group)
+    rc = -ERANGE;
+
+  uint8_t *block = rc == 0 ? malloc(report.block_size) : NULL;
+  if (rc == 0 && !block)
+    rc = -ENOMEM;
+  uint64_t physical_off = 0u;
+  if (rc == 0)
+  {
+    physical_off = le64toh(block_group->data_physical_off) +
+                   (logical - le64toh(block_group->data_logical_start)) * report.block_size;
+    rc = kafs_pread_all(fd, block, report.block_size, (off_t)physical_off);
+  }
+  kafs_v7_kdir_header_t *header = (kafs_v7_kdir_header_t *)block;
+  size_t used = 0u;
+  size_t required = KAFS_V7_KDIR_RECORD_PREFIX_BYTES + strlen(next_name);
+  if (rc == 0 && (le32toh(header->magic) != KAFS_V7_KDIR_MAGIC ||
+                  le16toh(header->version) != KAFS_V7_KDIR_VERSION))
+    rc = -EUCLEAN;
+  if (rc == 0)
+  {
+    used = KAFS_V7_KDIR_HEADER_BYTES + le32toh(header->record_bytes);
+    if (used > report.block_size || required <= 1u || required > report.block_size - used)
+      rc = -EINVAL;
+  }
+  while (rc == 0 && report.block_size - used >= required)
+  {
+    size_t record_bytes = report.block_size - used - (required - 1u);
+    if (record_bytes > KAFS_V7_KDIR_RECORD_PREFIX_BYTES + 255u)
+      record_bytes = KAFS_V7_KDIR_RECORD_PREFIX_BYTES + 255u;
+    if (record_bytes <= KAFS_V7_KDIR_RECORD_PREFIX_BYTES)
+    {
+      rc = -EINVAL;
+      break;
+    }
+    size_t name_bytes = record_bytes - KAFS_V7_KDIR_RECORD_PREFIX_BYTES;
+    char filler[256];
+    memset(filler, 'p', name_bytes);
+    filler[name_bytes] = '\0';
+    size_t record_off = used;
+    rc = append_dir_record(block, report.block_size, &used, 0u, filler);
+    if (rc == 0)
+    {
+      kafs_v7_kdir_record_t *record = (kafs_v7_kdir_record_t *)(block + record_off);
+      record->flags = htole16(KAFS_V7_KDIR_FLAG_TOMBSTONE);
+    }
+  }
+  if (rc == 0)
+  {
+    header->record_bytes = htole32((uint32_t)(used - KAFS_V7_KDIR_HEADER_BYTES));
+    root.size = htole64(used);
+    rc = kafs_pwrite_all(fd, block, report.block_size, (off_t)physical_off);
+  }
+  if (rc == 0)
+    rc = write_inode(fd, &report, KAFS_INO_ROOTDIR, &root);
+  if (rc == 0 && fdatasync(fd) != 0)
+    rc = -errno;
+  free(block);
+  kafs_v7_layout_report_clear(&report);
+  close(fd);
+  return rc;
+}
+
 static int publish_pending_uid(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
                                kafs_v7_layout_report_t *report, kafs_v7_sequence_state_t *sequence,
                                uint32_t ino, uint16_t uid)
@@ -1501,6 +1595,16 @@ int main(void)
                                          4u) != 0)
     {
       fprintf(stderr, "v7 controlled inline-directory growth recovery failed fault=%s\n",
+              kafs_v7_test_fault_name(create_faults[i]));
+      return 1;
+    }
+    snprintf(create_recovery, sizeof(create_recovery), "v7-direct-growth-recovery-%zu.img", i);
+    if (copy_image(image, create_recovery) != 0 ||
+        seed_full_root_directory(create_recovery, "expanded") != 0 ||
+        check_controlled_create_recovery(create_recovery, create_faults[i], "direct-growth",
+                                         "expanded", 4u) != 0)
+    {
+      fprintf(stderr, "v7 controlled direct-directory growth recovery failed fault=%s\n",
               kafs_v7_test_fault_name(create_faults[i]));
       return 1;
     }
