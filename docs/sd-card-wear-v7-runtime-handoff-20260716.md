@@ -83,17 +83,18 @@ checksum-consistent foreign-group mutation.
 | M6 | T20-T32: bounded direct overwrite, admission, diagnostics, partial/multi-block COW, interruption recovery | Complete |
 | M6.1 | FUSE request negotiation and supported atomic-request observability | Next |
 | M7 | Controlled-write RC qualification, real-media power interruption, and independent review | Not started |
-| M8-A | Existing-inode growth, allocation, hole policy, and truncate | In progress: direct growth and shrinking truncate complete; O_TRUNC remains |
+| M8-A | Existing-inode growth, allocation, hole policy, and truncate | Complete for bounded direct files |
 | M8-B | Create and directory-record mutation | Not started |
 | M8-C | Indirect-block COW, traversal, and retirement | Not started |
 | M9 | v5-to-v7 data migration beyond destination creation | Not started |
 | M10 | Cross-group HRL and multi-group atomic mutation | Not started |
 
-The implementation is at the M6/M6.1 boundary. V7 is practical for image
-creation, offline validation, read-only inspection, and explicitly bounded
-controlled overwrites of existing direct blocks. This is not general writable
-filesystem readiness: growth, create, indirect blocks, and most metadata
-mutation remain outside the admitted contract.
+The implementation has completed the bounded direct-file portion of M8-A. V7
+is practical for image creation, offline validation, read-only inspection, and
+controlled overwrite, contiguous growth, shrinking truncate, and O_TRUNC of
+existing direct-only files. This is not general writable filesystem readiness:
+create, indirect blocks, holes, and most metadata mutation remain outside the
+admitted contract.
 
 After M6.1 there is an explicit product decision point. A bounded
 direct-overwrite release can enter M7 qualification, or implementation can

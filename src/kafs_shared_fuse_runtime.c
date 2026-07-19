@@ -9058,7 +9058,7 @@ static int kafs_op_open(const char *path, struct fuse_file_info *fi)
   struct kafs_context *ctx = fctx->private_data;
   int accmode = fi->flags & O_ACCMODE;
 #ifdef KAFS_V7_RUNTIME_ENTRYPOINT
-  if (kafs_is_ctl_path(path) || (fi->flags & O_TRUNC) != 0)
+  if (kafs_is_ctl_path(path))
   {
     int v7_rc = kafs_v7_fuse_policy_reject_legacy_mutation(ctx);
     if (v7_rc != 0)
@@ -9095,16 +9095,41 @@ static int kafs_op_open(const char *path, struct fuse_file_info *fi)
     ok |= W_OK;
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, NULL, ok, &inoent);
-  fi->fh = kafs_ctx_ino_no(ctx, inoent);
-  if (ctx->c_open_cnt)
-    __atomic_add_fetch(&ctx->c_open_cnt[fi->fh], 1u, __ATOMIC_RELAXED);
+  kafs_inocnt_t ino = kafs_ctx_ino_no(ctx, inoent);
   // Handle O_TRUNC on open for existing files to match POSIX semantics
   if ((fi->flags & O_TRUNC) && (accmode == O_WRONLY || accmode == O_RDWR))
   {
-    kafs_inode_lock(ctx, (uint32_t)fi->fh);
-    (void)kafs_truncate(ctx, kafs_ctx_inode(ctx, fi->fh), 0);
-    kafs_inode_unlock(ctx, (uint32_t)fi->fh);
+    kafs_inode_lock(ctx, (uint32_t)ino);
+    int truncate_rc = 0;
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+    if (kafs_v7_fuse_policy_controlled_write_active(ctx))
+    {
+      truncate_rc =
+          kafs_v7_fuse_policy_check_controlled_write(ctx, KAFS_V7_CONTROLLED_WRITE_OP_OPEN_TRUNC);
+      if (truncate_rc == 0)
+      {
+        kafs_v7_fuse_truncate_result_t result;
+        truncate_rc = kafs_v7_fuse_truncate_direct(ctx, ino, 0u, &result);
+        if (truncate_rc == 0 && result.retirement_rc != 0)
+          kafs_log(KAFS_LOG_WARNING,
+                   "%s: v7 O_TRUNC block retirement deferred path=%s ino=%" PRIuFAST32 " rc=%d\n",
+                   __func__, path ? path : "(null)", (uint32_t)ino, result.retirement_rc);
+      }
+    }
+    else
+#endif
+      truncate_rc = kafs_truncate(ctx, inoent, 0);
+    kafs_inode_unlock(ctx, (uint32_t)ino);
+    if (truncate_rc != 0)
+      return truncate_rc;
   }
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  else if ((fi->flags & O_TRUNC) && kafs_v7_fuse_policy_controlled_write_active(ctx))
+    return -EACCES;
+#endif
+  fi->fh = ino;
+  if (ctx->c_open_cnt)
+    __atomic_add_fetch(&ctx->c_open_cnt[fi->fh], 1u, __ATOMIC_RELAXED);
   return 0;
 }
 

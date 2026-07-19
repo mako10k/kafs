@@ -12,6 +12,7 @@ typedef enum kafs_v7_controlled_write_op
   KAFS_V7_CONTROLLED_WRITE_OP_FSYNC,
   KAFS_V7_CONTROLLED_WRITE_OP_RELEASE,
   KAFS_V7_CONTROLLED_WRITE_OP_TRUNCATE,
+  KAFS_V7_CONTROLLED_WRITE_OP_OPEN_TRUNC,
 } kafs_v7_controlled_write_op_t;
 
 static inline void kafs_v7_fuse_policy_set_controlled_write(kafs_context_t *ctx, int enabled)
@@ -48,6 +49,7 @@ static inline int kafs_v7_fuse_policy_check_controlled_write(const kafs_context_
   case KAFS_V7_CONTROLLED_WRITE_OP_FSYNC:
   case KAFS_V7_CONTROLLED_WRITE_OP_RELEASE:
   case KAFS_V7_CONTROLLED_WRITE_OP_TRUNCATE:
+  case KAFS_V7_CONTROLLED_WRITE_OP_OPEN_TRUNC:
     return 0;
   case KAFS_V7_CONTROLLED_WRITE_OP_INVALID:
   default:
