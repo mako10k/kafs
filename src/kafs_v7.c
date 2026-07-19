@@ -41,7 +41,7 @@ static void usage(const char *prog)
           " image path (inline form)\n"
           "  --inspection-mount         Select the read-only " KAFS_V7_TOOL_FORMAT_LABEL
           " inspection contract\n"
-          "  --controlled-write-mount   Reserved; controlled-write admission is not yet enabled\n"
+          "  --controlled-write-mount   Select bounded aligned direct-block overwrites\n"
           "  --option <opt[,opt...]>    Alias for FUSE -o\n"
           "  --option=<opt[,opt...]>    Inline form of --option\n"
           "\n"
@@ -51,8 +51,9 @@ static void usage(const char *prog)
           "  admission and rejects legacy v6_* mount tokens. Inspection accepts only\n"
           "  a validated descriptor/checkpoint pair at checkpoint_seq=0 with empty\n"
           "  journal segments. The image is opened and mapped read-only, and all\n"
-          "  mutation operations fail with EROFS. Non-empty journal replay, repair,\n"
-          "  and controlled write remain unavailable and fail closed.\n",
+          "  mutation operations fail with EROFS. Controlled write requires the explicit\n"
+          "  safe mount options and admits only aligned full direct-block overwrites.\n"
+          "  Non-empty journal replay, repair, and other mutations fail closed.\n",
           prog, prog);
 }
 

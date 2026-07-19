@@ -263,7 +263,7 @@ int main(void)
   }
   if (expect_contains("kafs-v7 help", out, "format v7 runtime entrypoint") ||
       expect_contains("kafs-v7 help", out, "Format v7 image path") ||
-      expect_contains("kafs-v7 help", out, "controlled-write admission is not yet enabled") ||
+      expect_contains("kafs-v7 help", out, "bounded aligned direct-block overwrites") ||
       expect_contains("kafs-v7 help", out, "mutation operations fail with EROFS"))
     return 1;
 
@@ -297,12 +297,13 @@ int main(void)
       (char *)"rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
       NULL,
   };
-  if (run_cmd_capture(v7_write_argv, 2, out, sizeof(out)) != 0 ||
-      expect_contains("v7 controlled write closed", out,
-                      "controlled write mount admission failed") ||
-      expect_not_contains("v7 controlled write closed", out, "bad mount point"))
+  if (run_cmd_capture(v7_write_argv, 1, out, sizeof(out)) != 0 ||
+      expect_contains("v7 controlled write admission", out, "controlled write mount:") ||
+      expect_contains("v7 controlled write mountpoint", out, "bad mount point") ||
+      expect_not_contains("v7 controlled write admission", out,
+                          "controlled write mount admission failed"))
   {
-    tlogf("kafs-v7 controlled write did not fail closed before FUSE: %s", out);
+    tlogf("kafs-v7 controlled write did not reach FUSE after admission: %s", out);
     return 1;
   }
 
