@@ -116,7 +116,7 @@ int kafs_v7_runtime_view_admit_fd(kafs_context_t *ctx, int fd, const kafs_ssuper
   int rc = kafs_v7_validate_image_fd(fd, sbdisk, file_size, &report);
   if (rc != 0)
     return rc;
-  if (report.checkpoint_sequence != 0u || report.journal.selected_nonempty_segment_count != 0u)
+  if (report.journal.selected_nonempty_segment_count != 0u)
   {
     kafs_v7_layout_report_clear(&report);
     return -ENOTSUP;
@@ -166,7 +166,7 @@ int kafs_v7_runtime_view_validate(const kafs_context_t *ctx)
       ctx->c_v7_layout_desc_bytes == 0u || !ctx->c_v7_inode_shards ||
       ctx->c_v7_inode_shard_count == 0u || !ctx->c_v7_data_groups ||
       ctx->c_v7_data_group_count != ctx->c_v7_inode_shard_count || ctx->c_v7_block_size == 0u ||
-      ctx->c_v7_checkpoint_sequence != 0u)
+      ctx->c_v7_checkpoint_generation == 0u)
     return -EPROTO;
   if (ctx->c_v6_layout_desc || ctx->c_v6_bitmap_mapping_enabled ||
       ctx->c_v6_inode_mapping_enabled || ctx->c_v6_alloc_summary_mapping_enabled ||
