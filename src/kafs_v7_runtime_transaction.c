@@ -34,6 +34,16 @@ struct kafs_v7_runtime_data_cow
   uint8_t staged;
 };
 
+struct kafs_v7_runtime_data_cow_batch
+{
+  kafs_v7_runtime_transaction_service_t *service;
+  kafs_v7_layout_report_t layout;
+  kafs_v7_sequence_reservation_t reservation;
+  kafs_v7_data_cow_plan_t *plans;
+  uint8_t **staged_data;
+  size_t plan_count;
+};
+
 static int kafs_v7_runtime_allocation_cursors_init(kafs_v7_runtime_transaction_service_t *service,
                                                    const kafs_v7_layout_report_t *layout)
 {
@@ -520,6 +530,228 @@ int kafs_v7_runtime_data_cow_abort(kafs_v7_runtime_data_cow_t **operation_ptr)
   kafs_v7_runtime_data_cow_t *operation = *operation_ptr;
   *operation_ptr = NULL;
   return kafs_v7_runtime_data_cow_cancel(operation);
+}
+
+static void kafs_v7_runtime_data_cow_batch_release(kafs_v7_runtime_data_cow_batch_t *operation)
+{
+  if (!operation)
+    return;
+  for (size_t i = 0; i < operation->plan_count; ++i)
+  {
+    if (operation->staged_data)
+      free(operation->staged_data[i]);
+    if (operation->plans)
+      kafs_v7_data_cow_plan_clear(&operation->plans[i]);
+  }
+  free(operation->staged_data);
+  free(operation->plans);
+  kafs_v7_layout_report_clear(&operation->layout);
+  free(operation);
+}
+
+static int kafs_v7_runtime_data_cow_batch_cancel(kafs_v7_runtime_data_cow_batch_t *operation)
+{
+  int rc = 0;
+  if (operation->reservation.active)
+    rc = kafs_v7_sequence_cancel_reservation_fd(
+        operation->service->sequence, &operation->reservation, operation->service->fd,
+        &operation->service->superblock, operation->service->file_size);
+  kafs_v7_runtime_data_cow_batch_release(operation);
+  return rc;
+}
+
+int kafs_v7_runtime_data_cow_batch_prepare(kafs_v7_runtime_transaction_service_t *service,
+                                           const kafs_v7_runtime_data_cow_request_t *requests,
+                                           size_t request_count,
+                                           kafs_v7_runtime_data_cow_batch_t **operation_out,
+                                           kafs_v7_runtime_data_cow_plan_t *plans_out)
+{
+  if (!service || !requests || request_count < 2u || !operation_out || !plans_out ||
+      request_count > 64u || request_count > SIZE_MAX / sizeof(kafs_v7_data_cow_plan_request_t) ||
+      request_count > SIZE_MAX / sizeof(kafs_v7_data_cow_plan_t) ||
+      request_count > SIZE_MAX / sizeof(uint8_t *))
+    return -EINVAL;
+  *operation_out = NULL;
+  kafs_v7_runtime_data_cow_batch_t *operation = calloc(1u, sizeof(*operation));
+  kafs_v7_data_cow_plan_request_t *plan_requests = calloc(request_count, sizeof(*plan_requests));
+  if (!operation || !plan_requests)
+  {
+    free(plan_requests);
+    free(operation);
+    return -ENOMEM;
+  }
+  operation->service = service;
+  operation->plan_count = request_count;
+  operation->plans = calloc(request_count, sizeof(*operation->plans));
+  operation->staged_data = calloc(request_count, sizeof(*operation->staged_data));
+  int rc = !operation->plans || !operation->staged_data ? -ENOMEM : 0;
+  uint32_t group_id = requests[0].group_id;
+  for (size_t i = 0; rc == 0 && i < request_count; ++i)
+  {
+    if (requests[i].reserved != 0u || requests[i].group_id != group_id ||
+        group_id >= service->group_count)
+      rc = -EXDEV;
+  }
+  if (rc == 0)
+    rc = kafs_v7_sequence_reserve(service->sequence, group_id, &operation->reservation);
+  if (rc == 0)
+    rc = kafs_v7_validate_image_fd(service->fd, &service->superblock, service->file_size,
+                                   &operation->layout);
+  kafs_v7_journal_replay_t replay;
+  memset(&replay, 0, sizeof(replay));
+  if (rc == 0)
+    rc = kafs_v7_journal_analyze_fd(service->fd, &operation->layout, &replay);
+  uint64_t cursor = rc == 0 ? service->allocation_cursors[group_id] : 0u;
+  for (size_t i = 0; rc == 0 && i < request_count; ++i)
+  {
+    plan_requests[i] = (kafs_v7_data_cow_plan_request_t){
+        .layout = &operation->layout,
+        .replay = &replay,
+        .group_id = group_id,
+        .allocation_cursor = cursor,
+        .retained_logical_block = requests[i].retained_logical_block,
+    };
+  }
+  if (rc == 0)
+    rc =
+        kafs_v7_data_cow_plan_batch_fd(service->fd, plan_requests, request_count, operation->plans);
+  kafs_v7_journal_replay_clear(&replay);
+  free(plan_requests);
+  if (rc != 0)
+  {
+    int cancel_rc = kafs_v7_runtime_data_cow_batch_cancel(operation);
+    return cancel_rc != 0 ? cancel_rc : rc;
+  }
+  for (size_t i = 0; i < request_count; ++i)
+  {
+    plans_out[i] = (kafs_v7_runtime_data_cow_plan_t){
+        .group_id = group_id,
+        .block_size = operation->plans[i].block_size,
+        .sequence = operation->reservation.sequence,
+        .logical_block = operation->plans[i].logical_block,
+        .physical_off = operation->plans[i].physical_off,
+        .retained_logical_block = operation->plans[i].retained_logical_block,
+    };
+  }
+  const kafs_v7_group_desc_t *group = &kafs_v7_report_groups(&operation->layout)[group_id];
+  uint64_t start = le64toh(group->data_logical_start);
+  uint64_t count = le64toh(group->data_logical_count);
+  uint64_t next = operation->plans[request_count - 1u].logical_block + 1u;
+  service->allocation_cursors[group_id] = next >= start && next - start < count ? next : start;
+  *operation_out = operation;
+  return 0;
+}
+
+int kafs_v7_runtime_data_cow_batch_stage(kafs_v7_runtime_data_cow_batch_t *operation,
+                                         size_t plan_index, const void *data, size_t data_bytes)
+{
+  if (!operation || plan_index >= operation->plan_count || !data ||
+      operation->staged_data[plan_index])
+    return -EINVAL;
+  kafs_v7_data_cow_plan_t *plan = &operation->plans[plan_index];
+  uint8_t *verified = malloc(plan->block_size);
+  if (!verified)
+    return -ENOMEM;
+  int rc = kafs_v7_data_cow_stage_fd(operation->service->fd, plan, data, data_bytes, verified);
+  if (rc == 0)
+    operation->staged_data[plan_index] = verified;
+  else
+    free(verified);
+  return rc;
+}
+
+int kafs_v7_runtime_data_cow_batch_commit(kafs_v7_runtime_data_cow_batch_t **operation_ptr,
+                                          const kafs_v7_journal_patch_t *metadata_patches,
+                                          size_t metadata_patch_count,
+                                          kafs_v7_runtime_transaction_result_t *result)
+{
+  if (!operation_ptr || !*operation_ptr || !metadata_patches || metadata_patch_count == 0u ||
+      !result)
+    return -EINVAL;
+  kafs_v7_runtime_data_cow_batch_t *operation = *operation_ptr;
+  int rc = 0;
+  size_t bitmap_count = 0u;
+  for (size_t i = 0; rc == 0 && i < operation->plan_count; ++i)
+  {
+    if (!operation->staged_data[i])
+      rc = -EAGAIN;
+    if (rc == 0)
+      rc = kafs_v7_data_cow_verify_fd(operation->service->fd, &operation->plans[i],
+                                      operation->staged_data[i], operation->plans[i].block_size);
+    kafs_v7_runtime_data_cow_t validator = {
+        .service = operation->service, .layout = operation->layout, .plan = operation->plans[i]};
+    if (rc == 0)
+      rc = kafs_v7_runtime_data_cow_validate_direct_reference(&validator, metadata_patches,
+                                                              metadata_patch_count);
+    int last = 1;
+    for (size_t j = i + 1u; j < operation->plan_count; ++j)
+      if (operation->plans[j].bitmap_word_logical == operation->plans[i].bitmap_word_logical)
+        last = 0;
+    bitmap_count += last;
+  }
+  if (rc != 0)
+    return rc;
+  if (bitmap_count == SIZE_MAX || metadata_patch_count > SIZE_MAX - bitmap_count - 1u)
+    return -EOVERFLOW;
+  size_t patch_count = bitmap_count + 1u + metadata_patch_count;
+  kafs_v7_journal_patch_t *patches = calloc(patch_count, sizeof(*patches));
+  if (!patches)
+    return -ENOMEM;
+  size_t out = 0u;
+  for (size_t i = 0; i < operation->plan_count; ++i)
+  {
+    int last = 1;
+    for (size_t j = i + 1u; j < operation->plan_count; ++j)
+      if (operation->plans[j].bitmap_word_logical == operation->plans[i].bitmap_word_logical)
+        last = 0;
+    if (!last)
+      continue;
+    int64_t free_blocks_delta = out == 0u ? -(int64_t)operation->plan_count : 0;
+    patches[out++] = (kafs_v7_journal_patch_t){
+        .target_type = KAFS_V7_JOURNAL_TARGET_BLOCK_BITMAP,
+        .logical_index = operation->plans[i].bitmap_word_logical,
+        .patch_bytes = sizeof(operation->plans[i].bitmap_after),
+        .patch = operation->plans[i].bitmap_after,
+        .free_blocks_delta = free_blocks_delta,
+    };
+  }
+  kafs_v7_data_cow_plan_t *final = &operation->plans[operation->plan_count - 1u];
+  patches[out++] = (kafs_v7_journal_patch_t){
+      .target_type = KAFS_V7_JOURNAL_TARGET_ALLOCATOR_SUMMARY,
+      .logical_index = final->allocator_logical,
+      .patch_bytes = final->allocator_bytes,
+      .patch = final->allocator_after,
+  };
+  memcpy(patches + out, metadata_patches, metadata_patch_count * sizeof(*metadata_patches));
+  memset(result, 0, sizeof(*result));
+  rc = kafs_v7_runtime_transaction_publish_reserved(operation->service, &operation->layout,
+                                                    &operation->reservation, patches, patch_count,
+                                                    result);
+  free(patches);
+  *operation_ptr = NULL;
+  if (rc == 0)
+    kafs_v7_test_fault_maybe_crash(KAFS_V7_TEST_FAULT_JOURNAL_PUBLISH);
+  if (rc == 0)
+    rc = kafs_v7_runtime_transaction_closeout(operation->service, result);
+  if (operation->reservation.active)
+  {
+    int cancel_rc = kafs_v7_sequence_cancel_reservation_fd(
+        operation->service->sequence, &operation->reservation, operation->service->fd,
+        &operation->service->superblock, operation->service->file_size);
+    if (cancel_rc != 0)
+      rc = cancel_rc;
+  }
+  kafs_v7_runtime_data_cow_batch_release(operation);
+  return rc;
+}
+
+int kafs_v7_runtime_data_cow_batch_abort(kafs_v7_runtime_data_cow_batch_t **operation_ptr)
+{
+  if (!operation_ptr || !*operation_ptr)
+    return -EINVAL;
+  kafs_v7_runtime_data_cow_batch_t *operation = *operation_ptr;
+  *operation_ptr = NULL;
+  return kafs_v7_runtime_data_cow_batch_cancel(operation);
 }
 
 static int kafs_v7_runtime_group_shard(const kafs_v7_layout_report_t *layout, uint32_t group_id,

@@ -65,7 +65,7 @@ static uint64_t get_direct_reference(const kafs_v7_inode_t *inode, uint32_t slot
 }
 
 static int seed_regular_file(kafs_context_t *ctx, kafs_inocnt_t ino, uint32_t group_id,
-                             const void *data, uint64_t *logical_block_out)
+                             const void *data, uint64_t logical_blocks_out[3])
 {
   kafs_v7_inode_t inode;
   memset(&inode, 0, sizeof(inode));
@@ -86,37 +86,39 @@ static int seed_regular_file(kafs_context_t *ctx, kafs_inocnt_t ino, uint32_t gr
   if (rc != 0)
     return rc;
 
-  kafs_v7_runtime_data_cow_request_t request = {
-      .group_id = group_id,
-      .retained_logical_block = KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK,
-  };
-  kafs_v7_runtime_data_cow_t *operation = NULL;
-  kafs_v7_runtime_data_cow_plan_t plan;
-  rc = kafs_v7_runtime_data_cow_prepare(ctx->c_v7_runtime_transactions, &request, &operation,
-                                        &plan);
+  kafs_v7_runtime_data_cow_request_t requests[3];
+  for (size_t i = 0; i < 3u; ++i)
+    requests[i] = (kafs_v7_runtime_data_cow_request_t){
+        .group_id = group_id,
+        .retained_logical_block = KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK,
+    };
+  kafs_v7_runtime_data_cow_batch_t *operation = NULL;
+  kafs_v7_runtime_data_cow_plan_t plans[3];
+  rc = kafs_v7_runtime_data_cow_batch_prepare(ctx->c_v7_runtime_transactions, requests, 3u,
+                                              &operation, plans);
   if (rc != 0)
     fprintf(stderr, "seed prepare failed: %d group=%u\n", rc, group_id);
-  if (rc == 0)
-    rc = kafs_v7_runtime_data_cow_stage(operation, data, plan.block_size);
+  for (size_t i = 0; rc == 0 && i < 3u; ++i)
+    rc = kafs_v7_runtime_data_cow_batch_stage(operation, i, data, plans[i].block_size);
   if (rc != 0)
     fprintf(stderr, "seed stage failed: %d\n", rc);
   memset(&inode, 0, sizeof(inode));
   inode.mode = htole16(S_IFREG | 0644u);
-  inode.size = htole64(plan.block_size);
+  inode.size = htole64(3u * plans[0].block_size);
   inode.link_count = htole16(1u);
-  inode.blocks = htole32(1u);
-  if (rc == 0)
-    set_direct_reference(&inode, 0u, plan.logical_block);
+  inode.blocks = htole32(3u);
+  for (size_t i = 0; rc == 0 && i < 3u; ++i)
+    set_direct_reference(&inode, (uint32_t)i, plans[i].logical_block);
   patch.free_inodes_delta = 0;
-  kafs_v7_runtime_data_cow_result_t result;
   if (rc == 0)
-    rc = kafs_v7_runtime_data_cow_commit(&operation, &patch, 1u, &result);
+    rc = kafs_v7_runtime_data_cow_batch_commit(&operation, &patch, 1u, &transaction);
   if (rc != 0)
     fprintf(stderr, "seed commit failed: %d ino=%u\n", rc, (unsigned)ino);
   if (operation)
-    (void)kafs_v7_runtime_data_cow_abort(&operation);
+    (void)kafs_v7_runtime_data_cow_batch_abort(&operation);
   if (rc == 0)
-    *logical_block_out = result.data.logical_block;
+    for (size_t i = 0; i < 3u; ++i)
+      logical_blocks_out[i] = plans[i].logical_block;
   return rc;
 }
 
@@ -154,6 +156,20 @@ static int test_direct_overwrite(void)
     fprintf(stderr, "transaction service init failed: %d\n", rc);
   kafs_v7_fuse_policy_set_controlled_write(&ctx, 1);
 
+  if (rc == 0)
+  {
+    kafs_v7_runtime_data_cow_request_t invalid[2] = {
+        {.group_id = UINT32_MAX, .retained_logical_block = KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK},
+        {.group_id = UINT32_MAX, .retained_logical_block = KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK},
+    };
+    kafs_v7_runtime_data_cow_plan_t invalid_plans[2];
+    kafs_v7_runtime_data_cow_batch_t *invalid_operation = NULL;
+    if (kafs_v7_runtime_data_cow_batch_prepare(ctx.c_v7_runtime_transactions, invalid, 2u,
+                                               &invalid_operation, invalid_plans) != -EXDEV ||
+        invalid_operation != NULL)
+      rc = -1;
+  }
+
   kafs_inocnt_t ino = 2u;
   const kafs_v7_inode_runtime_shard_t *shard = NULL;
   if (rc == 0)
@@ -169,22 +185,27 @@ static int test_direct_overwrite(void)
     if (!before || !after)
       rc = -ENOMEM;
   }
+  uint64_t seeded[3] = {0};
   uint64_t retained = 0u;
   if (rc == 0)
   {
     memset(before, 0x5a, ctx.c_v7_block_size);
     memset(after, 0xa5, ctx.c_v7_block_size);
-    rc = seed_regular_file(&ctx, ino, shard->group_id, before, &retained);
+    rc = seed_regular_file(&ctx, ino, shard->group_id, before, seeded);
+    retained = seeded[0];
     if (rc != 0)
       fprintf(stderr, "regular file seed failed: %d\n", rc);
   }
-  if (rc == 0 &&
-      kafs_v7_fuse_write_direct(&ctx, ino, after, 2u, ctx.c_v7_block_size - 1u, NULL) !=
-          -EOPNOTSUPP)
-    rc = -1;
-  if (rc == 0 &&
-      kafs_v7_fuse_write_direct(&ctx, ino, after, 1u, ctx.c_v7_block_size, NULL) != -EFBIG)
-    rc = -1;
+  if (rc == 0)
+  {
+    int boundary_rc =
+        kafs_v7_fuse_write_direct(&ctx, ino, after, 1u, 3u * ctx.c_v7_block_size, NULL);
+    if (boundary_rc != -EFBIG)
+    {
+      fprintf(stderr, "file growth boundary returned %d\n", boundary_rc);
+      rc = -1;
+    }
+  }
   kafs_v7_fuse_write_result_t result;
   uint64_t physical_off = 0u;
   if (rc == 0)
@@ -201,15 +222,24 @@ static int test_direct_overwrite(void)
     rc = 0;
   if (rc == 0 && (result.retained_logical_block != retained || result.retirement_rc != 0 ||
                   result.new_logical_block == retained))
+  {
+    fprintf(stderr, "partial overwrite result mismatch\n");
     rc = -1;
+  }
   if (rc == 0)
     rc = kafs_ctx_v7_data_ref_physical_offset(&ctx, (kafs_blkcnt_t)result.new_logical_block + 1u,
                                               &physical_off);
   if (rc == 0 && memcmp((uint8_t *)image + physical_off, after, ctx.c_v7_block_size) != 0)
+  {
+    fprintf(stderr, "partial overwrite payload mismatch\n");
     rc = -1;
+  }
   const kafs_v7_inode_t *inode = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(&ctx, ino);
   if (rc == 0 && (!inode || get_direct_reference(inode, 0u) != result.new_logical_block))
+  {
+    fprintf(stderr, "partial overwrite inode mismatch\n");
     rc = -1;
+  }
   retained = result.new_logical_block;
   if (rc == 0)
   {
@@ -220,12 +250,64 @@ static int test_direct_overwrite(void)
     rc = 0;
   if (rc == 0 && (result.retained_logical_block != retained || result.retirement_rc != 0 ||
                   result.new_logical_block == retained))
+  {
+    fprintf(stderr, "full overwrite result mismatch\n");
     rc = -1;
+  }
   if (rc == 0)
     rc = kafs_ctx_v7_data_ref_physical_offset(&ctx, (kafs_blkcnt_t)result.new_logical_block + 1u,
                                               &physical_off);
   if (rc == 0 && memcmp((uint8_t *)image + physical_off, after, ctx.c_v7_block_size) != 0)
+  {
+    fprintf(stderr, "full overwrite payload mismatch\n");
     rc = -1;
+  }
+
+  uint8_t *multi = NULL;
+  uint8_t *expected = NULL;
+  size_t multi_size = ctx.c_v7_block_size + 37u;
+  uint64_t multi_offset = ctx.c_v7_block_size - 11u;
+  if (rc == 0)
+  {
+    multi = malloc(multi_size);
+    expected = malloc(3u * ctx.c_v7_block_size);
+    if (!multi || !expected)
+      rc = -ENOMEM;
+  }
+  if (rc == 0)
+  {
+    memset(multi, 0x7c, multi_size);
+    memset(expected, 0x5a, 3u * ctx.c_v7_block_size);
+    memset(expected, 0xa5, ctx.c_v7_block_size);
+    memcpy(expected + multi_offset, multi, multi_size);
+    rc = kafs_v7_fuse_write_direct(&ctx, ino, multi, multi_size, multi_offset, &result);
+  }
+  if (rc == (int)multi_size)
+    rc = 0;
+  if (rc != 0)
+    fprintf(stderr, "multi-block overwrite failed: %d\n", rc);
+  inode = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(&ctx, ino);
+  for (uint32_t slot_id = 0; rc == 0 && slot_id < 3u; ++slot_id)
+  {
+    uint64_t logical = get_direct_reference(inode, slot_id);
+    if (logical == seeded[slot_id])
+    {
+      fprintf(stderr, "multi-block slot %u retained old reference\n", slot_id);
+      rc = -1;
+    }
+    if (rc == 0)
+      rc = kafs_ctx_v7_data_ref_physical_offset(&ctx, (kafs_blkcnt_t)logical + 1u,
+                                                &physical_off);
+    if (rc == 0 && memcmp((uint8_t *)image + physical_off,
+                          expected + slot_id * ctx.c_v7_block_size,
+                          ctx.c_v7_block_size) != 0)
+    {
+      fprintf(stderr, "multi-block slot %u payload mismatch\n", slot_id);
+      rc = -1;
+    }
+  }
+  free(multi);
+  free(expected);
 
   free(before);
   free(after);
@@ -237,6 +319,8 @@ static int test_direct_overwrite(void)
   close(fd);
   if (rc == 0)
     rc = fsck_image(path);
+  if (rc != 0)
+    fprintf(stderr, "post-write fsck failed: %d\n", rc);
   return rc;
 }
 

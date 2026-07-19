@@ -3156,12 +3156,30 @@
   - partial transactionはpower interruption後もexactly-onceに収束し、fsckとrecovery diagnosticsがPASSする。
   - full-block overwriteを維持し、file growth、multi-block、indirect writeを暗黙に許可しない。
 
+### SDW-V7RT-T31 atomic multi-block direct overwrite
+
+- 目的: v7 controlled-writeを既存allocated direct block間のmulti-block overwriteへ拡張し、全data COWと
+  inode reference replacementを単一journal transactionでpublishする。
+- 変更:
+  - batch allocator plannerは同一groupのoverlay bitmapへ最大12 direct blockの割当を累積し、重複する
+    bitmap wordを最終状態へ集約してallocator summaryとfree-block deltaを一度だけpublishする。
+  - batch runtime transactionは1 sequence reservation内で全replacement blockをstage、flush、readback検証し、
+    全new direct referencesを含むinode patchとallocator patchesをatomicにcommitする。
+  - FUSE writeは先頭・末尾のpartial rangeをretained blockからmergeし、中間blockを含むrequest全体をbatchへ渡す。
+    inode切替のcheckpoint完了後に旧blockを個別retirement transactionで解放する。
+  - smoke testは3-block fileを作成し、3 blockに跨るpartial/full/partial payload、全reference切替、payload保持、
+    retirement後のfsckを検証する。
+- 完了条件:
+  - crash前には旧references、journal publication後には全new referencesとして回復し、混在状態を公開しない。
+  - 同一bitmap wordへ複数割当した場合も全bitとsummary/free-block counterが一致する。
+  - file growth、hole、12 direct blocks外、indirect writeは引き続き拒否する。
+
 ---
 
 ## 次に着手する候補
 
-1. 既存direct blockだけで完結するmulti-block overwriteを単一transactionへまとめ、全data COW publication後に
-   inode referencesをatomicに切り替える。file growth、indirect write、`create`は引き続き別slice。
+1. atomic multi-block overwriteをjournal publication、metadata apply、checkpoint copy、journal reclaimの各中断点で
+   実FUSE検証し、旧または新の全referencesへexactly-once回復することを診断出力とoffline readbackで確認する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の
