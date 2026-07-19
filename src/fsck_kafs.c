@@ -1509,7 +1509,7 @@ static int fsck_dir_v4_load_file(kafs_context_t *ctx, const kafs_sinode_t *inoen
                                  char **out_buf)
 {
   *out_buf = NULL;
-  if (size <= 0)
+  if (size == 0)
     return 0;
 
   char *buf = (char *)malloc((size_t)size);
