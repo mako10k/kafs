@@ -597,10 +597,11 @@ static int seed_full_root_directory(const char *path, const char *next_name,
   kafs_v7_inode_t root;
   if (rc == 0)
     rc = read_inode(fd, &report, KAFS_INO_ROOTDIR, &root);
-  uint64_t logical[2] = {0u, 0u};
+  uint64_t logical[KAFS_V7_INODE_DIRECT_REFERENCE_COUNT] = {0};
   if (rc == 0)
   {
-    if (expected_blocks == 0u || expected_blocks > 2u || le32toh(root.blocks) != expected_blocks)
+    if (expected_blocks == 0u || expected_blocks > KAFS_V7_INODE_DIRECT_REFERENCE_COUNT ||
+        le32toh(root.blocks) != expected_blocks)
       rc = -EINVAL;
   }
   for (uint32_t i = 0u; rc == 0 && i < expected_blocks; ++i)
@@ -618,7 +619,7 @@ static int seed_full_root_directory(const char *path, const char *next_name,
   uint8_t *block = rc == 0 ? malloc(payload_bytes) : NULL;
   if (rc == 0 && !block)
     rc = -ENOMEM;
-  uint64_t physical_off[2] = {0u, 0u};
+  uint64_t physical_off[KAFS_V7_INODE_DIRECT_REFERENCE_COUNT] = {0};
   const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(&report);
   for (uint32_t block_id = 0u; rc == 0 && block_id < expected_blocks; ++block_id)
   {
@@ -1362,7 +1363,7 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
 
 static int check_controlled_create_recovery(const char *image, kafs_v7_test_fault_point_t fault,
                                             const char *scenario, const char *relative_path,
-                                            uint64_t mutation_count)
+                                            uint64_t mutation_count, uint64_t preapplied_count)
 {
   char crash_log[PATH_MAX];
   char recovery_log[PATH_MAX];
@@ -1404,14 +1405,17 @@ static int check_controlled_create_recovery(const char *image, kafs_v7_test_faul
     rc = -1;
   else
   {
-    struct stat st;
+    struct stat st = {0};
     snprintf(created_path, sizeof(created_path), "mnt-create-recovery/%s", relative_path);
     if (stat(created_path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size != 0)
+    {
+      fprintf(stderr, "create recovery readback mismatch path=%s errno=%d mode=%o size=%jd\n",
+              relative_path, errno, (unsigned)st.st_mode, (intmax_t)st.st_size);
       rc = -1;
+    }
     kafs_test_stop_kafs("mnt-create-recovery", pid);
   }
-  if (rc == 0 &&
-      check_recovery_log(recovery_log, fault, mutation_count, mutation_count > 2u ? 1u : 0u) != 0)
+  if (rc == 0 && check_recovery_log(recovery_log, fault, mutation_count, preapplied_count) != 0)
     rc = -1;
   if (rc == 0 && run_fsck(image) != 0)
     rc = -1;
@@ -1453,6 +1457,89 @@ static int check_controlled_create_success(const char *image, const char *relati
   return rc;
 }
 
+static int build_direct_directory_fixture(const char *source_image, const char *fixture_image,
+                                          uint32_t target_blocks)
+{
+  if (target_blocks == 0u || target_blocks > KAFS_V7_INODE_DIRECT_REFERENCE_COUNT)
+    return -EINVAL;
+  int rc = copy_image(source_image, fixture_image);
+  for (uint32_t blocks = 1u; rc == 0 && blocks < target_blocks; ++blocks)
+  {
+    char name[32];
+    snprintf(name, sizeof(name), "fixture-grow-%u", blocks);
+    rc = seed_full_root_directory(fixture_image, name, blocks);
+    if (rc == 0)
+      rc = check_controlled_create_success(fixture_image, name);
+  }
+  return rc;
+}
+
+static int read_root_state(const char *image, kafs_v7_inode_t *root, uint64_t *free_blocks,
+                           uint64_t *free_inodes)
+{
+  int fd = open(image, O_RDONLY);
+  if (fd < 0)
+    return -errno;
+  kafs_ssuperblock_t sb;
+  uint64_t file_size = 0u;
+  kafs_v7_layout_report_t report = {0};
+  int rc = validate_image_fd(fd, &sb, &file_size, &report);
+  if (rc == 0)
+    rc = read_inode(fd, &report, KAFS_INO_ROOTDIR, root);
+  if (rc == 0)
+  {
+    *free_blocks = report.free_blocks;
+    *free_inodes = report.free_inodes;
+  }
+  kafs_v7_layout_report_clear(&report);
+  close(fd);
+  return rc;
+}
+
+static int check_controlled_create_limit_rejection(const char *image, const char *relative_path)
+{
+  kafs_v7_inode_t before;
+  uint64_t before_free_blocks = 0u;
+  uint64_t before_free_inodes = 0u;
+  int rc = read_root_state(image, &before, &before_free_blocks, &before_free_inodes);
+  kafs_test_mount_options_t options = {
+      .log_path = "v7-create-limit-rejection.log",
+      .extra_options = "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
+      .timeout_ms = 15000,
+  };
+  pid_t pid = rc == 0
+                  ? kafs_test_start_kafs_v7_controlled_write(image, "mnt-create-limit", &options)
+                  : -1;
+  if (pid <= 0)
+    rc = -1;
+  char created_path[PATH_MAX];
+  snprintf(created_path, sizeof(created_path), "mnt-create-limit/%s", relative_path);
+  if (rc == 0)
+  {
+    int fd = open(created_path, O_WRONLY | O_CREAT | O_EXCL, 0640);
+    if (fd >= 0 || errno != ENOSPC)
+      rc = -1;
+    if (fd >= 0)
+      close(fd);
+  }
+  if (pid > 0)
+    kafs_test_stop_kafs("mnt-create-limit", pid);
+
+  kafs_v7_inode_t after;
+  uint64_t after_free_blocks = 0u;
+  uint64_t after_free_inodes = 0u;
+  if (rc == 0)
+    rc = read_root_state(image, &after, &after_free_blocks, &after_free_inodes);
+  if (rc == 0 && (memcmp(&before, &after, sizeof(before)) != 0 ||
+                  before_free_blocks != after_free_blocks || before_free_inodes != after_free_inodes))
+    rc = -1;
+  if (rc == 0)
+    rc = run_fsck(image);
+  if (rc != 0)
+    kafs_test_dump_log(options.log_path, "v7 direct-limit rejection failed");
+  return rc;
+}
+
 typedef struct create_recovery_case
 {
   const char *transition;
@@ -1461,6 +1548,7 @@ typedef struct create_recovery_case
   const char *fill_for_name;
   uint32_t fill_block_count;
   uint64_t mutation_count;
+  uint64_t preapplied_count;
 } create_recovery_case_t;
 
 static int run_create_recovery_case(const create_recovery_case_t *test,
@@ -1475,7 +1563,8 @@ static int run_create_recovery_case(const create_recovery_case_t *test,
     rc = seed_full_root_directory(recovery_image, test->fill_for_name, test->fill_block_count);
   if (rc == 0)
     rc = check_controlled_create_recovery(recovery_image, fault, test->transition,
-                                          test->relative_path, test->mutation_count);
+                                          test->relative_path, test->mutation_count,
+                                          test->preapplied_count);
   if (rc != 0)
     fprintf(stderr, "v7 controlled create recovery failed transition=%s fault=%s\n",
             test->transition, kafs_v7_test_fault_name(fault));
@@ -1660,11 +1749,31 @@ int main(void)
     fprintf(stderr, "v7 controlled direct-interior growth setup failed\n");
     return 1;
   }
+  const char *direct_limit_minus_one = "v7-direct-limit-minus-one.img";
+  const char *direct_limit_minus_one_full = "v7-direct-limit-minus-one-full.img";
+  const char *direct_limit = "v7-direct-limit.img";
+  const char *direct_limit_full = "v7-direct-limit-full.img";
+  if (build_direct_directory_fixture(image, direct_limit_minus_one,
+                                     KAFS_V7_INODE_DIRECT_REFERENCE_COUNT - 1u) != 0 ||
+      copy_image(direct_limit_minus_one, direct_limit_minus_one_full) != 0 ||
+      seed_full_root_directory(direct_limit_minus_one_full, "limit-growth",
+                               KAFS_V7_INODE_DIRECT_REFERENCE_COUNT - 1u) != 0 ||
+      copy_image(direct_limit_minus_one_full, direct_limit) != 0 ||
+      check_controlled_create_success(direct_limit, "limit-growth") != 0 ||
+      copy_image(direct_limit, direct_limit_full) != 0 ||
+      seed_full_root_directory(direct_limit_full, "limit-rejected",
+                               KAFS_V7_INODE_DIRECT_REFERENCE_COUNT) != 0 ||
+      check_controlled_create_limit_rejection(direct_limit_full, "limit-rejected") != 0)
+  {
+    fprintf(stderr, "v7 controlled direct-limit setup failed\n");
+    return 1;
+  }
   const create_recovery_case_t create_cases[] = {
       {.transition = "direct-append",
        .source_image = image,
        .relative_path = "recovered",
-       .mutation_count = 4u},
+       .mutation_count = 4u,
+       .preapplied_count = 1u},
       {.transition = "inline-append",
        .source_image = image,
        .relative_path = "nested/y",
@@ -1672,24 +1781,41 @@ int main(void)
       {.transition = "inline-growth",
        .source_image = image,
        .relative_path = "nested/grow",
-       .mutation_count = 4u},
+       .mutation_count = 4u,
+       .preapplied_count = 1u},
       {.transition = "direct-growth-min",
        .source_image = image,
        .relative_path = "expanded",
        .fill_for_name = "expanded",
        .fill_block_count = 1u,
-       .mutation_count = 4u},
+       .mutation_count = 4u,
+       .preapplied_count = 1u},
       {.transition = "direct-append-interior",
        .source_image = direct_min_growth,
        .relative_path = "appended",
-       .mutation_count = 4u},
+       .mutation_count = 4u,
+       .preapplied_count = 1u},
       {.transition = "direct-growth-interior",
        .source_image = direct_interior_full,
        .relative_path = "third",
-       .mutation_count = 4u},
+       .mutation_count = 4u,
+       .preapplied_count = 1u},
       {.transition = "direct-append-interior",
        .source_image = direct_interior_growth,
        .relative_path = "third-append",
+       .mutation_count = 4u,
+       .preapplied_count = 1u},
+      {.transition = "direct-append-limit-minus-one",
+       .source_image = direct_limit_minus_one,
+       .relative_path = "limit-minus-one-append",
+       .mutation_count = 4u},
+      {.transition = "direct-growth-limit-minus-one",
+       .source_image = direct_limit_minus_one_full,
+       .relative_path = "limit-growth",
+       .mutation_count = 4u},
+      {.transition = "direct-append-limit",
+       .source_image = direct_limit,
+       .relative_path = "limit-append",
        .mutation_count = 4u},
   };
   for (size_t i = 0u; i < sizeof(create_faults) / sizeof(create_faults[0]); ++i)
