@@ -259,7 +259,9 @@ int kafs_v7_runtime_transaction_commit(kafs_v7_runtime_transaction_service_t *se
   return rc;
 }
 
-static void kafs_v7_runtime_data_cow_advance_cursor(kafs_v7_runtime_data_cow_t *operation);
+static void kafs_v7_runtime_data_cow_advance_cursor(kafs_v7_runtime_transaction_service_t *service,
+                                                    const kafs_v7_layout_report_t *layout,
+                                                    const kafs_v7_data_cow_plan_t *plan);
 
 static void kafs_v7_runtime_data_cow_release(kafs_v7_runtime_data_cow_t *operation)
 {
@@ -356,23 +358,26 @@ int kafs_v7_runtime_data_cow_stage(kafs_v7_runtime_data_cow_t *operation, const 
     operation->staged_data = verified;
     operation->staged_crc32 = kafs_v7_crc32(verified, data_bytes);
     operation->staged = 1u;
-    kafs_v7_runtime_data_cow_advance_cursor(operation);
+    kafs_v7_runtime_data_cow_advance_cursor(operation->service, &operation->layout,
+                                            &operation->plan);
     verified = NULL;
   }
   free(verified);
   return rc;
 }
 
-static void kafs_v7_runtime_data_cow_advance_cursor(kafs_v7_runtime_data_cow_t *operation)
+static void kafs_v7_runtime_data_cow_advance_cursor(kafs_v7_runtime_transaction_service_t *service,
+                                                    const kafs_v7_layout_report_t *layout,
+                                                    const kafs_v7_data_cow_plan_t *plan)
 {
-  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(&operation->layout);
-  const kafs_v7_group_desc_t *group = &groups[operation->plan.group_id];
+  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(layout);
+  const kafs_v7_group_desc_t *group = &groups[plan->group_id];
   uint64_t start = le64toh(group->data_logical_start);
   uint64_t count = le64toh(group->data_logical_count);
-  uint64_t next = operation->plan.logical_block + 1u;
+  uint64_t next = plan->logical_block + 1u;
   if (next < start || next - start >= count)
     next = start;
-  operation->service->allocation_cursors[operation->plan.group_id] = next;
+  service->allocation_cursors[plan->group_id] = next;
 }
 
 static int kafs_v7_runtime_data_cow_patch_references(const kafs_v7_journal_patch_t *patch,
@@ -568,7 +573,7 @@ int kafs_v7_runtime_data_cow_batch_prepare(kafs_v7_runtime_transaction_service_t
                                            kafs_v7_runtime_data_cow_batch_t **operation_out,
                                            kafs_v7_runtime_data_cow_plan_t *plans_out)
 {
-  if (!service || !requests || request_count < 2u || !operation_out || !plans_out ||
+  if (!service || !requests || request_count == 0u || !operation_out || !plans_out ||
       request_count > 64u || request_count > SIZE_MAX / sizeof(kafs_v7_data_cow_plan_request_t) ||
       request_count > SIZE_MAX / sizeof(kafs_v7_data_cow_plan_t) ||
       request_count > SIZE_MAX / sizeof(uint8_t *))
@@ -635,11 +640,6 @@ int kafs_v7_runtime_data_cow_batch_prepare(kafs_v7_runtime_transaction_service_t
         .retained_logical_block = operation->plans[i].retained_logical_block,
     };
   }
-  const kafs_v7_group_desc_t *group = &kafs_v7_report_groups(&operation->layout)[group_id];
-  uint64_t start = le64toh(group->data_logical_start);
-  uint64_t count = le64toh(group->data_logical_count);
-  uint64_t next = operation->plans[request_count - 1u].logical_block + 1u;
-  service->allocation_cursors[group_id] = next >= start && next - start < count ? next : start;
   *operation_out = operation;
   return 0;
 }
@@ -656,7 +656,10 @@ int kafs_v7_runtime_data_cow_batch_stage(kafs_v7_runtime_data_cow_batch_t *opera
     return -ENOMEM;
   int rc = kafs_v7_data_cow_stage_fd(operation->service->fd, plan, data, data_bytes, verified);
   if (rc == 0)
+  {
     operation->staged_data[plan_index] = verified;
+    kafs_v7_runtime_data_cow_advance_cursor(operation->service, &operation->layout, plan);
+  }
   else
     free(verified);
   return rc;
