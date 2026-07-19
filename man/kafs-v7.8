@@ -41,11 +41,11 @@ reported by
 .PP
 Controlled-write admission opens the image read-write and requires the explicit
 safe option set shown in the synopsis.  It permits only overwrites of existing,
-allocated direct blocks in regular files.  A request may replace a full block
-or a byte range wholly contained in one block and the current file size.
-Partial requests use read-modify-COW, publish the full replacement block and
-inode reference through the v7 journal, checkpoint it, and retire the old
-block.  Full
+allocated direct blocks in regular files.  A request may span multiple existing
+direct blocks while remaining within the current file size.  Partial first and
+last blocks use read-modify-COW.  All replacement blocks and inode references
+are published in one v7 journal transaction, checkpointed, and then the old
+blocks are retired.  Full
 .BR fsync (2)
 is required for the supported durability contract.
 .PP
@@ -100,9 +100,9 @@ Alias for FUSE
 Inline form of
 .BR --option .
 .SH CURRENT LIMITS
-File growth, holes, block-boundary-spanning or multi-block requests, indirect
-blocks, file creation, and other metadata mutations are rejected.  Offline
-repair, cross-group HRL mutation, and hotplug write delegation are not enabled.
+File growth, holes, requests beyond the twelve direct blocks, indirect blocks,
+file creation, and other metadata mutations are rejected.  Offline repair,
+cross-group HRL mutation, and hotplug write delegation are not enabled.
 .SH EXIT STATUS
 .TP
 .B 0

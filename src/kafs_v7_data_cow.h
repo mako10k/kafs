@@ -48,6 +48,8 @@ typedef struct kafs_v7_data_retirement_plan_request
  */
 int kafs_v7_data_cow_plan_fd(int fd, const kafs_v7_data_cow_plan_request_t *request,
                              kafs_v7_data_cow_plan_t *plan);
+int kafs_v7_data_cow_plan_batch_fd(int fd, const kafs_v7_data_cow_plan_request_t *requests,
+                                   size_t request_count, kafs_v7_data_cow_plan_t *plans);
 int kafs_v7_data_retirement_plan_fd(int fd, const kafs_v7_data_retirement_plan_request_t *request,
                                     kafs_v7_data_cow_plan_t *plan);
 void kafs_v7_data_cow_plan_clear(kafs_v7_data_cow_plan_t *plan);

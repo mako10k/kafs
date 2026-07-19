@@ -11,6 +11,7 @@
 
 typedef struct kafs_v7_runtime_transaction_service kafs_v7_runtime_transaction_service_t;
 typedef struct kafs_v7_runtime_data_cow kafs_v7_runtime_data_cow_t;
+typedef struct kafs_v7_runtime_data_cow_batch kafs_v7_runtime_data_cow_batch_t;
 
 typedef struct kafs_v7_runtime_transaction_result
 {
@@ -99,6 +100,19 @@ int kafs_v7_runtime_data_cow_commit(kafs_v7_runtime_data_cow_t **operation,
                                     size_t metadata_patch_count,
                                     kafs_v7_runtime_data_cow_result_t *result);
 int kafs_v7_runtime_data_cow_abort(kafs_v7_runtime_data_cow_t **operation);
+
+int kafs_v7_runtime_data_cow_batch_prepare(kafs_v7_runtime_transaction_service_t *service,
+                                           const kafs_v7_runtime_data_cow_request_t *requests,
+                                           size_t request_count,
+                                           kafs_v7_runtime_data_cow_batch_t **operation,
+                                           kafs_v7_runtime_data_cow_plan_t *plans);
+int kafs_v7_runtime_data_cow_batch_stage(kafs_v7_runtime_data_cow_batch_t *operation,
+                                         size_t plan_index, const void *data, size_t data_bytes);
+int kafs_v7_runtime_data_cow_batch_commit(kafs_v7_runtime_data_cow_batch_t **operation,
+                                          const kafs_v7_journal_patch_t *metadata_patches,
+                                          size_t metadata_patch_count,
+                                          kafs_v7_runtime_transaction_result_t *result);
+int kafs_v7_runtime_data_cow_batch_abort(kafs_v7_runtime_data_cow_batch_t **operation);
 
 /*
  * Retire one allocated, unreferenced direct-only block after first closing any
