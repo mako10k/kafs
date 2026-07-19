@@ -3307,11 +3307,24 @@
   - directory block allocation、親表現変換、子inode、free countersの一部だけが可視にならない。
   - 初期境界はinlineから1 direct blockへの変換とし、満杯のdirect directoryを複数blockへ伸長する処理は未対応とする。
 
+### SDW-V7RT-T41 one-to-two-block directory growth on create
+
+- 目的: record余地のない1-block direct directoryを2 direct blocksへ伸長し、createとatomicに公開する。
+- 変更:
+  - 既存directory blockを置換するCOWと2番目の新規block割当をsame-group batchでstageし、親inodeの2 references、
+    size/blocks、同group子inodeをallocator bitmap/summaryと同じtransactionでpublishする。
+  - covering checkpoint後に旧directory blockのみをretireし、新しい2 blocksは親inodeから連続snapshotとして参照する。
+  - 実FUSE recovery smokeは1-block fixtureをtombstone recordsで満たし、journal publish、metadata apply、
+    checkpoint copyの各中断点から新entry、子inode、free counters、offline fsckが収束することを検証する。
+- 完了条件:
+  - 2つのdata block、親inode、子inode、allocator stateの部分的なvisibilityを残さない。
+  - 初期境界は1 blockから2 blocksへの成長に限定し、既存2-block directoryへの追記と追加成長は未対応とする。
+
 ---
 
 ## 次に着手する候補
 
-1. M8-Bの次sliceとして、満杯の1-block direct directoryを2 blocksへ伸長し、directory growthとcreateを
+1. M8-Bの次sliceとして、既存2-block direct directoryの空き領域へrecordを追記し、2-block COWとcreateを
    1 transactionへ載せる。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの

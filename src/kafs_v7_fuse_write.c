@@ -520,55 +520,86 @@ int kafs_v7_fuse_create_in_direct_directory(kafs_context_t *ctx, kafs_inocnt_t p
   if (rc == 0)
     rc = kafs_pread_all(ctx->c_fd, block, plan.block_size, (off_t)physical_off);
 
-  kafs_v7_kdir_header_t *header = (kafs_v7_kdir_header_t *)block;
-  size_t used = 0u;
-  size_t record_bytes = KAFS_V7_KDIR_RECORD_PREFIX_BYTES + name_bytes;
-  if (rc == 0 && (le32toh(header->magic) != KAFS_V7_KDIR_MAGIC ||
-                  le16toh(header->version) != KAFS_V7_KDIR_VERSION))
-    rc = -EUCLEAN;
+  size_t new_size = 0u;
   if (rc == 0)
+    rc = kafs_v7_fuse_directory_append(block, plan.block_size, name, name_bytes, ino, &new_size);
+  if (rc == -ENOSPC)
   {
-    used = KAFS_V7_KDIR_HEADER_BYTES + le32toh(header->record_bytes);
-    if (used > plan.block_size || record_bytes > plan.block_size - used)
-      rc = -ENOSPC;
-  }
-  for (size_t offset = KAFS_V7_KDIR_HEADER_BYTES; rc == 0 && offset < used;)
-  {
-    if (used - offset < KAFS_V7_KDIR_RECORD_PREFIX_BYTES)
+    rc = kafs_v7_runtime_data_cow_abort(&operation);
+    size_t grown_bytes = (size_t)plan.block_size * 2u;
+    uint8_t *grown = rc == 0 ? realloc(block, grown_bytes) : NULL;
+    if (rc == 0 && !grown)
+      rc = -ENOMEM;
+    if (grown)
+      block = grown;
+    if (rc == 0)
     {
-      rc = -EUCLEAN;
-      break;
+      memset(block + plan.block_size, 0, plan.block_size);
+      rc = kafs_v7_fuse_directory_append(block, grown_bytes, name, name_bytes, ino, &new_size);
     }
-    const kafs_v7_kdir_record_t *existing = (const kafs_v7_kdir_record_t *)(block + offset);
-    size_t existing_bytes = le16toh(existing->record_length);
-    size_t existing_name_bytes = le16toh(existing->name_bytes);
-    if (existing_bytes < KAFS_V7_KDIR_RECORD_PREFIX_BYTES || existing_bytes > used - offset ||
-        existing_name_bytes > existing_bytes - KAFS_V7_KDIR_RECORD_PREFIX_BYTES)
+
+    kafs_v7_runtime_data_cow_request_t requests[2] = {
+        {.group_id = parent_shard->group_id, .retained_logical_block = retained},
+        {.group_id = parent_shard->group_id,
+         .retained_logical_block = KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK},
+    };
+    kafs_v7_runtime_data_cow_batch_t *batch = NULL;
+    kafs_v7_runtime_data_cow_plan_t plans[2];
+    if (rc == 0)
+      rc = kafs_v7_runtime_data_cow_batch_prepare(ctx->c_v7_runtime_transactions, requests, 2u,
+                                                  &batch, plans);
+    for (size_t i = 0u; rc == 0 && i < 2u; ++i)
+      rc = kafs_v7_runtime_data_cow_batch_stage(batch, i, block + i * plan.block_size,
+                                                plan.block_size);
+
+    kafs_v7_inode_t grown_parent;
+    memcpy(&grown_parent, mapped_parent, sizeof(grown_parent));
+    if (rc == 0 && (plans[0].logical_block >= UINT32_MAX || plans[1].logical_block >= UINT32_MAX))
+      rc = -ERANGE;
+    if (rc == 0)
     {
-      rc = -EUCLEAN;
-      break;
+      uint32_t first_reference = htole32((uint32_t)plans[0].logical_block + 1u);
+      uint32_t second_reference = htole32((uint32_t)plans[1].logical_block + 1u);
+      memcpy(grown_parent.inline_or_block_refs, &first_reference, sizeof(first_reference));
+      memcpy(grown_parent.inline_or_block_refs + sizeof(first_reference), &second_reference,
+             sizeof(second_reference));
+      grown_parent.size = htole64(new_size);
+      grown_parent.blocks = htole32(2u);
     }
-    if ((le16toh(existing->flags) & KAFS_V7_KDIR_FLAG_TOMBSTONE) == 0u &&
-        existing_name_bytes == name_bytes && memcmp(existing->name, name, name_bytes) == 0)
-    {
-      rc = -EEXIST;
-      break;
-    }
-    offset += existing_bytes;
+    kafs_v7_journal_patch_t growth_patches[2] = {
+        {.target_type = KAFS_V7_JOURNAL_TARGET_INODE,
+         .logical_index = parent_ino,
+         .patch_bytes = sizeof(grown_parent),
+         .patch = &grown_parent},
+        {.target_type = KAFS_V7_JOURNAL_TARGET_INODE,
+         .logical_index = ino,
+         .patch_bytes = sizeof(child),
+         .patch = &child,
+         .free_inodes_delta = -1},
+    };
+    kafs_v7_runtime_transaction_result_t transaction;
+    if (rc == 0)
+      rc = kafs_v7_runtime_data_cow_batch_commit(&batch, growth_patches, 2u, &transaction);
+    if (batch)
+      (void)kafs_v7_runtime_data_cow_batch_abort(&batch);
+    free(block);
+    if (rc != 0)
+      return rc;
+
+    kafs_v7_runtime_data_retirement_request_t retirement = {
+        .group_id = parent_shard->group_id,
+        .logical_block = retained,
+    };
+    kafs_v7_runtime_data_retirement_result_t retirement_result;
+    int retirement_rc = kafs_v7_runtime_data_retire(ctx->c_v7_runtime_transactions, &retirement,
+                                                    &retirement_result);
+    if (retirement_rc_out)
+      *retirement_rc_out = retirement_rc;
+    *ino_out = ino;
+    return 0;
   }
   if (rc == 0)
-  {
-    kafs_v7_kdir_record_t *record = (kafs_v7_kdir_record_t *)(block + used);
-    memset(record, 0, record_bytes);
-    record->record_length = htole16((uint16_t)record_bytes);
-    record->inode = htole32((uint32_t)ino);
-    record->name_bytes = htole16((uint16_t)name_bytes);
-    record->name_hash = htole32(kafs_v7_fuse_name_hash(name, name_bytes));
-    memcpy(record->name, name, name_bytes);
-    header->live_count = htole32(le32toh(header->live_count) + 1u);
-    header->record_bytes = htole32(le32toh(header->record_bytes) + (uint32_t)record_bytes);
     rc = kafs_v7_runtime_data_cow_stage(operation, block, plan.block_size);
-  }
   free(block);
 
   kafs_v7_inode_t parent;
@@ -579,7 +610,7 @@ int kafs_v7_fuse_create_in_direct_directory(kafs_context_t *ctx, kafs_inocnt_t p
   {
     uint32_t reference = htole32((uint32_t)plan.logical_block + 1u);
     memcpy(parent.inline_or_block_refs, &reference, sizeof(reference));
-    parent.size = htole64(used + record_bytes);
+    parent.size = htole64(new_size);
   }
   kafs_v7_journal_patch_t patches[2] = {
       {.target_type = KAFS_V7_JOURNAL_TARGET_INODE,
