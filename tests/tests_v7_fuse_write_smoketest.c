@@ -199,10 +199,10 @@ static int test_direct_overwrite(void)
   if (rc == 0)
   {
     int boundary_rc =
-        kafs_v7_fuse_write_direct(&ctx, ino, after, 1u, 3u * ctx.c_v7_block_size, NULL);
-    if (boundary_rc != -EFBIG)
+        kafs_v7_fuse_write_direct(&ctx, ino, after, 1u, 3u * ctx.c_v7_block_size + 1u, NULL);
+    if (boundary_rc != -EOPNOTSUPP)
     {
-      fprintf(stderr, "file growth boundary returned %d\n", boundary_rc);
+      fprintf(stderr, "hole write boundary returned %d\n", boundary_rc);
       rc = -1;
     }
   }
@@ -306,6 +306,50 @@ static int test_direct_overwrite(void)
       rc = -1;
     }
   }
+
+  uint8_t *growth = NULL;
+  uint8_t *grown = NULL;
+  size_t growth_size = ctx.c_v7_block_size + 37u;
+  uint64_t growth_offset = 3u * ctx.c_v7_block_size - 13u;
+  if (rc == 0)
+  {
+    growth = malloc(growth_size);
+    grown = calloc(5u, ctx.c_v7_block_size);
+    if (!growth || !grown)
+      rc = -ENOMEM;
+  }
+  if (rc == 0)
+  {
+    memset(growth, 0x6d, growth_size);
+    memcpy(grown, expected, 3u * ctx.c_v7_block_size);
+    memcpy(grown + growth_offset, growth, growth_size);
+    rc = kafs_v7_fuse_write_direct(&ctx, ino, growth, growth_size, growth_offset, &result);
+  }
+  if (rc == (int)growth_size)
+    rc = 0;
+  if (rc != 0)
+    fprintf(stderr, "direct growth failed: %d\n", rc);
+  inode = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(&ctx, ino);
+  uint64_t grown_size = growth_offset + growth_size;
+  if (rc == 0 && (!inode || le64toh(inode->size) != grown_size || le32toh(inode->blocks) != 5u))
+  {
+    fprintf(stderr, "direct growth inode size/block count mismatch\n");
+    rc = -1;
+  }
+  for (uint32_t slot_id = 0; rc == 0 && slot_id < 5u; ++slot_id)
+  {
+    uint64_t logical = get_direct_reference(inode, slot_id);
+    rc = kafs_ctx_v7_data_ref_physical_offset(&ctx, (kafs_blkcnt_t)logical + 1u, &physical_off);
+    if (rc == 0 && memcmp((uint8_t *)image + physical_off,
+                          grown + slot_id * ctx.c_v7_block_size,
+                          ctx.c_v7_block_size) != 0)
+    {
+      fprintf(stderr, "direct growth slot %u payload mismatch\n", slot_id);
+      rc = -1;
+    }
+  }
+  free(growth);
+  free(grown);
   free(multi);
   free(expected);
 
