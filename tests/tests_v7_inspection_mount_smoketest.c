@@ -1453,6 +1453,35 @@ static int check_controlled_create_success(const char *image, const char *relati
   return rc;
 }
 
+typedef struct create_recovery_case
+{
+  const char *transition;
+  const char *source_image;
+  const char *relative_path;
+  const char *fill_for_name;
+  uint32_t fill_block_count;
+  uint64_t mutation_count;
+} create_recovery_case_t;
+
+static int run_create_recovery_case(const create_recovery_case_t *test,
+                                    kafs_v7_test_fault_point_t fault, size_t fault_id,
+                                    size_t case_id)
+{
+  char recovery_image[PATH_MAX];
+  snprintf(recovery_image, sizeof(recovery_image), "v7-create-recovery-%zu-%zu.img", fault_id,
+           case_id);
+  int rc = copy_image(test->source_image, recovery_image);
+  if (rc == 0 && test->fill_for_name)
+    rc = seed_full_root_directory(recovery_image, test->fill_for_name, test->fill_block_count);
+  if (rc == 0)
+    rc = check_controlled_create_recovery(recovery_image, fault, test->transition,
+                                          test->relative_path, test->mutation_count);
+  if (rc != 0)
+    fprintf(stderr, "v7 controlled create recovery failed transition=%s fault=%s\n",
+            test->transition, kafs_v7_test_fault_name(fault));
+  return rc;
+}
+
 static int check_controlled_reclaim_recovery(const char *image)
 {
   int early_exit_status = -1;
@@ -1613,99 +1642,60 @@ int main(void)
       KAFS_V7_TEST_FAULT_METADATA_APPLY,
       KAFS_V7_TEST_FAULT_CHECKPOINT_COPY,
   };
-  const char *two_block_create = "v7-two-block-create.img";
-  if (copy_image(image, two_block_create) != 0 ||
-      seed_full_root_directory(two_block_create, "expanded", 1u) != 0 ||
-      check_controlled_create_success(two_block_create, "expanded") != 0)
+  const char *direct_min_growth = "v7-direct-min-growth.img";
+  if (copy_image(image, direct_min_growth) != 0 ||
+      seed_full_root_directory(direct_min_growth, "expanded", 1u) != 0 ||
+      check_controlled_create_success(direct_min_growth, "expanded") != 0)
   {
-    fprintf(stderr, "v7 controlled two-block create setup failed\n");
+    fprintf(stderr, "v7 controlled direct-min growth setup failed\n");
     return 1;
   }
-  const char *full_two_block_create = "v7-full-two-block-create.img";
-  const char *three_block_create = "v7-three-block-create.img";
-  if (copy_image(two_block_create, full_two_block_create) != 0 ||
-      seed_full_root_directory(full_two_block_create, "third", 2u) != 0 ||
-      copy_image(full_two_block_create, three_block_create) != 0 ||
-      check_controlled_create_success(three_block_create, "third") != 0)
+  const char *direct_interior_full = "v7-direct-interior-full.img";
+  const char *direct_interior_growth = "v7-direct-interior-growth.img";
+  if (copy_image(direct_min_growth, direct_interior_full) != 0 ||
+      seed_full_root_directory(direct_interior_full, "third", 2u) != 0 ||
+      copy_image(direct_interior_full, direct_interior_growth) != 0 ||
+      check_controlled_create_success(direct_interior_growth, "third") != 0)
   {
-    fprintf(stderr, "v7 controlled three-block create setup failed\n");
+    fprintf(stderr, "v7 controlled direct-interior growth setup failed\n");
     return 1;
   }
-  const char *three_block_append = "v7-three-block-append.img";
-  if (copy_image(three_block_create, three_block_append) != 0 ||
-      check_controlled_create_success(three_block_append, "third-append") != 0)
-  {
-    fprintf(stderr, "v7 controlled three-block append setup failed\n");
-    return 1;
-  }
+  const create_recovery_case_t create_cases[] = {
+      {.transition = "direct-append",
+       .source_image = image,
+       .relative_path = "recovered",
+       .mutation_count = 4u},
+      {.transition = "inline-append",
+       .source_image = image,
+       .relative_path = "nested/y",
+       .mutation_count = 2u},
+      {.transition = "inline-growth",
+       .source_image = image,
+       .relative_path = "nested/grow",
+       .mutation_count = 4u},
+      {.transition = "direct-growth-min",
+       .source_image = image,
+       .relative_path = "expanded",
+       .fill_for_name = "expanded",
+       .fill_block_count = 1u,
+       .mutation_count = 4u},
+      {.transition = "direct-append-interior",
+       .source_image = direct_min_growth,
+       .relative_path = "appended",
+       .mutation_count = 4u},
+      {.transition = "direct-growth-interior",
+       .source_image = direct_interior_full,
+       .relative_path = "third",
+       .mutation_count = 4u},
+      {.transition = "direct-append-interior",
+       .source_image = direct_interior_growth,
+       .relative_path = "third-append",
+       .mutation_count = 4u},
+  };
   for (size_t i = 0u; i < sizeof(create_faults) / sizeof(create_faults[0]); ++i)
-  {
-    char create_recovery[PATH_MAX];
-    snprintf(create_recovery, sizeof(create_recovery), "v7-create-recovery-%zu.img", i);
-    if (copy_image(image, create_recovery) != 0 ||
-        check_controlled_create_recovery(create_recovery, create_faults[i], "block", "recovered",
-                                         4u) != 0)
-    {
-      fprintf(stderr, "v7 controlled create recovery failed fault=%s\n",
-              kafs_v7_test_fault_name(create_faults[i]));
-      return 1;
-    }
-    snprintf(create_recovery, sizeof(create_recovery), "v7-inline-create-recovery-%zu.img", i);
-    if (copy_image(image, create_recovery) != 0 ||
-        check_controlled_create_recovery(create_recovery, create_faults[i], "inline", "nested/y",
-                                         2u) != 0)
-    {
-      fprintf(stderr, "v7 controlled inline-parent create recovery failed fault=%s\n",
-              kafs_v7_test_fault_name(create_faults[i]));
-      return 1;
-    }
-    snprintf(create_recovery, sizeof(create_recovery), "v7-growth-create-recovery-%zu.img", i);
-    if (copy_image(image, create_recovery) != 0 ||
-        check_controlled_create_recovery(create_recovery, create_faults[i], "growth", "nested/grow",
-                                         4u) != 0)
-    {
-      fprintf(stderr, "v7 controlled inline-directory growth recovery failed fault=%s\n",
-              kafs_v7_test_fault_name(create_faults[i]));
-      return 1;
-    }
-    snprintf(create_recovery, sizeof(create_recovery), "v7-direct-growth-recovery-%zu.img", i);
-    if (copy_image(image, create_recovery) != 0 ||
-        seed_full_root_directory(create_recovery, "expanded", 1u) != 0 ||
-        check_controlled_create_recovery(create_recovery, create_faults[i], "direct-growth",
-                                         "expanded", 4u) != 0)
-    {
-      fprintf(stderr, "v7 controlled direct-directory growth recovery failed fault=%s\n",
-              kafs_v7_test_fault_name(create_faults[i]));
-      return 1;
-    }
-    snprintf(create_recovery, sizeof(create_recovery), "v7-two-block-append-recovery-%zu.img", i);
-    if (copy_image(two_block_create, create_recovery) != 0 ||
-        check_controlled_create_recovery(create_recovery, create_faults[i], "two-block-append",
-                                         "appended", 4u) != 0)
-    {
-      fprintf(stderr, "v7 controlled two-block directory append recovery failed fault=%s\n",
-              kafs_v7_test_fault_name(create_faults[i]));
-      return 1;
-    }
-    snprintf(create_recovery, sizeof(create_recovery), "v7-three-block-growth-recovery-%zu.img", i);
-    if (copy_image(full_two_block_create, create_recovery) != 0 ||
-        check_controlled_create_recovery(create_recovery, create_faults[i], "three-block-growth",
-                                         "third", 4u) != 0)
-    {
-      fprintf(stderr, "v7 controlled three-block directory growth recovery failed fault=%s\n",
-              kafs_v7_test_fault_name(create_faults[i]));
-      return 1;
-    }
-    snprintf(create_recovery, sizeof(create_recovery), "v7-three-block-append-recovery-%zu.img", i);
-    if (copy_image(three_block_create, create_recovery) != 0 ||
-        check_controlled_create_recovery(create_recovery, create_faults[i], "three-block-append",
-                                         "third-append", 4u) != 0)
-    {
-      fprintf(stderr, "v7 controlled three-block directory append recovery failed fault=%s\n",
-              kafs_v7_test_fault_name(create_faults[i]));
-      return 1;
-    }
-  }
+    for (size_t j = 0u; j < sizeof(create_cases) / sizeof(create_cases[0]); ++j)
+      if (run_create_recovery_case(&create_cases[j], create_faults[i], i, j) != 0)
+        return 1;
 
   const char *degraded = "v7-degraded.img";
   if (copy_image(image, degraded) != 0 || corrupt_primary_pair(degraded) != 0)
