@@ -117,10 +117,11 @@ Controlled-write mounts support shrinking existing direct-only regular files
 through truncate, ftruncate, and write-access opens using O_TRUNC.  Truncate
 growth is rejected.
 Empty regular-file creation is supported when the parent occupies one direct
-block with record space and a free inode exists in the same group.  Directory
+block or is inline, has record space, and a free inode exists in the same
+group.  Directory
 Files up to 60 bytes remain inline and may be written through the create
 handle.  Inline-to-block conversion is not supported.  Directory
-growth, inline parents, cross-group allocation, holes, requests beyond the
+growth, cross-group allocation, holes, requests beyond the
 twelve direct blocks, indirect blocks, and other metadata mutations are
 rejected.  Offline repair,
 cross-group HRL mutation, and hotplug write delegation are not enabled.

@@ -3280,12 +3280,26 @@
   - create成功後のhandleが直ちにinline write可能で、block referenceをinline payloadとして誤読しない。
   - 各中断点からcreate全体が復旧し、部分的なdirectory/inode visibilityを残さない。
 
+### SDW-V7RT-T39 inline-parent create and generic publish interruption
+
+- 目的: inline directoryへのcreateをinode-only transactionで成立させ、汎用transactionの中断モデルをCOWと揃える。
+- 変更:
+  - blocks 0かつsize 60 bytes以下の親directoryはinline payloadへrecordを追記し、親inodeと同group子inodeの
+    2 patchesをatomic commitする。inode allocation lockで同group free-inode選択も直列化する。
+  - 汎用`runtime_transaction_commit`へjournal publish直後のfault hookを追加し、COW以外のinode-only transactionも
+    durable publish時点で同じpower-interruption試験を受ける。
+  - 実FUSE smokeはinline parent通常createと、2-mutation transactionのjournal publish、metadata apply、
+    checkpoint copy中断回復を検証する。
+- 完了条件:
+  - inline directory record、子inode、free-inode counterがatomicに可視化される。
+  - block-backed/inline parentの両create recoveryが全closeout中断点からfsck cleanへ収束する。
+
 ---
 
 ## 次に着手する候補
 
-1. M8-Bの次sliceとして、inline parent directoryへのrecord追加をinode-only transactionへ載せ、inline/full-block
-   directory両方のcreate placementを揃える。
+1. M8-Bの次sliceとして、record余地のないinline parentを1 direct blockへCOW変換し、directory growthとcreateを
+   1 transactionへ載せる。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の

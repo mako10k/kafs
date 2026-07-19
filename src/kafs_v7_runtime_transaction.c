@@ -253,6 +253,8 @@ int kafs_v7_runtime_transaction_commit(kafs_v7_runtime_transaction_service_t *se
   memset(result, 0, sizeof(*result));
   int rc = kafs_v7_runtime_transaction_publish(service, patches, patch_count, result);
   if (rc == 0)
+    kafs_v7_test_fault_maybe_crash(KAFS_V7_TEST_FAULT_JOURNAL_PUBLISH);
+  if (rc == 0)
     rc = kafs_v7_runtime_transaction_closeout(service, result);
   return rc;
 }
