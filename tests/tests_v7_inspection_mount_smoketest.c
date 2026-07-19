@@ -927,6 +927,9 @@ static int check_persisted_blocks(const char *image, uint32_t ino, const void *e
   kafs_v7_inode_t inode;
   if (rc == 0)
     rc = read_inode(fd, &report, ino, &inode);
+  if (rc == 0 && (le64toh(inode.size) != (uint64_t)block_size * block_count ||
+                  le32toh(inode.blocks) != block_count))
+    rc = -EUCLEAN;
   uint8_t *actual = rc == 0 ? malloc((size_t)block_size * block_count) : NULL;
   if (rc == 0 && !actual)
     rc = -ENOMEM;
@@ -992,13 +995,13 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
   char path[PATH_MAX];
   snprintf(path, sizeof(path), "%s/block", mnt);
   int fd = open(path, O_RDWR);
-  uint8_t *payload = malloc(3u * block_size);
+  uint8_t *payload = malloc(4u * block_size);
   int rc = fd < 0 || !payload ? -1 : 0;
-  const uint32_t patch_offset = 0u;
-  const uint32_t patch_bytes = 3u * block_size;
+  const uint32_t patch_offset = 3u * block_size;
+  const uint32_t patch_bytes = block_size;
   if (rc == 0)
   {
-    memset(payload, 0, 3u * block_size);
+    memset(payload, 0, 4u * block_size);
     memcpy(payload, k_block_payload, strlen(k_block_payload));
     for (uint32_t i = 0; i < patch_bytes; ++i)
       payload[patch_offset + i] = (uint8_t)(i * 29u + 7u);
@@ -1027,7 +1030,7 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
 
   if (rc == 0 && run_fsck(image) != 0)
     rc = -1;
-  if (rc == 0 && check_persisted_blocks(image, ino, payload, block_size, 3u) != 0)
+  if (rc == 0 && check_persisted_blocks(image, ino, payload, block_size, 4u) != 0)
     rc = -1;
   if (rc == 0)
   {
@@ -1042,7 +1045,7 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
     else
     {
       snprintf(path, sizeof(path), "%s/block", "mnt-controlled-remount");
-      if (read_block_equals(path, payload, 3u * block_size) != 0)
+      if (read_block_equals(path, payload, 4u * block_size) != 0)
         rc = -1;
       kafs_test_stop_kafs("mnt-controlled-remount", pid);
     }
@@ -1073,21 +1076,21 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
   if (pid <= 0)
     return -1;
 
-  uint8_t *payload = malloc(3u * block_size);
-  uint8_t *patch = malloc(3u * block_size);
-  const uint32_t patch_offset = 0u;
+  uint8_t *payload = malloc(4u * block_size);
+  uint8_t *patch = malloc(block_size);
+  const uint32_t patch_offset = 3u * block_size;
   char path[PATH_MAX];
   snprintf(path, sizeof(path), "%s/block", mnt);
   int fd = open(path, O_RDWR);
   int rc = fd < 0 || !payload || !patch ? -1 : 0;
   if (rc == 0)
   {
-    memset(payload, 0, 3u * block_size);
+    memset(payload, 0, 4u * block_size);
     memcpy(payload, k_block_payload, strlen(k_block_payload));
-    for (uint32_t i = 0; i < 3u * block_size; ++i)
+    for (uint32_t i = 0; i < block_size; ++i)
       patch[i] = (uint8_t)(i * 37u + seed);
-    memcpy(payload + patch_offset, patch, 3u * block_size);
-    if (pwrite(fd, patch, 3u * block_size, patch_offset) >= 0)
+    memcpy(payload + patch_offset, patch, block_size);
+    if (pwrite(fd, patch, block_size, patch_offset) >= 0)
       rc = -1;
   }
   if (fd >= 0)
@@ -1119,7 +1122,7 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
             kafs_v7_test_fault_name(fault));
     rc = -1;
   }
-  if (rc == 0 && check_persisted_blocks(image, ino, payload, block_size, 3u) != 0)
+  if (rc == 0 && check_persisted_blocks(image, ino, payload, block_size, 4u) != 0)
   {
     fprintf(stderr, "multi-block recovery payload failed fault=%s\n",
             kafs_v7_test_fault_name(fault));

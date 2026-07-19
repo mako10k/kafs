@@ -3208,12 +3208,28 @@
   - inspection modeは書き込みatomicityをadvertiseしない。
   - kernelがさらに小さい上限を提示した場合はその値を尊重する。
 
+### SDW-V7RT-T34 bounded direct growth
+
+- 目的: 既存regular inodeを12 direct blocks内で連続的に拡張し、追加block allocationとinode size更新を
+  overwriteと同じatomic COW transactionへ載せる。
+- 変更:
+  - write開始位置を現在EOF以下に限定したままrequest endのgrowthを許可し、既存block間のholeとEOFより先から
+    始まるwriteは拒否する。
+  - 未割当の次direct slotsはzero-filled full blockとしてstageし、new references、inode size、blocks、allocator
+    bitmap/summary/free counterを同じsingle/batch transactionでpublishする。
+  - low-level smokeは既存末尾から未割当2 blocksへ跨るgrowthを検証し、実FUSE smokeと全4 interruption caseは
+    EOFへの1-block append、full fsync、recovery diagnostics、size/blocks、offline payload、fsckを検証する。
+- 完了条件:
+  - request外の新規block領域はzeroで、追加block数とinode blocks/free-block counterが一致する。
+  - crash recovery後にold sizeまたはnew sizeの混在しないtransaction stateへ収束する。
+  - hole、12 direct blocks外、indirect growth、truncateは引き続き拒否する。
+
 ---
 
 ## 次に着手する候補
 
-1. M6.1完了後の判断点として、bounded direct-overwrite surfaceを実媒体RC qualificationへ進めるか、
-   M8-Aの既存inode growth・追加direct block allocationを先に実装するかを決定する。
+1. M8-Aの次sliceとして、direct file truncateをdata retirementと同じcheckpoint contractへ接続し、partial-tail
+   zeroing、whole-block release、全closeout中断点からのrecoveryを検証する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の

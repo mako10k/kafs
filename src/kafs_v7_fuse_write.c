@@ -31,10 +31,13 @@ static int kafs_v7_fuse_write_validate(const kafs_context_t *ctx, kafs_inocnt_t 
     return -EOPNOTSUPP;
 
   uint64_t file_size = le64toh(inode->size);
-  if (offset > file_size || size > file_size - offset)
+  if (offset > file_size)
+    return -EOPNOTSUPP;
+  if (size > UINT64_MAX - offset)
     return -EFBIG;
+  uint64_t request_end = offset + size;
   uint64_t first_slot = offset / ctx->c_v7_block_size;
-  uint64_t last_slot = (offset + size - 1u) / ctx->c_v7_block_size;
+  uint64_t last_slot = (request_end - 1u) / ctx->c_v7_block_size;
   if (first_slot >= 12u || last_slot >= 12u)
     return -EOPNOTSUPP;
 
@@ -46,8 +49,15 @@ static int kafs_v7_fuse_write_validate(const kafs_context_t *ctx, kafs_inocnt_t 
            sizeof(reference));
     reference = le32toh(reference);
     if (reference == 0u)
-      return -EOPNOTSUPP;
-    retained[i] = (uint64_t)reference - 1u;
+    {
+      uint64_t slot = first_slot + i;
+      uint64_t existing_slots = file_size == 0u ? 0u : (file_size - 1u) / ctx->c_v7_block_size + 1u;
+      if (slot < existing_slots)
+        return -EOPNOTSUPP;
+      retained[i] = KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK;
+    }
+    else
+      retained[i] = (uint64_t)reference - 1u;
   }
 
   *inode_out = inode;
@@ -95,11 +105,16 @@ int kafs_v7_fuse_write_direct(kafs_context_t *ctx, kafs_inocnt_t ino, const void
         rc = -ENOMEM;
         break;
       }
-      uint64_t retained_physical_off = 0u;
-      rc = kafs_ctx_v7_data_ref_physical_offset(ctx, (kafs_blkcnt_t)retained[i] + 1u,
-                                                &retained_physical_off);
-      if (rc == 0)
-        rc = kafs_pread_all(ctx->c_fd, block, plans[i].block_size, (off_t)retained_physical_off);
+      if (retained[i] == KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK)
+        memset(block, 0, plans[i].block_size);
+      else
+      {
+        uint64_t retained_physical_off = 0u;
+        rc = kafs_ctx_v7_data_ref_physical_offset(ctx, (kafs_blkcnt_t)retained[i] + 1u,
+                                                  &retained_physical_off);
+        if (rc == 0)
+          rc = kafs_pread_all(ctx->c_fd, block, plans[i].block_size, (off_t)retained_physical_off);
+      }
       uint64_t block_start = ((uint64_t)first_slot + i) * plans[i].block_size;
       uint64_t copy_start = offset > block_start ? offset : block_start;
       uint64_t request_end = offset + size;
@@ -120,6 +135,18 @@ int kafs_v7_fuse_write_direct(kafs_context_t *ctx, kafs_inocnt_t ino, const void
                sizeof(reference));
       }
     }
+    uint64_t request_end = offset + size;
+    uint64_t old_size = le64toh(inode.size);
+    if (rc == 0 && request_end > old_size)
+      inode.size = htole64(request_end);
+    uint32_t added_blocks = 0u;
+    for (size_t i = 0; i < block_count; ++i)
+      if (retained[i] == KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK)
+        ++added_blocks;
+    if (rc == 0 && added_blocks > UINT32_MAX - le32toh(inode.blocks))
+      rc = -EOVERFLOW;
+    if (rc == 0)
+      inode.blocks = htole32(le32toh(inode.blocks) + added_blocks);
     kafs_v7_journal_patch_t inode_patch = {
         .target_type = KAFS_V7_JOURNAL_TARGET_INODE,
         .logical_index = ino,
@@ -136,6 +163,8 @@ int kafs_v7_fuse_write_direct(kafs_context_t *ctx, kafs_inocnt_t ino, const void
     int retirement_rc = 0;
     for (size_t i = 0; i < block_count; ++i)
     {
+      if (retained[i] == KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK)
+        continue;
       kafs_v7_runtime_data_retirement_request_t retirement = {.group_id = group_id,
                                                               .logical_block = retained[i]};
       kafs_v7_runtime_data_retirement_result_t retirement_result;
@@ -172,12 +201,17 @@ int kafs_v7_fuse_write_direct(kafs_context_t *ctx, kafs_inocnt_t ino, const void
     merged = malloc(plan.block_size);
     if (!merged)
       rc = -ENOMEM;
-    uint64_t retained_physical_off = 0u;
-    if (rc == 0)
-      rc = kafs_ctx_v7_data_ref_physical_offset(ctx, (kafs_blkcnt_t)retained_block + 1u,
-                                                &retained_physical_off);
-    if (rc == 0)
-      rc = kafs_pread_all(ctx->c_fd, merged, plan.block_size, (off_t)retained_physical_off);
+    if (rc == 0 && retained_block == KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK)
+      memset(merged, 0, plan.block_size);
+    else
+    {
+      uint64_t retained_physical_off = 0u;
+      if (rc == 0)
+        rc = kafs_ctx_v7_data_ref_physical_offset(ctx, (kafs_blkcnt_t)retained_block + 1u,
+                                                  &retained_physical_off);
+      if (rc == 0)
+        rc = kafs_pread_all(ctx->c_fd, merged, plan.block_size, (off_t)retained_physical_off);
+    }
     if (rc == 0)
     {
       memcpy(merged + offset % plan.block_size, buf, size);
@@ -199,6 +233,16 @@ int kafs_v7_fuse_write_direct(kafs_context_t *ctx, kafs_inocnt_t ino, const void
   {
     uint32_t reference = htole32((uint32_t)plan.logical_block + 1u);
     memcpy(inode.inline_or_block_refs + slot * sizeof(reference), &reference, sizeof(reference));
+    uint64_t request_end = offset + size;
+    if (request_end > le64toh(inode.size))
+      inode.size = htole64(request_end);
+    if (retained_block == KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK)
+    {
+      if (le32toh(inode.blocks) == UINT32_MAX)
+        rc = -EOVERFLOW;
+      else
+        inode.blocks = htole32(le32toh(inode.blocks) + 1u);
+    }
   }
   kafs_v7_journal_patch_t inode_patch = {
       .target_type = KAFS_V7_JOURNAL_TARGET_INODE,
@@ -214,13 +258,17 @@ int kafs_v7_fuse_write_direct(kafs_context_t *ctx, kafs_inocnt_t ino, const void
   if (rc != 0)
     return rc;
 
-  kafs_v7_runtime_data_retirement_request_t retirement = {
-      .group_id = group_id,
-      .logical_block = retained_block,
-  };
-  kafs_v7_runtime_data_retirement_result_t retirement_result;
-  int retirement_rc =
-      kafs_v7_runtime_data_retire(ctx->c_v7_runtime_transactions, &retirement, &retirement_result);
+  int retirement_rc = 0;
+  if (retained_block != KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK)
+  {
+    kafs_v7_runtime_data_retirement_request_t retirement = {
+        .group_id = group_id,
+        .logical_block = retained_block,
+    };
+    kafs_v7_runtime_data_retirement_result_t retirement_result;
+    retirement_rc = kafs_v7_runtime_data_retire(ctx->c_v7_runtime_transactions, &retirement,
+                                                &retirement_result);
+  }
   if (result)
   {
     result->new_logical_block = cow_result.data.logical_block;
