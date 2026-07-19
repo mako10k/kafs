@@ -3174,12 +3174,30 @@
   - 同一bitmap wordへ複数割当した場合も全bitとsummary/free-block counterが一致する。
   - file growth、hole、12 direct blocks外、indirect writeは引き続き拒否する。
 
+### SDW-V7RT-T32 multi-block interruption recovery
+
+- 目的: atomic multi-block direct overwriteを実FUSE経路の全closeout中断点で検証し、回復後に全referencesと
+  payloadが同じtransaction generationへ収束することを確認する。
+- 変更:
+  - inspection fixtureのregular fileを同一groupの3 allocated direct blocksへ拡張し、statfs、read-only mount、
+    offline reference解決を3-block layoutに対応させる。
+  - controlled-write smokeはpage-aligned 3-block requestを発行し、full fsync、offline fsck、全3 referencesの
+    positional readback、inspection remountを検証する。
+  - journal publication、metadata apply、checkpoint copy、journal reclaimの各fault caseを3-block payloadで実行し、
+    recovery diagnostic、fsck、全block readbackを検証する。
+  - `no_writeback_cache`では非整列の大きなapplication writeがkernel FUSE層で複数requestへ分割され得るため、
+    atomicity contractが1 FUSE write request単位であることを明記する。
+- 完了条件:
+  - 各中断点からのadmission recovery後にjournalが空になり、3 referencesすべてがnew blocksを指す。
+  - allocator bitmap/summary/free-block counterと3-block payloadがoffline fsck/readbackで一致する。
+  - request分割を跨ぐapplication syscall全体のatomicityを暗黙に保証しない。
+
 ---
 
 ## 次に着手する候補
 
-1. atomic multi-block overwriteをjournal publication、metadata apply、checkpoint copy、journal reclaimの各中断点で
-   実FUSE検証し、旧または新の全referencesへexactly-once回復することを診断出力とoffline readbackで確認する。
+1. 既存direct blocks内のwrite request分割境界を明示的に観測・制御するmount negotiationを追加し、
+   supported atomic request sizeを起動ログとinspection surfaceへ公開する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の
