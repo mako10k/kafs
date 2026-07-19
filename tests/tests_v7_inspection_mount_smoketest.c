@@ -836,7 +836,8 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
   return rc;
 }
 
-static int check_controlled_write_recovery(const char *image, uint32_t ino, uint32_t block_size)
+static int check_controlled_write_recovery(const char *image, uint32_t ino, uint32_t block_size,
+                                           const char *crash_env, uint8_t seed)
 {
   const char *mnt = "mnt-controlled-crash";
   kafs_test_mount_options_t options = {
@@ -845,10 +846,10 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
           "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
       .timeout_ms = 15000,
   };
-  if (setenv("KAFS_V7_TEST_CRASH_AFTER_JOURNAL_PUBLISH", "1", 1) != 0)
+  if (setenv(crash_env, "1", 1) != 0)
     return -1;
   pid_t pid = kafs_test_start_kafs_v7_controlled_write(image, mnt, &options);
-  unsetenv("KAFS_V7_TEST_CRASH_AFTER_JOURNAL_PUBLISH");
+  unsetenv(crash_env);
   if (pid <= 0)
     return -1;
 
@@ -860,7 +861,7 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
   if (rc == 0)
   {
     for (uint32_t i = 0; i < block_size; ++i)
-      payload[i] = (uint8_t)(i * 37u + 11u);
+      payload[i] = (uint8_t)(i * 37u + seed);
     if (pwrite(fd, payload, block_size, 0) >= 0)
       rc = -1;
   }
@@ -975,9 +976,28 @@ int main(void)
 
   const char *recovery = "v7-controlled-recovery.img";
   if (copy_image(image, recovery) != 0 ||
-      check_controlled_write_recovery(recovery, fixture.block_ino, fixture.block_size) != 0)
+      check_controlled_write_recovery(recovery, fixture.block_ino, fixture.block_size,
+                                      "KAFS_V7_TEST_CRASH_AFTER_JOURNAL_PUBLISH", 11u) != 0)
   {
-    fprintf(stderr, "v7 controlled-write recovery matrix failed\n");
+    fprintf(stderr, "v7 controlled-write journal recovery failed\n");
+    return 1;
+  }
+
+  const char *apply_recovery = "v7-controlled-apply-recovery.img";
+  if (copy_image(image, apply_recovery) != 0 ||
+      check_controlled_write_recovery(apply_recovery, fixture.block_ino, fixture.block_size,
+                                      "KAFS_V7_TEST_CRASH_AFTER_METADATA_APPLY", 13u) != 0)
+  {
+    fprintf(stderr, "v7 controlled-write metadata apply recovery failed\n");
+    return 1;
+  }
+
+  const char *checkpoint_recovery = "v7-controlled-checkpoint-recovery.img";
+  if (copy_image(image, checkpoint_recovery) != 0 ||
+      check_controlled_write_recovery(checkpoint_recovery, fixture.block_ino, fixture.block_size,
+                                      "KAFS_V7_TEST_CRASH_AFTER_CHECKPOINT_COPY", 17u) != 0)
+  {
+    fprintf(stderr, "v7 controlled-write checkpoint recovery failed\n");
     return 1;
   }
 
