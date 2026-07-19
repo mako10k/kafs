@@ -6,6 +6,8 @@ This document holds supplemental guidance that is not mandatory policy.
 - Treat handoff and backlog next steps as candidates. Revalidate current
   evidence and re-derive exit criteria through the `AGENTS.md` Task Start Gate
   before implementation.
+- Recompute the capability dependency path after each wave and state what the
+  chosen wave unlocks before continuing.
 - Batch related shell commands and checkpoint every 3-5 calls.
 - Add a one-line preamble before each tool batch: why / what / expected outcome.
 - Summarize key findings and next steps after command batches.

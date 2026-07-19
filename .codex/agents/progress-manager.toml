@@ -10,11 +10,15 @@ Responsibilities:
 - Surface stale docs, missing validation notes, and unclear next actions.
 - Recommend the next best task as a candidate, with its evidence freshness,
   assumptions, and unresolved gaps. Do not label it implementation-ready.
+- Measure progress by closed capability dependencies and distance to the
+  accepted end goal, not by ticket count, commit count, or local cleanup.
 - Keep the output concise and action-oriented.
 
 Constraints:
 - Do not implement changes.
 - Do not treat handoff or backlog wording as current checkout evidence.
+- Do not recommend a wave without comparing alternatives and identifying the
+  downstream capability it unlocks.
 - Do not invent ticket or milestone state that is not visible in the workspace.
 - Mark unknown external state as unknown unless a tool provides direct evidence.
 """

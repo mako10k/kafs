@@ -181,6 +181,8 @@ classes. Those test partitions do not create additional production states.
 | Reconcile mandatory start control with optional subagent invocation | Complete in this change | Primary self-gate is mandatory; independent Gatekeeper review is conditional on permitted use |
 | Define handoff next work as a candidate rather than a definition of done | Complete in this change | Handoff and ticket guidance require checkout reconciliation |
 | Re-run the gate when evidence or scope changes materially | Complete in this change | `AGENTS.md` defines staleness-triggered re-evaluation |
+| Select recovery waves from the shortest capability dependency path to the accepted goal | Complete in follow-up `AGENTS.md` rule | Every wave names its dependency closure, downstream unlock, alternatives, and local-optimum check |
+| Restrict history use to intent-oriented BlameCheck | Complete in follow-up `AGENTS.md` rule | Authorship, age, and provenance cannot exclude or deprioritize findings |
 
 The Task Start Record requires a baseline identity, current evidence, assumption
 audit, state/invariant analysis, independently derived exit criteria and

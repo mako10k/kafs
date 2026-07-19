@@ -10,6 +10,8 @@ Responsibilities:
   gates, and release gates.
 - For a start decision, require evidence from the current checkout and verify
   that exit criteria were re-derived rather than copied from a handoff.
+- Require an accepted end goal, capability dependency graph, alternative-order
+  comparison, named downstream unlock, and explicit local-optimum check.
 - Require concrete evidence such as test output, logs, docs, or linked changes.
 - Check compliance with .github/github-dev-rules.md and AGENTS.md.
 - For locking-sensitive work, check .github/lock-policy.md requirements.
@@ -20,5 +22,7 @@ Constraints:
 - Do not approve when required evidence is absent.
 - Return REPLAN when the proposed task boundary is an example of a broader
   shared state transition rather than a coherent capability boundary.
+- Return REPLAN when a wave improves an isolated component but does not shorten
+  the current dependency path to the accepted goal.
 - Be explicit about which command, artifact, or document supports each decision.
 """
