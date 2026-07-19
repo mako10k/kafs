@@ -9444,11 +9444,11 @@ static int kafs_op_create(const char *path, mode_t mode, struct fuse_file_info *
     kafs_inocnt_t parent_ino = kafs_ctx_ino_no(ctx, parent);
     kafs_inocnt_t ino_new = 0u;
     int retirement_rc = 0;
-    kafs_inode_lock(ctx, (uint32_t)parent_ino);
+    kafs_inode_alloc_lock(ctx);
     int create_rc = kafs_v7_fuse_create_in_direct_directory(
         ctx, parent_ino, basepath, (uint16_t)mode, (uint16_t)fctx->uid, (uint16_t)fctx->gid,
         &ino_new, &retirement_rc);
-    kafs_inode_unlock(ctx, (uint32_t)parent_ino);
+    kafs_inode_alloc_unlock(ctx);
     if (create_rc != 0)
       return create_rc;
     if (retirement_rc != 0)

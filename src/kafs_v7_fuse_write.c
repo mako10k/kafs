@@ -325,6 +325,63 @@ static uint32_t kafs_v7_fuse_name_hash(const char *name, size_t bytes)
   return hash;
 }
 
+static kafs_inocnt_t kafs_v7_fuse_find_free_inode(kafs_context_t *ctx,
+                                                  const kafs_v7_inode_runtime_shard_t *shard)
+{
+  for (uint64_t candidate = shard->logical_start;
+       candidate < shard->logical_start + shard->logical_count; ++candidate)
+  {
+    if (candidate <= KAFS_INO_ROOTDIR)
+      continue;
+    const kafs_v7_inode_t *inode =
+        (const kafs_v7_inode_t *)kafs_ctx_v7_inode(ctx, (kafs_inocnt_t)candidate);
+    if (inode && le16toh(inode->mode) == 0u)
+      return (kafs_inocnt_t)candidate;
+  }
+  return 0u;
+}
+
+static int kafs_v7_fuse_directory_append(uint8_t *payload, size_t capacity, const char *name,
+                                         size_t name_bytes, kafs_inocnt_t ino, size_t *new_size)
+{
+  if (capacity < KAFS_V7_KDIR_HEADER_BYTES)
+    return -EUCLEAN;
+  kafs_v7_kdir_header_t *header = (kafs_v7_kdir_header_t *)payload;
+  if (le32toh(header->magic) != KAFS_V7_KDIR_MAGIC ||
+      le16toh(header->version) != KAFS_V7_KDIR_VERSION)
+    return -EUCLEAN;
+  size_t used = KAFS_V7_KDIR_HEADER_BYTES + le32toh(header->record_bytes);
+  size_t record_bytes = KAFS_V7_KDIR_RECORD_PREFIX_BYTES + name_bytes;
+  if (used > capacity || record_bytes > capacity - used)
+    return -ENOSPC;
+  for (size_t offset = KAFS_V7_KDIR_HEADER_BYTES; offset < used;)
+  {
+    if (used - offset < KAFS_V7_KDIR_RECORD_PREFIX_BYTES)
+      return -EUCLEAN;
+    const kafs_v7_kdir_record_t *existing = (const kafs_v7_kdir_record_t *)(payload + offset);
+    size_t existing_bytes = le16toh(existing->record_length);
+    size_t existing_name_bytes = le16toh(existing->name_bytes);
+    if (existing_bytes < KAFS_V7_KDIR_RECORD_PREFIX_BYTES || existing_bytes > used - offset ||
+        existing_name_bytes > existing_bytes - KAFS_V7_KDIR_RECORD_PREFIX_BYTES)
+      return -EUCLEAN;
+    if ((le16toh(existing->flags) & KAFS_V7_KDIR_FLAG_TOMBSTONE) == 0u &&
+        existing_name_bytes == name_bytes && memcmp(existing->name, name, name_bytes) == 0)
+      return -EEXIST;
+    offset += existing_bytes;
+  }
+  kafs_v7_kdir_record_t *record = (kafs_v7_kdir_record_t *)(payload + used);
+  memset(record, 0, record_bytes);
+  record->record_length = htole16((uint16_t)record_bytes);
+  record->inode = htole32((uint32_t)ino);
+  record->name_bytes = htole16((uint16_t)name_bytes);
+  record->name_hash = htole32(kafs_v7_fuse_name_hash(name, name_bytes));
+  memcpy(record->name, name, name_bytes);
+  header->live_count = htole32(le32toh(header->live_count) + 1u);
+  header->record_bytes = htole32(le32toh(header->record_bytes) + (uint32_t)record_bytes);
+  *new_size = used + record_bytes;
+  return 0;
+}
+
 int kafs_v7_fuse_create_in_direct_directory(kafs_context_t *ctx, kafs_inocnt_t parent_ino,
                                             const char *name, uint16_t mode, uint16_t uid,
                                             uint16_t gid, kafs_inocnt_t *ino_out,
@@ -341,8 +398,49 @@ int kafs_v7_fuse_create_in_direct_directory(kafs_context_t *ctx, kafs_inocnt_t p
       kafs_ctx_v7_inode_shard_for_ino(ctx, parent_ino);
   const kafs_v7_inode_t *mapped_parent =
       (const kafs_v7_inode_t *)kafs_ctx_v7_inode(ctx, parent_ino);
-  if (!parent_shard || !mapped_parent || !S_ISDIR(le16toh(mapped_parent->mode)) ||
-      le32toh(mapped_parent->blocks) != 1u || le64toh(mapped_parent->size) > ctx->c_v7_block_size)
+  if (!parent_shard || !mapped_parent || !S_ISDIR(le16toh(mapped_parent->mode)))
+    return -EOPNOTSUPP;
+  kafs_inocnt_t ino = kafs_v7_fuse_find_free_inode(ctx, parent_shard);
+  if (ino == 0u)
+    return -ENOSPC;
+  kafs_v7_inode_t child;
+  memset(&child, 0, sizeof(child));
+  child.mode = htole16((uint16_t)(S_IFREG | (mode & 07777u)));
+  child.uid = htole16(uid);
+  child.gid = htole16(gid);
+  child.link_count = htole16(1u);
+
+  if (le32toh(mapped_parent->blocks) == 0u &&
+      le64toh(mapped_parent->size) <= sizeof(mapped_parent->inline_or_block_refs))
+  {
+    kafs_v7_inode_t parent;
+    memcpy(&parent, mapped_parent, sizeof(parent));
+    size_t new_size = 0u;
+    int rc = kafs_v7_fuse_directory_append(parent.inline_or_block_refs,
+                                           sizeof(parent.inline_or_block_refs), name, name_bytes,
+                                           ino, &new_size);
+    if (rc != 0)
+      return rc;
+    parent.size = htole64(new_size);
+    kafs_v7_journal_patch_t patches[2] = {
+        {.target_type = KAFS_V7_JOURNAL_TARGET_INODE,
+         .logical_index = parent_ino,
+         .patch_bytes = sizeof(parent),
+         .patch = &parent},
+        {.target_type = KAFS_V7_JOURNAL_TARGET_INODE,
+         .logical_index = ino,
+         .patch_bytes = sizeof(child),
+         .patch = &child,
+         .free_inodes_delta = -1},
+    };
+    kafs_v7_runtime_transaction_result_t transaction;
+    rc = kafs_v7_runtime_transaction_commit(ctx->c_v7_runtime_transactions, patches, 2u,
+                                            &transaction);
+    if (rc == 0)
+      *ino_out = ino;
+    return rc;
+  }
+  if (le32toh(mapped_parent->blocks) != 1u || le64toh(mapped_parent->size) > ctx->c_v7_block_size)
     return -EOPNOTSUPP;
   for (uint32_t slot = 1u; slot < 15u; ++slot)
     if (kafs_v7_fuse_inode_reference(mapped_parent, slot) != 0u)
@@ -360,18 +458,6 @@ int kafs_v7_fuse_create_in_direct_directory(kafs_context_t *ctx, kafs_inocnt_t p
   kafs_v7_runtime_data_cow_plan_t plan;
   int rc =
       kafs_v7_runtime_data_cow_prepare(ctx->c_v7_runtime_transactions, &request, &operation, &plan);
-  kafs_inocnt_t ino = 0u;
-  for (uint64_t candidate = parent_shard->logical_start;
-       rc == 0 && candidate < parent_shard->logical_start + parent_shard->logical_count;
-       ++candidate)
-  {
-    const kafs_v7_inode_t *candidate_inode =
-        (const kafs_v7_inode_t *)kafs_ctx_v7_inode(ctx, (kafs_inocnt_t)candidate);
-    if (candidate_inode && le16toh(candidate_inode->mode) == 0u)
-      ino = (kafs_inocnt_t)candidate;
-  }
-  if (rc == 0 && ino == 0u)
-    rc = -ENOSPC;
   uint8_t *block = rc == 0 ? malloc(plan.block_size) : NULL;
   if (rc == 0 && !block)
     rc = -ENOMEM;
@@ -434,12 +520,6 @@ int kafs_v7_fuse_create_in_direct_directory(kafs_context_t *ctx, kafs_inocnt_t p
 
   kafs_v7_inode_t parent;
   memcpy(&parent, mapped_parent, sizeof(parent));
-  kafs_v7_inode_t child;
-  memset(&child, 0, sizeof(child));
-  child.mode = htole16((uint16_t)(S_IFREG | (mode & 07777u)));
-  child.uid = htole16(uid);
-  child.gid = htole16(gid);
-  child.link_count = htole16(1u);
   if (rc == 0 && plan.logical_block >= UINT32_MAX)
     rc = -ERANGE;
   if (rc == 0)
