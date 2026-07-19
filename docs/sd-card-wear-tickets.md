@@ -3028,12 +3028,27 @@
   - incomplete/invalid journal、descriptor/checkpoint corruptionは修復対象にせずfail closedとする。
   - recoveryを伴わないmountとv4/v5/v6 runtime behaviorを変更しない。
 
+### SDW-V7RT-T23 controlled-write closeout interruption matrix
+
+- 目的: T22の実FUSE recoveryをmetadata apply後とcheckpoint replica 1コピー後へ拡張し、closeoutの
+  durability境界をend-to-endで固定する。
+- 変更:
+  - test-only crash hookをmetadata applyのflush完了後と、最初のcheckpoint blockのwrite/flush完了後に追加する。
+  - pristine fixtureをケースごとに複製し、full-block write中のserver停止、controlled-write再起動、fsck、
+    raw inode/data read-backをjournal publication、metadata apply、checkpoint 1コピーの3境界で共通検証する。
+  - metadata apply済みmutationは再適用せず、checkpoint片側状態は同generationの不足replicaだけを補完してから
+    covered journalをreclaimする。
+- 完了条件:
+  - 3境界のいずれでもcommitted data/inode updateがexactly-onceに収束する。
+  - checkpoint generation/sequenceを不要に進めず、最終的に2-copy checkpointと空journalを得る。
+  - 通常mountではtest hookが無効で、既存durability順を変更しない。
+
 ---
 
 ## 次に着手する候補
 
-1. controlled-writeのmetadata apply後、checkpoint replica 1コピー後、journal reclaim途中でも実FUSE process
-   interruptionを模擬し、admission recovery matrixを全durability stageへ拡張する。
+1. 複数groupにnon-empty segmentを持つfixtureを作り、journal reclaim途中の実FUSE process interruptionと
+   admission resumeを追加してrecovery matrixを閉じる。
    partial-block merge、file growth、indirect/multi-block write、`create`は引き続き別slice。
 2. power-interruption recovery matrixを完了した後、accepted offline/inspection surfaceに
    `kafsresize --migrate-create --format-version 7`を追加する。
