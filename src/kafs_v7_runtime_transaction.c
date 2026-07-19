@@ -383,7 +383,7 @@ static int kafs_v7_runtime_data_cow_patch_references(const kafs_v7_journal_patch
   if (patch->target_type != KAFS_V7_JOURNAL_TARGET_INODE || !patch->patch)
     return 0;
   const uint32_t first_ref = offsetof(kafs_v7_inode_t, inline_or_block_refs);
-  for (uint32_t slot = 0; slot < 12u; ++slot)
+  for (uint32_t slot = 0; slot < KAFS_V7_INODE_DIRECT_REFERENCE_COUNT; ++slot)
   {
     uint32_t ref_off = first_ref + slot * sizeof(uint32_t);
     if (patch->patch_off > ref_off || patch->patch_bytes < sizeof(uint32_t) ||
@@ -837,7 +837,7 @@ static int kafs_v7_runtime_data_retirement_scan_inodes(kafs_v7_runtime_data_reti
   {
     if (le16toh(inodes[inode].mode) == 0u || le64toh(inodes[inode].size) <= 60u)
       continue;
-    for (uint32_t slot = 0; slot < 15u; ++slot)
+    for (uint32_t slot = 0; slot < KAFS_V7_INODE_REFERENCE_COUNT; ++slot)
     {
       uint32_t reference = 0u;
       memcpy(&reference, inodes[inode].inline_or_block_refs + slot * sizeof(reference),
@@ -848,7 +848,7 @@ static int kafs_v7_runtime_data_retirement_scan_inodes(kafs_v7_runtime_data_reti
         rc = -EBUSY;
         break;
       }
-      if (slot >= 12u && reference != 0u)
+      if (slot >= KAFS_V7_INODE_DIRECT_REFERENCE_COUNT && reference != 0u)
         scan->has_indirect = 1;
     }
   }

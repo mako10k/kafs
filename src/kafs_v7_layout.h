@@ -263,6 +263,11 @@ typedef struct kafs_v7_inode
   uint8_t disabled_tail_bytes[14];
 } __attribute__((packed)) kafs_v7_inode_t;
 
+#define KAFS_V7_INODE_REFERENCE_COUNT 15u
+#define KAFS_V7_INODE_DIRECT_REFERENCE_COUNT 12u
+#define KAFS_V7_INODE_INDIRECT_REFERENCE_COUNT                                                     \
+  (KAFS_V7_INODE_REFERENCE_COUNT - KAFS_V7_INODE_DIRECT_REFERENCE_COUNT)
+
 typedef struct kafs_v7_kdir_header
 {
   uint32_t magic;
@@ -319,6 +324,9 @@ _Static_assert(sizeof(kafs_v7_journal_control_t) == KAFS_V7_JOURNAL_CONTROL_BYTE
 _Static_assert(sizeof(kafs_v7_journal_mutation_t) == KAFS_V7_JOURNAL_MUTATION_HEADER_BYTES,
                "v7 journal mutation header wire size");
 _Static_assert(sizeof(kafs_v7_inode_t) == KAFS_V7_INODE_BYTES, "v7 inode wire size");
+_Static_assert(sizeof(((kafs_v7_inode_t *)0)->inline_or_block_refs) ==
+                   KAFS_V7_INODE_REFERENCE_COUNT * sizeof(uint32_t),
+               "v7 inode reference count");
 _Static_assert(offsetof(kafs_v7_inode_t, inline_or_block_refs) == 54,
                "v7 inode inline data offset");
 _Static_assert(sizeof(kafs_v7_hrl_entry_t) == KAFS_V7_HRL_ENTRY_BYTES, "v7 HRL entry wire size");

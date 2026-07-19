@@ -16,7 +16,8 @@
 static int kafs_v7_fuse_write_validate(const kafs_context_t *ctx, kafs_inocnt_t ino, size_t size,
                                        uint64_t offset, const kafs_v7_inode_t **inode_out,
                                        uint32_t *group_id_out, uint32_t *first_slot_out,
-                                       size_t *block_count_out, uint64_t retained[12])
+                                       size_t *block_count_out,
+                                       uint64_t retained[KAFS_V7_INODE_DIRECT_REFERENCE_COUNT])
 {
   if (!ctx || !inode_out || !group_id_out || !first_slot_out || !block_count_out || !retained ||
       !ctx->c_v7_runtime_transactions || !kafs_v7_fuse_policy_controlled_write_active(ctx))
@@ -38,7 +39,8 @@ static int kafs_v7_fuse_write_validate(const kafs_context_t *ctx, kafs_inocnt_t 
   uint64_t request_end = offset + size;
   uint64_t first_slot = offset / ctx->c_v7_block_size;
   uint64_t last_slot = (request_end - 1u) / ctx->c_v7_block_size;
-  if (first_slot >= 12u || last_slot >= 12u)
+  if (first_slot >= KAFS_V7_INODE_DIRECT_REFERENCE_COUNT ||
+      last_slot >= KAFS_V7_INODE_DIRECT_REFERENCE_COUNT)
     return -EOPNOTSUPP;
 
   size_t block_count = (size_t)(last_slot - first_slot + 1u);
@@ -108,7 +110,7 @@ int kafs_v7_fuse_write_direct(kafs_context_t *ctx, kafs_inocnt_t ino, const void
   uint32_t group_id = 0u;
   uint32_t first_slot = 0u;
   size_t block_count = 0u;
-  uint64_t retained[12] = {0};
+  uint64_t retained[KAFS_V7_INODE_DIRECT_REFERENCE_COUNT] = {0};
   int rc = kafs_v7_fuse_write_validate(ctx, ino, size, offset, &mapped_inode, &group_id,
                                        &first_slot, &block_count, retained);
   if (rc != 0)
@@ -116,8 +118,8 @@ int kafs_v7_fuse_write_direct(kafs_context_t *ctx, kafs_inocnt_t ino, const void
 
   if (block_count > 1u)
   {
-    kafs_v7_runtime_data_cow_request_t requests[12];
-    kafs_v7_runtime_data_cow_plan_t plans[12];
+    kafs_v7_runtime_data_cow_request_t requests[KAFS_V7_INODE_DIRECT_REFERENCE_COUNT];
+    kafs_v7_runtime_data_cow_plan_t plans[KAFS_V7_INODE_DIRECT_REFERENCE_COUNT];
     for (size_t i = 0; i < block_count; ++i)
       requests[i] = (kafs_v7_runtime_data_cow_request_t){.group_id = group_id,
                                                          .retained_logical_block = retained[i]};
@@ -497,7 +499,7 @@ int kafs_v7_fuse_create_in_direct_directory(kafs_context_t *ctx, kafs_inocnt_t p
   if (parent_blocks >= 2u && parent_blocks <= 3u &&
       le64toh(mapped_parent->size) <= (uint64_t)ctx->c_v7_block_size * parent_blocks)
   {
-    for (uint32_t slot = parent_blocks; slot < 15u; ++slot)
+    for (uint32_t slot = parent_blocks; slot < KAFS_V7_INODE_REFERENCE_COUNT; ++slot)
       if (kafs_v7_fuse_inode_reference(mapped_parent, slot) != 0u)
         return -EOPNOTSUPP;
     uint64_t retained[3];
@@ -620,7 +622,7 @@ int kafs_v7_fuse_create_in_direct_directory(kafs_context_t *ctx, kafs_inocnt_t p
   }
   if (parent_blocks != 1u || le64toh(mapped_parent->size) > ctx->c_v7_block_size)
     return -EOPNOTSUPP;
-  for (uint32_t slot = 1u; slot < 15u; ++slot)
+  for (uint32_t slot = 1u; slot < KAFS_V7_INODE_REFERENCE_COUNT; ++slot)
     if (kafs_v7_fuse_inode_reference(mapped_parent, slot) != 0u)
       return -EOPNOTSUPP;
   uint32_t parent_reference = kafs_v7_fuse_inode_reference(mapped_parent, 0u);
@@ -784,18 +786,20 @@ int kafs_v7_fuse_truncate_direct(kafs_context_t *ctx, kafs_inocnt_t ino, uint64_
     return -EOPNOTSUPP;
 
   uint64_t old_size = le64toh(mapped->size);
-  if (size > old_size || old_size > 12u * (uint64_t)ctx->c_v7_block_size)
+  if (size > old_size ||
+      old_size > KAFS_V7_INODE_DIRECT_REFERENCE_COUNT * (uint64_t)ctx->c_v7_block_size)
     return -EOPNOTSUPP;
   if (size == old_size)
     return 0;
-  for (uint32_t slot = 12u; slot < 15u; ++slot)
+  for (uint32_t slot = KAFS_V7_INODE_DIRECT_REFERENCE_COUNT; slot < KAFS_V7_INODE_REFERENCE_COUNT;
+       ++slot)
     if (kafs_v7_fuse_inode_reference(mapped, slot) != 0u)
       return -EOPNOTSUPP;
 
   uint32_t old_slots =
       old_size == 0u ? 0u : (uint32_t)((old_size - 1u) / ctx->c_v7_block_size + 1u);
   uint32_t keep_slots = size == 0u ? 0u : (uint32_t)((size - 1u) / ctx->c_v7_block_size + 1u);
-  uint64_t retired[12] = {0};
+  uint64_t retired[KAFS_V7_INODE_DIRECT_REFERENCE_COUNT] = {0};
   size_t retired_count = 0u;
   for (uint32_t slot = 0u; slot < old_slots; ++slot)
   {
