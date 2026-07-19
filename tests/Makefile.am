@@ -34,6 +34,7 @@ check_PROGRAMS = tailmeta_parser hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigur
 	v7_raw_layout_smoketest v7_multi_group_smoketest v7_replica_fault_smoketest \
 	v7_inspection_mount_smoketest v7_journal_replay_smoketest v7_mutation_routing_smoketest \
 	v7_checkpoint_publication_smoketest v7_locks_smoketest \
+	v7_fuse_write_smoketest \
 	clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility \
 	prune_indirect_single prune_indirect_double prune_indirect_triple truncate_prune reflink_clone \
 	kafsctl_links bg_dedup_skip_dirs \
@@ -177,6 +178,19 @@ v7_locks_smoketest_SOURCES = tests_v7_locks_smoketest.c $(top_srcdir)/src/kafs_v
 v7_locks_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -pthread
 v7_locks_smoketest_LDADD = $(KAFS_LIBS)
 v7_locks_smoketest_LDFLAGS = -pthread
+
+v7_fuse_write_smoketest_SOURCES = tests_v7_fuse_write_smoketest.c test_utils.c \
+	$(top_srcdir)/src/kafs_v7_checkpoint.c $(top_srcdir)/src/kafs_v7_layout.c \
+	$(top_srcdir)/src/kafs_v7_journal.c $(top_srcdir)/src/kafs_v7_locks.c \
+	$(top_srcdir)/src/kafs_v7_mutation.c $(top_srcdir)/src/kafs_v7_journal_writer.c \
+	$(top_srcdir)/src/kafs_v7_sequence.c $(top_srcdir)/src/kafs_v7_data_cow.c \
+	$(top_srcdir)/src/kafs_v7_runtime_transaction.c $(top_srcdir)/src/kafs_v7_runtime_view.c \
+	$(top_srcdir)/src/kafs_v7_fuse_write.c $(top_srcdir)/src/kafs_hrl.c \
+	$(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
+v7_fuse_write_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function \
+	-Wno-unused-parameter -pthread
+v7_fuse_write_smoketest_LDADD = $(KAFS_LIBS)
+v7_fuse_write_smoketest_LDFLAGS = -pthread
 
 clone_template_copy_SOURCES = tests_clone_template_copy.c test_utils.c \
 	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c

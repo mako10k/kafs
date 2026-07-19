@@ -18,6 +18,7 @@
 #ifdef KAFS_V7_RUNTIME_ENTRYPOINT
 #include "kafs_v7_fuse_policy.h"
 #include "kafs_v7_runtime_transaction.h"
+#include "kafs_v7_fuse_write.h"
 #endif
 
 #include <fuse.h>
@@ -10036,6 +10037,26 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
     if (!fctx || fctx->pid != 0)
       return -EACCES;
   }
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (kafs_v7_fuse_policy_controlled_write_active(ctx))
+  {
+    int policy = kafs_v7_fuse_policy_check_controlled_write(ctx, KAFS_V7_CONTROLLED_WRITE_OP_WRITE);
+    if (policy != 0)
+      return policy;
+    if (offset < 0)
+      return -EINVAL;
+    kafs_v7_fuse_write_result_t result;
+    int write_rc =
+        kafs_v7_fuse_write_aligned_direct(ctx, ino, buf, size, (uint64_t)offset, &result);
+    if (write_rc >= 0 && result.retirement_rc != 0)
+      kafs_log(KAFS_LOG_WARNING,
+               "%s: v7 retained block retirement deferred path=%s ino=%" PRIuFAST32
+               " block=%" PRIu64 " rc=%d\n",
+               __func__, path ? path : "(null)", (uint32_t)ino, result.retained_logical_block,
+               result.retirement_rc);
+    return write_rc;
+  }
+#endif
   gate = kafs_v6_controlled_write_reject_if_op(ctx, ctx && ctx->c_hotplug_active,
                                                KAFS_V6_CONTROLLED_WRITE_OP_HOTPLUG_DELEGATED_WRITE);
   if (gate != 0)
