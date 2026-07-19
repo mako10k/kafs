@@ -3058,12 +3058,28 @@
   - 既にemptyのsegment generationを不要に進めず、残存segmentだけをresetする。
   - journal publication、metadata apply、checkpoint 1コピー、partial reclaimの全境界が実FUSE再起動で収束する。
 
+### SDW-V7RT-T25 shared recovery fault-point API
+
+- 目的: T22-T24で各moduleへ個別追加したtest-only crash hookを共通contractへ統合し、stage選択と診断を
+  一貫させる。
+- 変更:
+  - `kafs_v7_test_fault.h`へ`journal_publish`、`checkpoint_copy`、`metadata_apply`、`journal_reclaim`のenum、
+    stable name、exit status 86-89、単一`KAFS_V7_TEST_CRASH_POINT` dispatcherを集約する。
+  - transaction/checkpoint/journal moduleは個別の環境変数解析と`_exit`を持たず、durability boundaryで共通
+    dispatcherだけを呼ぶ。
+  - mount testはwrite中断childとmount前admission中断childのexit statusを明示的に照合し、別stageでの偶発停止を
+    recovery成功として扱わない。
+- 完了条件:
+  - fault point名とexit statusの対応が1 headerだけで定義される。
+  - 未指定/未知stageではproduction pathに副作用がなく、全4stageの実FUSE matrixがPASSする。
+  - test helperはmount前early exit statusをcallerへ返せる。
+
 ---
 
 ## 次に着手する候補
 
-1. controlled-write recoveryのtest-only crash hookを共通fault-point APIへ整理し、各stageのexit statusと
-   recovery diagnosticsを一貫して検証する。
+1. recovery logをmachine-readableなstage/counter summaryへ整理し、各fault caseでcheckpoint generation、
+   sequence、apply/reclaim countが期待どおりかを検証する。
    partial-block merge、file growth、indirect/multi-block write、`create`は引き続き別slice。
 2. power-interruption recovery matrixを完了した後、accepted offline/inspection surfaceに
    `kafsresize --migrate-create --format-version 7`を追加する。

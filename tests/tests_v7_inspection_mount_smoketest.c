@@ -7,6 +7,7 @@
 #include "kafs_v7_locks.h"
 #include "kafs_v7_mutation.h"
 #include "kafs_v7_sequence.h"
+#include "kafs_v7_test_fault.h"
 
 #include <dirent.h>
 #include <endian.h>
@@ -924,7 +925,7 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
 }
 
 static int check_controlled_write_recovery(const char *image, uint32_t ino, uint32_t block_size,
-                                           const char *crash_env, uint8_t seed)
+                                           kafs_v7_test_fault_point_t fault, uint8_t seed)
 {
   const char *mnt = "mnt-controlled-crash";
   kafs_test_mount_options_t options = {
@@ -933,10 +934,10 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
           "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
       .timeout_ms = 15000,
   };
-  if (setenv(crash_env, "1", 1) != 0)
+  if (setenv(KAFS_V7_TEST_CRASH_POINT_ENV, kafs_v7_test_fault_name(fault), 1) != 0)
     return -1;
   pid_t pid = kafs_test_start_kafs_v7_controlled_write(image, mnt, &options);
-  unsetenv(crash_env);
+  unsetenv(KAFS_V7_TEST_CRASH_POINT_ENV);
   if (pid <= 0)
     return -1;
 
@@ -954,6 +955,11 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
   }
   if (fd >= 0)
     close(fd);
+  int status = 0;
+  if (rc == 0 &&
+      (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) ||
+       WEXITSTATUS(status) != kafs_v7_test_fault_exit_status(fault)))
+    rc = -1;
   kafs_test_stop_kafs(mnt, pid);
 
   options.log_path = "v7-controlled-recovery.log";
@@ -979,21 +985,27 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
 
 static int check_controlled_reclaim_recovery(const char *image)
 {
+  int early_exit_status = -1;
   kafs_test_mount_options_t options = {
       .log_path = "v7-controlled-reclaim-crash.log",
       .extra_options =
           "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
       .timeout_ms = 15000,
+      .early_exit_status = &early_exit_status,
   };
-  if (setenv("KAFS_V7_TEST_CRASH_AFTER_JOURNAL_RECLAIM", "1", 1) != 0)
+  if (setenv(KAFS_V7_TEST_CRASH_POINT_ENV,
+             kafs_v7_test_fault_name(KAFS_V7_TEST_FAULT_JOURNAL_RECLAIM), 1) != 0)
     return -1;
   pid_t pid = kafs_test_start_kafs_v7_controlled_write(image, "mnt-reclaim-crash", &options);
-  unsetenv("KAFS_V7_TEST_CRASH_AFTER_JOURNAL_RECLAIM");
+  unsetenv(KAFS_V7_TEST_CRASH_POINT_ENV);
   if (pid > 0)
   {
     kafs_test_stop_kafs("mnt-reclaim-crash", pid);
     return -1;
   }
+  if (early_exit_status !=
+      kafs_v7_test_fault_exit_status(KAFS_V7_TEST_FAULT_JOURNAL_RECLAIM))
+    return -1;
   if (check_nonempty_journal_count(image, 1u) != 0)
     return -1;
 
@@ -1092,7 +1104,7 @@ int main(void)
   const char *recovery = "v7-controlled-recovery.img";
   if (copy_image(image, recovery) != 0 ||
       check_controlled_write_recovery(recovery, fixture.block_ino, fixture.block_size,
-                                      "KAFS_V7_TEST_CRASH_AFTER_JOURNAL_PUBLISH", 11u) != 0)
+                                      KAFS_V7_TEST_FAULT_JOURNAL_PUBLISH, 11u) != 0)
   {
     fprintf(stderr, "v7 controlled-write journal recovery failed\n");
     return 1;
@@ -1101,7 +1113,7 @@ int main(void)
   const char *apply_recovery = "v7-controlled-apply-recovery.img";
   if (copy_image(image, apply_recovery) != 0 ||
       check_controlled_write_recovery(apply_recovery, fixture.block_ino, fixture.block_size,
-                                      "KAFS_V7_TEST_CRASH_AFTER_METADATA_APPLY", 13u) != 0)
+                                      KAFS_V7_TEST_FAULT_METADATA_APPLY, 13u) != 0)
   {
     fprintf(stderr, "v7 controlled-write metadata apply recovery failed\n");
     return 1;
@@ -1110,7 +1122,7 @@ int main(void)
   const char *checkpoint_recovery = "v7-controlled-checkpoint-recovery.img";
   if (copy_image(image, checkpoint_recovery) != 0 ||
       check_controlled_write_recovery(checkpoint_recovery, fixture.block_ino, fixture.block_size,
-                                      "KAFS_V7_TEST_CRASH_AFTER_CHECKPOINT_COPY", 17u) != 0)
+                                      KAFS_V7_TEST_FAULT_CHECKPOINT_COPY, 17u) != 0)
   {
     fprintf(stderr, "v7 controlled-write checkpoint recovery failed\n");
     return 1;

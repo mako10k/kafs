@@ -23,6 +23,7 @@ typedef struct kafs_test_mount_options
   const char *extra_options;
   int multithread;
   int timeout_ms;
+  int *early_exit_status;
 } kafs_test_mount_options_t;
 
 // Start kafs in the foreground for mount-based tests.

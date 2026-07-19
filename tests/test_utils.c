@@ -508,7 +508,11 @@ static pid_t kafs_test_start_kafs_tool(const char *tool, kafs_test_v6_tool_mode_
     if (w == pid)
     {
       if (WIFEXITED(st))
+      {
+        if (options && options->early_exit_status)
+          *options->early_exit_status = WEXITSTATUS(st);
         fprintf(stderr, "kafs test server exited early with status=%d\n", WEXITSTATUS(st));
+      }
       else if (WIFSIGNALED(st))
         fprintf(stderr, "kafs test server exited early with signal=%d\n", WTERMSIG(st));
       kafs_test_dump_log(log_path, "mount start failed");
