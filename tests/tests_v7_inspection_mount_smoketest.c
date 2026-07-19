@@ -2,13 +2,18 @@
 
 #include "kafs_offline_summary.h"
 #include "kafs_superblock.h"
+#include "kafs_v7_journal_writer.h"
 #include "kafs_v7_layout.h"
+#include "kafs_v7_locks.h"
+#include "kafs_v7_mutation.h"
+#include "kafs_v7_sequence.h"
 
 #include <dirent.h>
 #include <endian.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -467,6 +472,88 @@ static int seed_fixture(const char *path, v7_fixture_t *fixture)
   return rc;
 }
 
+static int publish_pending_uid(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
+                               kafs_v7_layout_report_t *report,
+                               kafs_v7_sequence_state_t *sequence, uint32_t ino, uint16_t uid)
+{
+  kafs_v7_mutation_route_t route;
+  int rc = kafs_v7_mutation_route_target(report, KAFS_V7_JOURNAL_TARGET_INODE, ino, &route);
+  kafs_v7_sequence_reservation_t reservation;
+  memset(&reservation, 0, sizeof(reservation));
+  if (rc == 0)
+    rc = kafs_v7_sequence_reserve(sequence, route.group_id, &reservation);
+  uint16_t wire_uid = htole16(uid);
+  kafs_v7_journal_patch_t patch = {
+      .target_type = KAFS_V7_JOURNAL_TARGET_INODE,
+      .logical_index = ino,
+      .patch_off = offsetof(kafs_v7_inode_t, uid),
+      .patch_bytes = sizeof(wire_uid),
+      .patch = &wire_uid,
+  };
+  kafs_v7_journal_transaction_t *transaction = NULL;
+  if (rc == 0)
+    rc = kafs_v7_journal_transaction_encode_fd(fd, report, &reservation, &patch, 1u,
+                                                KAFS_V7_JOURNAL_COMMIT_TAG, &transaction);
+  kafs_v7_journal_publication_t publication;
+  if (rc == 0)
+    rc = kafs_v7_journal_transaction_publish_fd(fd, report, &reservation, transaction,
+                                                 &publication);
+  if (rc == 0)
+    rc = kafs_v7_sequence_confirm_publication_fd(sequence, &reservation, fd, sb, file_size);
+  else if (reservation.active)
+    (void)kafs_v7_sequence_cancel_reservation_fd(sequence, &reservation, fd, sb, file_size);
+  kafs_v7_journal_transaction_destroy(transaction);
+  if (rc == 0)
+  {
+    kafs_v7_layout_report_clear(report);
+    memset(report, 0, sizeof(*report));
+    rc = kafs_v7_validate_image_fd(fd, sb, file_size, report);
+  }
+  return rc;
+}
+
+static int seed_pending_journals(const char *path, uint32_t first_ino, uint32_t second_ino)
+{
+  int fd = open(path, O_RDWR);
+  kafs_ssuperblock_t sb;
+  uint64_t file_size = 0u;
+  kafs_v7_layout_report_t report = {0};
+  int rc = fd < 0 ? -errno : validate_image_fd(fd, &sb, &file_size, &report);
+  kafs_v7_lock_state_t *locks = NULL;
+  kafs_v7_sequence_state_t *sequence = NULL;
+  if (rc == 0)
+    rc = kafs_v7_locks_init(report.group_count, 0u, &locks);
+  if (rc == 0)
+    rc = kafs_v7_sequence_state_init(locks, &report, &sequence);
+  if (rc == 0)
+    rc = publish_pending_uid(fd, &sb, file_size, &report, sequence, first_ino, 101u);
+  if (rc == 0)
+    rc = publish_pending_uid(fd, &sb, file_size, &report, sequence, second_ino, 202u);
+  if (rc == 0 && report.journal.selected_nonempty_segment_count != 2u)
+    rc = -EUCLEAN;
+  kafs_v7_sequence_state_destroy(sequence);
+  kafs_v7_locks_destroy(locks);
+  kafs_v7_layout_report_clear(&report);
+  if (fd >= 0)
+    close(fd);
+  return rc;
+}
+
+static int check_nonempty_journal_count(const char *path, uint32_t expected)
+{
+  int fd = open(path, O_RDONLY);
+  kafs_ssuperblock_t sb;
+  uint64_t file_size = 0u;
+  kafs_v7_layout_report_t report = {0};
+  int rc = fd < 0 ? -errno : validate_image_fd(fd, &sb, &file_size, &report);
+  if (rc == 0 && report.journal.selected_nonempty_segment_count != expected)
+    rc = -EUCLEAN;
+  kafs_v7_layout_report_clear(&report);
+  if (fd >= 0)
+    close(fd);
+  return rc;
+}
+
 static int file_digest(const char *path, uint64_t *digest_out)
 {
   int fd = open(path, O_RDONLY);
@@ -890,6 +977,34 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
   return rc;
 }
 
+static int check_controlled_reclaim_recovery(const char *image)
+{
+  kafs_test_mount_options_t options = {
+      .log_path = "v7-controlled-reclaim-crash.log",
+      .extra_options =
+          "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
+      .timeout_ms = 15000,
+  };
+  if (setenv("KAFS_V7_TEST_CRASH_AFTER_JOURNAL_RECLAIM", "1", 1) != 0)
+    return -1;
+  pid_t pid = kafs_test_start_kafs_v7_controlled_write(image, "mnt-reclaim-crash", &options);
+  unsetenv("KAFS_V7_TEST_CRASH_AFTER_JOURNAL_RECLAIM");
+  if (pid > 0)
+  {
+    kafs_test_stop_kafs("mnt-reclaim-crash", pid);
+    return -1;
+  }
+  if (check_nonempty_journal_count(image, 1u) != 0)
+    return -1;
+
+  options.log_path = "v7-controlled-reclaim-recovery.log";
+  pid = kafs_test_start_kafs_v7_controlled_write(image, "mnt-reclaim-recovery", &options);
+  if (pid <= 0)
+    return -1;
+  kafs_test_stop_kafs("mnt-reclaim-recovery", pid);
+  return check_nonempty_journal_count(image, 0u) == 0 && run_fsck(image) == 0 ? 0 : -1;
+}
+
 static int corrupt_primary_pair(const char *path)
 {
   int fd = open(path, O_RDWR);
@@ -998,6 +1113,15 @@ int main(void)
                                       "KAFS_V7_TEST_CRASH_AFTER_CHECKPOINT_COPY", 17u) != 0)
   {
     fprintf(stderr, "v7 controlled-write checkpoint recovery failed\n");
+    return 1;
+  }
+
+  const char *reclaim_recovery = "v7-controlled-reclaim-recovery.img";
+  if (copy_image(image, reclaim_recovery) != 0 ||
+      seed_pending_journals(reclaim_recovery, fixture.nested_ino, fixture.inline_ino) != 0 ||
+      check_controlled_reclaim_recovery(reclaim_recovery) != 0)
+  {
+    fprintf(stderr, "v7 controlled-write journal reclaim recovery failed\n");
     return 1;
   }
 
