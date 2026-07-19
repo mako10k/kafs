@@ -41,17 +41,20 @@ The accepted v7 surface currently provides:
 - a mount-lifetime v7 transaction coordinator that serializes global sequence
   publication and runs the complete metadata closeout lifecycle;
 - a v7-owned group-local data-block COW/allocator planner that durably stages
-  and re-verifies one full block before publishing its direct inode reference;
+  and re-verifies up to twelve existing direct blocks before atomically
+  publishing their inode references;
 - a post-checkpoint retained-block retirement transaction that verifies the
   direct/HRL reference set, clears the allocator state, and closes out retry;
-- v7-only FUSE `fsync` / `release` closeout barriers with every legacy mutation
-  path still rejected.
+- v7-only FUSE `fsync` / `release` closeout barriers;
+- explicit controlled-write admission for existing regular-file ranges within
+  allocated direct blocks, including partial and multi-block COW;
+- admission recovery and diagnostics for interruption after journal
+  publication, metadata apply, checkpoint copy, or journal reclamation.
 
-Runtime controlled write is still fail closed. The `kafs-v7`
-controlled-write token is recognized for boundary testing, but it is rejected
-before FUSE admission. Production `kafs` remains the v4/v5 runtime and does not
-admit v7. Frozen experimental v6 behavior is not a compatibility contract for
-v7.
+Runtime controlled write remains fail closed outside that allowlist. File
+growth, holes, indirect references, create, and wider metadata mutations are
+rejected. Production `kafs` remains the v4/v5 runtime and does not admit v7.
+Frozen experimental v6 behavior is not a compatibility contract for v7.
 
 The metadata durability order fixed by T14 is:
 
@@ -77,15 +80,25 @@ checksum-consistent foreign-group mutation.
 | M3 | T7-T15: journal, checkpoint, locking, and crash recovery foundation | Complete |
 | M4 | T16-T17: mount-lifetime coordinator and fail-closed runtime boundary | Complete |
 | M5 | T18-T19: internal full-block data COW and retained-block retirement | Complete |
-| M6 | Existing-file aligned full-block direct overwrite through v7 FUSE | Next; not started |
-| M7 | Controlled-write RC qualification and independent review | Later; not started |
-| M8 | Partial writes, growth, create, indirect/multi-block writes, and wider mutation | Later; not started |
+| M6 | T20-T32: bounded direct overwrite, admission, diagnostics, partial/multi-block COW, interruption recovery | Complete |
+| M6.1 | FUSE request negotiation and supported atomic-request observability | Next |
+| M7 | Controlled-write RC qualification, real-media power interruption, and independent review | Not started |
+| M8-A | Existing-inode growth, allocation, hole policy, and truncate | Not started |
+| M8-B | Create and directory-record mutation | Not started |
+| M8-C | Indirect-block COW, traversal, and retirement | Not started |
+| M9 | v5-to-v7 data migration beyond destination creation | Not started |
+| M10 | Cross-group HRL and multi-group atomic mutation | Not started |
 
-The implementation is at the M5/M6 boundary: M5 is complete and M6 is the next
-bounded slice. The six completed milestones out of nine are a scope count, not
-a writable-readiness percentage. V7 is practical today for image creation,
-offline validation, and read-only inspection; mounted write admission remains
-intentionally unavailable.
+The implementation is at the M6/M6.1 boundary. V7 is practical for image
+creation, offline validation, read-only inspection, and explicitly bounded
+controlled overwrites of existing direct blocks. This is not general writable
+filesystem readiness: growth, create, indirect blocks, and most metadata
+mutation remain outside the admitted contract.
+
+After M6.1 there is an explicit product decision point. A bounded
+direct-overwrite release can enter M7 qualification, or implementation can
+continue through M8-A before qualification if file growth is required for the
+target workload. M8-B and M8-C remain separate recovery-sensitive milestones.
 
 ## T15 Closeout
 
@@ -318,12 +331,11 @@ T19 validation completed on 2026-07-17:
 
 ## Recommended Next Slice
 
-Route only an existing regular file's aligned full-block direct overwrite
-through a v7-owned FUSE adapter and the T17-T19 coordinator. Keep partial-block
-merge, file growth, indirect/multi-block write, directory mutation, and
-`create` outside that slice. Do not open controlled-write admission until a
-mount/write/full-fsync/unmount/remount/fsck matrix and controlled
-power-interruption recovery prove the complete path.
+Implement M6.1 by negotiating a bounded FUSE write-request size, recording the
+kernel-negotiated value, and exposing the supported per-request atomicity limit
+in startup diagnostics and the read-only inspection surface. Tests must prove
+the reported value matches negotiation and must distinguish one atomic FUSE
+request from an application write split into multiple requests.
 
 ## Resume Checklist
 
