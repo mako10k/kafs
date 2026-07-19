@@ -138,7 +138,8 @@ static int check_fuse_contract_log(const char *path, const char *expected_mode, 
     unsigned expected_negotiated = writable && kernel > cap ? (unsigned)cap : kernel;
     unsigned expected_atomic = writable ? expected_negotiated : 0u;
     rc = strcmp(mode, expected_mode) == 0 && negotiated == expected_negotiated &&
-                 atomic == expected_atomic && logged_block_size == block_size && direct_blocks == 12u
+                 atomic == expected_atomic && logged_block_size == block_size &&
+                 direct_blocks == 12u
              ? 0
              : -EINVAL;
     break;
@@ -159,8 +160,7 @@ static int check_recovery_cli(const char *path, const kafs_v7_recovery_diagnosti
     return -1;
   }
   char *json_argv[] = {text_argv[0], "--json", "--recovery-log", (char *)path, NULL};
-  if (run_command(json_argv, 0, output, sizeof(output)) != 0 ||
-      !strstr(output, "\"recovery\":") ||
+  if (run_command(json_argv, 0, output, sizeof(output)) != 0 || !strstr(output, "\"recovery\":") ||
       !strstr(output, "\"status\": \"completed\"") ||
       !strstr(output, kafs_v7_recovery_resume_from_name(diagnostic->resume_from)))
   {
@@ -192,8 +192,7 @@ static int check_recovery_log(const char *path, kafs_v7_test_fault_point_t fault
                : -1;
   case KAFS_V7_TEST_FAULT_CHECKPOINT_COPY:
     return diagnostic.resume_from == KAFS_V7_RECOVERY_RESUME_CHECKPOINT_COPY &&
-                   diagnostic.checkpoint_publications == 1u &&
-                   diagnostic.checkpoint_resumes == 1u
+                   diagnostic.checkpoint_publications == 1u && diagnostic.checkpoint_resumes == 1u
                ? 0
                : -1;
   case KAFS_V7_TEST_FAULT_JOURNAL_RECLAIM:
@@ -299,8 +298,8 @@ static void inode_init(kafs_v7_inode_t *inode, uint16_t mode, uint64_t size, uin
   inode->blocks = htole32(blocks);
 }
 
-static const kafs_v7_shard_desc_t *inode_shard_for_group(
-    const kafs_v7_layout_report_t *report, uint32_t group_id)
+static const kafs_v7_shard_desc_t *inode_shard_for_group(const kafs_v7_layout_report_t *report,
+                                                         uint32_t group_id)
 {
   const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(report);
   const kafs_v7_shard_desc_t *shards = kafs_v7_report_shards(report);
@@ -399,8 +398,8 @@ static int allocate_group_block(int fd, const kafs_v7_layout_report_t *report, u
     free(allocator);
     return -ENOMEM;
   }
-  int rc = kafs_pread_all(fd, bitmap, (size_t)bitmap_bytes,
-                          (off_t)le64toh(bitmap_shard->physical_off));
+  int rc =
+      kafs_pread_all(fd, bitmap, (size_t)bitmap_bytes, (off_t)le64toh(bitmap_shard->physical_off));
   uint64_t local = logical - start;
   if (rc == 0 && (bitmap[local / 8u] & (uint8_t)(1u << (local % 8u))) != 0)
     rc = -EEXIST;
@@ -439,16 +438,15 @@ static int update_checkpoints(int fd, const kafs_v7_layout_report_t *report, uin
   for (uint32_t i = 0; i < report->replica_count; ++i)
   {
     kafs_v7_checkpoint_t checkpoint;
-    int rc = kafs_pread_all(fd, &checkpoint, sizeof(checkpoint),
-                            (off_t)report->checkpoints[i].offset);
+    int rc =
+        kafs_pread_all(fd, &checkpoint, sizeof(checkpoint), (off_t)report->checkpoints[i].offset);
     if (rc != 0)
       return rc;
     checkpoint.free_blocks = htole64(free_blocks);
     checkpoint.free_inodes = htole64(free_inodes);
     checkpoint.crc32 = 0u;
     checkpoint.crc32 = htole32(kafs_v7_crc32(&checkpoint, sizeof(checkpoint)));
-    rc = kafs_pwrite_all(fd, &checkpoint, sizeof(checkpoint),
-                         (off_t)report->checkpoints[i].offset);
+    rc = kafs_pwrite_all(fd, &checkpoint, sizeof(checkpoint), (off_t)report->checkpoints[i].offset);
     if (rc != 0)
       return rc;
   }
@@ -508,8 +506,7 @@ static int seed_fixture(const char *path, v7_fixture_t *fixture)
   if (rc == 0)
     rc = build_directory(nested_data, KAFS_INODE_DIRECT_BYTES, nested_inos, nested_names, 2u,
                          &nested_bytes);
-  if (rc == 0 && (root_bytes <= KAFS_INODE_DIRECT_BYTES ||
-                  nested_bytes > KAFS_INODE_DIRECT_BYTES ||
+  if (rc == 0 && (root_bytes <= KAFS_INODE_DIRECT_BYTES || nested_bytes > KAFS_INODE_DIRECT_BYTES ||
                   strlen(k_block_payload) <= KAFS_INODE_DIRECT_BYTES))
     rc = -EINVAL;
   if (rc == 0)
@@ -577,8 +574,8 @@ static int seed_fixture(const char *path, v7_fixture_t *fixture)
     return -errno;
   kafs_v7_layout_report_t verify = {0};
   rc = validate_image_fd(fd, &sb, &file_size, &verify);
-  if (rc == 0 && (verify.free_blocks != fixture->free_blocks ||
-                  verify.free_inodes != fixture->free_inodes))
+  if (rc == 0 &&
+      (verify.free_blocks != fixture->free_blocks || verify.free_inodes != fixture->free_inodes))
     rc = -EINVAL;
   kafs_v7_layout_report_clear(&verify);
   close(fd);
@@ -586,8 +583,8 @@ static int seed_fixture(const char *path, v7_fixture_t *fixture)
 }
 
 static int publish_pending_uid(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
-                               kafs_v7_layout_report_t *report,
-                               kafs_v7_sequence_state_t *sequence, uint32_t ino, uint16_t uid)
+                               kafs_v7_layout_report_t *report, kafs_v7_sequence_state_t *sequence,
+                               uint32_t ino, uint16_t uid)
 {
   kafs_v7_mutation_route_t route;
   int rc = kafs_v7_mutation_route_target(report, KAFS_V7_JOURNAL_TARGET_INODE, ino, &route);
@@ -606,11 +603,11 @@ static int publish_pending_uid(int fd, const kafs_ssuperblock_t *sb, uint64_t fi
   kafs_v7_journal_transaction_t *transaction = NULL;
   if (rc == 0)
     rc = kafs_v7_journal_transaction_encode_fd(fd, report, &reservation, &patch, 1u,
-                                                KAFS_V7_JOURNAL_COMMIT_TAG, &transaction);
+                                               KAFS_V7_JOURNAL_COMMIT_TAG, &transaction);
   kafs_v7_journal_publication_t publication;
   if (rc == 0)
-    rc = kafs_v7_journal_transaction_publish_fd(fd, report, &reservation, transaction,
-                                                 &publication);
+    rc =
+        kafs_v7_journal_transaction_publish_fd(fd, report, &reservation, transaction, &publication);
   if (rc == 0)
     rc = kafs_v7_sequence_confirm_publication_fd(sequence, &reservation, fd, sb, file_size);
   else if (reservation.active)
@@ -825,9 +822,11 @@ static int check_mutations_erofs(const char *mnt)
   if (fd >= 0)
     close(fd);
   if (expect_erofs("open-write", fd) != 0 || expect_erofs("truncate", truncate(block_path, 1)) ||
-      expect_erofs("unlink", unlink(block_path)) || expect_erofs("rename", rename(block_path, new_path)) ||
-      expect_erofs("link", link(block_path, new_path)) || expect_erofs("mkdir", mkdir(new_path, 0777)) ||
-      expect_erofs("rmdir", rmdir(nested_path)) || expect_erofs("chmod", chmod(block_path, 0600)) ||
+      expect_erofs("unlink", unlink(block_path)) ||
+      expect_erofs("rename", rename(block_path, new_path)) ||
+      expect_erofs("link", link(block_path, new_path)) ||
+      expect_erofs("mkdir", mkdir(new_path, 0777)) || expect_erofs("rmdir", rmdir(nested_path)) ||
+      expect_erofs("chmod", chmod(block_path, 0600)) ||
       expect_erofs("chown", chown(block_path, getuid(), getgid())))
     return -1;
 
@@ -860,8 +859,7 @@ static int check_mount(const char *image, const char *mnt, const char *log_path,
   int rc = 0;
   char path[PATH_MAX];
   struct stat st;
-  if (!directory_has(mnt, "nested") || !directory_has(mnt, "block") ||
-      !directory_has(mnt, "link"))
+  if (!directory_has(mnt, "nested") || !directory_has(mnt, "block") || !directory_has(mnt, "link"))
     rc = -1;
   snprintf(path, sizeof(path), "%s/nested", mnt);
   if (rc == 0 && (stat(path, &st) != 0 || !S_ISDIR(st.st_mode) || !directory_has(path, "inline")))
@@ -917,8 +915,7 @@ static int run_fsck(const char *image)
 }
 
 static int check_persisted_blocks(const char *image, uint32_t ino, const void *expected,
-                                  uint64_t expected_size, uint32_t block_size,
-                                  uint32_t block_count)
+                                  uint64_t expected_size, uint32_t block_size, uint32_t block_count)
 {
   int fd = open(image, O_RDONLY);
   kafs_ssuperblock_t sb;
@@ -928,11 +925,10 @@ static int check_persisted_blocks(const char *image, uint32_t ino, const void *e
   kafs_v7_inode_t inode;
   if (rc == 0)
     rc = read_inode(fd, &report, ino, &inode);
-  if (rc == 0 && (le64toh(inode.size) != expected_size ||
-                  le32toh(inode.blocks) != block_count))
+  if (rc == 0 && (le64toh(inode.size) != expected_size || le32toh(inode.blocks) != block_count))
     rc = -EUCLEAN;
-  uint8_t *actual = rc == 0 ? malloc((size_t)block_size * block_count) : NULL;
-  if (rc == 0 && !actual)
+  uint8_t *actual = rc == 0 && block_count != 0u ? malloc((size_t)block_size * block_count) : NULL;
+  if (rc == 0 && block_count != 0u && !actual)
     rc = -ENOMEM;
   const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(&report);
   for (uint32_t slot = 0; rc == 0 && slot < block_count; ++slot)
@@ -958,7 +954,8 @@ static int check_persisted_blocks(const char *image, uint32_t ino, const void *e
       break;
     }
   }
-  if (rc == 0 && memcmp(actual, expected, (size_t)block_size * block_count) != 0)
+  if (rc == 0 && block_count != 0u &&
+      memcmp(actual, expected, (size_t)block_size * block_count) != 0)
   {
     size_t bytes = (size_t)block_size * block_count;
     size_t mismatch = 0u;
@@ -982,8 +979,7 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
   const char *log_path = "v7-controlled-write.log";
   kafs_test_mount_options_t options = {
       .log_path = log_path,
-      .extra_options =
-          "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
+      .extra_options = "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
       .timeout_ms = 15000,
   };
   pid_t pid = kafs_test_start_kafs_v7_controlled_write(image, mnt, &options);
@@ -1044,8 +1040,7 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
 
   if (rc == 0 && run_fsck(image) != 0)
     rc = -1;
-  if (rc == 0 &&
-      check_persisted_blocks(image, ino, payload, truncate_size, block_size, 3u) != 0)
+  if (rc == 0 && check_persisted_blocks(image, ino, payload, truncate_size, block_size, 3u) != 0)
     rc = -1;
   if (rc == 0)
   {
@@ -1065,6 +1060,31 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
       kafs_test_stop_kafs("mnt-controlled-remount", pid);
     }
   }
+  if (rc == 0)
+  {
+    kafs_test_mount_options_t truncate_options = {
+        .log_path = "v7-controlled-open-trunc.log",
+        .extra_options =
+            "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
+        .timeout_ms = 15000,
+    };
+    pid = kafs_test_start_kafs_v7_controlled_write(image, "mnt-controlled-open-trunc",
+                                                   &truncate_options);
+    if (pid <= 0)
+      rc = -1;
+    else
+    {
+      snprintf(path, sizeof(path), "%s/block", "mnt-controlled-open-trunc");
+      int truncate_fd = open(path, O_WRONLY | O_TRUNC);
+      if (truncate_fd < 0 || close(truncate_fd) != 0)
+        rc = -1;
+      kafs_test_stop_kafs("mnt-controlled-open-trunc", pid);
+    }
+  }
+  if (rc == 0 && run_fsck(image) != 0)
+    rc = -1;
+  if (rc == 0 && check_persisted_blocks(image, ino, NULL, 0u, block_size, 0u) != 0)
+    rc = -1;
   free(payload);
   return rc;
 }
@@ -1080,8 +1100,7 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
            kafs_v7_test_fault_name(fault));
   kafs_test_mount_options_t options = {
       .log_path = crash_log,
-      .extra_options =
-          "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
+      .extra_options = "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
       .timeout_ms = 15000,
   };
   if (setenv(KAFS_V7_TEST_CRASH_POINT_ENV, kafs_v7_test_fault_name(fault), 1) != 0)
@@ -1107,16 +1126,15 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
   if (fd >= 0)
     close(fd);
   int status = 0;
-  if (rc == 0 &&
-      (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) ||
-       WEXITSTATUS(status) != kafs_v7_test_fault_exit_status(fault)))
+  if (rc == 0 && (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) ||
+                  WEXITSTATUS(status) != kafs_v7_test_fault_exit_status(fault)))
     rc = -1;
   kafs_test_stop_kafs(mnt, pid);
 
   options.log_path = recovery_log;
-  pid = rc == 0 ? kafs_test_start_kafs_v7_controlled_write(
-                       image, "mnt-controlled-recovery", &options)
-                : -1;
+  pid = rc == 0
+            ? kafs_test_start_kafs_v7_controlled_write(image, "mnt-controlled-recovery", &options)
+            : -1;
   if (pid <= 0)
     rc = -1;
   else
@@ -1129,15 +1147,12 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
   }
   if (rc == 0 && run_fsck(image) != 0)
   {
-    fprintf(stderr, "truncate recovery fsck failed fault=%s\n",
-            kafs_v7_test_fault_name(fault));
+    fprintf(stderr, "truncate recovery fsck failed fault=%s\n", kafs_v7_test_fault_name(fault));
     rc = -1;
   }
-  if (rc == 0 &&
-      check_persisted_blocks(image, ino, payload, truncate_size, block_size, 2u) != 0)
+  if (rc == 0 && check_persisted_blocks(image, ino, payload, truncate_size, block_size, 2u) != 0)
   {
-    fprintf(stderr, "truncate recovery payload failed fault=%s\n",
-            kafs_v7_test_fault_name(fault));
+    fprintf(stderr, "truncate recovery payload failed fault=%s\n", kafs_v7_test_fault_name(fault));
     rc = -1;
   }
   if (rc != 0)
@@ -1154,8 +1169,7 @@ static int check_controlled_reclaim_recovery(const char *image)
   int early_exit_status = -1;
   kafs_test_mount_options_t options = {
       .log_path = "v7-controlled-reclaim-crash.log",
-      .extra_options =
-          "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
+      .extra_options = "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
       .timeout_ms = 15000,
       .early_exit_status = &early_exit_status,
   };
@@ -1169,8 +1183,7 @@ static int check_controlled_reclaim_recovery(const char *image)
     kafs_test_stop_kafs("mnt-reclaim-crash", pid);
     return -1;
   }
-  if (early_exit_status !=
-      kafs_v7_test_fault_exit_status(KAFS_V7_TEST_FAULT_JOURNAL_RECLAIM))
+  if (early_exit_status != kafs_v7_test_fault_exit_status(KAFS_V7_TEST_FAULT_JOURNAL_RECLAIM))
     return -1;
   if (check_nonempty_journal_count(image, 1u) != 0)
     return -1;
@@ -1228,8 +1241,7 @@ static int make_unpaired_generation(const char *path)
     kafs_v7_layout_header_t *header = (kafs_v7_layout_header_t *)report.descriptor;
     header->generation = htole64(le64toh(header->generation) + 1u);
     header->descriptor_crc32 = 0u;
-    header->descriptor_crc32 =
-        htole32(kafs_v7_crc32(report.descriptor, report.descriptor_bytes));
+    header->descriptor_crc32 = htole32(kafs_v7_crc32(report.descriptor, report.descriptor_bytes));
     rc = kafs_pwrite_all(fd, report.descriptor, report.descriptor_bytes,
                          (off_t)report.descriptors[0].offset);
   }
@@ -1331,12 +1343,17 @@ int main(void)
   if (copy_image(image, unpaired) != 0 || make_unpaired_generation(unpaired) != 0)
     return 1;
   char output[8192];
-  char *argv[] = {(char *)kafs_test_kafs_v7_bin(), (char *)"--image", (char *)unpaired,
-                  (char *)"--inspection-mount", (char *)"missing-mnt", (char *)"-o",
-                  (char *)"ro", NULL};
+  char *argv[] = {(char *)kafs_test_kafs_v7_bin(),
+                  (char *)"--image",
+                  (char *)unpaired,
+                  (char *)"--inspection-mount",
+                  (char *)"missing-mnt",
+                  (char *)"-o",
+                  (char *)"ro",
+                  NULL};
   if (run_command(argv, 2, output, sizeof(output)) != 0 ||
-      !strstr(output, "admission preflight failed") || strstr(output, "selected descriptor retained") ||
-      strstr(output, "bad mount point"))
+      !strstr(output, "admission preflight failed") ||
+      strstr(output, "selected descriptor retained") || strstr(output, "bad mount point"))
   {
     fprintf(stderr, "unpaired v7 descriptor generation reached FUSE unexpectedly:\n%s\n", output);
     return 1;

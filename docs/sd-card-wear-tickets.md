@@ -3238,14 +3238,27 @@
 - 完了条件:
   - partial tailのlogical EOF以降がzeroで、削除slot、inode blocks、allocator counterが一致する。
   - crash recovery後にold inodeまたは縮小済みinodeの混在しないtransaction stateへ収束する。
-  - truncateによる拡張、hole/indirect file、`O_TRUNC`は引き続き拒否する。
+  - truncateによる拡張、hole/indirect fileは引き続き拒否する。
+
+### SDW-V7RT-T36 bounded open truncate
+
+- 目的: `open(2)`の`O_TRUNC`をbounded direct truncateへ接続し、handle公開前にsize-0 transactionを完了する。
+- 変更:
+  - v7 controlled-writeでは`O_TRUNC`をlegacy mutation guardから外し、write access確認後にdirect truncate adapterを
+    inode lock下で実行する。失敗時はfile handle/open countを公開しない。
+  - write accessを伴わない`O_TRUNC`は`EACCES`、direct-only regular file以外は既存adapterの境界で拒否する。
+  - 実FUSE smokeは`open(O_WRONLY|O_TRUNC)`後のsize/blocks/references、offline fsckを検証する。LinuxがOPEN内の
+    flagまたはSETATTR+OPENのどちらへ分解しても、同じsize-0 transaction contractへ収束する。
+- 完了条件:
+  - successful openの時点でinodeはsize 0かつblocks 0で、旧direct blocksはretirement済みである。
+  - journal/checkpoint recoveryはT35のsize-0を含むtruncate transaction contractを再利用する。
 
 ---
 
 ## 次に着手する候補
 
-1. M8-Aの次sliceとして、`O_TRUNC`をcreate/open policyからbounded direct truncateへ接続し、open時の
-   permission/locking/error contractとrecoveryを検証する。
+1. M8-Bの最初のsliceとして、空regular inode作成と親directory record追加をsingle-group transactionへ載せ、
+   create/openのhandle公開、free-inode counter、全closeout中断点からのrecoveryを検証する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の
