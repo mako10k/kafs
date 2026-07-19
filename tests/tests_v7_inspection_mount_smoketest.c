@@ -1072,6 +1072,16 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
       rc = -1;
     }
   }
+  if (rc == 0)
+  {
+    snprintf(path, sizeof(path), "%s/nested/g", mnt);
+    int grown_created_fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (grown_created_fd < 0 || close(grown_created_fd) != 0)
+    {
+      fprintf(stderr, "controlled inline-directory growth create failed: errno=%d\n", errno);
+      rc = -1;
+    }
+  }
   kafs_test_stop_kafs(mnt, pid);
   if (rc == 0 && check_fuse_contract_log(log_path, "controlled-write", block_size, 1) != 0)
   {
@@ -1121,10 +1131,17 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
         rc = -1;
       }
       snprintf(path, sizeof(path), "%s/nested/x", "mnt-controlled-remount");
-      if (rc == 0 && (stat(path, &created_st) != 0 || !S_ISREG(created_st.st_mode) ||
-                      created_st.st_size != 0))
+      if (rc == 0 &&
+          (stat(path, &created_st) != 0 || !S_ISREG(created_st.st_mode) || created_st.st_size != 0))
       {
         fprintf(stderr, "controlled inline-parent file remount stat failed\n");
+        rc = -1;
+      }
+      snprintf(path, sizeof(path), "%s/nested/g", "mnt-controlled-remount");
+      if (rc == 0 &&
+          (stat(path, &created_st) != 0 || !S_ISREG(created_st.st_mode) || created_st.st_size != 0))
+      {
+        fprintf(stderr, "controlled grown-directory file remount stat failed\n");
         rc = -1;
       }
       kafs_test_stop_kafs("mnt-controlled-remount", pid);
@@ -1235,14 +1252,15 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
 }
 
 static int check_controlled_create_recovery(const char *image, kafs_v7_test_fault_point_t fault,
-                                            const char *relative_path, uint64_t mutation_count)
+                                            const char *scenario, const char *relative_path,
+                                            uint64_t mutation_count)
 {
   char crash_log[PATH_MAX];
   char recovery_log[PATH_MAX];
-  snprintf(crash_log, sizeof(crash_log), "v7-create-%" PRIu64 "-%s-crash.log", mutation_count,
+  snprintf(crash_log, sizeof(crash_log), "v7-create-%s-%s-crash.log", scenario,
            kafs_v7_test_fault_name(fault));
-  snprintf(recovery_log, sizeof(recovery_log), "v7-create-%" PRIu64 "-%s-recovery.log",
-           mutation_count, kafs_v7_test_fault_name(fault));
+  snprintf(recovery_log, sizeof(recovery_log), "v7-create-%s-%s-recovery.log", scenario,
+           kafs_v7_test_fault_name(fault));
   kafs_test_mount_options_t options = {
       .log_path = crash_log,
       .extra_options = "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
@@ -1271,9 +1289,8 @@ static int check_controlled_create_recovery(const char *image, kafs_v7_test_faul
   kafs_test_stop_kafs("mnt-create-crash", pid);
 
   options.log_path = recovery_log;
-  pid = rc == 0
-            ? kafs_test_start_kafs_v7_controlled_write(image, "mnt-create-recovery", &options)
-            : -1;
+  pid = rc == 0 ? kafs_test_start_kafs_v7_controlled_write(image, "mnt-create-recovery", &options)
+                : -1;
   if (pid <= 0)
     rc = -1;
   else
@@ -1462,7 +1479,8 @@ int main(void)
     char create_recovery[PATH_MAX];
     snprintf(create_recovery, sizeof(create_recovery), "v7-create-recovery-%zu.img", i);
     if (copy_image(image, create_recovery) != 0 ||
-        check_controlled_create_recovery(create_recovery, create_faults[i], "recovered", 4u) != 0)
+        check_controlled_create_recovery(create_recovery, create_faults[i], "block", "recovered",
+                                         4u) != 0)
     {
       fprintf(stderr, "v7 controlled create recovery failed fault=%s\n",
               kafs_v7_test_fault_name(create_faults[i]));
@@ -1470,9 +1488,19 @@ int main(void)
     }
     snprintf(create_recovery, sizeof(create_recovery), "v7-inline-create-recovery-%zu.img", i);
     if (copy_image(image, create_recovery) != 0 ||
-        check_controlled_create_recovery(create_recovery, create_faults[i], "nested/y", 2u) != 0)
+        check_controlled_create_recovery(create_recovery, create_faults[i], "inline", "nested/y",
+                                         2u) != 0)
     {
       fprintf(stderr, "v7 controlled inline-parent create recovery failed fault=%s\n",
+              kafs_v7_test_fault_name(create_faults[i]));
+      return 1;
+    }
+    snprintf(create_recovery, sizeof(create_recovery), "v7-growth-create-recovery-%zu.img", i);
+    if (copy_image(image, create_recovery) != 0 ||
+        check_controlled_create_recovery(create_recovery, create_faults[i], "growth", "nested/grow",
+                                         4u) != 0)
+    {
+      fprintf(stderr, "v7 controlled inline-directory growth recovery failed fault=%s\n",
               kafs_v7_test_fault_name(create_faults[i]));
       return 1;
     }

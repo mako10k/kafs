@@ -419,9 +419,60 @@ int kafs_v7_fuse_create_in_direct_directory(kafs_context_t *ctx, kafs_inocnt_t p
     int rc = kafs_v7_fuse_directory_append(parent.inline_or_block_refs,
                                            sizeof(parent.inline_or_block_refs), name, name_bytes,
                                            ino, &new_size);
-    if (rc != 0)
+    if (rc != 0 && rc != -ENOSPC)
       return rc;
-    parent.size = htole64(new_size);
+    if (rc == 0)
+    {
+      parent.size = htole64(new_size);
+      kafs_v7_journal_patch_t patches[2] = {
+          {.target_type = KAFS_V7_JOURNAL_TARGET_INODE,
+           .logical_index = parent_ino,
+           .patch_bytes = sizeof(parent),
+           .patch = &parent},
+          {.target_type = KAFS_V7_JOURNAL_TARGET_INODE,
+           .logical_index = ino,
+           .patch_bytes = sizeof(child),
+           .patch = &child,
+           .free_inodes_delta = -1},
+      };
+      kafs_v7_runtime_transaction_result_t transaction;
+      rc = kafs_v7_runtime_transaction_commit(ctx->c_v7_runtime_transactions, patches, 2u,
+                                              &transaction);
+      if (rc == 0)
+        *ino_out = ino;
+      return rc;
+    }
+
+    kafs_v7_runtime_data_cow_request_t request = {
+        .group_id = parent_shard->group_id,
+        .retained_logical_block = KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK,
+    };
+    kafs_v7_runtime_data_cow_t *operation = NULL;
+    kafs_v7_runtime_data_cow_plan_t plan;
+    rc = kafs_v7_runtime_data_cow_prepare(ctx->c_v7_runtime_transactions, &request, &operation,
+                                          &plan);
+    uint8_t *block = rc == 0 ? calloc(1u, plan.block_size) : NULL;
+    if (rc == 0 && !block)
+      rc = -ENOMEM;
+    if (rc == 0)
+    {
+      memcpy(block, mapped_parent->inline_or_block_refs,
+             sizeof(mapped_parent->inline_or_block_refs));
+      rc = kafs_v7_fuse_directory_append(block, plan.block_size, name, name_bytes, ino, &new_size);
+    }
+    if (rc == 0)
+      rc = kafs_v7_runtime_data_cow_stage(operation, block, plan.block_size);
+    free(block);
+    if (rc == 0 && plan.logical_block >= UINT32_MAX)
+      rc = -ERANGE;
+    if (rc == 0)
+    {
+      memset(parent.inline_or_block_refs, 0, sizeof(parent.inline_or_block_refs));
+      uint32_t reference = htole32((uint32_t)plan.logical_block + 1u);
+      memcpy(parent.inline_or_block_refs, &reference, sizeof(reference));
+      parent.size = htole64(new_size);
+      parent.blocks = htole32(1u);
+    }
     kafs_v7_journal_patch_t patches[2] = {
         {.target_type = KAFS_V7_JOURNAL_TARGET_INODE,
          .logical_index = parent_ino,
@@ -433,9 +484,11 @@ int kafs_v7_fuse_create_in_direct_directory(kafs_context_t *ctx, kafs_inocnt_t p
          .patch = &child,
          .free_inodes_delta = -1},
     };
-    kafs_v7_runtime_transaction_result_t transaction;
-    rc = kafs_v7_runtime_transaction_commit(ctx->c_v7_runtime_transactions, patches, 2u,
-                                            &transaction);
+    kafs_v7_runtime_data_cow_result_t cow_result;
+    if (rc == 0)
+      rc = kafs_v7_runtime_data_cow_commit(&operation, patches, 2u, &cow_result);
+    if (operation)
+      (void)kafs_v7_runtime_data_cow_abort(&operation);
     if (rc == 0)
       *ino_out = ino;
     return rc;
