@@ -75,6 +75,35 @@ int kafs_v7_fuse_write_direct(kafs_context_t *ctx, kafs_inocnt_t ino, const void
   if (!buf)
     return -EINVAL;
 
+  if (ctx && ctx->c_v7_runtime_transactions && kafs_v7_fuse_policy_controlled_write_active(ctx))
+  {
+    const kafs_v7_inode_t *mapped = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(ctx, ino);
+    uint64_t old_size = mapped ? le64toh(mapped->size) : 0u;
+    uint64_t inline_capacity = sizeof(mapped->inline_or_block_refs);
+    if (mapped && S_ISREG(le16toh(mapped->mode)) && old_size <= inline_capacity &&
+        le32toh(mapped->blocks) == 0u && offset <= old_size && size <= UINT64_MAX - offset &&
+        offset + size <= inline_capacity)
+    {
+      kafs_v7_inode_t inode;
+      memcpy(&inode, mapped, sizeof(inode));
+      memcpy(inode.inline_or_block_refs + offset, buf, size);
+      if (offset + size > old_size)
+        inode.size = htole64(offset + size);
+      kafs_v7_journal_patch_t inode_patch = {
+          .target_type = KAFS_V7_JOURNAL_TARGET_INODE,
+          .logical_index = ino,
+          .patch_bytes = sizeof(inode),
+          .patch = &inode,
+      };
+      kafs_v7_runtime_transaction_result_t transaction;
+      int inline_rc = kafs_v7_runtime_transaction_commit(ctx->c_v7_runtime_transactions,
+                                                         &inode_patch, 1u, &transaction);
+      return inline_rc == 0 ? (int)size : inline_rc;
+    }
+    if (mapped && old_size <= inline_capacity && le32toh(mapped->blocks) == 0u)
+      return -EOPNOTSUPP;
+  }
+
   const kafs_v7_inode_t *mapped_inode = NULL;
   uint32_t group_id = 0u;
   uint32_t first_slot = 0u;

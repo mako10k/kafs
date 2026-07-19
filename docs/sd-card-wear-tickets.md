@@ -3265,14 +3265,27 @@
     検証する。
 - 完了条件:
   - directory record、新inode、free-inode counterの一部だけが可視になる状態を通常closeoutで残さない。
-  - inline directory、directory growth、cross-group inode allocation、mkdir、create直後write連結は未対応とする。
+  - inline directory、directory growth、cross-group inode allocation、mkdirは未対応とする。
+
+### SDW-V7RT-T38 create recovery and inline write chaining
+
+- 目的: empty create直後の同一handle writeを成立させ、create transaction固有の中断回復を固定する。
+- 変更:
+  - size 60 bytes以下かつblocks 0のregular inode writeはinode inline payloadを直接transaction commitする。
+    inlineからblock-backedへの表現移行は別境界として拒否する。
+  - 実FUSE smokeは`O_CREAT|O_EXCL`で得たhandleへwrite/full-fsyncし、read-only remountでsize/payloadを検証する。
+  - createの4 mutations（allocator bitmap/summary、親inode、子inode）についてjournal publish、metadata apply、
+    checkpoint copyの各中断点からdirectory entry、空inode、free counters、fsckが収束することを検証する。
+- 完了条件:
+  - create成功後のhandleが直ちにinline write可能で、block referenceをinline payloadとして誤読しない。
+  - 各中断点からcreate全体が復旧し、部分的なdirectory/inode visibilityを残さない。
 
 ---
 
 ## 次に着手する候補
 
-1. M8-Bの次sliceとして、empty create transactionの全closeout中断点recoveryを追加し、create直後のdirect writeを
-   同じopen handleから成立させる。
+1. M8-Bの次sliceとして、inline parent directoryへのrecord追加をinode-only transactionへ載せ、inline/full-block
+   directory両方のcreate placementを揃える。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の
