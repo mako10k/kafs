@@ -115,11 +115,12 @@ int kafs_v7_fuse_write_direct(kafs_context_t *ctx, kafs_inocnt_t ino, const void
                                        &first_slot, &block_count, retained);
   if (rc != 0)
     return rc;
+  if (block_count == 0u)
+    return -EUCLEAN;
 
-  if (block_count > 1u)
   {
-    kafs_v7_runtime_data_cow_request_t requests[KAFS_V7_INODE_DIRECT_REFERENCE_COUNT];
-    kafs_v7_runtime_data_cow_plan_t plans[KAFS_V7_INODE_DIRECT_REFERENCE_COUNT];
+    kafs_v7_runtime_data_cow_request_t requests[KAFS_V7_INODE_DIRECT_REFERENCE_COUNT] = {0};
+    kafs_v7_runtime_data_cow_plan_t plans[KAFS_V7_INODE_DIRECT_REFERENCE_COUNT] = {0};
     for (size_t i = 0; i < block_count; ++i)
       requests[i] = (kafs_v7_runtime_data_cow_request_t){.group_id = group_id,
                                                          .retained_logical_block = retained[i]};
@@ -212,101 +213,6 @@ int kafs_v7_fuse_write_direct(kafs_context_t *ctx, kafs_inocnt_t ino, const void
     }
     return (int)size;
   }
-
-  uint32_t slot = first_slot;
-  uint64_t retained_block = retained[0];
-
-  kafs_v7_runtime_data_cow_request_t request = {
-      .group_id = group_id,
-      .retained_logical_block = retained_block,
-  };
-  kafs_v7_runtime_data_cow_t *operation = NULL;
-  kafs_v7_runtime_data_cow_plan_t plan;
-  memset(&plan, 0, sizeof(plan));
-  rc =
-      kafs_v7_runtime_data_cow_prepare(ctx->c_v7_runtime_transactions, &request, &operation, &plan);
-  uint8_t *merged = NULL;
-  const void *staged = buf;
-  if (rc == 0 && size != plan.block_size)
-  {
-    merged = malloc(plan.block_size);
-    if (!merged)
-      rc = -ENOMEM;
-    if (rc == 0 && retained_block == KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK)
-      memset(merged, 0, plan.block_size);
-    else
-    {
-      uint64_t retained_physical_off = 0u;
-      if (rc == 0)
-        rc = kafs_ctx_v7_data_ref_physical_offset(ctx, (kafs_blkcnt_t)retained_block + 1u,
-                                                  &retained_physical_off);
-      if (rc == 0)
-        rc = kafs_pread_all(ctx->c_fd, merged, plan.block_size, (off_t)retained_physical_off);
-    }
-    if (rc == 0)
-    {
-      memcpy(merged + offset % plan.block_size, buf, size);
-      staged = merged;
-    }
-  }
-  if (rc == 0)
-    rc = kafs_v7_runtime_data_cow_stage(operation, staged, plan.block_size);
-  free(merged);
-
-  kafs_v7_inode_t inode;
-  memcpy(&inode, mapped_inode, sizeof(inode));
-  if (rc == 0)
-  {
-    if (plan.logical_block >= UINT32_MAX)
-      rc = -ERANGE;
-  }
-  if (rc == 0)
-  {
-    uint32_t reference = htole32((uint32_t)plan.logical_block + 1u);
-    memcpy(inode.inline_or_block_refs + slot * sizeof(reference), &reference, sizeof(reference));
-    uint64_t request_end = offset + size;
-    if (request_end > le64toh(inode.size))
-      inode.size = htole64(request_end);
-    if (retained_block == KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK)
-    {
-      if (le32toh(inode.blocks) == UINT32_MAX)
-        rc = -EOVERFLOW;
-      else
-        inode.blocks = htole32(le32toh(inode.blocks) + 1u);
-    }
-  }
-  kafs_v7_journal_patch_t inode_patch = {
-      .target_type = KAFS_V7_JOURNAL_TARGET_INODE,
-      .logical_index = ino,
-      .patch_bytes = sizeof(inode),
-      .patch = &inode,
-  };
-  kafs_v7_runtime_data_cow_result_t cow_result;
-  if (rc == 0)
-    rc = kafs_v7_runtime_data_cow_commit(&operation, &inode_patch, 1u, &cow_result);
-  if (operation)
-    (void)kafs_v7_runtime_data_cow_abort(&operation);
-  if (rc != 0)
-    return rc;
-
-  int retirement_rc = 0;
-  if (retained_block != KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK)
-  {
-    kafs_v7_runtime_data_retirement_request_t retirement = {
-        .group_id = group_id,
-        .logical_block = retained_block,
-    };
-    kafs_v7_runtime_data_retirement_result_t retirement_result;
-    retirement_rc = kafs_v7_runtime_data_retire(ctx->c_v7_runtime_transactions, &retirement,
-                                                &retirement_result);
-  }
-  if (result)
-  {
-    result->new_logical_block = cow_result.data.logical_block;
-    result->retained_logical_block = retained_block;
-    result->retirement_rc = retirement_rc;
-  }
-  return (int)size;
 }
 
 static uint32_t kafs_v7_fuse_inode_reference(const kafs_v7_inode_t *inode, uint32_t slot)
