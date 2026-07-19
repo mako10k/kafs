@@ -1,5 +1,5 @@
 '.\" -*- nroff -*-
-.TH KAFSRESIZE 8 "2026-03-17" "kafs 0.4.0" "System Administration"
+.TH KAFSRESIZE 8 "2026-07-19" "kafs 0.4.0" "System Administration"
 .SH NAME
 kafsresize \- grow offline KAFS images and create migration target images
 .SH SYNOPSIS
@@ -25,7 +25,7 @@ kafsresize \- grow offline KAFS images and create migration target images
 .B --dst-image
 .I image
 .B --format-version
-.I 6
+.I 6|7
 .B --inodes
 .I I
 .RI [ --dry-run ]
@@ -77,16 +77,20 @@ Validate migration-create inputs without writing
 .BR --dst-image .
 For
 .B --format-version 6
+or
+.B --format-version 7
 this requires
 .B --src-image
 and checks that the source is a clean v5 image, that destination inode and data
-capacity can hold the currently used source counts, and that v6 descriptor
-replica placement is valid.
+capacity can hold the currently used source counts, and that the selected
+descriptor-backed layout is valid.
 .TP
 .B --src-image image
 Source image used by
 migration precheck. It is required for
 .B --format-version 6
+or
+.B --format-version 7
 and is validated before the destination image is overwritten.
 .TP
 .B --size-bytes N
@@ -122,6 +126,15 @@ with
 .B --src-image
 to run the clean-v5 source precheck before creating the offline v6 descriptor
 destination scaffold.
+Use
+.BR --format-version 7
+with
+.B --src-image
+to run the same source and capacity precheck using the accepted v7 group-local
+layout planner before creating a destination accepted by
+.BR kafsdump (8),
+.BR fsck.kafs (8),
+and the v7 inspection runtime.
 .TP
 .B --journal-size-bytes N
 Optional journal size forwarded to

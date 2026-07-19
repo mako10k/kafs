@@ -81,7 +81,7 @@ kafsimage_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 kafsimage_LDADD = $(KAFS_LIBS)
 
 # offline image grow tool (grow-only)
-kafsresize_SOURCES = kafsresize.c
+kafsresize_SOURCES = kafsresize.c kafs_v7_layout.c kafs_v7_journal.c kafs_v7_mutation.c
 kafsresize_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 kafsresize_LDADD = $(KAFS_LIBS)
 

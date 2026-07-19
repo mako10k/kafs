@@ -506,6 +506,33 @@ static int kafs_v7_plan(const kafs_v7_mkfs_options_t *options, kafs_v7_geometry_
   return -ENOSPC;
 }
 
+int kafs_v7_mkfs_plan(const kafs_v7_mkfs_options_t *options, kafs_v7_mkfs_plan_t *plan)
+{
+  if (!plan)
+    return -EINVAL;
+  kafs_v7_geometry_t geometry;
+  int rc = kafs_v7_plan(options, &geometry);
+  if (rc != 0)
+    return rc;
+  uint64_t data_bytes;
+  if (kafs_v7_mul_u64(geometry.data_blocks, options->block_size, &data_bytes) != 0 ||
+      data_bytes > options->image_size_bytes)
+    return -EOVERFLOW;
+  *plan = (kafs_v7_mkfs_plan_t){
+      .image_size_bytes = options->image_size_bytes,
+      .metadata_bytes = options->image_size_bytes - data_bytes,
+      .data_blocks = geometry.data_blocks,
+      .first_data_block = geometry.groups[0].data_off / options->block_size,
+      .block_size = options->block_size,
+      .inode_count = options->inode_count,
+      .group_count = geometry.group_count,
+      .replica_count = geometry.replica_count,
+      .descriptor_bytes = geometry.descriptor_bytes,
+      .journal_segment_count = geometry.journal_segment_count,
+  };
+  return 0;
+}
+
 static void kafs_v7_shard_set(kafs_v7_shard_desc_t *shard, uint16_t type, uint16_t storage_class,
                               uint32_t group_id, uint64_t physical_off, uint64_t physical_bytes,
                               uint64_t logical_start, uint64_t logical_count, uint32_t record_bytes)

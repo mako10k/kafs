@@ -3121,12 +3121,31 @@
   - valid recovery recordはtext/JSONで同じstage/counterを返し、不正recordはexit status 1になる。
   - image inspectionの既存CLI、text/JSON schema、終了statusを変更しない。
 
+### SDW-V7RT-T29 v5-to-v7 migration target creation
+
+- 目的: clean v5 sourceからaccepted v7 destinationを作るoffline cutover入口を`kafsresize`へ追加し、
+  destination geometryとsource収容量を作成前に検証する。
+- 変更:
+  - v7 layout ownerへwrite-free `kafs_v7_mkfs_plan` APIを追加し、mkfsと同じgroup/replica/data capacity
+    計算をdry-runとpreflightで共有する。
+  - `kafsresize --migrate-create --src-image <v5> --format-version 7`を許可し、clean source、inode count、
+    source used data bytes、v7 descriptor/group/journal geometryをdestination overwrite前に検証する。
+  - dry-runはv7 descriptor bytes、replica count、group count、journal segment count、group placement policyを
+    出力し、destinationへ書き込まない。
+  - 実作成後にsource `kafsdump --json`不変、destination accepted v7 superblock、`kafsdump --json`、
+    `fsck.kafs --check`を回帰検証する。source未指定はdestinationを変更せずfail closedとする。
+- 完了条件:
+  - v7 migration planと`mkfs.kafs --format-version 7`のgeometryが同じv7-owned plannerから得られる。
+  - source/destination block sizeが異なる場合もdata capacityをbytesで比較する。
+  - 作成されたdestinationはaccepted offline/inspection surfaceで検証可能で、source imageを変更しない。
+
 ---
 
 ## 次に着手する候補
 
-1. accepted offline/inspection surfaceに`kafsresize --migrate-create --format-version 7`を追加する。
-   partial-block merge、file growth、indirect/multi-block write、`create`は引き続き別slice。
+1. 既存allocated blockに限定したpartial-block overwrite mergeをv7 transactionへ追加し、read-modify-COW、
+   full fsync、power-interruption recoveryを実FUSEで検証する。file growth、indirect/multi-block write、
+   `create`は引き続き別slice。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の
