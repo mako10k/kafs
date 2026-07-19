@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 struct kafs_v7_runtime_transaction_service
 {
@@ -473,6 +474,9 @@ static int kafs_v7_runtime_data_cow_publish(kafs_v7_runtime_data_cow_t *operatio
 static int kafs_v7_runtime_data_cow_finish(kafs_v7_runtime_data_cow_t *operation,
                                            kafs_v7_runtime_data_cow_result_t *result, int rc)
 {
+  const char *crash_after_publish = getenv("KAFS_V7_TEST_CRASH_AFTER_JOURNAL_PUBLISH");
+  if (rc == 0 && crash_after_publish && strcmp(crash_after_publish, "1") == 0)
+    _exit(86);
   if (rc == 0)
     rc = kafs_v7_runtime_transaction_closeout(operation->service, &result->transaction);
   if (operation->reservation.active)

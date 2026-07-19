@@ -3012,11 +3012,28 @@
   - 実FUSE経由でT20の限定writeだけが成功し、unmount後のfsckとraw dataが一致する。
   - v4/v5/v6 runtime behaviorとv7 inspection-only behaviorを変更しない。
 
+### SDW-V7RT-T22 controlled-write admission recovery
+
+- 目的: full-block overwriteのdurable journal publication後にprocess/power interruptionが発生したimageを、
+  次回controlled-write admissionで安全にcloseoutして再利用可能にする。
+- 変更:
+  - controlled-write admissionはruntime mmap構築前にraw v7 layoutを検証し、non-empty journalがある場合だけ
+    一時v7 lock state下でmetadata apply、checkpoint redundancy/publication、covered journal reclaimを再開する。
+  - closeout後にimageを再検証し、journalが空にならなければFUSE開始前にfail closedとする。inspection preflightは
+    read-onlyのままでnon-empty journalを変更せず拒否する。
+  - test-only crash hookでdata COW journal publication直後にFUSE serverを終了し、同じimageのcontrolled-write
+    再起動、fsck、raw inode/data read-backまでを実mount smokeで検証する。
+- 完了条件:
+  - committed journal prefixは次回controlled-write admissionでexactly-onceに収束する。
+  - incomplete/invalid journal、descriptor/checkpoint corruptionは修復対象にせずfail closedとする。
+  - recoveryを伴わないmountとv4/v5/v6 runtime behaviorを変更しない。
+
 ---
 
 ## 次に着手する候補
 
-1. controlled-writeの各durability stageでprocess/power interruptionを模擬するrecovery matrixを追加する。
+1. controlled-writeのmetadata apply後、checkpoint replica 1コピー後、journal reclaim途中でも実FUSE process
+   interruptionを模擬し、admission recovery matrixを全durability stageへ拡張する。
    partial-block merge、file growth、indirect/multi-block write、`create`は引き続き別slice。
 2. power-interruption recovery matrixを完了した後、accepted offline/inspection surfaceに
    `kafsresize --migrate-create --format-version 7`を追加する。

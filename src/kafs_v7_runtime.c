@@ -2,11 +2,14 @@
 
 #include "kafs_context.h"
 #include "kafs_v7_admission.h"
+#include "kafs_v7_checkpoint.h"
 #include "kafs_v7_fuse_policy.h"
+#include "kafs_v7_layout.h"
 #include "kafs_v7_runtime_transaction.h"
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -380,6 +383,46 @@ static int kafs_v7_runtime_admit_context(kafs_context_t *ctx, const kafs_ssuperb
   return kafs_v7_admission_runtime_context(ctx, sbdisk, prot);
 }
 
+static int kafs_v7_runtime_recover_controlled_write(kafs_context_t *ctx,
+                                                    const kafs_ssuperblock_t *sbdisk, FILE *err)
+{
+  uint64_t file_size = 0u;
+  int rc = kafs_offline_detect_file_size(ctx->c_fd, &file_size);
+  kafs_v7_layout_report_t layout;
+  memset(&layout, 0, sizeof(layout));
+  if (rc == 0)
+    rc = kafs_v7_validate_image_fd(ctx->c_fd, sbdisk, file_size, &layout);
+  if (rc != 0 || layout.journal.selected_nonempty_segment_count == 0u)
+  {
+    kafs_v7_layout_report_clear(&layout);
+    return rc;
+  }
+
+  kafs_v7_lock_state_t *locks = NULL;
+  rc = kafs_v7_locks_init(layout.group_count, 0u, &locks);
+  kafs_v7_layout_report_clear(&layout);
+  kafs_v7_metadata_closeout_result_t result;
+  memset(&result, 0, sizeof(result));
+  if (rc == 0)
+    rc = kafs_v7_metadata_closeout_fd(locks, ctx->c_fd, sbdisk, file_size, &result);
+  kafs_v7_locks_destroy(locks);
+  if (rc == 0)
+    rc = kafs_v7_validate_image_fd(ctx->c_fd, sbdisk, file_size, &layout);
+  if (rc == 0 && layout.journal.selected_nonempty_segment_count != 0u)
+    rc = -EUCLEAN;
+  if (rc == 0)
+  {
+    fprintf(err,
+            "format %s controlled write recovery: checkpoint_sequence=%" PRIu64
+            "; applied=%u checkpoint_publications=%u reclaimed_segments=%u.\n",
+            KAFS_V7_TOOL_FORMAT_LABEL, result.final_checkpoint_sequence,
+            result.apply.written_target_count, result.checkpoint_publication_count,
+            result.reclaim.reset_segment_count);
+  }
+  kafs_v7_layout_report_clear(&layout);
+  return rc;
+}
+
 int kafs_v7_runtime_admit_mount_context(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk,
                                         kafs_v7_runtime_mode_t mode, kafs_inocnt_t *inocnt_out,
                                         kafs_blkcnt_t *r_blkcnt_out, FILE *err)
@@ -390,7 +433,11 @@ int kafs_v7_runtime_admit_mount_context(kafs_context_t *ctx, const kafs_ssuperbl
     return -EINVAL;
 
   kafs_v7_fuse_policy_set_controlled_write(ctx, 0);
-  int rc = kafs_v7_runtime_admit_context(ctx, sbdisk, mode);
+  int rc = mode == KAFS_V7_RUNTIME_MODE_CONTROLLED_WRITE
+               ? kafs_v7_runtime_recover_controlled_write(ctx, sbdisk, err)
+               : 0;
+  if (rc == 0)
+    rc = kafs_v7_runtime_admit_context(ctx, sbdisk, mode);
   if (rc == 0)
   {
     if (mode == KAFS_V7_RUNTIME_MODE_INSPECTION)
