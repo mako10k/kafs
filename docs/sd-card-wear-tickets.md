@@ -3294,11 +3294,24 @@
   - inline directory record、子inode、free-inode counterがatomicに可視化される。
   - block-backed/inline parentの両create recoveryが全closeout中断点からfsck cleanへ収束する。
 
+### SDW-V7RT-T40 inline-directory growth on create
+
+- 目的: record余地のないinline directoryを1 direct blockへ変換し、同じcreate transactionで公開する。
+- 変更:
+  - inline payloadを同groupの新data blockへコピーしてrecordを追記し、allocator bitmap/summary、親inodeの
+    block reference/size、同group子inodeを4 mutationsのCOW transactionでatomic commitする。
+  - 元のinline表現にはretire対象blockがないため、checkpoint後のretirementは行わない。
+  - 実FUSE smokeは余地内inline create後の成長create、read-only remount、journal publish、metadata apply、
+    checkpoint copyの各中断点からの回復とoffline fsckを検証する。
+- 完了条件:
+  - directory block allocation、親表現変換、子inode、free countersの一部だけが可視にならない。
+  - 初期境界はinlineから1 direct blockへの変換とし、満杯のdirect directoryを複数blockへ伸長する処理は未対応とする。
+
 ---
 
 ## 次に着手する候補
 
-1. M8-Bの次sliceとして、record余地のないinline parentを1 direct blockへCOW変換し、directory growthとcreateを
+1. M8-Bの次sliceとして、満杯の1-block direct directoryを2 blocksへ伸長し、directory growthとcreateを
    1 transactionへ載せる。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
