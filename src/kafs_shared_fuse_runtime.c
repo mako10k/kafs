@@ -11105,6 +11105,27 @@ static void *kafs_op_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 #endif
   struct fuse_context *fctx = fuse_get_context();
   kafs_context_t *ctx = fctx ? (kafs_context_t *)fctx->private_data : NULL;
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (ctx && conn)
+  {
+    const uint32_t direct_blocks = 12u;
+    uint64_t requested = (uint64_t)ctx->c_v7_block_size * direct_blocks;
+    if (requested > UINT32_MAX)
+      requested = UINT32_MAX;
+    ctx->c_v7_fuse_kernel_max_write = conn->max_write;
+    if (kafs_v7_fuse_policy_controlled_write_active(ctx) && conn->max_write > requested)
+      conn->max_write = (uint32_t)requested;
+    ctx->c_v7_fuse_negotiated_max_write = conn->max_write;
+    ctx->c_v7_atomic_write_max =
+        kafs_v7_fuse_policy_controlled_write_active(ctx) ? conn->max_write : 0u;
+    kafs_log(KAFS_LOG_INFO,
+             "kafs-v7-fuse-contract mode=%s kernel_max_write=%u negotiated_max_write=%u "
+             "atomic_write_max=%u block_size=%u direct_blocks=%u\n",
+             kafs_v7_fuse_policy_controlled_write_active(ctx) ? "controlled-write" : "inspection",
+             ctx->c_v7_fuse_kernel_max_write, ctx->c_v7_fuse_negotiated_max_write,
+             ctx->c_v7_atomic_write_max, ctx->c_v7_block_size, direct_blocks);
+  }
+#endif
   if (ctx && ctx->c_runtime_read_only)
     return ctx;
   if (kafs_v6_fuse_init_suppresses_background_workers(ctx))
