@@ -45,6 +45,34 @@
   scope changes materially. Narrow, self-contained fixes may use an abbreviated
   record, but must still state current evidence and exit criteria before edits.
 
+## Goal And Critical Path Gate
+
+- Derive implementation waves from the shortest dependency path to the current
+  accepted end goal, not from file boundaries, finding counts, apparent cleanup
+  convenience, or the previous wave's local shape.
+- Before assigning priority or starting a wave, extend the Task Start Record
+  with:
+  1. the accepted end goal and current capability position;
+  2. the capability dependency graph and unresolved prerequisites;
+  3. the dependency this wave closes and the downstream capabilities it
+     unlocks;
+  4. comparison with credible alternative orderings; and
+  5. an explicit local-optimum check showing that the wave shortens the path to
+     the goal rather than only improving an isolated component.
+- Static-analysis findings, age, authorship, existing ticket order, and code
+  proximity may inform risk and effort but may not determine wave priority.
+  Correctness, data-integrity, and durability findings are mandatory path
+  constraints, regardless of where they were introduced.
+- Keep every confirmed finding owned and assigned a disposition even when it is
+  off the current critical path. Off-path does not mean unrelated, accepted, or
+  exempt from recovery.
+- At each wave closeout, verify the dependency was actually closed, refresh the
+  graph from current evidence, and recompute the shortest path before selecting
+  the next wave. Do not advance mechanically from a prior plan or handoff.
+- Use history and `git blame` only as BlameCheck evidence for design intent,
+  constraints, and change context. Never use authorship, age, or provenance to
+  transfer responsibility, lower priority, or exclude a finding.
+
 ## Build And Test
 
 - Bootstrap and default build:
@@ -102,7 +130,8 @@
 - After broad PR/update work, run clone/static gates and report PASS/FAIL with the exact commands that ran.
 - If a tool is missing or a sandbox/permission issue prevents verification, report that explicitly and include the command that could not run.
 - These are completion and escape-detection controls. They do not replace the
-  Task Start Gate or justify an implementation boundary by themselves.
+  Task Start Gate, Goal And Critical Path Gate, or justify an implementation
+  boundary by themselves.
 
 ## Codex Project Setup
 

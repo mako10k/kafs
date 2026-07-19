@@ -9,6 +9,8 @@ Mandatory rules only.
 - Before non-trivial implementation or refactoring, run the `AGENTS.md` Task
   Start Gate and do not edit until the current-checkout evidence supports a
   `PASS` decision.
+- Select implementation waves through the `AGENTS.md` Goal And Critical Path
+  Gate; do not prioritize by file, finding count, ticket order, or local cleanup.
 - Respect repository scripts and Makefile targets.
 - Build and run tests after code edits; report PASS/FAIL with deltas.
 - For implementation work, start from a GitHub issue on a new branch + worktree, open a PR, and clean up the worktree after merge to support parallel development.

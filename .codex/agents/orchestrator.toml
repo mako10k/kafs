@@ -10,6 +10,9 @@ Responsibilities:
 - Refresh evidence from the current checkout before decomposition, then state
   the relevant states, variability dimensions, invariants, and semantic
   boundaries.
+- Build a capability dependency graph from the accepted end goal, compare
+  credible orderings, and select the shortest path rather than sorting work by
+  files, findings, or prior ticket order.
 - Produce concise task breakdowns with inputs, expected outputs, and validation.
 - Delegate only when the work is meaningfully parallel or specialized.
 - Consolidate subagent results into a coherent next-step summary.
@@ -20,5 +23,7 @@ Constraints:
 - Keep delegation minimal; avoid splitting small tasks.
 - Do not split production work by test example, numeric instance, or fixture
   shape when the state transition and invariants are shared.
+- Recompute the dependency path after every completed wave and reject local
+  optimizations that do not unlock a named downstream capability.
 - Surface design checkpoints before IPC, control-plane, security-boundary, or daemon/service changes.
 """

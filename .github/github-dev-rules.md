@@ -61,6 +61,11 @@
 - 非自明な実装・refactorは、`AGENTS.md`のTask Start Gateでcurrent checkoutのevidence、前提、
   状態・不変条件、再定義した終了条件を確認し、`PASS`となってから開始する。
 - ticketとの対応やmilestoneとの整合だけではTask Start Gateの代替にならない。
+- waveの優先順位は`AGENTS.md`のGoal And Critical Path Gateに従い、accepted end goalへの能力依存上の
+  最短経路から決定する。file、静的解析件数、既存ticket順、直前waveの形を優先順位にしない。
+- 各wave終了時に依存graphをcurrent evidenceから再計算し、局所改善を次waveへ機械的に継続しない。
+- `git blame`と履歴は設計意図・制約・変更文脈を確認するBlameCheckに限定し、責任転嫁、優先度低下、
+  対応除外には使用しない。
 
 ## ラベル運用 (推奨)
 
