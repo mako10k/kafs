@@ -2976,15 +2976,33 @@
   - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineの87件・1,246行
     （2.58%）で、今回変更したmodule由来のcloneは0件。新規retirement関数のlizard threshold warningも0件。
 
+### SDW-V7RT-T20 bounded aligned direct overwrite adapter
+
+- 目的: 既存regular fileのaligned full-block direct overwriteだけをv7-owned FUSE write surfaceからT17-T19
+  coordinatorへ接続し、partial writeや未実装のmetadata mutationを混入させない。
+- 変更:
+  - `kafs_v7_fuse_write` adapterを追加し、controlled-write contextで既存regular file、既存サイズ内、block境界、
+    direct slot、既存block参照の条件だけを受理する。
+  - T18のfull-block COW、inode direct-reference transaction、T19の旧block retirementを順序どおり接続した。
+  - shared FUSE `write`はv7 buildだけadapterへ分岐し、v4/v5/v6のwrite pathとhotplug pathは変更しない。
+  - focused smoke testで境界外write拒否、data read-back、direct reference更新、旧block解放、fsck整合性を固定した。
+- 完了条件:
+  - partial-block、growth、indirect/multi-block、createを`EOPNOTSUPP`で拒否する。
+  - data durability、metadata pointer、checkpoint、retirementの順序をT17-T19 API経由で維持する。
+  - `make check -j2` と focused v7 write test がPASSする。
+- 検証結果（2026-07-19）:
+  - `autoreconf -fi && ./configure && make -j2`: PASS（`-Wall -Werror`）。
+  - `v7_fuse_write_smoketest`、既存v7/v6 focused 4 tests: PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: all 39 tests passed。
+
 ---
 
 ## 次に着手する候補
 
-1. 既存regular fileのaligned full-block direct overwriteだけをv7-owned FUSE adapterからT17-T19 coordinatorへ
-   接続する。partial-block merge、file growth、indirect/multi-block write、`create`は別sliceに残し、mount/write/
-   full-fsync/unmount/remount/fsckとpower-interruption recovery matrixが揃うまでcontrolled-write admissionは
-   fail closedを維持する。
-2. accepted offline/inspection surface安定後に`kafsresize --migrate-create --format-version 7`を追加する。
+1. 実FUSE mountで既存regular fileのwrite/full-fsync/unmount/remount/fsck matrixを追加し、controlled-write admission
+   の実運用境界を検証する。partial-block merge、file growth、indirect/multi-block write、`create`は引き続き別slice。
+2. power-interruption recovery matrixを完了した後、accepted offline/inspection surfaceに
+   `kafsresize --migrate-create --format-version 7`を追加する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の
