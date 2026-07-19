@@ -10054,8 +10054,7 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
     if (offset < 0)
       return -EINVAL;
     kafs_v7_fuse_write_result_t result;
-    int write_rc =
-        kafs_v7_fuse_write_aligned_direct(ctx, ino, buf, size, (uint64_t)offset, &result);
+    int write_rc = kafs_v7_fuse_write_direct(ctx, ino, buf, size, (uint64_t)offset, &result);
     if (write_rc < 0)
       kafs_log(KAFS_LOG_WARNING,
                "%s: v7 bounded write rejected path=%s ino=%" PRIuFAST32 " size=%zu offset=%" PRIu64

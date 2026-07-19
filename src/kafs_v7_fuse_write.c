@@ -3,11 +3,13 @@
 #include "kafs_v7_fuse_policy.h"
 #include "kafs_v7_layout.h"
 #include "kafs_v7_runtime_transaction.h"
+#include "kafs_tool_util.h"
 
 #include <endian.h>
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -19,8 +21,8 @@ static int kafs_v7_fuse_write_validate(const kafs_context_t *ctx, kafs_inocnt_t 
   if (!ctx || !inode_out || !group_id_out || !slot_out || !retained_out ||
       !ctx->c_v7_runtime_transactions || !kafs_v7_fuse_policy_controlled_write_active(ctx))
     return -EROFS;
-  if (ctx->c_v7_block_size == 0u || size != ctx->c_v7_block_size ||
-      (offset % ctx->c_v7_block_size) != 0u)
+  if (ctx->c_v7_block_size == 0u || size == 0u ||
+      size > ctx->c_v7_block_size - (offset % ctx->c_v7_block_size))
     return -EOPNOTSUPP;
 
   const kafs_v7_inode_runtime_shard_t *shard = kafs_ctx_v7_inode_shard_for_ino(ctx, ino);
@@ -49,9 +51,8 @@ static int kafs_v7_fuse_write_validate(const kafs_context_t *ctx, kafs_inocnt_t 
   return 0;
 }
 
-int kafs_v7_fuse_write_aligned_direct(kafs_context_t *ctx, kafs_inocnt_t ino, const void *buf,
-                                      size_t size, uint64_t offset,
-                                      kafs_v7_fuse_write_result_t *result)
+int kafs_v7_fuse_write_direct(kafs_context_t *ctx, kafs_inocnt_t ino, const void *buf, size_t size,
+                              uint64_t offset, kafs_v7_fuse_write_result_t *result)
 {
   if (result)
     memset(result, 0, sizeof(*result));
@@ -76,8 +77,28 @@ int kafs_v7_fuse_write_aligned_direct(kafs_context_t *ctx, kafs_inocnt_t ino, co
   memset(&plan, 0, sizeof(plan));
   rc =
       kafs_v7_runtime_data_cow_prepare(ctx->c_v7_runtime_transactions, &request, &operation, &plan);
+  uint8_t *merged = NULL;
+  const void *staged = buf;
+  if (rc == 0 && size != plan.block_size)
+  {
+    merged = malloc(plan.block_size);
+    if (!merged)
+      rc = -ENOMEM;
+    uint64_t retained_physical_off = 0u;
+    if (rc == 0)
+      rc = kafs_ctx_v7_data_ref_physical_offset(ctx, (kafs_blkcnt_t)retained + 1u,
+                                                &retained_physical_off);
+    if (rc == 0)
+      rc = kafs_pread_all(ctx->c_fd, merged, plan.block_size, (off_t)retained_physical_off);
+    if (rc == 0)
+    {
+      memcpy(merged + offset % plan.block_size, buf, size);
+      staged = merged;
+    }
+  }
   if (rc == 0)
-    rc = kafs_v7_runtime_data_cow_stage(operation, buf, size);
+    rc = kafs_v7_runtime_data_cow_stage(operation, staged, plan.block_size);
+  free(merged);
 
   kafs_v7_inode_t inode;
   memcpy(&inode, mapped_inode, sizeof(inode));
