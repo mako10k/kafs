@@ -108,26 +108,39 @@ static int read_recovery_log(const char *path, kafs_v7_recovery_diagnostic_t *di
   FILE *fp = fopen(path, "r");
   if (!fp)
     return -errno;
-  char line[2048];
-  int rc = -ENOENT;
-  while (fgets(line, sizeof(line), fp))
-  {
-    if (strncmp(line, "kafs-v7-recovery ", strlen("kafs-v7-recovery ")) == 0)
-    {
-      rc = kafs_v7_recovery_diagnostic_parse(line, diagnostic);
-      break;
-    }
-  }
-  if (ferror(fp))
-    rc = -EIO;
+  int rc = kafs_v7_recovery_diagnostic_read(fp, diagnostic);
   fclose(fp);
   return rc;
+}
+
+static int check_recovery_cli(const char *path, const kafs_v7_recovery_diagnostic_t *diagnostic)
+{
+  char output[4096];
+  char *text_argv[] = {(char *)kafs_test_kafsdump_bin(), "--recovery-log", (char *)path, NULL};
+  if (run_command(text_argv, 0, output, sizeof(output)) != 0 ||
+      !strstr(output, "recovery status=completed format=v7") ||
+      !strstr(output, kafs_v7_recovery_resume_from_name(diagnostic->resume_from)))
+  {
+    fprintf(stderr, "kafsdump recovery text validation failed: %s\n", output);
+    return -1;
+  }
+  char *json_argv[] = {text_argv[0], "--json", "--recovery-log", (char *)path, NULL};
+  if (run_command(json_argv, 0, output, sizeof(output)) != 0 ||
+      !strstr(output, "\"recovery\":") ||
+      !strstr(output, "\"status\": \"completed\"") ||
+      !strstr(output, kafs_v7_recovery_resume_from_name(diagnostic->resume_from)))
+  {
+    fprintf(stderr, "kafsdump recovery JSON validation failed: %s\n", output);
+    return -1;
+  }
+  return 0;
 }
 
 static int check_recovery_log(const char *path, kafs_v7_test_fault_point_t fault)
 {
   kafs_v7_recovery_diagnostic_t diagnostic;
-  if (read_recovery_log(path, &diagnostic) != 0 || diagnostic.final_nonempty_segments != 0u)
+  if (read_recovery_log(path, &diagnostic) != 0 || diagnostic.final_nonempty_segments != 0u ||
+      check_recovery_cli(path, &diagnostic) != 0)
     return -1;
   switch (fault)
   {

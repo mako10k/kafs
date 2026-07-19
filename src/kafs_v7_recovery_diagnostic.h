@@ -34,5 +34,6 @@ const char *kafs_v7_recovery_resume_from_name(kafs_v7_recovery_resume_from_t res
 int kafs_v7_recovery_diagnostic_write(FILE *stream,
                                       const kafs_v7_recovery_diagnostic_t *diagnostic);
 int kafs_v7_recovery_diagnostic_parse(const char *line, kafs_v7_recovery_diagnostic_t *diagnostic);
+int kafs_v7_recovery_diagnostic_read(FILE *stream, kafs_v7_recovery_diagnostic_t *diagnostic);
 
 #endif

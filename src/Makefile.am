@@ -70,7 +70,8 @@ kafs_info_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 kafs_info_LDADD = $(KAFS_LIBS)
 
 # offline image dump tool
-kafsdump_SOURCES = kafsdump.c kafs_v7_layout.c kafs_v7_journal.c kafs_v7_mutation.c
+kafsdump_SOURCES = kafsdump.c kafs_v7_layout.c kafs_v7_journal.c kafs_v7_mutation.c \
+	kafs_v7_recovery_diagnostic.c
 kafsdump_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 kafsdump_LDADD = $(KAFS_LIBS)
 

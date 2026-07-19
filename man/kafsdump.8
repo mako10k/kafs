@@ -1,15 +1,26 @@
 '.\" -*- nroff -*-
-.TH KAFSDUMP 8 "2026-07-16" "kafs 0.4.0" "System Administration"
+.TH KAFSDUMP 8 "2026-07-19" "kafs 0.4.0" "System Administration"
 .SH NAME
 kafsdump \- inspect offline KAFS image metadata without mutation
 .SH SYNOPSIS
 .B kafsdump
 .RB [ --json ]
 .I image
+.br
+.B kafsdump
+.RB [ --json ]
+.BI --recovery-log " log"
 .SH DESCRIPTION
 .B kafsdump
 reads an offline KAFS image in read-only mode and prints a compact metadata summary.
 The tool never writes image contents.
+.PP
+With
+.BR --recovery-log ,
+the input is a saved kafs-v7 mount log instead of an image.  The tool locates
+and strictly validates the machine-readable controlled-admission recovery
+record, then reports its resume stage and operation counters without modifying
+the log.
 .SH OUTPUT
 The dump contains the following sections:
 .TP
@@ -88,6 +99,13 @@ stable top-level keys
 .BR wear_distribution ,
 and
 .BR journal_segments .
+.TP
+.BI --recovery-log " log"
+Inspect a saved kafs-v7 recovery log.  Missing, duplicate, unknown, malformed,
+or out-of-range recovery fields cause validation failure.  In JSON mode the
+validated record is emitted under the stable top-level
+.B recovery
+key.
 .SH EXIT STATUS
 .TP
 .B 0

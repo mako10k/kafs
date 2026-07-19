@@ -211,3 +211,18 @@ invalid:
 }
 
 #undef PARSE_NUMERIC_FIELD
+
+int kafs_v7_recovery_diagnostic_read(FILE *stream, kafs_v7_recovery_diagnostic_t *diagnostic)
+{
+  if (!stream || !diagnostic)
+    return -EINVAL;
+  char line[2048];
+  while (fgets(line, sizeof(line), stream))
+  {
+    if (!strchr(line, '\n') && !feof(stream))
+      return -EOVERFLOW;
+    if (strncmp(line, "kafs-v7-recovery ", strlen("kafs-v7-recovery ")) == 0)
+      return kafs_v7_recovery_diagnostic_parse(line, diagnostic);
+  }
+  return ferror(stream) ? -EIO : -ENOENT;
+}
