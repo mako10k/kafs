@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h> // PRIu64, PRIu32
+#include <limits.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -1394,13 +1395,16 @@ static ssize_t fsck_inode_pread(kafs_context_t *ctx, const kafs_sinode_t *inoent
   kafs_off_t filesize = kafs_ino_size_get(inoent);
   if (offset >= filesize)
     return 0;
-  if (offset + size > filesize)
-    size = filesize - offset;
+  kafs_off_t available = filesize - offset;
+  if (size > available)
+    size = available;
   if (size == 0)
     return 0;
+  if (size > (kafs_off_t)SIZE_MAX || size > (kafs_off_t)SSIZE_MAX)
+    return -EOVERFLOW;
   if (filesize <= KAFS_INODE_DIRECT_BYTES)
   {
-    memcpy(buf, (const void *)inoent->i_blkreftbl + offset, (size_t)size);
+    memcpy(buf, (const uint8_t *)inoent->i_blkreftbl + (size_t)offset, (size_t)size);
     return (ssize_t)size;
   }
 
