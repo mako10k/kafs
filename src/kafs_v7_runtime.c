@@ -398,6 +398,15 @@ static int kafs_v7_runtime_recover_controlled_write(kafs_context_t *ctx,
     return rc;
   }
 
+  uint64_t initial_checkpoint_generation = layout.checkpoint_generation;
+  uint64_t initial_checkpoint_sequence = layout.checkpoint_sequence;
+  uint32_t initial_nonempty_segments = layout.journal.selected_nonempty_segment_count;
+  const char *resume_from = "journal_reclaim";
+  if (kafs_v7_layout_checkpoint_copy_count(&layout) < 2u)
+    resume_from = "checkpoint_copy";
+  else if (layout.journal.last_sequence > layout.checkpoint_sequence)
+    resume_from = layout.journal.replay_mutation_count != 0u ? "journal_publish" : "metadata_apply";
+
   kafs_v7_lock_state_t *locks = NULL;
   rc = kafs_v7_locks_init(layout.group_count, 0u, &locks);
   kafs_v7_layout_report_clear(&layout);
@@ -412,12 +421,21 @@ static int kafs_v7_runtime_recover_controlled_write(kafs_context_t *ctx,
     rc = -EUCLEAN;
   if (rc == 0)
   {
-    fprintf(err,
-            "format %s controlled write recovery: checkpoint_sequence=%" PRIu64
-            "; applied=%u checkpoint_publications=%u reclaimed_segments=%u.\n",
-            KAFS_V7_TOOL_FORMAT_LABEL, result.final_checkpoint_sequence,
-            result.apply.written_target_count, result.checkpoint_publication_count,
-            result.reclaim.reset_segment_count);
+    fprintf(
+        err,
+        "kafs-v7-recovery status=completed format=%s trigger=controlled-admission resume_from=%s "
+        "initial_checkpoint_generation=%" PRIu64 " initial_checkpoint_sequence=%" PRIu64
+        " initial_nonempty_segments=%u applied_targets=%u applied_mutations=%u "
+        "already_applied_mutations=%u checkpoint_publications=%u checkpoint_resumes=%u "
+        "reclaimed_segments=%u already_empty_segments=%u final_checkpoint_generation=%" PRIu64
+        " final_checkpoint_sequence=%" PRIu64 " final_nonempty_segments=%u\n",
+        KAFS_V7_TOOL_FORMAT_LABEL, resume_from, initial_checkpoint_generation,
+        initial_checkpoint_sequence, initial_nonempty_segments, result.apply.written_target_count,
+        result.apply.applied_mutation_count, result.apply.already_applied_mutation_count,
+        result.checkpoint_publication_count, result.checkpoint_resume_count,
+        result.reclaim.reset_segment_count, result.reclaim.already_empty_segment_count,
+        result.final_checkpoint_generation, result.final_checkpoint_sequence,
+        layout.journal.selected_nonempty_segment_count);
   }
   kafs_v7_layout_report_clear(&layout);
   return rc;

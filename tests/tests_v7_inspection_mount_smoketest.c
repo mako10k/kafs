@@ -102,6 +102,50 @@ static int run_command(char *const argv[], int expected_exit, char *output, size
   return WEXITSTATUS(status) == expected_exit ? 0 : -1;
 }
 
+static int log_contains(const char *path, const char *first, const char *second, const char *third,
+                        const char *fourth)
+{
+  FILE *fp = fopen(path, "r");
+  if (!fp)
+    return -errno;
+  char text[16384];
+  size_t used = fread(text, 1u, sizeof(text) - 1u, fp);
+  int rc = ferror(fp) ? -EIO : 0;
+  fclose(fp);
+  text[used] = '\0';
+  if (rc == 0 &&
+      (!strstr(text, first) || !strstr(text, second) || !strstr(text, third) ||
+       !strstr(text, fourth)))
+    rc = -EINVAL;
+  return rc;
+}
+
+static int check_recovery_log(const char *path, kafs_v7_test_fault_point_t fault)
+{
+  const char *stage_counter = NULL;
+  switch (fault)
+  {
+  case KAFS_V7_TEST_FAULT_JOURNAL_PUBLISH:
+    stage_counter = "applied_targets=2 applied_mutations=2 already_applied_mutations=1";
+    break;
+  case KAFS_V7_TEST_FAULT_METADATA_APPLY:
+    stage_counter = "applied_targets=0 applied_mutations=0 already_applied_mutations=3";
+    break;
+  case KAFS_V7_TEST_FAULT_CHECKPOINT_COPY:
+    stage_counter = "checkpoint_publications=1 checkpoint_resumes=1";
+    break;
+  case KAFS_V7_TEST_FAULT_JOURNAL_RECLAIM:
+    stage_counter = "checkpoint_publications=0 checkpoint_resumes=0 reclaimed_segments=1";
+    break;
+  default:
+    return -EINVAL;
+  }
+  char resume_from[64];
+  snprintf(resume_from, sizeof(resume_from), "resume_from=%s", kafs_v7_test_fault_name(fault));
+  return log_contains(path, "kafs-v7-recovery status=completed", resume_from,
+                      "final_nonempty_segments=0", stage_counter);
+}
+
 static int format_image(const char *path)
 {
   char output[4096];
@@ -928,8 +972,13 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
                                            kafs_v7_test_fault_point_t fault, uint8_t seed)
 {
   const char *mnt = "mnt-controlled-crash";
+  char crash_log[PATH_MAX];
+  char recovery_log[PATH_MAX];
+  snprintf(crash_log, sizeof(crash_log), "v7-%s-crash.log", kafs_v7_test_fault_name(fault));
+  snprintf(recovery_log, sizeof(recovery_log), "v7-%s-recovery.log",
+           kafs_v7_test_fault_name(fault));
   kafs_test_mount_options_t options = {
-      .log_path = "v7-controlled-crash.log",
+      .log_path = crash_log,
       .extra_options =
           "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
       .timeout_ms = 15000,
@@ -962,7 +1011,7 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
     rc = -1;
   kafs_test_stop_kafs(mnt, pid);
 
-  options.log_path = "v7-controlled-recovery.log";
+  options.log_path = recovery_log;
   pid = rc == 0 ? kafs_test_start_kafs_v7_controlled_write(
                        image, "mnt-controlled-recovery", &options)
                 : -1;
@@ -970,14 +1019,16 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
     rc = -1;
   else
     kafs_test_stop_kafs("mnt-controlled-recovery", pid);
+  if (rc == 0 && check_recovery_log(recovery_log, fault) != 0)
+    rc = -1;
   if (rc == 0 && run_fsck(image) != 0)
     rc = -1;
   if (rc == 0 && check_persisted_block(image, ino, payload, block_size) != 0)
     rc = -1;
   if (rc != 0)
   {
-    kafs_test_dump_log("v7-controlled-crash.log", "v7 controlled-write crash failed");
-    kafs_test_dump_log("v7-controlled-recovery.log", "v7 controlled-write recovery failed");
+    kafs_test_dump_log(crash_log, "v7 controlled-write crash failed");
+    kafs_test_dump_log(recovery_log, "v7 controlled-write recovery failed");
   }
   free(payload);
   return rc;
@@ -1014,7 +1065,11 @@ static int check_controlled_reclaim_recovery(const char *image)
   if (pid <= 0)
     return -1;
   kafs_test_stop_kafs("mnt-reclaim-recovery", pid);
-  return check_nonempty_journal_count(image, 0u) == 0 && run_fsck(image) == 0 ? 0 : -1;
+  return check_nonempty_journal_count(image, 0u) == 0 && run_fsck(image) == 0 &&
+                 check_recovery_log("v7-controlled-reclaim-recovery.log",
+                                    KAFS_V7_TEST_FAULT_JOURNAL_RECLAIM) == 0
+             ? 0
+             : -1;
 }
 
 static int corrupt_primary_pair(const char *path)
