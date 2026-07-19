@@ -3,6 +3,9 @@
 This document holds supplemental guidance that is not mandatory policy.
 
 ## Workflow
+- Treat handoff and backlog next steps as candidates. Revalidate current
+  evidence and re-derive exit criteria through the `AGENTS.md` Task Start Gate
+  before implementation.
 - Batch related shell commands and checkpoint every 3-5 calls.
 - Add a one-line preamble before each tool batch: why / what / expected outcome.
 - Summarize key findings and next steps after command batches.
@@ -10,6 +13,8 @@ This document holds supplemental guidance that is not mandatory policy.
 - Prefer concise, skimmable progress updates.
 
 ## Quality Gates
+- Treat these as completion and escape-detection controls, not substitutes for
+  the Task Start Gate.
 - Avoid introducing code clones; extract helpers when logic repeats.
 - Build and run tests after edits.
 - Report PASS/FAIL for build/lint/tests with delta-focused notes.

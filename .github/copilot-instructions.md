@@ -6,6 +6,9 @@ Mandatory rules only.
 - Identity: reply `GitHub Copilot` when asked your name.
 - If tooling loads `.github/copilot-instruction.md`, treat it as an alias of this file and apply the same rules.
 - Follow repository rules in `.github/github-dev-rules.md`.
+- Before non-trivial implementation or refactoring, run the `AGENTS.md` Task
+  Start Gate and do not edit until the current-checkout evidence supports a
+  `PASS` decision.
 - Respect repository scripts and Makefile targets.
 - Build and run tests after code edits; report PASS/FAIL with deltas.
 - For implementation work, start from a GitHub issue on a new branch + worktree, open a PR, and clean up the worktree after merge to support parallel development.

@@ -1,4 +1,4 @@
-# KAFS format v7 runtime handoff (updated 2026-07-17)
+# KAFS format v7 runtime handoff (updated 2026-07-19)
 
 ## Scope
 
@@ -7,12 +7,22 @@ This handoff covers the format v7 runtime foundation through
 make the next runtime mutation/admission slice resumable from another host
 without reopening the accepted wear-leveling and fault-tolerance decisions.
 
-Repository checkpoint for this update:
+This document is a dated evidence snapshot and a source of candidate work. It
+is not implementation authorization and does not define current exit criteria.
+On every resume, run the `AGENTS.md` Task Start Gate against the current branch,
+HEAD, worktree, code, tests, and accepted specifications. Preserve accepted
+design decisions unless new evidence contradicts them, but re-derive the task
+boundary and definition of done from the refreshed evidence before editing.
+
+Original repository checkpoint for this handoff:
 
 - Branch: `feat/v7-runtime-admission-foundation`
 - Push target: `origin/feat/v7-runtime-admission-foundation`
 - Implementation checkpoint: `a332343 feat: retire v7 retained data blocks`
 - This handoff snapshot is documentation-only and makes no runtime changes.
+- Later sections have accumulated progress updates beyond this original
+  checkpoint. Their status and next-task wording must therefore be reconciled
+  with the current checkout rather than assumed current.
 
 Relevant implementation checkpoints:
 
@@ -94,10 +104,11 @@ is practical for image creation, offline validation, read-only inspection, and
 controlled overwrite, contiguous growth, shrinking truncate, and O_TRUNC of
 existing direct-only files. It also supports bounded empty regular-file
 creation in inline and one-block same-group directories, including conversion
-to one or two direct blocks when the current representation is full. This is
-not general writable filesystem readiness. Directory growth beyond three direct
-blocks, general create placement, indirect blocks, holes, and most metadata
-mutation remain outside the admitted contract.
+to cardinality-specific direct layouts through three blocks. This is not
+general writable filesystem readiness, and those paths are not the accepted
+final M8-B implementation. Directory growth beyond three direct blocks, general
+create placement, indirect blocks, holes, and most metadata mutation remain
+outside the admitted contract.
 
 `KAFS-INC-2026-07-19-01` found that M8-B had been decomposed by individual
 block count even though batch COW already supports variable cardinality. Do not

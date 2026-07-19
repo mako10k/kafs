@@ -16,6 +16,35 @@
 - `man/` and `completions/`: user-facing command documentation and shell completions.
 - `.github/`: CI workflows, GitHub development rules, lock policy, and legacy Copilot/agent instructions.
 
+## Task Start Gate
+
+- Treat a handoff, backlog item, ticket, or prior next-task recommendation as a
+  candidate starting point, not as implementation authorization or a current
+  definition of done.
+- Before editing files for any non-trivial implementation or refactor, refresh
+  the evidence from the current checkout and publish a concise Task Start Record
+  in the working update. The primary agent owns this gate; it does not depend on
+  a subagent being available.
+- The Task Start Record must contain:
+  1. the current branch, HEAD, worktree state, and the source/freshness of the
+     proposed task;
+  2. directly observed evidence from the affected code, analogous existing
+     implementations, relevant specifications, and tests;
+  3. which inherited assumptions remain valid, are contradicted, or remain
+     unknown;
+  4. the relevant states, variability dimensions, invariants, and semantic
+     boundaries;
+  5. exit criteria and explicit non-goals re-derived from the refreshed
+     evidence rather than copied from the handoff; and
+  6. a `PASS`, `REPLAN`, or `BLOCKED` start decision with rationale.
+- Do not begin implementation on `REPLAN` or `BLOCKED`. For `REPLAN`, replace
+  the candidate with a task whose boundary closes a coherent capability. Do not
+  split production code by test example, numeric instance, or fixture shape
+  when the state transition and invariants are shared.
+- Re-run the start gate when HEAD, relevant evidence, assumptions, or requested
+  scope changes materially. Narrow, self-contained fixes may use an abbreviated
+  record, but must still state current evidence and exit criteria before edits.
+
 ## Build And Test
 
 - Bootstrap and default build:
@@ -72,6 +101,8 @@
 - After formatting-sensitive C changes, run `./scripts/format.sh` or `./scripts/format.sh fix` as appropriate.
 - After broad PR/update work, run clone/static gates and report PASS/FAIL with the exact commands that ran.
 - If a tool is missing or a sandbox/permission issue prevents verification, report that explicitly and include the command that could not run.
+- These are completion and escape-detection controls. They do not replace the
+  Task Start Gate or justify an implementation boundary by themselves.
 
 ## Codex Project Setup
 

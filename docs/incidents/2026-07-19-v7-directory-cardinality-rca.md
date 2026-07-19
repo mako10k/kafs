@@ -2,171 +2,225 @@
 
 - Incident ID: `KAFS-INC-2026-07-19-01`
 - Date: 2026-07-19
-- Status: RCA complete; corrective refactor pending
-- Classification: development-quality incident
+- Status: RCA revised; containment and task-start controls implemented;
+  corrective product refactor pending
+- Classification: development-quality and task-control incident
 - Released or remote impact: none observed
 
-## Summary
+## Executive Summary
 
-The v7 create path was advanced through separate one-to-two-block growth,
-two-block append, two-to-three-block growth, and three-block append slices even
-though the underlying operation is parameterized by the current direct-block
-count. This produced block-count-specific branches, repeated fixtures, and a
-ticket sequence that would have continued with three-to-four-block growth.
+The v7 create path was implemented as separate one-to-two-block growth,
+two-block append, two-to-three-block growth, and three-block append changes.
+The direct-directory transition was already expressible as one operation over
+`N` existing direct blocks, so these were examples of one capability rather
+than separate production capabilities.
 
-The first one-to-two-block implementation was a reasonable proof of the batch
-COW and recovery model. The incident began when the next task was framed as a
-two-block-only append instead of extracting the already visible `N`-block
-invariant. The implementation then continued for three additional commits
-before the user challenged the approach.
+The root cause was not the handoff wording and was not the absence of a final
+code-quality check. Work could start without a current Definition of Ready: no
+control required the executor to refresh checkout evidence, reconsider inherited
+assumptions, and re-derive the task boundary and exit criteria before editing.
+The handoff candidate was consequently used as both the starting input and the
+definition of done.
+
+The previous RCA incorrectly treated `939eaf2` as a reasonable prototype and
+placed the incident start before `f05cd5c`. Evidence available before
+`939eaf2` already included a variable-cardinality batch COW API, a generic
+multi-block direct-write path, a twelve-direct-block boundary, and a generic
+bounded direct-growth precedent. The incident therefore began when `939eaf2`
+started without re-evaluating that evidence.
 
 ## Impact
 
-- No released image, remote branch, or known filesystem data was affected.
-  At RCA time, no remote ref contained the incident commits.
-- Four local commits from `939eaf2` through `38f9b28` added a net 156 lines to
+- No released image, remote branch, or known filesystem data was affected. At
+  RCA time, no remote ref contained the incident commits.
+- Four commits from `939eaf2` through `38f9b28` added a net 156 lines to
   `kafs_v7_fuse_create_in_direct_directory` (231 to 387 lines).
-- Across the same range, `src/kafs_v7_fuse_write.c` changed by 198 additions
-  and 42 deletions, and the inspection mount smoke test added 201 lines.
-- Current static analysis reports the create function at 375 NLOC and
-  cyclomatic complexity 103.
-- The clone gate identifies five clone pairs inside
-  `src/kafs_v7_fuse_write.c`. The repository-wide clone gate also has older
-  debt, but these target-file findings were directly actionable.
-- Recovery coverage was added and all 40 tests continued to pass, so the
-  incident is maintainability and defect-risk growth rather than an observed
-  runtime regression.
+- Across that range, `src/kafs_v7_fuse_write.c` changed by 198 additions and 42
+  deletions, and the inspection mount smoke test added 201 lines.
+- Static analysis reported the create function at 375 NLOC and cyclomatic
+  complexity 103.
+- The clone report identified five clone pairs within
+  `src/kafs_v7_fuse_write.c`.
+- All 40 tests passed. The observed impact is excess complexity, duplication,
+  misleading progress records, and increased future defect risk rather than a
+  demonstrated runtime or data-integrity failure.
 
 ## Timeline
 
 | Time (JST) | Event |
 | --- | --- |
-| 17:08 | `939eaf2` implemented one-to-two-block directory growth. |
-| 17:52 | `f05cd5c` added a separate two-block append path instead of generalizing by block count. |
+| Before 17:08 | Existing code and tickets already described generic multi-block COW and bounded direct growth through twelve direct blocks. |
+| 17:08 | `939eaf2` implemented one-to-two-block directory growth without a fresh task-start review. This is the first incident commit. |
+| 17:52 | `f05cd5c` added a separate two-block append path. |
 | 17:57 | `4025170` added a two-to-three-block growth variant. |
-| 18:04 | `38f9b28` extended the special case to three-block append. |
-| After 18:04 | The user questioned why each block count required a separate implementation; feature work stopped and RCA began. |
+| 18:04 | `38f9b28` extended the specialization to three-block append. |
+| After 18:04 | The user questioned the cardinality-specific sequence; feature work stopped. |
+| After detection | `7ab682b` recorded an initial RCA, which was rejected as too shallow and was revised by this change. |
 
-## Root Cause
+## Evidence Available At The First Incident Commit
 
-The primary root cause was incorrect task decomposition. Recovery-sensitive
-states were treated as separate production implementations when they should
-have been separate test cases for one parameterized direct-directory mutation
-algorithm.
+The following evidence was present before `939eaf2` and should have changed the
+task boundary:
 
-The controlling invariant should have been:
+- `kafs_v7_fuse_write_direct` calculated `block_count` from the request and
+  passed that count through arrays and loops bounded by twelve direct slots.
+- `kafs_v7_runtime_data_cow_batch_prepare` accepted a runtime
+  `request_count`, with no two-block or three-block transaction semantic.
+- `SDW-V7RT-T31` described one atomic multi-block direct overwrite capability
+  through the twelve-slot direct boundary.
+- `SDW-V7RT-T34` described bounded direct growth as one capability and used
+  representative one- and two-block tests rather than separate production
+  implementations per block count.
+- The handoff's original branch and implementation checkpoint no longer
+  identified the current checkout, while later sections contained accumulated
+  updates. This made live reconciliation necessary before using its next-task
+  text.
 
-1. Load `N` existing direct blocks.
-2. Append within `N` blocks when capacity permits.
-3. Otherwise allocate and stage `N + 1` blocks when the direct limit permits.
-4. Atomically publish allocator state, `N` or `N + 1` inode references, parent
-   size/block count, and the child inode.
-5. Retire the old `N` blocks after the covering checkpoint.
+These facts establish that a generic design was discoverable from the checkout;
+no new transaction primitive or format decision was required first.
 
-The batch COW API already accepted a variable request count, so there was no
-transaction-layer limitation requiring block-count-specific code.
+## Causal Analysis
 
-## Five Whys
+### Root Process Cause
 
-1. Why were separate block-count paths implemented?
-   The handoff's next candidate was followed literally as the next smallest
-   recovery slice.
-2. Why was the common operation not extracted after the first slice?
-   Planning focused on proving each crash boundary, not on identifying the
-   stable `N`-block production invariant.
-3. Why did the same pattern continue after the two-block append?
-   Each successful `make check` was treated as sufficient completion evidence,
-   and the next ticket was mechanically advanced by one block.
-4. Why did review not stop the repetition?
-   The required clone/static gates were not run for these commits, and no
-   explicit design checkpoint was triggered when the next task differed only
-   by cardinality.
-5. Why was the direct limit not used to force a generic design?
-   The direct-reference boundary was encoded as literals in multiple places:
-   COW validation scans 12 direct slots, while retirement scanning also
-   interprets slots 12 through 14 as indirect roots. No shared constant or
-   create-path contract made that distinction mandatory.
+The repository had no operational Task Start Gate for non-trivial
+implementation. A handoff, backlog item, or delegated next task could transition
+directly into editing without a recorded check of:
 
-## Contributing Factors
+1. current branch, HEAD, worktree, and handoff freshness;
+2. affected and analogous code, existing APIs, specifications, and tests;
+3. inherited assumptions against current evidence;
+4. states, variability dimensions, invariants, and semantic boundaries; and
+5. exit criteria re-derived from that evidence.
 
-- A valid emphasis on crash recovery was incorrectly coupled to production
-  specialization. Recovery cases should vary independently from implementation
-  structure.
-- Ticket and handoff updates reinforced one-block-at-a-time progress and made
-  local completion appear equivalent to milestone progress.
-- The inspection fixture helper was extended by representation count, which
-  increased the apparent cost of changing to a table-driven test model.
-- The function was already large, but no complexity budget or growth check was
-  used as a stop condition.
-- The repository-wide clone gate has pre-existing failures. That reduced its
-  usefulness as a binary gate, but does not explain ignoring the new target-file
-  clone findings.
+`AGENTS.md` required evidence-based reporting and post-edit validation, but did
+not require evidence refresh and reconsideration before editing. The custom
+gatekeeper mentioned entry criteria, but normal implementation did not require
+a start decision, custom-agent use required an explicit request, and its input
+criteria did not have to be reconstructed from the checkout. The separate rule
+requiring Gatekeeper approval for major work therefore had no always-available
+invocation path. The task rules required ticket and milestone alignment only.
 
-## Detection And Missed Signals
+### Direct Cause
 
-The user detected the issue by questioning the repeated block-count-specific
-tasks. It should have been detected before `f05cd5c`, when the proposed next
-work was identical to the preceding COW flow except for request count.
+The executor treated the handoff's next candidate as the current implementation
+scope and definition of done. It did not inspect the analogous generic direct
+write/growth paths or reclassify block count as a variability dimension within
+one state transition. Production code was therefore partitioned by the same
+examples used to increment recovery coverage.
 
-Additional missed signals were:
+### Contributing Conditions
 
-- `kafs_v7_runtime_data_cow_batch_prepare` already supported variable request
-  counts up to 64.
-- `AGENTS.md` requires meaningful clones to be extracted and broad changes to
-  run clone/static gates.
-- The handoff repeatedly described the next task by incrementing a block count
-  rather than by closing a capability boundary.
-- Static analysis now flags the create function at complexity 103 and the clone
-  report identifies repeated transaction/patch/retirement blocks in the same
-  source file.
+- Instructions to keep changes small, focused, and testable were applied to
+  diff size instead of semantic capability boundaries.
+- The orchestrator role asked for discrete tasks but did not first require a
+  state/invariant model.
+- The progress-manager role could recommend a next task from plans, tickets,
+  and recent changes without marking that recommendation as unready or stale.
+- The handoff accumulated current progress beneath an older checkpoint and
+  presented next work without an explicit requirement to rebaseline.
+- Repeated successful behavior tests reinforced the incorrect task boundary
+  because recovery examples and production branches evolved together.
 
-RCA-time gate evidence:
+These conditions increased the likelihood of the failure but did not compel
+it. The implementation remained responsible for reconciling them with current
+code evidence before starting.
 
-- `./scripts/clones.sh`: FAIL, 97 repository-wide clone groups and 2.69%
-  duplicated lines against the 1.0% threshold; five groups include only
-  `src/kafs_v7_fuse_write.c` locations.
-- `./scripts/static-checks.sh`: completed with one non-passing step, the clone
-  gate. Format and lint passed.
-- `git diff --check`: passed for the RCA documentation changes.
+### Escape And Detection
 
-## Corrective Actions
+The reviewed-scope WIP workflow was not followed for the incident commits, and
+the required clone/static checks were not run. The commits therefore escaped
+without capturing the growing same-file duplication and complexity.
+`make check` demonstrated behavioral compatibility only; it was not evidence
+that the implementation boundary was correct.
 
-| Action | Status | Completion gate |
+The aggregate `scripts/static-checks.sh` records failed steps but exits zero
+after reporting them. CI runs clone detection separately and can still fail,
+but the aggregate local command is not itself a blocking control. This weakens
+escape detection and makes explicit result review necessary; it does not cause
+the pre-implementation reasoning failure.
+
+The user detected the incident by comparing the repeated tasks with the
+expected generic capability. Clone and complexity analysis later quantified
+the escaped structural impact. These are detection controls, not prevention of
+the root cause.
+
+## Correct State Model
+
+Production behavior should be divided by semantic transition, not fixture
+cardinality:
+
+1. inline directory append: `inline -> inline`;
+2. inline representation growth: `inline -> direct(1)`;
+3. direct append: `direct(N) -> direct(N)`;
+4. direct growth: `direct(N) -> direct(N + 1)` while `N` is below the direct
+   limit; and
+5. direct-limit rejection: `direct(DIRECT_LIMIT) -> ENOSPC`.
+
+Recovery tests may select representative cardinalities within these transition
+classes. Those test partitions do not create additional production states.
+
+## Corrective And Preventive Actions
+
+### Correction Of Escaped Impact
+
+| Action | Status | Completion evidence |
 | --- | --- | --- |
-| Stop block-count-specific feature slices | Complete | No further `N-to-N+1` ticket before refactor |
-| Define shared direct and indirect reference-count constants | Pending | No create-path literal `12` or `15` for reference roles |
-| Replace the 1/2/3-block paths with one `N`-block append/growth algorithm | Pending | Supports the full admitted direct range with one control flow |
-| Extract payload load, batch planning/staging, inode patch, and retirement helpers | Pending | Target-file clone findings removed or explicitly justified |
-| Convert directory fixtures to table-driven boundary cases | Pending | Cover inline, 1, 2, 3, direct-limit-minus-one, and direct-limit cases |
-| Preserve fault recovery by equivalence class, not every cardinality | Pending | Publish/apply/checkpoint faults cover append, growth, and max-limit rejection |
-| Run and report `clones.sh` and `static-checks.sh` for the corrective refactor | Pending | No new target-file clones; repository baseline failures reported separately |
-| Re-review M8-B handoff after refactor | Pending | Next task is capability-based rather than count-based |
+| Stop further block-count-specific slices | Complete | No three-to-four-block ticket is authorized |
+| Replace the 1/2/3-block branches with one bounded `direct(N)` algorithm | Pending | One control flow covers the admitted direct range |
+| Centralize direct and indirect reference-count constants | Pending | Reference roles no longer use unexplained `12`/`15` literals |
+| Replace fixture-by-cardinality growth with transition-class tests | Pending | Inline, append, growth, limit, and recovery classes cover representative boundaries |
 
-## Prevention Rules
+### Prevention At Task Start
 
-1. When two consecutive planned tasks differ only by a numeric cardinality,
-   stop and document why parameterization is impossible before implementing the
-   second task.
-2. Keep recovery test matrices independent from production branch structure.
-3. Do not mark broad filesystem mutation work complete without clone/static
-   results, even when the repository has known baseline failures.
-4. Use named format constants for direct and indirect reference roles; do not
-   infer them from the raw 60-byte inode field.
-5. Treat rapidly growing function complexity as a design-review trigger, not
-   only as cleanup work after feature completion.
+| Action | Status | Completion evidence |
+| --- | --- | --- |
+| Add the Task Start Gate to `AGENTS.md` | Complete in this change | Editing is prohibited before a recorded `PASS` |
+| Make the primary agent own the gate | Complete in this change | Start control does not depend on subagent availability |
+| Require implementer, orchestrator, progress-manager, and gatekeeper roles to use the same contract | Complete in this change | Role definitions distinguish candidate, ready task, and start decision |
+| Reconcile mandatory start control with optional subagent invocation | Complete in this change | Primary self-gate is mandatory; independent Gatekeeper review is conditional on permitted use |
+| Define handoff next work as a candidate rather than a definition of done | Complete in this change | Handoff and ticket guidance require checkout reconciliation |
+| Re-run the gate when evidence or scope changes materially | Complete in this change | `AGENTS.md` defines staleness-triggered re-evaluation |
 
-## What Went Well
+The Task Start Record requires a baseline identity, current evidence, assumption
+audit, state/invariant analysis, independently derived exit criteria and
+non-goals, and a `PASS`, `REPLAN`, or `BLOCKED` decision. This is a semantic
+decision gate; a script cannot substitute for examining current code and
+architecture.
 
-- Commits were small, local, and recoverable; the incident was detected before
-  any remote ref included them.
-- The added normal and interruption tests are reusable as refactor regression
-  coverage.
-- No test, fsck, or recovery failure indicated existing data corruption.
+### Detection And Correction After Start
+
+| Action | Status | Completion evidence |
+| --- | --- | --- |
+| Preserve reviewed-scope review before final commits | Existing control, not followed | Reviewed units and validation are recorded before consolidation |
+| Run clone/static checks for broad implementation | Existing control, not followed | New target-file findings are reviewed even when the repository baseline fails |
+| Make repository-wide clone/complexity debt independently actionable | Pending separate work | Changed-scope regressions produce an unambiguous failing result |
+
+These controls detect and correct impact that passes the start gate. They are
+not presented as prevention of the root process cause.
+
+## Effectiveness Test
+
+The prevention is accepted only if it passes both directions of a retrospective
+replay:
+
+1. At the `65b73ca` checkout state, using the then-current handoff candidate,
+   the gate must return `REPLAN` for a one-to-two-only production implementation
+   because generic batch COW, generic direct write/growth, and the twelve-slot
+   boundary are already observable.
+2. The same gate must retain `inline -> direct(1)` as a separate transition
+   because representation, allocation, retirement, and transaction behavior
+   differ from `direct(N) -> direct(N + 1)`.
+
+The evidence review performed for this revised RCA satisfies this retrospective
+test: the first proposal is reclassified as `direct(N)` while the inline
+representation transition remains distinct. Future effectiveness is measured
+by the presence of a current Task Start Record before the first edit, not by the
+number of rules added or final tests passed.
 
 ## Follow-up Decision
 
-Do not continue with a three-to-four-block implementation. The next change must
-first consolidate direct-directory create into the parameterized algorithm,
-centralize the direct/indirect boundary, and retain representative recovery
-coverage. History rewriting is not required for containment; the corrective
-commit must make the branch's final implementation generic and auditable.
+Do not continue cardinality-specific directory work. After this process/RCA
+change is committed, run a fresh Task Start Gate for the corrective product
+refactor. Its exit criteria must be derived from the then-current checkout and
+must not be inherited solely from this RCA or the handoff.
