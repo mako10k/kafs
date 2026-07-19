@@ -3347,11 +3347,24 @@
   - 3つの新data blocks、親inode、子inode、allocator stateの部分的なvisibilityを残さない。
   - 初期境界は2 blocksから3 blocksへの成長に限定し、既存3-block directoryへの追記は未対応とする。
 
+### SDW-V7RT-T44 three-block directory append on create
+
+- 目的: 既存3-block direct directoryの空き領域へrecordを追記し、createをatomicに公開する。
+- 変更:
+  - 2-block専用batch経路を2または3 direct blocksの共通経路へ広げ、既存3 blocksをsame-group batch COWで
+    置換して親inode references/size、同group子inode、allocator bitmap/summaryをsingle transactionでpublishする。
+  - covering checkpoint後に旧3 blocksを個別にretireし、3-block容量不足時は追加成長を行わず`ENOSPC`を返す。
+  - 実FUSE smokeはcleanな3-block directory imageから通常createとjournal publish、metadata apply、
+    checkpoint copyの各中断点回復を行い、新entry、子inode、free counters、offline fsckを検証する。
+- 完了条件:
+  - 3-block directory追記がdata blocks、親inode、子inode、allocator stateの部分更新を残さない。
+  - 初期境界は既存3 blocks内の追記に限定し、3 blocksから4 blocksへの追加成長は未対応とする。
+
 ---
 
 ## 次に着手する候補
 
-1. M8-Bの次sliceとして、既存3-block direct directoryの空き領域へrecordを追記し、3-block COWとcreateを
+1. M8-Bの次sliceとして、満杯の3-block direct directoryを4 blocksへ伸長し、directory growthとcreateを
    1 transactionへ載せる。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
