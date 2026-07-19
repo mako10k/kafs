@@ -74,6 +74,19 @@ static int check_writer_roundtrip(void)
   return rc == 0 && memcmp(&expected, &actual, sizeof(expected)) == 0 ? 0 : -1;
 }
 
+static int check_stream_reader(void)
+{
+  FILE *fp = tmpfile();
+  if (!fp)
+    return -1;
+  fprintf(fp, "unrelated mount output\n%s\n", valid_line);
+  rewind(fp);
+  kafs_v7_recovery_diagnostic_t diagnostic;
+  int rc = kafs_v7_recovery_diagnostic_read(fp, &diagnostic);
+  fclose(fp);
+  return rc == 0 && diagnostic.resume_from == KAFS_V7_RECOVERY_RESUME_METADATA_APPLY ? 0 : -1;
+}
+
 int main(void)
 {
   char changed[2048];
@@ -93,7 +106,7 @@ int main(void)
       expect_invalid(changed) != 0 ||
       replace_once(valid_line, "applied_targets=3", "applied_targets=4294967296", changed,
                    sizeof(changed)) != 0 ||
-      expect_invalid(changed) != 0 || check_writer_roundtrip() != 0)
+      expect_invalid(changed) != 0 || check_writer_roundtrip() != 0 || check_stream_reader() != 0)
   {
     fprintf(stderr, "v7 recovery diagnostic contract failed\n");
     return 1;

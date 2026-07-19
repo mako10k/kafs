@@ -3105,15 +3105,28 @@
   - duplicate/missing/unknown/range overflowをfail closedで拒否する。
   - T26の全4stage recovery logが同じAPIでparseされ、期待counterと一致する。
 
+### SDW-V7RT-T28 offline recovery log inspection
+
+- 目的: 保存したv7 controlled-write recovery logをoperatorがimageやmountを変更せず検証し、text/JSONで
+  再利用できるread-only診断経路を提供する。
+- 変更:
+  - `kafsdump [--json] --recovery-log <log>`を追加し、通常のoffline image inspectionとは排他的なinput modeにする。
+  - recovery diagnostic APIへstream readerを追加し、通常のmount出力からmachine-readable recordを探索して
+    strict parserへ渡す。record欠落、malformed、長すぎるrecord、I/O errorはfail closedとする。
+  - textはresume stageとinitial/apply/checkpoint/reclaim/final summaryを表示し、JSONはstable top-level
+    `recovery` objectへ全contract fieldを出力する。
+  - 実FUSEの全4 fault caseで保存されたlogを`kafsdump`のtext/JSON両方から再検証する。
+- 完了条件:
+  - logはread-onlyで開かれ、inspectionによる内容変更がない。
+  - valid recovery recordはtext/JSONで同じstage/counterを返し、不正recordはexit status 1になる。
+  - image inspectionの既存CLI、text/JSON schema、終了statusを変更しない。
+
 ---
 
 ## 次に着手する候補
 
-1. recovery diagnostic parserをoperator-facing offline inspectionへ接続し、保存済みlogをsummary/JSONとして
-   検証できるread-only経路を追加する。partial-block merge、file growth、indirect/multi-block write、`create`は
-   引き続き別slice。
-2. power-interruption recovery matrixを完了した後、accepted offline/inspection surfaceに
-   `kafsresize --migrate-create --format-version 7`を追加する。
+1. accepted offline/inspection surfaceに`kafsresize --migrate-create --format-version 7`を追加する。
+   partial-block merge、file growth、indirect/multi-block write、`create`は引き続き別slice。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の

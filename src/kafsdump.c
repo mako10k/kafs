@@ -9,6 +9,7 @@
 #include "kafs_descriptor_layout.h"
 #include "kafs_v6_layout.h"
 #include "kafs_v7_layout.h"
+#include "kafs_v7_recovery_diagnostic.h"
 #include "kafs_cli_opts.h"
 #include "kafs_superblock.h"
 #include "kafs_tool_util.h"
@@ -76,7 +77,11 @@ static int dump_read_journal_header_slot(void *user, uint32_t slot, kj_header_t 
   return kafs_pread_all(ctx->fd, hdr, sizeof(*hdr), (off_t)off);
 }
 
-static void usage(const char *prog) { fprintf(stderr, "Usage: %s [--json] <image>\n", prog); }
+static void usage(const char *prog)
+{
+  fprintf(stderr, "Usage: %s [--json] <image>\n", prog);
+  fprintf(stderr, "       %s [--json] --recovery-log <log>\n", prog);
+}
 
 static const char *rc_to_text(int rc)
 {
@@ -85,6 +90,73 @@ static const char *rc_to_text(int rc)
   if (rc < 0)
     return strerror(-rc);
   return "error";
+}
+
+static void print_recovery_diagnostic_text(const kafs_v7_recovery_diagnostic_t *diagnostic)
+{
+  printf("recovery status=completed format=v7 trigger=controlled-admission resume_from=%s\n",
+         kafs_v7_recovery_resume_from_name(diagnostic->resume_from));
+  printf("initial checkpoint_generation=%" PRIu64 " checkpoint_sequence=%" PRIu64
+         " nonempty_segments=%u\n",
+         diagnostic->initial_checkpoint_generation, diagnostic->initial_checkpoint_sequence,
+         diagnostic->initial_nonempty_segments);
+  printf("apply targets=%u mutations=%u already_applied_mutations=%u\n",
+         diagnostic->applied_targets, diagnostic->applied_mutations,
+         diagnostic->already_applied_mutations);
+  printf("checkpoint publications=%u resumes=%u\n", diagnostic->checkpoint_publications,
+         diagnostic->checkpoint_resumes);
+  printf("reclaim reclaimed_segments=%u already_empty_segments=%u\n",
+         diagnostic->reclaimed_segments, diagnostic->already_empty_segments);
+  printf("final checkpoint_generation=%" PRIu64 " checkpoint_sequence=%" PRIu64
+         " nonempty_segments=%u\n",
+         diagnostic->final_checkpoint_generation, diagnostic->final_checkpoint_sequence,
+         diagnostic->final_nonempty_segments);
+}
+
+static void print_recovery_diagnostic_json(const kafs_v7_recovery_diagnostic_t *diagnostic)
+{
+  printf("{\n");
+  printf("  \"recovery\": {\"status\": \"completed\", \"format\": \"v7\", "
+         "\"trigger\": \"controlled-admission\", \"resume_from\": \"%s\", "
+         "\"initial_checkpoint_generation\": %" PRIu64 ", \"initial_checkpoint_sequence\": %" PRIu64
+         ", \"initial_nonempty_segments\": %u, \"applied_targets\": %u, "
+         "\"applied_mutations\": %u, \"already_applied_mutations\": %u, "
+         "\"checkpoint_publications\": %u, \"checkpoint_resumes\": %u, "
+         "\"reclaimed_segments\": %u, \"already_empty_segments\": %u, "
+         "\"final_checkpoint_generation\": %" PRIu64 ", \"final_checkpoint_sequence\": %" PRIu64
+         ", \"final_nonempty_segments\": %u}\n",
+         kafs_v7_recovery_resume_from_name(diagnostic->resume_from),
+         diagnostic->initial_checkpoint_generation, diagnostic->initial_checkpoint_sequence,
+         diagnostic->initial_nonempty_segments, diagnostic->applied_targets,
+         diagnostic->applied_mutations, diagnostic->already_applied_mutations,
+         diagnostic->checkpoint_publications, diagnostic->checkpoint_resumes,
+         diagnostic->reclaimed_segments, diagnostic->already_empty_segments,
+         diagnostic->final_checkpoint_generation, diagnostic->final_checkpoint_sequence,
+         diagnostic->final_nonempty_segments);
+  printf("}\n");
+}
+
+static int dump_recovery_log(const char *path, int json)
+{
+  FILE *stream = fopen(path, "r");
+  if (!stream)
+  {
+    perror("open recovery log");
+    return 1;
+  }
+  kafs_v7_recovery_diagnostic_t diagnostic;
+  int rc = kafs_v7_recovery_diagnostic_read(stream, &diagnostic);
+  fclose(stream);
+  if (rc != 0)
+  {
+    fprintf(stderr, "invalid v7 recovery log: %s\n", rc_to_text(rc));
+    return 1;
+  }
+  if (json)
+    print_recovery_diagnostic_json(&diagnostic);
+  else
+    print_recovery_diagnostic_text(&diagnostic);
+  return 0;
 }
 
 static int load_superblock(int fd, kafs_ssuperblock_t *sb)
@@ -1042,6 +1114,7 @@ int main(int argc, char **argv)
 {
   int json = 0;
   const char *image = NULL;
+  const char *recovery_log = NULL;
 
   if (kafs_cli_exit_if_help(argc, argv, usage, argv[0]) == 0)
     return 0;
@@ -1054,6 +1127,17 @@ int main(int argc, char **argv)
       continue;
     }
 
+    if (strcmp(argv[i], "--recovery-log") == 0)
+    {
+      if (++i >= argc || recovery_log)
+      {
+        usage(argv[0]);
+        return 2;
+      }
+      recovery_log = argv[i];
+      continue;
+    }
+
     if (argv[i][0] == '-')
     {
       usage(argv[0]);
@@ -1061,6 +1145,16 @@ int main(int argc, char **argv)
     }
 
     image = argv[i];
+  }
+
+  if (recovery_log)
+  {
+    if (image)
+    {
+      usage(argv[0]);
+      return 2;
+    }
+    return dump_recovery_log(recovery_log, json);
   }
 
   if (!image)
