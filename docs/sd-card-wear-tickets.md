@@ -3364,6 +3364,9 @@
 
 ## 次に着手する候補
 
+この節はhandoff用の開始候補であり、実装開始許可または最新の完了条件ではない。着手前に`AGENTS.md`の
+Task Start Gateでcurrent checkoutのevidenceを再確認し、`PASS`・`REPLAN`・`BLOCKED`を判定する。
+
 1. `KAFS-INC-2026-07-19-01`の是正として、block数別のcreate分岐をdirect上限までの`N`-block append/growth
    algorithmへ統合し、direct/indirect reference境界をnamed constantsへ集約する。
 2. inline、1、2、3、direct上限直前、direct上限のfixtureをtable-driven化し、append/growth/上限拒否の

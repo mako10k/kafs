@@ -44,7 +44,9 @@
 ## レビュー
 
 - レビュー指摘がある場合は修正か理由を記載する。
-- 重大な変更は Gatekeeper の承認を必須とする。
+- 重大な変更は、実装前にprimary agent自身によるTask Start Gateの`PASS`を必須とする。
+- subagent利用が明示的に許可されている場合は、Gatekeeperによる独立した開始・終了判定も行う。
+  Gatekeeperを利用できないことはprimary agentの開始判定を省略する理由にならない。
 
 ## CI/テスト
 
@@ -55,6 +57,10 @@
 
 - 実装はチケットと対応付ける。
 - マイルストーンと整合する範囲で進める。
+- handoff、backlog、ticketの「次」は実装候補であり、開始許可または最新の完了条件とは扱わない。
+- 非自明な実装・refactorは、`AGENTS.md`のTask Start Gateでcurrent checkoutのevidence、前提、
+  状態・不変条件、再定義した終了条件を確認し、`PASS`となってから開始する。
+- ticketとの対応やmilestoneとの整合だけではTask Start Gateの代替にならない。
 
 ## ラベル運用 (推奨)
 
