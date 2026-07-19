@@ -287,7 +287,8 @@ int main(int argc, char **argv)
     usage(argv[0]);
     return 2;
   }
-  if (kafs_v7_runtime_admission_preflight_image(opts.image_path, stderr, KAFS_V7_TOOL_NAME) != 0)
+  if (opts.request.mode == KAFS_V7_RUNTIME_MODE_INSPECTION &&
+      kafs_v7_runtime_admission_preflight_image(opts.image_path, stderr, KAFS_V7_TOOL_NAME) != 0)
     return 2;
 
   kafs_v7_entrypoint_adapter_options_t adapter_opts;

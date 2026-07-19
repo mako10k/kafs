@@ -836,6 +836,59 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
   return rc;
 }
 
+static int check_controlled_write_recovery(const char *image, uint32_t ino, uint32_t block_size)
+{
+  const char *mnt = "mnt-controlled-crash";
+  kafs_test_mount_options_t options = {
+      .log_path = "v7-controlled-crash.log",
+      .extra_options =
+          "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
+      .timeout_ms = 15000,
+  };
+  if (setenv("KAFS_V7_TEST_CRASH_AFTER_JOURNAL_PUBLISH", "1", 1) != 0)
+    return -1;
+  pid_t pid = kafs_test_start_kafs_v7_controlled_write(image, mnt, &options);
+  unsetenv("KAFS_V7_TEST_CRASH_AFTER_JOURNAL_PUBLISH");
+  if (pid <= 0)
+    return -1;
+
+  uint8_t *payload = malloc(block_size);
+  char path[PATH_MAX];
+  snprintf(path, sizeof(path), "%s/block", mnt);
+  int fd = open(path, O_RDWR);
+  int rc = fd < 0 || !payload ? -1 : 0;
+  if (rc == 0)
+  {
+    for (uint32_t i = 0; i < block_size; ++i)
+      payload[i] = (uint8_t)(i * 37u + 11u);
+    if (pwrite(fd, payload, block_size, 0) >= 0)
+      rc = -1;
+  }
+  if (fd >= 0)
+    close(fd);
+  kafs_test_stop_kafs(mnt, pid);
+
+  options.log_path = "v7-controlled-recovery.log";
+  pid = rc == 0 ? kafs_test_start_kafs_v7_controlled_write(
+                       image, "mnt-controlled-recovery", &options)
+                : -1;
+  if (pid <= 0)
+    rc = -1;
+  else
+    kafs_test_stop_kafs("mnt-controlled-recovery", pid);
+  if (rc == 0 && run_fsck(image) != 0)
+    rc = -1;
+  if (rc == 0 && check_persisted_block(image, ino, payload, block_size) != 0)
+    rc = -1;
+  if (rc != 0)
+  {
+    kafs_test_dump_log("v7-controlled-crash.log", "v7 controlled-write crash failed");
+    kafs_test_dump_log("v7-controlled-recovery.log", "v7 controlled-write recovery failed");
+  }
+  free(payload);
+  return rc;
+}
+
 static int corrupt_primary_pair(const char *path)
 {
   int fd = open(path, O_RDWR);
@@ -917,6 +970,14 @@ int main(void)
       check_controlled_write_mount(controlled, fixture.block_ino, fixture.block_size) != 0)
   {
     fprintf(stderr, "v7 controlled-write mount matrix failed\n");
+    return 1;
+  }
+
+  const char *recovery = "v7-controlled-recovery.img";
+  if (copy_image(image, recovery) != 0 ||
+      check_controlled_write_recovery(recovery, fixture.block_ino, fixture.block_size) != 0)
+  {
+    fprintf(stderr, "v7 controlled-write recovery matrix failed\n");
     return 1;
   }
 
