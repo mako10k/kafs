@@ -1408,6 +1408,36 @@ static int check_controlled_create_recovery(const char *image, kafs_v7_test_faul
   return rc;
 }
 
+static int check_controlled_create_success(const char *image, const char *relative_path)
+{
+  kafs_test_mount_options_t options = {
+      .log_path = "v7-create-success.log",
+      .extra_options = "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
+      .timeout_ms = 15000,
+  };
+  pid_t pid = kafs_test_start_kafs_v7_controlled_write(image, "mnt-create-success", &options);
+  if (pid <= 0)
+    return -1;
+  char created_path[PATH_MAX];
+  snprintf(created_path, sizeof(created_path), "mnt-create-success/%s", relative_path);
+  int fd = open(created_path, O_WRONLY | O_CREAT | O_EXCL, 0640);
+  int rc = fd < 0 ? -1 : 0;
+  if (fd >= 0 && close(fd) != 0)
+    rc = -1;
+  if (rc == 0)
+  {
+    struct stat st;
+    if (stat(created_path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size != 0)
+      rc = -1;
+  }
+  kafs_test_stop_kafs("mnt-create-success", pid);
+  if (rc == 0 && run_fsck(image) != 0)
+    rc = -1;
+  if (rc != 0)
+    kafs_test_dump_log(options.log_path, "v7 create success failed");
+  return rc;
+}
+
 static int check_controlled_reclaim_recovery(const char *image)
 {
   int early_exit_status = -1;
@@ -1568,6 +1598,14 @@ int main(void)
       KAFS_V7_TEST_FAULT_METADATA_APPLY,
       KAFS_V7_TEST_FAULT_CHECKPOINT_COPY,
   };
+  const char *two_block_create = "v7-two-block-create.img";
+  if (copy_image(image, two_block_create) != 0 ||
+      seed_full_root_directory(two_block_create, "expanded") != 0 ||
+      check_controlled_create_success(two_block_create, "expanded") != 0)
+  {
+    fprintf(stderr, "v7 controlled two-block create setup failed\n");
+    return 1;
+  }
   for (size_t i = 0u; i < sizeof(create_faults) / sizeof(create_faults[0]); ++i)
   {
     char create_recovery[PATH_MAX];
@@ -1605,6 +1643,15 @@ int main(void)
                                          "expanded", 4u) != 0)
     {
       fprintf(stderr, "v7 controlled direct-directory growth recovery failed fault=%s\n",
+              kafs_v7_test_fault_name(create_faults[i]));
+      return 1;
+    }
+    snprintf(create_recovery, sizeof(create_recovery), "v7-two-block-append-recovery-%zu.img", i);
+    if (copy_image(two_block_create, create_recovery) != 0 ||
+        check_controlled_create_recovery(create_recovery, create_faults[i], "two-block-append",
+                                         "appended", 4u) != 0)
+    {
+      fprintf(stderr, "v7 controlled two-block directory append recovery failed fault=%s\n",
               kafs_v7_test_fault_name(create_faults[i]));
       return 1;
     }

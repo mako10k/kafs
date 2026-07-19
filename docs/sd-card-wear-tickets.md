@@ -3320,11 +3320,24 @@
   - 2つのdata block、親inode、子inode、allocator stateの部分的なvisibilityを残さない。
   - 初期境界は1 blockから2 blocksへの成長に限定し、既存2-block directoryへの追記と追加成長は未対応とする。
 
+### SDW-V7RT-T42 two-block directory append on create
+
+- 目的: 既存2-block direct directoryの空き領域へrecordを追記し、createをatomicに公開する。
+- 変更:
+  - 既存2 blocksをsame-group batch COWで置換し、連続directory snapshotへrecordを追記して、親inodeの2 references、
+    size、同group子inode、allocator bitmap/summaryをsingle transactionでpublishする。
+  - covering checkpoint後に旧2 blocksを個別にretireし、retirement失敗はcreate成功と分離してdiagnosticへ返す。
+  - 実FUSE smokeはcleanな2-block directory imageを作成し、通常createとjournal publish、metadata apply、
+    checkpoint copyの各中断点から新entry、子inode、free counters、offline fsckが収束することを検証する。
+- 完了条件:
+  - 2-block directory追記が両data blocks、親inode、子inode、allocator stateの部分更新を残さない。
+  - 初期境界は既存2 blocks内の追記に限定し、2 blocksから3 blocksへの追加成長は未対応とする。
+
 ---
 
 ## 次に着手する候補
 
-1. M8-Bの次sliceとして、既存2-block direct directoryの空き領域へrecordを追記し、2-block COWとcreateを
+1. M8-Bの次sliceとして、満杯の2-block direct directoryを3 blocksへ伸長し、directory growthとcreateを
    1 transactionへ載せる。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
