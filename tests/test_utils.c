@@ -553,6 +553,13 @@ pid_t kafs_test_start_kafs_v7(const char *img, const char *mnt,
                                    mnt, options);
 }
 
+pid_t kafs_test_start_kafs_v7_controlled_write(const char *img, const char *mnt,
+                                               const kafs_test_mount_options_t *options)
+{
+  return kafs_test_start_kafs_tool(kafs_test_kafs_v7_bin(),
+                                   KAFS_TEST_V6_TOOL_MODE_CONTROLLED_WRITE, img, mnt, options);
+}
+
 pid_t kafs_test_start_kafs_v6_controlled_write(const char *img, const char *mnt,
                                                const kafs_test_mount_options_t *options)
 {

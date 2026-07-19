@@ -2995,12 +2995,30 @@
   - `v7_fuse_write_smoketest`、既存v7/v6 focused 4 tests: PASS。
   - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: all 39 tests passed。
 
+### SDW-V7RT-T21 controlled-write FUSE admission matrix
+
+- 目的: T20 adapterを実際の`kafs-v7 --controlled-write-mount`から到達可能にし、FUSE境界と永続化を
+  end-to-endで検証する。
+- 変更:
+  - controlled-writeではimage FDをread-writeで開く一方、descriptor-backed mmapはread-onlyのまま保持する。
+  - shared FUSE initはv7 buildでv7-owned worker policyを検証し、通常ファイルwriteはlegacy mutation guardより
+    前にT20 adapterへrouteする。control-planeと未列挙mutationは引き続き`EOPNOTSUPP`で拒否する。
+  - inspection fixtureを複製して実マウントし、partial write拒否、aligned full-block overwrite、full fsync、
+    unmount、fsck、offline descriptor/inode/data read-backを検証する。
+  - write後のnonzero checkpoint sequenceはinspection admissionが引き続きfail closedとする。再マウント可能化は
+    journal/checkpoint recoveryを含む次sliceで扱う。
+- 完了条件:
+  - explicit safe mount optionsなしではcontrolled-write admissionを拒否する。
+  - 実FUSE経由でT20の限定writeだけが成功し、unmount後のfsckとraw dataが一致する。
+  - v4/v5/v6 runtime behaviorとv7 inspection-only behaviorを変更しない。
+
 ---
 
 ## 次に着手する候補
 
-1. 実FUSE mountで既存regular fileのwrite/full-fsync/unmount/remount/fsck matrixを追加し、controlled-write admission
-   の実運用境界を検証する。partial-block merge、file growth、indirect/multi-block write、`create`は引き続き別slice。
+1. controlled-write後のnonzero checkpoint sequenceを安全に再admitするrecovery matrixを追加し、
+   write/full-fsync/unmount/remount/fsckを閉じる。partial-block merge、file growth、indirect/multi-block write、
+   `create`は引き続き別slice。
 2. power-interruption recovery matrixを完了した後、accepted offline/inspection surfaceに
    `kafsresize --migrate-create --format-version 7`を追加する。
 

@@ -33,13 +33,13 @@ static inline int kafs_v7_admission_runtime_context(kafs_context_t *ctx,
 {
   if (!ctx || ctx->c_fd < 0 || !sbdisk)
     return -EINVAL;
-  if (prot != PROT_READ)
+  if (prot != PROT_READ && prot != (PROT_READ | PROT_WRITE))
     return -EPROTONOSUPPORT;
 
   uint64_t file_size = 0;
   int rc = kafs_offline_detect_file_size(ctx->c_fd, &file_size);
   if (rc == 0)
-    rc = kafs_ctx_map_descriptor_runtime_admission_memory(ctx, sbdisk, file_size, prot);
+    rc = kafs_ctx_map_descriptor_runtime_admission_memory(ctx, sbdisk, file_size, PROT_READ);
   if (rc == 0)
     rc = kafs_v7_runtime_view_admit_fd(ctx, ctx->c_fd, ctx->c_superblock, file_size);
   if (rc == 0)

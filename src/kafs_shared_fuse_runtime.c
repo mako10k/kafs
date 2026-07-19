@@ -10020,9 +10020,17 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
             size, (uint64_t)offset);
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
-  int gate = kafs_runtime_write_guard(ctx);
+  int gate = 0;
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (!kafs_v7_fuse_policy_controlled_write_active(ctx))
+#endif
+    gate = kafs_runtime_write_guard(ctx);
   if (gate != 0)
     return gate;
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (kafs_v7_fuse_policy_controlled_write_active(ctx) && kafs_is_ctl_path(path))
+    return kafs_v7_fuse_policy_reject_legacy_mutation(ctx);
+#endif
   gate = kafs_v6_controlled_write_reject_if_op(ctx, kafs_is_ctl_path(path),
                                                KAFS_V6_CONTROLLED_WRITE_OP_CONTROL_PLANE_WRITE);
   if (gate != 0)
@@ -10048,6 +10056,11 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
     kafs_v7_fuse_write_result_t result;
     int write_rc =
         kafs_v7_fuse_write_aligned_direct(ctx, ino, buf, size, (uint64_t)offset, &result);
+    if (write_rc < 0)
+      kafs_log(KAFS_LOG_WARNING,
+               "%s: v7 bounded write rejected path=%s ino=%" PRIuFAST32 " size=%zu offset=%" PRIu64
+               " rc=%d\n",
+               __func__, path ? path : "(null)", (uint32_t)ino, size, (uint64_t)offset, write_rc);
     if (write_rc >= 0 && result.retirement_rc != 0)
       kafs_log(KAFS_LOG_WARNING,
                "%s: v7 retained block retirement deferred path=%s ino=%" PRIuFAST32
