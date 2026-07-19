@@ -1378,6 +1378,125 @@ int main(void)
     return 1;
   }
 
+  const char *dst_v7_dry_img = "migrate-dst-v7-dry.img";
+  if (create_sized_file(dst_v7_dry_img, 64 * 1024 * 1024) != 0)
+  {
+    fprintf(stderr, "failed to create v7 dry-run dst image\n");
+    return 1;
+  }
+  char migrate_v7_dry_stdout[4096];
+  char *migrate_create_v7_dry_argv[] = {
+      (char *)resize_abs,         (char *)"--migrate-create", (char *)"--src-image",
+      (char *)src_v5_migrate_img, (char *)"--dst-image",      (char *)dst_v7_dry_img,
+      (char *)"--inodes",         (char *)"4096",             (char *)"--format-version",
+      (char *)"7",                (char *)"--dry-run",        NULL};
+  if (run_cmd_capture_stdout(migrate_create_v7_dry_argv, migrate_v7_dry_stdout,
+                             sizeof(migrate_v7_dry_stdout)) != 0 ||
+      !strstr(migrate_v7_dry_stdout, "migrate-create dry-run PASS") ||
+      !strstr(migrate_v7_dry_stdout, "format_version: 7") ||
+      !strstr(migrate_v7_dry_stdout, "v7_descriptor_replicas:") ||
+      !strstr(migrate_v7_dry_stdout, "v7_group_count:") ||
+      !strstr(migrate_v7_dry_stdout, "v7_group_policy: group-local-linear") ||
+      !strstr(migrate_v7_dry_stdout, "writes_performed: no"))
+  {
+    fprintf(stderr, "migrate-create v7 dry-run failed or omitted geometry summary\n");
+    return 1;
+  }
+  kafs_ssuperblock_t dry_v7_dst_sb = {0};
+  if (read_superblock(dst_v7_dry_img, &dry_v7_dst_sb) != 0 ||
+      kafs_sb_magic_get(&dry_v7_dst_sb) == KAFS_MAGIC)
+  {
+    fprintf(stderr, "v7 dry-run unexpectedly formatted destination image\n");
+    return 1;
+  }
+
+  char migrate_v7_source_pre_json[KAFSRESIZE_DUMP_JSON_BUF_SIZE];
+  if (run_cmd_capture_stdout(dump_src_v5_pre_argv, migrate_v7_source_pre_json,
+                             sizeof(migrate_v7_source_pre_json)) != 0)
+  {
+    fprintf(stderr, "kafsdump --json for pre-v7 migration source failed\n");
+    return 1;
+  }
+
+  const char *dst_v7_img = "migrate-dst-v7.img";
+  if (create_sized_file(dst_v7_img, 64 * 1024 * 1024) != 0)
+  {
+    fprintf(stderr, "failed to create v7 migrate dst image\n");
+    return 1;
+  }
+  char migrate_v7_stdout[4096];
+  char *migrate_create_v7_argv[] = {
+      (char *)resize_abs,         (char *)"--migrate-create", (char *)"--src-image",
+      (char *)src_v5_migrate_img, (char *)"--dst-image",      (char *)dst_v7_img,
+      (char *)"--force",          (char *)"--inodes",         (char *)"4096",
+      (char *)"--format-version", (char *)"7",                (char *)"--yes",
+      NULL};
+  if (run_cmd_capture_stdout(migrate_create_v7_argv, migrate_v7_stdout,
+                             sizeof(migrate_v7_stdout)) != 0 ||
+      !strstr(migrate_v7_stdout, "format_version: 7"))
+  {
+    fprintf(stderr, "migrate-create v7 failed\n");
+    return 1;
+  }
+  kafs_ssuperblock_t migrate_v7_sb = {0};
+  if (read_superblock(dst_v7_img, &migrate_v7_sb) != 0 ||
+      kafs_sb_magic_get(&migrate_v7_sb) != KAFS_MAGIC ||
+      kafs_sb_format_version_get(&migrate_v7_sb) != KAFS_FORMAT_VERSION_V7)
+  {
+    fprintf(stderr, "unexpected migrate-create v7 image format\n");
+    return 1;
+  }
+
+  char migrate_v7_source_post_json[KAFSRESIZE_DUMP_JSON_BUF_SIZE];
+  if (run_cmd_capture_stdout(dump_src_v5_pre_argv, migrate_v7_source_post_json,
+                             sizeof(migrate_v7_source_post_json)) != 0 ||
+      strcmp(migrate_v7_source_pre_json, migrate_v7_source_post_json) != 0)
+  {
+    fprintf(stderr, "v7 migrate-create changed source image summary\n");
+    return 1;
+  }
+  char migrate_v7_dst_json[KAFSRESIZE_DUMP_JSON_BUF_SIZE];
+  char *dump_dst_v7_argv[] = {(char *)dump_abs, (char *)"--json", (char *)dst_v7_img, NULL};
+  if (run_cmd_capture_stdout(dump_dst_v7_argv, migrate_v7_dst_json,
+                             sizeof(migrate_v7_dst_json)) != 0 ||
+      !strstr(migrate_v7_dst_json, "\"format_version\": 7") ||
+      !strstr(migrate_v7_dst_json, "\"layout_descriptor\": {\"status\": \"ok\"") ||
+      !strstr(migrate_v7_dst_json, "\"journal_segments\": {\"status\": \"ok\""))
+  {
+    fprintf(stderr, "kafsdump --json rejected migrate-create v7 destination\n");
+    return 1;
+  }
+  char migrate_v7_fsck_output[KAFSRESIZE_DUMP_JSON_BUF_SIZE];
+  char *fsck_dst_v7_argv[] = {(char *)fsck_abs, (char *)"--check", (char *)dst_v7_img, NULL};
+  if (run_cmd_capture_combined(fsck_dst_v7_argv, migrate_v7_fsck_output,
+                               sizeof(migrate_v7_fsck_output)) != 0 ||
+      !strstr(migrate_v7_fsck_output, "format v7 raw-layout fsck: status=ok"))
+  {
+    fprintf(stderr, "fsck.kafs rejected migrate-create v7 destination\n");
+    return 1;
+  }
+
+  const char *dst_v7_nosrc_img = "migrate-dst-v7-nosrc.img";
+  if (create_sized_file(dst_v7_nosrc_img, 64 * 1024 * 1024) != 0)
+    return 1;
+  char *migrate_create_v7_nosrc_argv[] = {
+      (char *)resize_abs,         (char *)"--migrate-create", (char *)"--dst-image",
+      (char *)dst_v7_nosrc_img,   (char *)"--force",          (char *)"--inodes",
+      (char *)"4096",             (char *)"--format-version", (char *)"7",
+      (char *)"--yes",            NULL};
+  if (run_cmd_status(migrate_create_v7_nosrc_argv) == 0)
+  {
+    fprintf(stderr, "migrate-create v7 accepted missing source image\n");
+    return 1;
+  }
+  kafs_ssuperblock_t nosrc_v7_dst_sb = {0};
+  if (read_superblock(dst_v7_nosrc_img, &nosrc_v7_dst_sb) != 0 ||
+      kafs_sb_magic_get(&nosrc_v7_dst_sb) == KAFS_MAGIC)
+  {
+    fprintf(stderr, "v7 no-source failure touched destination image\n");
+    return 1;
+  }
+
   const char *info_img = "info-tombstone.img";
   char *info_mkfs_argv[] = {(char *)mkfs_abs, (char *)info_img, (char *)"-s", (char *)"32M", NULL};
   if (run_cmd_status(info_mkfs_argv) != 0)

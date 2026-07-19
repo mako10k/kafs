@@ -413,6 +413,20 @@ typedef struct kafs_v7_mkfs_options
   uint32_t group_count;
 } kafs_v7_mkfs_options_t;
 
+typedef struct kafs_v7_mkfs_plan
+{
+  uint64_t image_size_bytes;
+  uint64_t metadata_bytes;
+  uint64_t data_blocks;
+  uint64_t first_data_block;
+  uint32_t block_size;
+  uint32_t inode_count;
+  uint32_t group_count;
+  uint32_t replica_count;
+  uint32_t descriptor_bytes;
+  uint32_t journal_segment_count;
+} kafs_v7_mkfs_plan_t;
+
 uint32_t kafs_v7_crc32(const void *buf, size_t bytes);
 /* Extend an unfinalized CRC state; initialize with UINT32_MAX and xor on completion. */
 uint32_t kafs_v7_crc32_update(uint32_t crc, const void *buf, size_t bytes);
@@ -422,6 +436,7 @@ const char *kafs_v7_shard_type_name(uint16_t type);
 void kafs_v7_layout_report_clear(kafs_v7_layout_report_t *report);
 
 int kafs_v7_mkfs_fd(int fd, const kafs_v7_mkfs_options_t *options, kafs_v7_layout_report_t *report);
+int kafs_v7_mkfs_plan(const kafs_v7_mkfs_options_t *options, kafs_v7_mkfs_plan_t *plan);
 int kafs_v7_validate_image_fd(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
                               kafs_v7_layout_report_t *report);
 
