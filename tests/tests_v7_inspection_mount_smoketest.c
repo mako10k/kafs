@@ -170,7 +170,8 @@ static int check_recovery_cli(const char *path, const kafs_v7_recovery_diagnosti
   return 0;
 }
 
-static int check_recovery_log(const char *path, kafs_v7_test_fault_point_t fault)
+static int check_recovery_log(const char *path, kafs_v7_test_fault_point_t fault,
+                              uint64_t mutation_count)
 {
   kafs_v7_recovery_diagnostic_t diagnostic;
   if (read_recovery_log(path, &diagnostic) != 0 || diagnostic.final_nonempty_segments != 0u ||
@@ -180,14 +181,15 @@ static int check_recovery_log(const char *path, kafs_v7_test_fault_point_t fault
   {
   case KAFS_V7_TEST_FAULT_JOURNAL_PUBLISH:
     return diagnostic.resume_from == KAFS_V7_RECOVERY_RESUME_JOURNAL_PUBLISH &&
-                   diagnostic.applied_targets == 2u && diagnostic.applied_mutations == 2u &&
+                   diagnostic.applied_targets == mutation_count - 1u &&
+                   diagnostic.applied_mutations == mutation_count - 1u &&
                    diagnostic.already_applied_mutations == 1u
                ? 0
                : -1;
   case KAFS_V7_TEST_FAULT_METADATA_APPLY:
     return diagnostic.resume_from == KAFS_V7_RECOVERY_RESUME_METADATA_APPLY &&
                    diagnostic.applied_targets == 0u && diagnostic.applied_mutations == 0u &&
-                   diagnostic.already_applied_mutations == 3u
+                   diagnostic.already_applied_mutations == mutation_count
                ? 0
                : -1;
   case KAFS_V7_TEST_FAULT_CHECKPOINT_COPY:
@@ -789,6 +791,10 @@ static int read_block_equals(const char *path, const void *expected, size_t expe
   }
   close(fd);
   int rc = used == expected_bytes && memcmp(buf, expected, expected_bytes) == 0 ? 0 : -EINVAL;
+  if (rc != 0)
+    fprintf(stderr, "read mismatch path=%s used=%zu expected=%zu first=%u expected_first=%u\n",
+            path, used, expected_bytes, used != 0u ? buf[0] : 0u,
+            expected_bytes != 0u ? ((const uint8_t *)expected)[0] : 0u);
   free(buf);
   return rc;
 }
@@ -978,6 +984,7 @@ static int check_persisted_blocks(const char *image, uint32_t ino, const void *e
 
 static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_t block_size)
 {
+  static const char created_payload[] = "v7-created-file";
   const char *mnt = "mnt-controlled";
   const char *log_path = "v7-controlled-write.log";
   kafs_test_mount_options_t options = {
@@ -1036,11 +1043,24 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
   {
     snprintf(path, sizeof(path), "%s/created", mnt);
     int created_fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0640);
-    if (created_fd < 0 || close(created_fd) != 0)
+    if (created_fd < 0)
     {
       fprintf(stderr, "controlled create failed: errno=%d\n", errno);
       rc = -1;
     }
+    if (rc == 0 && write(created_fd, created_payload, sizeof(created_payload) - 1u) !=
+                       (ssize_t)(sizeof(created_payload) - 1u))
+    {
+      fprintf(stderr, "controlled created-file write failed: errno=%d\n", errno);
+      rc = -1;
+    }
+    if (rc == 0 && fsync(created_fd) != 0)
+    {
+      fprintf(stderr, "controlled created-file fsync failed: errno=%d\n", errno);
+      rc = -1;
+    }
+    if (created_fd >= 0 && close(created_fd) != 0 && rc == 0)
+      rc = -1;
   }
   kafs_test_stop_kafs(mnt, pid);
   if (rc == 0 && check_fuse_contract_log(log_path, "controlled-write", block_size, 1) != 0)
@@ -1079,9 +1099,15 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
       snprintf(path, sizeof(path), "%s/created", "mnt-controlled-remount");
       struct stat created_st;
       if (rc == 0 && (stat(path, &created_st) != 0 || !S_ISREG(created_st.st_mode) ||
-                      created_st.st_size != 0))
+                      created_st.st_size != (off_t)(sizeof(created_payload) - 1u)))
       {
-        fprintf(stderr, "controlled created file remount read failed\n");
+        fprintf(stderr, "controlled created file remount stat failed: errno=%d size=%jd\n", errno,
+                stat(path, &created_st) == 0 ? (intmax_t)created_st.st_size : (intmax_t)-1);
+        rc = -1;
+      }
+      if (rc == 0 && read_block_equals(path, created_payload, sizeof(created_payload) - 1u) != 0)
+      {
+        fprintf(stderr, "controlled created file remount payload failed\n");
         rc = -1;
       }
       kafs_test_stop_kafs("mnt-controlled-remount", pid);
@@ -1166,7 +1192,7 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
     rc = -1;
   else
     kafs_test_stop_kafs("mnt-controlled-recovery", pid);
-  if (rc == 0 && check_recovery_log(recovery_log, fault) != 0)
+  if (rc == 0 && check_recovery_log(recovery_log, fault, 3u) != 0)
   {
     fprintf(stderr, "truncate recovery diagnostic failed fault=%s\n",
             kafs_v7_test_fault_name(fault));
@@ -1188,6 +1214,60 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
     kafs_test_dump_log(recovery_log, "v7 controlled-write recovery failed");
   }
   free(payload);
+  return rc;
+}
+
+static int check_controlled_create_recovery(const char *image, kafs_v7_test_fault_point_t fault)
+{
+  char crash_log[PATH_MAX];
+  char recovery_log[PATH_MAX];
+  snprintf(crash_log, sizeof(crash_log), "v7-create-%s-crash.log",
+           kafs_v7_test_fault_name(fault));
+  snprintf(recovery_log, sizeof(recovery_log), "v7-create-%s-recovery.log",
+           kafs_v7_test_fault_name(fault));
+  kafs_test_mount_options_t options = {
+      .log_path = crash_log,
+      .extra_options = "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
+      .timeout_ms = 15000,
+  };
+  if (setenv(KAFS_V7_TEST_CRASH_POINT_ENV, kafs_v7_test_fault_name(fault), 1) != 0)
+    return -1;
+  pid_t pid = kafs_test_start_kafs_v7_controlled_write(image, "mnt-create-crash", &options);
+  unsetenv(KAFS_V7_TEST_CRASH_POINT_ENV);
+  if (pid <= 0)
+    return -1;
+  int fd = open("mnt-create-crash/recovered", O_WRONLY | O_CREAT | O_EXCL, 0640);
+  int rc = fd >= 0 ? -1 : 0;
+  if (fd >= 0)
+    close(fd);
+  int status = 0;
+  if (rc == 0 && (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) ||
+                  WEXITSTATUS(status) != kafs_v7_test_fault_exit_status(fault)))
+    rc = -1;
+  kafs_test_stop_kafs("mnt-create-crash", pid);
+
+  options.log_path = recovery_log;
+  pid = rc == 0
+            ? kafs_test_start_kafs_v7_controlled_write(image, "mnt-create-recovery", &options)
+            : -1;
+  if (pid <= 0)
+    rc = -1;
+  else
+  {
+    struct stat st;
+    if (stat("mnt-create-recovery/recovered", &st) != 0 || !S_ISREG(st.st_mode) || st.st_size != 0)
+      rc = -1;
+    kafs_test_stop_kafs("mnt-create-recovery", pid);
+  }
+  if (rc == 0 && check_recovery_log(recovery_log, fault, 4u) != 0)
+    rc = -1;
+  if (rc == 0 && run_fsck(image) != 0)
+    rc = -1;
+  if (rc != 0)
+  {
+    kafs_test_dump_log(crash_log, "v7 create crash failed");
+    kafs_test_dump_log(recovery_log, "v7 create recovery failed");
+  }
   return rc;
 }
 
@@ -1222,7 +1302,7 @@ static int check_controlled_reclaim_recovery(const char *image)
   kafs_test_stop_kafs("mnt-reclaim-recovery", pid);
   return check_nonempty_journal_count(image, 0u) == 0 && run_fsck(image) == 0 &&
                  check_recovery_log("v7-controlled-reclaim-recovery.log",
-                                    KAFS_V7_TEST_FAULT_JOURNAL_RECLAIM) == 0
+                                    KAFS_V7_TEST_FAULT_JOURNAL_RECLAIM, 0u) == 0
              ? 0
              : -1;
 }
@@ -1344,6 +1424,24 @@ int main(void)
   {
     fprintf(stderr, "v7 controlled-write journal reclaim recovery failed\n");
     return 1;
+  }
+
+  const kafs_v7_test_fault_point_t create_faults[] = {
+      KAFS_V7_TEST_FAULT_JOURNAL_PUBLISH,
+      KAFS_V7_TEST_FAULT_METADATA_APPLY,
+      KAFS_V7_TEST_FAULT_CHECKPOINT_COPY,
+  };
+  for (size_t i = 0u; i < sizeof(create_faults) / sizeof(create_faults[0]); ++i)
+  {
+    char create_recovery[PATH_MAX];
+    snprintf(create_recovery, sizeof(create_recovery), "v7-create-recovery-%zu.img", i);
+    if (copy_image(image, create_recovery) != 0 ||
+        check_controlled_create_recovery(create_recovery, create_faults[i]) != 0)
+    {
+      fprintf(stderr, "v7 controlled create recovery failed fault=%s\n",
+              kafs_v7_test_fault_name(create_faults[i]));
+      return 1;
+    }
   }
 
   const char *degraded = "v7-degraded.img";
