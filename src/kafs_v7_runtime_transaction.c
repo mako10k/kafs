@@ -522,7 +522,10 @@ int kafs_v7_runtime_data_cow_batch_commit(kafs_v7_runtime_data_cow_batch_t **ope
         last = 0;
     if (!last)
       continue;
-    int64_t free_blocks_delta = out == 0u ? -(int64_t)operation->plan_count : 0;
+    int64_t free_blocks_delta = 0;
+    for (size_t j = 0u; j < operation->plan_count; ++j)
+      if (operation->plans[j].bitmap_word_logical == operation->plans[i].bitmap_word_logical)
+        free_blocks_delta--;
     patches[out++] = (kafs_v7_journal_patch_t){
         .target_type = KAFS_V7_JOURNAL_TARGET_BLOCK_BITMAP,
         .logical_index = operation->plans[i].bitmap_word_logical,

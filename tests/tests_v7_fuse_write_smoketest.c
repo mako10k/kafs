@@ -129,6 +129,170 @@ static int seed_regular_file(kafs_context_t *ctx, kafs_inocnt_t ino, uint32_t gr
   return rc;
 }
 
+static int seed_direct_directory(
+    kafs_context_t *ctx, kafs_inocnt_t ino, uint32_t group_id, uint32_t block_count,
+    size_t spare_bytes, uint64_t logical_blocks_out[KAFS_V7_INODE_DIRECT_REFERENCE_COUNT])
+{
+  size_t payload_bytes = (size_t)ctx->c_v7_block_size * block_count;
+  if (block_count == 0u || block_count > KAFS_V7_INODE_DIRECT_REFERENCE_COUNT ||
+      spare_bytes >= payload_bytes - KAFS_V7_KDIR_HEADER_BYTES - KAFS_V7_KDIR_RECORD_PREFIX_BYTES)
+    return -EINVAL;
+  uint8_t *payload = calloc(1u, payload_bytes);
+  if (!payload)
+    return -ENOMEM;
+  size_t used = payload_bytes - spare_bytes;
+  size_t record_bytes = used - KAFS_V7_KDIR_HEADER_BYTES;
+  kafs_v7_kdir_header_t *header = (kafs_v7_kdir_header_t *)payload;
+  header->magic = htole32(KAFS_V7_KDIR_MAGIC);
+  header->version = htole16(KAFS_V7_KDIR_VERSION);
+  header->record_bytes = htole32((uint32_t)record_bytes);
+  kafs_v7_kdir_record_t *record =
+      (kafs_v7_kdir_record_t *)(payload + KAFS_V7_KDIR_HEADER_BYTES);
+  record->record_length = htole16((uint16_t)record_bytes);
+  record->flags = htole16(KAFS_V7_KDIR_FLAG_TOMBSTONE);
+
+  kafs_v7_runtime_data_cow_request_t requests[KAFS_V7_INODE_DIRECT_REFERENCE_COUNT];
+  for (size_t i = 0u; i < block_count; ++i)
+    requests[i] = (kafs_v7_runtime_data_cow_request_t){
+        .group_id = group_id,
+        .retained_logical_block = KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK,
+    };
+  kafs_v7_runtime_data_cow_batch_t *operation = NULL;
+  kafs_v7_runtime_data_cow_plan_t plans[KAFS_V7_INODE_DIRECT_REFERENCE_COUNT];
+  int rc = kafs_v7_runtime_data_cow_batch_prepare(ctx->c_v7_runtime_transactions, requests,
+                                                  block_count, &operation, plans);
+  for (size_t i = 0u; rc == 0 && i < block_count; ++i)
+    rc = kafs_v7_runtime_data_cow_batch_stage(operation, i,
+                                              payload + i * ctx->c_v7_block_size,
+                                              ctx->c_v7_block_size);
+  free(payload);
+
+  kafs_v7_inode_t inode;
+  memset(&inode, 0, sizeof(inode));
+  inode.mode = htole16(S_IFDIR | 0755u);
+  inode.size = htole64(used);
+  inode.link_count = htole16(1u);
+  inode.blocks = htole32(block_count);
+  for (size_t i = 0u; rc == 0 && i < block_count; ++i)
+  {
+    set_direct_reference(&inode, (uint32_t)i, plans[i].logical_block);
+    logical_blocks_out[i] = plans[i].logical_block;
+  }
+  kafs_v7_journal_patch_t patch = {
+      .target_type = KAFS_V7_JOURNAL_TARGET_INODE,
+      .logical_index = ino,
+      .patch_bytes = sizeof(inode),
+      .patch = &inode,
+  };
+  kafs_v7_runtime_transaction_result_t transaction;
+  if (rc == 0)
+    rc = kafs_v7_runtime_data_cow_batch_commit(&operation, &patch, 1u, &transaction);
+  if (operation)
+    (void)kafs_v7_runtime_data_cow_batch_abort(&operation);
+  return rc;
+}
+
+typedef struct direct_directory_case
+{
+  const char *name;
+  uint32_t initial_blocks;
+  int grow;
+  int require_bitmap_boundary;
+  int expected_rc;
+} direct_directory_case_t;
+
+static int test_direct_directory_transitions(kafs_context_t *ctx)
+{
+  static const direct_directory_case_t cases[] = {
+      {.name = "append-1", .initial_blocks = 1u},
+      {.name = "grow-1", .initial_blocks = 1u, .grow = 1},
+      {.name = "append-6", .initial_blocks = 6u},
+      {.name = "grow-6", .initial_blocks = 6u, .grow = 1},
+      {.name = "grow-11", .initial_blocks = 11u, .grow = 1, .require_bitmap_boundary = 1},
+      {.name = "append-12", .initial_blocks = KAFS_V7_INODE_DIRECT_REFERENCE_COUNT},
+      {.name = "full-12",
+       .initial_blocks = KAFS_V7_INODE_DIRECT_REFERENCE_COUNT,
+       .grow = 1,
+       .expected_rc = -ENOSPC},
+  };
+  const kafs_inocnt_t parent_ino = KAFS_INO_ROOTDIR;
+  const kafs_v7_inode_runtime_shard_t *shard = kafs_ctx_v7_inode_shard_for_ino(ctx, parent_ino);
+  if (!shard)
+    return -1;
+  for (size_t case_id = 0u; case_id < sizeof(cases) / sizeof(cases[0]); ++case_id)
+  {
+    const direct_directory_case_t *test = &cases[case_id];
+    size_t appended_bytes = KAFS_V7_KDIR_RECORD_PREFIX_BYTES + strlen(test->name);
+    size_t spare_bytes = test->grow ? appended_bytes - 1u : appended_bytes;
+    uint64_t retained[KAFS_V7_INODE_DIRECT_REFERENCE_COUNT] = {0};
+    int rc = seed_direct_directory(ctx, parent_ino, shard->group_id, test->initial_blocks,
+                                   spare_bytes, retained);
+    if (rc != 0)
+    {
+      fprintf(stderr, "direct directory case %s seed failed: %d\n", test->name, rc);
+      return -1;
+    }
+    const kafs_v7_inode_t *mapped = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(ctx, parent_ino);
+    kafs_v7_inode_t before;
+    if (mapped)
+      memcpy(&before, mapped, sizeof(before));
+    else
+      return -1;
+
+    kafs_inocnt_t child_ino = 0u;
+    int retirement_rc = 0;
+    if (rc == 0)
+      rc = kafs_v7_fuse_create_in_direct_directory(ctx, parent_ino, test->name, 0644u, 1u, 2u,
+                                                    &child_ino, &retirement_rc);
+    if (rc != test->expected_rc)
+    {
+      fprintf(stderr, "direct directory case %s returned %d expected %d\n", test->name, rc,
+              test->expected_rc);
+      return -1;
+    }
+    mapped = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(ctx, parent_ino);
+    if (test->expected_rc != 0)
+    {
+      if (!mapped || memcmp(mapped, &before, sizeof(before)) != 0 || child_ino != 0u ||
+          retirement_rc != 0)
+      {
+        fprintf(stderr, "direct directory case %s mutated on failure\n", test->name);
+        return -1;
+      }
+      continue;
+    }
+
+    uint32_t expected_blocks = test->initial_blocks + (uint32_t)test->grow;
+    const kafs_v7_inode_t *child = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(ctx, child_ino);
+    if (!mapped || !child || le32toh(mapped->blocks) != expected_blocks ||
+        !S_ISREG(le16toh(child->mode)) || retirement_rc != 0)
+    {
+      fprintf(stderr, "direct directory case %s result mismatch\n", test->name);
+      return -1;
+    }
+    uint64_t first_bitmap_word = get_direct_reference(mapped, 0u) / 64u;
+    int crossed_bitmap_boundary = 0;
+    for (uint32_t slot = 0u; slot < expected_blocks; ++slot)
+    {
+      if (get_direct_reference(mapped, slot) / 64u != first_bitmap_word)
+        crossed_bitmap_boundary = 1;
+      if (!has_direct_reference(mapped, slot) ||
+          (slot < test->initial_blocks && get_direct_reference(mapped, slot) == retained[slot]))
+      {
+        fprintf(stderr, "direct directory case %s slot %u was not replaced\n", test->name, slot);
+        return -1;
+      }
+    }
+    if (test->require_bitmap_boundary && !crossed_bitmap_boundary)
+    {
+      fprintf(stderr, "direct directory case %s did not cross a bitmap word boundary\n",
+              test->name);
+      return -1;
+    }
+  }
+  return 0;
+}
+
 static int test_direct_overwrite(void)
 {
   const char *path = "v7-fuse-write.img";
@@ -401,6 +565,8 @@ static int test_direct_overwrite(void)
     fprintf(stderr, "aligned direct truncate inode mismatch\n");
     rc = -1;
   }
+  if (rc == 0)
+    rc = test_direct_directory_transitions(&ctx);
   free(growth);
   free(grown);
   free(multi);
