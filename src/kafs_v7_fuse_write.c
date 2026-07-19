@@ -494,35 +494,41 @@ int kafs_v7_fuse_create_in_direct_directory(kafs_context_t *ctx, kafs_inocnt_t p
     return rc;
   }
   uint32_t parent_blocks = le32toh(mapped_parent->blocks);
-  if (parent_blocks == 2u && le64toh(mapped_parent->size) <= (uint64_t)ctx->c_v7_block_size * 2u)
+  if (parent_blocks >= 2u && parent_blocks <= 3u &&
+      le64toh(mapped_parent->size) <= (uint64_t)ctx->c_v7_block_size * parent_blocks)
   {
-    for (uint32_t slot = 2u; slot < 15u; ++slot)
+    for (uint32_t slot = parent_blocks; slot < 15u; ++slot)
       if (kafs_v7_fuse_inode_reference(mapped_parent, slot) != 0u)
         return -EOPNOTSUPP;
-    uint64_t retained[2];
-    for (size_t i = 0u; i < 2u; ++i)
+    uint64_t retained[3];
+    for (uint32_t i = 0u; i < parent_blocks; ++i)
     {
-      uint32_t reference = kafs_v7_fuse_inode_reference(mapped_parent, (uint32_t)i);
+      uint32_t reference = kafs_v7_fuse_inode_reference(mapped_parent, i);
       if (reference == 0u)
         return -EOPNOTSUPP;
       retained[i] = (uint64_t)reference - 1u;
     }
-    kafs_v7_runtime_data_cow_request_t requests[3] = {
-        {.group_id = parent_shard->group_id, .retained_logical_block = retained[0]},
-        {.group_id = parent_shard->group_id, .retained_logical_block = retained[1]},
-        {.group_id = parent_shard->group_id,
-         .retained_logical_block = KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK},
-    };
+    kafs_v7_runtime_data_cow_request_t requests[3];
+    for (uint32_t i = 0u; i < parent_blocks; ++i)
+      requests[i] = (kafs_v7_runtime_data_cow_request_t){
+          .group_id = parent_shard->group_id,
+          .retained_logical_block = retained[i],
+      };
+    if (parent_blocks == 2u)
+      requests[2] = (kafs_v7_runtime_data_cow_request_t){
+          .group_id = parent_shard->group_id,
+          .retained_logical_block = KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK,
+      };
     kafs_v7_runtime_data_cow_batch_t *batch = NULL;
     kafs_v7_runtime_data_cow_plan_t plans[3];
-    size_t plan_count = 2u;
-    int rc = kafs_v7_runtime_data_cow_batch_prepare(ctx->c_v7_runtime_transactions, requests, 2u,
-                                                    &batch, plans);
-    size_t payload_bytes = (size_t)ctx->c_v7_block_size * 2u;
+    size_t plan_count = parent_blocks;
+    int rc = kafs_v7_runtime_data_cow_batch_prepare(ctx->c_v7_runtime_transactions, requests,
+                                                    plan_count, &batch, plans);
+    size_t payload_bytes = (size_t)ctx->c_v7_block_size * parent_blocks;
     uint8_t *payload = rc == 0 ? malloc(payload_bytes) : NULL;
     if (rc == 0 && !payload)
       rc = -ENOMEM;
-    for (size_t i = 0u; rc == 0 && i < 2u; ++i)
+    for (size_t i = 0u; rc == 0 && i < parent_blocks; ++i)
     {
       uint64_t physical_off = 0u;
       rc =
@@ -534,7 +540,7 @@ int kafs_v7_fuse_create_in_direct_directory(kafs_context_t *ctx, kafs_inocnt_t p
     size_t new_size = 0u;
     if (rc == 0)
       rc = kafs_v7_fuse_directory_append(payload, payload_bytes, name, name_bytes, ino, &new_size);
-    if (rc == -ENOSPC)
+    if (rc == -ENOSPC && parent_blocks == 2u)
     {
       rc = kafs_v7_runtime_data_cow_batch_abort(&batch);
       size_t grown_bytes = (size_t)ctx->c_v7_block_size * 3u;
@@ -595,7 +601,7 @@ int kafs_v7_fuse_create_in_direct_directory(kafs_context_t *ctx, kafs_inocnt_t p
       return rc;
 
     int retirement_rc = 0;
-    for (size_t i = 0u; i < 2u; ++i)
+    for (size_t i = 0u; i < parent_blocks; ++i)
     {
       kafs_v7_runtime_data_retirement_request_t retirement = {
           .group_id = parent_shard->group_id,

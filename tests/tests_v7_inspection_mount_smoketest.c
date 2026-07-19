@@ -1631,6 +1631,13 @@ int main(void)
     fprintf(stderr, "v7 controlled three-block create setup failed\n");
     return 1;
   }
+  const char *three_block_append = "v7-three-block-append.img";
+  if (copy_image(three_block_create, three_block_append) != 0 ||
+      check_controlled_create_success(three_block_append, "third-append") != 0)
+  {
+    fprintf(stderr, "v7 controlled three-block append setup failed\n");
+    return 1;
+  }
   for (size_t i = 0u; i < sizeof(create_faults) / sizeof(create_faults[0]); ++i)
   {
     char create_recovery[PATH_MAX];
@@ -1686,6 +1693,15 @@ int main(void)
                                          "third", 4u) != 0)
     {
       fprintf(stderr, "v7 controlled three-block directory growth recovery failed fault=%s\n",
+              kafs_v7_test_fault_name(create_faults[i]));
+      return 1;
+    }
+    snprintf(create_recovery, sizeof(create_recovery), "v7-three-block-append-recovery-%zu.img", i);
+    if (copy_image(three_block_create, create_recovery) != 0 ||
+        check_controlled_create_recovery(create_recovery, create_faults[i], "three-block-append",
+                                         "third-append", 4u) != 0)
+    {
+      fprintf(stderr, "v7 controlled three-block directory append recovery failed fault=%s\n",
               kafs_v7_test_fault_name(create_faults[i]));
       return 1;
     }
