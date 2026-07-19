@@ -3,8 +3,8 @@
 - Date: 2026-07-19
 - Baseline: `b25b09e` on `feat/v7-aligned-direct-overwrite`
 - Related incident: `KAFS-INC-2026-07-19-01`
-- Status: investigation complete enough to select the decision gate; product
-  implementation remains blocked on the delivery-goal decision below
+- Status: investigation complete; create-inclusive bounded RC selected as the
+  evidence-based shortest path to an operator-usable controlled-write result
 
 ## Task Start Record
 
@@ -22,8 +22,15 @@
   blocks.
 - The handoff records an unresolved product decision after M6.1: qualify the
   bounded controlled-write surface through M7, or continue writable-surface
-  implementation first. Later implementation did not turn that choice into a
-  separately accepted delivery goal.
+  implementation first. Later implementation did not state a decision rule for
+  that choice.
+- The accepted stakeholders include operators who need an offline migration
+  path. The current v7 migration implementation creates and validates an empty
+  destination but does not copy source data; full data migration remains M9.
+- Therefore, without create admission, the normal operator surfaces cannot put
+  a regular file into a newly created v7 image for the bounded write path to
+  modify. Such a build remains useful as an internal recovery prototype but is
+  not a self-contained operator-usable controlled-write RC.
 - Repository-wide static analysis currently reports 97 source clone groups,
   1,351 duplicated source lines (2.69%), and 101 complexity warnings. Cppcheck
   reports 19 findings. These are escape and risk evidence, not a priority
@@ -43,23 +50,40 @@
   They require a recorded disposition even when they are not on the selected
   wave's critical path.
 
+### Delivery decision rule
+
+The next delivery must satisfy this minimum operator workflow using supported
+entrypoints rather than hand-built fixtures:
+
+```text
+create or migrate a v7 image
+  -> mount through kafs-v7 controlled-write admission
+  -> create a regular file
+  -> write/grow/truncate and full-fsync it
+  -> unmount/remount
+  -> validate it with fsck.kafs and inspect it with kafsdump
+```
+
+A candidate that cannot introduce a regular file through a supported surface
+fails this workflow even if overwrite recovery passes on test fixtures.
+
 ### Start decision
 
 - `PASS`: repository-wide investigation and recovery planning.
-- `BLOCKED`: corrective product edits until the delivery goal is selected as
-  either the earliest bounded v7 RC or an RC that includes bounded direct-file
-  create.
-
-The block is intentional: without that decision, "shortest path" has two
-different destinations and cannot determine whether removal or refactoring is
-the shorter recovery.
+- `PASS`: Option B corrective product implementation, because generic bounded
+  create is the shortest missing dependency for the minimum operator workflow.
+- `REPLAN`: Option A as an RC path. It is valid only if the accepted delivery is
+  explicitly changed from an operator-usable RC to an internal recovery
+  prototype.
 
 ## Accepted Goal And Capability Position
 
 The accepted architectural goal is a v7 format that distributes SD-card writes
-without weakening deterministic recovery. The nearest accepted delivery
-boundary is an explicit-opt-in RC with real-media qualification, but the
-enabled write surface for that RC is not yet selected.
+without weakening deterministic recovery. The nearest delivery boundary is an
+explicit-opt-in, operator-usable controlled-write RC with real-media
+qualification. "Operator-usable" means that the supported surface can complete
+the minimum workflow above; it does not imply general writable-filesystem
+parity.
 
 Current capability position:
 
@@ -79,20 +103,20 @@ not accepted. It cannot be carried into qualification unchanged.
 ## Capability Dependency Graph
 
 ```text
-                         +-> remove create admission and its incomplete claims
-accepted delivery goal -|                                      |
-selection gate           |                                      v
-                         |                              bounded-surface M7 RC
-                         |
-                         +-> generic direct-directory mutation primitive
-                                -> direct(N) append/growth/limit recovery proof
-                                -> accepted bounded M8-B create surface
-                                -> create-inclusive M7 RC
+accepted operator workflow
+  -> supported data-introduction path
+       -> M9 full data migration (larger alternative, not implemented)
+       -> generic bounded create (selected shortest dependency)
+            -> generic direct-directory mutation primitive
+            -> direct(N) append/growth/limit recovery proof
+            -> accepted bounded M8-B create surface
+  -> enabled-path correctness/control closure
+  -> create-inclusive M7 RC qualification
 
-both paths -> static finding disposition ledger
-           -> blocking correctness/durability fixes for every enabled surface
-           -> aggregate gate exit-status correction
-           -> independent review and real-media qualification
+selected path -> static finding disposition ledger
+              -> blocking correctness/durability fixes for every enabled surface
+              -> aggregate gate exit-status correction
+              -> independent review and real-media qualification
 ```
 
 M8-C indirect COW, M9 data migration, and M10 cross-group mutation are not
@@ -127,18 +151,22 @@ recorded; it does not transfer responsibility elsewhere.
 
 ## Alternative Ordering Comparison
 
-### Option A: earliest bounded v7 RC
+### Option A: fixture-backed recovery prototype
 
-1. Remove create admission and the incomplete M8-B implementation from the RC
+1. Remove create admission and the incomplete M8-B implementation from the
    surface while preserving accepted M6/M6.1 and explicitly selected M8-A
    behavior.
 2. Fix correctness/durability findings that affect that enabled surface and
    make the aggregate static gate fail correctly.
-3. Run M7 software, independent-review, and real-media qualification.
+3. Retain the result as internal recovery evidence rather than labeling it an
+   operator-usable RC.
 
-This is the shortest route if create is not required by the target workload.
-It does not declare the removed work acceptable; the incident code is removed
-from the delivery surface and M8-B remains an owned future capability.
+This is shorter only if the deliverable is explicitly an internal prototype.
+It fails the minimum operator workflow because v7 destination creation does not
+copy source data and the admitted surface cannot create a regular file. It is
+therefore rejected as the default RC route. Removing the incident code would
+still leave M8-B as an owned future capability rather than declaring it
+acceptable.
 
 ### Option B: create-inclusive bounded v7 RC
 
@@ -151,8 +179,10 @@ from the delivery surface and M8-B remains an owned future capability.
 4. Fix correctness/durability findings affecting the enabled surface and the
    aggregate gate, then perform M7 qualification.
 
-This is longer than Option A but shortest if bounded create is a required RC
-capability.
+This is the selected shortest route to an operator-usable controlled-write RC.
+The larger alternative is implementing M9 full data migration first; that adds
+a new copying/rebuild and cutover proof when bounded create already supplies the
+missing data-introduction capability.
 
 ### Rejected first waves
 
@@ -167,21 +197,9 @@ capability.
 
 ## Recovery Waves
 
-### Wave 0: delivery-goal decision
+### Wave 1: generic direct-directory recovery
 
-Record whether the next accepted delivery is the earliest bounded RC or a
-create-inclusive bounded RC, and list the workload that makes each enabled
-surface necessary. Exit when one option is accepted and the other is explicitly
-deferred.
-
-### Wave 1A: bounded-RC surface rollback
-
-Applies only to Option A. Remove create from admission, code, claims, and tests
-without weakening fail-closed behavior. Recompute the graph after verification.
-
-### Wave 1B: generic direct-directory recovery
-
-Applies only to Option B. Replace block-count-specific production flow with the
+Replace block-count-specific production flow with the
 five semantic transitions in the RCA. The wave closes the M8-B structural
 correctness dependency and unlocks create-inclusive recovery qualification.
 
@@ -198,9 +216,7 @@ Run full software recovery tests, independent review, and the accepted
 real-media format/mount/unmount/remount/fsck evidence. A controlled-write RC
 also requires write, full fsync, and controlled power-interruption cycles.
 
-## Wave 1B Exit Criteria
-
-These criteria are ready if Option B is selected:
+## Wave 1 Exit Criteria
 
 1. One production control flow handles `direct(N) -> direct(N)` and
    `direct(N) -> direct(N + 1)` for every admitted `N` below the named direct
@@ -222,9 +238,9 @@ These criteria are ready if Option B is selected:
 
 ## Local-Optimum Check
 
-Wave 0 is the only valid next wave because it changes the identity of the
-shortest path: Option A removes a non-required surface, while Option B repairs
-and qualifies it. Starting either implementation before that choice optimizes
-for the current code shape. After every wave, the capability graph must be
-rebuilt from current code, tests, specifications, and the accepted delivery
-goal before selecting the next wave.
+Wave 1 closes the nearest missing dependency in the minimum operator workflow.
+Removing create would shorten the code path but not the path to an
+operator-usable result; implementing M9 first would introduce a larger data-copy
+and cutover capability to solve the same data-introduction prerequisite. After
+every wave, the capability graph must be rebuilt from current code, tests,
+specifications, and the delivery decision rule before selecting the next wave.
