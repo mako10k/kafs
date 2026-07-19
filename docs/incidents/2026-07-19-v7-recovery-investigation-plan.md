@@ -3,7 +3,7 @@
 - Date: 2026-07-19
 - Baseline: `e76a0d1` on `feat/v7-aligned-direct-overwrite`
 - Related incident: `KAFS-INC-2026-07-19-01`
-- Status: countermeasure procedure fixed; recovery waves re-derived below
+- Status: R1 closed; R2 active
 
 ## Scope And Sequence
 
@@ -158,6 +158,35 @@ Exit criteria:
 
 Downstream unlock: RCA countermeasures and their detection controls are closed
 well enough to perform a clean capability rebaseline.
+
+## R1 Closeout Evidence
+
+R1 closed on 2026-07-19 at `13cc9a0` with the following current-checkout
+evidence:
+
+- `kafs_v7_fuse_write_direct` and direct-directory create use batch COW for
+  every admitted direct cardinality; no 1/2/3-block production branch remains.
+- The retained single-item COW API is an adapter over the batch lifecycle and is
+  used only where one-block representation semantics are explicit.
+- Direct inode roles and work arrays use
+  `KAFS_V7_INODE_DIRECT_REFERENCE_COUNT`; indirect slots are rejected before
+  direct mutation.
+- The normal-path transition table covers direct append, growth, limit-minus-one,
+  limit append, and full-limit rejection. The rejection preserves the parent
+  inode and allocator counters.
+- The interruption table crosses inline/direct append/growth transitions with
+  journal-publish, metadata-apply, and checkpoint-copy faults, including
+  limit-minus-one and limit representatives. Recovery readback and offline fsck
+  pass.
+- Boundary testing exposed and corrected batch allocation accounting across
+  bitmap words; free-block deltas are now emitted per bitmap patch.
+- The effectiveness replay rejects a one-to-two-only implementation boundary:
+  fixture cardinality is table data, while production control flow is driven by
+  semantic representation transitions.
+
+The R2 dependency graph starts with aggregate static exit status because every
+subsequent static remediation relies on a trustworthy machine-detectable gate.
+Clone and warning counts remain comparison evidence, not the ordering rule.
 
 ## Deferred Until RCA Countermeasure Closure
 
