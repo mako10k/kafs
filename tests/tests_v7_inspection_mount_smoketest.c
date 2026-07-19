@@ -814,6 +814,24 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
     rc = -1;
   if (rc == 0 && check_persisted_block(image, ino, payload, block_size) != 0)
     rc = -1;
+  if (rc == 0)
+  {
+    kafs_test_mount_options_t inspect = {
+        .log_path = "v7-controlled-remount.log",
+        .extra_options = "ro",
+        .timeout_ms = 15000,
+    };
+    pid = kafs_test_start_kafs_v7(image, "mnt-controlled-remount", &inspect);
+    if (pid <= 0)
+      rc = -1;
+    else
+    {
+      snprintf(path, sizeof(path), "%s/block", "mnt-controlled-remount");
+      if (read_block_equals(path, payload, block_size) != 0)
+        rc = -1;
+      kafs_test_stop_kafs("mnt-controlled-remount", pid);
+    }
+  }
   free(payload);
   return rc;
 }

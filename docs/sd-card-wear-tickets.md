@@ -3005,8 +3005,8 @@
     前にT20 adapterへrouteする。control-planeと未列挙mutationは引き続き`EOPNOTSUPP`で拒否する。
   - inspection fixtureを複製して実マウントし、partial write拒否、aligned full-block overwrite、full fsync、
     unmount、fsck、offline descriptor/inode/data read-backを検証する。
-  - write後のnonzero checkpoint sequenceはinspection admissionが引き続きfail closedとする。再マウント可能化は
-    journal/checkpoint recoveryを含む次sliceで扱う。
+  - write後のnonzero checkpoint sequenceは、journalが空でdescriptor/checkpoint validationが通るclean
+    closeout状態に限ってinspection再マウントを許可する。non-empty journalは引き続きfail closedとする。
 - 完了条件:
   - explicit safe mount optionsなしではcontrolled-write admissionを拒否する。
   - 実FUSE経由でT20の限定writeだけが成功し、unmount後のfsckとraw dataが一致する。
@@ -3016,9 +3016,8 @@
 
 ## 次に着手する候補
 
-1. controlled-write後のnonzero checkpoint sequenceを安全に再admitするrecovery matrixを追加し、
-   write/full-fsync/unmount/remount/fsckを閉じる。partial-block merge、file growth、indirect/multi-block write、
-   `create`は引き続き別slice。
+1. controlled-writeの各durability stageでprocess/power interruptionを模擬するrecovery matrixを追加する。
+   partial-block merge、file growth、indirect/multi-block write、`create`は引き続き別slice。
 2. power-interruption recovery matrixを完了した後、accepted offline/inspection surfaceに
    `kafsresize --migrate-create --format-version 7`を追加する。
 

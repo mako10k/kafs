@@ -49,8 +49,8 @@ static void usage(const char *prog)
           "  This is the dedicated format " KAFS_V7_TOOL_FORMAT_LABEL
           " runtime entrypoint. It owns " KAFS_V7_TOOL_FORMAT_LABEL " CLI\n"
           "  admission and rejects legacy v6_* mount tokens. Inspection accepts only\n"
-          "  a validated descriptor/checkpoint pair at checkpoint_seq=0 with empty\n"
-          "  journal segments. The image is opened and mapped read-only, and all\n"
+          "  a validated descriptor/checkpoint pair with empty journal segments.\n"
+          "  The image is opened and mapped read-only, and all\n"
           "  mutation operations fail with EROFS. Controlled write requires the explicit\n"
           "  safe mount options and admits only aligned full direct-block overwrites.\n"
           "  Non-empty journal replay, repair, and other mutations fail closed.\n",
