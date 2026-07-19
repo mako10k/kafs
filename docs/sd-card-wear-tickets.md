@@ -3222,14 +3222,30 @@
 - 完了条件:
   - request外の新規block領域はzeroで、追加block数とinode blocks/free-block counterが一致する。
   - crash recovery後にold sizeまたはnew sizeの混在しないtransaction stateへ収束する。
-  - hole、12 direct blocks外、indirect growth、truncateは引き続き拒否する。
+  - hole、12 direct blocks外、indirect growthは引き続き拒否する。
+
+### SDW-V7RT-T35 bounded direct truncate
+
+- 目的: 既存regular inodeを12 direct blocks内で縮小し、partial-tail zeroingと参照解除をv7 transactionへ
+  接続する。
+- 変更:
+  - `truncate(2)` / `ftruncate(2)`の縮小をcontrolled-write FUSE入口からv7専用adapterへrouteする。
+  - 非block境界の末尾はCOWして切捨て領域をzero-fillし、new tail reference、inode size/blocks、allocator metadataを
+    同じtransactionでpublishする。block境界の縮小はinode reference更新を直接transaction commitする。
+  - checkpoint後に参照が外れたtail/whole blocksを既存data retirement transactionで解放する。
+  - low-level smokeはpartial/aligned両経路を検証し、実FUSE smokeは通常縮小と全4 closeout中断点からのrecovery、
+    offline payload、inode size/blocks、fsckを検証する。
+- 完了条件:
+  - partial tailのlogical EOF以降がzeroで、削除slot、inode blocks、allocator counterが一致する。
+  - crash recovery後にold inodeまたは縮小済みinodeの混在しないtransaction stateへ収束する。
+  - truncateによる拡張、hole/indirect file、`O_TRUNC`は引き続き拒否する。
 
 ---
 
 ## 次に着手する候補
 
-1. M8-Aの次sliceとして、direct file truncateをdata retirementと同じcheckpoint contractへ接続し、partial-tail
-   zeroing、whole-block release、全closeout中断点からのrecoveryを検証する。
+1. M8-Aの次sliceとして、`O_TRUNC`をcreate/open policyからbounded direct truncateへ接続し、open時の
+   permission/locking/error contractとrecoveryを検証する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の

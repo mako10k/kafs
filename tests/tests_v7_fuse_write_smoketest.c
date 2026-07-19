@@ -64,6 +64,13 @@ static uint64_t get_direct_reference(const kafs_v7_inode_t *inode, uint32_t slot
   return (uint64_t)le32toh(reference) - 1u;
 }
 
+static int has_direct_reference(const kafs_v7_inode_t *inode, uint32_t slot)
+{
+  uint32_t reference = 0u;
+  memcpy(&reference, inode->inline_or_block_refs + slot * sizeof(reference), sizeof(reference));
+  return le32toh(reference) != 0u;
+}
+
 static int seed_regular_file(kafs_context_t *ctx, kafs_inocnt_t ino, uint32_t group_id,
                              const void *data, uint64_t logical_blocks_out[3])
 {
@@ -347,6 +354,52 @@ static int test_direct_overwrite(void)
       fprintf(stderr, "direct growth slot %u payload mismatch\n", slot_id);
       rc = -1;
     }
+  }
+  kafs_v7_fuse_truncate_result_t truncate_result;
+  uint64_t truncate_size = 2u * ctx.c_v7_block_size + 23u;
+  if (rc == 0)
+    rc = kafs_v7_fuse_truncate_direct(&ctx, ino, truncate_size, &truncate_result);
+  if (rc != 0)
+    fprintf(stderr, "partial direct truncate failed: %d\n", rc);
+  inode = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(&ctx, ino);
+  if (rc == 0 &&
+      (!inode || le64toh(inode->size) != truncate_size || le32toh(inode->blocks) != 3u ||
+       truncate_result.retirement_rc != 0))
+  {
+    fprintf(stderr, "partial direct truncate inode mismatch\n");
+    rc = -1;
+  }
+  if (rc == 0)
+  {
+    uint64_t logical = get_direct_reference(inode, 2u);
+    rc = kafs_ctx_v7_data_ref_physical_offset(&ctx, (kafs_blkcnt_t)logical + 1u, &physical_off);
+    if (rc == 0 && memcmp((uint8_t *)image + physical_off,
+                          grown + 2u * ctx.c_v7_block_size, 23u) != 0)
+    {
+      fprintf(stderr, "partial direct truncate tail mismatch\n");
+      rc = -1;
+    }
+    for (uint32_t i = 23u; rc == 0 && i < ctx.c_v7_block_size; ++i)
+      if (*((uint8_t *)image + physical_off + i) != 0u)
+      {
+        fprintf(stderr, "partial direct truncate tail not zeroed\n");
+        rc = -1;
+      }
+  }
+  if (rc == 0 && (has_direct_reference(inode, 3u) || has_direct_reference(inode, 4u)))
+  {
+    fprintf(stderr, "partial direct truncate retained removed references\n");
+    rc = -1;
+  }
+  if (rc == 0)
+    rc = kafs_v7_fuse_truncate_direct(&ctx, ino, ctx.c_v7_block_size, &truncate_result);
+  inode = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(&ctx, ino);
+  if (rc == 0 &&
+      (!inode || le64toh(inode->size) != ctx.c_v7_block_size || le32toh(inode->blocks) != 1u ||
+       truncate_result.retirement_rc != 0))
+  {
+    fprintf(stderr, "aligned direct truncate inode mismatch\n");
+    rc = -1;
   }
   free(growth);
   free(grown);

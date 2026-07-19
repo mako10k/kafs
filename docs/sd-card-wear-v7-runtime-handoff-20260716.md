@@ -83,7 +83,7 @@ checksum-consistent foreign-group mutation.
 | M6 | T20-T32: bounded direct overwrite, admission, diagnostics, partial/multi-block COW, interruption recovery | Complete |
 | M6.1 | FUSE request negotiation and supported atomic-request observability | Next |
 | M7 | Controlled-write RC qualification, real-media power interruption, and independent review | Not started |
-| M8-A | Existing-inode growth, allocation, hole policy, and truncate | Not started |
+| M8-A | Existing-inode growth, allocation, hole policy, and truncate | In progress: direct growth and shrinking truncate complete; O_TRUNC remains |
 | M8-B | Create and directory-record mutation | Not started |
 | M8-C | Indirect-block COW, traversal, and retirement | Not started |
 | M9 | v5-to-v7 data migration beyond destination creation | Not started |

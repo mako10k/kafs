@@ -113,8 +113,10 @@ Alias for FUSE
 Inline form of
 .BR --option .
 .SH CURRENT LIMITS
-Holes, requests beyond the twelve direct blocks, indirect blocks, truncate,
-file creation, and other metadata mutations are rejected.  Offline repair,
+Controlled-write mounts support shrinking existing direct-only regular files
+through truncate and ftruncate.  Truncate growth and O_TRUNC are rejected.
+Holes, requests beyond the twelve direct blocks, indirect blocks, file
+creation, and other metadata mutations are rejected.  Offline repair,
 cross-group HRL mutation, and hotplug write delegation are not enabled.
 .SH EXIT STATUS
 .TP
