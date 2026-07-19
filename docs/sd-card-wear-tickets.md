@@ -3074,13 +3074,28 @@
   - 未指定/未知stageではproduction pathに副作用がなく、全4stageの実FUSE matrixがPASSする。
   - test helperはmount前early exit statusをcallerへ返せる。
 
+### SDW-V7RT-T26 machine-readable recovery diagnostics
+
+- 目的: controlled-write admission recoveryの再開位置と実行量を安定したkey/value診断へ集約し、
+  各durability boundaryが期待した経路だけを通ることを実FUSE testで固定する。
+- 変更:
+  - recovery完了時に`status`、`format`、`trigger`、`resume_from`、初期/最終checkpoint状態、metadata apply、
+    checkpoint publication/resume、journal reclaimの各counterを1行で出力する。
+  - checkpoint replica数、checkpoint sequence、journal replay結果から`checkpoint_copy`、`journal_publish`、
+    `metadata_apply`、`journal_reclaim`の再開位置を分類する。
+  - 全4 fault caseで独立したrecovery logを採取し、stage、apply済みmutation数、checkpoint resume数、
+    reclaim数、最終journal空状態を照合する。
+- 完了条件:
+  - recovery診断は機械的に解析できるstable key/value形式で、全4stageを区別できる。
+  - counterはidempotent replayを含む実際の処理量を表し、各fault caseの期待値と一致する。
+  - recoveryを伴わないmountの出力とdurability順を変更しない。
+
 ---
 
 ## 次に着手する候補
 
-1. recovery logをmachine-readableなstage/counter summaryへ整理し、各fault caseでcheckpoint generation、
-   sequence、apply/reclaim countが期待どおりかを検証する。
-   partial-block merge、file growth、indirect/multi-block write、`create`は引き続き別slice。
+1. machine-readable recovery summaryを専用parser/APIへ切り出し、診断keyの重複、欠落、未知値を検出する
+   contract testを追加する。partial-block merge、file growth、indirect/multi-block write、`create`は引き続き別slice。
 2. power-interruption recovery matrixを完了した後、accepted offline/inspection surfaceに
    `kafsresize --migrate-create --format-version 7`を追加する。
 
