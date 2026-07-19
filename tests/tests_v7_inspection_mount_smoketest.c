@@ -917,7 +917,8 @@ static int run_fsck(const char *image)
 }
 
 static int check_persisted_blocks(const char *image, uint32_t ino, const void *expected,
-                                  uint32_t block_size, uint32_t block_count)
+                                  uint64_t expected_size, uint32_t block_size,
+                                  uint32_t block_count)
 {
   int fd = open(image, O_RDONLY);
   kafs_ssuperblock_t sb;
@@ -927,7 +928,7 @@ static int check_persisted_blocks(const char *image, uint32_t ino, const void *e
   kafs_v7_inode_t inode;
   if (rc == 0)
     rc = read_inode(fd, &report, ino, &inode);
-  if (rc == 0 && (le64toh(inode.size) != (uint64_t)block_size * block_count ||
+  if (rc == 0 && (le64toh(inode.size) != expected_size ||
                   le32toh(inode.blocks) != block_count))
     rc = -EUCLEAN;
   uint8_t *actual = rc == 0 ? malloc((size_t)block_size * block_count) : NULL;
@@ -1017,6 +1018,19 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
     fprintf(stderr, "controlled write fsync failed: errno=%d\n", errno);
     rc = -1;
   }
+  const uint64_t truncate_size = 2u * (uint64_t)block_size + 31u;
+  if (rc == 0 && ftruncate(fd, (off_t)truncate_size) != 0)
+  {
+    fprintf(stderr, "controlled truncate failed: errno=%d\n", errno);
+    rc = -1;
+  }
+  if (rc == 0 && fsync(fd) != 0)
+  {
+    fprintf(stderr, "controlled truncate fsync failed: errno=%d\n", errno);
+    rc = -1;
+  }
+  if (rc == 0)
+    memset(payload + truncate_size, 0, 3u * block_size - (size_t)truncate_size);
   if (fd >= 0 && close(fd) != 0 && rc == 0)
     rc = -1;
   kafs_test_stop_kafs(mnt, pid);
@@ -1030,7 +1044,8 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
 
   if (rc == 0 && run_fsck(image) != 0)
     rc = -1;
-  if (rc == 0 && check_persisted_blocks(image, ino, payload, block_size, 4u) != 0)
+  if (rc == 0 &&
+      check_persisted_blocks(image, ino, payload, truncate_size, block_size, 3u) != 0)
     rc = -1;
   if (rc == 0)
   {
@@ -1045,7 +1060,7 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
     else
     {
       snprintf(path, sizeof(path), "%s/block", "mnt-controlled-remount");
-      if (read_block_equals(path, payload, 4u * block_size) != 0)
+      if (read_block_equals(path, payload, (size_t)truncate_size) != 0)
         rc = -1;
       kafs_test_stop_kafs("mnt-controlled-remount", pid);
     }
@@ -1055,7 +1070,7 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
 }
 
 static int check_controlled_write_recovery(const char *image, uint32_t ino, uint32_t block_size,
-                                           kafs_v7_test_fault_point_t fault, uint8_t seed)
+                                           kafs_v7_test_fault_point_t fault)
 {
   const char *mnt = "mnt-controlled-crash";
   char crash_log[PATH_MAX];
@@ -1076,21 +1091,17 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
   if (pid <= 0)
     return -1;
 
-  uint8_t *payload = malloc(4u * block_size);
-  uint8_t *patch = malloc(block_size);
-  const uint32_t patch_offset = 3u * block_size;
+  uint8_t *payload = malloc(2u * block_size);
+  const uint64_t truncate_size = (uint64_t)block_size + 53u;
   char path[PATH_MAX];
   snprintf(path, sizeof(path), "%s/block", mnt);
   int fd = open(path, O_RDWR);
-  int rc = fd < 0 || !payload || !patch ? -1 : 0;
+  int rc = fd < 0 || !payload ? -1 : 0;
   if (rc == 0)
   {
-    memset(payload, 0, 4u * block_size);
+    memset(payload, 0, 2u * block_size);
     memcpy(payload, k_block_payload, strlen(k_block_payload));
-    for (uint32_t i = 0; i < block_size; ++i)
-      patch[i] = (uint8_t)(i * 37u + seed);
-    memcpy(payload + patch_offset, patch, block_size);
-    if (pwrite(fd, patch, block_size, patch_offset) >= 0)
+    if (ftruncate(fd, (off_t)truncate_size) >= 0)
       rc = -1;
   }
   if (fd >= 0)
@@ -1112,19 +1123,20 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
     kafs_test_stop_kafs("mnt-controlled-recovery", pid);
   if (rc == 0 && check_recovery_log(recovery_log, fault) != 0)
   {
-    fprintf(stderr, "multi-block recovery diagnostic failed fault=%s\n",
+    fprintf(stderr, "truncate recovery diagnostic failed fault=%s\n",
             kafs_v7_test_fault_name(fault));
     rc = -1;
   }
   if (rc == 0 && run_fsck(image) != 0)
   {
-    fprintf(stderr, "multi-block recovery fsck failed fault=%s\n",
+    fprintf(stderr, "truncate recovery fsck failed fault=%s\n",
             kafs_v7_test_fault_name(fault));
     rc = -1;
   }
-  if (rc == 0 && check_persisted_blocks(image, ino, payload, block_size, 4u) != 0)
+  if (rc == 0 &&
+      check_persisted_blocks(image, ino, payload, truncate_size, block_size, 2u) != 0)
   {
-    fprintf(stderr, "multi-block recovery payload failed fault=%s\n",
+    fprintf(stderr, "truncate recovery payload failed fault=%s\n",
             kafs_v7_test_fault_name(fault));
     rc = -1;
   }
@@ -1134,7 +1146,6 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
     kafs_test_dump_log(recovery_log, "v7 controlled-write recovery failed");
   }
   free(payload);
-  free(patch);
   return rc;
 }
 
@@ -1263,7 +1274,7 @@ int main(void)
   const char *recovery = "v7-controlled-recovery.img";
   if (copy_image(image, recovery) != 0 ||
       check_controlled_write_recovery(recovery, fixture.block_ino, fixture.block_size,
-                                      KAFS_V7_TEST_FAULT_JOURNAL_PUBLISH, 11u) != 0)
+                                      KAFS_V7_TEST_FAULT_JOURNAL_PUBLISH) != 0)
   {
     fprintf(stderr, "v7 controlled-write journal recovery failed\n");
     return 1;
@@ -1272,7 +1283,7 @@ int main(void)
   const char *apply_recovery = "v7-controlled-apply-recovery.img";
   if (copy_image(image, apply_recovery) != 0 ||
       check_controlled_write_recovery(apply_recovery, fixture.block_ino, fixture.block_size,
-                                      KAFS_V7_TEST_FAULT_METADATA_APPLY, 13u) != 0)
+                                      KAFS_V7_TEST_FAULT_METADATA_APPLY) != 0)
   {
     fprintf(stderr, "v7 controlled-write metadata apply recovery failed\n");
     return 1;
@@ -1281,7 +1292,7 @@ int main(void)
   const char *checkpoint_recovery = "v7-controlled-checkpoint-recovery.img";
   if (copy_image(image, checkpoint_recovery) != 0 ||
       check_controlled_write_recovery(checkpoint_recovery, fixture.block_ino, fixture.block_size,
-                                      KAFS_V7_TEST_FAULT_CHECKPOINT_COPY, 17u) != 0)
+                                      KAFS_V7_TEST_FAULT_CHECKPOINT_COPY) != 0)
   {
     fprintf(stderr, "v7 controlled-write checkpoint recovery failed\n");
     return 1;

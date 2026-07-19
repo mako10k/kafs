@@ -9421,7 +9421,21 @@ static int kafs_op_truncate(const char *path, off_t size, struct fuse_file_info 
 {
   struct fuse_context *fctx = NULL;
   struct kafs_context *ctx = NULL;
-  int gate = kafs_mutation_path_context(path, &fctx, &ctx);
+  struct fuse_context *current_fctx = fuse_get_context();
+  ctx = current_fctx ? current_fctx->private_data : NULL;
+  int gate = 0;
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (!kafs_v7_fuse_policy_controlled_write_active(ctx))
+#endif
+    gate = kafs_mutation_path_context(path, &fctx, &ctx);
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  else
+  {
+    fctx = current_fctx;
+    if (kafs_is_ctl_path(path))
+      gate = -EACCES;
+  }
+#endif
   if (gate != 0)
     return gate;
   gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_TRUNCATE);
@@ -9432,6 +9446,26 @@ static int kafs_op_truncate(const char *path, off_t size, struct fuse_file_info 
   uint32_t ino = (uint32_t)kafs_ctx_ino_no(ctx, inoent);
   kafs_dlog(2, "%s: enter path=%s ino=%" PRIuFAST32 " size=%" PRIuFAST64 "\n", __func__,
             path ? path : "(null)", ino, (uint64_t)size);
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (kafs_v7_fuse_policy_controlled_write_active(ctx))
+  {
+    if (size < 0)
+      return -EINVAL;
+    int policy =
+        kafs_v7_fuse_policy_check_controlled_write(ctx, KAFS_V7_CONTROLLED_WRITE_OP_TRUNCATE);
+    if (policy != 0)
+      return policy;
+    kafs_v7_fuse_truncate_result_t result;
+    kafs_inode_lock(ctx, ino);
+    int truncate_rc = kafs_v7_fuse_truncate_direct(ctx, ino, (uint64_t)size, &result);
+    kafs_inode_unlock(ctx, ino);
+    if (truncate_rc == 0 && result.retirement_rc != 0)
+      kafs_log(KAFS_LOG_WARNING,
+               "%s: v7 truncate block retirement deferred path=%s ino=%" PRIuFAST32 " rc=%d\n",
+               __func__, path ? path : "(null)", ino, result.retirement_rc);
+    return truncate_rc;
+  }
+#endif
   int rc_hp = kafs_hotplug_call_truncate(fctx, ctx, inoent, size);
   if (rc_hp == 0)
   {
