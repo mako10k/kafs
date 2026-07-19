@@ -10,6 +10,7 @@
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 typedef struct kafs_v7_parsed_transaction
 {
@@ -1008,6 +1009,10 @@ static int kafs_v7_journal_reclaim_segments(int fd, const kafs_v7_layout_report_
     rc = kafs_v7_journal_reset_segment(fd, layout, &segments[id]);
     if (rc == 0)
       ++result->reset_segment_count;
+    const char *crash_after_reclaim = getenv("KAFS_V7_TEST_CRASH_AFTER_JOURNAL_RECLAIM");
+    if (rc == 0 && result->reset_segment_count == 1u && crash_after_reclaim &&
+        strcmp(crash_after_reclaim, "1") == 0)
+      _exit(89);
   }
   return rc;
 }

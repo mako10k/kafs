@@ -3043,12 +3043,27 @@
   - checkpoint generation/sequenceを不要に進めず、最終的に2-copy checkpointと空journalを得る。
   - 通常mountではtest hookが無効で、既存durability順を変更しない。
 
+### SDW-V7RT-T24 multi-segment journal reclaim interruption
+
+- 目的: 複数groupのcovered journal segmentをreclaimしている途中のprocess interruptionを実FUSE admission
+  recoveryで再開し、durability matrixを閉じる。
+- 変更:
+  - inspection mount smokeへv7 sequence/journal writerをlinkし、production APIで異なる2 groupのinode patchを
+    committed journal transactionとしてpublishするfixtureを追加する。
+  - test-only hookで最初のnon-empty segmentをempty headerへflush/read-backした直後にserverを終了する。
+  - raw validatorでnon-empty segmentが2から1へ減ったことを確認し、次のcontrolled-write admissionで残り1件だけを
+    reclaimする。最終状態はjournal 0件とfsck PASSを要求する。
+- 完了条件:
+  - checkpointが全transactionをcoverする前はreclaimせず、cover後は各segmentを独立に再実行可能とする。
+  - 既にemptyのsegment generationを不要に進めず、残存segmentだけをresetする。
+  - journal publication、metadata apply、checkpoint 1コピー、partial reclaimの全境界が実FUSE再起動で収束する。
+
 ---
 
 ## 次に着手する候補
 
-1. 複数groupにnon-empty segmentを持つfixtureを作り、journal reclaim途中の実FUSE process interruptionと
-   admission resumeを追加してrecovery matrixを閉じる。
+1. controlled-write recoveryのtest-only crash hookを共通fault-point APIへ整理し、各stageのexit statusと
+   recovery diagnosticsを一貫して検証する。
    partial-block merge、file growth、indirect/multi-block write、`create`は引き続き別slice。
 2. power-interruption recovery matrixを完了した後、accepted offline/inspection surfaceに
    `kafsresize --migrate-create --format-version 7`を追加する。
