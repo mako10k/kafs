@@ -24,6 +24,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential autoconf automake libfuse3-dev pkg-config clang-format cppcheck python3-pip jq
 
+      - name: Install REUSE
+        run: python3 -m pip install --disable-pip-version-check reuse==6.2.0
+
+      - name: License compliance
+        run: ./scripts/license-check.sh
+
       - name: Setup Node.js for jscpd
         uses: actions/setup-node@v4
         with:
