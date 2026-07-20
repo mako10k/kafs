@@ -6,6 +6,45 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
+
+int kafs_v7_block_tree_address(uint32_t block_size, uint64_t file_block,
+                               kafs_v7_block_tree_path_t *path)
+{
+  if (!path || block_size < sizeof(uint32_t) || block_size % sizeof(uint32_t) != 0u)
+    return -EINVAL;
+  memset(path, 0, sizeof(*path));
+  if (file_block < KAFS_V7_INODE_DIRECT_REFERENCE_COUNT)
+  {
+    path->inode_slot = (uint32_t)file_block;
+    return 0;
+  }
+
+  uint64_t remaining = file_block - KAFS_V7_INODE_DIRECT_REFERENCE_COUNT;
+  uint64_t references_per_block = block_size / sizeof(uint32_t);
+  uint64_t capacity = 1u;
+  for (uint32_t levels = 1u; levels <= KAFS_V7_INODE_INDIRECT_REFERENCE_COUNT; ++levels)
+  {
+    int capacity_overflow = capacity > UINT64_MAX / references_per_block;
+    if (!capacity_overflow)
+      capacity *= references_per_block;
+    if (!capacity_overflow && remaining >= capacity)
+    {
+      remaining -= capacity;
+      continue;
+    }
+
+    path->inode_slot = KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + levels - 1u;
+    path->level_count = levels;
+    for (uint32_t level = levels; level > 0u; --level)
+    {
+      path->indices[level - 1u] = (uint32_t)(remaining % references_per_block);
+      remaining /= references_per_block;
+    }
+    return 0;
+  }
+  return -EFBIG;
+}
 
 static int kafs_v7_block_tree_walk_reference(const kafs_v7_block_tree_t *tree, uint32_t reference,
                                              uint32_t remaining_levels,
