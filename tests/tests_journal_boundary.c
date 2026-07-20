@@ -211,7 +211,7 @@ static int test_v6_descriptor_journal_routing(void)
     ctx.c_img_base = map;
     ctx.c_img_size = (size_t)file_size;
     ctx.c_superblock = (kafs_ssuperblock_t *)map;
-    if (kafs_v6_descriptor_mapping_admit_fd(&ctx, fd, file_size, NULL, NULL, NULL, NULL, NULL) !=
+    if (kafs_descriptor_mapping_admit_fd(&ctx, fd, file_size, NULL, NULL, NULL, NULL, NULL) !=
         0)
       failed = 1;
   }

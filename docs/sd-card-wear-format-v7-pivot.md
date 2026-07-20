@@ -55,14 +55,14 @@ descriptor build, and v7 wire magic are owned by `kafs_v7_layout.h`.  The v7
 wire identifiers are separate from experimental v6: the superblock descriptor
 anchor uses `K7SA`, and the layout descriptor uses `K7LD`.
 
-The neutral `kafs_descriptor_layout.h` facade is a low-level descriptor
-scaffold shared by descriptor-backed formats.  It provides selected-descriptor
-loading, coverage validation, journal segment validation, and explicit-wire
-helper functions used by the v6/v7 layout entrypoints.  It is not the public v7
-layout entrypoint.  The backing in-memory structs still originate from the
-experimental v6 descriptor scaffold, so the facade currently delegates to
-`kafs_v6_layout.h`; that delegation is an implementation detail, not the
-public v7 runtime contract.
+The neutral `kafs_descriptor_layout.h` implementation is a low-level descriptor
+scaffold shared by descriptor-backed formats. It owns the in-memory descriptor
+structures, selected-descriptor loading, coverage validation, journal segment
+validation, and explicit-wire helpers. The temporary `kafs_v6_layout.h` is now
+only an offline v6 name adapter over that implementation. It is not the public
+v7 layout entrypoint. The unqualified legacy builder/discovery values remain v6
+wire values until offline v6 creation and diagnostics are retired; v7 keeps its
+wire contract in `kafs_v7_layout.*` and does not use those legacy defaults.
 
 The current builder emits accepted `K7SA` locator / `K7LD` descriptor version 2
 with v7-owned group, shard, checkpoint, and replica records.  It supports the
