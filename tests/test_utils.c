@@ -200,6 +200,9 @@ static const char *kafs_test_resolve_tool(const char *env_name, const char *tool
       if ((size_t)snprintf(out, PATH_MAX, "%s/../src/%s", exe_path, tool_name) < PATH_MAX &&
           access(out, X_OK) == 0)
         return out;
+      if ((size_t)snprintf(out, PATH_MAX, "%s/%s", exe_path, tool_name) < PATH_MAX &&
+          access(out, X_OK) == 0)
+        return out;
     }
   }
 
@@ -230,6 +233,12 @@ const char *kafs_test_mkfs_bin(void)
 {
   static char path[PATH_MAX];
   return kafs_test_resolve_tool("KAFS_TEST_MKFS", "mkfs.kafs", path);
+}
+
+const char *kafs_test_v6_fixture_mkfs_bin(void)
+{
+  static char path[PATH_MAX];
+  return kafs_test_resolve_tool("KAFS_TEST_V6_FIXTURE_MKFS", "v6_fixture_mkfs", path);
 }
 
 const char *kafs_test_kafsctl_bin(void)

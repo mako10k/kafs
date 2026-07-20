@@ -173,7 +173,8 @@ static int run_cmd_capture(char *const argv[], int expected_exit, char *out, siz
 static int make_v6_image(const char *img)
 {
   char out[4096];
-  char *argv[] = {(char *)kafs_test_mkfs_bin(), (char *)img, (char *)"--format-version",
+  char *argv[] = {(char *)kafs_test_v6_fixture_mkfs_bin(), (char *)img,
+                  (char *)"--format-version",
                   (char *)"6", (char *)"--size-bytes", (char *)"64M", (char *)"--yes", NULL};
   int rc = run_cmd_capture(argv, 0, out, sizeof(out));
   if (rc != 0)

@@ -513,10 +513,22 @@ int main(void)
     return 1;
   }
 
-  char *mkfs_argv[] = {(char *)kafs_test_mkfs_bin(), (char *)img, (char *)"--format-version",
+  char out[8192];
+  char *production_mkfs_argv[] = {
+      (char *)kafs_test_mkfs_bin(), (char *)"product-v6.img", (char *)"--format-version",
+      (char *)"6",                 (char *)"--size-bytes",    (char *)"64M",
+      (char *)"--yes",            NULL};
+  if (run_cmd_capture(production_mkfs_argv, 2, out, sizeof(out)) != 0 ||
+      !strstr(out, "unsupported format version: 6"))
+  {
+    tlogf("production mkfs did not reject v6 creation: %s", out);
+    return 1;
+  }
+
+  char *mkfs_argv[] = {(char *)kafs_test_v6_fixture_mkfs_bin(), (char *)img,
+                       (char *)"--format-version",
                        (char *)"6", (char *)"--size-bytes", (char *)"64M", (char *)"--yes",
                        NULL};
-  char out[8192];
   if (run_cmd_capture(mkfs_argv, 0, out, sizeof(out)) != 0)
   {
     tlogf("mkfs v6 failed: %s", out);

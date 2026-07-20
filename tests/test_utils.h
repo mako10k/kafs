@@ -78,6 +78,9 @@ const char *kafs_test_kafs_v7_bin(void);
 // If KAFS_TEST_MKFS is set, it is used; otherwise resolves mkfs.kafs near the test binary.
 const char *kafs_test_mkfs_bin(void);
 
+// Resolves the test-only mkfs build that can create v6 fixtures.
+const char *kafs_test_v6_fixture_mkfs_bin(void);
+
 // If KAFS_TEST_KAFSCTL is set, it is used; otherwise falls back to "./kafsctl".
 const char *kafs_test_kafsctl_bin(void);
 

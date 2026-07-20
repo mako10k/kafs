@@ -52,9 +52,10 @@ placeholder.
 Phase 2 moved descriptor structures and validation into
 `kafs_descriptor_layout.h`. Active common/v7 code no longer includes the v6
 layout header. Offline callers now use neutral descriptor names and the
-`kafs_v6_layout.h` adapter has been deleted. The next prerequisite is to stop v6
-image creation while retaining only the test fixture construction needed to
-verify bounded read-only diagnostics for existing images.
+`kafs_v6_layout.h` adapter has been deleted. Production `mkfs.kafs` and
+`kafsresize --migrate-create` no longer create v6 images. The former mkfs path
+is enabled only in the uninstalled `tests/v6_fixture_mkfs` build so bounded
+read-only diagnostics can still be verified against deterministic fixtures.
 
 The final entrypoint-removal phase must not be pulled forward merely to make the
 tree smaller: until the other v6 surfaces are gone, the placeholder provides a

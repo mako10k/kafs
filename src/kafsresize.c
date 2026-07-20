@@ -35,10 +35,6 @@ typedef struct kafsresize_mkfs_layout
   uint64_t first_data_block;
   uint64_t block_count;
   uint64_t data_block_capacity;
-  uint64_t v6_desc_off;
-  uint32_t v6_desc_bytes;
-  uint64_t v6_candidates[KAFS_DESCRIPTOR_LAYOUT_REPLICA_MAX_COUNT];
-  uint32_t v6_candidate_count;
   uint32_t v7_group_count;
   uint32_t v7_replica_count;
   uint32_t v7_descriptor_bytes;
@@ -286,7 +282,7 @@ static int resolve_migrate_create_size(const char *dst_image, uint64_t *size_byt
 static int kafsresize_format_version_is_supported(uint32_t format_version)
 {
   return format_version == KAFS_FORMAT_VERSION || format_version == KAFS_FORMAT_VERSION_V5 ||
-         format_version == KAFS_FORMAT_VERSION_V6 || format_version == KAFS_FORMAT_VERSION_V7;
+         format_version == KAFS_FORMAT_VERSION_V7;
 }
 
 static uint32_t kafsresize_resolve_target_format(uint32_t format_version)
@@ -393,14 +389,6 @@ static void kafsresize_compute_mkfs_layout_once(uint32_t format_version, uint64_
 
   uint64_t mapsize = sizeof(kafs_ssuperblock_t);
   mapsize = kafsresize_align_up_u64(mapsize, block_mask);
-
-  if (format_version == KAFS_FORMAT_VERSION_V6)
-  {
-    out->v6_desc_off = mapsize;
-    out->v6_desc_bytes = kafs_descriptor_bytes_for_block((uint32_t)block_size);
-    mapsize += out->v6_desc_bytes;
-    mapsize = kafsresize_align_up_u64(mapsize, block_mask);
-  }
 
   mapsize += (block_count + 7u) >> 3;
   mapsize = kafsresize_align_up_u64(mapsize, 7u);
@@ -520,20 +508,6 @@ static int kafsresize_compute_mkfs_layout(uint32_t format_version, uint64_t tota
     block_count--;
   }
 
-  if (format_version == KAFS_FORMAT_VERSION_V6)
-  {
-    if (journal_bytes <= block_size)
-      return -EINVAL;
-    int rc = kafs_descriptor_candidate_offsets(total_bytes, (uint32_t)block_size,
-                                               layout.v6_desc_off, layout.v6_desc_bytes,
-                                               layout.v6_candidates, &layout.v6_candidate_count);
-    if (rc != 0)
-      return rc;
-    for (uint32_t i = 1; i < layout.v6_candidate_count; ++i)
-      if (layout.v6_candidates[i] < layout.mapsize)
-        return -ERANGE;
-  }
-
   *out = layout;
   return 0;
 }
@@ -553,8 +527,7 @@ static int kafsresize_prepare_migrate_create_plan(const char *src_image, const c
     fprintf(stderr, "unsupported format version: %" PRIu32 "\n", target_format);
     return 2;
   }
-  if ((target_format == KAFS_FORMAT_VERSION_V6 || target_format == KAFS_FORMAT_VERSION_V7) &&
-      (!src_image || !*src_image))
+  if (target_format == KAFS_FORMAT_VERSION_V7 && (!src_image || !*src_image))
   {
     fprintf(stderr, "--format-version %" PRIu32 " requires --src-image\n", target_format);
     return 2;
@@ -586,10 +559,9 @@ static int kafsresize_prepare_migrate_create_plan(const char *src_image, const c
                                      resolved_journal_bytes, resolved_hrl_entry_ratio, &layout);
   if (rc != 0)
   {
-    if ((target_format == KAFS_FORMAT_VERSION_V6 || target_format == KAFS_FORMAT_VERSION_V7) &&
-        rc == -EINVAL)
+    if (target_format == KAFS_FORMAT_VERSION_V7 && rc == -EINVAL)
       fprintf(stderr, "invalid format v%" PRIu32 " migration geometry\n", target_format);
-    else if (target_format == KAFS_FORMAT_VERSION_V6 || target_format == KAFS_FORMAT_VERSION_V7)
+    else if (target_format == KAFS_FORMAT_VERSION_V7)
       fprintf(stderr, "image too small for format v%" PRIu32 " descriptor layout\n", target_format);
     else
       fprintf(stderr, "invalid total size: %" PRIu64 "\n", size_bytes);
@@ -658,16 +630,6 @@ static void kafsresize_print_migrate_create_dry_run(const char *src_image, const
   printf("  metadata_bytes: %" PRIu64 "\n", plan->layout.mapsize);
   printf("  first_data_block: %" PRIu64 "\n", plan->layout.first_data_block);
   printf("  data_block_capacity: %" PRIu64 "\n", plan->layout.data_block_capacity);
-  if (plan->target_format == KAFS_FORMAT_VERSION_V6)
-  {
-    printf("  v6_descriptor_bytes: %" PRIu32 "\n", plan->layout.v6_desc_bytes);
-    printf("  v6_descriptor_replicas: %" PRIu32 "\n", plan->layout.v6_candidate_count);
-    printf("  v6_descriptor_offsets:");
-    for (uint32_t i = 0; i < plan->layout.v6_candidate_count; ++i)
-      printf(" %" PRIu64, plan->layout.v6_candidates[i]);
-    printf("\n");
-    printf("  v6_group_policy: descriptor-backed metadata groups\n");
-  }
   if (plan->target_format == KAFS_FORMAT_VERSION_V7)
   {
     printf("  v7_descriptor_bytes: %" PRIu32 "\n", plan->layout.v7_descriptor_bytes);
@@ -876,7 +838,7 @@ static int cmd_migrate_create(const char *src_image, const char *dst_image, uint
   int dst_is_reg = dst_exists && S_ISREG(dst_st.st_mode);
   int dst_is_blk = dst_exists && S_ISBLK(dst_st.st_mode);
 
-  if (target_format == KAFS_FORMAT_VERSION_V6 || target_format == KAFS_FORMAT_VERSION_V7)
+  if (target_format == KAFS_FORMAT_VERSION_V7)
   {
     kafsresize_migrate_create_plan_t plan;
     int precheck_rc = kafsresize_prepare_migrate_create_plan(src_image, dst_image, size_bytes,
