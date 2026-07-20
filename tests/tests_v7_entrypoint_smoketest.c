@@ -360,7 +360,7 @@ int main(void)
     return 1;
 
   const char *img_v6 = "v6.img";
-  char *mkfs_v6_argv[] = {(char *)kafs_test_mkfs_bin(), (char *)img_v6,
+  char *mkfs_v6_argv[] = {(char *)kafs_test_v6_fixture_mkfs_bin(), (char *)img_v6,
                           (char *)"--format-version", (char *)"6", (char *)"--size-bytes",
                           (char *)"64M", (char *)"--yes", NULL};
   if (run_cmd_capture(mkfs_v6_argv, 0, out, sizeof(out)) != 0)

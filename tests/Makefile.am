@@ -28,7 +28,7 @@ AM_TESTS_ENVIRONMENT = \
 # --- Tests ---
 # NOTE: stress_fs mounts in multithread mode and exercises heavier workloads.
 # To minimize any residual side effects on subsequent tests, run it last.
-check_PROGRAMS = tailmeta_parser hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured min_git_hooks fs_semantics \
+check_PROGRAMS = v6_fixture_mkfs tailmeta_parser hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured min_git_hooks fs_semantics \
 	v5_mount_smoketest v5_tail_smallfile_smoketest v5_tail_mixed_smoketest v5_default_promotion_smoketest \
 	v6_descriptor_smoketest v6_descriptor_validation v7_entrypoint_smoketest \
 	v7_raw_layout_smoketest v7_multi_group_smoketest v7_replica_fault_smoketest \
@@ -40,7 +40,15 @@ check_PROGRAMS = tailmeta_parser hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigur
 	kafsctl_links bg_dedup_skip_dirs \
 	stress_fs hotplug_rpc e2e_hotplug kafsresize journal_boundary fallocate_lseek_block
 
-TESTS = $(check_PROGRAMS)
+TESTS = $(filter-out v6_fixture_mkfs,$(check_PROGRAMS))
+
+v6_fixture_mkfs_SOURCES = $(top_srcdir)/src/mkfs_kafs.c \
+	$(top_srcdir)/src/kafs_v7_layout.c $(top_srcdir)/src/kafs_v7_journal.c \
+	$(top_srcdir)/src/kafs_v7_mutation.c $(top_srcdir)/src/kafs_hrl.c \
+	$(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
+v6_fixture_mkfs_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter \
+	-DKAFS_ENABLE_V6_FIXTURE_MKFS=1
+v6_fixture_mkfs_LDADD = $(KAFS_LIBS)
 
 tailmeta_parser_SOURCES = tests_tailmeta_parser.c
 tailmeta_parser_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter

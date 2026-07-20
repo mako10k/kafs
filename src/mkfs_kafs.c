@@ -8,7 +8,6 @@
 #include "kafs_journal.h"
 #include "kafs_tailmeta.h"
 #include "kafs_descriptor_layout.h"
-#include "kafs_descriptor_layout.h"
 #include "kafs_v7_layout.h"
 #include "kafs_cli_opts.h"
 #include "kafs_tool_util.h"
@@ -26,6 +25,10 @@
 #include <unistd.h>
 #ifdef __linux__
 #include <linux/fs.h>
+#endif
+
+#ifndef KAFS_ENABLE_V6_FIXTURE_MKFS
+#define KAFS_ENABLE_V6_FIXTURE_MKFS 0
 #endif
 
 static void usage(const char *prog)
@@ -62,8 +65,8 @@ static void usage(const char *prog)
   fprintf(
       stderr,
       "    New images default to format version 5; use --format-version 4 for legacy v4 images.\n");
-  fprintf(stderr, "    --format-version 6 creates an offline-only descriptor scaffold; runtime "
-                  "mount support is not enabled yet.\n");
+  if (KAFS_ENABLE_V6_FIXTURE_MKFS)
+    fprintf(stderr, "    --format-version 6 creates a test-only descriptor fixture.\n");
   fprintf(stderr, "    --format-version 7 creates a descriptor-backed v7 image for kafs-v7.\n");
 }
 
@@ -139,7 +142,8 @@ static kafs_inocnt_t mkfs_default_inocnt_for_size(off_t total_bytes)
 static int mkfs_format_version_is_supported(uint32_t format_version)
 {
   return format_version == KAFS_FORMAT_VERSION || format_version == KAFS_FORMAT_VERSION_V5 ||
-         format_version == KAFS_FORMAT_VERSION_V6 || format_version == KAFS_FORMAT_VERSION_V7;
+         (KAFS_ENABLE_V6_FIXTURE_MKFS && format_version == KAFS_FORMAT_VERSION_V6) ||
+         format_version == KAFS_FORMAT_VERSION_V7;
 }
 
 static size_t mkfs_tailmeta_region_size(uint32_t format_version, kafs_blksize_t blksize)

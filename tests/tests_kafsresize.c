@@ -299,90 +299,6 @@ static int expect_v5_migrate_source_dump_json(const char *json)
          expect_json_u64_field("v5 source kafsdump JSON", json, "used", 1u);
 }
 
-static int expect_v6_migrate_destination_dump_json(const char *json)
-{
-  return expect_text_contains("v6 destination kafsdump JSON", json, "\"superblock\"") ||
-         expect_json_u64_field("v6 destination kafsdump JSON", json, "format_version",
-                               KAFS_FORMAT_VERSION_V6) ||
-         expect_json_u64_field("v6 destination kafsdump JSON", json, "inode_count", 4096u) ||
-         expect_json_bool_field("v6 destination kafsdump JSON", json, "tailmeta_enabled", 0) ||
-         expect_text_contains("v6 destination kafsdump JSON", json, "\"v6_layout_descriptor\"") ||
-         expect_text_contains("v6 destination kafsdump JSON", json, "\"status\": \"ok\"") ||
-         expect_json_bool_field("v6 destination kafsdump JSON", json, "anchor_valid", 1) ||
-         expect_json_u64_field("v6 destination kafsdump JSON", json, "group_count", 1u) ||
-         expect_json_u64_field("v6 destination kafsdump JSON", json, "shard_count", 12u) ||
-         expect_json_u64_field("v6 destination kafsdump JSON", json, "replica_count", 3u) ||
-         expect_text_contains("v6 destination kafsdump JSON", json,
-                              "{\"group_id\": 0, \"metadata_start_block\"") ||
-         expect_text_contains("v6 destination kafsdump JSON", json,
-                              "\"type\": \"block_bitmap\"") ||
-         expect_text_contains("v6 destination kafsdump JSON", json,
-                              "\"type\": \"inode_table\"") ||
-         expect_text_contains("v6 destination kafsdump JSON", json,
-                              "\"type\": \"allocator_summary\"") ||
-         expect_text_contains("v6 destination kafsdump JSON", json,
-                              "\"type\": \"hrl_index\"") ||
-         expect_text_contains("v6 destination kafsdump JSON", json,
-                              "\"type\": \"hrl_entries\"") ||
-         expect_text_contains("v6 destination kafsdump JSON", json,
-                              "\"type\": \"journal_header\"") ||
-         expect_text_contains("v6 destination kafsdump JSON", json,
-                              "\"type\": \"journal_data\"") ||
-         expect_text_contains("v6 destination kafsdump JSON", json,
-                              "\"type\": \"pending_log\"") ||
-         expect_text_contains("v6 destination kafsdump JSON", json,
-                              "\"type\": \"layout_descriptor\"") ||
-         expect_text_contains("v6 destination kafsdump JSON", json, "\"v6_bitmap_shards\"") ||
-         expect_json_bool_field("v6 destination kafsdump JSON", json, "lookup_available", 1) ||
-         expect_text_contains("v6 destination kafsdump JSON", json, "\"v6_journal_segments\"") ||
-         expect_json_u64_field("v6 destination kafsdump JSON", json, "segment_count", 1u) ||
-         expect_json_u64_field("v6 destination kafsdump JSON", json, "selected_group", 0u) ||
-         expect_text_contains("v6 destination kafsdump JSON", json,
-                              "\"name\": \"tail_metadata\", \"available\": false") ||
-         expect_text_contains("v6 destination kafsdump JSON", json, "\"tail_metadata\": {\n"
-                                                                      "    \"status\": \"ok\",\n"
-                                                                      "    \"available\": false");
-}
-
-static int expect_v6_migrate_destination_fsck(const char *text)
-{
-  return expect_text_contains("v6 destination fsck", text,
-                              "layout descriptor: anchor_valid=true selected=true") ||
-         expect_text_contains("v6 destination fsck", text, "groups=1 shards=12 replicas=3") ||
-         expect_text_contains("v6 destination fsck", text, "layout descriptor replica[0]:") ||
-         expect_text_contains("v6 destination fsck", text,
-                              "status=selected generation=1 crc_ok=true selected=true") ||
-         expect_text_contains("v6 destination fsck", text,
-                              "v6 bitmap shards: status=ok available=true") ||
-         expect_text_contains("v6 destination fsck", text,
-                              "v6 inode shards: status=ok available=true") ||
-         expect_text_contains("v6 destination fsck", text,
-                              "v6 allocator summary shards: status=ok available=true") ||
-         expect_text_contains("v6 destination fsck", text,
-                              "v6 HRL index shards: status=ok available=true") ||
-         expect_text_contains("v6 destination fsck", text,
-                              "v6 HRL entry shards: status=ok available=true") ||
-         expect_text_contains("v6 destination fsck", text,
-                              "v6 HRL chains: status=ok available=true") ||
-         expect_text_contains("v6 destination fsck", text,
-                              "v6 journal header shards: status=ok available=true") ||
-         expect_text_contains("v6 destination fsck", text,
-                              "v6 journal data shards: status=ok available=true") ||
-         expect_text_contains("v6 destination fsck", text,
-                              "v6 journal segments: status=ok available=true") ||
-         expect_text_contains("v6 destination fsck", text,
-                              "Journal check: format v6 descriptor-backed segment health OK.");
-}
-
-static int expect_v6_migrate_destination_mount_rejection(const char *text)
-{
-  return expect_text_contains("v6 destination runtime mount", text,
-                              "unsupported format version: v6 runtime support has been retired") ||
-         expect_text_contains("v6 destination runtime mount", text,
-                              "recreate the image as format v7") ||
-         expect_text_absent("v6 destination runtime mount", text, "admission preflight");
-}
-
 static int read_tailmeta_region_header(const char *img, uint64_t off,
                                        kafs_tailmeta_region_hdr_t *hdr)
 {
@@ -1086,9 +1002,11 @@ int main(void)
                                       NULL};
   if (run_cmd_status(mkfs_src_v5_migrate_argv) != 0)
   {
-    fprintf(stderr, "mkfs for v5->v6 dry-run source failed\n");
+    fprintf(stderr, "mkfs for migration source failed\n");
     return 1;
   }
+  char *dump_src_v5_pre_argv[] = {(char *)dump_abs, (char *)"--json", (char *)src_v5_migrate_img,
+                                  NULL};
 
   const char *dst_v6_dry_img = "migrate-dst-v6-dry.img";
   if (create_sized_file(dst_v6_dry_img, 64 * 1024 * 1024) != 0)
@@ -1097,11 +1015,8 @@ int main(void)
     return 1;
   }
 
-  char migrate_v6_dry_stdout[4096];
   char *migrate_create_v6_dry_argv[] = {(char *)resize_abs,
                                         (char *)"--migrate-create",
-                                        (char *)"--src-image",
-                                        (char *)src_v5_migrate_img,
                                         (char *)"--dst-image",
                                         (char *)dst_v6_dry_img,
                                         (char *)"--inodes",
@@ -1110,19 +1025,9 @@ int main(void)
                                         (char *)"6",
                                         (char *)"--dry-run",
                                         NULL};
-  if (run_cmd_capture_stdout(migrate_create_v6_dry_argv, migrate_v6_dry_stdout,
-                             sizeof(migrate_v6_dry_stdout)) != 0)
+  if (run_cmd_status(migrate_create_v6_dry_argv) == 0)
   {
-    fprintf(stderr, "migrate-create v6 dry-run failed\n");
-    return 1;
-  }
-  if (!strstr(migrate_v6_dry_stdout, "migrate-create dry-run PASS") ||
-      !strstr(migrate_v6_dry_stdout, "source_format_version: 5") ||
-      !strstr(migrate_v6_dry_stdout, "format_version: 6") ||
-      !strstr(migrate_v6_dry_stdout, "v6_descriptor_replicas:") ||
-      !strstr(migrate_v6_dry_stdout, "writes_performed: no"))
-  {
-    fprintf(stderr, "migrate-create v6 dry-run output missing expected summary\n");
+    fprintf(stderr, "migrate-create v6 dry-run was not retired\n");
     return 1;
   }
 
@@ -1138,51 +1043,6 @@ int main(void)
     return 1;
   }
 
-  const char *src_v5_dirty_img = "migrate-src-v5-dirty.img";
-  char *mkfs_src_v5_dirty_argv[] = {(char *)mkfs_abs,
-                                    (char *)src_v5_dirty_img,
-                                    (char *)"-s",
-                                    (char *)"32M",
-                                    (char *)"--format-version",
-                                    (char *)"5",
-                                    NULL};
-  if (run_cmd_status(mkfs_src_v5_dirty_argv) != 0)
-  {
-    fprintf(stderr, "mkfs for dirty v5 dry-run source failed\n");
-    return 1;
-  }
-
-  kafs_ssuperblock_t dirty_src_sb = {0};
-  if (read_superblock(src_v5_dirty_img, &dirty_src_sb) != 0)
-  {
-    fprintf(stderr, "failed to read dirty source superblock\n");
-    return 1;
-  }
-  kafs_sb_commit_seq_set(&dirty_src_sb, kafs_sb_checkpoint_seq_get(&dirty_src_sb) + 1u);
-  if (write_superblock(src_v5_dirty_img, &dirty_src_sb) != 0)
-  {
-    fprintf(stderr, "failed to mark dirty source superblock\n");
-    return 1;
-  }
-
-  char *migrate_create_v6_dirty_argv[] = {(char *)resize_abs,
-                                          (char *)"--migrate-create",
-                                          (char *)"--src-image",
-                                          (char *)src_v5_dirty_img,
-                                          (char *)"--dst-image",
-                                          (char *)dst_v6_dry_img,
-                                          (char *)"--inodes",
-                                          (char *)"4096",
-                                          (char *)"--format-version",
-                                          (char *)"6",
-                                          (char *)"--dry-run",
-                                          NULL};
-  if (run_cmd_status(migrate_create_v6_dirty_argv) == 0)
-  {
-    fprintf(stderr, "migrate-create v6 dry-run accepted dirty source\n");
-    return 1;
-  }
-
   const char *dst_v6_img = "migrate-dst-v6.img";
   if (create_sized_file(dst_v6_img, 64 * 1024 * 1024) != 0)
   {
@@ -1190,23 +1050,8 @@ int main(void)
     return 1;
   }
 
-  char migrate_v5_source_pre_json[KAFSRESIZE_DUMP_JSON_BUF_SIZE];
-  char *dump_src_v5_pre_argv[] = {(char *)dump_abs, (char *)"--json", (char *)src_v5_migrate_img,
-                                  NULL};
-  if (run_cmd_capture_stdout(dump_src_v5_pre_argv, migrate_v5_source_pre_json,
-                             sizeof(migrate_v5_source_pre_json)) != 0)
-  {
-    fprintf(stderr, "kafsdump --json for pre-migration v5 source failed\n");
-    return 1;
-  }
-  if (expect_v5_migrate_source_dump_json(migrate_v5_source_pre_json) != 0)
-    return 1;
-
-  char migrate_v6_stdout[4096];
   char *migrate_create_v6_argv[] = {(char *)resize_abs,
                                     (char *)"--migrate-create",
-                                    (char *)"--src-image",
-                                    (char *)src_v5_migrate_img,
                                     (char *)"--dst-image",
                                     (char *)dst_v6_img,
                                     (char *)"--force",
@@ -1216,162 +1061,21 @@ int main(void)
                                     (char *)"6",
                                     (char *)"--yes",
                                     NULL};
-  if (run_cmd_capture_stdout(migrate_create_v6_argv, migrate_v6_stdout,
-                             sizeof(migrate_v6_stdout)) != 0)
+  if (run_cmd_status(migrate_create_v6_argv) == 0)
   {
-    fprintf(stderr, "migrate-create v6 failed\n");
+    fprintf(stderr, "migrate-create v6 was not retired\n");
     return 1;
   }
 
-  kafs_ssuperblock_t migrate_v6_sb = {0};
-  if (read_superblock(dst_v6_img, &migrate_v6_sb) != 0)
+  kafs_ssuperblock_t rejected_v6_sb = {0};
+  if (read_superblock(dst_v6_img, &rejected_v6_sb) != 0)
   {
-    fprintf(stderr, "failed to read migrate-create v6 superblock\n");
+    fprintf(stderr, "failed to inspect rejected v6 destination\n");
     return 1;
   }
-  if (kafs_sb_magic_get(&migrate_v6_sb) != KAFS_MAGIC ||
-      kafs_sb_format_version_get(&migrate_v6_sb) != KAFS_FORMAT_VERSION_V6)
+  if (kafs_sb_magic_get(&rejected_v6_sb) == KAFS_MAGIC)
   {
-    fprintf(stderr, "unexpected migrate-create v6 image format\n");
-    return 1;
-  }
-  if (!strstr(migrate_v6_stdout, "format_version: 6"))
-  {
-    fprintf(stderr, "migrate-create v6 output missing format version summary\n");
-    return 1;
-  }
-
-  char migrate_v5_source_post_json[KAFSRESIZE_DUMP_JSON_BUF_SIZE];
-  char *dump_src_v5_post_argv[] = {(char *)dump_abs, (char *)"--json", (char *)src_v5_migrate_img,
-                                   NULL};
-  if (run_cmd_capture_stdout(dump_src_v5_post_argv, migrate_v5_source_post_json,
-                             sizeof(migrate_v5_source_post_json)) != 0)
-  {
-    fprintf(stderr, "kafsdump --json for post-migration v5 source failed\n");
-    return 1;
-  }
-  if (strcmp(migrate_v5_source_pre_json, migrate_v5_source_post_json) != 0)
-  {
-    fprintf(stderr, "v6 migrate-create changed source kafsdump JSON summary\n");
-    return 1;
-  }
-
-  char migrate_v6_dst_json[KAFSRESIZE_DUMP_JSON_BUF_SIZE];
-  char *dump_dst_v6_argv[] = {(char *)dump_abs, (char *)"--json", (char *)dst_v6_img, NULL};
-  if (run_cmd_capture_stdout(dump_dst_v6_argv, migrate_v6_dst_json,
-                             sizeof(migrate_v6_dst_json)) != 0)
-  {
-    fprintf(stderr, "kafsdump --json for migrate-create v6 destination failed\n");
-    return 1;
-  }
-  if (expect_v6_migrate_destination_dump_json(migrate_v6_dst_json) != 0)
-    return 1;
-
-  char migrate_v6_fsck_output[KAFSRESIZE_DUMP_JSON_BUF_SIZE];
-  char *fsck_dst_v6_argv[] = {(char *)fsck_abs, (char *)"--balanced-check", (char *)dst_v6_img,
-                              NULL};
-  if (run_cmd_capture_combined(fsck_dst_v6_argv, migrate_v6_fsck_output,
-                               sizeof(migrate_v6_fsck_output)) != 0)
-  {
-    fprintf(stderr, "fsck.kafs --balanced-check for migrate-create v6 destination failed\n");
-    return 1;
-  }
-  if (expect_v6_migrate_destination_fsck(migrate_v6_fsck_output) != 0)
-    return 1;
-
-  const char *dst_v6_mnt = "migrate-dst-v6-mnt";
-  if (mkdir(dst_v6_mnt, 0700) != 0)
-  {
-    fprintf(stderr, "failed to create v6 migrate mountpoint\n");
-    return 1;
-  }
-
-  char migrate_v6_mount_output[4096];
-  char *mount_dst_v6_argv[] = {(char *)kafs_abs, (char *)dst_v6_img, (char *)dst_v6_mnt,
-                               NULL};
-  int mount_v6_rc =
-      run_cmd_capture_combined(mount_dst_v6_argv, migrate_v6_mount_output,
-                               sizeof(migrate_v6_mount_output));
-  if (mount_v6_rc != 2)
-  {
-    fprintf(stderr, "migrate-create v6 runtime mount rc=%d, want=2: %s\n", mount_v6_rc,
-            migrate_v6_mount_output);
-    return 1;
-  }
-  if (expect_v6_migrate_destination_mount_rejection(migrate_v6_mount_output) != 0)
-    return 1;
-
-  const char *dst_v6_nosrc_img = "migrate-dst-v6-nosrc.img";
-  if (create_sized_file(dst_v6_nosrc_img, 64 * 1024 * 1024) != 0)
-  {
-    fprintf(stderr, "failed to create v6 no-source dst image\n");
-    return 1;
-  }
-
-  char *migrate_create_v6_nosrc_argv[] = {(char *)resize_abs,
-                                          (char *)"--migrate-create",
-                                          (char *)"--dst-image",
-                                          (char *)dst_v6_nosrc_img,
-                                          (char *)"--force",
-                                          (char *)"--inodes",
-                                          (char *)"4096",
-                                          (char *)"--format-version",
-                                          (char *)"6",
-                                          (char *)"--yes",
-                                          NULL};
-  if (run_cmd_status(migrate_create_v6_nosrc_argv) == 0)
-  {
-    fprintf(stderr, "migrate-create v6 accepted missing source image\n");
-    return 1;
-  }
-
-  kafs_ssuperblock_t nosrc_dst_sb = {0};
-  if (read_superblock(dst_v6_nosrc_img, &nosrc_dst_sb) != 0)
-  {
-    fprintf(stderr, "failed to inspect v6 no-source dst image\n");
-    return 1;
-  }
-  if (kafs_sb_magic_get(&nosrc_dst_sb) == KAFS_MAGIC)
-  {
-    fprintf(stderr, "v6 no-source failure touched destination image\n");
-    return 1;
-  }
-
-  const char *dst_v6_dirty_img = "migrate-dst-v6-dirty.img";
-  if (create_sized_file(dst_v6_dirty_img, 64 * 1024 * 1024) != 0)
-  {
-    fprintf(stderr, "failed to create v6 dirty-source dst image\n");
-    return 1;
-  }
-
-  char *migrate_create_v6_dirty_run_argv[] = {(char *)resize_abs,
-                                              (char *)"--migrate-create",
-                                              (char *)"--src-image",
-                                              (char *)src_v5_dirty_img,
-                                              (char *)"--dst-image",
-                                              (char *)dst_v6_dirty_img,
-                                              (char *)"--force",
-                                              (char *)"--inodes",
-                                              (char *)"4096",
-                                              (char *)"--format-version",
-                                              (char *)"6",
-                                              (char *)"--yes",
-                                              NULL};
-  if (run_cmd_status(migrate_create_v6_dirty_run_argv) == 0)
-  {
-    fprintf(stderr, "migrate-create v6 accepted dirty source\n");
-    return 1;
-  }
-
-  kafs_ssuperblock_t dirty_dst_sb = {0};
-  if (read_superblock(dst_v6_dirty_img, &dirty_dst_sb) != 0)
-  {
-    fprintf(stderr, "failed to inspect v6 dirty-source dst image\n");
-    return 1;
-  }
-  if (kafs_sb_magic_get(&dirty_dst_sb) == KAFS_MAGIC)
-  {
-    fprintf(stderr, "v6 dirty-source failure touched destination image\n");
+    fprintf(stderr, "rejected v6 migrate-create formatted destination\n");
     return 1;
   }
 
