@@ -188,13 +188,23 @@
   not preserve old v6 wire/API behavior in v7 unless the user explicitly asks
   for a compatibility exception.
 - Format-specific entrypoints must remain explicit: production `kafs` owns
-  v4/v5, `kafs-v6` owns frozen experimental v6, and `kafs-v7` owns v7. Do not
+  v4/v5, the temporary `kafs-v6` placeholder rejects retired v6 runtime use,
+  and `kafs-v7` owns v7. Do not
   route successful v7 admission through `kafs.c`, `kafs-v6`, or v6-owned
   admission/layout entrypoints.
 - When v7 needs logic that currently lives in v5/v6-owned files, first copy it
   into v7-owned files or extract a clearly neutral helper with no v5/v6 public
   entrypoint dependency. Avoid premature "common" names until ownership is
   clear.
+- Format v6 is under phased source retirement, not maintenance. Do not add v6
+  compatibility, features, parity refactors, or shared abstractions whose
+  purpose is to preserve v6 behavior. Follow
+  `docs/sd-card-wear-v6-retirement-plan.md`: first replace independent,
+  clone-heavy runtime surfaces with fail-closed placeholders; then decouple
+  active neutral/v7 code from v6-owned layout and policy types before deleting
+  those sources; remove the `kafs-v6` entrypoint, packaging, documentation, and
+  tests only in the final phase. Temporary static-analysis exclusions must
+  shrink as the corresponding v6 sources are deleted.
 - For filesystem geometry changes such as size or inode count, prefer offline rebuild/migration via `kafsresize --migrate-create` over in-place metadata relocation.
 - Treat in-place inode-table expansion as out of scope unless the user explicitly asks for that high-risk migration path.
 - For performance optimization, prefer enabling LTO (`./configure --enable-lto`) before removing `static inline` hints wholesale.

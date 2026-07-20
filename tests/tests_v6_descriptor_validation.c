@@ -3373,11 +3373,10 @@ static int expect_runtime_rejects_v6_without_preflight(const char *img, const ch
   char out[8192];
   char *mount_argv[] = {(char *)kafs_test_kafs_bin(), (char *)img, (char *)mnt, NULL};
   if (run_cmd_capture(mount_argv, 2, out, sizeof(out)) != 0 ||
-      !strstr(out, "unsupported format version: v6 runtime admission is owned by kafs-v6") ||
-      !strstr(out, "kafs-v6 --inspection-mount") ||
-      !strstr(out, "kafs-v6 --controlled-write-mount") || strstr(out, "admission preflight"))
+      !strstr(out, "unsupported format version: v6 runtime support has been retired") ||
+      !strstr(out, "recreate the image as format v7") || strstr(out, "admission preflight"))
   {
-    tlogf("v6 runtime mount did not reject directly with kafs-v6 guidance: %s", out);
+    tlogf("v6 runtime mount did not reject with retirement guidance: %s", out);
     return -1;
   }
   return 0;

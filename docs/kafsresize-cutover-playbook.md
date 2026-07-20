@@ -1,5 +1,11 @@
 # KAFS Resize Cutover Playbook
 
+> **Format v6 retirement:** v6 runtime mount and controlled-write workflows in
+> older sections of this historical playbook are retired. `kafs-v6` now rejects
+> operational requests. Use offline tools only while migrating, and create an
+> accepted format v7 destination for runtime use. See
+> [the v6 source retirement plan](sd-card-wear-v6-retirement-plan.md).
+
 This playbook describes the recommended offline migration-image workflow built
 around `kafsresize --migrate-create`.
 
