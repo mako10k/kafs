@@ -2227,8 +2227,8 @@ static int repair_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_repair_stats
       for (uint32_t i = 0; i < delta; ++i)
       {
         stats->inc_attempted++;
-        int rc = kafs_hrl_inc_ref_by_blo(ctx, blo);
-        if (rc != 0)
+        int adjust_rc = kafs_hrl_inc_ref_by_blo(ctx, blo);
+        if (adjust_rc != 0)
           stats->inc_failed++;
       }
     }
@@ -2238,8 +2238,8 @@ static int repair_hrl_blo_refcounts(kafs_context_t *ctx, struct hrl_repair_stats
       for (uint32_t i = 0; i < delta; ++i)
       {
         stats->dec_attempted++;
-        int rc = kafs_hrl_dec_ref_by_blo(ctx, blo);
-        if (rc != 0)
+        int adjust_rc = kafs_hrl_dec_ref_by_blo(ctx, blo);
+        if (adjust_rc != 0)
           stats->dec_failed++;
       }
     }
