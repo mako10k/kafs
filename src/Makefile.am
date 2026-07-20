@@ -43,7 +43,7 @@ kafs_v7_SOURCES = kafs_v7.c kafs_v7_runtime.c kafs_v7_runtime_view.c kafs_v7_lay
 	kafs_v7_recovery_diagnostic.c \
 	kafs_v7_checkpoint.c kafs_v7_journal.c kafs_v7_locks.c kafs_v7_mutation.c \
 	kafs_v7_journal_writer.c kafs_v7_sequence.c kafs_v7_data_cow.c \
-	kafs_v7_runtime_transaction.c kafs_v7_fuse_write.c \
+	kafs_v7_runtime_transaction.c kafs_v7_block_tree.c kafs_v7_fuse_write.c \
 	kafs_mount_options_common.c kafs_v7_mount_options.c kafs_v7_entrypoint_adapter.c \
 	kafs_shared_fuse_runtime.c \
 	kafs_hrl.c kafs_lock_order.c kafs_locks.c kafs_journal.c kafs_rpc.c
@@ -104,6 +104,7 @@ noinst_HEADERS = kafs_block.h kafs_config.h kafs_context.h kafs_dirent.h kafs_in
 	kafs_mount_options_common.h \
 	kafs_v7_admission.h kafs_v7_entrypoint_adapter.h \
 	kafs_v7_checkpoint.h kafs_v7_data_cow.h kafs_v7_fuse_policy.h kafs_v7_fuse_write.h \
+	kafs_v7_block_tree.h \
 	kafs_v7_io.h kafs_v7_journal.h kafs_v7_test_fault.h \
 	kafs_v7_layout.h kafs_v7_locks.h \
 	kafs_v7_journal_writer.h kafs_v7_mount_options.h \
