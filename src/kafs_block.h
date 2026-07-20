@@ -303,7 +303,7 @@ static int kafs_descriptor_mapping_read_fd(struct kafs_context *ctx, int fd, uin
   kafs_descriptor_layout_report_t layout;
   int rc;
   if (format_version == KAFS_FORMAT_VERSION_V6)
-    rc = kafs_v6_discover_layout(fd, ctx->c_superblock, file_size, &layout);
+    rc = kafs_descriptor_discover_layout(fd, ctx->c_superblock, file_size, &layout);
   else if (format_version == KAFS_FORMAT_VERSION_V7)
     /* Accepted v7 raw layouts are offline-only until the v7 runtime-view ticket lands. */
     rc = -EPROTONOSUPPORT;
@@ -567,18 +567,6 @@ static int kafs_descriptor_mapping_admit_fd(
   if (rc != 0)
     free(desc);
   return rc;
-}
-
-static int
-kafs_v6_descriptor_mapping_admit_fd(struct kafs_context *ctx, int fd, uint64_t file_size,
-                                    kafs_v6_bitmap_coverage_report_t *out_bitmap,
-                                    kafs_v6_inode_coverage_report_t *out_inode,
-                                    kafs_v6_allocator_summary_coverage_report_t *out_alloc_summary,
-                                    kafs_v6_hrl_index_coverage_report_t *out_hrl_index,
-                                    kafs_v6_hrl_entries_coverage_report_t *out_hrl_entries)
-{
-  return kafs_descriptor_mapping_admit_fd(ctx, fd, file_size, out_bitmap, out_inode,
-                                          out_alloc_summary, out_hrl_index, out_hrl_entries);
 }
 
 static int kafs_v7_descriptor_mapping_admit_fd(

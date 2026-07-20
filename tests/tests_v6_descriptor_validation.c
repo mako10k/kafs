@@ -1507,7 +1507,7 @@ static int test_allocator_summary_runtime_allocation_mapping(void)
     ctx.c_fd = info.fd;
 
     kafs_v6_allocator_summary_coverage_report_t alloc_coverage;
-    int admit_rc = kafs_v6_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL, NULL,
+    int admit_rc = kafs_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL, NULL,
                                                        &alloc_coverage, NULL, NULL);
     if (admit_rc != 0 ||
         !ctx.c_v6_bitmap_mapping_enabled || !ctx.c_v6_inode_mapping_enabled ||
@@ -1696,7 +1696,7 @@ static int test_hrl_runtime_shard_mapping(void)
 
     kafs_v6_hrl_index_coverage_report_t index_report;
     kafs_v6_hrl_entries_coverage_report_t entries_report;
-    int rc = kafs_v6_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL, NULL, NULL,
+    int rc = kafs_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL, NULL, NULL,
                                                  &index_report, &entries_report);
     if (rc != 0 || !ctx.c_v6_hrl_mapping_enabled || index_report.shard_count != 2u ||
         entries_report.shard_count != 2u || ctx.c_v6_hrl_index_shard_count != 2u ||
@@ -1800,7 +1800,7 @@ static int test_inode_runtime_descriptor_mapping(void)
     ctx.c_fd = info.fd;
 
     kafs_v6_inode_coverage_report_t inode_coverage;
-    if (kafs_v6_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL,
+    if (kafs_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL,
                                             &inode_coverage, NULL, NULL, NULL) != 0 ||
         !ctx.c_v6_bitmap_mapping_enabled || !ctx.c_v6_inode_mapping_enabled ||
         !ctx.c_v6_layout_desc_owned || inode_coverage.shard_count != ctx.c_v6_inode_shard_count)
@@ -1859,7 +1859,7 @@ static int test_inode_runtime_allocation_mapping(void)
     ctx.c_superblock = (kafs_ssuperblock_t *)map;
     ctx.c_fd = info.fd;
     kafs_v6_inode_coverage_report_t inode_coverage;
-    if (kafs_v6_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL,
+    if (kafs_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL,
                                             &inode_coverage, NULL, NULL, NULL) != 0 ||
         !ctx.c_v6_inode_mapping_enabled || inode_coverage.shard_count != 2u ||
         ctx.c_v6_inode_shard_count != 2u)
@@ -2488,7 +2488,7 @@ static int test_live_metadata_mutation_routing_matrix(void)
     kafs_v6_allocator_summary_coverage_report_t alloc_coverage;
     kafs_v6_hrl_index_coverage_report_t hrl_index_coverage;
     kafs_v6_hrl_entries_coverage_report_t hrl_entry_coverage;
-    int rc = kafs_v6_descriptor_mapping_admit_fd(
+    int rc = kafs_descriptor_mapping_admit_fd(
         &ctx, info.fd, info.file_size, &bitmap_coverage, &inode_coverage, &alloc_coverage,
         &hrl_index_coverage, &hrl_entry_coverage);
     if (rc != 0 || !ctx.c_v6_bitmap_mapping_enabled || !ctx.c_v6_inode_mapping_enabled ||
@@ -2767,7 +2767,7 @@ static int test_v6_write_lock_stress_gate(void)
     ctx.c_fd = info.fd;
 
     int rc =
-        kafs_v6_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL, NULL, NULL, NULL,
+        kafs_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL, NULL, NULL, NULL,
                                             NULL);
     if (rc != 0 || !ctx.c_v6_bitmap_mapping_enabled ||
         !ctx.c_v6_alloc_summary_mapping_enabled || !ctx.c_v6_hrl_mapping_enabled ||
@@ -3403,7 +3403,7 @@ static int expect_full_admission_rejected(const char *img)
     ctx.c_superblock = (kafs_ssuperblock_t *)map;
     ctx.c_fd = info.fd;
 
-    int rc = kafs_v6_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL, NULL, NULL,
+    int rc = kafs_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL, NULL, NULL,
                                                  NULL, NULL);
     if (rc == 0 || ctx.c_v6_bitmap_mapping_enabled || ctx.c_v6_inode_mapping_enabled ||
         ctx.c_v6_alloc_summary_mapping_enabled || ctx.c_v6_hrl_mapping_enabled ||
@@ -3609,7 +3609,7 @@ static int test_allocator_summary_admission_rejects_gap(void)
     ctx.c_fd = info.fd;
 
     kafs_v6_allocator_summary_coverage_report_t alloc_coverage;
-    int rc = kafs_v6_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL, NULL,
+    int rc = kafs_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL, NULL,
                                                  &alloc_coverage, NULL, NULL);
     if (rc == 0 || !alloc_coverage.has_gap || !alloc_coverage.missing_coverage ||
         ctx.c_v6_bitmap_mapping_enabled || ctx.c_v6_inode_mapping_enabled ||
@@ -3653,7 +3653,7 @@ static int test_hrl_admission_rejects_gap(void)
     ctx.c_fd = info.fd;
 
     kafs_v6_hrl_index_coverage_report_t hrl_index_coverage;
-    int rc = kafs_v6_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL, NULL, NULL,
+    int rc = kafs_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL, NULL, NULL,
                                                  &hrl_index_coverage, NULL);
     if (rc == 0 || !hrl_index_coverage.has_gap || !hrl_index_coverage.missing_coverage ||
         ctx.c_v6_bitmap_mapping_enabled || ctx.c_v6_inode_mapping_enabled ||
@@ -3740,7 +3740,7 @@ static int test_inode_admission_rejects_gap(void)
     ctx.c_fd = info.fd;
 
     kafs_v6_inode_coverage_report_t inode_coverage;
-    int rc = kafs_v6_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL,
+    int rc = kafs_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL,
                                                  &inode_coverage, NULL, NULL, NULL);
     if (rc == 0 || !inode_coverage.has_gap || !inode_coverage.missing_coverage ||
         ctx.c_v6_bitmap_mapping_enabled || ctx.c_v6_inode_mapping_enabled ||

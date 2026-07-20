@@ -38,15 +38,22 @@ A slice may start only when:
 
 A slice is complete only when the selected sources are no longer built or
 referenced, user-visible guidance matches the new behavior, focused tests pass,
-and repository static-analysis results do not regress. Clone/static exclusions
-are temporary inventory controls, not justification to retain excluded code.
+and repository static-analysis results do not regress under the same analysis
+population. If ownership movement changes that population, record the old and
+new populations separately; do not add unrelated refactors merely to recover a
+threshold. Clone/static exclusions are temporary inventory controls, not
+justification to retain excluded code.
 
 ## Current phase
 
-Phase 1 retires v6 runtime mounting. `kafs-v6` remains only as a fail-closed
-placeholder. Offline v6 layout readers remain temporarily because active tools
-still consume the descriptor facade backed by `kafs_v6_layout.h`; removing that
-dependency is the next retirement prerequisite.
+Phase 1 retired v6 runtime mounting. `kafs-v6` remains only as a fail-closed
+placeholder.
+
+Phase 2 moved descriptor structures and validation into
+`kafs_descriptor_layout.h`. Active common/v7 code no longer includes the v6
+layout header; `kafs_v6_layout.h` is a temporary offline name adapter. The next
+prerequisite is to stop v6 image creation and move the remaining offline v6
+diagnostic callers to explicit neutral names so the adapter can be deleted.
 
 The final entrypoint-removal phase must not be pulled forward merely to make the
 tree smaller: until the other v6 surfaces are gone, the placeholder provides a

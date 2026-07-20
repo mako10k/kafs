@@ -37,7 +37,7 @@ typedef struct kafsresize_mkfs_layout
   uint64_t data_block_capacity;
   uint64_t v6_desc_off;
   uint32_t v6_desc_bytes;
-  uint64_t v6_candidates[KAFS_V6_LAYOUT_REPLICA_MAX_COUNT];
+  uint64_t v6_candidates[KAFS_DESCRIPTOR_LAYOUT_REPLICA_MAX_COUNT];
   uint32_t v6_candidate_count;
   uint32_t v7_group_count;
   uint32_t v7_replica_count;
@@ -410,8 +410,8 @@ static void kafsresize_compute_mkfs_layout_once(uint32_t format_version, uint64_
   mapsize = kafsresize_align_up_u64(mapsize, block_mask);
 
   uint64_t allocator_size = 0;
-  if (kafs_v6_allocator_summary_shape(block_count, &(uint64_t){0}, &(uint64_t){0}, &(uint64_t){0},
-                                      &allocator_size) != 0 ||
+  if (kafs_descriptor_allocator_summary_shape(block_count, &(uint64_t){0}, &(uint64_t){0},
+                                              &(uint64_t){0}, &allocator_size) != 0 ||
       allocator_size < 4096u)
     allocator_size = 4096u;
   allocator_size = kafsresize_align_up_u64(allocator_size, block_mask);
@@ -524,9 +524,9 @@ static int kafsresize_compute_mkfs_layout(uint32_t format_version, uint64_t tota
   {
     if (journal_bytes <= block_size)
       return -EINVAL;
-    int rc = kafs_v6_candidate_offsets(total_bytes, (uint32_t)block_size, layout.v6_desc_off,
-                                       layout.v6_desc_bytes, layout.v6_candidates,
-                                       &layout.v6_candidate_count);
+    int rc = kafs_descriptor_candidate_offsets(total_bytes, (uint32_t)block_size,
+                                               layout.v6_desc_off, layout.v6_desc_bytes,
+                                               layout.v6_candidates, &layout.v6_candidate_count);
     if (rc != 0)
       return rc;
     for (uint32_t i = 1; i < layout.v6_candidate_count; ++i)
