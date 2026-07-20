@@ -57,6 +57,13 @@ layout header. Offline callers now use neutral descriptor names and the
 is enabled only in the uninstalled `tests/v6_fixture_mkfs` build so bounded
 read-only diagnostics can still be verified against deterministic fixtures.
 
+The former parameterized `kafs_descriptor_*_wire` path has also been removed
+from the neutral header. It had no consumers after v7 moved to its owned raw
+layout implementation; retaining it duplicated the active neutral descriptor
+implementation without preserving a live format boundary. The non-parameterized
+neutral API remains the explicit owner for the bounded v6 fixture and offline
+diagnostic callers.
+
 The final entrypoint-removal phase must not be pulled forward merely to make the
 tree smaller: until the other v6 surfaces are gone, the placeholder provides a
 deterministic explanation to existing callers.
