@@ -59,6 +59,22 @@ When reporting findings, diagnoses, or causal explanations, the agent MUST expli
   - Interpretation: hypotheses or causal conclusions drawn from those facts.
 - Do not present hypotheses as settled facts unless they are fully validated by reproducible evidence.
 
+## Diagnostic and causal reasoning (mandatory)
+
+- Follow the `AGENTS.md` Diagnostic And Causal-Reasoning Gate for diagnoses,
+  recovery recommendations, diagnostic mutations, RCAs, and retrospectives.
+- Confidence markers do not satisfy that gate by themselves. Preserve competing
+  hypotheses, discriminating checks, claim dependencies, and invalidation of
+  downstream conclusions when a premise is refuted.
+- Evaluate user objections and agent claims under the same evidence standard;
+  neither agreement nor disagreement is a substitute for verification.
+- Do not recommend a state change from an unverified causal story. Distinguish
+  workaround, containment, recovery, and root fix, and record what evidence a
+  change could destroy.
+- Build retrospectives from the contemporaneous chronology before thematic
+  grouping. Keep the technical failure chain separate from the agent's
+  reasoning and response chain.
+
 ## Decision checkpoints (must ask user)
 
 When a change affects system boundaries or control paths, the agent MUST ask before implementing.

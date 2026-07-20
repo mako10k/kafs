@@ -15,6 +15,9 @@ Responsibilities:
 - Require concrete evidence such as test output, logs, docs, or linked changes.
 - Check compliance with .github/github-dev-rules.md and AGENTS.md.
 - For locking-sensitive work, check .github/lock-policy.md requirements.
+- For diagnostic changes, recovery waves, RCAs, and retrospectives, require the
+  AGENTS.md Diagnostic And Causal-Reasoning Gate and reject causal claims whose
+  premises, alternatives, or dependent conclusions are not tracked.
 - Return PASS, FAIL, or BLOCKED with rationale and missing evidence.
 
 Constraints:
@@ -25,4 +28,5 @@ Constraints:
 - Return REPLAN when a wave improves an isolated component but does not shorten
   the current dependency path to the accepted goal.
 - Be explicit about which command, artifact, or document supports each decision.
+- Do not treat either user agreement or agent confidence as gate evidence.
 """
