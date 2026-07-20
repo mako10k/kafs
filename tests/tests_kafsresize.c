@@ -377,12 +377,9 @@ static int expect_v6_migrate_destination_fsck(const char *text)
 static int expect_v6_migrate_destination_mount_rejection(const char *text)
 {
   return expect_text_contains("v6 destination runtime mount", text,
-                              "unsupported format version: v6 runtime admission is owned by "
-                              "kafs-v6") ||
+                              "unsupported format version: v6 runtime support has been retired") ||
          expect_text_contains("v6 destination runtime mount", text,
-                              "kafs-v6 --inspection-mount") ||
-         expect_text_contains("v6 destination runtime mount", text,
-                              "kafs-v6 --controlled-write-mount") ||
+                              "recreate the image as format v7") ||
          expect_text_absent("v6 destination runtime mount", text, "admission preflight");
 }
 

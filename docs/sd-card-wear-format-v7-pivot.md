@@ -19,9 +19,9 @@ Format v7 is the breaking-change continuation of that work:
 - production `kafs` remains the v4/v5 runtime and fails closed for v6/v7;
 - v7 is not a v6 compatibility layer and should not preserve experimental v6
   behavior unless a compatibility exception is explicitly accepted;
-- v6 remains available for existing experimental tests and images, but new
-  layout or policy expansion should target v7 unless explicitly scoped as a v6
-  regression fix.
+- v6 is being removed under the phased
+  [v6 source retirement plan](sd-card-wear-v6-retirement-plan.md); it is not a
+  compatibility, feature, or regression-fix target.
 
 The v7 decision model in
 [sd-card-wear-format-v7-inception-deck.md](sd-card-wear-format-v7-inception-deck.md)
@@ -47,8 +47,8 @@ Resource ownership is intentionally strict:
   function, copy it into v7-owned resources or extract a neutral helper first.
 - Neutral helpers must be named and documented as neutral scaffolding, not as a
   bridge or compatibility layer between formats.
-- Entry surfaces remain format-specific: `kafs` owns v4/v5, `kafs-v6` owns
-  frozen experimental v6, and `kafs-v7` owns v7.
+- Entry surfaces remain format-specific: `kafs` owns v4/v5, the temporary
+  `kafs-v6` placeholder rejects retired v6 runtime use, and `kafs-v7` owns v7.
 
 Format v7 descriptor discovery, superblock anchor initialization, mkfs
 descriptor build, and v7 wire magic are owned by `kafs_v7_layout.h`.  The v7
@@ -88,7 +88,7 @@ User-facing entrypoints and on-disk format numbers are no longer ambiguous:
 | Surface | Role |
 | --- | --- |
 | `kafs` | Production v4/v5 runtime. Rejects v6/v7 descriptor-backed images. |
-| `kafs-v6` | Frozen experimental v6 runtime entrypoint. |
+| `kafs-v6` | Temporary fail-closed placeholder for the retired v6 runtime; removed in the final retirement phase. |
 | `kafs-v7` | Breaking-change descriptor-backed entrypoint; admits accepted v7 images for read-only inspection. |
 | `mkfs.kafs --format-version 7` | Emits the accepted version 2 grouped raw layout for offline validation and inspection. |
 | `fsck.kafs` / `kafsdump` | Validate/report descriptor-backed v6/v7 images offline. |

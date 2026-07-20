@@ -1,77 +1,34 @@
 '.\" -*- nroff -*-
-.TH KAFS-V6 8 "2026-07-02" "kafs 0.4.0" "System Administration"
+.TH KAFS-V6 8 "2026-07-20" "kafs 0.4.0" "System Administration"
 .SH NAME
-kafs-v6 \- dedicated format v6 runtime entrypoint
+kafs-v6 \- retired format v6 runtime placeholder
 .SH SYNOPSIS
 .B kafs-v6
-.RB --image
-.I image
-.B --inspection-mount
-.I mountpoint
-.BR -o " " ro
-.RI [ FUSE\ options ]
-.PP
-.B kafs-v6
-.RB --image
-.I image
-.B --controlled-write-mount
-.I mountpoint
-.BR -o " " rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full
+.RB [ --help ]
 .SH DESCRIPTION
 .B kafs-v6
-is the dedicated format v6 runtime entrypoint.
-It validates the format v6 CLI boundary, rejects legacy
-.B v6_*
-mount-option mode tokens, runs descriptor preflight, and then admits the
-selected v6 runtime contract.
+is a temporary fail-closed placeholder for the retired format v6 runtime.
+Operational requests exit without opening or mounting an image. Use offline
+tools while migrating remaining experimental v6 images, or recreate them as
+format v7 images for use with
+.BR kafs-v7 (8).
 .PP
-Format v6 is an experimental implementation used to split runtime entrypoint,
-descriptor admission, and controlled-write policy away from the production
-.BR kafs (1)
-binary.  New breaking format work continues through
-.BR kafs-v7 (8)
-instead of expanding the v6 compatibility surface.  The existing
-.B kafs
-binary remains the v4/v5 production runtime entrypoint.
+The placeholder command will be removed after the remaining v6 offline and
+layout sources have been retired.
 .SH OPTIONS
 .TP
 .BR -h ", " --help
-Show help and exit.
-.TP
-.BR --image " " <image>
-Specify the format v6 image path.
-.TP
-.BR --image= "<image>"
-Specify the format v6 image path using the inline form.
-.TP
-.B --inspection-mount
-Select the read-only v6 inspection contract.
-The request must include
-.BR -o " " ro .
-.TP
-.B --controlled-write-mount
-Select the experimental v6 controlled write contract.
-The request must include
-.BR -o " " rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full .
-.TP
-.BR --option " " <opt[,opt...]>
-Alias for FUSE
-.BR -o .
-.TP
-.BR --option= "<opt[,opt...]>"
-Inline form of
-.BR --option .
+Show the retirement notice and exit.
 .SH EXIT STATUS
 .TP
 .B 0
 Help was printed.
 .TP
 .B 2
-The request was invalid, the image was not format v6, descriptor preflight
-failed, or runtime admission failed.
+An operational request was rejected because v6 runtime support is retired.
 .SH SEE ALSO
 .BR kafs (1),
-.BR mkfs.kafs (8),
+.BR kafs-v7 (8),
 .BR fsck.kafs (8),
 .BR kafsdump (8)
 .SH AUTHOR

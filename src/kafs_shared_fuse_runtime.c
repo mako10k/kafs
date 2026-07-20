@@ -13189,6 +13189,12 @@ static void kafs_main_validate_image_format(const char *image_path, uint32_t fmt
     return;
   if (kafs_format_uses_layout_descriptor(fmt_ver))
   {
+    if (fmt_ver == KAFS_FORMAT_VERSION_V6)
+    {
+      fprintf(stderr, "unsupported format version: v6 runtime support has been retired.\n"
+                      "Use offline tools while migrating or recreate the image as format v7.\n");
+      exit(2);
+    }
     const char *entrypoint = kafs_format_runtime_entrypoint(fmt_ver);
     fprintf(stderr,
             "unsupported format version: v%u runtime admission is owned by %s.\n"
@@ -13340,7 +13346,7 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
   kafs_blkcnt_t r_blkcnt = 0;
   if (kafs_format_uses_layout_descriptor(fmt_ver))
   {
-    if (mount_read_only_requested)
+    if (mount_read_only_requested && fmt_ver != KAFS_FORMAT_VERSION_V6)
       fprintf(stderr,
               "format v%u inspection mount requires %s --inspection-mount with "
               "-o ro; -o ro through kafs keeps v%u unsupported.\n",
