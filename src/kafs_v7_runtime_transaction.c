@@ -1,6 +1,7 @@
 #include "kafs_v7_runtime_transaction.h"
 
 #include "kafs_v7_data_cow.h"
+#include "kafs_v7_block_tree.h"
 #include "kafs_v7_io.h"
 #include "kafs_v7_mutation.h"
 #include "kafs_v7_sequence.h"
@@ -690,8 +691,61 @@ typedef struct kafs_v7_runtime_data_retirement_scan
   const kafs_v7_layout_report_t *layout;
   const kafs_v7_journal_replay_t *replay;
   uint32_t expected;
-  int has_indirect;
 } kafs_v7_runtime_data_retirement_scan_t;
+
+static int kafs_v7_runtime_data_retirement_read_block(void *opaque, uint64_t logical_block,
+                                                      void *block, size_t block_bytes)
+{
+  const kafs_v7_runtime_data_retirement_scan_t *scan = opaque;
+  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(scan->layout);
+  if (!groups || block_bytes != scan->layout->block_size)
+    return -EUCLEAN;
+  for (uint32_t group_id = 0; group_id < scan->layout->group_count; ++group_id)
+  {
+    uint64_t start = le64toh(groups[group_id].data_logical_start);
+    uint64_t count = le64toh(groups[group_id].data_logical_count);
+    if (logical_block < start || logical_block - start >= count)
+      continue;
+    uint64_t index = logical_block - start;
+    uint64_t physical_off = le64toh(groups[group_id].data_physical_off);
+    if (index > (UINT64_MAX - physical_off) / block_bytes)
+      return -EUCLEAN;
+    physical_off += index * block_bytes;
+    return kafs_v7_journal_overlay_pread(scan->replay, scan->service->fd, block, block_bytes,
+                                         physical_off);
+  }
+  return -EUCLEAN;
+}
+
+static int kafs_v7_runtime_data_retirement_visit_block(void *opaque, uint64_t logical_block,
+                                                       uint32_t remaining_levels)
+{
+  (void)remaining_levels;
+  const kafs_v7_runtime_data_retirement_scan_t *scan = opaque;
+  return logical_block + 1u == scan->expected ? -EBUSY : 0;
+}
+
+static int
+kafs_v7_runtime_data_retirement_scan_indirect(kafs_v7_runtime_data_retirement_scan_t *scan,
+                                              uint32_t reference, uint32_t levels)
+{
+  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(scan->layout);
+  if (!groups || scan->layout->group_count == 0u)
+    return -EUCLEAN;
+  const kafs_v7_group_desc_t *last = &groups[scan->layout->group_count - 1u];
+  uint64_t logical_start = le64toh(last->data_logical_start);
+  uint64_t logical_count = le64toh(last->data_logical_count);
+  if (logical_start > UINT64_MAX - logical_count)
+    return -EUCLEAN;
+  kafs_v7_block_tree_t tree = {
+      .block_size = scan->layout->block_size,
+      .logical_block_count = logical_start + logical_count,
+      .read = kafs_v7_runtime_data_retirement_read_block,
+      .read_opaque = scan,
+  };
+  return kafs_v7_block_tree_walk(&tree, reference, levels,
+                                 kafs_v7_runtime_data_retirement_visit_block, scan);
+}
 
 static int
 kafs_v7_runtime_data_retirement_read_shard(const kafs_v7_runtime_data_retirement_scan_t *scan,
@@ -737,7 +791,7 @@ static int kafs_v7_runtime_data_retirement_scan_inodes(kafs_v7_runtime_data_reti
   {
     if (le16toh(inodes[inode].mode) == 0u || le64toh(inodes[inode].size) <= 60u)
       continue;
-    for (uint32_t slot = 0; slot < KAFS_V7_INODE_REFERENCE_COUNT; ++slot)
+    for (uint32_t slot = 0; rc == 0 && slot < KAFS_V7_INODE_REFERENCE_COUNT; ++slot)
     {
       uint32_t reference = 0u;
       memcpy(&reference, inodes[inode].inline_or_block_refs + slot * sizeof(reference),
@@ -748,8 +802,11 @@ static int kafs_v7_runtime_data_retirement_scan_inodes(kafs_v7_runtime_data_reti
         rc = -EBUSY;
         break;
       }
-      if (slot >= KAFS_V7_INODE_DIRECT_REFERENCE_COUNT && reference != 0u)
-        scan->has_indirect = 1;
+      if (slot >= KAFS_V7_INODE_DIRECT_REFERENCE_COUNT)
+      {
+        rc = kafs_v7_runtime_data_retirement_scan_indirect(
+            scan, reference, slot - KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 1u);
+      }
     }
   }
   free(inodes);
@@ -791,7 +848,7 @@ static int kafs_v7_runtime_data_retirement_validate_unreferenced(
     rc = kafs_v7_runtime_data_retirement_scan_inodes(&scan, group_id);
   for (uint32_t group_id = 0; rc == 0 && group_id < layout->group_count; ++group_id)
     rc = kafs_v7_runtime_data_retirement_scan_hrl(&scan, group_id);
-  return rc != 0 ? rc : scan.has_indirect ? -EOPNOTSUPP : 0;
+  return rc;
 }
 
 static int kafs_v7_runtime_data_retirement_publish(kafs_v7_runtime_transaction_service_t *service,

@@ -193,6 +193,25 @@ static int block_is_allocated(const checkpoint_fixture_t *fixture, uint64_t logi
   return rc;
 }
 
+static int data_block_physical_offset(const checkpoint_fixture_t *fixture, uint64_t logical_block,
+                                      uint64_t *physical_off)
+{
+  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(&fixture->layout);
+  if (!groups || !physical_off)
+    return -EINVAL;
+  for (uint32_t group_id = 0; group_id < fixture->layout.group_count; ++group_id)
+  {
+    uint64_t start = le64toh(groups[group_id].data_logical_start);
+    uint64_t count = le64toh(groups[group_id].data_logical_count);
+    if (logical_block < start || logical_block - start >= count)
+      continue;
+    *physical_off = le64toh(groups[group_id].data_physical_off) +
+                    (logical_block - start) * fixture->layout.block_size;
+    return 0;
+  }
+  return -ERANGE;
+}
+
 static int publish_retirement_without_closeout(checkpoint_fixture_t *fixture, uint32_t group_id,
                                                uint64_t logical_block, uint64_t *sequence_out)
 {
@@ -770,8 +789,26 @@ static int data_retirement_reference_guards(data_retirement_test_state_t *state)
     rc = data_retirement_inode_commit(state, &transaction);
   if (rc == 0 && transaction.publication.sequence != 5u)
     rc = -1;
-  if (rc == 0 && kafs_v7_runtime_data_retire(*state->service, &request, &result) != -EOPNOTSUPP)
+
+  uint64_t indirect_physical_off = 0u;
+  uint32_t *indirect = calloc(1u, state->fixture->layout.block_size);
+  if (rc == 0 && !indirect)
+    rc = -ENOMEM;
+  if (rc == 0)
+    rc = data_block_physical_offset(state->fixture, state->current_block, &indirect_physical_off);
+  if (rc == 0)
+  {
+    indirect[0] = htole32((uint32_t)state->retired_block + 1u);
+    rc = kafs_pwrite_all(state->fixture->fd, indirect, state->fixture->layout.block_size,
+                         (off_t)indirect_physical_off);
+  }
+  if (rc == 0 && kafs_v7_runtime_data_retire(*state->service, &request, &result) != -EBUSY)
     rc = -1;
+
+  if (rc == 0)
+    rc = kafs_pwrite_all(state->fixture->fd, state->data, state->fixture->layout.block_size,
+                         (off_t)indirect_physical_off);
+  free(indirect);
 
   data_retirement_inode_reference_set(state->inode_record, 12u, UINT64_MAX);
   state->inode_record->blocks = htole32(1u);

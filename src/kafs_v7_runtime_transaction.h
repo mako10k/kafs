@@ -115,9 +115,9 @@ int kafs_v7_runtime_data_cow_batch_commit(kafs_v7_runtime_data_cow_batch_t **ope
 int kafs_v7_runtime_data_cow_batch_abort(kafs_v7_runtime_data_cow_batch_t **operation);
 
 /*
- * Retire one allocated, unreferenced direct-only block after first closing any
- * durable journal prefix. A live direct/HRL reference returns EBUSY; any
- * indirect root returns EOPNOTSUPP until indirect traversal is implemented.
+ * Retire one allocated, unreferenced block after first closing any durable
+ * journal prefix. A live direct, indirect-tree, or HRL reference returns
+ * EBUSY; malformed indirect trees fail closed.
  */
 int kafs_v7_runtime_data_retire(kafs_v7_runtime_transaction_service_t *service,
                                 const kafs_v7_runtime_data_retirement_request_t *request,
