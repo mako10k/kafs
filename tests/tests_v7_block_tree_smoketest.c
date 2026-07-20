@@ -64,8 +64,52 @@ static int expect_walk(tree_fixture_t *fixture, uint32_t root, uint32_t levels,
   return 0;
 }
 
+typedef struct address_case
+{
+  uint64_t file_block;
+  uint32_t inode_slot;
+  uint32_t level_count;
+  uint32_t indices[3];
+  int expected_rc;
+} address_case_t;
+
+static int test_address_boundaries(void)
+{
+  static const address_case_t cases[] = {
+      {.file_block = 0u, .inode_slot = 0u},
+      {.file_block = 11u, .inode_slot = 11u},
+      {.file_block = 12u, .inode_slot = 12u, .level_count = 1u, .indices = {0u}},
+      {.file_block = 15u, .inode_slot = 12u, .level_count = 1u, .indices = {3u}},
+      {.file_block = 16u, .inode_slot = 13u, .level_count = 2u, .indices = {0u, 0u}},
+      {.file_block = 31u, .inode_slot = 13u, .level_count = 2u, .indices = {3u, 3u}},
+      {.file_block = 32u, .inode_slot = 14u, .level_count = 3u, .indices = {0u, 0u, 0u}},
+      {.file_block = 95u, .inode_slot = 14u, .level_count = 3u, .indices = {3u, 3u, 3u}},
+      {.file_block = 96u, .expected_rc = -EFBIG},
+  };
+  for (size_t case_id = 0; case_id < sizeof(cases) / sizeof(cases[0]); ++case_id)
+  {
+    const address_case_t *test = &cases[case_id];
+    kafs_v7_block_tree_path_t path;
+    int rc = kafs_v7_block_tree_address(TEST_BLOCK_SIZE, test->file_block, &path);
+    if (rc != test->expected_rc)
+      return -1;
+    if (rc == 0 &&
+        (path.inode_slot != test->inode_slot || path.level_count != test->level_count ||
+         memcmp(path.indices, test->indices, sizeof(path.indices)) != 0))
+      return -1;
+  }
+  kafs_v7_block_tree_path_t path;
+  if (kafs_v7_block_tree_address(15u, 0u, &path) != -EINVAL ||
+      kafs_v7_block_tree_address(UINT32_MAX - 3u, UINT64_MAX, &path) != 0 ||
+      path.level_count != 3u)
+    return -1;
+  return 0;
+}
+
 int main(void)
 {
+  if (test_address_boundaries() != 0)
+    return 1;
   tree_fixture_t fixture = {0};
   set_reference(&fixture, 0u, 0u, 2u);
   set_reference(&fixture, 0u, 2u, 3u);
