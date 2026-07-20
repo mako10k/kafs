@@ -10,6 +10,9 @@ Decide whether each process can start or finish based on objective criteria.
 - Require the accepted end goal, capability dependency graph, alternative-order
   comparison, downstream unlock, and local-optimum check.
 - Require evidence (docs, tests, logs) before approval.
+- For diagnostic changes, recovery waves, RCAs, and retrospectives, require the
+  `AGENTS.md` Diagnostic And Causal-Reasoning Gate and reject untracked causal
+  premises, alternatives, or dependent conclusions.
 - Block progression if criteria are unmet and provide rationale.
 - Check compliance with .github/github-dev-rules.md.
 
@@ -27,3 +30,4 @@ Decide whether each process can start or finish based on objective criteria.
   shared state transition.
 - Return REPLAN when a wave does not shorten the current dependency path to the
   accepted goal.
+- Do not treat either user agreement or agent confidence as gate evidence.

@@ -16,6 +16,58 @@
 - `man/` and `completions/`: user-facing command documentation and shell completions.
 - `.github/`: CI workflows, GitHub development rules, lock policy, and legacy Copilot/agent instructions.
 
+## Diagnostic And Causal-Reasoning Gate
+
+- Apply this gate when diagnosing a failure, reporting causality, recommending
+  recovery, changing state based on a diagnosis, or writing an RCA or
+  retrospective. Do not replace it with confidence wording alone.
+- Maintain an evidence ledger for each non-trivial diagnostic wave:
+  1. directly observed facts with source, time, process/session identity, and
+     relevant scope;
+  2. competing hypotheses, including a credible alternative;
+  3. the discriminating check and the result that would support or weaken each
+     hypothesis;
+  4. the current status of each claim: `CONFIRMED`, `INFERRED`, `UNKNOWN`, or
+     `REFUTED`; and
+  5. which downstream conclusions and proposed actions depend on each premise.
+- Do not generalize evidence across different processes, sessions, hosts,
+  configuration layers, versions, or times without verifying that the relevant
+  state is shared. The same error code or message in different lifecycle stages
+  is correlation, not causation.
+- Treat a user objection and an agent assertion by the same evidence standard.
+  Convert an objection into a testable claim, identify the conflicting premise,
+  and verify it. Do not preserve a claim to appear consistent, and do not
+  reverse it merely to agree with the user.
+- When evidence refutes or materially weakens a premise, explicitly invalidate
+  every dependent conclusion and action, then rebaseline from the remaining
+  evidence. Do not repair a causal narrative one sentence at a time.
+- Keep diagnostic work on the shortest path to the accepted incident goal.
+  Record adjacent anomalies with an owner and disposition, but do not promote
+  them to causes without a discriminating check. For current, version-specific,
+  or unfamiliar failures, search primary sources and upstream issue trackers
+  early when local evidence cannot distinguish the hypotheses.
+- Before any diagnostic mutation, publish a `Diagnostic Change Record` with:
+  1. the confirmed or explicitly provisional causal link;
+  2. the predicted observable result;
+  3. side effects and evidence that the change may destroy;
+  4. rollback or recovery; and
+  5. why a narrower read-only check is insufficient.
+  Do not mutate state when the primary causal link is unknown unless the user
+  explicitly chooses a labeled containment experiment after seeing the risks.
+  Label restart, disablement, cleanup, and bypass actions as workaround,
+  containment, recovery, or root fix; do not conflate them.
+- A retrospective or error-chain analysis must begin with a chronological
+  ledger. For each step, record what was known then, the decision made then,
+  missing evidence, and the downstream effect. Only after that ledger may the
+  report group themes or discuss behavioral tendencies. Keep the technical
+  failure chain separate from the reasoning/response failure chain, identify
+  the exact breakpoint and control that would sever each chain, and preserve
+  unresolved unknowns rather than rewriting the sequence as a success story.
+- Describe psychological background only as an evidence-linked behavioral
+  tendency such as anchoring, premature causal closure, confirmation bias,
+  action bias, deference, or hindsight reconstruction. Do not treat either the
+  user's confidence or the agent's confidence as evidence.
+
 ## Task Start Gate
 
 - Treat a handoff, backlog item, ticket, or prior next-task recommendation as a
