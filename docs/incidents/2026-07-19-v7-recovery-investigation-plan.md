@@ -188,6 +188,15 @@ The R2 dependency graph starts with aggregate static exit status because every
 subsequent static remediation relies on a trustworthy machine-detectable gate.
 Clone and warning counts remain comparison evidence, not the ordering rule.
 
+R2 clone-scope evidence was refreshed after the neutral mount-option filtering
+extraction. Format v6 is closed and frozen, retained only for existing
+experimental tests and images, so `src/kafs_v6*` is not an active clone
+remediation surface. It remains covered by build, tests, lint, complexity, and
+cppcheck. With only that accepted ownership boundary excluded, the strict
+active-source clone gate reports 41 clones / 408 duplicated lines / 0.89% and
+passes the unchanged 1% threshold. Active production, v7, and neutral helper
+clones remain owned by R2.
+
 ## Deferred Until RCA Countermeasure Closure
 
 Do not use this document to choose among M7, M8-C, M9, or M10. After R1 and R2,
