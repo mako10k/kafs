@@ -7,7 +7,7 @@
 #include "kafs_offline_summary.h"
 #include "kafs_tailmeta.h"
 #include "kafs_descriptor_layout.h"
-#include "kafs_v6_layout.h"
+#include "kafs_descriptor_layout.h"
 #include "kafs_v7_layout.h"
 #include "kafs_v7_recovery_diagnostic.h"
 #include "kafs_cli_opts.h"
@@ -198,12 +198,13 @@ static int dump_discover_descriptor_layout(int fd, const kafs_ssuperblock_t *sb,
 
   uint32_t format_version = kafs_sb_format_version_get(sb);
   if (format_version == KAFS_FORMAT_VERSION_V6)
-    return kafs_v6_discover_layout(fd, sb, file_size, report);
+    return kafs_descriptor_discover_layout(fd, sb, file_size, report);
   return -EPROTONOSUPPORT;
 }
 
 static const char *descriptor_bitmap_status(const kafs_ssuperblock_t *sb,
-                                            const kafs_v6_layout_report_t *v6, int rc_v6_bitmap)
+                                            const kafs_descriptor_layout_report_t *v6,
+                                            int rc_v6_bitmap)
 {
   if (!dump_has_layout_descriptor(sb))
     return "not_applicable";
@@ -379,11 +380,11 @@ struct dump_report
   const struct hrl_summary *hrl;
   const struct journal_summary *jr;
   const struct tailmeta_summary *tm;
-  const kafs_v6_layout_report_t *v6;
-  const kafs_v6_bitmap_coverage_report_t *v6_bitmap;
-  const kafs_v6_journal_header_coverage_report_t *v6_journal_header;
-  const kafs_v6_journal_data_coverage_report_t *v6_journal_data;
-  const kafs_v6_journal_segment_report_t *v6_journal_segments;
+  const kafs_descriptor_layout_report_t *v6;
+  const kafs_descriptor_bitmap_coverage_report_t *v6_bitmap;
+  const kafs_descriptor_journal_header_coverage_report_t *v6_journal_header;
+  const kafs_descriptor_journal_data_coverage_report_t *v6_journal_data;
+  const kafs_descriptor_journal_segment_report_t *v6_journal_segments;
   const void *v6_desc;
   uint32_t v6_desc_bytes;
   const struct metadata_region_summary *regions;
@@ -400,49 +401,51 @@ struct dump_report
 
 static const char *v6_shard_type_name(uint16_t type)
 {
-  if (type == KAFS_V6_SHARD_TYPE_LAYOUT_DESCRIPTOR)
+  if (type == KAFS_DESCRIPTOR_SHARD_TYPE_LAYOUT_DESCRIPTOR)
     return "layout_descriptor";
   if (type <= KAFS_META_REGION_TAIL_METADATA)
     return kafs_meta_region_name(type);
   return "unknown";
 }
 
-static const kafs_sv6_group_desc_t *dump_v6_group_table(const struct dump_report *dump,
-                                                        uint32_t *out_count)
+static const kafs_sdescriptor_group_desc_t *dump_v6_group_table(const struct dump_report *dump,
+                                                                uint32_t *out_count)
 {
   if (out_count)
     *out_count = 0;
-  if (!dump || !dump->v6_desc || dump->v6_desc_bytes < sizeof(kafs_sv6_layout_desc_header_t))
+  if (!dump || !dump->v6_desc ||
+      dump->v6_desc_bytes < sizeof(kafs_sdescriptor_layout_desc_header_t))
     return NULL;
 
-  const kafs_sv6_layout_desc_header_t *hdr = (const kafs_sv6_layout_desc_header_t *)dump->v6_desc;
+  const kafs_sdescriptor_layout_desc_header_t *hdr =
+      (const kafs_sdescriptor_layout_desc_header_t *)dump->v6_desc;
   uint32_t group_count = kafs_u32_stoh(hdr->ld_group_count);
   uint32_t group_off = kafs_u32_stoh(hdr->ld_group_desc_off);
 
   if (kafs_u32_stoh(hdr->ld_descriptor_bytes) != dump->v6_desc_bytes ||
-      le16toh(hdr->ld_group_desc_bytes) != KAFS_V6_GROUP_DESC_BYTES ||
-      kafs_v6_table_bounds(group_off, group_count, KAFS_V6_GROUP_DESC_BYTES, dump->v6_desc_bytes) !=
-          0)
+      le16toh(hdr->ld_group_desc_bytes) != KAFS_DESCRIPTOR_GROUP_DESC_BYTES ||
+      kafs_descriptor_table_bounds(group_off, group_count, KAFS_DESCRIPTOR_GROUP_DESC_BYTES,
+                                   dump->v6_desc_bytes) != 0)
     return NULL;
   if (out_count)
     *out_count = group_count;
-  return (const kafs_sv6_group_desc_t *)((const char *)dump->v6_desc + group_off);
+  return (const kafs_sdescriptor_group_desc_t *)((const char *)dump->v6_desc + group_off);
 }
 
-static const kafs_sv6_shard_desc_t *dump_v6_shard_table(const struct dump_report *dump,
-                                                        uint32_t *out_count)
+static const kafs_sdescriptor_shard_desc_t *dump_v6_shard_table(const struct dump_report *dump,
+                                                                uint32_t *out_count)
 {
   if (out_count)
     *out_count = 0;
   if (!dump || !dump->v6_desc)
     return NULL;
-  return kafs_v6_shard_table(dump->v6_desc, dump->v6_desc_bytes, out_count);
+  return kafs_descriptor_shard_table(dump->v6_desc, dump->v6_desc_bytes, out_count);
 }
 
 static void print_v6_groups_text(const struct dump_report *dump)
 {
   uint32_t group_count = 0;
-  const kafs_sv6_group_desc_t *groups = dump_v6_group_table(dump, &group_count);
+  const kafs_sdescriptor_group_desc_t *groups = dump_v6_group_table(dump, &group_count);
 
   printf("  groups:\n");
   if (!groups)
@@ -461,7 +464,7 @@ static void print_v6_groups_text(const struct dump_report *dump)
 static void print_v6_shards_text(const struct dump_report *dump)
 {
   uint32_t shard_count = 0;
-  const kafs_sv6_shard_desc_t *shards = dump_v6_shard_table(dump, &shard_count);
+  const kafs_sdescriptor_shard_desc_t *shards = dump_v6_shard_table(dump, &shard_count);
 
   printf("  shards:\n");
   if (!shards)
@@ -484,7 +487,7 @@ static void print_v6_shards_text(const struct dump_report *dump)
 static void print_v6_groups_json(const struct dump_report *dump)
 {
   uint32_t group_count = 0;
-  const kafs_sv6_group_desc_t *groups = dump_v6_group_table(dump, &group_count);
+  const kafs_sdescriptor_group_desc_t *groups = dump_v6_group_table(dump, &group_count);
 
   printf("    \"groups\": [");
   if (groups)
@@ -512,7 +515,7 @@ static void print_v6_groups_json(const struct dump_report *dump)
 static void print_v6_shards_json(const struct dump_report *dump)
 {
   uint32_t shard_count = 0;
-  const kafs_sv6_shard_desc_t *shards = dump_v6_shard_table(dump, &shard_count);
+  const kafs_sdescriptor_shard_desc_t *shards = dump_v6_shard_table(dump, &shard_count);
 
   printf("    \"shards\": [");
   if (shards)
@@ -541,11 +544,12 @@ static void print_v6_shards_json(const struct dump_report *dump)
 static void print_text(const struct dump_report *dump)
 {
   const kafs_ssuperblock_t *sb = dump->sb;
-  const kafs_v6_layout_report_t *v6 = dump->v6;
-  const kafs_v6_bitmap_coverage_report_t *v6_bitmap = dump->v6_bitmap;
-  const kafs_v6_journal_header_coverage_report_t *v6_journal_header = dump->v6_journal_header;
-  const kafs_v6_journal_data_coverage_report_t *v6_journal_data = dump->v6_journal_data;
-  const kafs_v6_journal_segment_report_t *v6_journal_segments = dump->v6_journal_segments;
+  const kafs_descriptor_layout_report_t *v6 = dump->v6;
+  const kafs_descriptor_bitmap_coverage_report_t *v6_bitmap = dump->v6_bitmap;
+  const kafs_descriptor_journal_header_coverage_report_t *v6_journal_header =
+      dump->v6_journal_header;
+  const kafs_descriptor_journal_data_coverage_report_t *v6_journal_data = dump->v6_journal_data;
+  const kafs_descriptor_journal_segment_report_t *v6_journal_segments = dump->v6_journal_segments;
   const struct metadata_region_summary *regions = dump->regions;
   struct sb_geometry g = kafs_offline_superblock_geometry(sb);
 
@@ -581,9 +585,9 @@ static void print_text(const struct dump_report *dump)
     printf("  replica_count: %" PRIu32 "\n", v6->replica_count);
     for (uint32_t i = 0; i < v6->replica_count; ++i)
     {
-      const kafs_v6_replica_report_t *replica = &v6->replicas[i];
+      const kafs_descriptor_replica_report_t *replica = &v6->replicas[i];
       char summary[256];
-      kafs_v6_replica_summary(summary, sizeof(summary), replica);
+      kafs_descriptor_replica_summary(summary, sizeof(summary), replica);
       printf("  replica[%" PRIu32 "]: %s\n", replica->replica_id, summary);
     }
     print_v6_groups_text(dump);
@@ -732,11 +736,12 @@ static void print_text(const struct dump_report *dump)
 static void print_json(const struct dump_report *dump)
 {
   const kafs_ssuperblock_t *sb = dump->sb;
-  const kafs_v6_layout_report_t *v6 = dump->v6;
-  const kafs_v6_bitmap_coverage_report_t *v6_bitmap = dump->v6_bitmap;
-  const kafs_v6_journal_header_coverage_report_t *v6_journal_header = dump->v6_journal_header;
-  const kafs_v6_journal_data_coverage_report_t *v6_journal_data = dump->v6_journal_data;
-  const kafs_v6_journal_segment_report_t *v6_journal_segments = dump->v6_journal_segments;
+  const kafs_descriptor_layout_report_t *v6 = dump->v6;
+  const kafs_descriptor_bitmap_coverage_report_t *v6_bitmap = dump->v6_bitmap;
+  const kafs_descriptor_journal_header_coverage_report_t *v6_journal_header =
+      dump->v6_journal_header;
+  const kafs_descriptor_journal_data_coverage_report_t *v6_journal_data = dump->v6_journal_data;
+  const kafs_descriptor_journal_segment_report_t *v6_journal_segments = dump->v6_journal_segments;
   const struct metadata_region_summary *regions = dump->regions;
   const struct sb_geometry g = kafs_offline_superblock_geometry(sb);
 
@@ -773,14 +778,14 @@ static void print_json(const struct dump_report *dump)
   printf("    \"replicas\": [");
   for (uint32_t i = 0; i < v6->replica_count; ++i)
   {
-    const kafs_v6_replica_report_t *replica = &v6->replicas[i];
+    const kafs_descriptor_replica_report_t *replica = &v6->replicas[i];
     printf("%s{\"replica_id\": %" PRIu32 ", \"role\": \"%s\", \"offset\": %" PRIu64
            ", \"bytes\": %" PRIu32 ", \"status\": \"%s\", \"generation\": %" PRIu64
            ", \"crc_ok\": %s, \"selected\": %s}",
-           (i == 0u) ? "" : ", ", replica->replica_id, kafs_v6_replica_role_name(replica->role),
-           replica->offset, replica->bytes, kafs_v6_replica_status_name(replica->status),
-           replica->generation, replica->crc_ok ? "true" : "false",
-           replica->selected ? "true" : "false");
+           (i == 0u) ? "" : ", ", replica->replica_id,
+           kafs_descriptor_replica_role_name(replica->role), replica->offset, replica->bytes,
+           kafs_descriptor_replica_status_name(replica->status), replica->generation,
+           replica->crc_ok ? "true" : "false", replica->selected ? "true" : "false");
   }
   printf("],\n");
   print_v6_groups_json(dump);
@@ -1207,11 +1212,11 @@ int main(int argc, char **argv)
   struct hrl_summary hrl;
   struct journal_summary jr;
   struct tailmeta_summary tm;
-  kafs_v6_layout_report_t v6;
-  kafs_v6_bitmap_coverage_report_t v6_bitmap;
-  kafs_v6_journal_header_coverage_report_t v6_journal_header;
-  kafs_v6_journal_data_coverage_report_t v6_journal_data;
-  kafs_v6_journal_segment_report_t v6_journal_segments;
+  kafs_descriptor_layout_report_t v6;
+  kafs_descriptor_bitmap_coverage_report_t v6_bitmap;
+  kafs_descriptor_journal_header_coverage_report_t v6_journal_header;
+  kafs_descriptor_journal_data_coverage_report_t v6_journal_data;
+  kafs_descriptor_journal_segment_report_t v6_journal_segments;
   struct metadata_region_summary regions[KAFS_META_REGION_COUNT];
   int rc_inode = collect_inode_summary(fd, &sb, file_size, &ino);
   int rc_hrl = collect_hrl_summary(fd, &sb, file_size, &hrl);

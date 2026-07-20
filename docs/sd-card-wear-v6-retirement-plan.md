@@ -51,9 +51,10 @@ placeholder.
 
 Phase 2 moved descriptor structures and validation into
 `kafs_descriptor_layout.h`. Active common/v7 code no longer includes the v6
-layout header; `kafs_v6_layout.h` is a temporary offline name adapter. The next
-prerequisite is to stop v6 image creation and move the remaining offline v6
-diagnostic callers to explicit neutral names so the adapter can be deleted.
+layout header. Offline callers now use neutral descriptor names and the
+`kafs_v6_layout.h` adapter has been deleted. The next prerequisite is to stop v6
+image creation while retaining only the test fixture construction needed to
+verify bounded read-only diagnostics for existing images.
 
 The final entrypoint-removal phase must not be pulled forward merely to make the
 tree smaller: until the other v6 surfaces are gone, the placeholder provides a

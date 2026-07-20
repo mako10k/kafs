@@ -8,7 +8,7 @@
 #include "kafs_journal.h"
 #include "kafs_tailmeta.h"
 #include "kafs_descriptor_layout.h"
-#include "kafs_v6_layout.h"
+#include "kafs_descriptor_layout.h"
 #include "kafs_v7_layout.h"
 #include "kafs_cli_opts.h"
 #include "kafs_tool_util.h"
@@ -100,7 +100,7 @@ struct mkfs_layout
   off_t v6_desc_off;
   uint32_t v6_desc_bytes;
   uint32_t v6_candidate_count;
-  uint64_t v6_candidates[KAFS_V6_LAYOUT_REPLICA_MAX_COUNT];
+  uint64_t v6_candidates[KAFS_DESCRIPTOR_LAYOUT_REPLICA_MAX_COUNT];
   off_t blkmask_off;
   off_t inotbl_off;
   off_t allocator_off;
@@ -301,9 +301,9 @@ static int mkfs_finalize_v6_layout(uint32_t format_version, off_t total_bytes,
     return 0;
   if (!layout || layout->v6_desc_off == 0 || layout->v6_desc_bytes == 0)
     return -1;
-  int rc = kafs_v6_candidate_offsets((uint64_t)total_bytes, blksize, (uint64_t)layout->v6_desc_off,
-                                     layout->v6_desc_bytes, layout->v6_candidates,
-                                     &layout->v6_candidate_count);
+  int rc = kafs_descriptor_candidate_offsets((uint64_t)total_bytes, blksize,
+                                             (uint64_t)layout->v6_desc_off, layout->v6_desc_bytes,
+                                             layout->v6_candidates, &layout->v6_candidate_count);
   if (rc != 0)
     return rc;
 
@@ -694,8 +694,8 @@ static void mkfs_init_superblock(kafs_context_t *ctx, uint32_t format_version,
   kafs_sb_feature_flags_set(ctx->c_superblock, mkfs_feature_flags_for_format(format_version));
   kafs_sb_compat_flags_set(ctx->c_superblock, 0);
   if (format_version == KAFS_FORMAT_VERSION_V6)
-    kafs_v6_anchor_init(ctx->c_superblock, (uint64_t)layout->v6_desc_off, layout->v6_desc_bytes,
-                        layout->v6_candidate_count);
+    kafs_descriptor_anchor_init(ctx->c_superblock, (uint64_t)layout->v6_desc_off,
+                                layout->v6_desc_bytes, layout->v6_candidate_count);
 
   ctx->c_superblock->s_inocnt = kafs_inocnt_htos(inocnt);
   kafs_sb_inocnt_free_set(ctx->c_superblock,
@@ -840,10 +840,10 @@ static int mkfs_write_descriptor_layout(kafs_context_t *ctx, const struct mkfs_l
       kafs_inode_table_bytes_for_format(format_version, kafs_sb_inocnt_get(ctx->c_superblock));
   int rc;
   if (format_version == KAFS_FORMAT_VERSION_V6)
-    rc = kafs_v6_build_mkfs_descriptor(desc, layout->v6_desc_bytes, ctx->c_superblock,
-                                       (uint64_t)total_bytes, (uint64_t *)layout->v6_candidates,
-                                       layout->v6_candidate_count, (uint64_t)layout->blkmask_off,
-                                       bitmap_bytes, (uint64_t)layout->inotbl_off, inode_bytes);
+    rc = kafs_descriptor_build_mkfs_descriptor(
+        desc, layout->v6_desc_bytes, ctx->c_superblock, (uint64_t)total_bytes,
+        (uint64_t *)layout->v6_candidates, layout->v6_candidate_count,
+        (uint64_t)layout->blkmask_off, bitmap_bytes, (uint64_t)layout->inotbl_off, inode_bytes);
   else
     rc = -EPROTONOSUPPORT;
   if (rc != 0)

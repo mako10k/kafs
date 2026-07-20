@@ -4,7 +4,7 @@
 #include "kafs_ioctl.h"
 #include "kafs_offline_summary.h"
 #include "kafs_superblock.h"
-#include "kafs_v6_layout.h"
+#include "kafs_descriptor_layout.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -117,18 +117,18 @@ static int check_v6_descriptor_direct(const char *img)
   if (rc == 0 && kafs_sb_format_version_get(&sb) != KAFS_FORMAT_VERSION_V6)
     rc = -EINVAL;
 
-  kafs_v6_layout_report_t report;
+  kafs_descriptor_layout_report_t report;
   if (rc == 0)
-    rc = kafs_v6_discover_layout(fd, &sb, file_size, &report);
+    rc = kafs_descriptor_discover_layout(fd, &sb, file_size, &report);
   close(fd);
   if (rc != 0)
     return rc;
   if (!report.anchor_valid || !report.selected_found || report.replica_count != 3u ||
       report.group_count != 1u || report.shard_count != 12u || report.descriptor_bytes == 0u)
     return -EINVAL;
-  if (report.replicas[0].status != KAFS_V6_REPLICA_STATUS_SELECTED ||
-      report.replicas[1].status != KAFS_V6_REPLICA_STATUS_VALID ||
-      report.replicas[2].status != KAFS_V6_REPLICA_STATUS_VALID)
+  if (report.replicas[0].status != KAFS_DESCRIPTOR_REPLICA_STATUS_SELECTED ||
+      report.replicas[1].status != KAFS_DESCRIPTOR_REPLICA_STATUS_VALID ||
+      report.replicas[2].status != KAFS_DESCRIPTOR_REPLICA_STATUS_VALID)
     return -EINVAL;
   return 0;
 }
@@ -141,12 +141,12 @@ static int corrupt_all_v6_descriptors(const char *img)
 
   kafs_ssuperblock_t sb;
   uint64_t file_size = 0;
-  kafs_v6_layout_report_t report;
+  kafs_descriptor_layout_report_t report;
   int rc = kafs_pread_all(fd, &sb, sizeof(sb), 0);
   if (rc == 0)
     rc = kafs_offline_detect_file_size(fd, &file_size);
   if (rc == 0)
-    rc = kafs_v6_discover_layout(fd, &sb, file_size, &report);
+    rc = kafs_descriptor_discover_layout(fd, &sb, file_size, &report);
   if (rc == 0 && (report.replica_count == 0u || report.descriptor_bytes == 0u))
     rc = -EINVAL;
 
@@ -303,8 +303,8 @@ static void build_inline_payload_inode(kafs_sinode_v5_t *disk_inode, mode_t mode
 static int write_v6_inode_record(int fd, const void *desc, uint32_t desc_bytes, kafs_inocnt_t ino,
                                  const kafs_sinode_v5_t *disk_inode)
 {
-  kafs_v6_inode_lookup_t lookup;
-  int rc = kafs_v6_inode_lookup(desc, desc_bytes, ino, &lookup);
+  kafs_descriptor_inode_lookup_t lookup;
+  int rc = kafs_descriptor_inode_lookup(desc, desc_bytes, ino, &lookup);
   if (rc != 0)
     return rc;
   if (lookup.record_bytes != sizeof(*disk_inode))
@@ -321,7 +321,7 @@ static int seed_v6_readonly_traversal_fixture(const char *img)
   int rc = 0;
   kafs_ssuperblock_t sb;
   uint64_t file_size = 0;
-  kafs_v6_layout_report_t report;
+  kafs_descriptor_layout_report_t report;
   void *desc = NULL;
   uint32_t desc_bytes = 0;
 
@@ -329,9 +329,9 @@ static int seed_v6_readonly_traversal_fixture(const char *img)
   if (rc == 0)
     rc = kafs_offline_detect_file_size(fd, &file_size);
   if (rc == 0)
-    rc = kafs_v6_discover_layout(fd, &sb, file_size, &report);
+    rc = kafs_descriptor_discover_layout(fd, &sb, file_size, &report);
   if (rc == 0)
-    rc = kafs_v6_read_selected_descriptor(fd, &report, &desc, &desc_bytes);
+    rc = kafs_descriptor_read_selected_descriptor(fd, &report, &desc, &desc_bytes);
   if (rc != 0)
     goto out;
 

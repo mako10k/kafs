@@ -3,7 +3,7 @@
 #include "kafs_journal.h"
 #include "kafs_offline_summary.h"
 #include "kafs_superblock.h"
-#include "kafs_v6_layout.h"
+#include "kafs_descriptor_layout.h"
 #include "test_utils.h"
 
 #include <errno.h>
@@ -216,10 +216,10 @@ static int test_v6_descriptor_journal_routing(void)
       failed = 1;
   }
 
-  kafs_v6_journal_segment_lookup_t lookup;
+  kafs_descriptor_journal_segment_lookup_t lookup;
   memset(&lookup, 0, sizeof(lookup));
   if (!failed &&
-      kafs_v6_journal_segment_lookup(ctx.c_v6_layout_desc, ctx.c_v6_layout_desc_bytes, 0,
+      kafs_descriptor_journal_segment_lookup(ctx.c_v6_layout_desc, ctx.c_v6_layout_desc_bytes, 0,
                                      &lookup) != 0)
     failed = 1;
 

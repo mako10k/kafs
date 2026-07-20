@@ -7,7 +7,7 @@
 #include "kafs_cli_opts.h"
 #include "kafs_tool_util.h"
 #include "kafs_descriptor_layout.h"
-#include "kafs_v6_layout.h"
+#include "kafs_descriptor_layout.h"
 #include "kafs_v7_layout.h"
 /* jscpd:ignore-start */
 #include <errno.h>
@@ -571,7 +571,7 @@ static int fsck_discover_descriptor_layout(int fd, const kafs_ssuperblock_t *sb,
 
   uint32_t format_version = kafs_sb_format_version_get(sb);
   if (format_version == KAFS_FORMAT_VERSION_V6)
-    return kafs_v6_discover_layout(fd, sb, file_size, report);
+    return kafs_descriptor_discover_layout(fd, sb, file_size, report);
   return -EPROTONOSUPPORT;
 }
 
