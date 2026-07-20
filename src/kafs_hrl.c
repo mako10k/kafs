@@ -285,11 +285,26 @@ static int hrl_release_blo(kafs_context_t *ctx, kafs_blkcnt_t *pblo)
 {
   if (!pblo || *pblo == KAFS_BLO_NONE)
     return 0;
+  if (!ctx || !ctx->c_superblock || *pblo >= kafs_sb_blkcnt_get(ctx->c_superblock))
+    return -ERANGE;
+
   kafs_blksize_t bs = hrl_blksize(ctx);
   char z[bs];
   memset(z, 0, bs);
-  (void)hrl_write_blo(ctx, *pblo, z);
-  (void)kafs_blk_set_usage(ctx, *pblo, KAFS_FALSE);
+
+  kafs_bitmap_lock(ctx);
+  kafs_bitmap_word_ref_t ref;
+  int rc = kafs_blk_load_word(ctx, *pblo, &ref);
+  if (rc == 0 && (ref.word & ref.bit) == 0)
+    rc = -EIO;
+  if (rc == 0)
+    rc = hrl_write_blo(ctx, *pblo, z);
+  if (rc == 0)
+    rc = kafs_blk_set_usage_nolock(ctx, *pblo, KAFS_FALSE);
+  kafs_bitmap_unlock(ctx);
+  if (rc != 0)
+    return rc;
+
   *pblo = KAFS_BLO_NONE;
   return 0;
 }
@@ -790,27 +805,28 @@ int kafs_hrl_dec_ref(kafs_context_t *ctx, kafs_hrid_t hrid)
     kafs_hrl_bucket_unlock(ctx, bucket);
     return -EINVAL;
   }
-  e->refcnt -= 1u;
-  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(*e));
-  if (e->refcnt == 0)
+  if (e->refcnt > 1u)
   {
-    // free physical block and remove from index chain
-    kafs_blkcnt_t blo = e->blo;
-    uint64_t fast = e->fast;
-    rc = hrl_release_blo(ctx, &blo);
-    if (rc != 0)
-    {
-      kafs_hrl_bucket_unlock(ctx, bucket);
-      return rc;
-    }
-    (void)hrl_chain_remove(ctx, hrid, fast);
-    hrl_slot_reset(e);
+    e->refcnt -= 1u;
     kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(*e));
     kafs_hrl_bucket_unlock(ctx, bucket);
-    hrl_publish_free_slot(ctx, hrid);
     return 0;
   }
+
+  // Keep the last reference live until the block is safely released.
+  kafs_blkcnt_t blo = e->blo;
+  uint64_t fast = e->fast;
+  rc = hrl_release_blo(ctx, &blo);
+  if (rc != 0)
+  {
+    kafs_hrl_bucket_unlock(ctx, bucket);
+    return rc;
+  }
+  (void)hrl_chain_remove(ctx, hrid, fast);
+  hrl_slot_reset(e);
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(*e));
   kafs_hrl_bucket_unlock(ctx, bucket);
+  hrl_publish_free_slot(ctx, hrid);
   return 0;
 }
 
@@ -862,10 +878,10 @@ int kafs_hrl_inc_ref_by_blo(kafs_context_t *ctx, kafs_blkcnt_t blo)
 static int hrl_dec_ref_matched_locked(kafs_context_t *ctx, uint32_t bucket, uint32_t idx,
                                       kafs_hrl_entry_t *e)
 {
-  e->refcnt -= 1u;
-  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(*e));
-  if (e->refcnt != 0)
+  if (e->refcnt > 1u)
   {
+    e->refcnt -= 1u;
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(*e));
     kafs_hrl_bucket_unlock(ctx, bucket);
     return 0;
   }

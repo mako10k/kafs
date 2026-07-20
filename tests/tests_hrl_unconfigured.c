@@ -36,8 +36,19 @@ int main(void)
   ssize_t w = pwrite(ctx.c_fd, buf, bs, (off_t)blo << kafs_sb_log_blksize_get(ctx.c_superblock));
   assert(w == (ssize_t)bs);
 
-  // dec_ref_by_blo should fall back to direct free when HRL is off
+  // Direct fallback must also preserve the allocation when zeroing fails.
+  int rw_fd = ctx.c_fd;
+  int ro_fd = open(img, O_RDONLY);
+  assert(ro_fd >= 0);
+  ctx.c_fd = ro_fd;
+  assert(kafs_hrl_dec_ref_by_blo(&ctx, blo) == -EIO);
+  assert(kafs_blk_get_usage_locked(&ctx, blo) != 0);
+  ctx.c_fd = rw_fd;
+  close(ro_fd);
+
+  // dec_ref_by_blo should fall back to direct free when HRL is off.
   assert(kafs_hrl_dec_ref_by_blo(&ctx, blo) == 0);
+  assert(kafs_blk_get_usage_locked(&ctx, blo) == 0);
 
   munmap(ctx.c_superblock, mapsize);
   close(ctx.c_fd);
