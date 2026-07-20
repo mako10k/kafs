@@ -71,6 +71,13 @@ Documentation entrypoints:
 - Product and operator docs index: [docs/INDEX.md](docs/INDEX.md)
 - Tool overview and roadmap: [docs/tools-suite.md](docs/tools-suite.md)
 
+## License
+
+KAFS is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for the
+license text. Externally maintained files and dependency licenses are documented
+in [REUSE.toml](REUSE.toml) and
+[docs/dependency-licenses.md](docs/dependency-licenses.md).
+
 ## Tools and Options
 
 ### mkfs.kafs
