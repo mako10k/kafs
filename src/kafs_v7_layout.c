@@ -1748,6 +1748,21 @@ static int kafs_v7_validate_bitmap_allocator(int fd, const kafs_v7_shard_desc_t 
   return rc;
 }
 
+static int kafs_v7_validate_allocated_inode(const kafs_v7_inode_t *inode)
+{
+  if (!kafs_v7_all_bytes(inode->disabled_tail_bytes, sizeof(inode->disabled_tail_bytes), 0))
+    return -EINVAL;
+
+  uint64_t size = le64toh(inode->size);
+  size_t inline_capacity = sizeof(inode->inline_or_block_refs);
+  if (size > inline_capacity)
+    return 0;
+  if (le32toh(inode->blocks) != 0u || !kafs_v7_all_bytes(inode->inline_or_block_refs + (size_t)size,
+                                                         inline_capacity - (size_t)size, 0))
+    return -EINVAL;
+  return 0;
+}
+
 static int kafs_v7_validate_inodes(int fd, const kafs_v7_shard_desc_t *shard,
                                    const kafs_v7_journal_replay_t *replay, uint64_t *free_inodes)
 {
@@ -1768,21 +1783,15 @@ static int kafs_v7_validate_inodes(int fd, const kafs_v7_shard_desc_t *shard,
       if (!zero)
         rc = -EINVAL;
     }
-    else if (inode == 1)
-    {
-      if (le16toh(inodes[i].mode) == 0)
-        rc = -EINVAL;
-    }
     else if (le16toh(inodes[i].mode) == 0)
     {
-      if (!zero)
+      if (inode == 1 || !zero)
         rc = -EINVAL;
       else
         free_count++;
     }
-    else if (!kafs_v7_all_bytes(inodes[i].disabled_tail_bytes,
-                                sizeof(inodes[i].disabled_tail_bytes), 0))
-      rc = -EINVAL;
+    else
+      rc = kafs_v7_validate_allocated_inode(&inodes[i]);
   }
   uint64_t payload = count * KAFS_V7_INODE_BYTES;
   if (rc == 0 && !kafs_v7_all_bytes((uint8_t *)area + payload,

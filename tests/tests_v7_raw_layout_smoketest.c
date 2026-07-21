@@ -327,6 +327,99 @@ static int apply_descriptor_fault(const char *path, enum descriptor_fault fault,
   return rc;
 }
 
+enum inode_representation_fault
+{
+  INODE_INLINE_BLOCK_COUNT,
+  INODE_INLINE_PADDING,
+  INODE_DISABLED_TAIL,
+};
+
+static int apply_inode_representation_fault(const char *path, enum inode_representation_fault fault)
+{
+  if (format_image(path, "64M", 0) != 0)
+    return -1;
+  kafs_v7_layout_report_t report;
+  if (validate_path(path, 1, &report) != 0)
+    return -1;
+  const kafs_v7_shard_desc_t *shards = kafs_v7_report_shards(&report);
+  uint64_t inode_start = le64toh(shards[1].logical_start);
+  uint64_t inode_count = le64toh(shards[1].logical_count);
+  uint64_t root_index = 0u;
+  int rc = inode_start <= 1u && 1u - inode_start < inode_count ? 0 : -ERANGE;
+  if (rc == 0)
+    root_index = 1u - inode_start;
+  uint64_t root_off = le64toh(shards[1].physical_off) + root_index * KAFS_V7_INODE_BYTES;
+  int fd = rc == 0 ? open(path, O_RDWR) : -1;
+  if (rc == 0 && fd < 0)
+    rc = -errno;
+  kafs_v7_inode_t root;
+  if (rc == 0)
+    rc = kafs_pread_all(fd, &root, sizeof(root), (off_t)root_off);
+  if (rc == 0)
+  {
+    switch (fault)
+    {
+    case INODE_INLINE_BLOCK_COUNT:
+      root.blocks = htole32(1u);
+      break;
+    case INODE_INLINE_PADDING:
+    {
+      uint64_t size = le64toh(root.size);
+      if (size >= sizeof(root.inline_or_block_refs))
+        rc = -ERANGE;
+      else
+        root.inline_or_block_refs[size] = 1u;
+      break;
+    }
+    case INODE_DISABLED_TAIL:
+      root.disabled_tail_bytes[0] = 1u;
+      break;
+    }
+  }
+  if (rc == 0)
+    rc = kafs_pwrite_all(fd, &root, sizeof(root), (off_t)root_off);
+  if (fd >= 0)
+    close(fd);
+  kafs_v7_layout_report_clear(&report);
+  return rc;
+}
+
+static int inode_fault_consumers_reject(const char *path)
+{
+  char *dump_argv[] = {(char *)kafs_test_kafsdump_bin(), (char *)"--json", (char *)path, NULL};
+  char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)"--check", (char *)path, NULL};
+  char *mount_argv[] = {(char *)kafs_test_kafs_v7_bin(),
+                        (char *)"--image",
+                        (char *)path,
+                        (char *)"--inspection-mount",
+                        (char *)"missing-mnt",
+                        (char *)"-o",
+                        (char *)"ro",
+                        NULL};
+  return run_command(dump_argv, 1) == 0 && run_command(fsck_argv, 13) == 0 &&
+                 run_command(mount_argv, 2) == 0
+             ? 0
+             : -1;
+}
+
+static int test_inode_representation_faults(void)
+{
+  const enum inode_representation_fault faults[] = {
+      INODE_INLINE_BLOCK_COUNT,
+      INODE_INLINE_PADDING,
+      INODE_DISABLED_TAIL,
+  };
+  for (size_t i = 0; i < sizeof(faults) / sizeof(faults[0]); ++i)
+  {
+    char path[64];
+    snprintf(path, sizeof(path), "v7-inode-representation-%zu.img", i);
+    if (apply_inode_representation_fault(path, faults[i]) != 0 ||
+        validate_path(path, 0, NULL) != 0 || (i == 0u && inode_fault_consumers_reject(path) != 0))
+      return -1;
+  }
+  return 0;
+}
+
 static int test_descriptor_fault_matrix(void)
 {
   const enum descriptor_fault faults[] = {
@@ -766,6 +859,11 @@ int main(void)
   if (test_checkpoint_and_payload_faults() != 0)
   {
     fprintf(stderr, "v7 checkpoint/payload fault matrix failed\n");
+    return 1;
+  }
+  if (test_inode_representation_faults() != 0)
+  {
+    fprintf(stderr, "v7 inode representation fault matrix failed\n");
     return 1;
   }
   if (test_root_and_identity_faults() != 0)

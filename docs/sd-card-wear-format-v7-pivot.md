@@ -235,9 +235,12 @@ raw-layout specification and does not relax any software recovery gate.
 2. T49 is the bounded exception made while exact real-media preparation is
    deferred: it closes regular-file inline-to-one-direct-block promotion and
    refreshes both qualification matrices without making an RC claim.
-3. Keep M8-C indirect mutation behind M7. Address calculation and traversal do
+3. T50 closes the corresponding common-admission gap: every allocated inode
+   has a zero disabled tail, and inline records have zero block count and zero
+   padding. It does not add repair or widen mutation admission.
+4. Keep M8-C indirect mutation behind M7. Address calculation and traversal do
    not justify widening journal/recovery admission before the direct surface is
    qualified.
-4. Treat full M9 migration/cutover as distinct from the implemented v7
+5. Treat full M9 migration/cutover as distinct from the implemented v7
    destination-image creation path, and keep M10 cross-group mutation behind an
    explicit design-direction decision.
