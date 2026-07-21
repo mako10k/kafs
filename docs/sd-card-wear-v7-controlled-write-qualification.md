@@ -143,7 +143,7 @@ Revalidate a preserved report without mounting anything:
 3. The report records environment/sample identity, case status, artifacts,
    digests, limitations, and false RC/media claims.
 4. The gate accepts a complete synthetic and actual report and rejects skip,
-missing identity, false RC/device claims, and changed artifacts.
+   missing identity, false RC/device claims, and changed artifacts.
 5. FUSE unavailability is reported as SKIP/77, not PASS.
 6. Focused regression, full tests, formatting/lint, ownership, clone,
    complexity, cppcheck, and Git checks have explicit results.
@@ -171,8 +171,8 @@ Validation results:
   synthetic gate regression;
 - cppcheck: 28 existing const-style diagnostics, with no semantic,
   portability, or unused-function finding attributable to this slice;
-- Git whitespace and generated-artifact checks: PASS; the working tree retains
-  only the uncommitted T48-A implementation and documentation changes;
+- Git whitespace and generated-artifact checks: PASS; T48-A was consolidated
+  into `9a9ef10` with no WIP commit left in the final history;
 - the validate-only gate accepted the actual report and the synthetic positive
   case, and rejected the synthetic skipped, missing-identity, false-RC-claim,
   device-path, and changed-artifact cases.
@@ -182,9 +182,12 @@ real-media, or independent-review conditions of T48 and M7.
 
 ## Follow-On Boundary
 
-The next slice is T48-B: define the exact card/controller/power-cut sample
-matrix, destructive-impact statement, raw-evidence retention policy, and
-independent-review checklist. Request operator approval for that exact matrix.
-Only after approval may a later T48 slice add a `/dev/*` runner and physical
+T48-B1 adds the fail-closed matrix and digest-bound approval contract in
+`docs/sd-card-wear-v7-real-media-qualification-approval.md`. Current read-only
+discovery found no eligible real-media device, so the repository matrix remains
+`DRAFT`. The next action is to supply the exact host, card unit,
+reader/controller, isolated power-cut apparatus, trigger protocol, and cycle
+count, then request approval for the resulting matrix SHA-256. Only after that
+approval may a later T48 slice add a `/dev/*` runner and physical
 controlled-interruption procedure. Independent review remains required before
 any bounded RC decision.
