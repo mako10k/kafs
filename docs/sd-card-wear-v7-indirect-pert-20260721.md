@@ -449,3 +449,101 @@ finite ES/EF/LS/LF values past the join:
   inserted into the `.pert` plan through a false finish edge.
 - Decision: `BLOCKED`. This machine result replaces the hand-calculated table
   as the current selection authority and forbids an off-goal substitute.
+
+## VHDX-backed host-recovery replan
+
+- Record ID/time: `KAFS-PERTTOOL-20260721-VHDX-HARNESS`, 2026-07-21 JST.
+- Trigger: disposable SD-card hardware remains unavailable, and the user offered
+  the local Windows-host WSL VHDX as an interim interruption target.
+- Accepted goal: unchanged. Approved real-media recovery/wear qualification and
+  production cutover remain the finish; virtual-media evidence is an additional
+  predecessor and never substitutes for physical-media authorization.
+- Current baseline at selection: branch
+  `feat/v7-runtime-admission-foundation`, HEAD `60fb869`; generated test
+  executables were untracked, and `plans/current.pert` was the only tracked
+  selection-control edit.
+- Current backing evidence: the repository is on `/dev/sdd`, `ext4`, under
+  WSL2. Windows registry discovery identifies Ubuntu's current backing as
+  `ext4.vhdx`, allocated length `120680611840` bytes. No separate registered
+  file named `WSLHOME.vhdx` was observed.
+- Safety correction: the active Ubuntu VHDX is not disposable and cannot be
+  raw-formatted or raw-written. The permissible target is a new regular-file
+  KAFS image inside that ext4 filesystem. Windows may terminate and restart the
+  Ubuntu distro only after a durable exact-boundary marker is observed.
+
+The updated `plans/current.pert` adds these nodes without removing the external
+hardware branch:
+
+```text
+SOFTWARE_QUALIFIED -> VHDX_HARNESS -> VHDX_HOST_RECOVERY_RUN --+
+                                                               +-> REAL_MEDIA_QUALIFICATION
+SOFTWARE_QUALIFIED -> HARDWARE_APPROVAL ------------------------+
+```
+
+`./scripts/pert-next-task.sh plans/current.pert` passed DSL validation and both
+schedule analyses. Its `dag next` result classified `VHDX_HARNESS` as the only
+`RUNNABLE NOW` task, with zero total float and both precedence/resource critical
+status. `HARDWARE_APPROVAL` remained `BLOCKED NOW`; `VHDX_HOST_RECOVERY_RUN` was
+`UPCOMING`. The decision was `SELECT VHDX_HARNESS`.
+
+### VHDX_HARNESS Task Start Gate
+
+- Baseline identity: branch and HEAD above; evidence refreshed before product
+  edits.
+- Directly observed state: the four deterministic process-fault points already
+  exist in v7-owned journal/checkpoint/transaction code; the inspection smoke
+  test already verifies recovery diagnostics, fsck, and persisted payloads for
+  those points; the active ext4 filesystem is VHDX-backed.
+- State space: journal publication, checkpoint copy, metadata apply, and journal
+  reclaim; fresh versus stale state; marker absent/present; arm process active,
+  WSL terminated, WSL restarted, verification incomplete/complete; host
+  preflight versus explicit execute.
+- Invariants: normal process-fault exit statuses remain unchanged; the marker is
+  created exclusively and fsynced before `SIGSTOP`; only a dedicated new
+  regular-file image is formatted; Windows records exact distro/VHDX identity
+  and successful terminate/restart exits; recovery validates payload,
+  diagnostic, full fsck, and dump artifacts; all real-media, physical-power,
+  wear, and RC claims remain false.
+- Exit criteria: exact-boundary pause contract, separate arm/verify modes,
+  Linux ext4/same-filesystem preflight, native Windows discovery and explicit
+  high-impact execution gate, digest-sealed evidence, proportional regression,
+  and unchanged deterministic process-fault behavior.
+- Explicit non-goals: executing `wsl.exe --terminate Ubuntu` from the active
+  Codex/WSL session, raw access to the VHDX, physical power interruption,
+  real-media/wear qualification, a background service, or changing IPC and
+  security boundaries.
+- Tooling: `lsp-cli` was present but `clangd` was unavailable, so compiler,
+  exhaustive reference search, shell analysis, and focused behavioral tests are
+  the semantic fallback.
+- Decision: `PASS`. This slice prepares the selected critical harness only; the
+  actual Windows-host interruption matrix remains a distinct next node.
+
+### VHDX_HARNESS closeout and next frontier
+
+- Closeout evidence: all four pause points reached a durable marker and stopped
+  the KAFS process. A process-kill substitute then resumed each saved image and
+  passed recovery diagnostic, persisted-payload validation, full fsck,
+  `kafsdump`, and artifact digest verification. This validates the harness but
+  is not Windows-host terminate/restart evidence.
+- Safety evidence: native Windows and Linux preflight passed without termination;
+  DrvFs, state outside the WSL home, stale state, and false real-media claims
+  were rejected. The controller rediscovered the registered `ext4.vhdx` rather
+  than relying on the tentative `WSLHOME.vhdx` name.
+- Regression evidence: the complete inspection smoke passed. The full Automake
+  run passed 42 tests including every affected v7 test; the unrelated existing
+  `e2e_hotplug` case timed out once and passed its immediate isolated rerun.
+  Format, lint, strict clone, complexity, both v7 ownership checks, shell
+  analysis, Autotools regeneration, and warning-clean build passed. The new
+  pause code adds no complexity warning.
+- Claim boundary: actual `wsl.exe --terminate Ubuntu` was deliberately not run
+  from the Codex session hosted inside that same distro. Real-media, physical
+  power, controller-independent wear, and RC claims remain false.
+
+`plans/current.pert` now marks `VHDX_HARNESS_READY` reached and removes the
+completed harness task. A fresh
+`./scripts/pert-next-task.sh plans/current.pert` run passed and classified
+`VHDX_HOST_RECOVERY_RUN` as the only `RUNNABLE NOW` node, with total float zero
+and both precedence/resource critical status. `HARDWARE_APPROVAL` remains a
+blocked zero-slack critical join branch. The next-task decision is therefore
+`SELECT VHDX_HOST_RECOVERY_RUN`, executable only from native Windows outside the
+target Ubuntu distro.
