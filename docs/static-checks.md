@@ -5,7 +5,9 @@
 - Clones: jscpd via scripts/clones.sh with a strict active-source
   `src/**/*.{c,h}` gate excluding frozen experimental `src/kafs_v6*`, plus a
   separate non-gating `tests/**/*.{c,h}` report (formats: c,c-header)
-- Dead code: cppcheck via scripts/deadcode.sh
+- Dead code and semantic diagnostics: cppcheck via scripts/deadcode.sh
 - Complexity: lizard via scripts/complexity.sh
 
-Run all: scripts/static-checks.sh
+Run the normal aggregate gate (format, lint, clones, and complexity):
+`scripts/static-checks.sh`. Run cppcheck separately with
+`scripts/deadcode.sh`; it is not part of the aggregate script.

@@ -3360,6 +3360,72 @@
   - 3-block directory追記がdata blocks、親inode、子inode、allocator stateの部分更新を残さない。
   - 初期境界は既存3 blocks内の追記に限定し、3 blocksから4 blocksへの追加成長は未対応とする。
 
+### SDW-V7RT-T45 cardinality-independent direct mutation recovery wave
+
+- 目的: `KAFS-INC-2026-07-19-01`の是正として、direct directory createをblock数別分岐から
+  direct上限までのsemantic transitionへ置き換え、write/create/recoveryを同じbounded-`N` contractへ揃える。
+- 変更:
+  - direct/indirect inode reference roleをnamed constantsへ置き換え、work arrayをdirect reference上限から導出する。
+  - single COW APIをbatch lifecycleのadapterとし、direct writeとdirectory append/growthをcardinality-independentな
+    batch pathへ統合する。
+  - `inline -> inline`、`inline -> direct(1)`、`direct(N) -> direct(N)`、
+    `direct(N) -> direct(N + 1)`、direct上限拒否をtable-driven fixtureで検証する。
+  - journal publication、metadata apply、checkpoint copyの中断matrixにminimum、interior、limit-minus-one、limitの
+    representativeを含め、offline fsck/readbackで収束を確認する。
+- 完了条件:
+  - production control flowに1/2/3-block専用分岐または2/3要素専用arrayが残らない。
+  - direct上限拒否がtransaction、allocator、inode、directory、counter、retirement stateを変更しない。
+  - recovery-wave effectiveness replayがblock数ごとのfeature分割を拒否する。
+- 完了結果（2026-07-19）:
+  - `13cc9a0`でR1 closeout。詳細は
+    `docs/incidents/2026-07-19-v7-recovery-investigation-plan.md`を参照する。
+
+### SDW-V7RT-T46 recovery-surface structural and static closure
+
+- 目的: R1で固定したdirect mutation surfaceに対し、同原因clone、static finding、aggregate gate、ownership
+  exceptionをrepository-wideにdispositionし、能力再ベースラインの前提を閉じる。
+- 変更:
+  - aggregate static checkを全report収集後もconstituent failureでnonzeroにする。
+  - selector bounds、fsck read/portability、repair result、unsigned-zero、HRL release failureのsemantic findingを修正する。
+  - frozen v6だけをclone remediationから除外し、build/test/lint/complexity/cppcheck対象には残す。
+  - callerのないdescriptor wire pathを除去し、active-source cloneを同じ1% policyで再計測する。
+- 完了条件:
+  - enabled pathのcorrectness、data-integrity、durability findingをdeferしない。
+  - active-source clone gateが例外拡大なしでPASSする。
+  - build/test、static、ownership、Git evidenceと残存diagnosticのdispositionが明示される。
+- 完了結果（2026-07-21）:
+  - `460f7b0`時点でR2 closeout。active-source cloneは41件・409行・0.86%。
+  - cppcheckの残存28件はconst-style hygieneとしてowned。semantic/portability/unused-function findingは0件。
+
+### SDW-V7RT-T47 post-RCA capability rebaseline and product selection
+
+- 目的: R1/R2後のcurrent checkoutから、実装済み能力、fail-closed境界、未検証の実機証拠を再分類し、
+  M7/M8-C/M9/M10の順序をGoal And Critical Path Gateで再決定する。
+- 変更:
+  - current capability matrix、R2 closeout evidence、alternative ordering、next-task exit criteriaを
+    `docs/sd-card-wear-v7-capability-rebaseline-20260721.md`へ記録する。
+  - handoff、pivot、man page、ticket候補のstaleなM6.1/M8-B/current-limits記述をcurrent checkoutへ揃える。
+- 完了条件:
+  - current capabilityとinference、software evidenceとreal-media未検証領域が分離される。
+  - 次product sliceとnon-goalsが、acceptedなfault-tolerance/wear priorityから説明される。
+
+### SDW-V7RT-T48 controlled-write RC qualification gate
+
+- 目的: 現在有効なbounded direct controlled-write surfaceを、明示した実機matrix、controlled power
+  interruption、offline検証、独立reviewによりRC判定可能な証拠へ進める。
+- 変更:
+  - host、kernel、libfuse、SD card、reader/controller、power-cut方法、sample IDを固定するevidence schemaを追加する。
+  - format、mount、各enabled mutation class、full fsync、controlled interruption、remount、`fsck.kafs`、
+    `kafsdump`を再現可能なrepository procedureへする。
+  - raw log、digest、recovery outcome、skip/inconclusiveを保存し、filesystem placement evidenceと
+    NAND/FTL claimを分離する。
+  - 実device format/power interruptionはexact device/sample matrixと破壊的影響へのoperator明示承認後だけ実行する。
+- 完了条件:
+  - 全enabled mutation classにnormal pathとapproved matrix上のcontrolled-interruption evidenceがある。
+  - 中断sampleがallowed stateへ回復するかfail closedとなり、fsck/dump evidenceで裏付けられる。
+  - 独立reviewerがraw evidenceからbounded RC claimをacceptまたはrejectする。
+  - indirect/cross-group mutation、stable/GA、controller-independent wearはclaimしない。
+
 ---
 
 ## 次に着手する候補
@@ -3367,13 +3433,14 @@
 この節はhandoff用の開始候補であり、実装開始許可または最新の完了条件ではない。着手前に`AGENTS.md`の
 Task Start Gateでcurrent checkoutのevidenceを再確認し、`PASS`・`REPLAN`・`BLOCKED`を判定する。
 
-1. `KAFS-INC-2026-07-19-01`の是正として、block数別のcreate分岐をdirect上限までの`N`-block append/growth
-   algorithmへ統合し、direct/indirect reference境界をnamed constantsへ集約する。
-2. inline、1、2、3、direct上限直前、direct上限のfixtureをtable-driven化し、append/growth/上限拒否の
-   recovery equivalence classesを検証する。
+1. `SDW-V7RT-T48`のnon-destructive procedure、evidence schema、sample matrix、independent-review checklistを
+   実装し、repository内のsynthetic imageでdry-runする。
+2. exact device/sample matrixと破壊的影響についてoperatorの明示承認を得た後だけ、real-media formatと
+   controlled power-interruption cycleを実行する。
 
-RCAは`docs/incidents/2026-07-19-v7-directory-cardinality-rca.md`を参照する。是正完了まではblock数を1つずつ
-増やすfeature ticketを追加しない。
+現在の選定根拠と非目標は
+`docs/sd-card-wear-v7-capability-rebaseline-20260721.md`を参照する。M7 closeout前にM8-C indirect mutationへ
+進む場合は、Goal And Critical Path Gateを再実行して順序変更の根拠を記録する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の

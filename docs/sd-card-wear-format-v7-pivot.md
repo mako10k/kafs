@@ -90,11 +90,17 @@ User-facing entrypoints and on-disk format numbers are no longer ambiguous:
 | --- | --- |
 | `kafs` | Production v4/v5 runtime. Rejects v6/v7 descriptor-backed images. |
 | `kafs-v6` | Temporary fail-closed placeholder for the retired v6 runtime; removed in the final retirement phase. |
-| `kafs-v7` | Breaking-change descriptor-backed entrypoint; admits accepted v7 images for read-only inspection. |
+| `kafs-v7` | Breaking-change descriptor-backed entrypoint; admits accepted v7 images for read-only inspection or explicitly bounded controlled write. |
 | `mkfs.kafs --format-version 7` | Emits the accepted version 2 grouped raw layout for offline validation and inspection. |
 | `fsck.kafs` / `kafsdump` | Validate/report descriptor-backed v6/v7 images offline. |
 
-## Runtime Inspection Status
+## Runtime Implementation History
+
+This section records the incremental path from inspection admission to the
+current controlled-write surface. Statements that a later slice remained
+outside an earlier checkpoint are historical boundaries; the current matrix is
+maintained in
+[sd-card-wear-v7-capability-rebaseline-20260721.md](sd-card-wear-v7-capability-rebaseline-20260721.md).
 
 The read-only inspection blockers identified by the 2026-07-16 source/docs
 audit are now closed for the bounded initial runtime surface:
@@ -182,20 +188,25 @@ runs metadata apply, two-copy checkpoint publication, and covered journal
 reclamation before returning success. It does not route through a v5/v6
 transaction entrypoint.
 
-The v7-owned data COW/allocator planner now selects a group-local free block
-from the authoritative bitmap/L1/L2 overlay, writes and flushes one full block,
-reads it back, and re-verifies it before publishing a caller-owned direct inode
-reference with the bitmap and allocator-summary after-images. The independent
-retirement path first closes any durable prefix, rejects live direct/HRL
-references and all untraversed indirect roots, then clears the retained block
-with `free_blocks_delta=+1`. A published-before-closeout retry converges through
-preflight closeout and `EALREADY` without double free.
+The v7-owned data COW/allocator planner selects group-local free blocks from the
+authoritative bitmap/L1/L2 overlay, stages and verifies up to twelve direct
+blocks, and publishes direct references, inode attributes, and allocator
+after-images in one transaction. Independent post-checkpoint retirement clears
+retained blocks only after direct, indirect-walk, and HRL reference checks.
 
-Controlled write remains blocked. The planner is not connected to FUSE
-`create` or `write`; indirect traversal, multi-block writes, partial-block
-merge, file growth, and directory mutation are not implemented. The v7 policy
-state and helpers are v7-owned; production `kafs` and frozen `kafs-v6`
-behavior remain separate.
+Controlled write is now explicitly admitted for the bounded same-group direct
+surface: partial/multi-block overwrite, contiguous growth, shrinking truncate,
+`O_TRUNC`, empty regular-file create, inline-file write, and inline/direct
+directory append/growth. FUSE negotiation caps and reports the per-request
+atomic boundary. Recovery tests cover journal publication, metadata apply,
+checkpoint-copy, and journal-reclaim interruptions. Indirect mutation, holes,
+cross-group allocation, and unrelated metadata mutation remain fail closed.
+The v7 policy state and helpers are v7-owned; production `kafs` and frozen
+`kafs-v6` behavior remain separate.
+
+V7-owned direct/single/double/triple address calculation, walking, and
+retirement guards now exist. That foundation does not admit indirect write,
+create, growth, or truncate.
 
 FTL/ECC correlated-failure injection is not in this implementation blocker
 list.  It is governed by the RC media-qualification boundary in the accepted
@@ -215,11 +226,13 @@ raw-layout specification and does not relax any software recovery gate.
 
 ## Follow-Up Boundaries
 
-1. Route an existing regular file's aligned full-block direct overwrite through
-   a v7-owned FUSE adapter and the established T17-T19 coordinator. Keep
-   partial-block merge, file growth, indirect/multi-block write, and `create`
-   outside that slice, and keep controlled-write admission closed until the
-   mount/recovery matrix passes.
-2. Add `kafsresize --migrate-create --format-version 7` after the accepted
-   offline and inspection surfaces are stable; migration does not outrank a
-   blocker on the mount/write path.
+1. Run the M7 controlled-write RC qualification gate against the current
+   bounded surface. Add the non-destructive procedure and evidence contract
+   first; require explicit operator authorization for the exact real-device
+   sample matrix and destructive actions.
+2. Keep M8-C indirect mutation behind M7. Address calculation and traversal do
+   not justify widening journal/recovery admission before the direct surface is
+   qualified.
+3. Treat full M9 migration/cutover as distinct from the implemented v7
+   destination-image creation path, and keep M10 cross-group mutation behind an
+   explicit design-direction decision.
