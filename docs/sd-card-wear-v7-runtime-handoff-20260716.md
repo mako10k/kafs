@@ -115,6 +115,7 @@ checksum-consistent foreign-group mutation.
 | M8-B.1 | T49 regular-file inline-to-one-direct-block promotion | Complete with file-image normal/recovery qualification refresh |
 | M8-B.2 | T50 allocated-inode representation validation | Complete for inline block count/padding and all allocated disabled tails |
 | M8-B.3 | T51 namespace payload structural validation | Complete for inline and bounded direct KDIR/symlink admission |
+| M8-B.4 | T52 bounded direct-inode reference validation | Complete for dense direct count/slots and recovered-bitmap allocation admission |
 | M8-C | Indirect-block COW, traversal, and retirement | Address/walk/retirement foundation present; mutation not admitted |
 | M9 | v5-to-v7 data migration beyond destination creation | Destination creation present; full data migration/cutover not complete |
 | M10 | Cross-group HRL and multi-group atomic mutation | Not started |
@@ -131,10 +132,11 @@ write RC qualification before further mutation expansion. Exact media identity
 remained unavailable, so the user explicitly deferred that external dependency.
 The refreshed gate selected T49 as the smallest software-only capability closure
 and required the file-image and DRAFT real-media matrices to grow with it. The
-following T50 and T51 safety slices aligned the common image validator with the
-accepted inline-inode and bounded namespace wire contracts without widening
-mutation admission. Whole-namespace graph validation and indirect payload
-validation remain outside this boundary. The ordering record is maintained in
+following T50-T52 safety slices aligned the common image validator with the
+accepted inline-inode, dense direct-reference, and bounded namespace wire
+contracts without widening mutation admission. Duplicate-reference ownership,
+whole-namespace graph validation, and indirect payload validation remain
+outside this boundary. The ordering record is maintained in
 `docs/sd-card-wear-v7-capability-rebaseline-20260721.md`.
 
 ## T15 Closeout
@@ -370,8 +372,9 @@ T19 validation completed on 2026-07-17:
 When the required hardware is available, complete the `SDW-V7RT-T48-B1` draft matrix described in
 `docs/sd-card-wear-v7-real-media-qualification-approval.md`. T48-A has validated
 the non-destructive file-image path, T49 refreshed it for regular-file promotion,
-T50 hardened the shared inode admission boundary, and T48-B1 has fixed the
-fail-closed matrix, destructive-impact, evidence-
+T50-T52 hardened the shared inline, namespace, and dense direct-reference
+admission boundaries, and T48-B1 has fixed the fail-closed matrix,
+destructive-impact, evidence-
 retention, digest-bound approval, and independent-review contract. Supply the
 exact native/passthrough host, physical card unit, reader/controller, isolated
 power-cut apparatus, trigger protocol, and cycle count; validate

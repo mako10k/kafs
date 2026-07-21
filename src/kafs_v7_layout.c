@@ -1803,6 +1803,135 @@ static int kafs_v7_validate_inodes(int fd, const kafs_v7_shard_desc_t *shard,
   return rc;
 }
 
+typedef struct kafs_v7_direct_reference_view
+{
+  const kafs_v7_layout_report_t *report;
+  uint8_t **bitmaps;
+} kafs_v7_direct_reference_view_t;
+
+static void kafs_v7_direct_reference_view_clear(kafs_v7_direct_reference_view_t *view)
+{
+  if (!view)
+    return;
+  if (view->bitmaps && view->report)
+    for (uint32_t group_id = 0u; group_id < view->report->group_count; ++group_id)
+      free(view->bitmaps[group_id]);
+  free(view->bitmaps);
+  memset(view, 0, sizeof(*view));
+}
+
+static int kafs_v7_direct_reference_view_init(kafs_v7_direct_reference_view_t *view, int fd,
+                                              const kafs_v7_layout_report_t *report,
+                                              const kafs_v7_journal_replay_t *replay)
+{
+  if (!view || !report)
+    return -EINVAL;
+  memset(view, 0, sizeof(*view));
+  view->report = report;
+  view->bitmaps = (uint8_t **)calloc(report->group_count, sizeof(*view->bitmaps));
+  if (!view->bitmaps)
+    return -ENOMEM;
+
+  const kafs_v7_shard_desc_t *shards = kafs_v7_report_shards(report);
+  int rc = 0;
+  for (uint32_t group_id = 0u; rc == 0 && group_id < report->group_count; ++group_id)
+  {
+    const kafs_v7_shard_desc_t *bitmap = &shards[(uint64_t)group_id * KAFS_V7_GROUP_LOCAL_SHARDS];
+    void *bits = NULL;
+    rc = kafs_v7_read_shard(fd, bitmap, replay, &bits);
+    view->bitmaps[group_id] = (uint8_t *)bits;
+  }
+  if (rc != 0)
+    kafs_v7_direct_reference_view_clear(view);
+  return rc;
+}
+
+static int kafs_v7_resolve_data_reference(const kafs_v7_layout_report_t *report, uint32_t reference,
+                                          uint32_t *group_id, uint64_t *group_local)
+{
+  if (!report || !group_id || !group_local || reference == 0u)
+    return -EINVAL;
+  uint64_t logical = (uint64_t)reference - 1u;
+  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(report);
+  for (uint32_t id = 0u; id < report->group_count; ++id)
+  {
+    uint64_t start = le64toh(groups[id].data_logical_start);
+    uint64_t count = le64toh(groups[id].data_logical_count);
+    if (logical < start || logical - start >= count)
+      continue;
+    *group_id = id;
+    *group_local = logical - start;
+    return 0;
+  }
+  return -ERANGE;
+}
+
+static int kafs_v7_validate_direct_reference(const kafs_v7_direct_reference_view_t *view,
+                                             uint32_t reference)
+{
+  if (!view || !view->report || !view->bitmaps)
+    return -EINVAL;
+  uint32_t group_id = 0u;
+  uint64_t local = 0u;
+  int rc = kafs_v7_resolve_data_reference(view->report, reference, &group_id, &local);
+  if (rc != 0)
+    return rc;
+  return (view->bitmaps[group_id][local / 8u] & (uint8_t)(1u << (local % 8u))) != 0u ? 0 : -EINVAL;
+}
+
+static int kafs_v7_validate_direct_inode(const kafs_v7_direct_reference_view_t *view,
+                                         const kafs_v7_inode_t *inode)
+{
+  uint64_t size = le64toh(inode->size);
+  uint64_t direct_capacity =
+      (uint64_t)view->report->block_size * KAFS_V7_INODE_DIRECT_REFERENCE_COUNT;
+  if (size <= sizeof(inode->inline_or_block_refs) || size > direct_capacity)
+    return 0;
+
+  uint32_t expected_blocks =
+      (uint32_t)((size + view->report->block_size - 1u) / view->report->block_size);
+  if (le32toh(inode->blocks) != expected_blocks)
+    return -EINVAL;
+  for (uint32_t slot = 0u; slot < KAFS_V7_INODE_REFERENCE_COUNT; ++slot)
+  {
+    uint32_t reference = 0u;
+    memcpy(&reference, inode->inline_or_block_refs + slot * sizeof(reference), sizeof(reference));
+    reference = le32toh(reference);
+    if (slot < expected_blocks)
+    {
+      int rc = kafs_v7_validate_direct_reference(view, reference);
+      if (rc != 0)
+        return rc;
+    }
+    else if (reference != 0u)
+      return -EINVAL;
+  }
+  return 0;
+}
+
+static int kafs_v7_validate_direct_inodes(int fd, const kafs_v7_layout_report_t *report,
+                                          const kafs_v7_journal_replay_t *replay)
+{
+  kafs_v7_direct_reference_view_t view;
+  int rc = kafs_v7_direct_reference_view_init(&view, fd, report, replay);
+  const kafs_v7_shard_desc_t *shards = kafs_v7_report_shards(report);
+  for (uint32_t group_id = 0u; rc == 0 && group_id < report->group_count; ++group_id)
+  {
+    const kafs_v7_shard_desc_t *shard =
+        &shards[(uint64_t)group_id * KAFS_V7_GROUP_LOCAL_SHARDS + 1u];
+    void *area = NULL;
+    rc = kafs_v7_read_shard(fd, shard, replay, &area);
+    uint64_t count = le64toh(shard->logical_count);
+    const kafs_v7_inode_t *inodes = (const kafs_v7_inode_t *)area;
+    for (uint64_t local = 0u; rc == 0 && local < count; ++local)
+      if (le16toh(inodes[local].mode) != 0u)
+        rc = kafs_v7_validate_direct_inode(&view, &inodes[local]);
+    free(area);
+  }
+  kafs_v7_direct_reference_view_clear(&view);
+  return rc;
+}
+
 typedef struct kafs_v7_namespace_view
 {
   int fd;
@@ -1851,23 +1980,19 @@ static int kafs_v7_namespace_read_inode(const kafs_v7_namespace_view_t *view, ui
 static int kafs_v7_namespace_data_offset(const kafs_v7_namespace_view_t *view, uint32_t reference,
                                          uint64_t *physical_off)
 {
-  if (!view || !physical_off || reference == 0u)
+  if (!view || !physical_off)
     return -EINVAL;
-  uint64_t logical = (uint64_t)reference - 1u;
-  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(view->report);
-  for (uint32_t group_id = 0u; group_id < view->report->group_count; ++group_id)
-  {
-    uint64_t start = le64toh(groups[group_id].data_logical_start);
-    uint64_t count = le64toh(groups[group_id].data_logical_count);
-    if (logical < start || logical - start >= count)
-      continue;
-    uint64_t delta = 0u;
-    int rc = kafs_v7_mul_u64(logical - start, view->report->block_size, &delta);
-    if (rc == 0)
-      rc = kafs_v7_add_u64(le64toh(groups[group_id].data_physical_off), delta, physical_off);
+  uint32_t group_id = 0u;
+  uint64_t local = 0u;
+  int rc = kafs_v7_resolve_data_reference(view->report, reference, &group_id, &local);
+  if (rc != 0)
     return rc;
-  }
-  return -ERANGE;
+  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(view->report);
+  uint64_t delta = 0u;
+  rc = kafs_v7_mul_u64(local, view->report->block_size, &delta);
+  if (rc == 0)
+    rc = kafs_v7_add_u64(le64toh(groups[group_id].data_physical_off), delta, physical_off);
+  return rc;
 }
 
 static int kafs_v7_namespace_load_direct_payload(const kafs_v7_namespace_view_t *view,
@@ -2336,6 +2461,8 @@ static int kafs_v7_validate_payloads(int fd, const kafs_ssuperblock_t *sb,
     if (rc == 0)
       rc = kafs_v7_validate_hrl(fd, local, group, report->block_size, total_bucket_count, &replay);
   }
+  if (rc == 0)
+    rc = kafs_v7_validate_direct_inodes(fd, report, &replay);
   if (rc == 0)
     rc = kafs_v7_validate_namespace(fd, report, &replay, kafs_sb_inocnt_get(sb));
   if (rc == 0 &&
