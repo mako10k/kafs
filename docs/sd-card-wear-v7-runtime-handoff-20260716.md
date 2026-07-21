@@ -354,12 +354,14 @@ T19 validation completed on 2026-07-17:
 
 ## Recommended Next Slice
 
-Execute `SDW-V7RT-T48`, the controlled-write RC qualification gate described in
-`docs/sd-card-wear-v7-capability-rebaseline-20260721.md`. First add and validate
-the non-destructive repository procedure, evidence schema, sample matrix, and
-independent-review checklist. Do not format a real device or introduce a power
-interruption until the operator explicitly approves the exact device/sample
-matrix and destructive impact.
+Execute `SDW-V7RT-T48-B`, the real-media qualification planning and approval
+slice described in
+`docs/sd-card-wear-v7-controlled-write-qualification.md`. T48-A has validated
+the non-destructive repository runner and evidence gate on a file image. Next,
+fix the exact card/controller/power-cut sample matrix, destructive-impact
+statement, raw-evidence retention policy, and independent-review checklist,
+then request operator approval. Do not format a real device, add a `/dev/*`
+execution path, or introduce a physical power interruption before that approval.
 
 ## Resume Checklist
 
@@ -381,8 +383,8 @@ matrix and destructive impact.
    make -C tests check TESTS='v7_entrypoint_smoketest v7_locks_smoketest v6_descriptor_smoketest'
    ```
 
-6. Start with T48's non-destructive qualification procedure and evidence
-   contract. Preserve the current mutation boundary and keep real-device
-   actions behind explicit operator authorization.
+6. Revalidate the preserved T48-A report if needed, then start with T48-B's
+   exact real-media matrix and approval package. Preserve the current mutation
+   boundary and keep real-device actions behind explicit operator authorization.
 7. Follow the reviewed file/hunk WIP workflow in
    [github-dev-rules.md](../.github/github-dev-rules.md).

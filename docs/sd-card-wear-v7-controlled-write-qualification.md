@@ -1,0 +1,190 @@
+# KAFS format v7 controlled-write qualification plan
+
+- Task: `SDW-V7RT-T48`
+- Current slice: `T48-A end-to-end non-destructive qualification dry run`
+- Baseline: `3a86fde`
+- Status: T48-A complete; real-media qualification not started
+
+## Goal And Critical Path
+
+The accepted v7 goal is an SD-card-friendly filesystem that keeps recovery and
+offline validation deterministic while distributing mutable metadata away from
+one hot prefix. The current bounded direct controlled-write surface has software
+recovery evidence but has not crossed the real-media RC boundary.
+
+T48-A closes one dependency on that path: it turns the existing software
+recovery matrix into a repeatable evidence-producing workflow before any real
+device is selected or modified.
+
+```text
+bounded direct controlled write
+  -> T48-A non-destructive file-image evidence pipeline
+  -> approved card/controller/power-cut sample matrix
+  -> real-media controlled interruption runs
+  -> independent review
+  -> bounded M7 RC decision
+```
+
+The schema and validator are not separate cleanup tasks. The slice exits only
+when the runner has generated evidence from the FUSE workload and the gate has
+validated that report.
+
+## Task Start Record
+
+- Branch: `feat/v7-runtime-admission-foundation`
+- Start HEAD: `3a86fde`
+- Current capability: explicit v7 format/inspection/controlled-write admission,
+  bounded direct overwrite/growth/truncate/create/directory transitions, and
+  process-fault recovery through journal publication, metadata apply,
+  checkpoint copy, and journal reclaim.
+- Current gap: no repeatable operator report joining the FUSE workload, raw
+  logs, image digests, offline fsck/dump, environment identity, and an explicit
+  non-RC claim boundary.
+- Invariants: v7 owns its entrypoint and evidence workflow; v6 public paths are
+  not a compatibility shortcut; skipped or inconclusive work is not PASS.
+- Non-goals: runtime feature expansion, `/dev/*`, caller-supplied images, real
+  SD-card formatting, physical power interruption, RC approval, and NAND/FTL
+  independence claims.
+- Start decision: `PASS`.
+
+## Workload Boundary
+
+`scripts/v7-controlled-write-qualification-dry-run.sh` invokes the existing
+`tests/v7_inspection_mount_smoketest` as its workload engine. That test starts
+with `mkfs.kafs --format-version 7`, then uses v7 test-owned fixture preparation
+to expose block-backed files and directory boundary states before mounting the
+image through `kafs-v7`.
+
+The fixture preparation is explicit evidence scaffolding, not an operator image
+creation claim. A plain new v7 image cannot currently create a block-backed
+regular file through the public controlled-write surface because inline regular
+file conversion remains unsupported.
+
+The workload emits one stable marker for each completed case. A zero test exit
+without every required marker and raw log is a failed qualification dry run.
+
+## Required Case Matrix
+
+| Class | Required evidence |
+| --- | --- |
+| Format and inspection | accepted format/seed image, inspection mount |
+| Direct overwrite | partial and multi-block overwrite through FUSE |
+| Direct geometry | contiguous growth, shrinking truncate, `O_TRUNC` |
+| Create | create plus inline-file write and full fsync |
+| Directory transitions | inline append/growth, direct append/growth representatives, direct-limit rejection |
+| Recovery | journal publication, metadata apply, checkpoint copy, and journal reclaim process interruption |
+| Admission | degraded inspection succeeds; unpaired generation fails closed |
+| Closeout | inspection remount, offline `fsck.kafs`, and `kafsdump --json` |
+
+The current process-fault cases exercise the durable transaction boundaries.
+They do not model loss of power to a card/controller and cannot replace the
+later real-media sample matrix.
+
+## Evidence Contract
+
+The runner writes `qualification.json` with schema
+`KAFS.V7ControlledWriteQualification.v1` and preserves raw artifacts below the
+same report directory.
+
+Required fields include:
+
+- overall `PASS`, `SKIP`, or `FAIL` status;
+- file-image sample identity and the explicit
+  `process-fault-injection` interruption model;
+- Git revision, dirty state, UTC timestamp, kernel, uname, libfuse version, and
+  SHA-256 identities for the runner, gate, workload, and invoked v7 tools;
+- one result for every required case;
+- relative artifact paths with byte counts and SHA-256 digests;
+- false RC, real-media, and controller-independent-wear claims;
+- explicit limitations for physical power loss and NAND/FTL independence.
+
+`scripts/v7-controlled-write-qualification-gate.sh --validate-only` performs no
+mount or image mutation. It rejects missing cases, any non-PASS result, missing
+sample/environment identity, unsafe device claims, absent limitations, unknown
+evidence references, and artifact size/digest mismatch.
+
+## Status Semantics
+
+- `PASS`: the file-image FUSE workload, every required marker, raw-log set,
+  final fsck/dump, and validate-only gate all passed.
+- `SKIP`: the host cannot run the FUSE workload, for example because
+  `/dev/fuse` is unavailable. The runner exits 77 and still records a report.
+- `FAIL`: the workload, artifact collection, offline validation, required case
+  coverage, or gate failed.
+- `INCONCLUSIVE`: reserved for the later real-media matrix. It must never be
+  accepted as PASS.
+
+Even a T48-A PASS has `rc_eligible=false` and is not M7 closeout.
+
+## Commands
+
+Build the workload engine and run the non-destructive report:
+
+```sh
+make -j2
+make -C tests v7_inspection_mount_smoketest
+./scripts/v7-controlled-write-qualification-dry-run.sh
+```
+
+Revalidate a preserved report without mounting anything:
+
+```sh
+./scripts/v7-controlled-write-qualification-gate.sh \
+  --report-dir report/v7-controlled-write-qualification/<timestamp> \
+  --validate-only
+```
+
+## T48-A Exit Criteria
+
+1. The runner accepts no image/device input and only creates temporary sparse
+   files below its report work directory.
+2. The actual FUSE workload emits every required case marker and preserves the
+   mapped raw logs.
+3. The report records environment/sample identity, case status, artifacts,
+   digests, limitations, and false RC/media claims.
+4. The gate accepts a complete synthetic and actual report and rejects skip,
+missing identity, false RC/device claims, and changed artifacts.
+5. FUSE unavailability is reported as SKIP/77, not PASS.
+6. Focused regression, full tests, formatting/lint, ownership, clone,
+   complexity, cppcheck, and Git checks have explicit results.
+
+## T48-A Closeout Evidence
+
+The 2026-07-21 local dry run under
+`report/v7-controlled-write-qualification/current-slice-final` completed with
+all 23 required cases at PASS and 84 digest-checked artifacts. The report
+records Linux
+`6.18.33.2-microsoft-standard-WSL2`, libfuse `3.14.0`, a temporary sparse image,
+and `process-fault-injection`; all RC, real-media, and controller-independent
+wear claims remain false.
+
+Validation results:
+
+- focused Automake gate: 2/2 PASS;
+- full `make check -j2`: 41/41 PASS, with one unrelated existing FUSE test
+  skipped after its mount startup timed out;
+- format, lint, v7 layout ownership, v7 runtime policy ownership, and v7
+  filesystem placement proof: PASS;
+- aggregate static checks: PASS; the strict source clone result remains 41
+  clones and 409 duplicated lines (0.86%);
+- `make dist`: PASS; the archive contains the runner, validate-only gate, and
+  synthetic gate regression;
+- cppcheck: 28 existing const-style diagnostics, with no semantic,
+  portability, or unused-function finding attributable to this slice;
+- Git whitespace and generated-artifact checks: PASS; the working tree retains
+  only the uncommitted T48-A implementation and documentation changes;
+- the validate-only gate accepted the actual report and the synthetic positive
+  case, and rejected the synthetic skipped, missing-identity, false-RC-claim,
+  device-path, and changed-artifact cases.
+
+This closes T48-A only. It does not satisfy the controlled power-interruption,
+real-media, or independent-review conditions of T48 and M7.
+
+## Follow-On Boundary
+
+The next slice is T48-B: define the exact card/controller/power-cut sample
+matrix, destructive-impact statement, raw-evidence retention policy, and
+independent-review checklist. Request operator approval for that exact matrix.
+Only after approval may a later T48 slice add a `/dev/*` runner and physical
+controlled-interruption procedure. Independent review remains required before
+any bounded RC decision.

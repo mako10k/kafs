@@ -18,7 +18,9 @@ man_MANS = \
 bashcompletiondir = $(datadir)/bash-completion/completions
 bashcompletion_DATA = completions/kafs completions/mount.kafs
 
-EXTRA_DIST = $(man_MANS) $(bashcompletion_DATA)
+EXTRA_DIST = $(man_MANS) $(bashcompletion_DATA) \
+	scripts/v7-controlled-write-qualification-dry-run.sh \
+	scripts/v7-controlled-write-qualification-gate.sh
 
 # Convenience targets for static analysis (call into scripts/)
 .PHONY: format lint clones deadcode complexity static-checks
