@@ -214,3 +214,99 @@ subnetwork to the `R` join is:
   surface without shortening the calculated path.
 - PERT decision: `SELECT D2`. A fresh Task Start Gate is still required before
   its implementation; this closeout selection is not implementation approval.
+
+## D2 Task Start Gate
+
+- Record ID/time: `KAFS-V7-START-20260721-INDIRECT-D2`, 2026-07-21 JST.
+- Baseline identity: branch `feat/v7-runtime-admission-foundation`, HEAD
+  `e79b6e8`; the worktree contained only ignored/generated test executables and
+  no tracked edits when the gate ran.
+- Current evidence: T53 is the HEAD ancestor; the focused block-tree,
+  checkpoint-publication, FUSE-write, and inspection tests passed; the rebuilt
+  PERT above still has `D2` as the only runnable zero-slack software frontier.
+- Assumptions checked: format v7 remains a breaking ownership boundary;
+  controlled write remains dense and same-group; hardware identity/approval is
+  unavailable and deliberately remains external blocker `H`; no evidence
+  invalidates the single-root path-copy/reachability/retirement contract.
+- State space to cover: single-to-double crossing; overwrite and contiguous
+  growth within double depth; double-child-table crossing; partial and aligned
+  shrink; child-table pruning; double-to-single, double-to-direct, and zero;
+  journal-publication, metadata-apply, and checkpoint-copy interruption.
+- Required invariants: each data/leaf/root/inode transition publishes in one
+  same-group transaction; every staged block is reachable from the after graph
+  and every retained block from the before graph; `inode.blocks` equals data
+  plus every owned index block; required references are allocated and unused
+  references are zero; old data and index blocks retire only after publication.
+- Exit criteria: low-level boundary/negative tests, actual FUSE
+  full-fsync/readback/remount, detect-only fsck, three-point recovery, updated
+  non-destructive qualification contract, and repository gates all pass.
+- Explicit non-goals: triple-indirect mutation, sparse files, indirect
+  directories, cross-group allocation/transactions, repair, real-media
+  formatting, and physical power interruption.
+- Tooling note: `compile_commands.json` and `lsp-cli` were present, but `clangd`
+  was unavailable, so semantic LSP checks could not run.
+- Decision: `PASS`. The selected `D2` capability and its exit criteria remain
+  coherent on the current checkout; implementation may start without
+  substituting a locally easier off-path task.
+
+## D2 Closeout And Rebuilt PERT
+
+- Record ID/time: `KAFS-V7-PERT-20260721-INDIRECT-D3`, 2026-07-21 JST.
+- Evidence baseline: T54 working tree derived from `e79b6e8`, after focused
+  low-level and actual-FUSE lifecycle/recovery tests, the 32/32 non-destructive
+  qualification gate with 104 digest-checked artifacts, and the full Automake
+  result of 42 PASS and one environment-limited SKIP.
+- Closed capability: `D2` now proves dense same-group double-indirect regular
+  files through write, shrink, lower-depth contraction, image validation,
+  remount, and three interruption points. The explicit T54 non-goals remain
+  open and do not silently become predecessors of the software path.
+- External state: exact card/reader/power-cut identity and digest-bound approval
+  remain unavailable, so `H` is still an unknown-duration join blocker.
+
+The completed `D2` node is removed from the runnable frontier. No evidence from
+this wave adds a predecessor between double and triple depth or creates a causal
+edge from namespace validation `N` to the real-media join.
+
+| ID | Capability or mandatory outcome | Causal predecessors | O | M | P | TE | Confidence | Current state/blocker | Downstream unlock |
+| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| CS | Bounded direct and dense single-indirect controlled write/recovery |  | 0 | 0 | 0 | 0.00 | High | Complete through T53 | Complete predecessor |
+| D2 | Dense same-group double-indirect regular-file lifecycle | CS | 0 | 0 | 0 | 0.00 | High | Complete through T54 | Triple-depth path-copy |
+| D3 | Dense same-group triple-indirect regular-file lifecycle | D2 | 4 | 8 | 15 | 8.50 | Low | Runnable | Full regular-file block-tree surface |
+| Q | Expanded software recovery, fsck, and non-destructive qualification | D3 | 2 | 4 | 7 | 4.17 | Medium | Blocked by D3 | Stable software candidate for media qualification |
+| H | Exact card/reader/power-cut identity and digest-bound approval | CS | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN | Low | External blocker; explicitly deferred | Authorized real-media execution |
+| R | Real-media recovery and wear qualification for the expanded surface | Q, H | 3 | 5 | 9 | 5.33 | Low | Blocked by Q and H | Bounded RC evidence |
+| M | Migration/cutover evidence for the qualified destination runtime | R | 5 | 10 | 18 | 10.50 | Low | Blocked by R | Accepted production cutover decision |
+| N | Whole-namespace graph/link-count validation | CS | 2 | 4 | 7 | 4.17 | Low | Runnable but off this causal path | Separate corruption-admission closure |
+
+```text
+CS -> D2 (complete) -> D3 -> Q --+
+                                   +-> R -> M
+CS -> H ---------------------------+
+
+CS -> N   (separate correctness path; no current edge to R or M)
+```
+
+`H` still prevents a truthful end-to-end backward pass. The rebuilt software
+subnetwork from the T54 closeout to the `R` join is:
+
+| ID | ES | EF | LS | LF | Slack | Runnable now | Critical or near-critical |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| D3 | 0.00 | 8.50 | 0.00 | 8.50 | 0.00 | Yes | Critical |
+| Q | 8.50 | 12.67 | 8.50 | 12.67 | 0.00 | No | Critical |
+| H | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN | No | External join blocker |
+| R | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN | 0.00 after join | No | Critical join |
+| M | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN | 0.00 after R | No | Critical |
+| N | 0.00 | 4.17 | N/A | N/A | N/A | Yes | Off the accepted product path |
+
+- Critical software path: `D3 -> Q -> R -> M` after completed `CS -> D2`.
+- Uncertainty-overlapping path: `CS -> H -> R -> M`.
+- Runnable zero-slack frontier: `D3`.
+- Runnable off-path work: `N`; choosing it would not shorten either leg of the
+  `R` join.
+- PERT decision: `SELECT D3`, the dense same-group triple-indirect
+  regular-file lifecycle. `Q` must follow it so qualification is not repeated
+  for an interim depth, while `N` remains a separate correctness path.
+- Start condition: this is a closeout selection, not implementation approval.
+  Re-run a fresh Task Start Gate on the post-T54 committed checkout before any
+  D3 edit; retain triple state-space, invariants, exit criteria, and non-goals
+  only if that gate returns `PASS`.

@@ -139,6 +139,9 @@ required_cases=(
   direct_growth
   direct_truncate
   single_indirect_write_truncate
+  double_indirect_write_truncate
+  double_indirect_to_single_truncate
+  double_indirect_recovery_matrix
   single_indirect_to_direct_truncate
   single_indirect_recovery_matrix
   create_inline_write
@@ -208,6 +211,9 @@ required_cases = [
     "direct_growth",
     "direct_truncate",
     "single_indirect_write_truncate",
+    "double_indirect_write_truncate",
+    "double_indirect_to_single_truncate",
+    "double_indirect_recovery_matrix",
     "single_indirect_to_direct_truncate",
     "single_indirect_recovery_matrix",
     "create_inline_write",
@@ -240,6 +246,13 @@ evidence = {
     "direct_growth": ["artifacts/logs/v7-controlled-write.log"],
     "direct_truncate": ["artifacts/logs/v7-controlled-write.log"],
     "single_indirect_write_truncate": ["artifacts/logs/v7-controlled-write.log"],
+    "double_indirect_write_truncate": ["artifacts/logs/v7-controlled-write.log"],
+    "double_indirect_to_single_truncate": ["artifacts/logs/v7-controlled-open-trunc.log"],
+    "double_indirect_recovery_matrix": [
+        "artifacts/logs/v7-double-journal_publish-recovery.log",
+        "artifacts/logs/v7-double-metadata_apply-recovery.log",
+        "artifacts/logs/v7-double-checkpoint_copy-recovery.log",
+    ],
     "single_indirect_to_direct_truncate": ["artifacts/logs/v7-controlled-open-trunc.log"],
     "single_indirect_recovery_matrix": [
         "artifacts/logs/v7-single-journal_publish-recovery.log",

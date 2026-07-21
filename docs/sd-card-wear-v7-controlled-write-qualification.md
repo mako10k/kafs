@@ -209,6 +209,22 @@ controller-independent-wear claims remain false. The DRAFT real-media matrix
 now includes `regular_file_single_indirect_lifecycle`, so every earlier draft
 digest is obsolete and cannot authorize execution.
 
+## T54 Double-Indirect File-Image Refresh
+
+The 2026-07-21 T54 dry run completed with all 32 required results at PASS and
+104 digest-checked artifacts. T54 adds three required results:
+`double_indirect_write_truncate`, `double_indirect_to_single_truncate`, and
+`double_indirect_recovery_matrix`. The normal path crosses the single boundary,
+performs double-depth overwrite and shrink, verifies persisted leaf/root/data
+blocks, remounts read-only, and then contracts through single and direct to
+zero. The recovery result requires raw journal-publication, metadata-apply, and
+checkpoint-copy logs for a double-leaf tail COW.
+
+This remains non-destructive file-image evidence. RC, real-media, and
+controller-independent-wear claims remain false. The DRAFT real-media matrix
+adds `regular_file_double_indirect_lifecycle`; all previous draft digests are
+obsolete and cannot authorize execution.
+
 ## Follow-On Boundary
 
 T48-B1 adds the fail-closed matrix and digest-bound approval contract in
