@@ -1,0 +1,105 @@
+{
+  "blocked_by": [
+    "native qualification host identity",
+    "physical SD-card unit identity",
+    "reader/controller identity",
+    "isolated power-cut apparatus and trigger protocol",
+    "operator approval bound to the completed matrix digest"
+  ],
+  "claims": {
+    "controller_independent_wear": false,
+    "rc_eligible": false,
+    "real_media_qualified": false
+  },
+  "destructive_impact": {
+    "all_existing_data_lost": true,
+    "disposable_media_only": true,
+    "host_or_system_disk_power_cut_forbidden": true,
+    "whole_device_overwrite": true
+  },
+  "discovery": {
+    "eligible_device_count": 0,
+    "host_class": "WSL2",
+    "observed_at_utc": "2026-07-21T02:14:49Z",
+    "observed_device_classes": [
+      "Microsoft Virtual Disk"
+    ],
+    "status": "NO_ELIGIBLE_REAL_MEDIA"
+  },
+  "execution_policy": {
+    "approval_record_required": true,
+    "physical_power_cut_without_approval": false,
+    "raw_device_execution_without_approval": false
+  },
+  "independent_review": {
+    "allowed_decisions": [
+      "ACCEPT",
+      "REJECT",
+      "INCONCLUSIVE"
+    ],
+    "raw_evidence_required": true,
+    "reviewer_must_differ_from_operator": true
+  },
+  "matrix_id": "T48-B1-DRAFT-20260721",
+  "retention": {
+    "immutable_copy_required": true,
+    "minimum_days": 180,
+    "required_artifacts": [
+      "artifact-sha256",
+      "command-log",
+      "device-identity-after",
+      "device-identity-before",
+      "environment",
+      "fsck-after",
+      "fsck-before",
+      "kafsdump-after",
+      "kafsdump-before",
+      "mount-log",
+      "power-cut-log",
+      "workload-log"
+    ],
+    "retain_through": "M7 decision plus 180 days"
+  },
+  "samples": [],
+  "schema": "KAFS.V7RealMediaQualificationMatrix.v1",
+  "scope": "format-v7-bounded-direct-controlled-write",
+  "state": "DRAFT",
+  "target_host": {
+    "host_id": null,
+    "kernel": null,
+    "libfuse": null,
+    "native_or_passthrough_environment": null
+  },
+  "test_plan": {
+    "controlled_interruption_boundaries": [
+      "journal_publish",
+      "metadata_apply",
+      "checkpoint_copy",
+      "journal_reclaim"
+    ],
+    "cycles_per_workload": null,
+    "interruption_cross_product_required": true,
+    "mount_mode": "--controlled-write-mount",
+    "mount_options": "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
+    "normal_workloads": [
+      "create_inline_write",
+      "direct_contiguous_growth",
+      "direct_multi_block_overwrite",
+      "direct_partial_overwrite",
+      "direct_shrink_truncate",
+      "directory_direct_append_and_growth",
+      "directory_inline_append_and_growth",
+      "open_truncate"
+    ],
+    "offline_checks": [
+      "fsck.kafs --check",
+      "kafsdump --json"
+    ],
+    "result_states": [
+      "PASS",
+      "FAIL",
+      "SKIP",
+      "INCONCLUSIVE"
+    ]
+  }
+}

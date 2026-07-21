@@ -3440,6 +3440,22 @@
   - PASSでもRC、real-media、controller-independent wearのclaimはfalseのままであり、T48/M7は未完了。
   - 次sliceは`T48-B`とし、exact card/controller/power-cut matrix、破壊的影響、raw evidence保持、
     independent-review checklistを固定してoperator承認を求める。実媒体実行はまだ行わない。
+- current slice (`T48-B1`):
+  - current WSL2 hostのread-only discoveryではMicrosoft Virtual Disk 4台だけが見え、適格なremovable/SD
+    candidateは0台だったため、exact physical matrixの完成は`REPLAN`とした。
+  - `KAFS.V7RealMediaQualificationMatrix.v1`でhost、card unit、reader/controller、stable device identity、
+    isolated power-cut、workload/interruption cross product、retention、review境界を固定する。
+  - operator approvalは別recordとし、matrix ID、byte-for-byte SHA-256、authorized actions、破壊的影響確認、
+    有効期限へ束縛する。draft validationもapproval validationもdeviceをopenしない。
+  - repository matrixはmissing identityを`blocked_by`に残した`DRAFT`であり、raw-device executionとphysical
+    power cutは未承認である。exact identityを受領するまで`/dev/*` runnerは追加しない。
+- T48-B1完了結果（2026-07-21）:
+  - draft、synthetic ready/approved、negative matrix/approval regressionを実装し、Automake 2/2 PASS、lint、
+    Autotools refresh、`make dist`を確認した。
+  - approval-free execution、volatile device identity、system/host storage、digest mismatch、期限切れ、
+    draft承認をfail closedで拒否する。
+  - current draftは`DRAFT_VALID`だがexecution approvalではない。次のblockerはexact physical identityと
+    そのmatrix digestに対するoperator approvalである。
 
 ---
 
@@ -3448,10 +3464,10 @@
 この節はhandoff用の開始候補であり、実装開始許可または最新の完了条件ではない。着手前に`AGENTS.md`の
 Task Start Gateでcurrent checkoutのevidenceを再確認し、`PASS`・`REPLAN`・`BLOCKED`を判定する。
 
-1. `SDW-V7RT-T48-B`でexact card/controller/power-cut matrix、破壊的影響、raw evidence保持、
-   independent-review checklistを文書化し、operatorへ承認を求める。
-2. 承認されたexact device/sample matrixだけを対象に、real-media formatとcontrolled
-   power-interruption cycleを実行する。承認前は`/dev/*` execution pathも追加しない。
+1. `SDW-V7RT-T48-B1` matrixへexact host/card/reader/power-cut identityとcycle countを入力し、
+   `READY_FOR_APPROVAL` gateが返すSHA-256をoperatorへ提示する。
+2. そのexact digestに対する期限付きapprovalを得た後だけ、承認されたsampleを対象にreal-media runnerを
+   実装する。承認前はformat、mount、power interruption、`/dev/*` execution pathを追加しない。
 
 現在の選定根拠と非目標は
 `docs/sd-card-wear-v7-capability-rebaseline-20260721.md`を参照する。M7 closeout前にM8-C indirect mutationへ

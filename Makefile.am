@@ -19,8 +19,11 @@ bashcompletiondir = $(datadir)/bash-completion/completions
 bashcompletion_DATA = completions/kafs completions/mount.kafs
 
 EXTRA_DIST = $(man_MANS) $(bashcompletion_DATA) \
+	docs/sd-card-wear-v7-real-media-qualification-approval.md \
+	docs/sd-card-wear-v7-real-media-qualification-matrix.json \
 	scripts/v7-controlled-write-qualification-dry-run.sh \
-	scripts/v7-controlled-write-qualification-gate.sh
+	scripts/v7-controlled-write-qualification-gate.sh \
+	scripts/v7-real-media-qualification-approval-gate.sh
 
 # Convenience targets for static analysis (call into scripts/)
 .PHONY: format lint clones deadcode complexity static-checks

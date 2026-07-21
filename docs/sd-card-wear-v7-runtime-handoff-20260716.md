@@ -354,14 +354,15 @@ T19 validation completed on 2026-07-17:
 
 ## Recommended Next Slice
 
-Execute `SDW-V7RT-T48-B`, the real-media qualification planning and approval
-slice described in
-`docs/sd-card-wear-v7-controlled-write-qualification.md`. T48-A has validated
-the non-destructive repository runner and evidence gate on a file image. Next,
-fix the exact card/controller/power-cut sample matrix, destructive-impact
-statement, raw-evidence retention policy, and independent-review checklist,
-then request operator approval. Do not format a real device, add a `/dev/*`
-execution path, or introduce a physical power interruption before that approval.
+Complete the `SDW-V7RT-T48-B1` draft matrix described in
+`docs/sd-card-wear-v7-real-media-qualification-approval.md`. T48-A has validated
+the non-destructive file-image path, and T48-B1 has fixed the fail-closed matrix,
+destructive-impact, evidence-retention, digest-bound approval, and independent-
+review contract. Supply the exact native/passthrough host, physical card unit,
+reader/controller, isolated power-cut apparatus, trigger protocol, and cycle
+count; validate `READY_FOR_APPROVAL`; then approve that exact matrix digest. Do
+not format a real device, add a `/dev/*` execution path, or introduce a physical
+power interruption before that approval.
 
 ## Resume Checklist
 
@@ -383,8 +384,9 @@ execution path, or introduce a physical power interruption before that approval.
    make -C tests check TESTS='v7_entrypoint_smoketest v7_locks_smoketest v6_descriptor_smoketest'
    ```
 
-6. Revalidate the preserved T48-A report if needed, then start with T48-B's
-   exact real-media matrix and approval package. Preserve the current mutation
-   boundary and keep real-device actions behind explicit operator authorization.
+6. Revalidate the T48-B1 draft matrix, fill only directly observed physical
+   identities, and request approval for its exact digest. Preserve the current
+   mutation boundary and keep real-device actions behind explicit operator
+   authorization.
 7. Follow the reviewed file/hunk WIP workflow in
    [github-dev-rules.md](../.github/github-dev-rules.md).
