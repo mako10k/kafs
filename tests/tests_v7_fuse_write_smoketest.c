@@ -507,6 +507,33 @@ static int seed_dense_direct_file(kafs_context_t *ctx, kafs_inocnt_t ino, uint32
   return rc;
 }
 
+static int grow_dense_regular(kafs_context_t *ctx, kafs_inocnt_t ino, uint8_t *expected,
+                              uint64_t target_size, uint8_t salt)
+{
+  const size_t max_bytes = 60u * (size_t)ctx->c_v7_block_size;
+  const kafs_v7_inode_t *inode = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(ctx, ino);
+  if (!inode || target_size < le64toh(inode->size))
+    return -EINVAL;
+  uint64_t offset = le64toh(inode->size);
+  while (offset < target_size)
+  {
+    size_t bytes = target_size - offset > max_bytes ? max_bytes : (size_t)(target_size - offset);
+    if (offset % ctx->c_v7_block_size != 0u)
+    {
+      size_t align = ctx->c_v7_block_size - (size_t)(offset % ctx->c_v7_block_size);
+      if (bytes > align)
+        bytes = align;
+    }
+    for (size_t i = 0u; i < bytes; ++i)
+      expected[offset + i] = (uint8_t)((offset + i) * 17u + salt);
+    int rc = kafs_v7_fuse_write_regular(ctx, ino, expected + offset, bytes, offset, NULL);
+    if (rc != (int)bytes)
+      return rc == 0 ? -EIO : rc;
+    offset += bytes;
+  }
+  return 0;
+}
+
 static int read_reference_block(kafs_context_t *ctx, uint32_t reference, void *block)
 {
   uint64_t physical_off = 0u;
@@ -703,6 +730,216 @@ static int test_single_indirect_transitions(kafs_context_t *ctx, kafs_inocnt_t i
   free(expected);
   free(block);
   free(root);
+  return rc;
+}
+
+static int expect_unused_double_reference_rejected(kafs_context_t *ctx, uint32_t root_reference,
+                                                   uint32_t child_reference)
+{
+  uint64_t root_physical_off = 0u;
+  int rc = kafs_ctx_v7_data_ref_physical_offset(ctx, root_reference, &root_physical_off);
+  uint32_t poison = htole32(child_reference);
+  if (rc == 0)
+    rc = kafs_pwrite_all(ctx->c_fd, &poison, sizeof(poison), (off_t)root_physical_off + 4);
+  int poisoned = rc == 0;
+  if (rc == 0 && fdatasync(ctx->c_fd) != 0)
+    rc = -errno;
+  kafs_v7_layout_report_t report = {0};
+  int validation_rc = rc == 0 ? kafs_v7_validate_image_fd(ctx->c_fd, ctx->c_superblock,
+                                                          ctx->c_img_size, &report)
+                              : rc;
+  kafs_v7_layout_report_clear(&report);
+  uint32_t zero = 0u;
+  int restore_rc = poisoned ? kafs_pwrite_all(ctx->c_fd, &zero, sizeof(zero),
+                                              (off_t)root_physical_off + 4)
+                            : 0;
+  if (restore_rc == 0 && fdatasync(ctx->c_fd) != 0)
+    restore_rc = -errno;
+  if (rc != 0)
+    return rc;
+  if (restore_rc != 0)
+    return restore_rc;
+  return validation_rc == 0 ? -1 : 0;
+}
+
+static int test_double_indirect_transitions(kafs_context_t *ctx, kafs_inocnt_t ino,
+                                            kafs_inocnt_t zero_ino)
+{
+  const kafs_v7_inode_runtime_shard_t *shard = kafs_ctx_v7_inode_shard_for_ino(ctx, ino);
+  uint64_t references_per_block = ctx->c_v7_block_size / sizeof(uint32_t);
+  uint64_t single_slots = KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + references_per_block;
+  uint64_t first_leaf_end_slots = single_slots + references_per_block;
+  uint64_t direct_size =
+      KAFS_V7_INODE_DIRECT_REFERENCE_COUNT * (uint64_t)ctx->c_v7_block_size;
+  uint64_t single_size = single_slots * (uint64_t)ctx->c_v7_block_size;
+  uint64_t first_leaf_end_size = first_leaf_end_slots * (uint64_t)ctx->c_v7_block_size;
+  size_t expected_bytes = (size_t)(first_leaf_end_size + ctx->c_v7_block_size);
+  uint8_t *expected = calloc(1u, expected_bytes);
+  uint32_t *double_root = malloc(ctx->c_v7_block_size);
+  uint32_t *leaf = malloc(ctx->c_v7_block_size);
+  if (!shard || !expected || !double_root || !leaf)
+  {
+    free(expected);
+    free(double_root);
+    free(leaf);
+    return -ENOMEM;
+  }
+
+  int rc = seed_dense_direct_file(ctx, ino, shard->group_id, expected);
+  if (rc == 0)
+    rc = grow_dense_regular(ctx, ino, expected, single_size, 0x31u);
+  uint8_t crossing[34];
+  memset(crossing, 0x92, sizeof(crossing));
+  uint64_t crossing_offset = single_size - 17u;
+  kafs_v7_fuse_write_result_t write_result;
+  if (rc == 0)
+    rc = kafs_v7_fuse_write_regular(ctx, ino, crossing, sizeof(crossing), crossing_offset,
+                                    &write_result);
+  if (rc == (int)sizeof(crossing))
+    rc = 0;
+  memcpy(expected + crossing_offset, crossing, sizeof(crossing));
+
+  const kafs_v7_inode_t *inode = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(ctx, ino);
+  uint32_t root_reference =
+      inode ? (uint32_t)get_direct_reference(
+                  inode, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 1u) +
+                  1u
+            : 0u;
+  if (rc == 0 &&
+      (!inode || le64toh(inode->size) != single_size + 17u ||
+       le32toh(inode->blocks) != single_slots + 4u || root_reference == 0u ||
+       write_result.retirement_rc != 0))
+    rc = -1;
+  if (rc == 0)
+    rc = read_reference_block(ctx, root_reference, double_root);
+  uint32_t child_reference = rc == 0 ? le32toh(double_root[0]) : 0u;
+  if (rc == 0 && child_reference == 0u)
+    rc = -1;
+  if (rc == 0)
+    rc = read_reference_block(ctx, child_reference, leaf);
+  uint32_t data_reference = rc == 0 ? le32toh(leaf[0]) : 0u;
+  uint8_t *block = malloc(ctx->c_v7_block_size);
+  if (rc == 0 && !block)
+    rc = -ENOMEM;
+  if (rc == 0)
+    rc = read_reference_block(ctx, data_reference, block);
+  if (rc == 0 && memcmp(block, expected + single_size, ctx->c_v7_block_size) != 0)
+    rc = -1;
+
+  static const uint8_t patch[] = {0x51u, 0x52u, 0x53u, 0x54u};
+  if (rc == 0)
+    rc = kafs_v7_fuse_write_regular(ctx, ino, patch, sizeof(patch), single_size + 3u,
+                                    &write_result);
+  if (rc == (int)sizeof(patch))
+    rc = 0;
+  memcpy(expected + single_size + 3u, patch, sizeof(patch));
+  if (rc == 0 && write_result.retirement_rc != 0)
+    rc = -1;
+
+  if (rc == 0)
+    rc = grow_dense_regular(ctx, ino, expected, first_leaf_end_size, 0x47u);
+  uint8_t leaf_crossing[34];
+  memset(leaf_crossing, 0xa4, sizeof(leaf_crossing));
+  uint64_t leaf_crossing_offset = first_leaf_end_size - 17u;
+  if (rc == 0)
+    rc = kafs_v7_fuse_write_regular(ctx, ino, leaf_crossing, sizeof(leaf_crossing),
+                                    leaf_crossing_offset, &write_result);
+  if (rc == (int)sizeof(leaf_crossing))
+    rc = 0;
+  memcpy(expected + leaf_crossing_offset, leaf_crossing, sizeof(leaf_crossing));
+  inode = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(ctx, ino);
+  root_reference = inode ? (uint32_t)get_direct_reference(
+                               inode, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 1u) +
+                               1u
+                         : 0u;
+  if (rc == 0 &&
+      (!inode || le64toh(inode->size) != first_leaf_end_size + 17u ||
+       le32toh(inode->blocks) != first_leaf_end_slots + 5u ||
+       write_result.retirement_rc != 0))
+    rc = -1;
+  if (rc == 0)
+    rc = read_reference_block(ctx, root_reference, double_root);
+  if (rc == 0 && (le32toh(double_root[0]) == 0u || le32toh(double_root[1]) == 0u))
+    rc = -1;
+
+  kafs_v7_fuse_truncate_result_t truncate_result;
+  uint64_t partial_size = first_leaf_end_size + 9u;
+  if (rc == 0)
+    rc = kafs_v7_fuse_truncate_regular(ctx, ino, partial_size, &truncate_result);
+  inode = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(ctx, ino);
+  if (rc == 0 &&
+      (!inode || le64toh(inode->size) != partial_size ||
+       le32toh(inode->blocks) != first_leaf_end_slots + 5u ||
+       truncate_result.retirement_rc != 0))
+    rc = -1;
+  if (rc == 0)
+    rc = kafs_v7_fuse_truncate_regular(ctx, ino, first_leaf_end_size, &truncate_result);
+  inode = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(ctx, ino);
+  root_reference = inode ? (uint32_t)get_direct_reference(
+                               inode, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 1u) +
+                               1u
+                         : 0u;
+  if (rc == 0 &&
+      (!inode || le32toh(inode->blocks) != first_leaf_end_slots + 3u ||
+       truncate_result.retirement_rc != 0))
+    rc = -1;
+  if (rc == 0)
+    rc = read_reference_block(ctx, root_reference, double_root);
+  child_reference = rc == 0 ? le32toh(double_root[0]) : 0u;
+  if (rc == 0 && (child_reference == 0u || le32toh(double_root[1]) != 0u))
+    rc = -1;
+  if (rc == 0)
+    rc = expect_unused_double_reference_rejected(ctx, root_reference, child_reference);
+
+  if (rc == 0)
+    rc = kafs_v7_fuse_truncate_regular(ctx, ino, single_size, &truncate_result);
+  inode = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(ctx, ino);
+  if (rc == 0 &&
+      (!inode || le64toh(inode->size) != single_size ||
+       le32toh(inode->blocks) != single_slots + 1u ||
+       has_direct_reference(inode, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 1u) ||
+       truncate_result.retirement_rc != 0))
+    rc = -1;
+
+  if (rc == 0)
+    rc = kafs_v7_fuse_write_regular(ctx, ino, crossing, sizeof(crossing), crossing_offset,
+                                    &write_result);
+  if (rc == (int)sizeof(crossing))
+    rc = 0;
+  if (rc == 0)
+    rc = kafs_v7_fuse_truncate_regular(ctx, ino, direct_size, &truncate_result);
+  inode = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(ctx, ino);
+  if (rc == 0 &&
+      (!inode || le64toh(inode->size) != direct_size ||
+       le32toh(inode->blocks) != KAFS_V7_INODE_DIRECT_REFERENCE_COUNT ||
+       has_direct_reference(inode, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT) ||
+       has_direct_reference(inode, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 1u) ||
+       truncate_result.retirement_rc != 0))
+    rc = -1;
+
+  if (rc == 0)
+    rc = seed_dense_direct_file(ctx, zero_ino, shard->group_id, expected);
+  if (rc == 0)
+    rc = grow_dense_regular(ctx, zero_ino, expected, single_size, 0x59u);
+  if (rc == 0)
+    rc = kafs_v7_fuse_write_regular(ctx, zero_ino, crossing, sizeof(crossing), crossing_offset,
+                                    &write_result);
+  if (rc == (int)sizeof(crossing))
+    rc = 0;
+  if (rc == 0)
+    rc = kafs_v7_fuse_truncate_regular(ctx, zero_ino, 0u, &truncate_result);
+  inode = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(ctx, zero_ino);
+  if (rc == 0 &&
+      (!inode || le64toh(inode->size) != 0u || le32toh(inode->blocks) != 0u ||
+       has_direct_reference(inode, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT) ||
+       has_direct_reference(inode, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 1u) ||
+       truncate_result.retirement_rc != 0))
+    rc = -1;
+
+  free(block);
+  free(expected);
+  free(double_root);
+  free(leaf);
   return rc;
 }
 
@@ -984,6 +1221,8 @@ static int test_direct_overwrite(void)
     rc = test_direct_directory_transitions(&ctx);
   if (rc == 0)
     rc = test_single_indirect_transitions(&ctx, 100u);
+  if (rc == 0)
+    rc = test_double_indirect_transitions(&ctx, 101u, 102u);
   free(growth);
   free(grown);
   free(multi);

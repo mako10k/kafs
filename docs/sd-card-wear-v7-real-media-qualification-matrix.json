@@ -62,7 +62,7 @@
   },
   "samples": [],
   "schema": "KAFS.V7RealMediaQualificationMatrix.v1",
-  "scope": "format-v7-bounded-direct-controlled-write",
+  "scope": "format-v7-bounded-controlled-write",
   "state": "DRAFT",
   "target_host": {
     "host_id": null,
@@ -91,7 +91,8 @@
       "directory_inline_append_and_growth",
       "open_truncate",
       "regular_file_inline_to_direct_promotion",
-      "regular_file_single_indirect_lifecycle"
+      "regular_file_single_indirect_lifecycle",
+      "regular_file_double_indirect_lifecycle"
     ],
     "offline_checks": [
       "fsck.kafs --check",

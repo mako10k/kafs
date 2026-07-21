@@ -3588,6 +3588,44 @@
     次のrunnable zero-slack frontierはdense same-group double-indirect lifecycle `D2`である。実装前には別途
     current checkoutに対するTask Start Gateを要求する。
 
+### SDW-V7RT-T54 dense double-indirect regular-file lifecycle
+
+- 目的: T53で確立したsingle-root path-copyを二段treeへ拡張し、same-group dense regular fileの
+  double-indirect write/truncate/recoveryを独立したcapability boundaryとして閉じる。
+- PERT/Task Start判断:
+  - post-T53 PERTで`D2`は`CS -> D2 -> D3 -> Q -> R -> M`上の唯一のrunnable zero-slack software nodeである。
+  - branch `feat/v7-runtime-admission-foundation`、HEAD `e79b6e8`でTask Start Gateを再実行し、state space、
+    不変条件、exit criteria、非目標を再導出して`PASS`した。
+- 変更:
+  - single-to-double crossing、double内overwrite/contiguous growth、child-table crossingを、data、必要なleaf、
+    double root、必要時のsingle root、inodeを一つのsame-group COW batchとしてpublishする。
+  - partial/aligned shrink、child prune、double-to-single/direct/zeroを実装し、旧data/leaf/rootをpublish後に
+    retirementする。
+  - 共通image validatorをdense double treeへ拡張し、data+single root+double root+leafの正確なblock count、
+    必須referenceのallocation、未使用entryのzeroを検査する。
+  - low-levelのsingle/double境界、child-table境界、prune/縮退、破損reference testと、actual FUSEの
+    full-fsync/readback/fsck/remountおよび3中断点recovery matrixを追加する。
+  - file-image qualificationとDRAFT real-media matrixへdouble lifecycleを追加する。ただしRC、real-media、
+    controller-independent wearのclaimはfalseのままとする。
+- 完了条件:
+  - 上記normal transitionがpayload、reference、counter、retirementを壊さず完了する。
+  - journal publish、metadata apply、checkpoint copyの各中断後にpublished stateへ収束し、fsckとreadbackが
+    一致する。
+  - triple、sparse、indirect directory、cross-group、repair、real-media executionは非目標のままにする。
+- focused結果（2026-07-21）:
+  - low-level FUSE-write smokeはsingle-to-double、double overwrite/growth、child-table crossing、partial/aligned
+    shrink、child prune、double-to-single/direct/zeroを通過し、最終detect-only fsckもPASSした。
+  - actual FUSE normal/remount、double-to-single-to-direct-to-zero、journal publish/metadata apply/checkpoint copy
+    recoveryはPASSした。
+  - non-destructive file-image qualificationはrequired result 32/32 PASS、digest検証済みartifact 104件となった。
+  - synthetic file-image qualification gateとDRAFT real-media approval gate regressionはPASSした。
+  - full `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`は42 PASS、FUSE権限に依存する`stress_fs` 1件は
+    SKIPとなった。format、lint、v7 ownership、clone、aggregate static gateはPASSし、active-source cloneは
+    42件、422 duplicated lines、0.86%で1% limit内だった。
+  - closeout PERTでD2をcompleteへ移し、次のrunnable zero-slack frontierとしてdense same-group
+    triple-indirect regular-file lifecycle `D3`を選択した。D3着手前にはpost-T54 commit上でfresh Task Start
+    Gateを実施する。
+
 ---
 
 ## 次に着手する候補
@@ -3595,10 +3633,11 @@
 この節はhandoff用の開始候補であり、実装開始許可または最新の完了条件ではない。着手前に`AGENTS.md`の
 Task Start Gateでcurrent checkoutのevidenceを再確認し、`PASS`・`REPLAN`・`BLOCKED`を判定する。
 
-T49-T53は完了している。最新のcloseout PERTは、software legの次のrunnable zero-slack frontierとして
-dense same-group double-indirect regular-file lifecycle `D2`を選択した。これはsingleで閉じたroot path-copy、
-reachability、retirement、recoveryを二段treeへ拡張し、triple lifecycleをunlockする。着手前にcurrent
-checkoutでTask Start Gateを再実行し、exit criteriaと非目標を再導出する。
+T49-T54は完了している。最新のcloseout PERTは、software legの次のrunnable zero-slack frontierとして
+dense same-group triple-indirect regular-file lifecycle `D3`を選択した。これはT54で閉じた二段root
+path-copy、reachability、retirement、recoveryを最終regular-file depthへ拡張し、その後のexpanded
+qualification `Q`をunlockする。着手前にpost-T54 commit上でTask Start Gateを再実行し、state space、
+不変条件、exit criteria、非目標を再導出する。
 
 実媒体準備を再開できる時点では、並行するexternal blocker `H`について次を行う。
 
@@ -3610,7 +3649,7 @@ checkoutでTask Start Gateを再実行し、exit criteriaと非目標を再導�
 現在の選定根拠と非目標は
 `docs/sd-card-wear-v7-indirect-pert-20260721.md`と
 `docs/sd-card-wear-v7-capability-rebaseline-20260721.md`を参照する。hardware blockerをgraphから外したり、
-局所着手容易性で`D2`を別taskへ置換したりせず、各wave closeoutでPERTを再構築する。
+局所着手容易性で`D3`を別taskへ置換したりせず、各wave closeoutでPERTを再構築する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の

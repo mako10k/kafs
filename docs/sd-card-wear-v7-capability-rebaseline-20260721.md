@@ -2,7 +2,7 @@
 
 - Branch: `feat/v7-runtime-admission-foundation`
 - Baseline: `460f7b0`
-- Status: baseline accepted; T49-T53 software expansion/hardening complete while M7 awaits hardware identity
+- Status: baseline accepted; T49-T54 software expansion/hardening complete while M7 awaits hardware identity
 
 ## Purpose
 
@@ -11,10 +11,11 @@ that predates the direct-mutation recovery work, and selects the next product
 slice from the capability that is present in the current checkout.
 
 The original rebaseline did not widen the admitted mutation surface. T49 later
-added inline-to-direct promotion, and T53 now adds the dense single-indirect
-regular-file lifecycle selected by the required PERT gate. Neither change
-enables double/triple or indirect-directory mutation, cross-group allocation,
-stable/GA claims, or real-device destructive testing.
+added inline-to-direct promotion, T53 added the dense single-indirect lifecycle,
+and T54 extends that lifecycle through double-indirect regular files after a
+fresh PERT and Task Start Gate. Triple-indirect and indirect-directory mutation,
+cross-group allocation, stable/GA claims, and real-device destructive testing
+remain outside the boundary.
 
 ## Evidence Baseline
 
@@ -41,14 +42,14 @@ been collected.
 | Surface | Current capability | Boundary |
 | --- | --- | --- |
 | Image creation | `mkfs.kafs` creates explicit format v7 images | v7 is not the default production format |
-| Offline validation | `fsck.kafs`, `kafsdump`, layout/policy checks, allocated-inode representation checks, dense direct/single-reference and bitmap checks, bounded namespace payload checks, and wear-placement proof understand the current v7 image contract | This is software/image evidence, not physical NAND/FTL proof; double/triple trees, duplicate ownership, and whole-namespace graph semantics remain separately bounded |
+| Offline validation | `fsck.kafs`, `kafsdump`, layout/policy checks, allocated-inode representation checks, dense direct/single/double-reference and bitmap checks, bounded namespace payload checks, and wear-placement proof understand the current v7 image contract | This is software/image evidence, not physical NAND/FTL proof; triple trees, duplicate ownership, and whole-namespace graph semantics remain separately bounded |
 | Offline migration | `kafsresize --migrate-create` can build a v7 destination image | No in-place metadata relocation or automatic cutover |
 | Runtime admission | Dedicated `kafs-v7` entrypoint supports inspection and explicit controlled-write mounts | Successful admission does not route through v5/v6 public entrypoints |
 | Inspection mount | Read-only FUSE view with selected recovery state and recovered `statfs` counters | Mutation fails closed |
-| Controlled write | Dense same-group regular-file overwrite/growth/shrink through one single-indirect root, empty-file creation, inline-file writes, inline-to-one-direct-block regular-file promotion, and same-group inline/direct directory append/growth through twelve direct references | Non-zero direct-to-inline conversion, holes, double/triple and indirect-directory mutation, cross-group allocation, and unrelated metadata mutation are rejected |
+| Controlled write | Dense same-group regular-file overwrite/growth/shrink through double-indirect depth, empty-file creation, inline-file writes, inline-to-one-direct-block regular-file promotion, and same-group inline/direct directory append/growth through twelve direct references | Non-zero direct-to-inline conversion, holes, triple-indirect and indirect-directory mutation, cross-group allocation, and unrelated metadata mutation are rejected |
 | Request contract | One FUSE write callback is one journal transaction; negotiated `max_write` is capped at twelve v7 blocks | No application-system-call atomicity claim across kernel-split requests |
-| Recovery | Admission closeout, interruption matrices, offline fsck, and readback cover enabled direct and single-indirect regular-file transitions | No real-card power-interruption qualification yet |
-| Indirect foundation | Direct/single/double/triple address calculation, walk, and retirement guard exist in v7-owned code; single-indirect regular-file mutation is admitted | Double/triple and indirect-directory mutation remain `EOPNOTSUPP` |
+| Recovery | Admission closeout, interruption matrices, offline fsck, and readback cover enabled direct, single-, and double-indirect regular-file transitions | No real-card power-interruption qualification yet |
+| Indirect foundation | Direct/single/double/triple address calculation, walk, and retirement guard exist in v7-owned code; double-indirect regular-file mutation is admitted | Triple-indirect and indirect-directory mutation remain `EOPNOTSUPP` |
 | Cross-group mutation | Not enabled | Design direction remains deferred by the accepted boundary |
 
 ## R2 Closeout
@@ -253,6 +254,42 @@ triple depth and expanded qualification follow it. Hardware identity remains an
 unknown-duration join blocker rather than disappearing from the graph. This is
 a PERT selection only, so D2 still requires a fresh Task Start Gate.
 
+## T54 Double-Indirect Lifecycle Addendum
+
+T54 ran that fresh Task Start Gate at `e79b6e8` and received `PASS`. The
+regular-file ownership graph may now contain the always-full single root, one
+double root, and the exact number of dense double-leaf tables needed by file
+size. Crossing single to double depth and writing within double depth copies
+each touched data block and leaf, the double root, the single root when the
+request crosses it, and the inode in one same-group batch. Retirement remains
+strictly post-publication.
+
+Shrinking supports partial and aligned double tails, leaf pruning, and
+double-to-single/direct/zero representation changes. `inode.blocks` counts data
+plus the single root, double root, and populated leaf tables. Common image
+validation requires every size-implied reference to be allocated and every
+unused single, double-root, and leaf entry to be zero. The validator still does
+not claim duplicate-reference ownership or whole-namespace reachability.
+
+Focused evidence covers the single/double and double-child-table boundaries,
+overwrite/growth, partial/aligned shrink, leaf pruning, all lower-depth
+transitions, invalid unused references, actual FUSE full-fsync/readback/remount,
+offline fsck, and journal-publication, metadata-apply, and checkpoint-copy
+recovery. The final non-destructive qualification result is 32/32 PASS with
+104 digest-checked artifacts, and the full Automake result is 42 PASS with one
+environment-limited FUSE stress SKIP. Format, lint, ownership, clone, and
+aggregate static gates pass; the active-source clone result is 42 clones and
+422 duplicated lines (0.86%), below the 1% limit.
+
+The T54 closeout PERT removes completed `D2` from the frontier and selects
+dense same-group triple-indirect lifecycle `D3` as the next runnable zero-slack
+software node. Expanded qualification `Q` follows D3; namespace graph work `N`
+remains runnable but off that causal path. A fresh Task Start Gate on the
+post-T54 committed checkout is still required before D3 implementation.
+
+Triple depth, sparse files, indirect directories, cross-group
+allocation, repair, RC, and physical-media execution remain outside T54.
+
 ## Deferred Gate: SDW-V7RT-T48 Controlled-write RC Qualification
 
 ### Scope
@@ -284,7 +321,7 @@ a PERT selection only, so D2 still requires a fresh Task Start Gate.
 
 ### Non-goals
 
-- enabling double/triple, indirect-directory, or cross-group mutation;
+- enabling triple-indirect, indirect-directory, or cross-group mutation;
 - claiming stable or GA readiness;
 - claiming controller-independent wear behavior;
 - formatting any real device without the operator's explicit authorization.

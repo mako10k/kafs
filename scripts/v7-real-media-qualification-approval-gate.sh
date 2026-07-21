@@ -147,8 +147,8 @@ matrix = load_json(matrix_path, "matrix")
 if matrix.get("schema") != "KAFS.V7RealMediaQualificationMatrix.v1":
     fail("matrix.schema must be KAFS.V7RealMediaQualificationMatrix.v1")
 matrix_id = require_string(matrix, "matrix_id", "matrix")
-if matrix.get("scope") != "format-v7-bounded-direct-controlled-write":
-    fail("matrix.scope must be format-v7-bounded-direct-controlled-write")
+if matrix.get("scope") != "format-v7-bounded-controlled-write":
+    fail("matrix.scope must be format-v7-bounded-controlled-write")
 state = matrix.get("state")
 if state not in ("DRAFT", "READY_FOR_APPROVAL"):
     fail("matrix.state must be DRAFT or READY_FOR_APPROVAL")
@@ -228,6 +228,7 @@ required_workloads = {
     "open_truncate",
     "regular_file_inline_to_direct_promotion",
     "regular_file_single_indirect_lifecycle",
+    "regular_file_double_indirect_lifecycle",
 }
 required_boundaries = {"journal_publish", "metadata_apply", "checkpoint_copy", "journal_reclaim"}
 plan = matrix.get("test_plan")

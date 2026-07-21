@@ -1906,21 +1906,46 @@ static uint32_t kafs_v7_inode_reference(const kafs_v7_inode_t *inode, uint32_t s
   return le32toh(reference);
 }
 
+static int kafs_v7_validate_reference_entries(const kafs_v7_reference_view_t *view,
+                                              const uint32_t *references, uint64_t required)
+{
+  uint64_t references_per_block = view->report->block_size / sizeof(*references);
+  if (required > references_per_block)
+    return -EOVERFLOW;
+  int rc = 0;
+  for (uint64_t index = 0u; rc == 0 && index < references_per_block; ++index)
+  {
+    uint32_t reference = le32toh(references[index]);
+    if (index < required)
+      rc = kafs_v7_validate_data_reference(view, reference);
+    else if (reference != 0u)
+      rc = -EINVAL;
+  }
+  return rc;
+}
+
 static int kafs_v7_validate_inode_references(const kafs_v7_reference_view_t *view,
                                              const kafs_v7_inode_t *inode)
 {
   uint64_t size = le64toh(inode->size);
-  uint64_t direct_capacity =
-      (uint64_t)view->report->block_size * KAFS_V7_INODE_DIRECT_REFERENCE_COUNT;
   if (size <= sizeof(inode->inline_or_block_refs))
     return 0;
 
   uint64_t data_blocks = (size - 1u) / view->report->block_size + 1u;
   uint64_t references_per_block = view->report->block_size / sizeof(uint32_t);
   uint64_t single_capacity = KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + references_per_block;
-  if (data_blocks > single_capacity)
+  if (references_per_block > UINT64_MAX / references_per_block)
+    return -EOVERFLOW;
+  uint64_t double_capacity = single_capacity + references_per_block * references_per_block;
+  if (data_blocks > double_capacity)
     return 0;
-  uint64_t expected_allocated = data_blocks + (size > direct_capacity ? 1u : 0u);
+  uint64_t double_data = data_blocks > single_capacity ? data_blocks - single_capacity : 0u;
+  uint64_t double_leaves = double_data == 0u ? 0u : (double_data - 1u) / references_per_block + 1u;
+  uint64_t expected_allocated = data_blocks;
+  if (data_blocks > KAFS_V7_INODE_DIRECT_REFERENCE_COUNT)
+    ++expected_allocated;
+  if (double_data != 0u)
+    expected_allocated += 1u + double_leaves;
   if (expected_allocated > UINT32_MAX || le32toh(inode->blocks) != expected_allocated)
     return -EINVAL;
   uint32_t direct_blocks = data_blocks < KAFS_V7_INODE_DIRECT_REFERENCE_COUNT
@@ -1940,29 +1965,57 @@ static int kafs_v7_validate_inode_references(const kafs_v7_reference_view_t *vie
   }
 
   uint32_t single_root = kafs_v7_inode_reference(inode, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT);
-  for (uint32_t slot = KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 1u;
-       slot < KAFS_V7_INODE_REFERENCE_COUNT; ++slot)
-    if (kafs_v7_inode_reference(inode, slot) != 0u)
-      return -EINVAL;
-  if (size <= direct_capacity)
-    return single_root == 0u ? 0 : -EINVAL;
+  uint32_t double_root = kafs_v7_inode_reference(inode, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 1u);
+  uint32_t triple_root = kafs_v7_inode_reference(inode, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 2u);
+  if (triple_root != 0u)
+    return -EINVAL;
+  if (data_blocks <= KAFS_V7_INODE_DIRECT_REFERENCE_COUNT)
+    return single_root == 0u && double_root == 0u ? 0 : -EINVAL;
 
   int rc = kafs_v7_validate_data_reference(view, single_root);
-  uint32_t *references = rc == 0 ? malloc(view->report->block_size) : NULL;
-  if (rc == 0 && !references)
+  uint32_t *single = rc == 0 ? malloc(view->report->block_size) : NULL;
+  if (rc == 0 && !single)
     rc = -ENOMEM;
   if (rc == 0)
-    rc = kafs_v7_reference_view_read(view, single_root, references);
-  uint64_t indirect_data_blocks = data_blocks - KAFS_V7_INODE_DIRECT_REFERENCE_COUNT;
+    rc = kafs_v7_reference_view_read(view, single_root, single);
+  uint64_t single_data = data_blocks - KAFS_V7_INODE_DIRECT_REFERENCE_COUNT;
+  if (single_data > references_per_block)
+    single_data = references_per_block;
+  if (rc == 0)
+    rc = kafs_v7_validate_reference_entries(view, single, single_data);
+  free(single);
+  if (rc != 0)
+    return rc;
+  if (double_data == 0u)
+    return double_root == 0u ? 0 : -EINVAL;
+
+  rc = kafs_v7_validate_data_reference(view, double_root);
+  uint32_t *root = rc == 0 ? malloc(view->report->block_size) : NULL;
+  uint32_t *leaf = rc == 0 ? malloc(view->report->block_size) : NULL;
+  if (rc == 0 && (!root || !leaf))
+    rc = -ENOMEM;
+  if (rc == 0)
+    rc = kafs_v7_reference_view_read(view, double_root, root);
   for (uint64_t index = 0u; rc == 0 && index < references_per_block; ++index)
   {
-    uint32_t reference = le32toh(references[index]);
-    if (index < indirect_data_blocks)
+    uint32_t reference = le32toh(root[index]);
+    if (index < double_leaves)
+    {
       rc = kafs_v7_validate_data_reference(view, reference);
+      if (rc == 0)
+        rc = kafs_v7_reference_view_read(view, reference, leaf);
+      uint64_t consumed = index * references_per_block;
+      uint64_t required = double_data - consumed;
+      if (required > references_per_block)
+        required = references_per_block;
+      if (rc == 0)
+        rc = kafs_v7_validate_reference_entries(view, leaf, required);
+    }
     else if (reference != 0u)
       rc = -EINVAL;
   }
-  free(references);
+  free(root);
+  free(leaf);
   return rc;
 }
 
