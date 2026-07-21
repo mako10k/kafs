@@ -46,6 +46,12 @@ static const char k_block_payload[] =
     "the second sentence keeps this payload beyond the sixty-byte inline boundary.\n";
 static const char k_symlink_target[] = "nested/inline";
 
+static void qualification_case_pass(const char *case_id)
+{
+  printf("KAFS_V7_QUALIFICATION_CASE %s PASS\n", case_id);
+  fflush(stdout);
+}
+
 static int run_command(char *const argv[], int expected_exit, char *output, size_t output_size)
 {
   int pipefd[2];
@@ -1113,27 +1119,78 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
   snprintf(path, sizeof(path), "%s/block", mnt);
   int fd = open(path, O_RDWR);
   uint8_t *payload = malloc(4u * block_size);
-  int rc = fd < 0 || !payload ? -1 : 0;
-  const uint32_t patch_offset = 3u * block_size;
-  const uint32_t patch_bytes = block_size;
+  const size_t multi_bytes = (size_t)block_size + 53u;
+  uint8_t *multi = malloc(multi_bytes);
+  int rc = fd < 0 || !payload || !multi ? -1 : 0;
   if (rc == 0)
   {
     memset(payload, 0, 4u * block_size);
     memcpy(payload, k_block_payload, strlen(k_block_payload));
-    for (uint32_t i = 0; i < patch_bytes; ++i)
-      payload[patch_offset + i] = (uint8_t)(i * 29u + 7u);
   }
-  if (rc == 0 &&
-      pwrite(fd, payload + patch_offset, patch_bytes, patch_offset) != (ssize_t)patch_bytes)
+
+  const size_t partial_offset = 31u;
+  const size_t partial_bytes = 97u;
+  uint8_t partial[97];
+  for (size_t i = 0u; i < partial_bytes; ++i)
+    partial[i] = (uint8_t)(i * 17u + 3u);
+  if (rc == 0 && pwrite(fd, partial, partial_bytes, (off_t)partial_offset) !=
+                     (ssize_t)partial_bytes)
   {
-    fprintf(stderr, "partial controlled write failed: errno=%d\n", errno);
+    fprintf(stderr, "partial controlled overwrite failed: errno=%d\n", errno);
     rc = -1;
+  }
+  if (rc == 0)
+    memcpy(payload + partial_offset, partial, partial_bytes);
+  if (rc == 0 && fsync(fd) != 0)
+  {
+    fprintf(stderr, "partial controlled overwrite fsync failed: errno=%d\n", errno);
+    rc = -1;
+  }
+  if (rc == 0)
+    qualification_case_pass("direct_partial_overwrite");
+
+  const size_t multi_offset = (size_t)block_size - 17u;
+  if (rc == 0)
+  {
+    for (size_t i = 0u; i < multi_bytes; ++i)
+      multi[i] = (uint8_t)(i * 29u + 7u);
+    if (pwrite(fd, multi, multi_bytes, (off_t)multi_offset) != (ssize_t)multi_bytes)
+    {
+      fprintf(stderr, "multi-block controlled overwrite failed: errno=%d\n", errno);
+      rc = -1;
+    }
+  }
+  if (rc == 0)
+    memcpy(payload + multi_offset, multi, multi_bytes);
+  if (rc == 0 && fsync(fd) != 0)
+  {
+    fprintf(stderr, "multi-block controlled overwrite fsync failed: errno=%d\n", errno);
+    rc = -1;
+  }
+  if (rc == 0)
+    qualification_case_pass("direct_multi_block_overwrite");
+
+  const size_t growth_offset = 3u * (size_t)block_size;
+  const size_t growth_bytes = block_size;
+  if (rc == 0)
+  {
+    for (size_t i = 0u; i < growth_bytes; ++i)
+      payload[growth_offset + i] = (uint8_t)(i * 31u + 11u);
+    if (pwrite(fd, payload + growth_offset, growth_bytes, (off_t)growth_offset) !=
+        (ssize_t)growth_bytes)
+    {
+      fprintf(stderr, "controlled direct growth failed: errno=%d\n", errno);
+      rc = -1;
+    }
   }
   if (rc == 0 && fsync(fd) != 0)
   {
-    fprintf(stderr, "controlled write fsync failed: errno=%d\n", errno);
+    fprintf(stderr, "controlled direct growth fsync failed: errno=%d\n", errno);
     rc = -1;
   }
+  if (rc == 0)
+    qualification_case_pass("direct_growth");
+
   const uint64_t truncate_size = 2u * (uint64_t)block_size + 31u;
   if (rc == 0 && ftruncate(fd, (off_t)truncate_size) != 0)
   {
@@ -1147,6 +1204,8 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
   }
   if (rc == 0)
     memset(payload + truncate_size, 0, 3u * block_size - (size_t)truncate_size);
+  if (rc == 0)
+    qualification_case_pass("direct_truncate");
   if (fd >= 0 && close(fd) != 0 && rc == 0)
     rc = -1;
   if (rc == 0)
@@ -1171,6 +1230,8 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
     }
     if (created_fd >= 0 && close(created_fd) != 0 && rc == 0)
       rc = -1;
+    if (rc == 0)
+      qualification_case_pass("create_inline_write");
   }
   if (rc == 0)
   {
@@ -1181,6 +1242,8 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
       fprintf(stderr, "controlled inline-parent create failed: errno=%d\n", errno);
       rc = -1;
     }
+    if (rc == 0)
+      qualification_case_pass("directory_inline_append");
   }
   if (rc == 0)
   {
@@ -1191,6 +1254,8 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
       fprintf(stderr, "controlled inline-directory growth create failed: errno=%d\n", errno);
       rc = -1;
     }
+    if (rc == 0)
+      qualification_case_pass("directory_inline_growth");
   }
   kafs_test_stop_kafs(mnt, pid);
   if (rc == 0 && check_fuse_contract_log(log_path, "controlled-write", block_size, 1) != 0)
@@ -1255,6 +1320,8 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
         rc = -1;
       }
       kafs_test_stop_kafs("mnt-controlled-remount", pid);
+      if (rc == 0)
+        qualification_case_pass("inspection_remount");
     }
   }
   if (rc == 0)
@@ -1276,12 +1343,15 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
       if (truncate_fd < 0 || close(truncate_fd) != 0)
         rc = -1;
       kafs_test_stop_kafs("mnt-controlled-open-trunc", pid);
+      if (rc == 0)
+        qualification_case_pass("open_truncate");
     }
   }
   if (rc == 0 && run_fsck(image) != 0)
     rc = -1;
   if (rc == 0 && check_persisted_blocks(image, ino, NULL, 0u, block_size, 0u) != 0)
     rc = -1;
+  free(multi);
   free(payload);
   return rc;
 }
@@ -1670,6 +1740,7 @@ int main(void)
     fprintf(stderr, "failed to build accepted v7 inspection fixture\n");
     return 1;
   }
+  qualification_case_pass("format_and_seed");
 
   if (access("/dev/fuse", R_OK | W_OK) != 0)
   {
@@ -1681,6 +1752,7 @@ int main(void)
     fprintf(stderr, "pristine v7 inspection mount failed\n");
     return 1;
   }
+  qualification_case_pass("inspection_mount");
 
   const char *controlled = "v7-controlled.img";
   if (copy_image(image, controlled) != 0 ||
@@ -1689,6 +1761,7 @@ int main(void)
     fprintf(stderr, "v7 controlled-write mount matrix failed\n");
     return 1;
   }
+  qualification_case_pass("controlled_write_normal_matrix");
 
   const char *recovery = "v7-controlled-recovery.img";
   if (copy_image(image, recovery) != 0 ||
@@ -1698,6 +1771,7 @@ int main(void)
     fprintf(stderr, "v7 controlled-write journal recovery failed\n");
     return 1;
   }
+  qualification_case_pass("journal_publish_recovery");
 
   const char *apply_recovery = "v7-controlled-apply-recovery.img";
   if (copy_image(image, apply_recovery) != 0 ||
@@ -1707,6 +1781,7 @@ int main(void)
     fprintf(stderr, "v7 controlled-write metadata apply recovery failed\n");
     return 1;
   }
+  qualification_case_pass("metadata_apply_recovery");
 
   const char *checkpoint_recovery = "v7-controlled-checkpoint-recovery.img";
   if (copy_image(image, checkpoint_recovery) != 0 ||
@@ -1716,6 +1791,7 @@ int main(void)
     fprintf(stderr, "v7 controlled-write checkpoint recovery failed\n");
     return 1;
   }
+  qualification_case_pass("checkpoint_copy_recovery");
 
   const char *reclaim_recovery = "v7-controlled-reclaim-recovery.img";
   if (copy_image(image, reclaim_recovery) != 0 ||
@@ -1725,6 +1801,7 @@ int main(void)
     fprintf(stderr, "v7 controlled-write journal reclaim recovery failed\n");
     return 1;
   }
+  qualification_case_pass("journal_reclaim_recovery");
 
   const kafs_v7_test_fault_point_t create_faults[] = {
       KAFS_V7_TEST_FAULT_JOURNAL_PUBLISH,
@@ -1768,6 +1845,8 @@ int main(void)
     fprintf(stderr, "v7 controlled direct-limit setup failed\n");
     return 1;
   }
+  qualification_case_pass("directory_transition_normal_matrix");
+  qualification_case_pass("direct_limit_rejection");
   const create_recovery_case_t create_cases[] = {
       {.transition = "direct-append",
        .source_image = image,
@@ -1822,6 +1901,7 @@ int main(void)
     for (size_t j = 0u; j < sizeof(create_cases) / sizeof(create_cases[0]); ++j)
       if (run_create_recovery_case(&create_cases[j], create_faults[i], i, j) != 0)
         return 1;
+  qualification_case_pass("directory_transition_recovery_matrix");
 
   const char *degraded = "v7-degraded.img";
   if (copy_image(image, degraded) != 0 || corrupt_primary_pair(degraded) != 0)
@@ -1842,6 +1922,7 @@ int main(void)
   kafs_v7_layout_report_clear(&report);
   if (check_mount(degraded, "mnt-degraded", "v7-degraded.log", &fixture, 0) != 0)
     return 1;
+  qualification_case_pass("degraded_inspection");
 
   const char *unpaired = "v7-unpaired.img";
   if (copy_image(image, unpaired) != 0 || make_unpaired_generation(unpaired) != 0)
@@ -1862,5 +1943,6 @@ int main(void)
     fprintf(stderr, "unpaired v7 descriptor generation reached FUSE unexpectedly:\n%s\n", output);
     return 1;
   }
+  qualification_case_pass("unpaired_fail_closed");
   return 0;
 }

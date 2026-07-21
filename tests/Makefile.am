@@ -23,7 +23,8 @@ AM_TESTS_ENVIRONMENT = \
 	KAFS_TEST_KAFSRESIZE='$(abs_top_builddir)/src/kafsresize'; \
 	KAFS_TEST_KAFSDUMP='$(abs_top_builddir)/src/kafsdump'; \
 	KAFS_TEST_KAFS_BACK='$(abs_top_builddir)/src/kafs-back'; \
-	export KAFS_TEST_KAFS KAFS_TEST_KAFS_V6 KAFS_TEST_KAFS_V7 KAFS_TEST_KAFSCTL KAFS_TEST_MKFS KAFS_TEST_FSCK KAFS_TEST_KAFS_INFO KAFS_TEST_KAFSRESIZE KAFS_TEST_KAFSDUMP KAFS_TEST_KAFS_BACK;
+	KAFS_TEST_V7_QUALIFICATION_GATE='$(abs_top_srcdir)/scripts/v7-controlled-write-qualification-gate.sh'; \
+	export KAFS_TEST_KAFS KAFS_TEST_KAFS_V6 KAFS_TEST_KAFS_V7 KAFS_TEST_KAFSCTL KAFS_TEST_MKFS KAFS_TEST_FSCK KAFS_TEST_KAFS_INFO KAFS_TEST_KAFSRESIZE KAFS_TEST_KAFSDUMP KAFS_TEST_KAFS_BACK KAFS_TEST_V7_QUALIFICATION_GATE;
 
 # --- Tests ---
 # NOTE: stress_fs mounts in multithread mode and exercises heavier workloads.
@@ -41,7 +42,9 @@ check_PROGRAMS = v6_fixture_mkfs tailmeta_parser hrl_smoketest hrl_dec_ref_by_bl
 	kafsctl_links bg_dedup_skip_dirs \
 	stress_fs hotplug_rpc e2e_hotplug kafsresize journal_boundary fallocate_lseek_block
 
-TESTS = $(filter-out v6_fixture_mkfs,$(check_PROGRAMS))
+TESTS = $(filter-out v6_fixture_mkfs,$(check_PROGRAMS)) v7_qualification_gate_test.sh
+
+EXTRA_DIST = v7_qualification_gate_test.sh
 
 v6_fixture_mkfs_SOURCES = $(top_srcdir)/src/mkfs_kafs.c \
 	$(top_srcdir)/src/kafs_v7_layout.c $(top_srcdir)/src/kafs_v7_journal.c \

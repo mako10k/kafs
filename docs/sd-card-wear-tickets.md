@@ -3425,6 +3425,21 @@
   - 中断sampleがallowed stateへ回復するかfail closedとなり、fsck/dump evidenceで裏付けられる。
   - 独立reviewerがraw evidenceからbounded RC claimをacceptまたはrejectする。
   - indirect/cross-group mutation、stable/GA、controller-independent wearはclaimしない。
+- current slice (`T48-A`):
+  - `docs/sd-card-wear-v7-controlled-write-qualification.md`でnon-destructive file-image
+    evidence contract、case matrix、status semantics、実媒体境界を固定する。
+  - v7実FUSE regressionをworkload engineにしてraw log、digest、fsck/dump、環境情報をreport化し、
+    独立validate-only gateで完全性を検証する。
+  - `/dev/*`とcaller-supplied imageは受け付けず、PASSでも`rc_eligible=false`とする。
+  - T48-A完了後にexact card/controller/power-cut matrixと破壊的影響のoperator承認へ進む。
+- T48-A完了結果（2026-07-21）:
+  - actual file-image dry-runはrequired case 23/23 PASS、digest検証済みartifact 84件となった。
+  - focused Automake gateは2/2 PASS、full `make check -j2`は41/41 PASS（既存FUSE test 1件は
+    mount timeoutでSKIP）、format/lint/static/ownership/wear placement gateはPASSした。
+  - `make dist`でrunner、validate-only gate、synthetic regressionの配布物収録を確認した。
+  - PASSでもRC、real-media、controller-independent wearのclaimはfalseのままであり、T48/M7は未完了。
+  - 次sliceは`T48-B`とし、exact card/controller/power-cut matrix、破壊的影響、raw evidence保持、
+    independent-review checklistを固定してoperator承認を求める。実媒体実行はまだ行わない。
 
 ---
 
@@ -3433,10 +3448,10 @@
 この節はhandoff用の開始候補であり、実装開始許可または最新の完了条件ではない。着手前に`AGENTS.md`の
 Task Start Gateでcurrent checkoutのevidenceを再確認し、`PASS`・`REPLAN`・`BLOCKED`を判定する。
 
-1. `SDW-V7RT-T48`のnon-destructive procedure、evidence schema、sample matrix、independent-review checklistを
-   実装し、repository内のsynthetic imageでdry-runする。
-2. exact device/sample matrixと破壊的影響についてoperatorの明示承認を得た後だけ、real-media formatと
-   controlled power-interruption cycleを実行する。
+1. `SDW-V7RT-T48-B`でexact card/controller/power-cut matrix、破壊的影響、raw evidence保持、
+   independent-review checklistを文書化し、operatorへ承認を求める。
+2. 承認されたexact device/sample matrixだけを対象に、real-media formatとcontrolled
+   power-interruption cycleを実行する。承認前は`/dev/*` execution pathも追加しない。
 
 現在の選定根拠と非目標は
 `docs/sd-card-wear-v7-capability-rebaseline-20260721.md`を参照する。M7 closeout前にM8-C indirect mutationへ

@@ -49,6 +49,13 @@ static void kafs_test_cleanup_workdir(void)
   if (!g_test_workdir_set)
     return;
 
+  const char *keep = getenv("KAFS_TEST_KEEP_WORKDIR");
+  if (keep && *keep && strcmp(keep, "0") != 0)
+  {
+    fprintf(stderr, "kafs test workdir kept: %s\n", g_test_workdir);
+    return;
+  }
+
   // Ensure we're not sitting inside the directory we want to delete.
   if (chdir("/") != 0)
     return;
