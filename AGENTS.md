@@ -99,28 +99,59 @@
 
 ## Goal And Critical Path Gate
 
-- Derive implementation waves from the shortest dependency path to the current
-  accepted end goal, not from file boundaries, finding counts, apparent cleanup
-  convenience, or the previous wave's local shape.
-- Before assigning priority or starting a wave, extend the Task Start Record
-  with:
+- Build a fresh capability-level PERT network before naming, recommending,
+  accepting, or assigning priority to the next implementation wave. A PERT
+  record is a selection prerequisite, not a justification added after a
+  candidate has already been proposed or accepted. Use
+  `docs/pert-task-selection.md` as the required record format.
+- Define PERT nodes as goal-relevant capability or mandatory correctness and
+  durability outcomes. Do not use files, functions, findings, tickets, test
+  examples, or small convenient diffs as nodes unless they independently unlock
+  a downstream capability.
+- The PERT record must contain:
   1. the accepted end goal and current capability position;
-  2. the capability dependency graph and unresolved prerequisites;
-  3. the dependency this wave closes and the downstream capabilities it
-     unlocks;
-  4. comparison with credible alternative orderings; and
-  5. an explicit local-optimum check showing that the wave shortens the path to
-     the goal rather than only improving an isolated component.
+  2. every credible goal path and causal predecessor edge known from current
+     evidence;
+  3. optimistic, most-likely, and pessimistic duration estimates (`O`, `M`,
+     `P`), the PERT expected duration `(O + 4M + P) / 6`, and estimate
+     confidence;
+  4. earliest/latest position, slack, the critical and uncertainty-overlapping
+     near-critical paths, unresolved prerequisites, and external blockers;
+  5. the runnable critical frontier and the capability each runnable node
+     unlocks; and
+  6. comparison with credible alternative orderings, including future rework or
+     qualification debt created by each ordering.
+- Select from the runnable zero-slack or least-slack frontier. When a critical
+  node is externally blocked, keep it in the network and first select an
+  unblocked predecessor, blocker-reduction activity, or other node that reduces
+  critical-path duration. A non-critical node may be selected only when no such
+  critical work is runnable and the PERT record shows its slack, opportunity
+  cost, and reason for using the capacity. Never replace a blocked critical node
+  with the locally easiest task by default.
+- Correctness, data-integrity, and durability findings are mandatory predecessor
+  nodes only when current evidence identifies the causal capability edge they
+  protect. The fact that a finding is real or a change is safe is not by itself
+  evidence that it has the next priority.
+- Only after PERT selects a wave may the Task Start Gate derive its
+  implementation boundary and decide `PASS`, `REPLAN`, or `BLOCKED`. A coherent,
+  useful, or low-risk candidate does not pass priority selection merely because
+  it can be implemented safely.
+- Refresh the PERT network before every next-task proposal and after every wave
+  closeout, and whenever the accepted goal, HEAD, relevant evidence,
+  dependencies, estimates, or blocker state changes. Do not carry a previous
+  candidate across those events without recomputation.
 - Static-analysis findings, age, authorship, existing ticket order, and code
   proximity may inform risk and effort but may not determine wave priority.
-  Correctness, data-integrity, and durability findings are mandatory path
-  constraints, regardless of where they were introduced.
+  Keep correctness, data-integrity, and durability findings as mandatory owned
+  constraints regardless of where they were introduced, but require the PERT
+  record to identify their causal edge before they determine next-wave order.
 - Keep every confirmed finding owned and assigned a disposition even when it is
   off the current critical path. Off-path does not mean unrelated, accepted, or
   exempt from recovery.
-- At each wave closeout, verify the dependency was actually closed, refresh the
-  graph from current evidence, and recompute the shortest path before selecting
-  the next wave. Do not advance mechanically from a prior plan or handoff.
+- At each wave closeout, verify the dependency was actually closed, rebuild the
+  PERT calculations from current evidence, and publish the new critical frontier
+  before proposing the next wave. Do not advance mechanically from a prior plan,
+  handoff, nearby finding, or the shape of the completed implementation.
 - Use history and `git blame` only as BlameCheck evidence for design intent,
   constraints, and change context. Never use authorship, age, or provenance to
   transfer responsibility, lower priority, or exclude a finding.
