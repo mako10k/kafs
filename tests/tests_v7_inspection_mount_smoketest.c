@@ -47,7 +47,7 @@ static const char k_block_payload[] =
 static const char k_promoted_payload[] =
     "v7-created-file grows from inline storage into one direct block while preserving its "
     "original prefix.\n";
-static const char k_symlink_target[] = "nested/inline";
+static const char k_symlink_target[] = "inline";
 
 static void qualification_case_pass(const char *case_id)
 {
@@ -374,6 +374,35 @@ static int read_inode(int fd, const kafs_v7_layout_report_t *report, uint32_t in
   return -ENOENT;
 }
 
+static int inode_direct_block_offset(const kafs_v7_layout_report_t *report,
+                                     const kafs_v7_inode_t *inode, uint32_t block_id,
+                                     uint64_t *physical_off)
+{
+  if (!report || !inode || !physical_off ||
+      block_id >= KAFS_V7_INODE_DIRECT_REFERENCE_COUNT || block_id >= le32toh(inode->blocks))
+    return -EINVAL;
+  uint32_t reference = 0u;
+  memcpy(&reference, inode->inline_or_block_refs + block_id * sizeof(reference),
+         sizeof(reference));
+  reference = le32toh(reference);
+  if (reference == 0u)
+    return -EINVAL;
+  uint64_t logical = (uint64_t)reference - 1u;
+  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(report);
+  for (uint32_t group_id = 0u; group_id < report->group_count; ++group_id)
+  {
+    uint64_t start = le64toh(groups[group_id].data_logical_start);
+    uint64_t count = le64toh(groups[group_id].data_logical_count);
+    if (logical >= start && logical - start < count)
+    {
+      *physical_off = le64toh(groups[group_id].data_physical_off) +
+                      (logical - start) * report->block_size;
+      return 0;
+    }
+  }
+  return -ERANGE;
+}
+
 static int write_data_block(int fd, const kafs_v7_group_desc_t *group, uint64_t logical,
                             const void *buf, uint32_t block_size)
 {
@@ -508,12 +537,13 @@ static int seed_fixture(const char *path, v7_fixture_t *fixture)
   size_t root_bytes = 0;
   size_t nested_bytes = 0;
   uint8_t nested_data[KAFS_V7_INODE_BYTES] = {0};
-  const uint32_t root_inos[] = {fixture->nested_ino, fixture->block_ino, fixture->symlink_ino};
-  const char *const root_names[] = {"nested", "block", "link"};
-  const uint32_t nested_inos[] = {fixture->inline_ino};
-  const char *const nested_names[] = {"inline"};
+  const uint32_t root_inos[] = {fixture->nested_ino, fixture->inline_ino, fixture->block_ino,
+                                fixture->symlink_ino};
+  const char *const root_names[] = {"nested", "inline", "block", "link"};
+  const uint32_t nested_inos[] = {KAFS_INO_ROOTDIR};
+  const char *const nested_names[] = {".."};
   if (rc == 0)
-    rc = build_directory(root_data, block_size, root_inos, root_names, 3u, &root_bytes);
+    rc = build_directory(root_data, block_size, root_inos, root_names, 4u, &root_bytes);
   if (rc == 0)
     rc = build_directory(nested_data, KAFS_INODE_DIRECT_BYTES, nested_inos, nested_names, 1u,
                          &nested_bytes);
@@ -593,6 +623,143 @@ static int seed_fixture(const char *path, v7_fixture_t *fixture)
   return rc;
 }
 
+static int copy_image(const char *src, const char *dst);
+
+enum namespace_payload_fault
+{
+  NAMESPACE_DIRECT_NAME_HASH,
+  NAMESPACE_INLINE_LIVE_COUNT,
+  NAMESPACE_MISSING_PARENT,
+  NAMESPACE_SYMLINK_NUL,
+};
+
+static int apply_namespace_payload_fault(const char *path, const v7_fixture_t *fixture,
+                                         enum namespace_payload_fault fault)
+{
+  int fd = open(path, O_RDWR);
+  if (fd < 0)
+    return -errno;
+  kafs_ssuperblock_t sb;
+  uint64_t file_size = 0u;
+  kafs_v7_layout_report_t report = {0};
+  int rc = validate_image_fd(fd, &sb, &file_size, &report);
+  uint32_t ino = fault == NAMESPACE_SYMLINK_NUL ? fixture->symlink_ino : fixture->nested_ino;
+  if (fault == NAMESPACE_DIRECT_NAME_HASH)
+    ino = KAFS_INO_ROOTDIR;
+  kafs_v7_inode_t inode;
+  if (rc == 0)
+    rc = read_inode(fd, &report, ino, &inode);
+  if (rc == 0 && fault == NAMESPACE_DIRECT_NAME_HASH)
+  {
+    uint64_t physical_off = 0u;
+    rc = inode_direct_block_offset(&report, &inode, 0u, &physical_off);
+    uint8_t *payload = rc == 0 ? malloc(report.block_size) : NULL;
+    if (rc == 0 && !payload)
+      rc = -ENOMEM;
+    if (rc == 0)
+      rc = kafs_pread_all(fd, payload, report.block_size, (off_t)physical_off);
+    if (rc == 0)
+    {
+      kafs_v7_kdir_header_t *header = (kafs_v7_kdir_header_t *)payload;
+      kafs_v7_kdir_record_t *record =
+          (kafs_v7_kdir_record_t *)(payload + KAFS_V7_KDIR_HEADER_BYTES);
+      if (le32toh(header->magic) != KAFS_V7_KDIR_MAGIC ||
+          le16toh(record->record_length) < KAFS_V7_KDIR_RECORD_PREFIX_BYTES + 1u)
+        rc = -EUCLEAN;
+      else
+      {
+        record->name_hash = htole32(le32toh(record->name_hash) ^ 1u);
+        rc = kafs_pwrite_all(fd, payload, report.block_size, (off_t)physical_off);
+      }
+    }
+    free(payload);
+  }
+  else if (rc == 0 && fault == NAMESPACE_INLINE_LIVE_COUNT)
+  {
+    kafs_v7_kdir_header_t *header = (kafs_v7_kdir_header_t *)inode.inline_or_block_refs;
+    header->live_count = htole32(le32toh(header->live_count) + 1u);
+    rc = write_inode(fd, &report, ino, &inode);
+  }
+  else if (rc == 0 && fault == NAMESPACE_MISSING_PARENT)
+  {
+    kafs_v7_kdir_record_t *record =
+        (kafs_v7_kdir_record_t *)(inode.inline_or_block_refs + KAFS_V7_KDIR_HEADER_BYTES);
+    if (le16toh(record->name_bytes) != 2u || memcmp(record->name, "..", 2u) != 0)
+      rc = -EUCLEAN;
+    else
+    {
+      memcpy(record->name, "xx", 2u);
+      record->name_hash = htole32(name_hash("xx", 2u));
+      rc = write_inode(fd, &report, ino, &inode);
+    }
+  }
+  else if (rc == 0 && fault == NAMESPACE_SYMLINK_NUL)
+  {
+    inode.inline_or_block_refs[0] = '\0';
+    rc = write_inode(fd, &report, ino, &inode);
+  }
+  if (rc == 0 && fdatasync(fd) != 0)
+    rc = -errno;
+  kafs_v7_layout_report_clear(&report);
+  close(fd);
+  return rc;
+}
+
+static int namespace_image_rejected(const char *path)
+{
+  int fd = open(path, O_RDONLY);
+  if (fd < 0)
+    return -errno;
+  kafs_ssuperblock_t sb;
+  uint64_t file_size = 0u;
+  kafs_v7_layout_report_t report = {0};
+  int rc = validate_image_fd(fd, &sb, &file_size, &report);
+  kafs_v7_layout_report_clear(&report);
+  close(fd);
+  return rc == 0 ? -1 : 0;
+}
+
+static int namespace_fault_consumers_reject(const char *path)
+{
+  char output[8192];
+  char *dump_argv[] = {(char *)kafs_test_kafsdump_bin(), (char *)"--json", (char *)path, NULL};
+  char *fsck_argv[] = {(char *)kafs_test_fsck_bin(), (char *)"--check", (char *)path, NULL};
+  char *mount_argv[] = {(char *)kafs_test_kafs_v7_bin(),
+                        (char *)"--image",
+                        (char *)path,
+                        (char *)"--inspection-mount",
+                        (char *)"missing-mnt",
+                        (char *)"-o",
+                        (char *)"ro",
+                        NULL};
+  if (run_command(dump_argv, 1, output, sizeof(output)) != 0 ||
+      run_command(fsck_argv, 13, output, sizeof(output)) != 0 ||
+      run_command(mount_argv, 2, output, sizeof(output)) != 0 ||
+      !strstr(output, "admission preflight failed"))
+    return -1;
+  return 0;
+}
+
+static int test_namespace_payload_faults(const char *source, const v7_fixture_t *fixture)
+{
+  const enum namespace_payload_fault faults[] = {
+      NAMESPACE_DIRECT_NAME_HASH,
+      NAMESPACE_INLINE_LIVE_COUNT,
+      NAMESPACE_MISSING_PARENT,
+      NAMESPACE_SYMLINK_NUL,
+  };
+  for (size_t i = 0u; i < sizeof(faults) / sizeof(faults[0]); ++i)
+  {
+    char path[64];
+    snprintf(path, sizeof(path), "v7-namespace-fault-%zu.img", i);
+    if (copy_image(source, path) != 0 || apply_namespace_payload_fault(path, fixture, faults[i]) != 0 ||
+        namespace_image_rejected(path) != 0 ||
+        (i == 0u && namespace_fault_consumers_reject(path) != 0))
+      return -1;
+  }
+  return 0;
+}
+
 static int seed_full_root_directory(const char *path, const char *next_name,
                                     uint32_t expected_blocks)
 {
@@ -606,22 +773,11 @@ static int seed_full_root_directory(const char *path, const char *next_name,
   kafs_v7_inode_t root;
   if (rc == 0)
     rc = read_inode(fd, &report, KAFS_INO_ROOTDIR, &root);
-  uint64_t logical[KAFS_V7_INODE_DIRECT_REFERENCE_COUNT] = {0};
   if (rc == 0)
   {
     if (expected_blocks == 0u || expected_blocks > KAFS_V7_INODE_DIRECT_REFERENCE_COUNT ||
         le32toh(root.blocks) != expected_blocks)
       rc = -EINVAL;
-  }
-  for (uint32_t i = 0u; rc == 0 && i < expected_blocks; ++i)
-  {
-    uint32_t reference = 0u;
-    memcpy(&reference, root.inline_or_block_refs + i * sizeof(reference), sizeof(reference));
-    reference = le32toh(reference);
-    if (reference == 0u)
-      rc = -EINVAL;
-    else
-      logical[i] = (uint64_t)reference - 1u;
   }
 
   size_t payload_bytes = (size_t)report.block_size * expected_blocks;
@@ -629,36 +785,23 @@ static int seed_full_root_directory(const char *path, const char *next_name,
   if (rc == 0 && !block)
     rc = -ENOMEM;
   uint64_t physical_off[KAFS_V7_INODE_DIRECT_REFERENCE_COUNT] = {0};
-  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(&report);
   for (uint32_t block_id = 0u; rc == 0 && block_id < expected_blocks; ++block_id)
   {
-    const kafs_v7_group_desc_t *block_group = NULL;
-    for (uint32_t group_id = 0u; group_id < report.group_count; ++group_id)
-    {
-      uint64_t start = le64toh(groups[group_id].data_logical_start);
-      uint64_t count = le64toh(groups[group_id].data_logical_count);
-      if (logical[block_id] >= start && logical[block_id] - start < count)
-        block_group = &groups[group_id];
-    }
-    if (!block_group)
-      rc = -ERANGE;
+    rc = inode_direct_block_offset(&report, &root, block_id, &physical_off[block_id]);
     if (rc == 0)
-    {
-      physical_off[block_id] =
-          le64toh(block_group->data_physical_off) +
-          (logical[block_id] - le64toh(block_group->data_logical_start)) * report.block_size;
       rc = kafs_pread_all(fd, block + block_id * report.block_size, report.block_size,
                           (off_t)physical_off[block_id]);
-    }
   }
   kafs_v7_kdir_header_t *header = (kafs_v7_kdir_header_t *)block;
   size_t used = 0u;
+  uint32_t tombstone_count = 0u;
   size_t required = KAFS_V7_KDIR_RECORD_PREFIX_BYTES + strlen(next_name);
   if (rc == 0 && (le32toh(header->magic) != KAFS_V7_KDIR_MAGIC ||
                   le16toh(header->version) != KAFS_V7_KDIR_VERSION))
     rc = -EUCLEAN;
   if (rc == 0)
   {
+    tombstone_count = le32toh(header->tombstone_count);
     used = KAFS_V7_KDIR_HEADER_BYTES + le32toh(header->record_bytes);
     if (used > payload_bytes || required <= 1u || required > payload_bytes - used)
       rc = -EINVAL;
@@ -678,16 +821,21 @@ static int seed_full_root_directory(const char *path, const char *next_name,
     memset(filler, 'p', name_bytes);
     filler[name_bytes] = '\0';
     size_t record_off = used;
-    rc = append_dir_record(block, payload_bytes, &used, 0u, filler);
+    rc = append_dir_record(block, payload_bytes, &used, KAFS_INO_ROOTDIR, filler);
     if (rc == 0)
     {
       kafs_v7_kdir_record_t *record = (kafs_v7_kdir_record_t *)(block + record_off);
       record->flags = htole16(KAFS_V7_KDIR_FLAG_TOMBSTONE);
+      if (tombstone_count == UINT32_MAX)
+        rc = -EOVERFLOW;
+      else
+        tombstone_count++;
     }
   }
   if (rc == 0)
   {
     header->record_bytes = htole32((uint32_t)(used - KAFS_V7_KDIR_HEADER_BYTES));
+    header->tombstone_count = htole32(tombstone_count);
     root.size = htole64(used);
     for (uint32_t i = 0u; rc == 0 && i < expected_blocks; ++i)
       rc = kafs_pwrite_all(fd, block + i * report.block_size, report.block_size,
@@ -933,7 +1081,7 @@ static int check_mutations_erofs(const char *mnt)
   char block_path[PATH_MAX];
   char nested_path[PATH_MAX];
   char new_path[PATH_MAX];
-  snprintf(inline_path, sizeof(inline_path), "%s/nested/inline", mnt);
+  snprintf(inline_path, sizeof(inline_path), "%s/inline", mnt);
   snprintf(block_path, sizeof(block_path), "%s/block", mnt);
   snprintf(nested_path, sizeof(nested_path), "%s/nested", mnt);
   snprintf(new_path, sizeof(new_path), "%s/new", mnt);
@@ -984,12 +1132,13 @@ static int check_mount(const char *image, const char *mnt, const char *log_path,
   int rc = 0;
   char path[PATH_MAX];
   struct stat st;
-  if (!directory_has(mnt, "nested") || !directory_has(mnt, "block") || !directory_has(mnt, "link"))
+  if (!directory_has(mnt, "nested") || !directory_has(mnt, "inline") ||
+      !directory_has(mnt, "block") || !directory_has(mnt, "link"))
     rc = -1;
   snprintf(path, sizeof(path), "%s/nested", mnt);
-  if (rc == 0 && (stat(path, &st) != 0 || !S_ISDIR(st.st_mode) || !directory_has(path, "inline")))
+  if (rc == 0 && (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)))
     rc = -1;
-  snprintf(path, sizeof(path), "%s/nested/inline", mnt);
+  snprintf(path, sizeof(path), "%s/inline", mnt);
   if (rc == 0 && read_equals(path, k_inline_payload) != 0)
     rc = -1;
   snprintf(path, sizeof(path), "%s/block", mnt);
@@ -1483,7 +1632,7 @@ static int check_controlled_inline_promotion_recovery(const char *image,
     return -1;
 
   char path[PATH_MAX];
-  snprintf(path, sizeof(path), "%s/nested/inline", "mnt-inline-promotion-crash");
+  snprintf(path, sizeof(path), "%s/inline", "mnt-inline-promotion-crash");
   int fd = open(path, O_WRONLY);
   ssize_t written = fd >= 0 ? write(fd, k_promoted_payload, sizeof(k_promoted_payload) - 1u) : -1;
   int rc = fd >= 0 && written != (ssize_t)(sizeof(k_promoted_payload) - 1u) ? 0 : -1;
@@ -1504,7 +1653,7 @@ static int check_controlled_inline_promotion_recovery(const char *image,
   else
   {
     struct stat st = {0};
-    snprintf(path, sizeof(path), "%s/nested/inline", "mnt-inline-promotion-recovery");
+    snprintf(path, sizeof(path), "%s/inline", "mnt-inline-promotion-recovery");
     if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) ||
         st.st_size != (off_t)(sizeof(k_promoted_payload) - 1u) ||
         read_block_equals(path, k_promoted_payload, sizeof(k_promoted_payload) - 1u) != 0)
@@ -1835,6 +1984,11 @@ int main(void)
     return 1;
   }
   qualification_case_pass("format_and_seed");
+  if (test_namespace_payload_faults(image, &fixture) != 0)
+  {
+    fprintf(stderr, "v7 namespace payload fault matrix failed\n");
+    return 1;
+  }
 
   if (access("/dev/fuse", R_OK | W_OK) != 0)
   {
@@ -1963,7 +2117,7 @@ int main(void)
        .mutation_count = 2u},
       {.transition = "inline-growth",
        .source_image = image,
-       .relative_path = "nested/grow",
+       .relative_path = "nested/growing",
        .mutation_count = 4u,
        .preapplied_count = 1u},
       {.transition = "direct-growth-min",

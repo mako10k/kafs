@@ -3513,6 +3513,42 @@
     controlled-write、checkpoint publicationを含む正当なinline/direct imageは引き続きPASSした。
   - format、lint、clone、aggregate static gateはPASSし、active source cloneは41件、409 duplicated lines、0.86%だった。
 
+### SDW-V7RT-T51 v7 namespace payload structural validation
+
+- 目的: accepted v7 namespace wire contractに反するdirectory/symlink payloadを共通image validatorで
+  fail closedにし、runtime、`fsck.kafs`、`kafsdump`のadmission判断を一致させる。
+- Task Start/critical-path判断:
+  - 実媒体M7はexact hardware identity待ちとして後回しのまま維持し、T50に続いて既存controlled-write
+    surfaceのcorruption admission gapを閉じるsoftware-only safety sliceとして`PASS`とした。
+  - runtime固有のlookup/readdir parserは破損recordへ到達した時点で検査していたが、共通validatorはnamespace
+    payloadを検査していなかった。後続mutation拡張より先にこの差を閉じる。
+- 変更:
+  - rootがdirectoryであること、inlineまたは十二個以下のdirect referencesに収まる全allocated directoryの
+    `KDIR` header、gap-free record列、name長/文字/hash、flags、target inode、live-name uniqueness、header件数を
+    journal overlay込みで検証する。
+  - rootではstored `..`を拒否し、non-root directoryではallocated directoryを指すlive `..`をちょうど一件
+    要求する。stored `.`は拒否する。
+  - 同じbounded payload範囲のsymlinkについて、targetがnon-emptyかつNULを含まないことを検証する。
+  - direct KDIR hash、inline header count、non-root parent record、inline symlink targetの破損fixtureを追加し、
+    代表fixtureを三consumerが共通preflightで拒否することを確認する。
+  - 既存test fixtureのnon-root `..`、tombstone record/countをcanonical wire shapeへ修正し、inline appendと
+    inline-to-direct growthの境界を維持する。
+- 完了条件:
+  - accepted inline/direct namespace image、十二direct-block境界、journal recovery、controlled-write regressionが
+    引き続き通る。
+  - 破損namespaceはconsumer固有のlookup/readdirやFUSE初期化へ進む前に共通validatorで拒否される。
+  - whole-namespace reachability、parent/child graph一致、link count、indirect payload、repair、real-media実行は
+    本sliceに含めない。
+- 完了結果（2026-07-21）:
+  - focused raw-layout、checkpoint-publication、FUSE write、inspection regressionはPASSした。
+  - 四種類の破損payloadを共通validatorが拒否し、代表fixtureは`kafsdump` exit 1、`fsck --check` exit 13、
+    `kafs-v7` preflight exit 2でfail closedとなった。
+  - 統合コミット上のfull `make check -j2`は43/43 PASSした。
+  - format、lint、v7 ownership、clone、aggregate static gateはPASSした。active source cloneは41件、
+    409 duplicated lines、0.86%を維持し、新規validator関数はcomplexity warning閾値以下へ分割した。
+  - non-destructive file-image qualificationはrequired case 26/26 PASS、digest検証済みartifact 90件だった。
+    RC、real-media、controller-independent wearのclaimはfalseのままである。
+
 ---
 
 ## 次に着手する候補

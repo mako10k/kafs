@@ -1803,6 +1803,368 @@ static int kafs_v7_validate_inodes(int fd, const kafs_v7_shard_desc_t *shard,
   return rc;
 }
 
+typedef struct kafs_v7_namespace_view
+{
+  int fd;
+  const kafs_v7_layout_report_t *report;
+  const kafs_v7_journal_replay_t *replay;
+  uint64_t inode_count;
+} kafs_v7_namespace_view_t;
+
+static uint32_t kafs_v7_fnv1a32(const uint8_t *data, size_t bytes)
+{
+  uint32_t hash = UINT32_C(2166136261);
+  for (size_t i = 0u; i < bytes; ++i)
+  {
+    hash ^= data[i];
+    hash *= UINT32_C(16777619);
+  }
+  return hash;
+}
+
+static int kafs_v7_namespace_read_inode(const kafs_v7_namespace_view_t *view, uint64_t ino,
+                                        kafs_v7_inode_t *inode)
+{
+  if (!view || !inode || ino >= view->inode_count)
+    return -ERANGE;
+  const kafs_v7_shard_desc_t *shards = kafs_v7_report_shards(view->report);
+  for (uint32_t group_id = 0u; group_id < view->report->group_count; ++group_id)
+  {
+    const kafs_v7_shard_desc_t *shard =
+        &shards[(uint64_t)group_id * KAFS_V7_GROUP_LOCAL_SHARDS + 1u];
+    uint64_t start = le64toh(shard->logical_start);
+    uint64_t count = le64toh(shard->logical_count);
+    if (ino < start || ino - start >= count)
+      continue;
+    uint64_t delta = 0u;
+    uint64_t off = 0u;
+    int rc = kafs_v7_mul_u64(ino - start, KAFS_V7_INODE_BYTES, &delta);
+    if (rc == 0)
+      rc = kafs_v7_add_u64(le64toh(shard->physical_off), delta, &off);
+    if (rc == 0)
+      rc = kafs_v7_journal_overlay_pread(view->replay, view->fd, inode, sizeof(*inode), off);
+    return rc;
+  }
+  return -ERANGE;
+}
+
+static int kafs_v7_namespace_data_offset(const kafs_v7_namespace_view_t *view, uint32_t reference,
+                                         uint64_t *physical_off)
+{
+  if (!view || !physical_off || reference == 0u)
+    return -EINVAL;
+  uint64_t logical = (uint64_t)reference - 1u;
+  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(view->report);
+  for (uint32_t group_id = 0u; group_id < view->report->group_count; ++group_id)
+  {
+    uint64_t start = le64toh(groups[group_id].data_logical_start);
+    uint64_t count = le64toh(groups[group_id].data_logical_count);
+    if (logical < start || logical - start >= count)
+      continue;
+    uint64_t delta = 0u;
+    int rc = kafs_v7_mul_u64(logical - start, view->report->block_size, &delta);
+    if (rc == 0)
+      rc = kafs_v7_add_u64(le64toh(groups[group_id].data_physical_off), delta, physical_off);
+    return rc;
+  }
+  return -ERANGE;
+}
+
+static int kafs_v7_namespace_load_direct_payload(const kafs_v7_namespace_view_t *view,
+                                                 const kafs_v7_inode_t *inode, uint8_t **payload,
+                                                 size_t *payload_bytes, int *checked)
+{
+  if (!view || !inode || !payload || !payload_bytes || !checked)
+    return -EINVAL;
+  *payload = NULL;
+  *payload_bytes = 0u;
+  *checked = 0;
+  uint64_t size = le64toh(inode->size);
+  if (size > (uint64_t)view->report->block_size * KAFS_V7_INODE_DIRECT_REFERENCE_COUNT)
+    return 0;
+  if (size > SIZE_MAX)
+    return -EOVERFLOW;
+  size_t bytes = (size_t)size;
+  uint8_t *data = (uint8_t *)malloc(bytes == 0u ? 1u : bytes);
+  if (!data)
+    return -ENOMEM;
+  if (bytes <= sizeof(inode->inline_or_block_refs))
+    memcpy(data, inode->inline_or_block_refs, bytes);
+  else
+  {
+    uint64_t block_count = (size + view->report->block_size - 1u) / view->report->block_size;
+    size_t copied = 0u;
+    for (uint64_t block_id = 0u; block_id < block_count; ++block_id)
+    {
+      uint32_t reference = 0u;
+      memcpy(&reference, inode->inline_or_block_refs + block_id * sizeof(reference),
+             sizeof(reference));
+      reference = le32toh(reference);
+      uint64_t physical_off = 0u;
+      int rc = kafs_v7_namespace_data_offset(view, reference, &physical_off);
+      size_t chunk = bytes - copied;
+      if (chunk > view->report->block_size)
+        chunk = view->report->block_size;
+      if (rc == 0)
+        rc = kafs_v7_journal_overlay_pread(view->replay, view->fd, data + copied, chunk,
+                                           physical_off);
+      if (rc != 0)
+      {
+        free(data);
+        return rc;
+      }
+      copied += chunk;
+    }
+  }
+  *payload = data;
+  *payload_bytes = bytes;
+  *checked = 1;
+  return 0;
+}
+
+static int kafs_v7_namespace_insert_live_name(size_t *slots, size_t slot_count,
+                                              const uint8_t *payload, size_t record_off,
+                                              const kafs_v7_kdir_record_t *record,
+                                              uint32_t name_hash, size_t name_bytes)
+{
+  size_t slot = name_hash & (slot_count - 1u);
+  while (slots[slot] != 0u)
+  {
+    size_t previous_off = slots[slot] - 1u;
+    const kafs_v7_kdir_record_t *previous = (const kafs_v7_kdir_record_t *)(payload + previous_off);
+    size_t previous_name_bytes = le16toh(previous->name_bytes);
+    if (previous_name_bytes == name_bytes && memcmp(previous->name, record->name, name_bytes) == 0)
+      return -EINVAL;
+    slot = (slot + 1u) & (slot_count - 1u);
+  }
+  slots[slot] = record_off + 1u;
+  return 0;
+}
+
+typedef struct kafs_v7_directory_counts
+{
+  uint32_t live;
+  uint32_t tombstone;
+  uint32_t parent;
+} kafs_v7_directory_counts_t;
+
+typedef struct kafs_v7_directory_record_view
+{
+  const kafs_v7_kdir_record_t *record;
+  size_t length;
+  size_t name_bytes;
+  uint16_t flags;
+  uint32_t target_ino;
+  uint32_t name_hash;
+} kafs_v7_directory_record_view_t;
+
+static int kafs_v7_directory_count_increment(uint32_t *count)
+{
+  if (*count == UINT32_MAX)
+    return -EOVERFLOW;
+  (*count)++;
+  return 0;
+}
+
+static int kafs_v7_directory_live_name_slots(uint32_t record_bytes, size_t **slots,
+                                             size_t *slot_count)
+{
+  size_t max_records = record_bytes / (KAFS_V7_KDIR_RECORD_PREFIX_BYTES + 1u);
+  if (max_records > SIZE_MAX / 2u)
+    return -EOVERFLOW;
+  *slot_count = 1u;
+  while (*slot_count < max_records * 2u)
+  {
+    if (*slot_count > SIZE_MAX / 2u)
+      return -EOVERFLOW;
+    *slot_count *= 2u;
+  }
+  *slots = (size_t *)calloc(*slot_count, sizeof(**slots));
+  return *slots ? 0 : -ENOMEM;
+}
+
+static int kafs_v7_validate_directory_header(const uint8_t *payload, size_t payload_bytes,
+                                             uint32_t *record_bytes)
+{
+  if (payload_bytes < KAFS_V7_KDIR_HEADER_BYTES)
+    return -EINVAL;
+  const kafs_v7_kdir_header_t *header = (const kafs_v7_kdir_header_t *)payload;
+  *record_bytes = le32toh(header->record_bytes);
+  if (le32toh(header->magic) != KAFS_V7_KDIR_MAGIC ||
+      le16toh(header->version) != KAFS_V7_KDIR_VERSION || le16toh(header->flags) != 0u ||
+      le32toh(header->reserved) != 0u || *record_bytes != payload_bytes - KAFS_V7_KDIR_HEADER_BYTES)
+    return -EINVAL;
+  return 0;
+}
+
+static int kafs_v7_validate_directory_record_name(const kafs_v7_kdir_record_t *record,
+                                                  size_t name_bytes, uint32_t *name_hash)
+{
+  for (size_t i = 0u; i < name_bytes; ++i)
+    if (record->name[i] == '\0' || record->name[i] == '/')
+      return -EINVAL;
+  *name_hash = kafs_v7_fnv1a32(record->name, name_bytes);
+  return *name_hash == le32toh(record->name_hash) ? 0 : -EINVAL;
+}
+
+static int kafs_v7_validate_directory_record(const kafs_v7_namespace_view_t *view,
+                                             const uint8_t *payload, size_t payload_bytes,
+                                             size_t off, kafs_v7_directory_record_view_t *record)
+{
+  if (payload_bytes - off < KAFS_V7_KDIR_RECORD_PREFIX_BYTES)
+    return -EINVAL;
+  record->record = (const kafs_v7_kdir_record_t *)(payload + off);
+  record->length = le16toh(record->record->record_length);
+  record->name_bytes = le16toh(record->record->name_bytes);
+  record->flags = le16toh(record->record->flags);
+  record->target_ino = le32toh(record->record->inode);
+  if (record->name_bytes == 0u || record->name_bytes > 255u ||
+      record->length != KAFS_V7_KDIR_RECORD_PREFIX_BYTES + record->name_bytes ||
+      record->length > payload_bytes - off ||
+      (record->flags & ~KAFS_V7_KDIR_FLAG_TOMBSTONE) != 0u || record->target_ino == 0u ||
+      record->target_ino >= view->inode_count)
+    return -EINVAL;
+  return kafs_v7_validate_directory_record_name(record->record, record->name_bytes,
+                                                &record->name_hash);
+}
+
+static int kafs_v7_validate_parent_record(uint64_t ino, const kafs_v7_directory_record_view_t *view,
+                                          uint16_t target_mode, uint32_t *parent_count)
+{
+  int is_dot = view->name_bytes == 1u && view->record->name[0] == '.';
+  int is_dotdot =
+      view->name_bytes == 2u && view->record->name[0] == '.' && view->record->name[1] == '.';
+  if (is_dot || (ino == KAFS_INO_ROOTDIR && is_dotdot))
+    return -EINVAL;
+  if (!is_dotdot)
+    return 0;
+  if (!S_ISDIR(target_mode))
+    return -EINVAL;
+  return kafs_v7_directory_count_increment(parent_count);
+}
+
+static int kafs_v7_validate_live_directory_record(const kafs_v7_namespace_view_t *view,
+                                                  uint64_t ino, const uint8_t *payload,
+                                                  size_t record_off,
+                                                  const kafs_v7_directory_record_view_t *record,
+                                                  size_t *live_names, size_t slot_count,
+                                                  kafs_v7_directory_counts_t *counts)
+{
+  kafs_v7_inode_t target;
+  int rc = kafs_v7_namespace_read_inode(view, record->target_ino, &target);
+  uint16_t target_mode = rc == 0 ? le16toh(target.mode) : 0u;
+  if (rc == 0 && target_mode == 0u)
+    rc = -EINVAL;
+  if (rc == 0)
+    rc = kafs_v7_validate_parent_record(ino, record, target_mode, &counts->parent);
+  if (rc == 0)
+    rc = kafs_v7_namespace_insert_live_name(live_names, slot_count, payload, record_off,
+                                            record->record, record->name_hash, record->name_bytes);
+  if (rc == 0)
+    rc = kafs_v7_directory_count_increment(&counts->live);
+  return rc;
+}
+
+static int kafs_v7_validate_directory_counts(const kafs_v7_kdir_header_t *header, uint64_t ino,
+                                             size_t payload_bytes, size_t parsed_bytes,
+                                             const kafs_v7_directory_counts_t *counts)
+{
+  uint32_t expected_parent = ino == KAFS_INO_ROOTDIR ? 0u : 1u;
+  if (parsed_bytes != payload_bytes || counts->live != le32toh(header->live_count) ||
+      counts->tombstone != le32toh(header->tombstone_count) || counts->parent != expected_parent)
+    return -EINVAL;
+  return 0;
+}
+
+static int kafs_v7_validate_directory_payload(const kafs_v7_namespace_view_t *view, uint64_t ino,
+                                              const uint8_t *payload, size_t payload_bytes)
+{
+  uint32_t record_bytes = 0u;
+  int rc = kafs_v7_validate_directory_header(payload, payload_bytes, &record_bytes);
+  size_t *live_names = NULL;
+  size_t slot_count = 0u;
+  if (rc == 0)
+    rc = kafs_v7_directory_live_name_slots(record_bytes, &live_names, &slot_count);
+  kafs_v7_directory_counts_t counts = {0};
+  size_t off = KAFS_V7_KDIR_HEADER_BYTES;
+  while (rc == 0 && off < payload_bytes)
+  {
+    kafs_v7_directory_record_view_t record;
+    rc = kafs_v7_validate_directory_record(view, payload, payload_bytes, off, &record);
+    if (rc == 0 && (record.flags & KAFS_V7_KDIR_FLAG_TOMBSTONE) == 0u)
+      rc = kafs_v7_validate_live_directory_record(view, ino, payload, off, &record, live_names,
+                                                  slot_count, &counts);
+    else if (rc == 0)
+      rc = kafs_v7_directory_count_increment(&counts.tombstone);
+    if (rc == 0)
+      off += record.length;
+  }
+  const kafs_v7_kdir_header_t *header = (const kafs_v7_kdir_header_t *)payload;
+  if (rc == 0)
+    rc = kafs_v7_validate_directory_counts(header, ino, payload_bytes, off, &counts);
+  free(live_names);
+  return rc;
+}
+
+static int kafs_v7_validate_namespace_inode(const kafs_v7_namespace_view_t *view, uint64_t ino,
+                                            const kafs_v7_inode_t *inode)
+{
+  uint16_t mode = le16toh(inode->mode);
+  if (ino == KAFS_INO_ROOTDIR && !S_ISDIR(mode))
+    return -EINVAL;
+  if (!S_ISDIR(mode) && !S_ISLNK(mode))
+    return 0;
+  uint64_t size = le64toh(inode->size);
+  if (S_ISLNK(mode) && size == 0u)
+    return -EINVAL;
+  uint8_t *payload = NULL;
+  size_t payload_bytes = 0u;
+  int checked = 0;
+  int rc = kafs_v7_namespace_load_direct_payload(view, inode, &payload, &payload_bytes, &checked);
+  if (rc == 0 && checked && S_ISDIR(mode))
+    rc = kafs_v7_validate_directory_payload(view, ino, payload, payload_bytes);
+  if (rc == 0 && checked && S_ISLNK(mode) && memchr(payload, '\0', payload_bytes) != NULL)
+    rc = -EINVAL;
+  free(payload);
+  return rc;
+}
+
+static int kafs_v7_validate_namespace(int fd, const kafs_v7_layout_report_t *report,
+                                      const kafs_v7_journal_replay_t *replay, uint64_t inode_count)
+{
+  kafs_v7_namespace_view_t view = {
+      .fd = fd,
+      .report = report,
+      .replay = replay,
+      .inode_count = inode_count,
+  };
+  const kafs_v7_shard_desc_t *shards = kafs_v7_report_shards(report);
+  int root_seen = 0;
+  int rc = 0;
+  for (uint32_t group_id = 0u; rc == 0 && group_id < report->group_count; ++group_id)
+  {
+    const kafs_v7_shard_desc_t *shard =
+        &shards[(uint64_t)group_id * KAFS_V7_GROUP_LOCAL_SHARDS + 1u];
+    void *area = NULL;
+    rc = kafs_v7_read_shard(fd, shard, replay, &area);
+    uint64_t start = le64toh(shard->logical_start);
+    uint64_t count = le64toh(shard->logical_count);
+    const kafs_v7_inode_t *inodes = (const kafs_v7_inode_t *)area;
+    for (uint64_t local = 0u; rc == 0 && local < count; ++local)
+    {
+      uint64_t ino = start + local;
+      if (ino == KAFS_INO_ROOTDIR)
+        root_seen = 1;
+      if (le16toh(inodes[local].mode) != 0u)
+        rc = kafs_v7_validate_namespace_inode(&view, ino, &inodes[local]);
+    }
+    free(area);
+  }
+  if (rc == 0 && !root_seen)
+    rc = -EINVAL;
+  return rc;
+}
+
 static uint64_t kafs_v7_fnv1a64(const void *data, size_t bytes)
 {
   const uint8_t *p = (const uint8_t *)data;
@@ -1974,6 +2336,8 @@ static int kafs_v7_validate_payloads(int fd, const kafs_ssuperblock_t *sb,
     if (rc == 0)
       rc = kafs_v7_validate_hrl(fd, local, group, report->block_size, total_bucket_count, &replay);
   }
+  if (rc == 0)
+    rc = kafs_v7_validate_namespace(fd, report, &replay, kafs_sb_inocnt_get(sb));
   if (rc == 0 &&
       (free_blocks != report->free_blocks || free_inodes != report->free_inodes ||
        free_blocks > kafs_sb_r_blkcnt_get(sb) || free_inodes > kafs_sb_inocnt_get(sb) - 2u))

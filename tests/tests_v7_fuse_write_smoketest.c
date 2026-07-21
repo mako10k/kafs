@@ -257,6 +257,55 @@ static int seed_regular_file(kafs_context_t *ctx, kafs_inocnt_t ino, uint32_t gr
   return rc;
 }
 
+static uint32_t directory_name_hash(const uint8_t *name, size_t name_bytes)
+{
+  uint32_t hash = UINT32_C(2166136261);
+  for (size_t i = 0u; i < name_bytes; ++i)
+  {
+    hash ^= name[i];
+    hash *= UINT32_C(16777619);
+  }
+  return hash;
+}
+
+static int fill_canonical_tombstone_directory(uint8_t *payload, size_t used)
+{
+  if (!payload || used < KAFS_V7_KDIR_HEADER_BYTES)
+    return -EINVAL;
+  size_t remaining = used - KAFS_V7_KDIR_HEADER_BYTES;
+  size_t off = KAFS_V7_KDIR_HEADER_BYTES;
+  uint32_t tombstone_count = 0u;
+  while (remaining != 0u)
+  {
+    size_t record_bytes = remaining;
+    if (record_bytes > KAFS_V7_KDIR_RECORD_PREFIX_BYTES + 255u)
+      record_bytes = KAFS_V7_KDIR_RECORD_PREFIX_BYTES + 255u;
+    size_t remainder = remaining - record_bytes;
+    if (remainder != 0u && remainder < KAFS_V7_KDIR_RECORD_PREFIX_BYTES + 1u)
+      record_bytes -= KAFS_V7_KDIR_RECORD_PREFIX_BYTES + 1u - remainder;
+    if (record_bytes < KAFS_V7_KDIR_RECORD_PREFIX_BYTES + 1u)
+      return -EINVAL;
+
+    size_t name_bytes = record_bytes - KAFS_V7_KDIR_RECORD_PREFIX_BYTES;
+    kafs_v7_kdir_record_t *record = (kafs_v7_kdir_record_t *)(payload + off);
+    record->record_length = htole16((uint16_t)record_bytes);
+    record->flags = htole16(KAFS_V7_KDIR_FLAG_TOMBSTONE);
+    record->inode = htole32(KAFS_INO_ROOTDIR);
+    record->name_bytes = htole16((uint16_t)name_bytes);
+    memset(record->name, (int)('a' + tombstone_count % 26u), name_bytes);
+    record->name_hash = htole32(directory_name_hash(record->name, name_bytes));
+    tombstone_count++;
+    off += record_bytes;
+    remaining -= record_bytes;
+  }
+  kafs_v7_kdir_header_t *header = (kafs_v7_kdir_header_t *)payload;
+  header->magic = htole32(KAFS_V7_KDIR_MAGIC);
+  header->version = htole16(KAFS_V7_KDIR_VERSION);
+  header->tombstone_count = htole32(tombstone_count);
+  header->record_bytes = htole32((uint32_t)(used - KAFS_V7_KDIR_HEADER_BYTES));
+  return 0;
+}
+
 static int seed_direct_directory(
     kafs_context_t *ctx, kafs_inocnt_t ino, uint32_t group_id, uint32_t block_count,
     size_t spare_bytes, uint64_t logical_blocks_out[KAFS_V7_INODE_DIRECT_REFERENCE_COUNT])
@@ -269,15 +318,7 @@ static int seed_direct_directory(
   if (!payload)
     return -ENOMEM;
   size_t used = payload_bytes - spare_bytes;
-  size_t record_bytes = used - KAFS_V7_KDIR_HEADER_BYTES;
-  kafs_v7_kdir_header_t *header = (kafs_v7_kdir_header_t *)payload;
-  header->magic = htole32(KAFS_V7_KDIR_MAGIC);
-  header->version = htole16(KAFS_V7_KDIR_VERSION);
-  header->record_bytes = htole32((uint32_t)record_bytes);
-  kafs_v7_kdir_record_t *record =
-      (kafs_v7_kdir_record_t *)(payload + KAFS_V7_KDIR_HEADER_BYTES);
-  record->record_length = htole16((uint16_t)record_bytes);
-  record->flags = htole16(KAFS_V7_KDIR_FLAG_TOMBSTONE);
+  int rc = fill_canonical_tombstone_directory(payload, used);
 
   kafs_v7_runtime_data_cow_request_t requests[KAFS_V7_INODE_DIRECT_REFERENCE_COUNT];
   for (size_t i = 0u; i < block_count; ++i)
@@ -287,8 +328,9 @@ static int seed_direct_directory(
     };
   kafs_v7_runtime_data_cow_batch_t *operation = NULL;
   kafs_v7_runtime_data_cow_plan_t plans[KAFS_V7_INODE_DIRECT_REFERENCE_COUNT];
-  int rc = kafs_v7_runtime_data_cow_batch_prepare(ctx->c_v7_runtime_transactions, requests,
-                                                  block_count, &operation, plans);
+  if (rc == 0)
+    rc = kafs_v7_runtime_data_cow_batch_prepare(ctx->c_v7_runtime_transactions, requests,
+                                                block_count, &operation, plans);
   for (size_t i = 0u; rc == 0 && i < block_count; ++i)
     rc = kafs_v7_runtime_data_cow_batch_stage(operation, i,
                                               payload + i * ctx->c_v7_block_size,
