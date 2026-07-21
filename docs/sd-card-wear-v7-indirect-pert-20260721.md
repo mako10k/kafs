@@ -418,3 +418,34 @@ finite ES/EF/LS/LF values past the join:
   preparation resumes, the next start gate is the digest-bound hardware and
   approval gate for `H`, followed by `R`. Until then, report the blocker rather
   than substituting `N` or inventing another local task.
+
+## `perttool` transition record
+
+- Record ID/time: `KAFS-PERTTOOL-20260721-POST-T55`, 2026-07-21 JST.
+- Product baseline: branch `feat/v7-runtime-admission-foundation`, product HEAD
+  `5d53faf`; the only tracked working-tree changes during this refresh were the
+  task-selection control itself. Generated test executables remained untracked.
+- Plan and tool: `plans/current.pert`, `perttool 0.1.0-dev.0`.
+- Evidence freshness: the T55 closeout evidence immediately above; no product
+  capability, hardware identity, or approval-state change was observed during
+  the control transition.
+- Accepted residual goal: approved real-media recovery/wear qualification,
+  followed by migration and production-cutover evidence.
+- Estimate confidence: `HARDWARE_APPROVAL` uses a provisional low-confidence
+  1/1/2-day work estimate after unblocking; its external calendar wait remains
+  unknown. The 3/5/9 and 5/10/18 estimates for the two downstream tasks retain
+  the prior record's low confidence. Because this residual graph is serial,
+  the provisional first estimate does not change task order.
+- Command: `./scripts/pert-next-task.sh plans/current.pert`.
+- `dag analyze` result: all three remaining tasks are on the precedence and
+  resource critical path; the 17-day implementation-effort schedule is
+  explicitly conditional on the external block being resolved and excludes its
+  calendar wait.
+- `dag next` result: `RUNNABLE NOW` is empty; `HARDWARE_APPROVAL` is
+  `BLOCKED NOW` with total float zero; `REAL_MEDIA_QUALIFICATION` and
+  `MIGRATION_CUTOVER_EVIDENCE` are `UPCOMING`.
+- Alternative ordering: whole-namespace validation `N` remains owned by this
+  narrative but has no causal edge to the accepted residual finish. It was not
+  inserted into the `.pert` plan through a false finish edge.
+- Decision: `BLOCKED`. This machine result replaces the hand-calculated table
+  as the current selection authority and forbids an off-goal substitute.

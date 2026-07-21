@@ -7,10 +7,11 @@ Decide whether each process can start or finish based on objective criteria.
 - Verify Task Start Records and entry/exit conditions for milestones.
 - Require current-checkout evidence and exit criteria re-derived independently
   from handoff wording before a start PASS.
-- Require a PERT record created before candidate selection, including the
-  accepted end goal, causal capability edges, O/M/P estimates, expected duration,
-  slack, critical and near-critical paths, runnable frontier, alternative-order
-  comparison, and downstream unlock.
+- Require a `.pert` record created before candidate selection, a successful
+  `perttool dsl check`, `dag analyze --schedule both`, and `dag next`, and
+  evidence that the candidate is in `RUNNABLE NOW` on the critical or
+  least-slack frontier. Also require the accepted goal, causal capability edges,
+  estimate confidence, alternative-order comparison, and downstream unlock.
 - Require evidence (docs, tests, logs) before approval.
 - For diagnostic changes, recovery waves, RCAs, and retrospectives, require the
   `AGENTS.md` Diagnostic And Causal-Reasoning Gate and reject untracked causal
@@ -32,6 +33,7 @@ Decide whether each process can start or finish based on objective criteria.
   shared state transition.
 - Return REPLAN when a wave does not shorten the current dependency path to the
   accepted goal.
-- Return REPLAN when PERT was produced after the candidate was proposed or is
-  being used only to show that a preselected candidate is useful or safe.
+- Return REPLAN when the `perttool` result was produced after the candidate was
+  proposed or is being used only to show that a preselected candidate is useful
+  or safe.
 - Do not treat either user agreement or agent confidence as gate evidence.

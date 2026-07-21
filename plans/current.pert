@@ -1,0 +1,75 @@
+project KAFS_CURRENT:
+  version 1
+  title "KAFS accepted-goal residual plan"
+  description |
+    Canonical residual network for next-task selection. The v7 dense
+    regular-file block tree and non-destructive software qualification are
+    complete through T55. The remaining accepted goal is approved real-media
+    qualification followed by migration and cutover evidence. Off-goal work is
+    owned in its linked backlog or PERT narrative and is not added here as a
+    false predecessor.
+  as_of 2026-07-21
+  duration_unit day
+  finish PRODUCTION_CUTOVER_DECIDED
+
+resource PRIMARY_STREAM:
+  title "Primary implementation and qualification stream"
+  capacity 1
+
+milestone SOFTWARE_QUALIFIED:
+  title "Expanded v7 software qualification complete"
+  description |
+    Dense direct, single-, double-, and triple-indirect regular-file mutation,
+    recovery, detect-only fsck, and non-destructive qualification are complete.
+  state reached
+
+milestone MEDIA_AUTHORIZED:
+  title "Exact media apparatus and destructive run authorized"
+
+milestone MEDIA_QUALIFIED:
+  title "Real-media recovery and wear qualification complete"
+
+milestone PRODUCTION_CUTOVER_DECIDED:
+  title "Migration and production cutover evidence accepted"
+
+task HARDWARE_APPROVAL SOFTWARE_QUALIFIED -> MEDIA_AUTHORIZED:
+  title "Bind exact card, reader, power-cut apparatus, cycle count, and approval"
+  description |
+    The low-confidence estimate covers repository and operator work after the
+    external inputs become available. It intentionally excludes unknown
+    external calendar wait and does not affect ordering in this serial residual
+    network.
+  estimate:
+    optimistic 1d
+    most_likely 1d
+    pessimistic 2d
+  status blocked
+  blocked_reason |
+    Exact card, reader/controller, isolated power-cut apparatus, cycle count,
+    and digest-bound destructive approval are unavailable and deferred.
+  owner "external approver and KAFS operator"
+  source "docs/sd-card-wear-v7-real-media-qualification-approval.md"
+  requires:
+    PRIMARY_STREAM 1
+
+task REAL_MEDIA_QUALIFICATION MEDIA_AUTHORIZED -> MEDIA_QUALIFIED:
+  title "Run approved real-media recovery and wear qualification"
+  estimate:
+    optimistic 3d
+    most_likely 5d
+    pessimistic 9d
+  owner "KAFS operator"
+  source "docs/sd-card-wear-v7-controlled-write-qualification.md"
+  requires:
+    PRIMARY_STREAM 1
+
+task MIGRATION_CUTOVER_EVIDENCE MEDIA_QUALIFIED -> PRODUCTION_CUTOVER_DECIDED:
+  title "Produce migration and production cutover evidence"
+  estimate:
+    optimistic 5d
+    most_likely 10d
+    pessimistic 18d
+  owner "KAFS implementation stream"
+  source "docs/sd-card-wear-v7-indirect-pert-20260721.md"
+  requires:
+    PRIMARY_STREAM 1

@@ -99,30 +99,44 @@
 
 ## Goal And Critical Path Gate
 
-- Build a fresh capability-level PERT network before naming, recommending,
-  accepting, or assigning priority to the next implementation wave. A PERT
-  record is a selection prerequisite, not a justification added after a
-  candidate has already been proposed or accepted. Use
-  `docs/pert-task-selection.md` as the required record format.
+- Build or refresh a capability-level `perttool` plan before naming,
+  recommending, accepting, or assigning priority to the next implementation
+  wave. The repository default is `plans/current.pert`; a scoped replacement
+  must be named in the selection record. A plan is a selection prerequisite,
+  not a justification added after a candidate has already been proposed or
+  accepted. Follow `docs/pert-task-selection.md`.
+- `perttool` is the calculation and task-classification authority for this
+  gate. After refreshing the plan from current evidence, run
+  `./scripts/pert-next-task.sh [plan.pert]`, which executes `dsl check`,
+  `dag analyze --schedule both`, and `dag next` in that order. A hand-written
+  table, Mermaid graph, backlog ordering, or mental calculation may explain the
+  result but may not replace or override these commands.
+- Do not name a selected task when `perttool` is unavailable, the plan fails
+  `dsl check`, the plan is stale relative to the accepted goal or current
+  evidence, or the candidate is absent from `RUNNABLE NOW`. Return `REPLAN` for
+  an invalid or incomplete model and `BLOCKED` when the valid model has no
+  runnable critical or least-slack task.
 - Define PERT nodes as goal-relevant capability or mandatory correctness and
   durability outcomes. Do not use files, functions, findings, tickets, test
   examples, or small convenient diffs as nodes unless they independently unlock
   a downstream capability.
-- The PERT record must contain:
+- The `.pert` input and its companion selection record must contain:
   1. the accepted end goal and current capability position;
   2. every credible goal path and causal predecessor edge known from current
      evidence;
-  3. optimistic, most-likely, and pessimistic duration estimates (`O`, `M`,
-     `P`), the PERT expected duration `(O + 4M + P) / 6`, and estimate
-     confidence;
-  4. earliest/latest position, slack, the critical and uncertainty-overlapping
-     near-critical paths, unresolved prerequisites, and external blockers;
-  5. the runnable critical frontier and the capability each runnable node
-     unlocks; and
+  3. optimistic, most-likely, and pessimistic implementation-effort estimates
+     (`O`, `M`, `P`), estimate confidence, and truthful resource capacities;
+  4. `perttool`-calculated expected duration, earliest/latest position, total
+     float, critical paths, unresolved prerequisites, and external blockers;
+  5. `dag next` active, ready, `RUNNABLE NOW`, `BLOCKED NOW`, and upcoming
+     classifications, plus the capability each runnable node unlocks; and
   6. comparison with credible alternative orderings, including future rework or
      qualification debt created by each ordering.
-- Select from the runnable zero-slack or least-slack frontier. When a critical
-  node is externally blocked, keep it in the network and first select an
+- Select only from `dag next`'s `RUNNABLE NOW` zero-slack or least-slack
+  frontier, using the resource capacity encoded in the plan. `priority` may
+  express an evidence-backed product constraint but may not encode local ease
+  or force a preselected candidate. When a critical node is externally
+  blocked, keep it in the network and first select an
   unblocked predecessor, blocker-reduction activity, or other node that reduces
   critical-path duration. A non-critical node may be selected only when no such
   critical work is runnable and the PERT record shows its slack, opportunity
@@ -136,8 +150,9 @@
   implementation boundary and decide `PASS`, `REPLAN`, or `BLOCKED`. A coherent,
   useful, or low-risk candidate does not pass priority selection merely because
   it can be implemented safely.
-- Refresh the PERT network before every next-task proposal and after every wave
-  closeout, and whenever the accepted goal, HEAD, relevant evidence,
+- Refresh the `.pert` network and rerun all three `perttool` commands before
+  every next-task proposal and after every wave closeout, and whenever the
+  accepted goal, HEAD, relevant evidence,
   dependencies, estimates, or blocker state changes. Do not carry a previous
   candidate across those events without recomputation.
 - Static-analysis findings, age, authorship, existing ticket order, and code
@@ -148,10 +163,11 @@
 - Keep every confirmed finding owned and assigned a disposition even when it is
   off the current critical path. Off-path does not mean unrelated, accepted, or
   exempt from recovery.
-- At each wave closeout, verify the dependency was actually closed, rebuild the
-  PERT calculations from current evidence, and publish the new critical frontier
-  before proposing the next wave. Do not advance mechanically from a prior plan,
-  handoff, nearby finding, or the shape of the completed implementation.
+- At each wave closeout, verify the dependency was actually closed, update the
+  stored task/milestone state, rebuild the `perttool` calculations from current
+  evidence, and publish the new `dag next` frontier before proposing the next
+  wave. Do not advance mechanically from a prior plan, handoff, nearby finding,
+  or the shape of the completed implementation.
 - Use history and `git blame` only as BlameCheck evidence for design intent,
   constraints, and change context. Never use authorship, age, or provenance to
   transfer responsibility, lower priority, or exclude a finding.

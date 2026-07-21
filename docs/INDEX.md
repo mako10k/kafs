@@ -21,7 +21,8 @@ historical investigations and deep design notes.
 ## Design And Planning
 
 - [codex-review-orchestration.md](codex-review-orchestration.md)
-- [pert-task-selection.md](pert-task-selection.md): mandatory pre-proposal PERT record for capability-level task ordering
+- [pert-task-selection.md](pert-task-selection.md): mandatory `perttool` gate for capability-level task ordering
+- [../plans/current.pert](../plans/current.pert): canonical residual network for current next-task selection
 - [hotplug-plan.md](hotplug-plan.md)
 - [hotplug-requirements.md](hotplug-requirements.md)
 - [hotplug-design.md](hotplug-design.md)
