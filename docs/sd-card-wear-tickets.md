@@ -3657,6 +3657,42 @@
     hardware identityとdigest-bound approval `H`だけであり、whole-namespace graph validation `N`はrunnable
     だがoff-pathなので代替選定しない。
 
+### SDW-V7RT-T56 Windows-host VHDX recovery harness
+
+- 目的: disposable SD cardを準備できない期間に、active Ubuntu VHDXをraw媒体として扱わず、そのext4上の
+  専用KAFS regular-file imageでWindows-host terminate/restart recoveryを実行できる安全・再開可能な
+  harnessを作る。
+- PERT/Task Start判断:
+  - `plans/current.pert`へphysical hardware branchを残したまま`VHDX_HARNESS -> VHDX_HOST_RECOVERY_RUN`を
+    real-media joinの追加predecessorとして導入した。
+  - `perttool`は`VHDX_HARNESS`だけをrunnable/zero-slack/precedence・resource criticalと判定し、Task Start
+    Gateはbranch `feat/v7-runtime-admission-foundation`、HEAD `60fb869`で`PASS`した。
+- 変更:
+  - 既存4 durability pointへ、通常のprocess-fault exitを変えないopt-in marker fsync + parent-directory fsync
+    + `SIGSTOP` hookを追加する。
+  - inspection smokeへfresh stateを作る`--vhdx-arm`と、既存imageを回復・fsck・payload/diagnostic検証する
+    `--vhdx-verify`を追加する。
+  - Linux runnerでstate rootをcurrent WSL home、repositoryと同じext4/sourceへ制限し、DrvFs、stale state、
+    claim昇格、不一致host evidenceをfail closedにする。
+  - native Windows controllerでregistryからexact distro VHDXを毎回発見し、`-Execute`とhigh-impact
+    `ShouldProcess`後だけmarker確認、`wsl.exe --terminate`、restart、verifyを行う。
+  - full fsck、kafsdump、host/WSL identity、image SHA-256、全artifact digestとfalse claimを保存する。
+- 完了結果（2026-07-21）:
+  - Windows/WSL preflightはcurrent Ubuntu `ext4.vhdx`、length `120680611840`、Linux `/dev/sdd` ext4を確認し、
+    terminateを実行せずPASSした。
+  - 4 faultすべてでdurable marker時の停止を確認し、KAFS process killによる代替中断後のarm/verify、payload、
+    recovery diagnostic、full fsck、kafsdump、artifact digestがPASSした。これはharness検証であり、実際の
+    WSL terminate evidenceではない。
+  - false real-media claim、DrvFs、WSL home外state rootは拒否された。通常のinspection smoke全caseもPASSし、
+    既存process-fault behaviorは維持された。
+  - full `make check -j2`初回は変更対象を含む42件がPASSし、既存`e2e_hotplug`だけがconnect timeoutでFAIL。
+    同一checkoutの単独再実行はPASSした。format、lint、clone、complexity、v7 ownership、shell analysis、
+    Autotools再生成/buildはPASSし、新規complexity warningは0件となった。
+- closeout判断:
+  - harnessをcomplete、`VHDX_HARNESS_READY`をreachedへ移す。更新後の`perttool dag next`は実際のnative
+    Windows 4点実行`VHDX_HOST_RECOVERY_RUN`を唯一の`RUNNABLE NOW`、zero-slack critical taskとして選択する。
+  - physical `HARDWARE_APPROVAL`はzero-slackのblocked parallel branchとして残り、VHDX結果で代替しない。
+
 ---
 ---
 
@@ -3665,10 +3701,19 @@
 この節はhandoff用の開始候補であり、実装開始許可または最新の完了条件ではない。着手前に`AGENTS.md`の
 Task Start Gateでcurrent checkoutのevidenceを再確認し、`PASS`・`REPLAN`・`BLOCKED`を判定する。
 
-T49-T55は完了している。最新のcloseout PERTは`D3`とexpanded qualification `Q`をcompleteとし、
-real-media recovery `R`への残るpredecessorをexact hardware identityとdigest-bound approval `H`だけとする。
-whole-namespace graph validation `N`はrunnableだがoff-pathであり、local着手容易性を理由に`H`の代わりに
-選定しない。
+T49-T56は完了している。最新のcloseout PERTはVHDX harnessをcompleteとし、実際のnative Windows
+terminate/restart matrix `VHDX_HOST_RECOVERY_RUN`を唯一のrunnable critical taskとする。exact physical
+hardware identityとdigest-bound approval `H`は並行するblocked critical branchであり、virtual evidenceで
+置換しない。whole-namespace graph validation `N`はoff-pathのままである。
+
+次はnative Windows PowerShellから次を行う。
+
+1. `scripts/v7-vhdx-host-recovery.ps1 -Distro Ubuntu`でread-only preflightを実行し、registryで発見した
+   exact VHDX path/length、Linux runner、state root、false claimを確認する。
+2. target Ubuntuの外側にあるnative Windows PowerShellから`-Execute -Confirm`を付けて、4 faultすべての
+   marker確認、distro terminate/restart、resume verifyを実行する。target WSL内のCodexからは実行しない。
+3. 4 state directoryのhost-controller、fsck、dump、payload/recovery diagnostic、manifest、SHA-256とfinal
+   PASS markerを確認してから、PERTの`VHDX_HOST_RECOVERY_RUN`をcompleteへ移す。
 
 実媒体準備を再開できる時点では、並行するexternal blocker `H`について次を行う。
 

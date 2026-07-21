@@ -330,6 +330,27 @@ off that causal path and must not be substituted merely because it is local.
 Sparse files, indirect directories, cross-group allocation, repair, RC, and
 physical-media execution remain outside T55.
 
+## T56 VHDX Host-Recovery Harness Addendum
+
+When disposable hardware remained unavailable, the machine-evaluated residual
+plan added VHDX-backed host recovery as a prerequisite to later physical
+execution without removing the blocked hardware-approval branch. The selected
+T56 slice provides a dedicated regular-file KAFS image, four exact durability
+pause points, separate arm/verify modes, a WSL ext4 safety preflight, and a
+native Windows controller that requires explicit high-impact execution consent.
+
+The active Ubuntu VHDX is never a raw KAFS target. Windows registry identity,
+VHDX length, marker observation, terminate/restart exit codes, WSL context,
+payload/recovery validation, full fsck, dump output, and artifact digests form
+the evidence boundary. Every evidence record keeps RC, real-media, isolated
+physical power, and controller-independent wear claims false.
+
+T56 makes the host interruption run executable and resumable across WSL
+restart; it does not perform that interruption while the controlling Codex
+session resides inside the target distro. The actual four-point native Windows
+run remains the next PERT node. Hardware identity and destructive approval are
+still required in parallel before any real-media execution can start.
+
 ## Deferred Gate: SDW-V7RT-T48 Controlled-write RC Qualification
 
 ### Scope

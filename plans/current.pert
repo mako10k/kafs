@@ -4,10 +4,12 @@ project KAFS_CURRENT:
   description |
     Canonical residual network for next-task selection. The v7 dense
     regular-file block tree and non-destructive software qualification are
-    complete through T55. The remaining accepted goal is approved real-media
-    qualification followed by migration and cutover evidence. Off-goal work is
-    owned in its linked backlog or PERT narrative and is not added here as a
-    false predecessor.
+    complete through T55. The active Ubuntu system disk is a Windows-host VHDX,
+    so the dedicated-image Windows-host harness is now ready. Its actual
+    terminate/restart recovery run remains the runnable predecessor of approved
+    real-media qualification. Physical wear and isolated power-cut claims remain
+    blocked. Off-goal work is owned in its linked backlog or PERT narrative and
+    is not added here as a false predecessor.
   as_of 2026-07-21
   duration_unit day
   finish PRODUCTION_CUTOVER_DECIDED
@@ -25,6 +27,16 @@ milestone SOFTWARE_QUALIFIED:
 
 milestone MEDIA_AUTHORIZED:
   title "Exact media apparatus and destructive run authorized"
+
+milestone VHDX_HARNESS_READY:
+  title "Resumable Windows-host VHDX recovery harness ready"
+  state reached
+
+milestone VHDX_HOST_RECOVERY_QUALIFIED:
+  title "Windows-host VHDX terminate/restart recovery qualified"
+
+milestone REAL_MEDIA_EXECUTION_READY:
+  title "Virtual prequalification and physical-media authorization complete"
 
 milestone MEDIA_QUALIFIED:
   title "Real-media recovery and wear qualification complete"
@@ -52,7 +64,29 @@ task HARDWARE_APPROVAL SOFTWARE_QUALIFIED -> MEDIA_AUTHORIZED:
   requires:
     PRIMARY_STREAM 1
 
-task REAL_MEDIA_QUALIFICATION MEDIA_AUTHORIZED -> MEDIA_QUALIFIED:
+task VHDX_HOST_RECOVERY_RUN VHDX_HARNESS_READY -> VHDX_HOST_RECOVERY_QUALIFIED:
+  title "Run and verify VHDX-backed recovery across WSL terminate/restart"
+  description |
+    Run the resumable harness from Windows Host against only its disposable KAFS
+    image. Terminate and restart the Ubuntu distro at the defined boundaries,
+    then preserve fsck, dump, payload, host, distro, and VHDX identity evidence.
+    Make no physical-media, wear, controller, or isolated-power claim.
+  estimate:
+    optimistic 1d
+    most_likely 1d
+    pessimistic 2d
+  owner "Windows host operator and KAFS implementation stream"
+  source "docs/sd-card-wear-v7-indirect-pert-20260721.md"
+  requires:
+    PRIMARY_STREAM 1
+
+gate VHDX_RECOVERY_REQUIRED VHDX_HOST_RECOVERY_QUALIFIED -> REAL_MEDIA_EXECUTION_READY:
+  reason "Host-level virtual-media recovery evidence is required before physical execution"
+
+gate HARDWARE_APPROVAL_REQUIRED MEDIA_AUTHORIZED -> REAL_MEDIA_EXECUTION_READY:
+  reason "Physical execution still requires disposable media and isolated-power approval"
+
+task REAL_MEDIA_QUALIFICATION REAL_MEDIA_EXECUTION_READY -> MEDIA_QUALIFIED:
   title "Run approved real-media recovery and wear qualification"
   estimate:
     optimistic 3d

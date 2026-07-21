@@ -56,6 +56,7 @@ historical investigations and deep design notes.
 - [sd-card-wear-v7-capability-rebaseline-20260721.md](sd-card-wear-v7-capability-rebaseline-20260721.md): current v7 capability, R2 closeout, and selected M7 qualification task
 - [sd-card-wear-v7-controlled-write-qualification.md](sd-card-wear-v7-controlled-write-qualification.md): T48 qualification path, non-destructive evidence contract, and real-media boundary
 - [sd-card-wear-v7-real-media-qualification-approval.md](sd-card-wear-v7-real-media-qualification-approval.md): T48-B1 real-media matrix, destructive-impact, digest-bound approval, and independent-review contract
+- [sd-card-wear-v7-vhdx-host-recovery.md](sd-card-wear-v7-vhdx-host-recovery.md): safe Windows-host VHDX-backed terminate/restart prequalification and evidence boundary
 - [sd-card-wear-v7-runtime-handoff-20260716.md](sd-card-wear-v7-runtime-handoff-20260716.md): detailed v7 runtime implementation handoff
 - [write-performance-ideas.md](write-performance-ideas.md)
 - [bottleneck-measurement-plan.md](bottleneck-measurement-plan.md)

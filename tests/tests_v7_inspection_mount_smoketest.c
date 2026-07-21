@@ -15,6 +15,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -53,6 +54,55 @@ static void qualification_case_pass(const char *case_id)
 {
   printf("KAFS_V7_QUALIFICATION_CASE %s PASS\n", case_id);
   fflush(stdout);
+}
+
+static int check_fault_pause_marker(void)
+{
+  const char *marker = "v7-fault-pause.marker";
+  if (unlink(marker) != 0 && errno != ENOENT)
+    return -1;
+  char absolute_marker[PATH_MAX];
+  if (!realpath(".", absolute_marker))
+    return -1;
+  size_t used = strlen(absolute_marker);
+  if (used + 1u + strlen(marker) + 1u > sizeof(absolute_marker))
+    return -1;
+  absolute_marker[used++] = '/';
+  strcpy(absolute_marker + used, marker);
+
+  pid_t pid = fork();
+  if (pid < 0)
+    return -1;
+  if (pid == 0)
+  {
+    if (setenv(KAFS_V7_TEST_CRASH_POINT_ENV, "journal_publish", 1) != 0 ||
+        setenv(KAFS_V7_TEST_PAUSE_POINT_ENV, "journal_publish", 1) != 0 ||
+        setenv(KAFS_V7_TEST_PAUSE_MARKER_ENV, absolute_marker, 1) != 0)
+      _exit(124);
+    kafs_v7_test_fault_maybe_crash(KAFS_V7_TEST_FAULT_JOURNAL_PUBLISH);
+    _exit(124);
+  }
+
+  int status = 0;
+  int rc = waitpid(pid, &status, WUNTRACED) == pid && WIFSTOPPED(status) &&
+                   WSTOPSIG(status) == SIGSTOP
+               ? 0
+               : -1;
+  char point[64] = {0};
+  if (rc == 0)
+  {
+    int fd = open(marker, O_RDONLY);
+    ssize_t bytes = fd >= 0 ? read(fd, point, sizeof(point) - 1u) : -1;
+    if (fd >= 0)
+      close(fd);
+    if (bytes <= 0 || strcmp(point, "journal_publish\n") != 0)
+      rc = -1;
+  }
+  (void)kill(pid, SIGKILL);
+  (void)waitpid(pid, NULL, 0);
+  if (unlink(marker) != 0 && rc == 0)
+    rc = -1;
+  return rc;
 }
 
 static int run_command(char *const argv[], int expected_exit, char *output, size_t output_size)
@@ -2699,6 +2749,52 @@ static int check_controlled_triple_indirect_recovery(const char *image, uint32_t
   return rc;
 }
 
+static int recover_controlled_write_image(const char *image, uint32_t ino, uint32_t block_size,
+                                          kafs_v7_test_fault_point_t fault,
+                                          const char *recovery_log)
+{
+  kafs_test_mount_options_t options = {
+      .log_path = recovery_log,
+      .extra_options = "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
+      .timeout_ms = 15000,
+  };
+  pid_t pid = kafs_test_start_kafs_v7_controlled_write(image, "mnt-controlled-recovery", &options);
+  int rc = pid <= 0 ? -1 : 0;
+  if (pid > 0)
+    kafs_test_stop_kafs("mnt-controlled-recovery", pid);
+
+  uint8_t *payload = malloc(2u * block_size);
+  const uint64_t truncate_size = (uint64_t)block_size + 53u;
+  if (!payload)
+    rc = -1;
+  else
+  {
+    memset(payload, 0, 2u * block_size);
+    memcpy(payload, k_block_payload, strlen(k_block_payload));
+  }
+  if (rc == 0 && check_recovery_log(recovery_log, fault, 3u, 1u) != 0)
+  {
+    fprintf(stderr, "truncate recovery diagnostic failed fault=%s\n",
+            kafs_v7_test_fault_name(fault));
+    rc = -1;
+  }
+  if (rc == 0 && run_fsck(image) != 0)
+  {
+    fprintf(stderr, "truncate recovery fsck failed fault=%s\n", kafs_v7_test_fault_name(fault));
+    rc = -1;
+  }
+  if (rc == 0 && check_persisted_blocks(image, ino, payload, truncate_size, block_size, 2u) != 0)
+  {
+    fprintf(stderr, "truncate recovery payload failed fault=%s\n",
+            kafs_v7_test_fault_name(fault));
+    rc = -1;
+  }
+  if (rc != 0)
+    kafs_test_dump_log(recovery_log, "v7 controlled-write recovery failed");
+  free(payload);
+  return rc;
+}
+
 static int check_controlled_write_recovery(const char *image, uint32_t ino, uint32_t block_size,
                                            kafs_v7_test_fault_point_t fault)
 {
@@ -2720,19 +2816,13 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
   if (pid <= 0)
     return -1;
 
-  uint8_t *payload = malloc(2u * block_size);
   const uint64_t truncate_size = (uint64_t)block_size + 53u;
   char path[PATH_MAX];
   snprintf(path, sizeof(path), "%s/block", mnt);
   int fd = open(path, O_RDWR);
-  int rc = fd < 0 || !payload ? -1 : 0;
-  if (rc == 0)
-  {
-    memset(payload, 0, 2u * block_size);
-    memcpy(payload, k_block_payload, strlen(k_block_payload));
-    if (ftruncate(fd, (off_t)truncate_size) >= 0)
-      rc = -1;
-  }
+  int rc = fd < 0 ? -1 : 0;
+  if (rc == 0 && ftruncate(fd, (off_t)truncate_size) >= 0)
+    rc = -1;
   if (fd >= 0)
     close(fd);
   int status = 0;
@@ -2740,37 +2830,10 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
                   WEXITSTATUS(status) != kafs_v7_test_fault_exit_status(fault)))
     rc = -1;
   kafs_test_stop_kafs(mnt, pid);
-
-  options.log_path = recovery_log;
-  pid = rc == 0
-            ? kafs_test_start_kafs_v7_controlled_write(image, "mnt-controlled-recovery", &options)
-            : -1;
-  if (pid <= 0)
-    rc = -1;
-  else
-    kafs_test_stop_kafs("mnt-controlled-recovery", pid);
-  if (rc == 0 && check_recovery_log(recovery_log, fault, 3u, 1u) != 0)
-  {
-    fprintf(stderr, "truncate recovery diagnostic failed fault=%s\n",
-            kafs_v7_test_fault_name(fault));
-    rc = -1;
-  }
-  if (rc == 0 && run_fsck(image) != 0)
-  {
-    fprintf(stderr, "truncate recovery fsck failed fault=%s\n", kafs_v7_test_fault_name(fault));
-    rc = -1;
-  }
-  if (rc == 0 && check_persisted_blocks(image, ino, payload, truncate_size, block_size, 2u) != 0)
-  {
-    fprintf(stderr, "truncate recovery payload failed fault=%s\n", kafs_v7_test_fault_name(fault));
-    rc = -1;
-  }
+  if (rc == 0)
+    rc = recover_controlled_write_image(image, ino, block_size, fault, recovery_log);
   if (rc != 0)
-  {
     kafs_test_dump_log(crash_log, "v7 controlled-write crash failed");
-    kafs_test_dump_log(recovery_log, "v7 controlled-write recovery failed");
-  }
-  free(payload);
   return rc;
 }
 
@@ -3049,6 +3112,23 @@ static int run_create_recovery_case(const create_recovery_case_t *test,
   return rc;
 }
 
+static int recover_controlled_reclaim_image(const char *image, const char *recovery_log)
+{
+  kafs_test_mount_options_t options = {
+      .log_path = recovery_log,
+      .extra_options = "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
+      .timeout_ms = 15000,
+  };
+  pid_t pid = kafs_test_start_kafs_v7_controlled_write(image, "mnt-reclaim-recovery", &options);
+  if (pid <= 0)
+    return -1;
+  kafs_test_stop_kafs("mnt-reclaim-recovery", pid);
+  return check_nonempty_journal_count(image, 0u) == 0 && run_fsck(image) == 0 &&
+                 check_recovery_log(recovery_log, KAFS_V7_TEST_FAULT_JOURNAL_RECLAIM, 0u, 0u) == 0
+             ? 0
+             : -1;
+}
+
 static int check_controlled_reclaim_recovery(const char *image)
 {
   int early_exit_status = -1;
@@ -3072,17 +3152,7 @@ static int check_controlled_reclaim_recovery(const char *image)
     return -1;
   if (check_nonempty_journal_count(image, 1u) != 0)
     return -1;
-
-  options.log_path = "v7-controlled-reclaim-recovery.log";
-  pid = kafs_test_start_kafs_v7_controlled_write(image, "mnt-reclaim-recovery", &options);
-  if (pid <= 0)
-    return -1;
-  kafs_test_stop_kafs("mnt-reclaim-recovery", pid);
-  return check_nonempty_journal_count(image, 0u) == 0 && run_fsck(image) == 0 &&
-                 check_recovery_log("v7-controlled-reclaim-recovery.log",
-                                    KAFS_V7_TEST_FAULT_JOURNAL_RECLAIM, 0u, 0u) == 0
-             ? 0
-             : -1;
+  return recover_controlled_reclaim_image(image, "v7-controlled-reclaim-recovery.log");
 }
 
 static int corrupt_primary_pair(const char *path)
@@ -3137,10 +3207,167 @@ static int make_unpaired_generation(const char *path)
   return rc;
 }
 
-int main(void)
+static int parse_vhdx_fault(const char *name, kafs_v7_test_fault_point_t *fault)
 {
+  for (unsigned i = 0u; i <= (unsigned)KAFS_V7_TEST_FAULT_JOURNAL_RECLAIM; ++i)
+  {
+    kafs_v7_test_fault_point_t candidate = (kafs_v7_test_fault_point_t)i;
+    if (strcmp(name, kafs_v7_test_fault_name(candidate)) == 0)
+    {
+      *fault = candidate;
+      return 0;
+    }
+  }
+  return -EINVAL;
+}
+
+static int write_vhdx_state(kafs_v7_test_fault_point_t fault, const v7_fixture_t *fixture)
+{
+  const char *temporary = "vhdx-recovery.meta.tmp";
+  const char *final = "vhdx-recovery.meta";
+  FILE *fp = fopen(temporary, "wx");
+  if (!fp)
+    return -errno;
+  int rc = fprintf(fp, "schema=KAFS.V7VhdxRecoveryState.v1\nfault=%s\nino=%u\nblock_size=%u\n",
+                   kafs_v7_test_fault_name(fault), fixture->block_ino, fixture->block_size) > 0
+               ? 0
+               : -EIO;
+  if (rc == 0 && (fflush(fp) != 0 || fsync(fileno(fp)) != 0))
+    rc = -errno;
+  if (fclose(fp) != 0 && rc == 0)
+    rc = -errno;
+  if (rc == 0 && rename(temporary, final) != 0)
+    rc = -errno;
+  if (rc == 0)
+  {
+    int dirfd = open(".", O_RDONLY | O_DIRECTORY);
+    if (dirfd < 0 || fsync(dirfd) != 0)
+      rc = -errno;
+    if (dirfd >= 0)
+      close(dirfd);
+  }
+  if (rc != 0)
+    (void)unlink(temporary);
+  return rc;
+}
+
+static int read_vhdx_state(kafs_v7_test_fault_point_t expected, v7_fixture_t *fixture)
+{
+  FILE *fp = fopen("vhdx-recovery.meta", "r");
+  if (!fp)
+    return -errno;
+  char schema[64];
+  char fault_name[64];
+  unsigned ino = 0u;
+  unsigned block_size = 0u;
+  int fields = fscanf(fp, "schema=%63[^\n]\nfault=%63[^\n]\nino=%u\nblock_size=%u\n", schema,
+                      fault_name, &ino, &block_size);
+  fclose(fp);
+  if (fields != 4 || strcmp(schema, "KAFS.V7VhdxRecoveryState.v1") != 0 ||
+      strcmp(fault_name, kafs_v7_test_fault_name(expected)) != 0 || ino == 0u ||
+      block_size == 0u)
+    return -EINVAL;
+  fixture->block_ino = ino;
+  fixture->block_size = block_size;
+  return 0;
+}
+
+static int write_vhdx_verify_marker(kafs_v7_test_fault_point_t fault)
+{
+  int fd = open("vhdx-verify.ok", O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (fd < 0)
+    return -errno;
+  const char *name = kafs_v7_test_fault_name(fault);
+  int rc = write(fd, name, strlen(name)) == (ssize_t)strlen(name) && write(fd, "\n", 1u) == 1 &&
+                   fsync(fd) == 0
+               ? 0
+               : -EIO;
+  if (close(fd) != 0 && rc == 0)
+    rc = -errno;
+  return rc;
+}
+
+static int run_vhdx_arm(const char *fault_name, const char *state_dir)
+{
+  kafs_v7_test_fault_point_t fault;
+  const char *pause = getenv(KAFS_V7_TEST_PAUSE_POINT_ENV);
+  const char *marker = getenv(KAFS_V7_TEST_PAUSE_MARKER_ENV);
+  if (parse_vhdx_fault(fault_name, &fault) != 0 || !pause || strcmp(pause, fault_name) != 0 ||
+      !marker || marker[0] != '/' || chdir(state_dir) != 0)
+    return 2;
+  if (access("vhdx-recovery.meta", F_OK) == 0 || access("vhdx-recovery.img", F_OK) == 0)
+    return 2;
+
+  v7_fixture_t fixture = {0};
+  const char *image = "vhdx-recovery.img";
+  int rc = format_image(image);
+  if (rc == 0)
+    rc = seed_fixture(image, &fixture);
+  if (rc == 0 && fault == KAFS_V7_TEST_FAULT_JOURNAL_RECLAIM)
+    rc = seed_pending_journals(image, fixture.nested_ino, fixture.inline_ino);
+  if (rc == 0)
+    rc = write_vhdx_state(fault, &fixture);
+  if (rc != 0)
+  {
+    fprintf(stderr, "v7 VHDX arm preparation failed fault=%s rc=%d\n", fault_name, rc);
+    return 1;
+  }
+
+  if (fault == KAFS_V7_TEST_FAULT_JOURNAL_RECLAIM)
+    rc = check_controlled_reclaim_recovery(image);
+  else
+    rc = check_controlled_write_recovery(image, fixture.block_ino, fixture.block_size, fault);
+  fprintf(stderr, "v7 VHDX arm returned before host termination fault=%s rc=%d\n", fault_name, rc);
+  return 1;
+}
+
+static int run_vhdx_verify(const char *fault_name, const char *state_dir)
+{
+  kafs_v7_test_fault_point_t fault;
+  if (parse_vhdx_fault(fault_name, &fault) != 0 || chdir(state_dir) != 0)
+    return 2;
+  unsetenv(KAFS_V7_TEST_CRASH_POINT_ENV);
+  unsetenv(KAFS_V7_TEST_PAUSE_POINT_ENV);
+  unsetenv(KAFS_V7_TEST_PAUSE_MARKER_ENV);
+
+  v7_fixture_t fixture = {0};
+  int rc = read_vhdx_state(fault, &fixture);
+  char recovery_log[PATH_MAX];
+  snprintf(recovery_log, sizeof(recovery_log), "v7-vhdx-%s-recovery.log", fault_name);
+  if (rc == 0 && fault == KAFS_V7_TEST_FAULT_JOURNAL_RECLAIM)
+    rc = recover_controlled_reclaim_image("vhdx-recovery.img", recovery_log);
+  else if (rc == 0)
+    rc = recover_controlled_write_image("vhdx-recovery.img", fixture.block_ino,
+                                        fixture.block_size, fault, recovery_log);
+  if (rc == 0)
+    rc = write_vhdx_verify_marker(fault);
+  if (rc != 0)
+  {
+    fprintf(stderr, "v7 VHDX verification failed fault=%s rc=%d\n", fault_name, rc);
+    return 1;
+  }
+  printf("KAFS_V7_VHDX_RECOVERY %s PASS\n", fault_name);
+  return 0;
+}
+
+int main(int argc, char **argv)
+{
+  if (argc == 4 && strcmp(argv[1], "--vhdx-arm") == 0)
+    return run_vhdx_arm(argv[2], argv[3]);
+  if (argc == 4 && strcmp(argv[1], "--vhdx-verify") == 0)
+    return run_vhdx_verify(argv[2], argv[3]);
+  if (argc != 1)
+  {
+    fprintf(stderr, "usage: %s [--vhdx-arm|--vhdx-verify FAULT STATE_DIR]\n", argv[0]);
+    return 2;
+  }
   if (kafs_test_enter_tmpdir("v7-inspection-mount") != 0)
     return 1;
+  if (check_fault_pause_marker() != 0)
+  {
+    fprintf(stderr, "v7 fault pause marker contract failed\n");
+    return 1;
+  }
   const char *image = "v7-inspection.img";
   v7_fixture_t fixture = {0};
   if (format_image(image) != 0 || seed_fixture(image, &fixture) != 0)
@@ -3443,15 +3670,15 @@ int main(void)
   if (copy_image(image, unpaired) != 0 || make_unpaired_generation(unpaired) != 0)
     return 1;
   char output[8192];
-  char *argv[] = {(char *)kafs_test_kafs_v7_bin(),
-                  (char *)"--image",
-                  (char *)unpaired,
-                  (char *)"--inspection-mount",
-                  (char *)"missing-mnt",
-                  (char *)"-o",
-                  (char *)"ro",
-                  NULL};
-  if (run_command(argv, 2, output, sizeof(output)) != 0 ||
+  char *mount_argv[] = {(char *)kafs_test_kafs_v7_bin(),
+                        (char *)"--image",
+                        (char *)unpaired,
+                        (char *)"--inspection-mount",
+                        (char *)"missing-mnt",
+                        (char *)"-o",
+                        (char *)"ro",
+                        NULL};
+  if (run_command(mount_argv, 2, output, sizeof(output)) != 0 ||
       !strstr(output, "admission preflight failed") ||
       strstr(output, "selected descriptor retained") || strstr(output, "bad mount point"))
   {
