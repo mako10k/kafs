@@ -1,11 +1,12 @@
-# KAFS format v7 runtime handoff (updated 2026-07-19)
+# KAFS format v7 runtime handoff (updated 2026-07-21)
 
 ## Scope
 
-This handoff covers the format v7 runtime foundation through
-`SDW-V7RT-T19 retained data-block retirement and retry closeout`. It is intended to
-make the next runtime mutation/admission slice resumable from another host
-without reopening the accepted wear-leveling and fault-tolerance decisions.
+This handoff began at `SDW-V7RT-T19 retained data-block retirement and retry
+closeout` and now records the current runtime through the post-RCA capability
+rebaseline. It is intended to make the next qualification slice resumable from
+another host without reopening the accepted wear-leveling and fault-tolerance
+decisions.
 
 This document is a dated evidence snapshot and a source of candidate work. It
 is not implementation authorization and does not define current exit criteria.
@@ -37,6 +38,9 @@ Relevant implementation checkpoints:
 - `b01ea23 feat: add v7 runtime transaction coordinator`
 - `acdfb41 feat: add v7 data COW allocator planner`
 - `a332343 feat: retire v7 retained data blocks`
+- `1089fe3 feat: negotiate v7 atomic write requests`
+- `13cc9a0 test: replay v7 recovery-wave effectiveness`
+- `460f7b0 refactor: remove unused descriptor wire path`
 
 ## Current Runtime Boundary
 
@@ -51,20 +55,29 @@ The accepted v7 surface currently provides:
 - a mount-lifetime v7 transaction coordinator that serializes global sequence
   publication and runs the complete metadata closeout lifecycle;
 - a v7-owned group-local data-block COW/allocator planner that durably stages
-  and re-verifies up to twelve existing direct blocks before atomically
-  publishing their inode references;
+  and re-verifies up to twelve direct blocks before atomically publishing their
+  inode references, sizes, block counts, and allocator state;
 - a post-checkpoint retained-block retirement transaction that verifies the
   direct/HRL reference set, clears the allocator state, and closes out retry;
 - v7-only FUSE `fsync` / `release` closeout barriers;
-- explicit controlled-write admission for existing regular-file ranges within
-  allocated direct blocks, including partial and multi-block COW;
+- explicit controlled-write admission for direct regular-file overwrite,
+  contiguous growth, shrinking truncate, and `O_TRUNC`, including partial and
+  multi-block COW;
+- same-group empty regular-file create, inline-file write through the create
+  handle, and inline/direct directory append or growth through the twelve
+  direct references;
+- negotiated FUSE `max_write` and a startup diagnostic that distinguishes the
+  per-request atomic limit from application-system-call atomicity;
 - admission recovery and diagnostics for interruption after journal
-  publication, metadata apply, checkpoint copy, or journal reclamation.
+  publication, metadata apply, checkpoint copy, or journal reclamation;
+- v7-owned direct/single/double/triple indirect address calculation, traversal,
+  and retirement guards, without admitting indirect mutation.
 
-Runtime controlled write remains fail closed outside that allowlist. File
-growth, holes, indirect references, create, and wider metadata mutations are
-rejected. Production `kafs` remains the v4/v5 runtime and does not admit v7.
-Frozen experimental v6 behavior is not a compatibility contract for v7.
+Runtime controlled write remains fail closed outside that allowlist. Holes,
+inline regular-file conversion to block storage, indirect mutation,
+cross-group allocation, and wider metadata mutations are rejected. Production
+`kafs` remains the v4/v5 runtime and does not admit v7. Frozen experimental v6
+behavior is not a compatibility contract for v7.
 
 The metadata durability order fixed by T14 is:
 
@@ -91,35 +104,25 @@ checksum-consistent foreign-group mutation.
 | M4 | T16-T17: mount-lifetime coordinator and fail-closed runtime boundary | Complete |
 | M5 | T18-T19: internal full-block data COW and retained-block retirement | Complete |
 | M6 | T20-T32: bounded direct overwrite, admission, diagnostics, partial/multi-block COW, interruption recovery | Complete |
-| M6.1 | FUSE request negotiation and supported atomic-request observability | Next |
-| M7 | Controlled-write RC qualification, real-media power interruption, and independent review | Not started |
+| M6.1 | T33: FUSE request negotiation and supported atomic-request observability | Complete |
+| M7 | T48: controlled-write RC qualification, real-media power interruption, and independent review | Selected next; destructive execution not authorized |
 | M8-A | Existing-inode growth, allocation, hole policy, and truncate | Complete for bounded direct files |
-| M8-B | Create and directory-record mutation | Corrective refactor required: replace block-count-specific paths with one bounded direct algorithm |
-| M8-C | Indirect-block COW, traversal, and retirement | Not started |
-| M9 | v5-to-v7 data migration beyond destination creation | Not started |
+| M8-B | Create and directory-record mutation | Complete for bounded same-group inline/direct directories after R1 correction |
+| M8-C | Indirect-block COW, traversal, and retirement | Address/walk/retirement foundation present; mutation not admitted |
+| M9 | v5-to-v7 data migration beyond destination creation | Destination creation present; full data migration/cutover not complete |
 | M10 | Cross-group HRL and multi-group atomic mutation | Not started |
 
-The implementation has completed the bounded direct-file portion of M8-A. V7
-is practical for image creation, offline validation, read-only inspection, and
-controlled overwrite, contiguous growth, shrinking truncate, and O_TRUNC of
-existing direct-only files. It also supports bounded empty regular-file
-creation in inline and one-block same-group directories, including conversion
-to cardinality-specific direct layouts through three blocks. This is not
-general writable filesystem readiness, and those paths are not the accepted
-final M8-B implementation. Directory growth beyond three direct blocks, general
-create placement, indirect blocks, holes, and most metadata mutation remain
-outside the admitted contract.
+The bounded direct portions of M8-A and M8-B are implemented. R1 replaced the
+block-count-specific create path with one direct-`N` transition model and
+table-driven boundary/recovery evidence. R2 then closed the structural/static
+control wave. This is still not general writable-filesystem readiness:
+indirect mutation, holes, cross-group allocation, and most metadata mutations
+remain outside the admitted contract.
 
-`KAFS-INC-2026-07-19-01` found that M8-B had been decomposed by individual
-block count even though batch COW already supports variable cardinality. Do not
-continue with a three-to-four-block slice. The next mandatory step is the
-parameterized direct-directory refactor and direct/indirect boundary cleanup
-described in `docs/incidents/2026-07-19-v7-directory-cardinality-rca.md`.
-
-After M6.1 there is an explicit product decision point. A bounded
-direct-overwrite release can enter M7 qualification, or implementation can
-continue through M8-A before qualification if file growth is required for the
-target workload. M8-B and M8-C remain separate recovery-sensitive milestones.
+The post-R2 Task Start and Goal And Critical Path Gate selected M7 controlled-
+write RC qualification before further mutation expansion. The current matrix,
+alternative ordering, and T48 exit criteria are recorded in
+`docs/sd-card-wear-v7-capability-rebaseline-20260721.md`.
 
 ## T15 Closeout
 
@@ -333,16 +336,15 @@ T19 validation completed on 2026-07-17:
 
 ## Remaining Risks And Constraints
 
-- The planner supports one full block and direct inode slots only. Indirect
-  references, multi-block writes, partial-block merge policy, and
-  directory-record mutation are not implemented.
-- Retirement currently performs a conservative whole-image inode/HRL scan
-  under the global write gate and rejects every image with a non-zero indirect
-  root. It is correctness-first, not yet a scalable background reclaimer.
-- The first admitted write surface must remain bounded; do not infer support
-  for truncate, fallocate, unlink, rename, link, symlink, copy/reflink,
-  control-plane write, hotplug delegated write, runtime TRIM, writeback cache,
-  or delayed/background mutation.
+- Indirect address calculation and walking exist, but indirect mutation is not
+  admitted. Do not infer indirect COW, growth, or truncate support from the
+  traversal foundation.
+- Retirement remains a correctness-first synchronous path and is not a
+  scalable background reclaimer.
+- The admitted write surface remains bounded; do not infer support for
+  fallocate, unlink, rename, link, symlink, copy/reflink, control-plane write,
+  hotplug delegated write, runtime TRIM, writeback cache, or delayed/background
+  mutation.
 - Cross-group HRL policy and multi-group atomic mutation remain later work.
 - FTL/ECC correlated-failure injection is an RC media-qualification constraint,
   not an implementation blocker. RC still requires independent review and
@@ -352,21 +354,22 @@ T19 validation completed on 2026-07-17:
 
 ## Recommended Next Slice
 
-Implement M6.1 by negotiating a bounded FUSE write-request size, recording the
-kernel-negotiated value, and exposing the supported per-request atomicity limit
-in startup diagnostics and the read-only inspection surface. Tests must prove
-the reported value matches negotiation and must distinguish one atomic FUSE
-request from an application write split into multiple requests.
+Execute `SDW-V7RT-T48`, the controlled-write RC qualification gate described in
+`docs/sd-card-wear-v7-capability-rebaseline-20260721.md`. First add and validate
+the non-destructive repository procedure, evidence schema, sample matrix, and
+independent-review checklist. Do not format a real device or introduce a power
+interruption until the operator explicitly approves the exact device/sample
+matrix and destructive impact.
 
 ## Resume Checklist
 
 1. Fetch and check out `origin/feat/v7-runtime-admission-foundation`.
-2. Confirm `a332343` is an ancestor and inspect any commits after it.
+2. Confirm `460f7b0` is an ancestor and inspect any commits after it.
 3. Confirm `git status --short --branch` is clean.
 4. Read, in order:
+   - [sd-card-wear-v7-capability-rebaseline-20260721.md](sd-card-wear-v7-capability-rebaseline-20260721.md);
    - this handoff;
-   - [sd-card-wear-tickets.md](sd-card-wear-tickets.md) at T14-T19 and the next
-     candidates;
+   - [sd-card-wear-tickets.md](sd-card-wear-tickets.md) at T45-T48;
    - [sd-card-wear-format-v7-pivot.md](sd-card-wear-format-v7-pivot.md);
    - [.github/lock-policy.md](../.github/lock-policy.md).
 5. Bootstrap and establish a local baseline:
@@ -378,8 +381,8 @@ request from an application write split into multiple requests.
    make -C tests check TESTS='v7_entrypoint_smoketest v7_locks_smoketest v6_descriptor_smoketest'
    ```
 
-6. Start with the bounded existing-file aligned full-block direct-write FUSE
-   adapter. Do not include `create`, partial writes, or indirect blocks, and do
-   not enable controlled write until the mount/recovery matrix passes.
+6. Start with T48's non-destructive qualification procedure and evidence
+   contract. Preserve the current mutation boundary and keep real-device
+   actions behind explicit operator authorization.
 7. Follow the reviewed file/hunk WIP workflow in
    [github-dev-rules.md](../.github/github-dev-rules.md).

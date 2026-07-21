@@ -1,9 +1,10 @@
 # V7 RCA countermeasure detail and recovery waves
 
 - Date: 2026-07-19
-- Baseline: `e76a0d1` on `feat/v7-aligned-direct-overwrite`
+- Initial baseline: `e76a0d1` on `feat/v7-aligned-direct-overwrite`
+- Closeout baseline: `460f7b0` on `feat/v7-runtime-admission-foundation`
 - Related incident: `KAFS-INC-2026-07-19-01`
-- Status: R1 closed; R2 active
+- Status: R1 and R2 closed; capability rebaseline recorded on 2026-07-21
 
 ## Scope And Sequence
 
@@ -202,14 +203,40 @@ clones / 799 duplicated lines / 1.67%. The increase exposed a retained
 its owned raw-layout implementation. Removing that unreachable 432-line path,
 without changing the population or threshold, produces 41 clones / 409
 duplicated lines / 0.86% and passes the unchanged 1% gate. The remaining active
-production, v7, and neutral helper clones remain owned by R2.
+production, v7, and neutral helper clones remain measured under the normal
+clone policy.
 
-## Deferred Until RCA Countermeasure Closure
+## R2 Closeout Evidence
 
-Do not use this document to choose among M7, M8-C, M9, or M10. After R1 and R2,
-re-read current code, tests, specifications, and accepted decisions, establish
-the actual capability position, and derive the next product plan through a new
-Task Start and Goal And Critical Path Gate.
+R2 closed on 2026-07-21 at `460f7b0` with the following current-checkout
+evidence:
+
+- `scripts/static-checks.sh` collects the format, lint, clone, and complexity
+  results and preserves a failing aggregate exit status when any constituent
+  fails.
+- The active-source clone gate passes with 41 clones / 409 duplicated lines /
+  0.86% against the unchanged 1% limit. Frozen format-v6 sources are excluded
+  only from clone remediation and remain in build, test, lint, complexity, and
+  cppcheck scope.
+- Bounds-before-indexing, fsck read/portability, repair-result handling,
+  unsigned-zero, HRL state-release failure, and unreachable descriptor-wire
+  findings were corrected rather than waived.
+- `scripts/deadcode.sh` reports 28 remaining const-style diagnostics. None is
+  categorized as an enabled-path correctness, data-integrity, durability,
+  portability, or unused-function finding; these diagnostics remain owned as
+  repository-wide static hygiene.
+- The full test run passed 36 tests. Five FUSE-dependent tests were not run
+  after mount startup timed out and therefore are recorded as environment gaps,
+  not PASS evidence. Both v7 ownership checks pass.
+- The capability rebaseline and subsequent product decision are recorded in
+  `docs/sd-card-wear-v7-capability-rebaseline-20260721.md`.
+
+## Post-Closeout Product Selection
+
+The required post-R2 re-read is complete. The next product task is M7
+controlled-write RC qualification (`SDW-V7RT-T48`), not an expansion of the
+mutation surface. See the capability rebaseline for the current matrix,
+alternative ordering, scope, and exit criteria.
 
 ## Local-Optimum Check
 
