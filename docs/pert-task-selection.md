@@ -122,9 +122,10 @@ HEAD, relevant evidence, dependencies, estimates, or blocker state changes.
 
 The post-T52 v7 state is the regression case for this control. M7 real-media
 qualification was externally blocked, M8-C indirect mutation remained an
-explicit capability gap, and T53 bounded directory-graph validation was adjacent
-to the completed direct validators. A valid pre-proposal PERT record must not
-select T53 merely because it is coherent, safe, or locally easy. It must retain
-the M7 blocker, model M8-C and other credible goal paths at equal resolution,
-and show a causal zero/least-slack edge before T53 can be selected. Without that
-evidence the decision is `REPLAN`, not `SELECT`.
+explicit capability gap, and a tentative T53 bounded directory-graph validation
+candidate was adjacent to the completed direct validators. A valid pre-proposal
+PERT record must not select that directory task merely because it is coherent,
+safe, or locally easy. It must retain the M7 blocker, model M8-C and other
+credible goal paths at equal resolution, and show a causal zero/least-slack edge
+before any wave can be selected. Without that evidence the decision is
+`REPLAN`, not `SELECT`.

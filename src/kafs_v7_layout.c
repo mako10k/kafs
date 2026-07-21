@@ -1803,13 +1803,15 @@ static int kafs_v7_validate_inodes(int fd, const kafs_v7_shard_desc_t *shard,
   return rc;
 }
 
-typedef struct kafs_v7_direct_reference_view
+typedef struct kafs_v7_reference_view
 {
+  int fd;
   const kafs_v7_layout_report_t *report;
+  const kafs_v7_journal_replay_t *replay;
   uint8_t **bitmaps;
-} kafs_v7_direct_reference_view_t;
+} kafs_v7_reference_view_t;
 
-static void kafs_v7_direct_reference_view_clear(kafs_v7_direct_reference_view_t *view)
+static void kafs_v7_reference_view_clear(kafs_v7_reference_view_t *view)
 {
   if (!view)
     return;
@@ -1820,14 +1822,16 @@ static void kafs_v7_direct_reference_view_clear(kafs_v7_direct_reference_view_t 
   memset(view, 0, sizeof(*view));
 }
 
-static int kafs_v7_direct_reference_view_init(kafs_v7_direct_reference_view_t *view, int fd,
-                                              const kafs_v7_layout_report_t *report,
-                                              const kafs_v7_journal_replay_t *replay)
+static int kafs_v7_reference_view_init(kafs_v7_reference_view_t *view, int fd,
+                                       const kafs_v7_layout_report_t *report,
+                                       const kafs_v7_journal_replay_t *replay)
 {
   if (!view || !report)
     return -EINVAL;
   memset(view, 0, sizeof(*view));
+  view->fd = fd;
   view->report = report;
+  view->replay = replay;
   view->bitmaps = (uint8_t **)calloc(report->group_count, sizeof(*view->bitmaps));
   if (!view->bitmaps)
     return -ENOMEM;
@@ -1842,7 +1846,7 @@ static int kafs_v7_direct_reference_view_init(kafs_v7_direct_reference_view_t *v
     view->bitmaps[group_id] = (uint8_t *)bits;
   }
   if (rc != 0)
-    kafs_v7_direct_reference_view_clear(view);
+    kafs_v7_reference_view_clear(view);
   return rc;
 }
 
@@ -1866,8 +1870,7 @@ static int kafs_v7_resolve_data_reference(const kafs_v7_layout_report_t *report,
   return -ERANGE;
 }
 
-static int kafs_v7_validate_direct_reference(const kafs_v7_direct_reference_view_t *view,
-                                             uint32_t reference)
+static int kafs_v7_validate_data_reference(const kafs_v7_reference_view_t *view, uint32_t reference)
 {
   if (!view || !view->report || !view->bitmaps)
     return -EINVAL;
@@ -1879,41 +1882,95 @@ static int kafs_v7_validate_direct_reference(const kafs_v7_direct_reference_view
   return (view->bitmaps[group_id][local / 8u] & (uint8_t)(1u << (local % 8u))) != 0u ? 0 : -EINVAL;
 }
 
-static int kafs_v7_validate_direct_inode(const kafs_v7_direct_reference_view_t *view,
-                                         const kafs_v7_inode_t *inode)
+static int kafs_v7_reference_view_read(const kafs_v7_reference_view_t *view, uint32_t reference,
+                                       void *block)
+{
+  uint32_t group_id = 0u;
+  uint64_t local = 0u;
+  int rc = kafs_v7_resolve_data_reference(view->report, reference, &group_id, &local);
+  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(view->report);
+  if (rc != 0 || !groups)
+    return rc != 0 ? rc : -EUCLEAN;
+  uint64_t physical_off = le64toh(groups[group_id].data_physical_off);
+  if (local > (UINT64_MAX - physical_off) / view->report->block_size)
+    return -EOVERFLOW;
+  physical_off += local * view->report->block_size;
+  return kafs_v7_journal_overlay_pread(view->replay, view->fd, block, view->report->block_size,
+                                       physical_off);
+}
+
+static uint32_t kafs_v7_inode_reference(const kafs_v7_inode_t *inode, uint32_t slot)
+{
+  uint32_t reference = 0u;
+  memcpy(&reference, inode->inline_or_block_refs + slot * sizeof(reference), sizeof(reference));
+  return le32toh(reference);
+}
+
+static int kafs_v7_validate_inode_references(const kafs_v7_reference_view_t *view,
+                                             const kafs_v7_inode_t *inode)
 {
   uint64_t size = le64toh(inode->size);
   uint64_t direct_capacity =
       (uint64_t)view->report->block_size * KAFS_V7_INODE_DIRECT_REFERENCE_COUNT;
-  if (size <= sizeof(inode->inline_or_block_refs) || size > direct_capacity)
+  if (size <= sizeof(inode->inline_or_block_refs))
     return 0;
 
-  uint32_t expected_blocks =
-      (uint32_t)((size + view->report->block_size - 1u) / view->report->block_size);
-  if (le32toh(inode->blocks) != expected_blocks)
+  uint64_t data_blocks = (size - 1u) / view->report->block_size + 1u;
+  uint64_t references_per_block = view->report->block_size / sizeof(uint32_t);
+  uint64_t single_capacity = KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + references_per_block;
+  if (data_blocks > single_capacity)
+    return 0;
+  uint64_t expected_allocated = data_blocks + (size > direct_capacity ? 1u : 0u);
+  if (expected_allocated > UINT32_MAX || le32toh(inode->blocks) != expected_allocated)
     return -EINVAL;
-  for (uint32_t slot = 0u; slot < KAFS_V7_INODE_REFERENCE_COUNT; ++slot)
+  uint32_t direct_blocks = data_blocks < KAFS_V7_INODE_DIRECT_REFERENCE_COUNT
+                               ? (uint32_t)data_blocks
+                               : KAFS_V7_INODE_DIRECT_REFERENCE_COUNT;
+  for (uint32_t slot = 0u; slot < KAFS_V7_INODE_DIRECT_REFERENCE_COUNT; ++slot)
   {
-    uint32_t reference = 0u;
-    memcpy(&reference, inode->inline_or_block_refs + slot * sizeof(reference), sizeof(reference));
-    reference = le32toh(reference);
-    if (slot < expected_blocks)
+    uint32_t reference = kafs_v7_inode_reference(inode, slot);
+    if (slot < direct_blocks)
     {
-      int rc = kafs_v7_validate_direct_reference(view, reference);
+      int rc = kafs_v7_validate_data_reference(view, reference);
       if (rc != 0)
         return rc;
     }
     else if (reference != 0u)
       return -EINVAL;
   }
-  return 0;
+
+  uint32_t single_root = kafs_v7_inode_reference(inode, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT);
+  for (uint32_t slot = KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 1u;
+       slot < KAFS_V7_INODE_REFERENCE_COUNT; ++slot)
+    if (kafs_v7_inode_reference(inode, slot) != 0u)
+      return -EINVAL;
+  if (size <= direct_capacity)
+    return single_root == 0u ? 0 : -EINVAL;
+
+  int rc = kafs_v7_validate_data_reference(view, single_root);
+  uint32_t *references = rc == 0 ? malloc(view->report->block_size) : NULL;
+  if (rc == 0 && !references)
+    rc = -ENOMEM;
+  if (rc == 0)
+    rc = kafs_v7_reference_view_read(view, single_root, references);
+  uint64_t indirect_data_blocks = data_blocks - KAFS_V7_INODE_DIRECT_REFERENCE_COUNT;
+  for (uint64_t index = 0u; rc == 0 && index < references_per_block; ++index)
+  {
+    uint32_t reference = le32toh(references[index]);
+    if (index < indirect_data_blocks)
+      rc = kafs_v7_validate_data_reference(view, reference);
+    else if (reference != 0u)
+      rc = -EINVAL;
+  }
+  free(references);
+  return rc;
 }
 
-static int kafs_v7_validate_direct_inodes(int fd, const kafs_v7_layout_report_t *report,
-                                          const kafs_v7_journal_replay_t *replay)
+static int kafs_v7_validate_inode_references_all(int fd, const kafs_v7_layout_report_t *report,
+                                                 const kafs_v7_journal_replay_t *replay)
 {
-  kafs_v7_direct_reference_view_t view;
-  int rc = kafs_v7_direct_reference_view_init(&view, fd, report, replay);
+  kafs_v7_reference_view_t view;
+  int rc = kafs_v7_reference_view_init(&view, fd, report, replay);
   const kafs_v7_shard_desc_t *shards = kafs_v7_report_shards(report);
   for (uint32_t group_id = 0u; rc == 0 && group_id < report->group_count; ++group_id)
   {
@@ -1925,10 +1982,10 @@ static int kafs_v7_validate_direct_inodes(int fd, const kafs_v7_layout_report_t 
     const kafs_v7_inode_t *inodes = (const kafs_v7_inode_t *)area;
     for (uint64_t local = 0u; rc == 0 && local < count; ++local)
       if (le16toh(inodes[local].mode) != 0u)
-        rc = kafs_v7_validate_direct_inode(&view, &inodes[local]);
+        rc = kafs_v7_validate_inode_references(&view, &inodes[local]);
     free(area);
   }
-  kafs_v7_direct_reference_view_clear(&view);
+  kafs_v7_reference_view_clear(&view);
   return rc;
 }
 
@@ -2462,7 +2519,7 @@ static int kafs_v7_validate_payloads(int fd, const kafs_ssuperblock_t *sb,
       rc = kafs_v7_validate_hrl(fd, local, group, report->block_size, total_bucket_count, &replay);
   }
   if (rc == 0)
-    rc = kafs_v7_validate_direct_inodes(fd, report, &replay);
+    rc = kafs_v7_validate_inode_references_all(fd, report, &replay);
   if (rc == 0)
     rc = kafs_v7_validate_namespace(fd, report, &replay, kafs_sb_inocnt_get(sb));
   if (rc == 0 &&

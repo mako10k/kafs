@@ -153,6 +153,19 @@ target.write_text(json.dumps(data) + "\n", encoding="utf-8")
 PY
 expect_failure missing-promotion-workload "$gate" --matrix "$missing_promotion" --validate-only
 
+missing_single="$workdir/missing-single.json"
+python3 - "$ready" "$missing_single" <<'PY'
+import json
+from pathlib import Path
+import sys
+source = Path(sys.argv[1])
+target = Path(sys.argv[2])
+data = json.loads(source.read_text(encoding="utf-8"))
+data["test_plan"]["normal_workloads"].remove("regular_file_single_indirect_lifecycle")
+target.write_text(json.dumps(data) + "\n", encoding="utf-8")
+PY
+expect_failure missing-single-workload "$gate" --matrix "$missing_single" --validate-only
+
 unstable_path="$workdir/unstable-path.json"
 python3 - "$ready" "$unstable_path" <<'PY'
 import json

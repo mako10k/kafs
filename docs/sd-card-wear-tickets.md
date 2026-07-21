@@ -3549,6 +3549,45 @@
   - non-destructive file-image qualificationはrequired case 26/26 PASS、digest検証済みartifact 90件だった。
     RC、real-media、controller-independent wearのclaimはfalseのままである。
 
+### SDW-V7RT-T53 dense single-indirect regular-file lifecycle
+
+- 目的: 実媒体準備が外部待ちの間に、direct上限で止まっていたregular-file controlled-writeを、
+  same-groupのdense single-indirect write/truncate/recoveryまで一つのcoherent lifecycleとして閉じる。
+- PERT/Task Start判断:
+  - [v7 indirect lifecycle PERT](sd-card-wear-v7-indirect-pert-20260721.md)で、`single ->
+    double/triple -> expanded software qualification`をreal-media qualification joinのrunnable software legとした。
+  - tentativeなdirectory-graph validationは直前validatorに隣接するがcritical pathを短縮しないため破棄した。
+    single-indirect lifecycleをrunnable zero-slack predecessorとして`SELECT`し、Task Start Gateは`PASS`した。
+- 変更:
+  - regular-file write/truncate APIをdirect名からregular名へ改め、direct-to-single crossing、single内overwrite、
+    contiguous growth、aligned/partial shrink、single-to-direct、zeroを許可する。
+  - request対象data blockとsingle rootを同じsame-group COW batchでstageし、inode reference、size、
+    data+root block count、bitmap/summaryを一transactionでpublishする。旧data/rootはcommit後にだけretireする。
+  - data COW commit proofをdirect slot検索からbefore/after block-tree reachabilityへ拡張し、全new blockがafter
+    graph、全retained blockがbefore graphから到達できることを要求する。
+  - 共通image validatorでdense single treeのroot/data allocation、block count、必須/未使用referenceを
+    journal overlay込みで検査する。
+  - low-level transition/negative validator testと、actual FUSE write/read/full-fsync、fsck、inspection remount、
+    journal publish/metadata apply/checkpoint copy recovery matrixを追加する。
+- 完了条件:
+  - direct-to-single、single内overwrite/growth、single partial/aligned shrink、single-to-direct、zeroがpayload、
+    reference、counter、retirementを壊さず完了する。
+  - fault recovery後はold stateまたはpublished new stateへ収束し、mixed root/data graphをadmitしない。
+  - holes、double/triple mutation、indirect directory、cross-group allocation、repair、real-media executionは
+    fail closedまたは明示的な非目標のままにする。
+- focused完了結果（2026-07-21）:
+  - low-level FUSE-write smokeとcheckpoint-publication smokeはPASSした。
+  - actual FUSE normal/remount/single-to-direct matrixと3中断点single recovery matrix、offline fsckはPASSした。
+  - unused single-root referenceを注入したimageは共通validatorが拒否し、復元後のfsckはPASSした。
+  - non-destructive file-image qualificationはrequired result 29/29 PASS、digest検証済みartifact 97件となり、
+    synthetic gateとDRAFT real-media approval gate regressionもPASSした。
+  - final `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`は43/43 PASSし、SKIPはなかった。
+  - format、lint、v7 layout/runtime ownership、clone、aggregate static gateはすべてPASSした。active sourceは
+    41 clones、409 duplicated lines、0.84%で、new cloneは0件だった。
+  - closeout PERTはsingle完了後のnetworkを再構築し、doubleとtripleを別のcapability edgeとして再評価した。
+    次のrunnable zero-slack frontierはdense same-group double-indirect lifecycle `D2`である。実装前には別途
+    current checkoutに対するTask Start Gateを要求する。
+
 ---
 
 ## 次に着手する候補
@@ -3556,7 +3595,12 @@
 この節はhandoff用の開始候補であり、実装開始許可または最新の完了条件ではない。着手前に`AGENTS.md`の
 Task Start Gateでcurrent checkoutのevidenceを再確認し、`PASS`・`REPLAN`・`BLOCKED`を判定する。
 
-T49とT50は完了している。実媒体準備を再開できる時点では、次を行う。
+T49-T53は完了している。最新のcloseout PERTは、software legの次のrunnable zero-slack frontierとして
+dense same-group double-indirect regular-file lifecycle `D2`を選択した。これはsingleで閉じたroot path-copy、
+reachability、retirement、recoveryを二段treeへ拡張し、triple lifecycleをunlockする。着手前にcurrent
+checkoutでTask Start Gateを再実行し、exit criteriaと非目標を再導出する。
+
+実媒体準備を再開できる時点では、並行するexternal blocker `H`について次を行う。
 
 1. `SDW-V7RT-T48-B1` matrixへexact host/card/reader/power-cut identityとcycle countを入力し、
    `READY_FOR_APPROVAL` gateが返すSHA-256をoperatorへ提示する。
@@ -3564,8 +3608,9 @@ T49とT50は完了している。実媒体準備を再開できる時点では�
    実装する。承認前はformat、mount、power interruption、`/dev/*` execution pathを追加しない。
 
 現在の選定根拠と非目標は
-`docs/sd-card-wear-v7-capability-rebaseline-20260721.md`を参照する。M7 closeout前にM8-C indirect mutationへ
-進む場合は、Goal And Critical Path Gateを再実行して順序変更の根拠を記録する。
+`docs/sd-card-wear-v7-indirect-pert-20260721.md`と
+`docs/sd-card-wear-v7-capability-rebaseline-20260721.md`を参照する。hardware blockerをgraphから外したり、
+局所着手容易性で`D2`を別taskへ置換したりせず、各wave closeoutでPERTを再構築する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の

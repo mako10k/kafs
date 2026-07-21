@@ -1306,6 +1306,26 @@ static int run_fsck(const char *image)
   return rc;
 }
 
+static int read_persisted_reference(int fd, const kafs_v7_layout_report_t *report,
+                                    uint32_t reference, uint32_t block_size, void *block)
+{
+  if (reference == 0u)
+    return -ENOENT;
+  uint64_t logical = (uint64_t)reference - 1u;
+  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(report);
+  for (uint32_t group_id = 0u; group_id < report->group_count; ++group_id)
+  {
+    uint64_t start = le64toh(groups[group_id].data_logical_start);
+    uint64_t count = le64toh(groups[group_id].data_logical_count);
+    if (logical < start || logical - start >= count)
+      continue;
+    uint64_t off = le64toh(groups[group_id].data_physical_off) +
+                   (logical - start) * (uint64_t)block_size;
+    return kafs_pread_all(fd, block, block_size, (off_t)off);
+  }
+  return -ERANGE;
+}
+
 static int check_persisted_blocks(const char *image, uint32_t ino, const void *expected,
                                   uint64_t expected_size, uint32_t block_size, uint32_t block_count)
 {
@@ -1317,34 +1337,37 @@ static int check_persisted_blocks(const char *image, uint32_t ino, const void *e
   kafs_v7_inode_t inode;
   if (rc == 0)
     rc = read_inode(fd, &report, ino, &inode);
-  if (rc == 0 && (le64toh(inode.size) != expected_size || le32toh(inode.blocks) != block_count))
+  uint32_t expected_allocated =
+      block_count + (block_count > KAFS_V7_INODE_DIRECT_REFERENCE_COUNT ? 1u : 0u);
+  if (rc == 0 &&
+      (le64toh(inode.size) != expected_size || le32toh(inode.blocks) != expected_allocated))
     rc = -EUCLEAN;
   uint8_t *actual = rc == 0 && block_count != 0u ? malloc((size_t)block_size * block_count) : NULL;
+  uint32_t *indirect =
+      rc == 0 && block_count > KAFS_V7_INODE_DIRECT_REFERENCE_COUNT ? malloc(block_size) : NULL;
   if (rc == 0 && block_count != 0u && !actual)
     rc = -ENOMEM;
-  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(&report);
+  if (rc == 0 && block_count > KAFS_V7_INODE_DIRECT_REFERENCE_COUNT && !indirect)
+    rc = -ENOMEM;
+  if (rc == 0 && indirect)
+  {
+    uint32_t root_reference = 0u;
+    memcpy(&root_reference,
+           inode.inline_or_block_refs + KAFS_V7_INODE_DIRECT_REFERENCE_COUNT * sizeof(uint32_t),
+           sizeof(root_reference));
+    rc = read_persisted_reference(fd, &report, le32toh(root_reference), block_size, indirect);
+  }
   for (uint32_t slot = 0; rc == 0 && slot < block_count; ++slot)
   {
     uint32_t reference = 0u;
-    memcpy(&reference, inode.inline_or_block_refs + slot * sizeof(reference), sizeof(reference));
+    if (slot < KAFS_V7_INODE_DIRECT_REFERENCE_COUNT)
+      memcpy(&reference, inode.inline_or_block_refs + slot * sizeof(reference),
+             sizeof(reference));
+    else
+      reference = indirect[slot - KAFS_V7_INODE_DIRECT_REFERENCE_COUNT];
     reference = le32toh(reference);
-    if (reference == 0u)
-    {
-      rc = -ENOENT;
-      break;
-    }
-    uint64_t logical = (uint64_t)reference - 1u;
-    rc = -ERANGE;
-    for (uint32_t i = 0; i < report.group_count; ++i)
-    {
-      uint64_t start = le64toh(groups[i].data_logical_start);
-      uint64_t count = le64toh(groups[i].data_logical_count);
-      if (logical < start || logical - start >= count)
-        continue;
-      uint64_t off = le64toh(groups[i].data_physical_off) + (logical - start) * block_size;
-      rc = kafs_pread_all(fd, actual + (size_t)slot * block_size, block_size, (off_t)off);
-      break;
-    }
+    rc = read_persisted_reference(fd, &report, reference, block_size,
+                                  actual + (size_t)slot * block_size);
   }
   if (rc == 0 && block_count != 0u &&
       memcmp(actual, expected, (size_t)block_size * block_count) != 0)
@@ -1358,6 +1381,7 @@ static int check_persisted_blocks(const char *image, uint32_t ino, const void *e
             mismatch < bytes ? ((const uint8_t *)expected)[mismatch] : 0u);
     rc = -EIO;
   }
+  free(indirect);
   free(actual);
   kafs_v7_layout_report_clear(&report);
   if (fd >= 0)
@@ -1385,13 +1409,14 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
   char path[PATH_MAX];
   snprintf(path, sizeof(path), "%s/block", mnt);
   int fd = open(path, O_RDWR);
-  uint8_t *payload = malloc(4u * block_size);
+  const uint32_t single_data_blocks = KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 2u;
+  uint8_t *payload = malloc((size_t)single_data_blocks * block_size);
   const size_t multi_bytes = (size_t)block_size + 53u;
   uint8_t *multi = malloc(multi_bytes);
   int rc = fd < 0 || !payload || !multi ? -1 : 0;
   if (rc == 0)
   {
-    memset(payload, 0, 4u * block_size);
+    memset(payload, 0, (size_t)single_data_blocks * block_size);
     memcpy(payload, k_block_payload, strlen(k_block_payload));
   }
 
@@ -1473,6 +1498,69 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
     memset(payload + truncate_size, 0, 3u * block_size - (size_t)truncate_size);
   if (rc == 0)
     qualification_case_pass("direct_truncate");
+
+  const uint64_t direct_capacity =
+      (uint64_t)KAFS_V7_INODE_DIRECT_REFERENCE_COUNT * block_size;
+  if (rc == 0)
+  {
+    size_t growth_bytes = (size_t)(direct_capacity - truncate_size);
+    for (size_t i = 0u; i < growth_bytes; ++i)
+      payload[truncate_size + i] = (uint8_t)(i * 37u + 13u);
+    if (pwrite(fd, payload + truncate_size, growth_bytes, (off_t)truncate_size) !=
+        (ssize_t)growth_bytes)
+    {
+      fprintf(stderr, "controlled growth to direct capacity failed: errno=%d\n", errno);
+      rc = -1;
+    }
+  }
+  const size_t indirect_growth_bytes = 2u * (size_t)block_size;
+  if (rc == 0)
+  {
+    for (size_t i = 0u; i < indirect_growth_bytes; ++i)
+      payload[direct_capacity + i] = (uint8_t)(i * 41u + 19u);
+    if (pwrite(fd, payload + direct_capacity, indirect_growth_bytes, (off_t)direct_capacity) !=
+        (ssize_t)indirect_growth_bytes)
+    {
+      fprintf(stderr, "controlled single-indirect growth failed: errno=%d\n", errno);
+      rc = -1;
+    }
+  }
+  uint8_t indirect_patch[97];
+  const uint64_t indirect_patch_offset = direct_capacity + 31u;
+  if (rc == 0)
+  {
+    for (size_t i = 0u; i < sizeof(indirect_patch); ++i)
+      indirect_patch[i] = (uint8_t)(i * 43u + 23u);
+    if (pwrite(fd, indirect_patch, sizeof(indirect_patch), (off_t)indirect_patch_offset) !=
+        (ssize_t)sizeof(indirect_patch))
+    {
+      fprintf(stderr, "controlled single-indirect overwrite failed: errno=%d\n", errno);
+      rc = -1;
+    }
+    else
+      memcpy(payload + indirect_patch_offset, indirect_patch, sizeof(indirect_patch));
+  }
+  const uint64_t single_size = direct_capacity + block_size + 53u;
+  if (rc == 0 && ftruncate(fd, (off_t)single_size) != 0)
+  {
+    fprintf(stderr, "controlled single-indirect truncate failed: errno=%d\n", errno);
+    rc = -1;
+  }
+  if (rc == 0)
+    memset(payload + single_size, 0,
+           (size_t)single_data_blocks * block_size - (size_t)single_size);
+  if (rc == 0 && fsync(fd) != 0)
+  {
+    fprintf(stderr, "controlled single-indirect fsync failed: errno=%d\n", errno);
+    rc = -1;
+  }
+  if (rc == 0 && read_block_equals(path, payload, (size_t)single_size) != 0)
+  {
+    fprintf(stderr, "controlled single-indirect mounted readback failed\n");
+    rc = -1;
+  }
+  if (rc == 0)
+    qualification_case_pass("single_indirect_write_truncate");
   if (fd >= 0 && close(fd) != 0 && rc == 0)
     rc = -1;
   if (rc == 0)
@@ -1560,7 +1648,8 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
 
   if (rc == 0 && run_fsck(image) != 0)
     rc = -1;
-  if (rc == 0 && check_persisted_blocks(image, ino, payload, truncate_size, block_size, 3u) != 0)
+  if (rc == 0 &&
+      check_persisted_blocks(image, ino, payload, single_size, block_size, single_data_blocks) != 0)
   {
     fprintf(stderr, "controlled persisted block check failed\n");
     rc = -1;
@@ -1578,7 +1667,7 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
     else
     {
       snprintf(path, sizeof(path), "%s/block", "mnt-controlled-remount");
-      if (read_block_equals(path, payload, (size_t)truncate_size) != 0)
+      if (read_block_equals(path, payload, (size_t)single_size) != 0)
       {
         fprintf(stderr, "controlled block remount read failed\n");
         rc = -1;
@@ -1632,8 +1721,16 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
     else
     {
       snprintf(path, sizeof(path), "%s/block", "mnt-controlled-open-trunc");
-      int truncate_fd = open(path, O_WRONLY | O_TRUNC);
-      if (truncate_fd < 0 || close(truncate_fd) != 0)
+      int truncate_fd = open(path, O_RDWR);
+      uint64_t direct_size =
+          ((uint64_t)KAFS_V7_INODE_DIRECT_REFERENCE_COUNT - 1u) * block_size + 53u;
+      if (truncate_fd < 0 || ftruncate(truncate_fd, (off_t)direct_size) != 0 ||
+          fsync(truncate_fd) != 0 || close(truncate_fd) != 0)
+        rc = -1;
+      if (rc == 0)
+        qualification_case_pass("single_indirect_to_direct_truncate");
+      truncate_fd = rc == 0 ? open(path, O_WRONLY | O_TRUNC) : -1;
+      if (rc == 0 && (truncate_fd < 0 || close(truncate_fd) != 0))
         rc = -1;
       kafs_test_stop_kafs("mnt-controlled-open-trunc", pid);
       if (rc == 0)
@@ -1645,6 +1742,125 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
   if (rc == 0 && check_persisted_blocks(image, ino, NULL, 0u, block_size, 0u) != 0)
     rc = -1;
   free(multi);
+  free(payload);
+  return rc;
+}
+
+static void fill_single_indirect_payload(uint8_t *payload, uint32_t block_size)
+{
+  size_t total = (KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 2u) * (size_t)block_size;
+  memset(payload, 0, total);
+  memcpy(payload, k_block_payload, strlen(k_block_payload));
+  for (size_t i = 3u * block_size; i < total; ++i)
+    payload[i] = (uint8_t)(i * 47u + 29u);
+}
+
+static int seed_controlled_single_indirect(const char *image, uint32_t ino, uint32_t block_size)
+{
+  const char *mnt = "mnt-single-seed";
+  kafs_test_mount_options_t options = {
+      .log_path = "v7-single-seed.log",
+      .extra_options = "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
+      .timeout_ms = 15000,
+  };
+  pid_t pid = kafs_test_start_kafs_v7_controlled_write(image, mnt, &options);
+  if (pid <= 0)
+    return -1;
+
+  uint32_t data_blocks = KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 2u;
+  size_t total = (size_t)data_blocks * block_size;
+  uint8_t *payload = malloc(total);
+  char path[PATH_MAX];
+  snprintf(path, sizeof(path), "%s/block", mnt);
+  int fd = open(path, O_RDWR);
+  int rc = fd < 0 || !payload ? -1 : 0;
+  if (rc == 0)
+  {
+    fill_single_indirect_payload(payload, block_size);
+    size_t offset = 3u * block_size;
+    size_t bytes = total - offset;
+    if (pwrite(fd, payload + offset, bytes, (off_t)offset) != (ssize_t)bytes || fsync(fd) != 0)
+      rc = -1;
+  }
+  if (fd >= 0 && close(fd) != 0 && rc == 0)
+    rc = -1;
+  kafs_test_stop_kafs(mnt, pid);
+  if (rc == 0 && run_fsck(image) != 0)
+    rc = -1;
+  if (rc == 0 && check_persisted_blocks(image, ino, payload, total, block_size, data_blocks) != 0)
+    rc = -1;
+  if (rc != 0)
+    kafs_test_dump_log(options.log_path, "v7 single-indirect seed failed");
+  free(payload);
+  return rc;
+}
+
+static int check_controlled_single_indirect_recovery(const char *image, uint32_t ino,
+                                                      uint32_t block_size,
+                                                      kafs_v7_test_fault_point_t fault)
+{
+  char crash_log[PATH_MAX];
+  char recovery_log[PATH_MAX];
+  snprintf(crash_log, sizeof(crash_log), "v7-single-%s-crash.log",
+           kafs_v7_test_fault_name(fault));
+  snprintf(recovery_log, sizeof(recovery_log), "v7-single-%s-recovery.log",
+           kafs_v7_test_fault_name(fault));
+  kafs_test_mount_options_t options = {
+      .log_path = crash_log,
+      .extra_options = "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
+      .timeout_ms = 15000,
+  };
+  if (setenv(KAFS_V7_TEST_CRASH_POINT_ENV, kafs_v7_test_fault_name(fault), 1) != 0)
+    return -1;
+  pid_t pid = kafs_test_start_kafs_v7_controlled_write(image, "mnt-single-crash", &options);
+  unsetenv(KAFS_V7_TEST_CRASH_POINT_ENV);
+  if (pid <= 0)
+    return -1;
+
+  uint32_t data_blocks = KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 1u;
+  size_t expected_bytes = (size_t)data_blocks * block_size;
+  uint8_t *payload = malloc((KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 2u) * (size_t)block_size);
+  uint64_t truncate_size =
+      (uint64_t)KAFS_V7_INODE_DIRECT_REFERENCE_COUNT * block_size + 53u;
+  char path[PATH_MAX];
+  snprintf(path, sizeof(path), "%s/block", "mnt-single-crash");
+  int fd = open(path, O_RDWR);
+  int rc = fd < 0 || !payload ? -1 : 0;
+  if (rc == 0)
+  {
+    fill_single_indirect_payload(payload, block_size);
+    memset(payload + truncate_size, 0, expected_bytes - (size_t)truncate_size);
+    if (ftruncate(fd, (off_t)truncate_size) >= 0)
+      rc = -1;
+  }
+  if (fd >= 0)
+    close(fd);
+  int status = 0;
+  if (rc == 0 && (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) ||
+                  WEXITSTATUS(status) != kafs_v7_test_fault_exit_status(fault)))
+    rc = -1;
+  kafs_test_stop_kafs("mnt-single-crash", pid);
+
+  options.log_path = recovery_log;
+  pid = rc == 0
+            ? kafs_test_start_kafs_v7_controlled_write(image, "mnt-single-recovery", &options)
+            : -1;
+  if (pid <= 0)
+    rc = -1;
+  else
+    kafs_test_stop_kafs("mnt-single-recovery", pid);
+  if (rc == 0 && check_recovery_log(recovery_log, fault, 3u, 0u) != 0)
+    rc = -1;
+  if (rc == 0 && run_fsck(image) != 0)
+    rc = -1;
+  if (rc == 0 &&
+      check_persisted_blocks(image, ino, payload, truncate_size, block_size, data_blocks) != 0)
+    rc = -1;
+  if (rc != 0)
+  {
+    kafs_test_dump_log(crash_log, "v7 single-indirect crash failed");
+    kafs_test_dump_log(recovery_log, "v7 single-indirect recovery failed");
+  }
   free(payload);
   return rc;
 }
@@ -2176,6 +2392,27 @@ int main(void)
       KAFS_V7_TEST_FAULT_METADATA_APPLY,
       KAFS_V7_TEST_FAULT_CHECKPOINT_COPY,
   };
+  const char *single_seed = "v7-single-indirect-seed.img";
+  if (copy_image(image, single_seed) != 0 ||
+      seed_controlled_single_indirect(single_seed, fixture.block_ino, fixture.block_size) != 0)
+  {
+    fprintf(stderr, "v7 single-indirect recovery seed failed\n");
+    return 1;
+  }
+  for (size_t i = 0u; i < sizeof(mutation_faults) / sizeof(mutation_faults[0]); ++i)
+  {
+    char single_recovery[PATH_MAX];
+    snprintf(single_recovery, sizeof(single_recovery), "v7-single-indirect-recovery-%zu.img", i);
+    if (copy_image(single_seed, single_recovery) != 0 ||
+        check_controlled_single_indirect_recovery(single_recovery, fixture.block_ino,
+                                                  fixture.block_size, mutation_faults[i]) != 0)
+    {
+      fprintf(stderr, "v7 single-indirect recovery failed fault=%s\n",
+              kafs_v7_test_fault_name(mutation_faults[i]));
+      return 1;
+    }
+  }
+  qualification_case_pass("single_indirect_recovery_matrix");
   for (size_t i = 0u; i < sizeof(mutation_faults) / sizeof(mutation_faults[0]); ++i)
   {
     char promotion_recovery[PATH_MAX];

@@ -195,12 +195,26 @@ and controller-independent-wear claims remain false. The DRAFT real-media
 matrix now includes the promotion workload and must receive a new digest-bound
 approval after exact hardware identities are supplied.
 
+## T53 Single-Indirect File-Image Refresh
+
+The 2026-07-21 T53 dry run completed with all 29 required results at PASS and
+97 digest-checked artifacts. The three added results are
+`single_indirect_write_truncate`, `single_indirect_to_direct_truncate`, and
+`single_indirect_recovery_matrix`; the recovery result requires the raw journal
+publication, metadata apply, and checkpoint-copy recovery logs. The synthetic
+validate-only gate also requires all three results.
+
+This remains non-destructive file-image evidence. RC, real-media, and
+controller-independent-wear claims remain false. The DRAFT real-media matrix
+now includes `regular_file_single_indirect_lifecycle`, so every earlier draft
+digest is obsolete and cannot authorize execution.
+
 ## Follow-On Boundary
 
 T48-B1 adds the fail-closed matrix and digest-bound approval contract in
 `docs/sd-card-wear-v7-real-media-qualification-approval.md`. Current read-only
 discovery found no eligible real-media device, so the repository matrix remains
-`DRAFT`. The next action is to supply the exact host, card unit,
+`DRAFT`. The next hardware-path action is to supply the exact host, card unit,
 reader/controller, isolated power-cut apparatus, trigger protocol, and cycle
 count, then request approval for the resulting matrix SHA-256. Only after that
 approval may a later T48 slice add a `/dev/*` runner and physical

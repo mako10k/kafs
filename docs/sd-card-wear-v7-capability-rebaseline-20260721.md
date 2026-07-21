@@ -2,7 +2,7 @@
 
 - Branch: `feat/v7-runtime-admission-foundation`
 - Baseline: `460f7b0`
-- Status: baseline accepted; T49 expansion and T50-T52 validator hardening complete while M7 awaits hardware identity
+- Status: baseline accepted; T49-T53 software expansion/hardening complete while M7 awaits hardware identity
 
 ## Purpose
 
@@ -10,10 +10,11 @@ This document closes the post-RCA R2 recovery wave, replaces milestone status
 that predates the direct-mutation recovery work, and selects the next product
 slice from the capability that is present in the current checkout.
 
-The original rebaseline did not widen the admitted mutation surface. The T49
-addendum widens one direct transition only: an inline regular file may promote
-to one direct block. It does not enable indirect-block mutation, cross-group
-allocation, stable/GA claims, or real-device destructive testing.
+The original rebaseline did not widen the admitted mutation surface. T49 later
+added inline-to-direct promotion, and T53 now adds the dense single-indirect
+regular-file lifecycle selected by the required PERT gate. Neither change
+enables double/triple or indirect-directory mutation, cross-group allocation,
+stable/GA claims, or real-device destructive testing.
 
 ## Evidence Baseline
 
@@ -40,14 +41,14 @@ been collected.
 | Surface | Current capability | Boundary |
 | --- | --- | --- |
 | Image creation | `mkfs.kafs` creates explicit format v7 images | v7 is not the default production format |
-| Offline validation | `fsck.kafs`, `kafsdump`, layout/policy checks, allocated-inode representation checks, dense direct-reference/bitmap checks, bounded namespace payload checks, and wear-placement proof understand the current v7 image contract | This is software/image evidence, not physical NAND/FTL proof; indirect block-tree, duplicate ownership, and whole-namespace graph semantics remain separately bounded |
+| Offline validation | `fsck.kafs`, `kafsdump`, layout/policy checks, allocated-inode representation checks, dense direct/single-reference and bitmap checks, bounded namespace payload checks, and wear-placement proof understand the current v7 image contract | This is software/image evidence, not physical NAND/FTL proof; double/triple trees, duplicate ownership, and whole-namespace graph semantics remain separately bounded |
 | Offline migration | `kafsresize --migrate-create` can build a v7 destination image | No in-place metadata relocation or automatic cutover |
 | Runtime admission | Dedicated `kafs-v7` entrypoint supports inspection and explicit controlled-write mounts | Successful admission does not route through v5/v6 public entrypoints |
 | Inspection mount | Read-only FUSE view with selected recovery state and recovered `statfs` counters | Mutation fails closed |
-| Controlled write | Existing direct-block regular-file overwrite/growth, direct-only shrink above the inline boundary or to zero, empty-file creation, inline-file writes, inline-to-one-direct-block regular-file promotion, and same-group inline/direct directory append/growth through the twelve direct references | Non-zero direct-to-inline conversion, holes, promotion beyond one block, indirect mutation, cross-group allocation, and unrelated metadata mutation are rejected |
+| Controlled write | Dense same-group regular-file overwrite/growth/shrink through one single-indirect root, empty-file creation, inline-file writes, inline-to-one-direct-block regular-file promotion, and same-group inline/direct directory append/growth through twelve direct references | Non-zero direct-to-inline conversion, holes, double/triple and indirect-directory mutation, cross-group allocation, and unrelated metadata mutation are rejected |
 | Request contract | One FUSE write callback is one journal transaction; negotiated `max_write` is capped at twelve v7 blocks | No application-system-call atomicity claim across kernel-split requests |
-| Recovery | Admission closeout, interruption matrices, offline fsck, and readback cover the enabled direct mutation transitions | No real-card power-interruption qualification yet |
-| Indirect foundation | Direct/single/double/triple address calculation, walk, and retirement guard exist in v7-owned code | Indirect write/create/truncate admission remains `EOPNOTSUPP` |
+| Recovery | Admission closeout, interruption matrices, offline fsck, and readback cover enabled direct and single-indirect regular-file transitions | No real-card power-interruption qualification yet |
+| Indirect foundation | Direct/single/double/triple address calculation, walk, and retirement guard exist in v7-owned code; single-indirect regular-file mutation is admitted | Double/triple and indirect-directory mutation remain `EOPNOTSUPP` |
 | Cross-group mutation | Not enabled | Design direction remains deferred by the accepted boundary |
 
 ## R2 Closeout
@@ -87,7 +88,7 @@ R1 cardinality-independent direct mutation
   -> separately approved expansion or release decision
 ```
 
-M7 is selected before M8-C, M9, and M10:
+At the original rebaseline, M7 was selected before M8-C, M9, and M10:
 
 - **M7 controlled-write RC qualification** is the shortest path from the
   enabled surface to evidence for the accepted fault-tolerance and wear goals.
@@ -97,6 +98,12 @@ M7 is selected before M8-C, M9, and M10:
   operator cutover claim should depend on a qualified destination runtime.
 - **M10 cross-group allocation** remains behind an explicit design-direction
   decision and is not inferred from the current same-group implementation.
+
+That ordering is historical and was superseded after the user deferred physical
+media preparation and required a fresh pre-proposal PERT. The resulting record,
+[V7 indirect lifecycle PERT](sd-card-wear-v7-indirect-pert-20260721.md), keeps
+the hardware join blocker visible and selects single-indirect lifecycle as the
+runnable zero-slack software predecessor of expanded qualification.
 
 ## T49 Deferred-Media Addendum
 
@@ -216,7 +223,37 @@ complexity warning. The refreshed non-destructive file-image qualification
 passed 26/26 required results with 90 digest-checked artifacts; its RC,
 real-media, and controller-independent-wear claims remain false.
 
-## Next Task: SDW-V7RT-T48 Controlled-write RC Qualification Gate
+## T53 Single-Indirect Lifecycle Addendum
+
+T53 changes the regular-file ownership graph from inode-to-data only to an inode
+that may also own one COW single-indirect root. A write crossing the direct
+boundary, a single-indirect overwrite, and contiguous growth stage every
+requested data block plus a copied root in one same-group batch. The inode,
+bitmap/summary state, size, and `blocks = data + root` value publish atomically;
+old data and root blocks retire only after the new graph is checkpointed.
+
+The batch commit guard now reconstructs before/after inodes through the journal
+overlay and proves that every staged block is reachable from the after graph and
+every retained block was reachable from the before graph. Common image
+validation admits only dense single trees with allocated required references,
+zero unused references, zero double/triple roots, and the exact data-plus-root
+count. A deliberately non-zero unused root entry is rejected.
+
+Observed focused evidence includes low-level boundary/overwrite/growth/truncate
+transitions, checkpoint publication, actual FUSE full-fsync/readback/fsck and
+inspection remount, single-to-direct truncate, and journal-publish,
+metadata-apply, and checkpoint-copy recovery. Final aggregate gate evidence is
+recorded in T53 and the closeout PERT. Real-media, RC, double/triple,
+indirect-directory, sparse-file, and cross-group claims remain false.
+
+The post-T53 closeout rebuild splits the former combined double/triple estimate
+into causal depth boundaries. It selects dense same-group double-indirect
+regular-file lifecycle `D2` as the next runnable zero-slack software node; `D3`
+triple depth and expanded qualification follow it. Hardware identity remains an
+unknown-duration join blocker rather than disappearing from the graph. This is
+a PERT selection only, so D2 still requires a fresh Task Start Gate.
+
+## Deferred Gate: SDW-V7RT-T48 Controlled-write RC Qualification
 
 ### Scope
 
@@ -247,7 +284,7 @@ real-media, and controller-independent-wear claims remain false.
 
 ### Non-goals
 
-- enabling indirect or cross-group mutation;
+- enabling double/triple, indirect-directory, or cross-group mutation;
 - claiming stable or GA readiness;
 - claiming controller-independent wear behavior;
 - formatting any real device without the operator's explicit authorization.

@@ -9109,7 +9109,7 @@ static int kafs_op_open(const char *path, struct fuse_file_info *fi)
       if (truncate_rc == 0)
       {
         kafs_v7_fuse_truncate_result_t result;
-        truncate_rc = kafs_v7_fuse_truncate_direct(ctx, ino, 0u, &result);
+        truncate_rc = kafs_v7_fuse_truncate_regular(ctx, ino, 0u, &result);
         if (truncate_rc == 0 && result.retirement_rc != 0)
           kafs_log(KAFS_LOG_WARNING,
                    "%s: v7 O_TRUNC block retirement deferred path=%s ino=%" PRIuFAST32 " rc=%d\n",
@@ -9533,7 +9533,7 @@ static int kafs_op_truncate(const char *path, off_t size, struct fuse_file_info 
       return policy;
     kafs_v7_fuse_truncate_result_t result;
     kafs_inode_lock(ctx, ino);
-    int truncate_rc = kafs_v7_fuse_truncate_direct(ctx, ino, (uint64_t)size, &result);
+    int truncate_rc = kafs_v7_fuse_truncate_regular(ctx, ino, (uint64_t)size, &result);
     kafs_inode_unlock(ctx, ino);
     if (truncate_rc == 0 && result.retirement_rc != 0)
       kafs_log(KAFS_LOG_WARNING,
@@ -10164,7 +10164,7 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
     if (offset < 0)
       return -EINVAL;
     kafs_v7_fuse_write_result_t result;
-    int write_rc = kafs_v7_fuse_write_direct(ctx, ino, buf, size, (uint64_t)offset, &result);
+    int write_rc = kafs_v7_fuse_write_regular(ctx, ino, buf, size, (uint64_t)offset, &result);
     if (write_rc < 0)
       kafs_log(KAFS_LOG_WARNING,
                "%s: v7 bounded write rejected path=%s ino=%" PRIuFAST32 " size=%zu offset=%" PRIu64
