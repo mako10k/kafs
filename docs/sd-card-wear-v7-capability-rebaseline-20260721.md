@@ -2,7 +2,7 @@
 
 - Branch: `feat/v7-runtime-admission-foundation`
 - Baseline: `460f7b0`
-- Status: baseline accepted; T49 expansion and T50 validator hardening complete while M7 awaits hardware identity
+- Status: baseline accepted; T49 expansion and T50/T51 validator hardening complete while M7 awaits hardware identity
 
 ## Purpose
 
@@ -40,7 +40,7 @@ been collected.
 | Surface | Current capability | Boundary |
 | --- | --- | --- |
 | Image creation | `mkfs.kafs` creates explicit format v7 images | v7 is not the default production format |
-| Offline validation | `fsck.kafs`, `kafsdump`, layout/policy checks, allocated-inode representation checks, and wear-placement proof understand the current v7 image contract | This is software/image evidence, not physical NAND/FTL proof; block-tree and namespace semantics remain separately bounded |
+| Offline validation | `fsck.kafs`, `kafsdump`, layout/policy checks, allocated-inode representation checks, bounded namespace payload checks, and wear-placement proof understand the current v7 image contract | This is software/image evidence, not physical NAND/FTL proof; indirect block-tree and whole-namespace graph semantics remain separately bounded |
 | Offline migration | `kafsresize --migrate-create` can build a v7 destination image | No in-place metadata relocation or automatic cutover |
 | Runtime admission | Dedicated `kafs-v7` entrypoint supports inspection and explicit controlled-write mounts | Successful admission does not route through v5/v6 public entrypoints |
 | Inspection mount | Read-only FUSE view with selected recovery state and recovered `statfs` counters | Mutation fails closed |
@@ -151,6 +151,37 @@ Observed T50 evidence includes focused raw-layout and checkpoint-publication
 regressions, the full 41-test Automake suite with two unrelated mount-timeout
 skips, and passing format, lint, clone, and aggregate static gates. The active
 source clone result remained 409 duplicated lines (0.86%).
+
+## T51 Namespace-Payload Safety Addendum
+
+The accepted v7 wire contract defines a v7-owned KDIR version 1 payload and a
+non-empty, non-NUL symlink target. Before T51, the runtime parser checked KDIR
+records only when lookup or readdir reached them, while the common image
+validator admitted malformed namespace bytes to consumer-specific processing.
+
+T51 validates every allocated directory and symlink whose payload is inline or
+fits within the twelve direct references. KDIR headers and records must exactly
+cover the inode payload; record lengths, flags, names, hashes, targets,
+uniqueness, and header counts are checked. Root must be a directory and store no
+`..`; each non-root directory must store exactly one live `..` pointing to an
+allocated directory. Direct payload reads and inode reads both observe the
+selected journal overlay.
+
+This remains a bounded structural admission check. It does not prove namespace
+reachability, parent/child graph consistency, link counts, or indirect payloads,
+and it does not add repair or mutation capability. Corruption regressions cover
+a direct KDIR hash, inline KDIR count, missing non-root parent record, and inline
+symlink NUL. The representative corruption is rejected consistently by
+`kafsdump`, detect-only `fsck.kafs`, and `kafs-v7` preflight.
+
+Observed T51 evidence includes the focused raw-layout, checkpoint-publication,
+FUSE-write, and inspection regressions; the full 43-test Automake suite; and
+passing format, lint, v7 ownership, clone, and aggregate static gates. The
+active-source clone result remained 409 duplicated lines (0.86%), and the new
+validator functions remain below the complexity warning threshold after
+decomposition. The refreshed non-destructive file-image qualification passed
+26/26 required cases with 90 digest-checked artifacts; its RC, real-media, and
+controller-independent-wear claims remain false.
 
 ## Next Task: SDW-V7RT-T48 Controlled-write RC Qualification Gate
 

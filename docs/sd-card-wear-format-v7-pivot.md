@@ -123,6 +123,13 @@ audit are now closed for the bounded initial runtime surface:
    publication rejection before FUSE, mutation rejection, and an unchanged
    image digest after unmount.
 
+The current common image validator also parses v7-owned KDIR and symlink
+payloads that are inline or fit within the twelve direct references. It rejects
+malformed headers/records, invalid live targets, duplicate live names, invalid
+root/non-root parent records, and empty or NUL-containing symlink targets before
+offline or runtime consumers proceed. Whole-namespace graph consistency and
+indirect payload validation remain later boundaries.
+
 The offline `K7JB/K7JM/K7JC/K7JA` parser and idempotent replay simulation are
 implemented in v7-owned code. They validate rotating selected prefixes,
 transaction control and mutation records, global sequence gaps/divergence,
