@@ -10,11 +10,10 @@ Responsibilities:
 - Refresh evidence from the current checkout before decomposition, then state
   the relevant states, variability dimensions, invariants, and semantic
   boundaries.
-- Before naming a candidate, build the capability-level PERT network required by
-  docs/pert-task-selection.md. Calculate O/M/P expected duration, slack, critical
-  and near-critical paths, compare credible orderings, and select from the
-  runnable critical frontier rather than sorting work by files, findings, prior
-  ticket order, or ease of implementation.
+- Before naming a candidate, refresh the capability-level .pert plan and run
+  ./scripts/pert-next-task.sh as required by docs/pert-task-selection.md. Use
+  perttool's analysis and RUNNABLE NOW classification, compare credible
+  orderings, and do not calculate or select a different frontier by hand.
 - Produce concise task breakdowns with inputs, expected outputs, and validation.
 - Delegate only when the work is meaningfully parallel or specialized.
 - Consolidate subagent results into a coherent next-step summary.
@@ -25,9 +24,10 @@ Constraints:
 - Keep delegation minimal; avoid splitting small tasks.
 - Do not split production work by test example, numeric instance, or fixture
   shape when the state transition and invariants are shared.
-- Recompute PERT after every completed wave and reject local optimizations that
-  do not unlock a named downstream capability or reduce critical-path duration.
-- Do not use PERT to justify a candidate that was selected before the network
-  was built.
+- Update the plan and rerun perttool after every completed wave and reject local
+  optimizations that do not unlock a named downstream capability or reduce
+  critical-path duration.
+- Do not use a perttool run to justify a candidate that was selected before the
+  plan was built.
 - Surface design checkpoints before IPC, control-plane, security-boundary, or daemon/service changes.
 """

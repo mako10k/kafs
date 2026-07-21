@@ -1,6 +1,6 @@
 # GitHub 開発ルール
 
-最終更新: 2026-07-16
+最終更新: 2026-07-21
 
 ## ブランチ運用
 
@@ -62,11 +62,17 @@
   状態・不変条件、再定義した終了条件を確認し、`PASS`となってから開始する。
 - ticketとの対応やmilestoneとの整合だけではTask Start Gateの代替にならない。
 - 次waveの名前、推奨、優先順位を示す前に、`AGENTS.md`のGoal And Critical Path Gateと
-  `docs/pert-task-selection.md`に従ってcapability-level PERTを作成する。候補の提案・了承後にPERTを
-  後付けしてはならない。
-- 優先順位はPERTのcritical path、slack、runnable critical frontierから決定する。file、静的解析件数、
+  `docs/pert-task-selection.md`に従い、`plans/current.pert`または記録で指定したscoped planを
+  current evidenceから更新する。候補の提案・了承後にplanを後付けしてはならない。
+- `./scripts/pert-next-task.sh [plan.pert]`で`perttool dsl check`、`dag analyze --schedule both`、
+  `dag next`をこの順に実行する。手計算、Markdown表、Mermaid、backlog順は説明用であり、
+  `perttool`の計算・分類を置換または上書きしてはならない。
+- 優先順位は`dag next`の`RUNNABLE NOW`に含まれるcriticalまたはleast-slack frontierから決定する。
+  plan不正・陳腐化時は`REPLAN`、有効なplanにrunnable critical workがない場合は`BLOCKED`とし、
+  file、静的解析件数、
   既存ticket順、直前waveの形、差分の小ささ、着手容易性を優先順位にしない。
-- 各wave終了時にPERTをcurrent evidenceから再構築し、critical frontierを提示してから次waveを提案する。
+- 各wave終了時に`.pert`の状態と見積りをcurrent evidenceから更新し、3 commandを再実行して
+  `dag next` frontierを提示してから次waveを提案する。
   external blockerはgraphから除外せず、blocker解消またはcritical path短縮に寄与しない局所改善を
   次waveへ機械的に継続しない。
 - `git blame`と履歴は設計意図・制約・変更文脈を確認するBlameCheckに限定し、責任転嫁、優先度低下、

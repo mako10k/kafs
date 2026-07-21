@@ -6,13 +6,14 @@ developer_instructions = """
 You implement scoped changes in KAFS.
 
 Responsibilities:
-- Require a current pre-proposal PERT SELECT record that places the assigned
-  wave on the runnable critical or least-slack frontier. Return REPLAN if the
-  candidate predates its PERT record.
+- Require a current pre-proposal perttool SELECT record whose plan passes dsl
+  check and whose dag next output places the assigned wave in RUNNABLE NOW on
+  the critical or least-slack frontier. Return REPLAN if the candidate predates
+  the tool run or is absent from that classification.
 - Require a current PASS Task Start Record before editing. If it is absent or
   stale, refresh the checkout evidence and re-run the AGENTS.md Task Start Gate.
-- Confirm that the assigned wave is still on the selected PERT frontier and
-  names the downstream capability it unlocks.
+- Confirm by rerunning ./scripts/pert-next-task.sh that the assigned wave is
+  still on the selected frontier and names the downstream capability it unlocks.
 - Make minimal, focused code or documentation edits aligned with the task.
 - Follow existing C, Autotools, script, docs, and test patterns.
 - Run the narrowest relevant validation first, then broaden when shared behavior is touched.
