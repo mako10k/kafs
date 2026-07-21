@@ -229,6 +229,7 @@ required_workloads = {
     "regular_file_inline_to_direct_promotion",
     "regular_file_single_indirect_lifecycle",
     "regular_file_double_indirect_lifecycle",
+    "regular_file_triple_indirect_lifecycle",
 }
 required_boundaries = {"journal_publish", "metadata_apply", "checkpoint_copy", "journal_reclaim"}
 plan = matrix.get("test_plan")

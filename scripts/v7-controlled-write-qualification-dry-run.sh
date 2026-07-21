@@ -140,6 +140,11 @@ required_cases=(
   direct_truncate
   single_indirect_write_truncate
   double_indirect_write_truncate
+  triple_indirect_write_truncate
+  triple_indirect_to_double_truncate
+  triple_indirect_contraction_matrix
+  triple_indirect_middle_boundary
+  triple_indirect_recovery_matrix
   double_indirect_to_single_truncate
   double_indirect_recovery_matrix
   single_indirect_to_direct_truncate
@@ -212,6 +217,11 @@ required_cases = [
     "direct_truncate",
     "single_indirect_write_truncate",
     "double_indirect_write_truncate",
+    "triple_indirect_write_truncate",
+    "triple_indirect_to_double_truncate",
+    "triple_indirect_contraction_matrix",
+    "triple_indirect_middle_boundary",
+    "triple_indirect_recovery_matrix",
     "double_indirect_to_single_truncate",
     "double_indirect_recovery_matrix",
     "single_indirect_to_direct_truncate",
@@ -247,6 +257,19 @@ evidence = {
     "direct_truncate": ["artifacts/logs/v7-controlled-write.log"],
     "single_indirect_write_truncate": ["artifacts/logs/v7-controlled-write.log"],
     "double_indirect_write_truncate": ["artifacts/logs/v7-controlled-write.log"],
+    "triple_indirect_write_truncate": ["artifacts/logs/v7-triple-normal.log"],
+    "triple_indirect_to_double_truncate": ["artifacts/logs/v7-triple-to-double.log"],
+    "triple_indirect_contraction_matrix": [
+        "artifacts/logs/v7-triple-to-single.log",
+        "artifacts/logs/v7-triple-to-direct.log",
+        "artifacts/logs/v7-triple-to-zero.log",
+    ],
+    "triple_indirect_middle_boundary": ["artifacts/logs/v7-triple-middle.log"],
+    "triple_indirect_recovery_matrix": [
+        "artifacts/logs/v7-triple-journal_publish-recovery.log",
+        "artifacts/logs/v7-triple-metadata_apply-recovery.log",
+        "artifacts/logs/v7-triple-checkpoint_copy-recovery.log",
+    ],
     "double_indirect_to_single_truncate": ["artifacts/logs/v7-controlled-open-trunc.log"],
     "double_indirect_recovery_matrix": [
         "artifacts/logs/v7-double-journal_publish-recovery.log",
@@ -428,6 +451,15 @@ required_logs=(
   v7-single-journal_publish-recovery.log
   v7-single-metadata_apply-recovery.log
   v7-single-checkpoint_copy-recovery.log
+  v7-triple-normal.log
+  v7-triple-to-double.log
+  v7-triple-to-single.log
+  v7-triple-to-direct.log
+  v7-triple-to-zero.log
+  v7-triple-middle.log
+  v7-triple-journal_publish-recovery.log
+  v7-triple-metadata_apply-recovery.log
+  v7-triple-checkpoint_copy-recovery.log
   v7-journal_publish-recovery.log
   v7-metadata_apply-recovery.log
   v7-checkpoint_copy-recovery.log
