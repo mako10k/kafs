@@ -672,14 +672,16 @@ little-endian u32 plus-one references.  Therefore `s_r_blkcnt` must not exceed
 tail metadata is absent, and any non-zero tail byte is fatal for descriptor
 version 2.
 
-For an allocated inode with `60 < size <= 12 * block_size`, descriptor-version-2
-admission supports only the dense direct representation.  `blocks` equals
-`ceil(size / block_size)`; slots `[0, blocks)` are non-zero, resolve inside
-`[0, s_r_blkcnt)`, and name blocks marked allocated by the selected recovered
-bitmap.  Every slot in `[blocks, 15)` is zero, including unused direct slots and
-all three indirect roots.  This bounded rule rejects direct holes without
-claiming validation of duplicate ownership or of the indirect tree used when
-`size > 12 * block_size`.
+Descriptor-version-2 admission requires one dense representation selected by
+size.  Direct slots precede a single root, a double root containing leaf
+tables, and a triple root containing middle and leaf tables.  Every
+size-implied data or index reference is non-zero, resolves inside
+`[0, s_r_blkcnt)`, and names a block marked allocated by the selected recovered
+bitmap.  Every unused direct, root, middle, and leaf entry is zero.  `blocks`
+equals the number of data blocks plus every size-implied index block through
+triple depth.  Files larger than the direct+single+double+triple capacity are
+rejected.  This rule rejects dense-tree holes and stale unused references
+without claiming validation of duplicate ownership across references.
 
 Inode shards exact-cover `[0, s_inocnt)`, where `s_inocnt >= 2`.  An inode is
 allocated exactly when `mode != 0`.  A free inode is the canonical all-zero

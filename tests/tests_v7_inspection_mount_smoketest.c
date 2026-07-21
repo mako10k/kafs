@@ -233,6 +233,24 @@ static int format_image(const char *path)
   return run_command(argv, 0, output, sizeof(output));
 }
 
+static int format_triple_image(const char *path)
+{
+  char output[4096];
+  char *argv[] = {(char *)kafs_test_mkfs_bin(),
+                  (char *)path,
+                  (char *)"--format-version",
+                  (char *)"7",
+                  (char *)"--size-bytes",
+                  (char *)"256M",
+                  (char *)"--blksize-log",
+                  (char *)"10",
+                  (char *)"--v7-group-count",
+                  (char *)"1",
+                  (char *)"--yes",
+                  NULL};
+  return run_command(argv, 0, output, sizeof(output));
+}
+
 static int validate_image_fd(int fd, kafs_ssuperblock_t *sb, uint64_t *file_size,
                              kafs_v7_layout_report_t *report)
 {
@@ -472,6 +490,66 @@ static int allocate_group_block(int fd, const kafs_v7_layout_report_t *report, u
   return rc;
 }
 
+static int allocate_group_prefix(int fd, const kafs_v7_layout_report_t *report, uint32_t group_id,
+                                 uint64_t allocated_count, uint64_t *logical_start_out)
+{
+  if (!report || !logical_start_out || group_id >= report->group_count)
+    return -EINVAL;
+  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(report);
+  const kafs_v7_shard_desc_t *shards = kafs_v7_report_shards(report);
+  uint32_t first = le32toh(groups[group_id].first_shard_index);
+  const kafs_v7_shard_desc_t *bitmap_shard = &shards[first];
+  const kafs_v7_shard_desc_t *allocator_shard = &shards[first + 2u];
+  uint64_t blocks = le64toh(bitmap_shard->logical_count);
+  uint64_t bitmap_bytes = le64toh(bitmap_shard->physical_bytes);
+  uint64_t allocator_bytes = le64toh(allocator_shard->physical_bytes);
+  if (allocated_count == 0u || allocated_count > blocks || bitmap_bytes > SIZE_MAX ||
+      allocator_bytes > SIZE_MAX)
+    return -ERANGE;
+  uint8_t *bitmap = malloc((size_t)bitmap_bytes);
+  uint8_t *allocator = calloc(1u, (size_t)allocator_bytes);
+  if (!bitmap || !allocator)
+  {
+    free(bitmap);
+    free(allocator);
+    return -ENOMEM;
+  }
+  int rc =
+      kafs_pread_all(fd, bitmap, (size_t)bitmap_bytes, (off_t)le64toh(bitmap_shard->physical_off));
+  for (uint64_t local = 0u; rc == 0 && local < allocated_count; ++local)
+  {
+    uint8_t mask = (uint8_t)(1u << (local % 8u));
+    if ((bitmap[local / 8u] & mask) != 0u)
+      rc = -EEXIST;
+    else
+      bitmap[local / 8u] |= mask;
+  }
+  uint64_t l0_bytes = (blocks + 7u) / 8u;
+  uint64_t l1_bytes = (l0_bytes + 7u) / 8u;
+  for (uint64_t i = 0u; rc == 0 && i < l0_bytes; ++i)
+  {
+    uint8_t valid_mask = 0xffu;
+    if (i + 1u == l0_bytes && (blocks & 7u) != 0u)
+      valid_mask = (uint8_t)((1u << (blocks & 7u)) - 1u);
+    if ((bitmap[i] & valid_mask) != valid_mask)
+      allocator[i / 8u] |= (uint8_t)(1u << (i % 8u));
+  }
+  for (uint64_t i = 0u; rc == 0 && i < l1_bytes; ++i)
+    if (allocator[i] != 0u)
+      allocator[l1_bytes + i / 8u] |= (uint8_t)(1u << (i % 8u));
+  if (rc == 0)
+    rc = kafs_pwrite_all(fd, bitmap, (size_t)bitmap_bytes,
+                         (off_t)le64toh(bitmap_shard->physical_off));
+  if (rc == 0)
+    rc = kafs_pwrite_all(fd, allocator, (size_t)allocator_bytes,
+                         (off_t)le64toh(allocator_shard->physical_off));
+  free(bitmap);
+  free(allocator);
+  if (rc == 0)
+    *logical_start_out = le64toh(bitmap_shard->logical_start);
+  return rc;
+}
+
 static int update_checkpoints(int fd, const kafs_v7_layout_report_t *report, uint64_t free_blocks,
                               uint64_t free_inodes)
 {
@@ -491,6 +569,189 @@ static int update_checkpoints(int fd, const kafs_v7_layout_report_t *report, uin
       return rc;
   }
   return fdatasync(fd) == 0 ? 0 : -errno;
+}
+
+static int seed_triple_file_image(const char *path, uint64_t data_blocks, uint32_t *ino_out,
+                                  uint32_t *block_size_out)
+{
+  if (!path || !ino_out || !block_size_out)
+    return -EINVAL;
+  int fd = open(path, O_RDWR);
+  if (fd < 0)
+    return -errno;
+  kafs_ssuperblock_t sb;
+  uint64_t file_size = 0u;
+  kafs_v7_layout_report_t report = {0};
+  int rc = validate_image_fd(fd, &sb, &file_size, &report);
+  if (rc == 0 && report.group_count != 1u)
+    rc = -EINVAL;
+  uint64_t references_per_block = rc == 0 ? report.block_size / sizeof(uint32_t) : 0u;
+  uint64_t single_capacity = KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + references_per_block;
+  uint64_t double_data_capacity = references_per_block * references_per_block;
+  uint64_t double_capacity = single_capacity + double_data_capacity;
+  uint64_t triple_data = data_blocks > double_capacity ? data_blocks - double_capacity : 0u;
+  uint64_t double_data = data_blocks > single_capacity ? data_blocks - single_capacity : 0u;
+  if (double_data > double_data_capacity)
+    double_data = double_data_capacity;
+  uint64_t double_leaves =
+      double_data == 0u ? 0u : (double_data - 1u) / references_per_block + 1u;
+  uint64_t triple_leaves =
+      triple_data == 0u ? 0u : (triple_data - 1u) / references_per_block + 1u;
+  uint64_t triple_middles =
+      triple_leaves == 0u ? 0u : (triple_leaves - 1u) / references_per_block + 1u;
+  uint64_t index_blocks = (data_blocks > KAFS_V7_INODE_DIRECT_REFERENCE_COUNT ? 1u : 0u) +
+                          (double_data != 0u ? 1u + double_leaves : 0u) +
+                          (triple_data != 0u ? 1u + triple_middles + triple_leaves : 0u);
+  uint64_t file_blocks = data_blocks + index_blocks;
+  uint64_t allocated_blocks = 1u + file_blocks;
+  if (rc == 0 &&
+      (data_blocks < double_capacity || allocated_blocks > report.free_blocks ||
+       file_blocks > UINT32_MAX || data_blocks > UINT64_MAX / report.block_size))
+    rc = -ERANGE;
+  uint64_t logical_start = 0u;
+  if (rc == 0)
+    rc = allocate_group_prefix(fd, &report, 0u, allocated_blocks, &logical_start);
+  uint64_t cursor = logical_start;
+  uint64_t root_block = cursor++;
+  uint64_t data_start = cursor;
+  cursor += data_blocks;
+  uint64_t single_root = cursor++;
+  uint64_t double_leaf_start = cursor;
+  cursor += double_leaves;
+  uint64_t double_root = cursor++;
+  uint64_t triple_leaf_start = cursor;
+  cursor += triple_leaves;
+  uint64_t triple_middle_start = cursor;
+  cursor += triple_middles;
+  uint64_t triple_root = triple_data != 0u ? cursor++ : 0u;
+  if (rc == 0 && cursor - logical_start != allocated_blocks)
+    rc = -EUCLEAN;
+
+  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(&report);
+  uint8_t *block = rc == 0 ? calloc(1u, report.block_size) : NULL;
+  if (rc == 0 && !block)
+    rc = -ENOMEM;
+  uint32_t file_ino = 2u;
+  uint32_t pad_ino = 3u;
+  size_t root_bytes = 0u;
+  if (rc == 0)
+  {
+    const uint32_t inos[] = {file_ino, pad_ino};
+    const char *const names[] = {"block", "pads"};
+    rc = build_directory(block, report.block_size, inos, names, 2u, &root_bytes);
+  }
+  if (rc == 0)
+    rc = write_data_block(fd, &groups[0], root_block, block, report.block_size);
+
+  uint32_t *references = (uint32_t *)block;
+  if (rc == 0)
+  {
+    memset(block, 0, report.block_size);
+    uint64_t single_data = data_blocks - KAFS_V7_INODE_DIRECT_REFERENCE_COUNT;
+    if (single_data > references_per_block)
+      single_data = references_per_block;
+    for (uint64_t i = 0u; i < single_data; ++i)
+      references[i] = htole32((uint32_t)(data_start + KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + i) +
+                              1u);
+    rc = write_data_block(fd, &groups[0], single_root, block, report.block_size);
+  }
+  for (uint64_t leaf = 0u; rc == 0 && leaf < double_leaves; ++leaf)
+  {
+    memset(block, 0, report.block_size);
+    uint64_t consumed = leaf * references_per_block;
+    uint64_t count = double_data - consumed;
+    if (count > references_per_block)
+      count = references_per_block;
+    for (uint64_t i = 0u; i < count; ++i)
+      references[i] = htole32((uint32_t)(data_start + single_capacity + consumed + i) + 1u);
+    rc = write_data_block(fd, &groups[0], double_leaf_start + leaf, block, report.block_size);
+  }
+  if (rc == 0)
+  {
+    memset(block, 0, report.block_size);
+    for (uint64_t leaf = 0u; leaf < double_leaves; ++leaf)
+      references[leaf] = htole32((uint32_t)(double_leaf_start + leaf) + 1u);
+    rc = write_data_block(fd, &groups[0], double_root, block, report.block_size);
+  }
+  for (uint64_t leaf = 0u; rc == 0 && leaf < triple_leaves; ++leaf)
+  {
+    memset(block, 0, report.block_size);
+    uint64_t consumed = leaf * references_per_block;
+    uint64_t count = triple_data - consumed;
+    if (count > references_per_block)
+      count = references_per_block;
+    for (uint64_t i = 0u; i < count; ++i)
+      references[i] = htole32((uint32_t)(data_start + double_capacity + consumed + i) + 1u);
+    rc = write_data_block(fd, &groups[0], triple_leaf_start + leaf, block, report.block_size);
+  }
+  for (uint64_t middle = 0u; rc == 0 && middle < triple_middles; ++middle)
+  {
+    memset(block, 0, report.block_size);
+    uint64_t first_leaf = middle * references_per_block;
+    uint64_t count = triple_leaves - first_leaf;
+    if (count > references_per_block)
+      count = references_per_block;
+    for (uint64_t i = 0u; i < count; ++i)
+      references[i] = htole32((uint32_t)(triple_leaf_start + first_leaf + i) + 1u);
+    rc = write_data_block(fd, &groups[0], triple_middle_start + middle, block, report.block_size);
+  }
+  if (rc == 0 && triple_data != 0u)
+  {
+    memset(block, 0, report.block_size);
+    for (uint64_t middle = 0u; middle < triple_middles; ++middle)
+      references[middle] = htole32((uint32_t)(triple_middle_start + middle) + 1u);
+    rc = write_data_block(fd, &groups[0], triple_root, block, report.block_size);
+  }
+
+  kafs_v7_inode_t root_inode;
+  kafs_v7_inode_t file_inode;
+  kafs_v7_inode_t pad_inode;
+  if (rc == 0)
+  {
+    inode_init(&root_inode, (uint16_t)(S_IFDIR | 0777), root_bytes, 2u, 1u);
+    uint32_t reference = htole32((uint32_t)root_block + 1u);
+    memcpy(root_inode.inline_or_block_refs, &reference, sizeof(reference));
+    inode_init(&file_inode, (uint16_t)(S_IFREG | 0666), data_blocks * report.block_size, 1u,
+               (uint32_t)file_blocks);
+    for (uint32_t i = 0u; i < KAFS_V7_INODE_DIRECT_REFERENCE_COUNT; ++i)
+    {
+      reference = htole32((uint32_t)(data_start + i) + 1u);
+      memcpy(file_inode.inline_or_block_refs + i * sizeof(reference), &reference,
+             sizeof(reference));
+    }
+    reference = htole32((uint32_t)single_root + 1u);
+    memcpy(file_inode.inline_or_block_refs + KAFS_V7_INODE_DIRECT_REFERENCE_COUNT * sizeof(reference),
+           &reference, sizeof(reference));
+    reference = htole32((uint32_t)double_root + 1u);
+    memcpy(file_inode.inline_or_block_refs +
+               (KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 1u) * sizeof(reference),
+           &reference, sizeof(reference));
+    if (triple_data != 0u)
+    {
+      reference = htole32((uint32_t)triple_root + 1u);
+      memcpy(file_inode.inline_or_block_refs +
+                 (KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 2u) * sizeof(reference),
+             &reference, sizeof(reference));
+    }
+    inode_init(&pad_inode, (uint16_t)(S_IFREG | 0666), 0u, 1u, 0u);
+    rc = write_inode(fd, &report, KAFS_INO_ROOTDIR, &root_inode);
+    if (rc == 0)
+      rc = write_inode(fd, &report, file_ino, &file_inode);
+    if (rc == 0)
+      rc = write_inode(fd, &report, pad_ino, &pad_inode);
+  }
+  if (rc == 0)
+    rc = update_checkpoints(fd, &report, report.free_blocks - allocated_blocks,
+                            report.free_inodes - 2u);
+  free(block);
+  if (rc == 0)
+  {
+    *ino_out = file_ino;
+    *block_size_out = report.block_size;
+  }
+  kafs_v7_layout_report_clear(&report);
+  close(fd);
+  return rc;
 }
 
 static int seed_fixture(const char *path, v7_fixture_t *fixture)
@@ -2090,6 +2351,354 @@ static int check_controlled_double_indirect_recovery(const char *image, uint32_t
   return rc;
 }
 
+static int prepare_triple_file_image(const char *image, uint64_t data_blocks, uint32_t *ino,
+                                     uint32_t *block_size)
+{
+  int rc = format_triple_image(image);
+  if (rc == 0)
+    rc = seed_triple_file_image(image, data_blocks, ino, block_size);
+  if (rc == 0)
+    rc = run_fsck(image);
+  return rc;
+}
+
+static int triple_reference_physical_offset(const kafs_v7_layout_report_t *report,
+                                            uint32_t reference, uint64_t *physical_off)
+{
+  if (!report || !physical_off || reference == 0u)
+    return -EINVAL;
+  uint64_t logical = (uint64_t)reference - 1u;
+  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(report);
+  for (uint32_t group_id = 0u; group_id < report->group_count; ++group_id)
+  {
+    uint64_t start = le64toh(groups[group_id].data_logical_start);
+    uint64_t count = le64toh(groups[group_id].data_logical_count);
+    if (logical < start || logical - start >= count)
+      continue;
+    *physical_off = le64toh(groups[group_id].data_physical_off) +
+                    (logical - start) * report->block_size;
+    return 0;
+  }
+  return -ERANGE;
+}
+
+static int check_unused_triple_references_rejected(const char *image, uint32_t ino)
+{
+  int fd = open(image, O_RDWR);
+  if (fd < 0)
+    return -errno;
+  kafs_ssuperblock_t sb;
+  uint64_t file_size = 0u;
+  kafs_v7_layout_report_t report = {0};
+  int rc = validate_image_fd(fd, &sb, &file_size, &report);
+  kafs_v7_inode_t inode = {0};
+  if (rc == 0)
+    rc = read_inode(fd, &report, ino, &inode);
+  uint32_t root_reference = 0u;
+  if (rc == 0)
+  {
+    memcpy(&root_reference,
+           inode.inline_or_block_refs +
+               (KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 2u) * sizeof(uint32_t),
+           sizeof(root_reference));
+    root_reference = le32toh(root_reference);
+  }
+  uint32_t *root = rc == 0 ? malloc(report.block_size) : NULL;
+  uint32_t *middle = rc == 0 ? malloc(report.block_size) : NULL;
+  uint32_t *leaf = rc == 0 ? malloc(report.block_size) : NULL;
+  if (rc == 0 && (!root || !middle || !leaf))
+    rc = -ENOMEM;
+  if (rc == 0)
+    rc = read_persisted_reference(fd, &report, root_reference, report.block_size, root);
+  uint32_t middle_reference = rc == 0 ? le32toh(root[0]) : 0u;
+  if (rc == 0)
+    rc = read_persisted_reference(fd, &report, middle_reference, report.block_size, middle);
+  uint32_t leaf_reference = rc == 0 ? le32toh(middle[0]) : 0u;
+  if (rc == 0)
+    rc = read_persisted_reference(fd, &report, leaf_reference, report.block_size, leaf);
+  uint32_t data_reference = rc == 0 ? le32toh(leaf[0]) : 0u;
+  uint64_t references_per_block = rc == 0 ? report.block_size / sizeof(uint32_t) : 0u;
+  uint64_t data_blocks =
+      rc == 0 ? (le64toh(inode.size) - 1u) / report.block_size + 1u : 0u;
+  uint64_t double_capacity = KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + references_per_block +
+                             references_per_block * references_per_block;
+  uint64_t first_leaf_data = data_blocks > double_capacity ? data_blocks - double_capacity : 0u;
+  if (first_leaf_data > references_per_block)
+    first_leaf_data = references_per_block;
+  if (rc == 0 && first_leaf_data >= references_per_block)
+    rc = -ERANGE;
+  const uint32_t owners[] = {root_reference, middle_reference, leaf_reference};
+  const uint32_t poisons[] = {middle_reference, leaf_reference, data_reference};
+  const uint64_t unused_indices[] = {1u, 1u, first_leaf_data};
+  for (size_t i = 0u; rc == 0 && i < sizeof(owners) / sizeof(owners[0]); ++i)
+  {
+    uint64_t physical_off = 0u;
+    rc = triple_reference_physical_offset(&report, owners[i], &physical_off);
+    uint32_t poison = htole32(poisons[i]);
+    if (rc == 0)
+      rc = kafs_pwrite_all(fd, &poison, sizeof(poison),
+                           (off_t)physical_off + unused_indices[i] * sizeof(uint32_t));
+    if (rc == 0 && fdatasync(fd) != 0)
+      rc = -errno;
+    if (rc == 0 && v7_image_rejected(image) != 0)
+      rc = -1;
+    uint32_t zero = 0u;
+    if (rc == 0)
+      rc = kafs_pwrite_all(fd, &zero, sizeof(zero),
+                           (off_t)physical_off + unused_indices[i] * sizeof(uint32_t));
+    if (rc == 0 && fdatasync(fd) != 0)
+      rc = -errno;
+  }
+  free(root);
+  free(middle);
+  free(leaf);
+  kafs_v7_layout_report_clear(&report);
+  close(fd);
+  return rc == 0 ? run_fsck(image) : rc;
+}
+
+static int check_controlled_triple_crossing(const char *image)
+{
+  const char *mnt = "mnt-triple-normal";
+  uint32_t ino = 0u;
+  uint32_t block_size = 0u;
+  uint64_t references_per_block = 256u;
+  uint64_t double_capacity = KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + references_per_block +
+                             references_per_block * references_per_block;
+  int rc = prepare_triple_file_image(image, double_capacity, &ino, &block_size);
+  if (rc == 0 && block_size / sizeof(uint32_t) != references_per_block)
+    rc = -EINVAL;
+  kafs_test_mount_options_t options = {
+      .log_path = "v7-triple-normal.log",
+      .extra_options = "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
+      .timeout_ms = 15000,
+  };
+  pid_t pid = rc == 0 ? kafs_test_start_kafs_v7_controlled_write(image, mnt, &options) : -1;
+  if (pid <= 0)
+    rc = -1;
+  char path[PATH_MAX];
+  snprintf(path, sizeof(path), "%s/block", mnt);
+  int fd = rc == 0 ? open(path, O_RDWR) : -1;
+  size_t append_bytes = 2u * block_size;
+  uint8_t *payload = rc == 0 ? malloc(append_bytes) : NULL;
+  if (rc == 0 && (fd < 0 || !payload))
+    rc = -1;
+  for (size_t i = 0u; rc == 0 && i < append_bytes; ++i)
+    payload[i] = (uint8_t)(i * 67u + 43u);
+  uint64_t triple_offset = double_capacity * block_size;
+  if (rc == 0 &&
+      pwrite(fd, payload, append_bytes, (off_t)triple_offset) != (ssize_t)append_bytes)
+    rc = -1;
+  static const uint8_t patch[] = {0x31u, 0x42u, 0x53u, 0x64u, 0x75u};
+  if (rc == 0 &&
+      pwrite(fd, patch, sizeof(patch), (off_t)triple_offset + 17) != (ssize_t)sizeof(patch))
+    rc = -1;
+  if (rc == 0)
+    memcpy(payload + 17u, patch, sizeof(patch));
+  uint64_t partial_size = triple_offset + block_size + 53u;
+  if (rc == 0 && (ftruncate(fd, (off_t)partial_size) != 0 || fsync(fd) != 0))
+    rc = -1;
+  uint8_t tail[53];
+  if (rc == 0 &&
+      pread(fd, tail, sizeof(tail), (off_t)(triple_offset + block_size)) != (ssize_t)sizeof(tail))
+    rc = -1;
+  if (rc == 0 && memcmp(tail, payload + block_size, sizeof(tail)) != 0)
+    rc = -1;
+  if (fd >= 0 && close(fd) != 0 && rc == 0)
+    rc = -1;
+  if (pid > 0)
+    kafs_test_stop_kafs(mnt, pid);
+  if (rc == 0 && run_fsck(image) != 0)
+    rc = -1;
+  if (rc == 0 && check_unused_triple_references_rejected(image, ino) != 0)
+    rc = -1;
+  if (rc == 0)
+    qualification_case_pass("triple_indirect_write_truncate");
+  free(payload);
+  return rc;
+}
+
+static int check_controlled_triple_contraction(const char *image, uint64_t target_blocks,
+                                               const char *log_path)
+{
+  uint32_t ino = 0u;
+  uint32_t block_size = 0u;
+  const uint64_t references_per_block = 256u;
+  const uint64_t double_capacity = KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + references_per_block +
+                                   references_per_block * references_per_block;
+  int rc = prepare_triple_file_image(image, double_capacity + 2u, &ino, &block_size);
+  kafs_test_mount_options_t options = {
+      .log_path = log_path,
+      .extra_options = "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
+      .timeout_ms = 15000,
+  };
+  pid_t pid = rc == 0 ? kafs_test_start_kafs_v7_controlled_write(image, "mnt-triple-contract",
+                                                                 &options)
+                      : -1;
+  if (pid <= 0)
+    rc = -1;
+  char path[PATH_MAX];
+  snprintf(path, sizeof(path), "%s/block", "mnt-triple-contract");
+  int fd = rc == 0 ? open(path, O_RDWR) : -1;
+  uint64_t target_size = target_blocks * block_size;
+  struct stat st;
+  if (rc == 0 &&
+      (fd < 0 || ftruncate(fd, (off_t)target_size) != 0 || fsync(fd) != 0 ||
+       fstat(fd, &st) != 0 || (uint64_t)st.st_size != target_size))
+    rc = -1;
+  if (fd >= 0 && close(fd) != 0 && rc == 0)
+    rc = -1;
+  if (pid > 0)
+    kafs_test_stop_kafs("mnt-triple-contract", pid);
+  if (rc == 0 && run_fsck(image) != 0)
+    rc = -1;
+  return rc;
+}
+
+static int check_controlled_triple_contraction_matrix(void)
+{
+  const uint64_t references_per_block = 256u;
+  const uint64_t single_capacity = KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + references_per_block;
+  int rc = check_controlled_triple_contraction("v7-triple-to-double.img",
+                                               single_capacity + references_per_block *
+                                                                     references_per_block,
+                                               "v7-triple-to-double.log");
+  if (rc == 0)
+    qualification_case_pass("triple_indirect_to_double_truncate");
+  if (rc == 0)
+    rc = check_controlled_triple_contraction("v7-triple-to-single.img", single_capacity,
+                                             "v7-triple-to-single.log");
+  if (rc == 0)
+    rc = check_controlled_triple_contraction("v7-triple-to-direct.img",
+                                             KAFS_V7_INODE_DIRECT_REFERENCE_COUNT,
+                                             "v7-triple-to-direct.log");
+  if (rc == 0)
+    rc = check_controlled_triple_contraction("v7-triple-to-zero.img", 0u,
+                                             "v7-triple-to-zero.log");
+  if (rc == 0)
+    qualification_case_pass("triple_indirect_contraction_matrix");
+  return rc;
+}
+
+static int check_controlled_triple_middle_boundary(const char *image)
+{
+  const uint64_t references_per_block = 256u;
+  const uint64_t double_capacity = KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + references_per_block +
+                                   references_per_block * references_per_block;
+  const uint64_t boundary_blocks =
+      double_capacity + references_per_block * references_per_block;
+  uint32_t ino = 0u;
+  uint32_t block_size = 0u;
+  int rc = prepare_triple_file_image(image, boundary_blocks, &ino, &block_size);
+  kafs_test_mount_options_t options = {
+      .log_path = "v7-triple-middle.log",
+      .extra_options = "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
+      .timeout_ms = 15000,
+  };
+  pid_t pid = rc == 0 ? kafs_test_start_kafs_v7_controlled_write(image, "mnt-triple-middle",
+                                                                 &options)
+                      : -1;
+  if (pid <= 0)
+    rc = -1;
+  char path[PATH_MAX];
+  snprintf(path, sizeof(path), "%s/block", "mnt-triple-middle");
+  int fd = rc == 0 ? open(path, O_RDWR) : -1;
+  uint8_t *payload = rc == 0 ? malloc(2u * block_size) : NULL;
+  if (rc == 0 && (fd < 0 || !payload))
+    rc = -1;
+  if (rc == 0)
+  {
+    memset(payload, 0xacu, 2u * block_size);
+    uint64_t offset = boundary_blocks * block_size;
+    if (pwrite(fd, payload, 2u * block_size, (off_t)offset) != (ssize_t)(2u * block_size) ||
+        fsync(fd) != 0 || ftruncate(fd, (off_t)offset) != 0 || fsync(fd) != 0)
+      rc = -1;
+  }
+  if (fd >= 0 && close(fd) != 0 && rc == 0)
+    rc = -1;
+  if (pid > 0)
+    kafs_test_stop_kafs("mnt-triple-middle", pid);
+  if (rc == 0 && run_fsck(image) != 0)
+    rc = -1;
+  if (rc == 0)
+    qualification_case_pass("triple_indirect_middle_boundary");
+  free(payload);
+  return rc;
+}
+
+static int check_controlled_triple_indirect_recovery(const char *image, uint32_t ino,
+                                                      uint32_t block_size,
+                                                      kafs_v7_test_fault_point_t fault)
+{
+  char crash_log[PATH_MAX];
+  char recovery_log[PATH_MAX];
+  snprintf(crash_log, sizeof(crash_log), "v7-triple-%s-crash.log",
+           kafs_v7_test_fault_name(fault));
+  snprintf(recovery_log, sizeof(recovery_log), "v7-triple-%s-recovery.log",
+           kafs_v7_test_fault_name(fault));
+  kafs_test_mount_options_t options = {
+      .log_path = crash_log,
+      .extra_options = "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
+      .timeout_ms = 15000,
+  };
+  if (setenv(KAFS_V7_TEST_CRASH_POINT_ENV, kafs_v7_test_fault_name(fault), 1) != 0)
+    return -1;
+  pid_t pid = kafs_test_start_kafs_v7_controlled_write(image, "mnt-triple-crash", &options);
+  unsetenv(KAFS_V7_TEST_CRASH_POINT_ENV);
+  if (pid <= 0)
+    return -1;
+  uint64_t references_per_block = block_size / sizeof(uint32_t);
+  uint64_t double_capacity = KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + references_per_block +
+                             references_per_block * references_per_block;
+  uint64_t truncate_size = (double_capacity + 1u) * block_size + 53u;
+  char path[PATH_MAX];
+  snprintf(path, sizeof(path), "%s/block", "mnt-triple-crash");
+  int fd = open(path, O_RDWR);
+  int rc = fd < 0 ? -1 : 0;
+  if (rc == 0 && ftruncate(fd, (off_t)truncate_size) >= 0)
+    rc = -1;
+  if (fd >= 0)
+    close(fd);
+  int status = 0;
+  if (rc == 0 && (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) ||
+                  WEXITSTATUS(status) != kafs_v7_test_fault_exit_status(fault)))
+    rc = -1;
+  kafs_test_stop_kafs("mnt-triple-crash", pid);
+  options.log_path = recovery_log;
+  pid = rc == 0
+            ? kafs_test_start_kafs_v7_controlled_write(image, "mnt-triple-recovery", &options)
+            : -1;
+  if (pid <= 0)
+    rc = -1;
+  else
+    kafs_test_stop_kafs("mnt-triple-recovery", pid);
+  if (rc == 0 && check_recovery_log(recovery_log, fault, 3u, 0u) != 0)
+    rc = -1;
+  if (rc == 0 && run_fsck(image) != 0)
+    rc = -1;
+  if (rc == 0)
+  {
+    int verify_fd = open(image, O_RDONLY);
+    kafs_ssuperblock_t sb;
+    uint64_t file_size = 0u;
+    kafs_v7_layout_report_t report = {0};
+    kafs_v7_inode_t inode_state;
+    if (verify_fd < 0 || validate_image_fd(verify_fd, &sb, &file_size, &report) != 0 ||
+        read_inode(verify_fd, &report, ino, &inode_state) != 0 ||
+        le64toh(inode_state.size) != truncate_size)
+      rc = -1;
+    kafs_v7_layout_report_clear(&report);
+    if (verify_fd >= 0)
+      close(verify_fd);
+  }
+  if (rc != 0)
+  {
+    kafs_test_dump_log(crash_log, "v7 triple-indirect crash failed");
+    kafs_test_dump_log(recovery_log, "v7 triple-indirect recovery failed");
+  }
+  return rc;
+}
+
 static int check_controlled_write_recovery(const char *image, uint32_t ino, uint32_t block_size,
                                            kafs_v7_test_fault_point_t fault)
 {
@@ -2572,6 +3181,22 @@ int main(void)
   }
   qualification_case_pass("controlled_write_normal_matrix");
 
+  if (check_controlled_triple_crossing("v7-triple-normal.img") != 0)
+  {
+    fprintf(stderr, "v7 triple-indirect write/truncate matrix failed\n");
+    return 1;
+  }
+  if (check_controlled_triple_contraction_matrix() != 0)
+  {
+    fprintf(stderr, "v7 triple-indirect contraction matrix failed\n");
+    return 1;
+  }
+  if (check_controlled_triple_middle_boundary("v7-triple-middle.img") != 0)
+  {
+    fprintf(stderr, "v7 triple-indirect middle boundary matrix failed\n");
+    return 1;
+  }
+
   const char *recovery = "v7-controlled-recovery.img";
   if (copy_image(image, recovery) != 0 ||
       check_controlled_write_recovery(recovery, fixture.block_ino, fixture.block_size,
@@ -2659,6 +3284,35 @@ int main(void)
     }
   }
   qualification_case_pass("double_indirect_recovery_matrix");
+  const char *triple_seed = "v7-triple-indirect-seed.img";
+  uint32_t triple_ino = 0u;
+  uint32_t triple_block_size = 0u;
+  const uint64_t triple_references_per_block = 256u;
+  const uint64_t triple_double_capacity =
+      KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + triple_references_per_block +
+      triple_references_per_block * triple_references_per_block;
+  if (prepare_triple_file_image(triple_seed, triple_double_capacity + 2u, &triple_ino,
+                                &triple_block_size) != 0 ||
+      triple_block_size / sizeof(uint32_t) != triple_references_per_block)
+  {
+    fprintf(stderr, "v7 triple-indirect recovery seed failed\n");
+    return 1;
+  }
+  for (size_t i = 0u; i < sizeof(mutation_faults) / sizeof(mutation_faults[0]); ++i)
+  {
+    char triple_recovery[PATH_MAX];
+    snprintf(triple_recovery, sizeof(triple_recovery),
+             "v7-triple-indirect-recovery-%zu.img", i);
+    if (copy_image(triple_seed, triple_recovery) != 0 ||
+        check_controlled_triple_indirect_recovery(triple_recovery, triple_ino,
+                                                  triple_block_size, mutation_faults[i]) != 0)
+    {
+      fprintf(stderr, "v7 triple-indirect recovery failed fault=%s\n",
+              kafs_v7_test_fault_name(mutation_faults[i]));
+      return 1;
+    }
+  }
+  qualification_case_pass("triple_indirect_recovery_matrix");
   for (size_t i = 0u; i < sizeof(mutation_faults) / sizeof(mutation_faults[0]); ++i)
   {
     char promotion_recovery[PATH_MAX];

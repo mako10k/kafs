@@ -92,7 +92,8 @@
       "open_truncate",
       "regular_file_inline_to_direct_promotion",
       "regular_file_single_indirect_lifecycle",
-      "regular_file_double_indirect_lifecycle"
+      "regular_file_double_indirect_lifecycle",
+      "regular_file_triple_indirect_lifecycle"
     ],
     "offline_checks": [
       "fsck.kafs --check",

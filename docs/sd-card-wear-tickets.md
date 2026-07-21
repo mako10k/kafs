@@ -3626,6 +3626,38 @@
     triple-indirect regular-file lifecycle `D3`を選択した。D3着手前にはpost-T54 commit上でfresh Task Start
     Gateを実施する。
 
+### SDW-V7RT-T55 dense triple-indirect regular-file lifecycle
+
+- 目的: T54の二段path-copyを最終regular-file depthへ拡張し、dense same-group triple-indirect
+  write/truncate/recoveryとexpanded software qualificationを閉じる。
+- PERT/Task Start判断:
+  - post-T54 PERTで`D3`は`CS -> D2 -> D3 -> Q -> R -> M`上の唯一のrunnable zero-slack software node。
+  - branch `feat/v7-runtime-admission-foundation`、HEAD `c62d426`でTask Start Gateを再実行し、1KiB blockの
+    256MiB sparse imageでdouble/triple境界と次のmiddle-table境界を実行可能と確認して`PASS`した。
+- 変更:
+  - double-to-triple crossingとtriple内writeを、touched data/leaf/middle/root/inodeのpath-local COWとして
+    一つのsame-group transactionへ収める。
+  - partial/aligned shrink、leaf/middle prune、triple-to-double/single/direct/zero contractionを実装し、
+    publish後に削除suffixをstreaming retirementする。
+  - 共通image validatorを三段treeへ拡張し、正確なblock count、必須referenceのallocation、root/middle/leaf
+    の未使用entry zeroを検査する。
+  - actual FUSEでdouble/triple境界、middle-table境界、全lower-depth縮退、negative unused-reference、
+    detect-only fsck、3中断点recoveryを検証する。
+  - file-image qualificationへ5 result、DRAFT real-media matrixへ
+    `regular_file_triple_indirect_lifecycle`を追加する。RC/real-media claimはfalseのまま。
+- focused結果（2026-07-21）:
+  - actual FUSE normal/contraction/middle-boundary/recovery matrixはPASSした。
+  - non-destructive qualificationはrequired result 37/37 PASS、digest検証済みartifact 116件。
+  - synthetic file-image qualification gateとDRAFT real-media approval gate regressionはPASSした。
+  - full `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`は42 PASS、FUSE権限に依存する`stress_fs` 1件は
+    SKIP。format、lint、v7 ownership、clone、aggregate static gateはPASSし、strict source cloneは48件、
+    490 duplicated lines、0.97%で1% limit内。
+- closeout判断:
+  - `D3`とexpanded qualification `Q`をcompleteへ移す。real-media recovery `R`の残るpredecessorはexact
+    hardware identityとdigest-bound approval `H`だけであり、whole-namespace graph validation `N`はrunnable
+    だがoff-pathなので代替選定しない。
+
+---
 ---
 
 ## 次に着手する候補
@@ -3633,11 +3665,10 @@
 この節はhandoff用の開始候補であり、実装開始許可または最新の完了条件ではない。着手前に`AGENTS.md`の
 Task Start Gateでcurrent checkoutのevidenceを再確認し、`PASS`・`REPLAN`・`BLOCKED`を判定する。
 
-T49-T54は完了している。最新のcloseout PERTは、software legの次のrunnable zero-slack frontierとして
-dense same-group triple-indirect regular-file lifecycle `D3`を選択した。これはT54で閉じた二段root
-path-copy、reachability、retirement、recoveryを最終regular-file depthへ拡張し、その後のexpanded
-qualification `Q`をunlockする。着手前にpost-T54 commit上でTask Start Gateを再実行し、state space、
-不変条件、exit criteria、非目標を再導出する。
+T49-T55は完了している。最新のcloseout PERTは`D3`とexpanded qualification `Q`をcompleteとし、
+real-media recovery `R`への残るpredecessorをexact hardware identityとdigest-bound approval `H`だけとする。
+whole-namespace graph validation `N`はrunnableだがoff-pathであり、local着手容易性を理由に`H`の代わりに
+選定しない。
 
 実媒体準備を再開できる時点では、並行するexternal blocker `H`について次を行う。
 
@@ -3649,7 +3680,7 @@ qualification `Q`をunlockする。着手前にpost-T54 commit上でTask Start G
 現在の選定根拠と非目標は
 `docs/sd-card-wear-v7-indirect-pert-20260721.md`と
 `docs/sd-card-wear-v7-capability-rebaseline-20260721.md`を参照する。hardware blockerをgraphから外したり、
-局所着手容易性で`D3`を別taskへ置換したりせず、各wave closeoutでPERTを再構築する。
+局所着手容易性で`H`をoff-pathの`N`へ置換したりせず、各wave closeoutでPERTを再構築する。
 
 FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
 既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の

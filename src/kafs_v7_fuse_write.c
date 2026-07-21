@@ -53,6 +53,36 @@ typedef struct kafs_v7_fuse_double_view
   size_t double_leaf_count;
 } kafs_v7_fuse_double_view_t;
 
+typedef struct kafs_v7_fuse_triple_middle
+{
+  uint32_t index;
+  uint64_t logical_block;
+  uint32_t *references;
+  size_t plan_id;
+} kafs_v7_fuse_triple_middle_t;
+
+typedef struct kafs_v7_fuse_triple_leaf
+{
+  uint32_t middle_index;
+  uint32_t leaf_index;
+  uint64_t logical_block;
+  uint32_t *references;
+  size_t plan_id;
+} kafs_v7_fuse_triple_leaf_t;
+
+typedef struct kafs_v7_fuse_triple_view
+{
+  uint32_t references_per_block;
+  uint64_t old_slots;
+  uint64_t root_block;
+  uint32_t *root;
+  kafs_v7_fuse_triple_middle_t *middles;
+  size_t middle_count;
+  kafs_v7_fuse_triple_leaf_t *leaves;
+  size_t leaf_count;
+  size_t root_plan_id;
+} kafs_v7_fuse_triple_view_t;
+
 typedef struct kafs_v7_fuse_write_extent
 {
   uint64_t file_size;
@@ -91,15 +121,37 @@ static int kafs_v7_fuse_capacities(uint32_t block_size, uint64_t *single_capacit
   return 0;
 }
 
+static int kafs_v7_fuse_triple_capacity(uint32_t block_size, uint64_t *single_capacity_out,
+                                        uint64_t *double_capacity_out,
+                                        uint64_t *triple_capacity_out)
+{
+  if (!triple_capacity_out)
+    return -EINVAL;
+  int rc = kafs_v7_fuse_capacities(block_size, single_capacity_out, double_capacity_out);
+  if (rc != 0)
+    return rc;
+  uint64_t references_per_block = block_size / sizeof(uint32_t);
+  uint64_t double_blocks = references_per_block * references_per_block;
+  if (double_blocks > UINT64_MAX / references_per_block)
+    return -EOVERFLOW;
+  uint64_t triple_blocks = double_blocks * references_per_block;
+  if (triple_blocks > UINT64_MAX - *double_capacity_out)
+    return -EOVERFLOW;
+  *triple_capacity_out = *double_capacity_out + triple_blocks;
+  return 0;
+}
+
 static int kafs_v7_fuse_expected_blocks(uint32_t block_size, uint64_t data_blocks,
                                         uint32_t *blocks_out)
 {
   uint64_t single_capacity = 0u;
   uint64_t double_capacity = 0u;
-  int rc = kafs_v7_fuse_capacities(block_size, &single_capacity, &double_capacity);
+  uint64_t triple_capacity = 0u;
+  int rc = kafs_v7_fuse_triple_capacity(block_size, &single_capacity, &double_capacity,
+                                        &triple_capacity);
   if (rc != 0)
     return rc;
-  if (data_blocks > double_capacity)
+  if (data_blocks > triple_capacity)
     return -EFBIG;
   uint64_t blocks = data_blocks;
   if (data_blocks > KAFS_V7_INODE_DIRECT_REFERENCE_COUNT)
@@ -108,8 +160,21 @@ static int kafs_v7_fuse_expected_blocks(uint32_t block_size, uint64_t data_block
   {
     uint64_t double_data = data_blocks - single_capacity;
     uint64_t references_per_block = block_size / sizeof(uint32_t);
+    uint64_t double_data_capacity = references_per_block * references_per_block;
+    if (double_data > double_data_capacity)
+      double_data = double_data_capacity;
     uint64_t leaves = (double_data - 1u) / references_per_block + 1u;
     blocks += 1u + leaves;
+  }
+  if (data_blocks > double_capacity)
+  {
+    uint64_t triple_data = data_blocks - double_capacity;
+    uint64_t references_per_block = block_size / sizeof(uint32_t);
+    uint64_t leaves = (triple_data - 1u) / references_per_block + 1u;
+    uint64_t middles = (leaves - 1u) / references_per_block + 1u;
+    if (leaves > UINT64_MAX - middles - 1u || blocks > UINT64_MAX - leaves - middles - 1u)
+      return -EOVERFLOW;
+    blocks += 1u + middles + leaves;
   }
   if (blocks > UINT32_MAX)
     return -EOVERFLOW;
@@ -148,8 +213,15 @@ static int kafs_v7_fuse_write_state_init(kafs_context_t *ctx, kafs_inocnt_t ino,
                                       offset, extent);
   if (rc != 0)
     return rc;
-  if (extent->existing_slots > extent->double_capacity ||
-      kafs_v7_fuse_inode_reference(*inode_out, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 2u) != 0u)
+  uint64_t triple_capacity = 0u;
+  rc = kafs_v7_fuse_triple_capacity(ctx->c_v7_block_size, &extent->single_capacity,
+                                    &extent->double_capacity, &triple_capacity);
+  if (rc != 0)
+    return rc;
+  uint32_t triple_reference =
+      kafs_v7_fuse_inode_reference(*inode_out, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 2u);
+  if (extent->existing_slots > triple_capacity ||
+      ((extent->existing_slots > extent->double_capacity) != (triple_reference != 0u)))
     return -EOPNOTSUPP;
   if (double_depth)
     return extent->last_slot >= extent->single_capacity &&
@@ -202,10 +274,19 @@ static int kafs_v7_fuse_write_validate(const kafs_context_t *ctx, kafs_inocnt_t 
                                           &extent);
   if (rc != 0)
     return rc;
+  uint64_t single_capacity = 0u;
+  uint64_t double_capacity = 0u;
+  uint64_t triple_capacity = 0u;
+  rc = kafs_v7_fuse_triple_capacity(ctx->c_v7_block_size, &single_capacity, &double_capacity,
+                                    &triple_capacity);
+  if (rc != 0)
+    return rc;
+  uint32_t triple_reference =
+      kafs_v7_fuse_inode_reference(inode, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 2u);
   if (extent.first_slot >= KAFS_V7_INODE_DIRECT_REFERENCE_COUNT ||
       extent.last_slot >= KAFS_V7_INODE_DIRECT_REFERENCE_COUNT ||
-      extent.existing_slots > extent.double_capacity ||
-      kafs_v7_fuse_inode_reference(inode, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 2u) != 0u)
+      extent.existing_slots > triple_capacity ||
+      ((extent.existing_slots > double_capacity) != (triple_reference != 0u)))
     return -EOPNOTSUPP;
 
   size_t block_count = (size_t)(extent.last_slot - extent.first_slot + 1u);
@@ -382,6 +463,10 @@ static int kafs_v7_fuse_double_view_init(kafs_context_t *ctx, const kafs_v7_inod
   if (rc == 0 && view->old_slots > single_capacity)
   {
     uint64_t double_data = view->old_slots - single_capacity;
+    uint64_t double_data_capacity =
+        (uint64_t)view->references_per_block * view->references_per_block;
+    if (double_data > double_data_capacity)
+      double_data = double_data_capacity;
     leaf_count = (size_t)((double_data - 1u) / view->references_per_block + 1u);
     uint32_t reference =
         kafs_v7_fuse_inode_reference(inode, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 1u);
@@ -454,6 +539,195 @@ static int kafs_v7_fuse_double_view_destination(kafs_v7_fuse_double_view_t *view
   return 0;
 }
 
+static void kafs_v7_fuse_triple_view_clear(kafs_v7_fuse_triple_view_t *view)
+{
+  if (!view)
+    return;
+  for (size_t i = 0u; i < view->leaf_count; ++i)
+    free(view->leaves[i].references);
+  for (size_t i = 0u; i < view->middle_count; ++i)
+    free(view->middles[i].references);
+  free(view->leaves);
+  free(view->middles);
+  free(view->root);
+  memset(view, 0, sizeof(*view));
+}
+
+static int kafs_v7_fuse_triple_view_init(kafs_context_t *ctx, const kafs_v7_inode_t *inode,
+                                         uint64_t double_capacity, kafs_v7_fuse_triple_view_t *view)
+{
+  if (!ctx || !inode || !view || ctx->c_v7_block_size < sizeof(uint32_t))
+    return -EINVAL;
+  memset(view, 0, sizeof(*view));
+  view->root_block = KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK;
+  view->root_plan_id = SIZE_MAX;
+  view->references_per_block = ctx->c_v7_block_size / sizeof(uint32_t);
+  view->root = calloc(1u, ctx->c_v7_block_size);
+  if (!view->root)
+    return -ENOMEM;
+  uint64_t size = le64toh(inode->size);
+  view->old_slots = size == 0u ? 0u : (size - 1u) / ctx->c_v7_block_size + 1u;
+  uint32_t reference =
+      kafs_v7_fuse_inode_reference(inode, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 2u);
+  if (view->old_slots <= double_capacity)
+  {
+    if (reference != 0u)
+    {
+      kafs_v7_fuse_triple_view_clear(view);
+      return -EUCLEAN;
+    }
+    return 0;
+  }
+  if (reference == 0u)
+  {
+    kafs_v7_fuse_triple_view_clear(view);
+    return -EUCLEAN;
+  }
+  view->root_block = (uint64_t)reference - 1u;
+  int rc = kafs_v7_fuse_read_logical_block(ctx, view->root_block, view->root);
+  if (rc != 0)
+    kafs_v7_fuse_triple_view_clear(view);
+  return rc;
+}
+
+static int kafs_v7_fuse_triple_middle_get(kafs_context_t *ctx, kafs_v7_fuse_triple_view_t *view,
+                                          uint32_t index, int existing_required,
+                                          kafs_v7_fuse_triple_middle_t **middle_out)
+{
+  if (!ctx || !view || !middle_out || index >= view->references_per_block)
+    return -EINVAL;
+  for (size_t i = 0u; i < view->middle_count; ++i)
+    if (view->middles[i].index == index)
+    {
+      *middle_out = &view->middles[i];
+      return 0;
+    }
+
+  uint32_t *references = calloc(1u, ctx->c_v7_block_size);
+  if (!references)
+    return -ENOMEM;
+  uint32_t reference = le32toh(view->root[index]);
+  if (reference == 0u && existing_required)
+  {
+    free(references);
+    return -EUCLEAN;
+  }
+  uint64_t logical_block =
+      reference == 0u ? KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK : (uint64_t)reference - 1u;
+  int rc = reference == 0u ? 0 : kafs_v7_fuse_read_logical_block(ctx, logical_block, references);
+  if (rc != 0)
+  {
+    free(references);
+    return rc;
+  }
+  if (view->middle_count == SIZE_MAX || view->middle_count + 1u > SIZE_MAX / sizeof(*view->middles))
+  {
+    free(references);
+    return -EOVERFLOW;
+  }
+  kafs_v7_fuse_triple_middle_t *middles =
+      realloc(view->middles, (view->middle_count + 1u) * sizeof(*view->middles));
+  if (!middles)
+  {
+    free(references);
+    return -ENOMEM;
+  }
+  view->middles = middles;
+  kafs_v7_fuse_triple_middle_t *middle = &view->middles[view->middle_count++];
+  *middle = (kafs_v7_fuse_triple_middle_t){
+      .index = index,
+      .logical_block = logical_block,
+      .references = references,
+      .plan_id = SIZE_MAX,
+  };
+  *middle_out = middle;
+  return 0;
+}
+
+static int kafs_v7_fuse_triple_leaf_get(kafs_context_t *ctx, kafs_v7_fuse_triple_view_t *view,
+                                        kafs_v7_fuse_triple_middle_t *middle, uint32_t leaf_index,
+                                        int existing_required,
+                                        kafs_v7_fuse_triple_leaf_t **leaf_out)
+{
+  if (!ctx || !view || !middle || !leaf_out || leaf_index >= view->references_per_block)
+    return -EINVAL;
+  for (size_t i = 0u; i < view->leaf_count; ++i)
+    if (view->leaves[i].middle_index == middle->index && view->leaves[i].leaf_index == leaf_index)
+    {
+      *leaf_out = &view->leaves[i];
+      return 0;
+    }
+
+  uint32_t *references = calloc(1u, ctx->c_v7_block_size);
+  if (!references)
+    return -ENOMEM;
+  uint32_t reference = le32toh(middle->references[leaf_index]);
+  if (reference == 0u && existing_required)
+  {
+    free(references);
+    return -EUCLEAN;
+  }
+  uint64_t logical_block =
+      reference == 0u ? KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK : (uint64_t)reference - 1u;
+  int rc = reference == 0u ? 0 : kafs_v7_fuse_read_logical_block(ctx, logical_block, references);
+  if (rc != 0)
+  {
+    free(references);
+    return rc;
+  }
+  if (view->leaf_count == SIZE_MAX || view->leaf_count + 1u > SIZE_MAX / sizeof(*view->leaves))
+  {
+    free(references);
+    return -EOVERFLOW;
+  }
+  kafs_v7_fuse_triple_leaf_t *leaves =
+      realloc(view->leaves, (view->leaf_count + 1u) * sizeof(*view->leaves));
+  if (!leaves)
+  {
+    free(references);
+    return -ENOMEM;
+  }
+  view->leaves = leaves;
+  kafs_v7_fuse_triple_leaf_t *leaf = &view->leaves[view->leaf_count++];
+  *leaf = (kafs_v7_fuse_triple_leaf_t){
+      .middle_index = middle->index,
+      .leaf_index = leaf_index,
+      .logical_block = logical_block,
+      .references = references,
+      .plan_id = SIZE_MAX,
+  };
+  *leaf_out = leaf;
+  return 0;
+}
+
+static int kafs_v7_fuse_triple_slot_prepare(kafs_context_t *ctx, kafs_v7_fuse_triple_view_t *view,
+                                            uint64_t file_slot, int existing_required,
+                                            uint32_t *reference_out, void **destination_out)
+{
+  if (!ctx || !view || !reference_out || !destination_out)
+    return -EINVAL;
+  kafs_v7_block_tree_path_t path;
+  int rc = kafs_v7_block_tree_address(ctx->c_v7_block_size, file_slot, &path);
+  if (rc != 0)
+    return rc;
+  if (path.level_count != 3u)
+    return -EOPNOTSUPP;
+  kafs_v7_fuse_triple_middle_t *middle = NULL;
+  rc = kafs_v7_fuse_triple_middle_get(ctx, view, path.indices[0], existing_required, &middle);
+  kafs_v7_fuse_triple_leaf_t *leaf = NULL;
+  if (rc == 0)
+    rc = kafs_v7_fuse_triple_leaf_get(ctx, view, middle, path.indices[1], existing_required, &leaf);
+  if (rc == 0)
+  {
+    *reference_out = le32toh(leaf->references[path.indices[2]]);
+    if (*reference_out == 0u && existing_required)
+      rc = -EUCLEAN;
+    else
+      *destination_out = &leaf->references[path.indices[2]];
+  }
+  return rc;
+}
+
 static int kafs_v7_fuse_stage_write_reference(
     kafs_context_t *ctx, kafs_v7_runtime_data_cow_batch_t *operation, size_t plan_id,
     const kafs_v7_runtime_data_cow_plan_t *plan, uint64_t retained_logical_block,
@@ -496,6 +770,35 @@ static int kafs_v7_fuse_stage_index_reference(kafs_v7_runtime_data_cow_batch_t *
   if (!operation || !plan || !block || !reference_out)
     return -EINVAL;
   int rc = kafs_v7_runtime_data_cow_batch_stage(operation, plan_id, block, plan->block_size);
+  if (rc == 0 && plan->logical_block >= UINT32_MAX)
+    rc = -ERANGE;
+  if (rc == 0)
+  {
+    uint32_t reference = htole32((uint32_t)plan->logical_block + 1u);
+    memcpy(reference_out, &reference, sizeof(reference));
+  }
+  return rc;
+}
+
+static int kafs_v7_fuse_stage_truncate_tail(kafs_context_t *ctx,
+                                            kafs_v7_runtime_data_cow_batch_t *operation,
+                                            size_t plan_id,
+                                            const kafs_v7_runtime_data_cow_plan_t *plan,
+                                            uint64_t retained_logical_block, uint64_t tail_bytes,
+                                            void *reference_out)
+{
+  if (!ctx || !operation || !plan || !reference_out || tail_bytes >= plan->block_size)
+    return -EINVAL;
+  uint8_t *block = malloc(plan->block_size);
+  if (!block)
+    return -ENOMEM;
+  int rc = kafs_v7_fuse_read_logical_block(ctx, retained_logical_block, block);
+  if (rc == 0)
+  {
+    memset(block + tail_bytes, 0, plan->block_size - tail_bytes);
+    rc = kafs_v7_runtime_data_cow_batch_stage(operation, plan_id, block, plan->block_size);
+  }
+  free(block);
   if (rc == 0 && plan->logical_block >= UINT32_MAX)
     rc = -ERANGE;
   if (rc == 0)
@@ -799,6 +1102,261 @@ static int kafs_v7_fuse_write_double_indirect(kafs_context_t *ctx, kafs_inocnt_t
   return rc == 0 ? (int)size : rc;
 }
 
+static int kafs_v7_fuse_write_triple_indirect(kafs_context_t *ctx, kafs_inocnt_t ino,
+                                              const void *buf, size_t size, uint64_t offset,
+                                              kafs_v7_fuse_write_result_t *result)
+{
+  if (!ctx || !ctx->c_v7_runtime_transactions || !kafs_v7_fuse_policy_controlled_write_active(ctx))
+    return -EROFS;
+  const kafs_v7_inode_runtime_shard_t *shard = NULL;
+  const kafs_v7_inode_t *mapped = NULL;
+  int rc = kafs_v7_fuse_regular_inode_state(ctx, ino, &shard, &mapped);
+  kafs_v7_fuse_write_extent_t extent;
+  if (rc == 0)
+    rc = kafs_v7_fuse_write_extent_init(ctx->c_v7_block_size, le64toh(mapped->size), size, offset,
+                                        &extent);
+  uint64_t triple_capacity = 0u;
+  if (rc == 0)
+    rc = kafs_v7_fuse_triple_capacity(ctx->c_v7_block_size, &extent.single_capacity,
+                                      &extent.double_capacity, &triple_capacity);
+  uint32_t triple_reference =
+      rc == 0 ? kafs_v7_fuse_inode_reference(mapped, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 2u)
+              : 0u;
+  if (rc == 0 && (extent.last_slot < extent.double_capacity ||
+                  extent.last_slot >= triple_capacity || extent.existing_slots > triple_capacity ||
+                  ((extent.existing_slots > extent.double_capacity) != (triple_reference != 0u))))
+    rc = -EOPNOTSUPP;
+  if (rc != 0)
+    return rc;
+
+  size_t block_count = (size_t)(extent.last_slot - extent.first_slot + 1u);
+  if (block_count == 0u || block_count > 64u)
+    return -E2BIG;
+  int touches_double = extent.first_slot < extent.double_capacity;
+  if (touches_double && extent.first_slot < extent.single_capacity)
+    return -E2BIG;
+
+  kafs_v7_fuse_double_view_t double_view;
+  memset(&double_view, 0, sizeof(double_view));
+  if (touches_double)
+    rc = kafs_v7_fuse_double_view_init(ctx, mapped, &double_view);
+  kafs_v7_fuse_triple_view_t triple_view;
+  memset(&triple_view, 0, sizeof(triple_view));
+  if (rc == 0)
+    rc = kafs_v7_fuse_triple_view_init(ctx, mapped, extent.double_capacity, &triple_view);
+
+  uint64_t *retained = rc == 0 ? malloc(block_count * sizeof(*retained)) : NULL;
+  void **destinations = rc == 0 ? calloc(block_count, sizeof(*destinations)) : NULL;
+  size_t lower_leaves[64];
+  size_t lower_leaf_count = 0u;
+  if (rc == 0 && (!retained || !destinations))
+    rc = -ENOMEM;
+  for (size_t i = 0u; rc == 0 && i < block_count; ++i)
+  {
+    uint64_t slot = extent.first_slot + i;
+    uint32_t reference = 0u;
+    if (slot < extent.double_capacity)
+    {
+      rc = kafs_v7_fuse_double_view_reference(&double_view, mapped, ctx->c_v7_block_size, slot,
+                                              &reference);
+      if (rc == 0)
+        rc = kafs_v7_fuse_double_view_destination(&double_view, (kafs_v7_inode_t *)mapped,
+                                                  ctx->c_v7_block_size, slot, &destinations[i]);
+      kafs_v7_block_tree_path_t path;
+      if (rc == 0)
+        rc = kafs_v7_block_tree_address(ctx->c_v7_block_size, slot, &path);
+      if (rc == 0 && path.level_count != 2u)
+        rc = -EUCLEAN;
+      if (rc == 0)
+      {
+        size_t leaf = path.indices[0];
+        int seen = 0;
+        for (size_t j = 0u; j < lower_leaf_count; ++j)
+          if (lower_leaves[j] == leaf)
+            seen = 1;
+        if (!seen)
+          lower_leaves[lower_leaf_count++] = leaf;
+      }
+    }
+    else
+      rc = kafs_v7_fuse_triple_slot_prepare(ctx, &triple_view, slot, slot < extent.existing_slots,
+                                            &reference, &destinations[i]);
+    if (rc == 0 && reference == 0u && slot < extent.existing_slots)
+      rc = -EUCLEAN;
+    retained[i] = reference == 0u ? KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK : (uint64_t)reference - 1u;
+  }
+
+  size_t plan_count = block_count + lower_leaf_count + (size_t)touches_double +
+                      triple_view.leaf_count + triple_view.middle_count + 1u;
+  if (rc == 0 && plan_count > 64u)
+    rc = -E2BIG;
+  kafs_v7_runtime_data_cow_request_t *requests =
+      rc == 0 ? calloc(plan_count, sizeof(*requests)) : NULL;
+  kafs_v7_runtime_data_cow_plan_t *plans = rc == 0 ? calloc(plan_count, sizeof(*plans)) : NULL;
+  if (rc == 0 && (!requests || !plans))
+    rc = -ENOMEM;
+  size_t next_plan = 0u;
+  for (size_t i = 0u; rc == 0 && i < block_count; ++i)
+    requests[next_plan++] = (kafs_v7_runtime_data_cow_request_t){
+        .group_id = shard->group_id,
+        .retained_logical_block = retained[i],
+    };
+  size_t lower_leaf_plan_start = next_plan;
+  for (size_t i = 0u; rc == 0 && i < lower_leaf_count; ++i)
+    requests[next_plan++] = (kafs_v7_runtime_data_cow_request_t){
+        .group_id = shard->group_id,
+        .retained_logical_block = double_view.double_leaf_blocks[lower_leaves[i]],
+    };
+  size_t lower_root_plan = SIZE_MAX;
+  if (rc == 0 && touches_double)
+  {
+    lower_root_plan = next_plan++;
+    requests[lower_root_plan] = (kafs_v7_runtime_data_cow_request_t){
+        .group_id = shard->group_id,
+        .retained_logical_block = double_view.double_root_block,
+    };
+  }
+  for (size_t i = 0u; rc == 0 && i < triple_view.leaf_count; ++i)
+  {
+    triple_view.leaves[i].plan_id = next_plan++;
+    requests[triple_view.leaves[i].plan_id] = (kafs_v7_runtime_data_cow_request_t){
+        .group_id = shard->group_id,
+        .retained_logical_block = triple_view.leaves[i].logical_block,
+    };
+  }
+  for (size_t i = 0u; rc == 0 && i < triple_view.middle_count; ++i)
+  {
+    triple_view.middles[i].plan_id = next_plan++;
+    requests[triple_view.middles[i].plan_id] = (kafs_v7_runtime_data_cow_request_t){
+        .group_id = shard->group_id,
+        .retained_logical_block = triple_view.middles[i].logical_block,
+    };
+  }
+  if (rc == 0)
+  {
+    triple_view.root_plan_id = next_plan++;
+    requests[triple_view.root_plan_id] = (kafs_v7_runtime_data_cow_request_t){
+        .group_id = shard->group_id,
+        .retained_logical_block = triple_view.root_block,
+    };
+  }
+  if (rc == 0 && next_plan != plan_count)
+    rc = -EUCLEAN;
+
+  kafs_v7_runtime_data_cow_batch_t *operation = NULL;
+  if (rc == 0)
+    rc = kafs_v7_runtime_data_cow_batch_prepare(ctx->c_v7_runtime_transactions, requests,
+                                                plan_count, &operation, plans);
+  kafs_v7_inode_t inode;
+  memcpy(&inode, mapped, sizeof(inode));
+  for (size_t i = 0u; rc == 0 && i < block_count; ++i)
+    rc = kafs_v7_fuse_stage_write_reference(ctx, operation, i, &plans[i], retained[i],
+                                            extent.first_slot + i, buf, size, offset,
+                                            destinations[i]);
+  for (size_t i = 0u; rc == 0 && i < lower_leaf_count; ++i)
+  {
+    size_t plan_id = lower_leaf_plan_start + i;
+    size_t leaf = lower_leaves[i];
+    rc = kafs_v7_fuse_stage_index_reference(operation, plan_id, &plans[plan_id],
+                                            double_view.double_leaves[leaf],
+                                            &double_view.double_root[leaf]);
+  }
+  if (rc == 0 && touches_double)
+    rc = kafs_v7_fuse_stage_index_reference(
+        operation, lower_root_plan, &plans[lower_root_plan], double_view.double_root,
+        inode.inline_or_block_refs +
+            (KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 1u) * sizeof(uint32_t));
+  for (size_t i = 0u; rc == 0 && i < triple_view.leaf_count; ++i)
+  {
+    kafs_v7_fuse_triple_leaf_t *leaf = &triple_view.leaves[i];
+    kafs_v7_fuse_triple_middle_t *middle = NULL;
+    for (size_t j = 0u; j < triple_view.middle_count; ++j)
+      if (triple_view.middles[j].index == leaf->middle_index)
+        middle = &triple_view.middles[j];
+    if (!middle)
+      rc = -EUCLEAN;
+    else
+      rc = kafs_v7_fuse_stage_index_reference(operation, leaf->plan_id, &plans[leaf->plan_id],
+                                              leaf->references,
+                                              &middle->references[leaf->leaf_index]);
+  }
+  for (size_t i = 0u; rc == 0 && i < triple_view.middle_count; ++i)
+  {
+    kafs_v7_fuse_triple_middle_t *middle = &triple_view.middles[i];
+    rc = kafs_v7_fuse_stage_index_reference(operation, middle->plan_id, &plans[middle->plan_id],
+                                            middle->references, &triple_view.root[middle->index]);
+  }
+  if (rc == 0)
+    rc = kafs_v7_fuse_stage_index_reference(
+        operation, triple_view.root_plan_id, &plans[triple_view.root_plan_id], triple_view.root,
+        inode.inline_or_block_refs +
+            (KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 2u) * sizeof(uint32_t));
+
+  uint64_t new_size = extent.request_end > extent.file_size ? extent.request_end : extent.file_size;
+  uint64_t new_slots = (new_size - 1u) / ctx->c_v7_block_size + 1u;
+  uint32_t expected_blocks = 0u;
+  if (rc == 0)
+    rc = kafs_v7_fuse_expected_blocks(ctx->c_v7_block_size, new_slots, &expected_blocks);
+  if (rc == 0)
+  {
+    inode.size = htole64(new_size);
+    inode.blocks = htole32(expected_blocks);
+  }
+  rc = kafs_v7_fuse_commit_data_cow_inode(&operation, ino, &inode, rc);
+
+  int retirement_rc = 0;
+  if (rc == 0)
+  {
+    retirement_rc = kafs_v7_fuse_retire_blocks(ctx, shard->group_id, retained, block_count);
+    for (size_t i = 0u; i < lower_leaf_count; ++i)
+    {
+      int retire_rc = kafs_v7_fuse_retire_blocks(
+          ctx, shard->group_id, &double_view.double_leaf_blocks[lower_leaves[i]], 1u);
+      if (retirement_rc == 0)
+        retirement_rc = retire_rc;
+    }
+    if (touches_double)
+    {
+      int retire_rc =
+          kafs_v7_fuse_retire_blocks(ctx, shard->group_id, &double_view.double_root_block, 1u);
+      if (retirement_rc == 0)
+        retirement_rc = retire_rc;
+    }
+    for (size_t i = 0u; i < triple_view.leaf_count; ++i)
+    {
+      int retire_rc = kafs_v7_fuse_retire_blocks(ctx, shard->group_id,
+                                                 &triple_view.leaves[i].logical_block, 1u);
+      if (retirement_rc == 0)
+        retirement_rc = retire_rc;
+    }
+    for (size_t i = 0u; i < triple_view.middle_count; ++i)
+    {
+      int retire_rc = kafs_v7_fuse_retire_blocks(ctx, shard->group_id,
+                                                 &triple_view.middles[i].logical_block, 1u);
+      if (retirement_rc == 0)
+        retirement_rc = retire_rc;
+    }
+    int retire_rc = kafs_v7_fuse_retire_blocks(ctx, shard->group_id, &triple_view.root_block, 1u);
+    if (retirement_rc == 0)
+      retirement_rc = retire_rc;
+  }
+  if (rc == 0 && result)
+  {
+    result->new_logical_block = plans[0].logical_block;
+    result->retained_logical_block = retained[0];
+    result->retirement_rc = retirement_rc;
+  }
+  if (operation)
+    (void)kafs_v7_runtime_data_cow_batch_abort(&operation);
+  free(requests);
+  free(plans);
+  free(destinations);
+  free(retained);
+  kafs_v7_fuse_triple_view_clear(&triple_view);
+  kafs_v7_fuse_double_view_clear(&double_view);
+  return rc == 0 ? (int)size : rc;
+}
+
 static int kafs_v7_fuse_promote_inline_regular(kafs_context_t *ctx, kafs_inocnt_t ino,
                                                const kafs_v7_inode_t *mapped, const void *buf,
                                                size_t size, uint64_t offset,
@@ -871,11 +1429,14 @@ int kafs_v7_fuse_write_regular(kafs_context_t *ctx, kafs_inocnt_t ino, const voi
   {
     uint64_t single_capacity = 0u;
     uint64_t double_capacity = 0u;
-    int capacity_rc =
-        kafs_v7_fuse_capacities(ctx->c_v7_block_size, &single_capacity, &double_capacity);
+    uint64_t triple_capacity = 0u;
+    int capacity_rc = kafs_v7_fuse_triple_capacity(ctx->c_v7_block_size, &single_capacity,
+                                                   &double_capacity, &triple_capacity);
     if (capacity_rc != 0)
       return capacity_rc;
     uint64_t last_slot = (offset + size - 1u) / ctx->c_v7_block_size;
+    if (last_slot >= double_capacity)
+      return kafs_v7_fuse_write_triple_indirect(ctx, ino, buf, size, offset, result);
     if (last_slot >= single_capacity)
       return kafs_v7_fuse_write_double_indirect(ctx, ino, buf, size, offset, result);
     if (last_slot >= KAFS_V7_INODE_DIRECT_REFERENCE_COUNT)
@@ -1675,31 +2236,13 @@ static int kafs_v7_fuse_truncate_double_indirect(kafs_context_t *ctx, kafs_inocn
                                                 plan_count, &operation, plans);
   if (rc == 0 && cow_tail)
   {
-    uint8_t *block = malloc(plans[tail_plan].block_size);
-    if (!block)
-      rc = -ENOMEM;
+    void *destination = NULL;
     if (rc == 0)
-      rc = kafs_v7_fuse_read_logical_block(ctx, tail_retained, block);
-    if (rc == 0)
-    {
-      memset(block + tail_bytes, 0, plans[tail_plan].block_size - tail_bytes);
-      rc = kafs_v7_runtime_data_cow_batch_stage(operation, tail_plan, block,
-                                                plans[tail_plan].block_size);
-    }
-    free(block);
-    if (rc == 0 && plans[tail_plan].logical_block >= UINT32_MAX)
-      rc = -ERANGE;
-    if (rc == 0)
-    {
-      void *destination = NULL;
       rc = kafs_v7_fuse_double_view_destination(&view, &inode, ctx->c_v7_block_size,
                                                 keep_slots - 1u, &destination);
-      if (rc == 0)
-      {
-        uint32_t reference = htole32((uint32_t)plans[tail_plan].logical_block + 1u);
-        memcpy(destination, &reference, sizeof(reference));
-      }
-    }
+    if (rc == 0)
+      rc = kafs_v7_fuse_stage_truncate_tail(ctx, operation, tail_plan, &plans[tail_plan],
+                                            tail_retained, tail_bytes, destination);
   }
   if (rc == 0 && cow_single_root)
     rc = kafs_v7_fuse_stage_index_reference(
@@ -1743,6 +2286,362 @@ static int kafs_v7_fuse_truncate_double_indirect(kafs_context_t *ctx, kafs_inocn
   return rc;
 }
 
+static int kafs_v7_fuse_retire_indirect_suffix(kafs_context_t *ctx, uint32_t group_id,
+                                               uint32_t reference, uint32_t levels,
+                                               uint64_t base_slot, uint64_t keep_slot,
+                                               uint64_t old_end)
+{
+  if (!ctx || reference == 0u || levels == 0u || levels > KAFS_V7_INODE_INDIRECT_REFERENCE_COUNT)
+    return -EUCLEAN;
+  uint64_t references_per_block = ctx->c_v7_block_size / sizeof(uint32_t);
+  uint64_t child_span = 1u;
+  for (uint32_t level = 1u; level < levels; ++level)
+  {
+    if (child_span > UINT64_MAX / references_per_block)
+      return -EOVERFLOW;
+    child_span *= references_per_block;
+  }
+  uint32_t *references = malloc(ctx->c_v7_block_size);
+  if (!references)
+    return -ENOMEM;
+  int rc = kafs_v7_fuse_read_logical_block(ctx, (uint64_t)reference - 1u, references);
+  int retirement_rc = 0;
+  for (uint64_t index = 0u; rc == 0 && index < references_per_block; ++index)
+  {
+    if (index > (UINT64_MAX - base_slot) / child_span)
+    {
+      rc = -EOVERFLOW;
+      break;
+    }
+    uint64_t child_start = base_slot + index * child_span;
+    if (child_start >= old_end)
+      break;
+    uint64_t child_end =
+        child_start > UINT64_MAX - child_span ? UINT64_MAX : child_start + child_span;
+    if (child_end <= keep_slot)
+      continue;
+    uint32_t child_reference = le32toh(references[index]);
+    if (child_reference == 0u)
+    {
+      rc = -EUCLEAN;
+      break;
+    }
+    if (levels == 1u)
+    {
+      uint64_t logical_block = (uint64_t)child_reference - 1u;
+      int retire_rc = kafs_v7_fuse_retire_blocks(ctx, group_id, &logical_block, 1u);
+      if (retirement_rc == 0)
+        retirement_rc = retire_rc;
+      continue;
+    }
+    int child_rc = kafs_v7_fuse_retire_indirect_suffix(ctx, group_id, child_reference, levels - 1u,
+                                                       child_start, keep_slot, old_end);
+    if (retirement_rc == 0)
+      retirement_rc = child_rc;
+    if (child_start >= keep_slot)
+    {
+      uint64_t logical_block = (uint64_t)child_reference - 1u;
+      int retire_rc = kafs_v7_fuse_retire_blocks(ctx, group_id, &logical_block, 1u);
+      if (retirement_rc == 0)
+        retirement_rc = retire_rc;
+    }
+  }
+  free(references);
+  return rc != 0 ? rc : retirement_rc;
+}
+
+static int kafs_v7_fuse_retire_triple_suffix(kafs_context_t *ctx, uint32_t group_id,
+                                             const kafs_v7_inode_t *inode, uint64_t keep_slots,
+                                             uint64_t old_slots)
+{
+  uint64_t references_per_block = ctx->c_v7_block_size / sizeof(uint32_t);
+  uint64_t region_start = 0u;
+  int retirement_rc = 0;
+  uint64_t direct_end = KAFS_V7_INODE_DIRECT_REFERENCE_COUNT;
+  uint64_t direct_limit = old_slots < direct_end ? old_slots : direct_end;
+  for (uint64_t slot = keep_slots; slot < direct_limit; ++slot)
+  {
+    uint32_t reference = kafs_v7_fuse_inode_reference(inode, (uint32_t)slot);
+    if (reference == 0u)
+      return -EUCLEAN;
+    uint64_t logical_block = (uint64_t)reference - 1u;
+    int rc = kafs_v7_fuse_retire_blocks(ctx, group_id, &logical_block, 1u);
+    if (retirement_rc == 0)
+      retirement_rc = rc;
+  }
+  region_start = direct_end;
+  uint64_t region_span = references_per_block;
+  for (uint32_t levels = 1u; levels <= KAFS_V7_INODE_INDIRECT_REFERENCE_COUNT; ++levels)
+  {
+    uint64_t region_end =
+        region_start > UINT64_MAX - region_span ? UINT64_MAX : region_start + region_span;
+    uint64_t covered_end = old_slots < region_end ? old_slots : region_end;
+    if (covered_end > keep_slots && covered_end > region_start)
+    {
+      uint32_t reference =
+          kafs_v7_fuse_inode_reference(inode, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + levels - 1u);
+      if (reference == 0u)
+        return -EUCLEAN;
+      int rc = kafs_v7_fuse_retire_indirect_suffix(ctx, group_id, reference, levels, region_start,
+                                                   keep_slots, covered_end);
+      if (retirement_rc == 0)
+        retirement_rc = rc;
+      if (keep_slots <= region_start)
+      {
+        uint64_t logical_block = (uint64_t)reference - 1u;
+        rc = kafs_v7_fuse_retire_blocks(ctx, group_id, &logical_block, 1u);
+        if (retirement_rc == 0)
+          retirement_rc = rc;
+      }
+    }
+    region_start = region_end;
+    if (levels < KAFS_V7_INODE_INDIRECT_REFERENCE_COUNT)
+    {
+      if (region_span > UINT64_MAX / references_per_block)
+        return -EOVERFLOW;
+      region_span *= references_per_block;
+    }
+  }
+  return retirement_rc;
+}
+
+static int kafs_v7_fuse_truncate_triple_indirect(kafs_context_t *ctx, kafs_inocnt_t ino,
+                                                 uint64_t size,
+                                                 kafs_v7_fuse_truncate_result_t *result)
+{
+  kafs_v7_fuse_truncate_state_t state;
+  int rc = kafs_v7_fuse_truncate_state_init(ctx, ino, size, &state);
+  if (rc != 0)
+    return rc;
+  uint64_t single_capacity = 0u;
+  uint64_t double_capacity = 0u;
+  uint64_t triple_capacity = 0u;
+  rc = kafs_v7_fuse_triple_capacity(ctx->c_v7_block_size, &single_capacity, &double_capacity,
+                                    &triple_capacity);
+  uint32_t old_triple_reference =
+      kafs_v7_fuse_inode_reference(state.inode, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 2u);
+  if (rc == 0 && (state.old_slots <= double_capacity || state.old_slots > triple_capacity ||
+                  old_triple_reference == 0u))
+    rc = -EOPNOTSUPP;
+  if (rc != 0)
+    return rc;
+
+  kafs_v7_inode_t inode;
+  memcpy(&inode, state.inode, sizeof(inode));
+  kafs_v7_fuse_clear_direct_references(&inode, state.keep_slots);
+  kafs_v7_block_tree_path_t path;
+  memset(&path, 0, sizeof(path));
+  if (state.keep_slots != 0u)
+    rc = kafs_v7_block_tree_address(ctx->c_v7_block_size, state.keep_slots - 1u, &path);
+  if (rc != 0)
+    return rc;
+  for (uint32_t level = path.level_count + 1u; level <= KAFS_V7_INODE_INDIRECT_REFERENCE_COUNT;
+       ++level)
+    memset(inode.inline_or_block_refs +
+               (KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + level - 1u) * sizeof(uint32_t),
+           0, sizeof(uint32_t));
+
+  kafs_v7_fuse_double_view_t double_view;
+  memset(&double_view, 0, sizeof(double_view));
+  if (path.level_count == 1u || path.level_count == 2u)
+    rc = kafs_v7_fuse_double_view_init(ctx, state.inode, &double_view);
+  kafs_v7_fuse_triple_view_t triple_view;
+  memset(&triple_view, 0, sizeof(triple_view));
+  if (rc == 0 && path.level_count == 3u)
+    rc = kafs_v7_fuse_triple_view_init(ctx, state.inode, double_capacity, &triple_view);
+  if (rc != 0)
+  {
+    kafs_v7_fuse_triple_view_clear(&triple_view);
+    kafs_v7_fuse_double_view_clear(&double_view);
+    return rc;
+  }
+
+  uint64_t dirty_blocks[3] = {0u, 0u, 0u};
+  const void *dirty_buffers[3] = {NULL, NULL, NULL};
+  void *dirty_destinations[3] = {NULL, NULL, NULL};
+  size_t dirty_count = 0u;
+  uint32_t references_per_block = ctx->c_v7_block_size / sizeof(uint32_t);
+  uint32_t tail_bytes = (uint32_t)(size % ctx->c_v7_block_size);
+  int cow_tail = tail_bytes != 0u;
+  void *tail_destination = NULL;
+  uint32_t tail_reference = 0u;
+
+  if (state.keep_slots != 0u && path.level_count == 0u)
+  {
+    tail_reference = kafs_v7_fuse_inode_reference(state.inode, path.inode_slot);
+    tail_destination = inode.inline_or_block_refs + path.inode_slot * sizeof(uint32_t);
+  }
+  else if (path.level_count == 1u)
+  {
+    for (uint32_t index = path.indices[0] + 1u; index < references_per_block; ++index)
+      double_view.single_root[index] = 0u;
+    tail_reference = le32toh(double_view.single_root[path.indices[0]]);
+    tail_destination = &double_view.single_root[path.indices[0]];
+    int dirty = cow_tail || path.indices[0] + 1u < references_per_block;
+    if (dirty)
+    {
+      dirty_blocks[dirty_count] = double_view.single_root_block;
+      dirty_buffers[dirty_count] = double_view.single_root;
+      dirty_destinations[dirty_count++] =
+          inode.inline_or_block_refs + KAFS_V7_INODE_DIRECT_REFERENCE_COUNT * sizeof(uint32_t);
+    }
+  }
+  else if (path.level_count == 2u)
+  {
+    uint32_t *leaf = double_view.double_leaves[path.indices[0]];
+    for (uint32_t index = path.indices[1] + 1u; index < references_per_block; ++index)
+      leaf[index] = 0u;
+    for (uint32_t index = path.indices[0] + 1u; index < references_per_block; ++index)
+      double_view.double_root[index] = 0u;
+    tail_reference = le32toh(leaf[path.indices[1]]);
+    tail_destination = &leaf[path.indices[1]];
+    int leaf_dirty = cow_tail || path.indices[1] + 1u < references_per_block;
+    int root_dirty = leaf_dirty || path.indices[0] + 1u < references_per_block;
+    if (leaf_dirty)
+    {
+      dirty_blocks[dirty_count] = double_view.double_leaf_blocks[path.indices[0]];
+      dirty_buffers[dirty_count] = leaf;
+      dirty_destinations[dirty_count++] = &double_view.double_root[path.indices[0]];
+    }
+    if (root_dirty)
+    {
+      dirty_blocks[dirty_count] = double_view.double_root_block;
+      dirty_buffers[dirty_count] = double_view.double_root;
+      dirty_destinations[dirty_count++] =
+          inode.inline_or_block_refs +
+          (KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 1u) * sizeof(uint32_t);
+    }
+  }
+  else if (path.level_count == 3u)
+  {
+    void *destination = NULL;
+    rc = kafs_v7_fuse_triple_slot_prepare(ctx, &triple_view, state.keep_slots - 1u, 1,
+                                          &tail_reference, &destination);
+    kafs_v7_fuse_triple_middle_t *middle = NULL;
+    kafs_v7_fuse_triple_leaf_t *leaf = NULL;
+    for (size_t i = 0u; i < triple_view.middle_count; ++i)
+      if (triple_view.middles[i].index == path.indices[0])
+        middle = &triple_view.middles[i];
+    for (size_t i = 0u; i < triple_view.leaf_count; ++i)
+      if (triple_view.leaves[i].middle_index == path.indices[0] &&
+          triple_view.leaves[i].leaf_index == path.indices[1])
+        leaf = &triple_view.leaves[i];
+    if (rc == 0 && (!middle || !leaf))
+      rc = -EUCLEAN;
+    if (rc == 0)
+    {
+      tail_destination = destination;
+      for (uint32_t index = path.indices[2] + 1u; index < references_per_block; ++index)
+        leaf->references[index] = 0u;
+      for (uint32_t index = path.indices[1] + 1u; index < references_per_block; ++index)
+        middle->references[index] = 0u;
+      for (uint32_t index = path.indices[0] + 1u; index < references_per_block; ++index)
+        triple_view.root[index] = 0u;
+      int leaf_dirty = cow_tail || path.indices[2] + 1u < references_per_block;
+      int middle_dirty = leaf_dirty || path.indices[1] + 1u < references_per_block;
+      int root_dirty = middle_dirty || path.indices[0] + 1u < references_per_block;
+      if (leaf_dirty)
+      {
+        dirty_blocks[dirty_count] = leaf->logical_block;
+        dirty_buffers[dirty_count] = leaf->references;
+        dirty_destinations[dirty_count++] = &middle->references[path.indices[1]];
+      }
+      if (middle_dirty)
+      {
+        dirty_blocks[dirty_count] = middle->logical_block;
+        dirty_buffers[dirty_count] = middle->references;
+        dirty_destinations[dirty_count++] = &triple_view.root[path.indices[0]];
+      }
+      if (root_dirty)
+      {
+        dirty_blocks[dirty_count] = triple_view.root_block;
+        dirty_buffers[dirty_count] = triple_view.root;
+        dirty_destinations[dirty_count++] =
+            inode.inline_or_block_refs +
+            (KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 2u) * sizeof(uint32_t);
+      }
+    }
+  }
+  if (rc == 0 && cow_tail && (tail_reference == 0u || !tail_destination))
+    rc = -EUCLEAN;
+
+  uint64_t tail_retained =
+      cow_tail ? (uint64_t)tail_reference - 1u : KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK;
+  size_t plan_count = (size_t)cow_tail + dirty_count;
+  kafs_v7_runtime_data_cow_request_t requests[4];
+  kafs_v7_runtime_data_cow_plan_t plans[4];
+  size_t next_plan = 0u;
+  size_t tail_plan = SIZE_MAX;
+  if (rc == 0 && cow_tail)
+  {
+    tail_plan = next_plan++;
+    requests[tail_plan] = (kafs_v7_runtime_data_cow_request_t){
+        .group_id = state.shard->group_id,
+        .retained_logical_block = tail_retained,
+    };
+  }
+  for (size_t i = 0u; rc == 0 && i < dirty_count; ++i)
+    requests[next_plan++] = (kafs_v7_runtime_data_cow_request_t){
+        .group_id = state.shard->group_id,
+        .retained_logical_block = dirty_blocks[i],
+    };
+  if (rc == 0 && next_plan != plan_count)
+    rc = -EUCLEAN;
+
+  kafs_v7_runtime_data_cow_batch_t *operation = NULL;
+  if (rc == 0 && plan_count != 0u)
+    rc = kafs_v7_runtime_data_cow_batch_prepare(ctx->c_v7_runtime_transactions, requests,
+                                                plan_count, &operation, plans);
+  if (rc == 0 && cow_tail)
+    rc = kafs_v7_fuse_stage_truncate_tail(ctx, operation, tail_plan, &plans[tail_plan],
+                                          tail_retained, tail_bytes, tail_destination);
+  for (size_t i = 0u; rc == 0 && i < dirty_count; ++i)
+  {
+    size_t plan_id = (size_t)cow_tail + i;
+    rc = kafs_v7_fuse_stage_index_reference(operation, plan_id, &plans[plan_id], dirty_buffers[i],
+                                            dirty_destinations[i]);
+  }
+  uint32_t expected_blocks = 0u;
+  if (rc == 0)
+    rc = kafs_v7_fuse_expected_blocks(ctx->c_v7_block_size, state.keep_slots, &expected_blocks);
+  if (rc == 0)
+  {
+    inode.size = htole64(size);
+    inode.blocks = htole32(expected_blocks);
+    rc = kafs_v7_fuse_commit_truncate_inode(ctx, &operation, plan_count, ino, &inode);
+  }
+  else if (operation)
+    (void)kafs_v7_runtime_data_cow_batch_abort(&operation);
+
+  int retirement_rc = 0;
+  if (rc == 0 && cow_tail)
+    retirement_rc = kafs_v7_fuse_retire_blocks(ctx, state.shard->group_id, &tail_retained, 1u);
+  if (rc == 0 && state.keep_slots < state.old_slots)
+  {
+    int retire_rc = kafs_v7_fuse_retire_triple_suffix(ctx, state.shard->group_id, state.inode,
+                                                      state.keep_slots, state.old_slots);
+    if (retirement_rc == 0)
+      retirement_rc = retire_rc;
+  }
+  if (rc == 0)
+  {
+    int retire_rc =
+        kafs_v7_fuse_retire_blocks(ctx, state.shard->group_id, dirty_blocks, dirty_count);
+    if (retirement_rc == 0)
+      retirement_rc = retire_rc;
+  }
+  if (operation)
+    (void)kafs_v7_runtime_data_cow_batch_abort(&operation);
+  if (rc == 0 && result)
+  {
+    result->retained_logical_block = tail_retained;
+    result->retirement_rc = retirement_rc;
+  }
+  kafs_v7_fuse_triple_view_clear(&triple_view);
+  kafs_v7_fuse_double_view_clear(&double_view);
+  return rc;
+}
+
 int kafs_v7_fuse_truncate_regular(kafs_context_t *ctx, kafs_inocnt_t ino, uint64_t size,
                                   kafs_v7_fuse_truncate_result_t *result)
 {
@@ -1766,11 +2665,15 @@ int kafs_v7_fuse_truncate_regular(kafs_context_t *ctx, kafs_inocnt_t ino, uint64
     return 0;
   uint64_t single_capacity = 0u;
   uint64_t double_capacity = 0u;
-  int capacity_rc =
-      kafs_v7_fuse_capacities(ctx->c_v7_block_size, &single_capacity, &double_capacity);
+  uint64_t triple_capacity = 0u;
+  int capacity_rc = kafs_v7_fuse_triple_capacity(ctx->c_v7_block_size, &single_capacity,
+                                                 &double_capacity, &triple_capacity);
   if (capacity_rc != 0)
     return capacity_rc;
   uint64_t old_block_count = old_size == 0u ? 0u : (old_size - 1u) / ctx->c_v7_block_size + 1u;
+  if (old_block_count > double_capacity ||
+      kafs_v7_fuse_inode_reference(mapped, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 2u) != 0u)
+    return kafs_v7_fuse_truncate_triple_indirect(ctx, ino, size, result);
   if (old_block_count > single_capacity ||
       kafs_v7_fuse_inode_reference(mapped, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 1u) != 0u)
     return kafs_v7_fuse_truncate_double_indirect(ctx, ino, size, result);

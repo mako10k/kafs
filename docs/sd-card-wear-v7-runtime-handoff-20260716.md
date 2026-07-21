@@ -67,9 +67,9 @@ The accepted v7 surface currently provides:
 - v7-only FUSE `fsync` / `release` closeout barriers;
 - explicit controlled-write admission for dense same-group regular-file
   overwrite, contiguous growth, shrinking above the inline boundary or to zero,
-  and `O_TRUNC` through double-indirect depth, including partial and multi-block
-  COW, double-child-table crossing/pruning, and double-to-single-to-direct
-  truncate;
+  and `O_TRUNC` through triple-indirect depth, including partial and
+  multi-block COW, double-child and triple leaf/middle-table
+  crossing/pruning, and contraction through every lower representation;
 - same-group empty regular-file create, inline-file write through the create
   handle, regular-file inline-to-one-direct-block promotion, and inline/direct
   directory append or growth through the twelve direct references;
@@ -78,12 +78,11 @@ The accepted v7 surface currently provides:
 - admission recovery and diagnostics for interruption after journal
   publication, metadata apply, checkpoint copy, or journal reclamation;
 - v7-owned direct/single/double/triple indirect address calculation, traversal,
-  and retirement guards, with single- and double-indirect regular-file mutation
-  admitted through T54 and triple plus indirect-directory mutation still
-  rejected.
+  and retirement guards, with all regular-file depths admitted through T55 and
+  indirect-directory mutation still rejected.
 
 Runtime controlled write remains fail closed outside that allowlist. Non-zero
-direct-to-inline conversion, holes, triple-indirect and indirect-directory
+direct-to-inline conversion, holes, indirect-directory
 mutation, cross-group allocation, and wider metadata mutations are rejected.
 Production `kafs` remains the v4/v5 runtime and does not admit v7.
 Frozen experimental v6 behavior is not a compatibility contract for v7.
@@ -115,13 +114,13 @@ checksum-consistent foreign-group mutation.
 | M6 | T20-T32: bounded direct overwrite, admission, diagnostics, partial/multi-block COW, interruption recovery | Complete |
 | M6.1 | T33: FUSE request negotiation and supported atomic-request observability | Complete |
 | M7 | T48: controlled-write RC qualification, real-media power interruption, and independent review | External hardware/approval join blocked and deferred; destructive execution not authorized |
-| M8-A | Existing-inode growth, allocation, hole policy, and truncate | Complete for bounded direct files |
+| M8-A | Existing-inode growth, allocation, hole policy, and truncate | Complete for dense same-group regular files through triple depth |
 | M8-B | Create and directory-record mutation | Complete for bounded same-group inline/direct directories after R1 correction |
 | M8-B.1 | T49 regular-file inline-to-one-direct-block promotion | Complete with file-image normal/recovery qualification refresh |
 | M8-B.2 | T50 allocated-inode representation validation | Complete for inline block count/padding and all allocated disabled tails |
 | M8-B.3 | T51 namespace payload structural validation | Complete for inline and bounded direct KDIR/symlink admission |
 | M8-B.4 | T52 bounded direct-inode reference validation | Complete for dense direct count/slots and recovered-bitmap allocation admission |
-| M8-C | Indirect-block COW, traversal, and retirement | Double-indirect regular-file lifecycle complete through T54; triple and indirect directories remain |
+| M8-C | Indirect-block COW, traversal, and retirement | Triple-indirect regular-file lifecycle complete through T55; indirect directories remain |
 | M9 | v5-to-v7 data migration beyond destination creation | Destination creation present; full data migration/cutover not complete |
 | M10 | Cross-group HRL and multi-group atomic mutation | Not started |
 
@@ -129,7 +128,7 @@ The bounded direct portions of M8-A and M8-B are implemented. R1 replaced the
 block-count-specific create path with one direct-`N` transition model and
 table-driven boundary/recovery evidence. R2 then closed the structural/static
 control wave. This is still not general writable-filesystem readiness:
-triple-indirect or indirect-directory mutation, holes, cross-group allocation, and most metadata mutations
+indirect-directory mutation, holes, cross-group allocation, and most metadata mutations
 remain outside the admitted contract.
 
 The post-R2 Task Start and Goal And Critical Path Gate selected M7 controlled-
@@ -356,9 +355,9 @@ T19 validation completed on 2026-07-17:
 
 ## Remaining Risks And Constraints
 
-- Single- and double-indirect regular-file COW/growth/truncate are admitted and
-  validated, but triple-indirect and indirect-directory mutation are not. Do
-  not infer those wider surfaces from the shared traversal foundation.
+- Single-, double-, and triple-indirect regular-file COW/growth/truncate are
+  admitted and validated, but indirect-directory mutation is not. Do not infer
+  that wider surface from the shared traversal foundation.
 - Retirement remains a correctness-first synchronous path and is not a
   scalable background reclaimer.
 - The admitted write surface remains bounded; do not infer support for
@@ -374,17 +373,14 @@ T19 validation completed on 2026-07-17:
 
 ## Recommended Next Slice
 
-The post-T54 closeout PERT in
-`docs/sd-card-wear-v7-indirect-pert-20260721.md` selects dense same-group
-triple-indirect regular-file lifecycle `D3` as the next runnable zero-slack
-software capability. T54 closed double-root path-copy, reachability,
-retirement, validation, and recovery; D3 extends that contract to the final
-regular-file block-tree depth and unlocks expanded qualification `Q`.
-Rebuilding the network rejected immediate interim requalification and the
-nearby namespace validator because neither shortens the software leg to the
-real-media join. Run a fresh Task Start Gate against the post-T54 committed
-checkout before implementing D3; this recommendation is not itself start
-approval.
+The post-T55 closeout PERT in
+`docs/sd-card-wear-v7-indirect-pert-20260721.md` closes dense same-group
+triple-indirect regular-file lifecycle `D3` and expanded software
+qualification `Q`. No software predecessor remains runnable on the accepted
+path to real-media recovery `R`: exact hardware identity and digest-bound
+approval `H` is the remaining join blocker. Whole-namespace graph validation
+`N` is still runnable but off-path and must not replace `H` merely because it
+can be performed locally.
 
 The hardware path remains in the same network as unknown-duration blocker `H`.
 When the required hardware becomes available, complete the `SDW-V7RT-T48-B1`
@@ -397,13 +393,13 @@ interruption before that approval.
 ## Resume Checklist
 
 1. Fetch and check out `origin/feat/v7-runtime-admission-foundation`.
-2. Confirm the T54 double-indirect lifecycle commit is an ancestor and inspect
+2. Confirm the T55 triple-indirect lifecycle commit is an ancestor and inspect
    any commits after it.
 3. Confirm `git status --short --branch` is clean.
 4. Read, in order:
    - [sd-card-wear-v7-capability-rebaseline-20260721.md](sd-card-wear-v7-capability-rebaseline-20260721.md);
    - this handoff;
-   - [sd-card-wear-tickets.md](sd-card-wear-tickets.md) at T49-T54;
+   - [sd-card-wear-tickets.md](sd-card-wear-tickets.md) at T49-T55;
    - [sd-card-wear-v7-indirect-pert-20260721.md](sd-card-wear-v7-indirect-pert-20260721.md);
    - [sd-card-wear-format-v7-pivot.md](sd-card-wear-format-v7-pivot.md);
    - [.github/lock-policy.md](../.github/lock-policy.md).
@@ -416,9 +412,10 @@ interruption before that approval.
    make -C tests check TESTS='v7_fuse_write_smoketest v7_checkpoint_publication_smoketest v7_inspection_mount_smoketest'
    ```
 
-6. Rebuild the capability PERT from the refreshed checkout. If `D3` remains the
-   selected runnable frontier, run its Task Start Gate before editing. If
-   hardware identity becomes available, update T48-B1 only with directly
-   observed identities and keep real-device actions behind explicit approval.
+6. Rebuild the capability PERT from the refreshed checkout. If hardware
+   identity becomes available, update T48-B1 only with directly observed
+   identities and keep real-device actions behind explicit approval. If it is
+   still unavailable, report that the accepted path has no runnable software
+   node; do not substitute off-path namespace work without an explicit replan.
 7. Follow the reviewed file/hunk WIP workflow in
    [github-dev-rules.md](../.github/github-dev-rules.md).

@@ -310,3 +310,111 @@ subnetwork from the T54 closeout to the `R` join is:
   Re-run a fresh Task Start Gate on the post-T54 committed checkout before any
   D3 edit; retain triple state-space, invariants, exit criteria, and non-goals
   only if that gate returns `PASS`.
+
+## D3 Task Start Gate
+
+- Record ID/time: `KAFS-V7-START-20260721-INDIRECT-D3`, 2026-07-21 JST.
+- Baseline identity: branch `feat/v7-runtime-admission-foundation`, HEAD
+  `c62d426`; there were no tracked edits, while generated test executables
+  remained untracked and outside the reviewed scope.
+- PERT check: the post-T54 network above still has `D3` as the only runnable
+  zero-slack software node. `Q` remains causally blocked by D3, namespace node
+  `N` remains off-path, and hardware/approval node `H` remains an
+  unknown-duration external join blocker.
+- Foundation check: v7-owned address calculation, recursive walk, and
+  retirement already accept three indirect levels; the T54 data/leaf/root/inode
+  COW and publish-before-retire invariant is the immediate predecessor.
+- Feasibility check: format v7 rejects a 512-byte block image but accepts and
+  passes detect-only fsck at 1 KiB. With 256 references per index block, a
+  one-group 256 MiB sparse image crosses double-to-triple near 67 MiB and the
+  next triple middle-table boundary near 135 MiB, so both triple index
+  boundaries can be exercised without weakening the production 4 KiB logic.
+- State space to cover: double-to-triple crossing; overwrite and contiguous
+  growth within triple depth; triple leaf and middle-table crossing; partial
+  and aligned shrink; leaf and middle-table pruning; triple-to-double,
+  triple-to-single, triple-to-direct, and zero; journal-publication,
+  metadata-apply, and checkpoint-copy interruption.
+- Required invariants: every touched data/leaf/middle/root/inode transition is
+  one same-group transaction; `inode.blocks` equals data plus all owned index
+  nodes; required references are allocated and unused entries at every level
+  are zero; no staged block is unreachable from the after graph; old data and
+  all replaced/pruned index nodes retire only after publication.
+- Exit criteria: actual FUSE full-fsync/readback at both triple boundaries,
+  lower-depth contraction, detect-only fsck and negative unused-reference
+  validation, the three-point recovery matrix, updated non-destructive and
+  DRAFT real-media qualification contracts, full Automake regression, and all
+  repository gates pass.
+- Explicit non-goals: sparse files, indirect-directory mutation, cross-group
+  allocation/transactions, repair, real-media formatting, and physical power
+  interruption.
+- Tooling note: `lsp-cli` and `compile_commands.json` are present, but `clangd`
+  remains unavailable; semantic LSP checks cannot run in this environment.
+- Decision: `PASS`. D3 is feasible on the current checkout with its complete
+  causal state space and without substituting a locally easier task.
+
+## D3 And Q Closeout: Rebuilt PERT
+
+- Record ID/time: `KAFS-V7-PERT-20260721-INDIRECT-POST-D3`, 2026-07-21 JST.
+- Evidence baseline: T55 working tree derived from `c62d426`; actual-FUSE
+  double/triple crossing, overwrite/shrink, every lower-depth contraction, the
+  first triple middle-table boundary, detect-only fsck, unused-reference
+  rejection, and all three recovery interruption points passed.
+- Qualification closure: the non-destructive runner and gate require 37 results
+  and passed 37/37 with 116 digest-checked artifacts. The DRAFT real-media
+  contract now requires `regular_file_triple_indirect_lifecycle`; it does not
+  authorize formatting or power interruption.
+- Repository closure: the full Automake gate passed 42 tests with one
+  environment-limited stress SKIP; format, lint, v7 ownership, clone, and
+  aggregate static gates passed. The strict source clone result is 48 clones
+  and 490 duplicated lines (0.97%), below the 1% limit.
+- Closed capabilities: `D3` closes the final dense same-group regular-file
+  block-tree depth. Its immediately dependent expanded software recovery,
+  fsck, and non-destructive qualification node `Q` is also complete in T55.
+- External state: exact card, reader/controller, isolated power-cut apparatus,
+  cycle count, and digest-bound approval remain unavailable. Node `H` therefore
+  remains an unknown-duration external predecessor of `R`.
+
+No new evidence creates an edge from whole-namespace graph validation `N` to
+real-media recovery `R` or migration/cutover `M`. Removing completed `D3` and
+`Q` leaves the following network:
+
+| ID | Capability or mandatory outcome | Causal predecessors | O | M | P | TE | Confidence | Current state/blocker | Downstream unlock |
+| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| CS | Bounded direct and dense single-indirect controlled write/recovery |  | 0 | 0 | 0 | 0.00 | High | Complete through T53 | Complete predecessor |
+| D2 | Dense same-group double-indirect regular-file lifecycle | CS | 0 | 0 | 0 | 0.00 | High | Complete through T54 | Complete predecessor |
+| D3 | Dense same-group triple-indirect regular-file lifecycle | D2 | 0 | 0 | 0 | 0.00 | High | Complete through T55 | Complete regular-file block tree |
+| Q | Expanded software recovery, fsck, and non-destructive qualification | D3 | 0 | 0 | 0 | 0.00 | High | Complete through T55 | Software leg at real-media join complete |
+| H | Exact card/reader/power-cut identity and digest-bound approval | CS | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN | Low | External blocker; explicitly deferred | Authorized real-media execution |
+| R | Real-media recovery and wear qualification for the expanded surface | Q, H | 3 | 5 | 9 | 5.33 | Low | Blocked only by H | Bounded RC evidence |
+| M | Migration/cutover evidence for the qualified destination runtime | R | 5 | 10 | 18 | 10.50 | Low | Blocked by R | Accepted production cutover decision |
+| N | Whole-namespace graph/link-count validation | CS | 2 | 4 | 7 | 4.17 | Low | Runnable but off the accepted product path | Separate corruption-admission closure |
+
+```text
+CS -> D2 (complete) -> D3 (complete) -> Q (complete) --+
+                                                       +-> R -> M
+CS -> H ------------------------------------------------+
+
+CS -> N   (separate correctness path; no current edge to R or M)
+```
+
+Because `H` is unknown, a truthful end-to-end backward pass still cannot assign
+finite ES/EF/LS/LF values past the join:
+
+| ID | ES | EF | LS | LF | Slack | Runnable now | Critical or near-critical |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| D3 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | Complete | Closed critical predecessor |
+| Q | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | Complete | Closed critical predecessor |
+| H | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN | No | External join blocker |
+| R | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN | 0.00 after join | No | Critical join |
+| M | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN | 0.00 after R | No | Critical |
+| N | 0.00 | 4.17 | N/A | N/A | N/A | Yes | Off the accepted product path |
+
+- Completed software critical path: `CS -> D2 -> D3 -> Q`.
+- Remaining uncertainty path: `CS -> H -> R -> M`.
+- Runnable zero-slack software frontier: none.
+- Runnable off-path work: `N`; selecting it would not shorten the remaining
+  path and would repeat the local-ease ordering error this PERT gate prevents.
+- PERT decision: `BLOCKED-ON-H` for the accepted product path. When SD-card
+  preparation resumes, the next start gate is the digest-bound hardware and
+  approval gate for `H`, followed by `R`. Until then, report the blocker rather
+  than substituting `N` or inventing another local task.

@@ -225,6 +225,23 @@ controller-independent-wear claims remain false. The DRAFT real-media matrix
 adds `regular_file_double_indirect_lifecycle`; all previous draft digests are
 obsolete and cannot authorize execution.
 
+## T55 Triple-Indirect File-Image Refresh
+
+The 2026-07-21 T55 dry run completed with all 37 required results at PASS and
+116 digest-checked artifacts. T55 adds five required results:
+`triple_indirect_write_truncate`, `triple_indirect_to_double_truncate`,
+`triple_indirect_contraction_matrix`, `triple_indirect_middle_boundary`, and
+`triple_indirect_recovery_matrix`. The normal evidence crosses double to triple
+depth, verifies partial shrink and invalid unused references, contracts directly
+to every lower representation, and crosses the first triple middle-table
+boundary. The recovery result requires raw journal-publication, metadata-apply,
+and checkpoint-copy recovery logs for a triple tail COW.
+
+This remains non-destructive file-image evidence. RC, real-media, and
+controller-independent-wear claims remain false. The DRAFT real-media matrix
+adds `regular_file_triple_indirect_lifecycle`; all previous draft digests are
+obsolete and cannot authorize execution.
+
 ## Follow-On Boundary
 
 T48-B1 adds the fail-closed matrix and digest-bound approval contract in

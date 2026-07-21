@@ -1936,16 +1936,37 @@ static int kafs_v7_validate_inode_references(const kafs_v7_reference_view_t *vie
   uint64_t single_capacity = KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + references_per_block;
   if (references_per_block > UINT64_MAX / references_per_block)
     return -EOVERFLOW;
-  uint64_t double_capacity = single_capacity + references_per_block * references_per_block;
-  if (data_blocks > double_capacity)
-    return 0;
+  uint64_t double_data_capacity = references_per_block * references_per_block;
+  if (double_data_capacity > UINT64_MAX - single_capacity ||
+      double_data_capacity > UINT64_MAX / references_per_block)
+    return -EOVERFLOW;
+  uint64_t double_capacity = single_capacity + double_data_capacity;
+  uint64_t triple_data_capacity = double_data_capacity * references_per_block;
+  if (triple_data_capacity > UINT64_MAX - double_capacity)
+    return -EOVERFLOW;
+  uint64_t triple_capacity = double_capacity + triple_data_capacity;
+  if (data_blocks > triple_capacity)
+    return -EINVAL;
   uint64_t double_data = data_blocks > single_capacity ? data_blocks - single_capacity : 0u;
+  if (double_data > double_data_capacity)
+    double_data = double_data_capacity;
   uint64_t double_leaves = double_data == 0u ? 0u : (double_data - 1u) / references_per_block + 1u;
+  uint64_t triple_data = data_blocks > double_capacity ? data_blocks - double_capacity : 0u;
+  uint64_t triple_leaves = triple_data == 0u ? 0u : (triple_data - 1u) / references_per_block + 1u;
+  uint64_t triple_middles =
+      triple_leaves == 0u ? 0u : (triple_leaves - 1u) / references_per_block + 1u;
   uint64_t expected_allocated = data_blocks;
   if (data_blocks > KAFS_V7_INODE_DIRECT_REFERENCE_COUNT)
     ++expected_allocated;
   if (double_data != 0u)
     expected_allocated += 1u + double_leaves;
+  if (triple_data != 0u)
+  {
+    if (triple_leaves > UINT64_MAX - triple_middles - 1u ||
+        expected_allocated > UINT64_MAX - triple_leaves - triple_middles - 1u)
+      return -EOVERFLOW;
+    expected_allocated += 1u + triple_middles + triple_leaves;
+  }
   if (expected_allocated > UINT32_MAX || le32toh(inode->blocks) != expected_allocated)
     return -EINVAL;
   uint32_t direct_blocks = data_blocks < KAFS_V7_INODE_DIRECT_REFERENCE_COUNT
@@ -1967,10 +1988,8 @@ static int kafs_v7_validate_inode_references(const kafs_v7_reference_view_t *vie
   uint32_t single_root = kafs_v7_inode_reference(inode, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT);
   uint32_t double_root = kafs_v7_inode_reference(inode, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 1u);
   uint32_t triple_root = kafs_v7_inode_reference(inode, KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 2u);
-  if (triple_root != 0u)
-    return -EINVAL;
   if (data_blocks <= KAFS_V7_INODE_DIRECT_REFERENCE_COUNT)
-    return single_root == 0u && double_root == 0u ? 0 : -EINVAL;
+    return single_root == 0u && double_root == 0u && triple_root == 0u ? 0 : -EINVAL;
 
   int rc = kafs_v7_validate_data_reference(view, single_root);
   uint32_t *single = rc == 0 ? malloc(view->report->block_size) : NULL;
@@ -1987,7 +2006,7 @@ static int kafs_v7_validate_inode_references(const kafs_v7_reference_view_t *vie
   if (rc != 0)
     return rc;
   if (double_data == 0u)
-    return double_root == 0u ? 0 : -EINVAL;
+    return double_root == 0u && triple_root == 0u ? 0 : -EINVAL;
 
   rc = kafs_v7_validate_data_reference(view, double_root);
   uint32_t *root = rc == 0 ? malloc(view->report->block_size) : NULL;
@@ -2015,6 +2034,55 @@ static int kafs_v7_validate_inode_references(const kafs_v7_reference_view_t *vie
       rc = -EINVAL;
   }
   free(root);
+  free(leaf);
+  if (rc != 0)
+    return rc;
+  if (triple_data == 0u)
+    return triple_root == 0u ? 0 : -EINVAL;
+
+  rc = kafs_v7_validate_data_reference(view, triple_root);
+  uint32_t *triple = rc == 0 ? malloc(view->report->block_size) : NULL;
+  uint32_t *middle = rc == 0 ? malloc(view->report->block_size) : NULL;
+  leaf = rc == 0 ? malloc(view->report->block_size) : NULL;
+  if (rc == 0 && (!triple || !middle || !leaf))
+    rc = -ENOMEM;
+  if (rc == 0)
+    rc = kafs_v7_reference_view_read(view, triple_root, triple);
+  for (uint64_t middle_index = 0u; rc == 0 && middle_index < references_per_block; ++middle_index)
+  {
+    uint32_t middle_reference = le32toh(triple[middle_index]);
+    if (middle_index >= triple_middles)
+    {
+      if (middle_reference != 0u)
+        rc = -EINVAL;
+      continue;
+    }
+    rc = kafs_v7_validate_data_reference(view, middle_reference);
+    if (rc == 0)
+      rc = kafs_v7_reference_view_read(view, middle_reference, middle);
+    for (uint64_t leaf_index = 0u; rc == 0 && leaf_index < references_per_block; ++leaf_index)
+    {
+      uint64_t global_leaf = middle_index * references_per_block + leaf_index;
+      uint32_t leaf_reference = le32toh(middle[leaf_index]);
+      if (global_leaf >= triple_leaves)
+      {
+        if (leaf_reference != 0u)
+          rc = -EINVAL;
+        continue;
+      }
+      rc = kafs_v7_validate_data_reference(view, leaf_reference);
+      if (rc == 0)
+        rc = kafs_v7_reference_view_read(view, leaf_reference, leaf);
+      uint64_t consumed = global_leaf * references_per_block;
+      uint64_t required = triple_data - consumed;
+      if (required > references_per_block)
+        required = references_per_block;
+      if (rc == 0)
+        rc = kafs_v7_validate_reference_entries(view, leaf, required);
+    }
+  }
+  free(triple);
+  free(middle);
   free(leaf);
   return rc;
 }
