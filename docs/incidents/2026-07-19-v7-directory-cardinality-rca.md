@@ -181,14 +181,15 @@ classes. Those test partitions do not create additional production states.
 | Reconcile mandatory start control with optional subagent invocation | Complete in this change | Primary self-gate is mandatory; independent Gatekeeper review is conditional on permitted use |
 | Define handoff next work as a candidate rather than a definition of done | Complete in this change | Handoff and ticket guidance require checkout reconciliation |
 | Re-run the gate when evidence or scope changes materially | Complete in this change | `AGENTS.md` defines staleness-triggered re-evaluation |
-| Select recovery waves from the shortest capability dependency path to the accepted goal | Complete in follow-up `AGENTS.md` rule | Every wave names its dependency closure, downstream unlock, alternatives, and local-optimum check |
+| Select recovery waves from the accepted-goal capability dependency path | Superseded after failed effectiveness replay on 2026-07-21 | Pre-proposal PERT must calculate duration, slack, critical frontier, alternatives, and downstream unlock before a candidate is named |
 | Restrict history use to intent-oriented BlameCheck | Complete in follow-up `AGENTS.md` rule | Authorship, age, and provenance cannot exclude or deprioritize findings |
 
 The Task Start Record requires a baseline identity, current evidence, assumption
 audit, state/invariant analysis, independently derived exit criteria and
-non-goals, and a `PASS`, `REPLAN`, or `BLOCKED` decision. This is a semantic
-decision gate; a script cannot substitute for examining current code and
-architecture.
+non-goals, and a `PASS`, `REPLAN`, or `BLOCKED` decision. This remains a semantic
+implementation-start gate; it does not select the next wave. Selection now
+requires the pre-proposal PERT record in `docs/pert-task-selection.md`. A script
+cannot substitute for examining current code and architecture.
 
 ### Detection And Correction After Start
 
@@ -216,9 +217,36 @@ replay:
 
 The evidence review performed for this revised RCA satisfies this retrospective
 test: the first proposal is reclassified as `direct(N)` while the inline
-representation transition remains distinct. Future effectiveness is measured
-by the presence of a current Task Start Record before the first edit, not by the
-number of rules added or final tests passed.
+representation transition remains distinct. Future Task Start effectiveness is
+measured by the presence of a current record before the first edit. Task-order
+effectiveness is measured separately: PERT must exist before the candidate is
+named and must place the selected wave on the runnable critical or least-slack
+frontier. Neither the number of rules nor final test results establishes those
+controls.
+
+### 2026-07-21 task-order effectiveness failure
+
+The original follow-up control did not prevent a second form of local
+optimization. After real-media qualification became externally blocked, T49
+through T52 each had a Task Start Record, but the next candidate was normally
+named at the preceding wave's closeout. The later gate therefore checked whether
+the preselected candidate was coherent and safe instead of comparing it against
+all current goal paths.
+
+The selection criteria drifted from critical-path effect to local startability:
+existing direct-COW and validator work received concrete, low-uncertainty scope,
+while M8-C indirect mutation was represented mainly by its journal, allocator,
+path-copy, and recovery cost. Successful validator slices then supplied the next
+nearby validator candidate. The error became visible when T52 closeout proposed
+direct-only T53 directory-graph validation while indirect remained repeatedly
+excluded.
+
+This replay refutes the claim that a current Task Start Record alone is an
+effective task-order control. The corrective breakpoint is before candidate
+generation: construct a capability-level PERT network, calculate expected
+duration and slack, retain blocked critical nodes, and select from the runnable
+critical frontier. Only after that selection may the Task Start Gate assess the
+implementation boundary.
 
 ## Follow-up Decision
 
