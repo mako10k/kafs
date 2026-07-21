@@ -89,7 +89,8 @@
       "direct_shrink_truncate",
       "directory_direct_append_and_growth",
       "directory_inline_append_and_growth",
-      "open_truncate"
+      "open_truncate",
+      "regular_file_inline_to_direct_promotion"
     ],
     "offline_checks": [
       "fsck.kafs --check",

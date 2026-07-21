@@ -3457,12 +3457,44 @@
   - current draftは`DRAFT_VALID`だがexecution approvalではない。次のblockerはexact physical identityと
     そのmatrix digestに対するoperator approvalである。
 
+### SDW-V7RT-T49 regular-file inline-to-direct promotion
+
+- 目的: 実媒体M7の準備待ち中に、public controlled-writeで作成した通常ファイルが60 bytesを越えられない
+  capability gapを、既存same-group direct COW境界内で閉じる。
+- Task Start/critical-path判断:
+  - M7の実媒体優先度は維持するが、exact SD card/reader/power-cut identityは外部待ちとして明示的に後回しとなった。
+  - M8-Cはindirect reachabilityとpath-copy、M9 cutoverはqualified runtime、M10はcross-group設計判断を必要とする。
+    T49は後日の実媒体matrix追加を1 workload classに限定できる最小のsoftware-only closureとして`PASS`とした。
+- 変更:
+  - `blocks=0`、size 60 bytes以下、holeなし、request終端が1 filesystem block以内のregular inodeだけを
+    inlineから1 direct blockへ昇格する。
+  - old inline bytesをzero初期化した新blockへ保持してwriteを適用し、allocator metadata、inode first direct
+    reference、size、blocksを既存data COW transactionでatomic publishする。旧data blockは存在しないためretireしない。
+  - low-level回帰でhole/1-block超の不変拒否、payload/zero tail、昇格後direct COW chainingを検証する。
+  - `size <= 60`は必ずinlineというwire/read不変条件を守るため、昇格後direct inodeの非zero inline範囲への
+    truncateをfail closedで拒否し、retirement参照走査は`blocks == 0`だけをinlineとして除外する。
+  - actual FUSEでcreate handleからinline write、昇格、full fsync、read-only remountを検証し、journal publish、
+    metadata apply、checkpoint copyの各中断点からreadback/fsck cleanへ収束させる。
+  - non-destructive qualification runner/gateとDRAFT real-media matrixに通常・recovery workloadを追加する。
+- 完了条件:
+  - inline bytes、inode representation、allocator stateの部分更新を残さず、通常時とprocess fault recovery後に
+    one-direct-block stateへ収束する。
+  - hole、1 block超、truncate growth、non-zero direct-to-inline conversion、indirect、cross-groupは引き続き
+    fail closedとする。
+  - file-image qualificationを新surfaceで再実行し、real-media/RC claimはfalseのまま維持する。
+- 完了結果（2026-07-21）:
+  - low-level smoke、actual FUSE normal/remount、3中断点recovery、offline fsckがPASSした。
+  - qualification dry runはrequired case 26/26 PASS、digest検証済みartifact 90件となり、synthetic gateもPASSした。
+  - DRAFT real-media matrixに`regular_file_inline_to_direct_promotion`を追加し、旧draft digestを無効化した。
+
 ---
 
 ## 次に着手する候補
 
 この節はhandoff用の開始候補であり、実装開始許可または最新の完了条件ではない。着手前に`AGENTS.md`の
 Task Start Gateでcurrent checkoutのevidenceを再確認し、`PASS`・`REPLAN`・`BLOCKED`を判定する。
+
+T49は完了している。実媒体準備を再開できる時点では、次を行う。
 
 1. `SDW-V7RT-T48-B1` matrixへexact host/card/reader/power-cut identityとcycle countを入力し、
    `READY_FOR_APPROVAL` gateが返すSHA-256をoperatorへ提示する。

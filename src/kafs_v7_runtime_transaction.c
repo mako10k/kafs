@@ -789,7 +789,7 @@ static int kafs_v7_runtime_data_retirement_scan_inodes(kafs_v7_runtime_data_reti
                                                       sizeof(*inodes), (void **)&inodes, &count);
   for (uint64_t inode = 0; rc == 0 && inode < count; ++inode)
   {
-    if (le16toh(inodes[inode].mode) == 0u || le64toh(inodes[inode].size) <= 60u)
+    if (le16toh(inodes[inode].mode) == 0u || le32toh(inodes[inode].blocks) == 0u)
       continue;
     for (uint32_t slot = 0; rc == 0 && slot < KAFS_V7_INODE_REFERENCE_COUNT; ++slot)
     {

@@ -71,6 +71,134 @@ static int has_direct_reference(const kafs_v7_inode_t *inode, uint32_t slot)
   return le32toh(reference) != 0u;
 }
 
+static int test_inline_promotion(kafs_context_t *ctx, kafs_inocnt_t ino)
+{
+  const size_t inline_capacity = sizeof(((kafs_v7_inode_t *)0)->inline_or_block_refs);
+  uint8_t original[sizeof(((kafs_v7_inode_t *)0)->inline_or_block_refs)];
+  for (size_t i = 0u; i < sizeof(original); ++i)
+    original[i] = (uint8_t)(i * 13u + 5u);
+
+  kafs_v7_inode_t inode;
+  memset(&inode, 0, sizeof(inode));
+  inode.mode = htole16(S_IFREG | 0644u);
+  inode.size = htole64(inline_capacity);
+  inode.link_count = htole16(1u);
+  memcpy(inode.inline_or_block_refs, original, sizeof(original));
+  kafs_v7_journal_patch_t patch = {
+      .target_type = KAFS_V7_JOURNAL_TARGET_INODE,
+      .logical_index = ino,
+      .patch_bytes = sizeof(inode),
+      .patch = &inode,
+      .free_inodes_delta = -1,
+  };
+  kafs_v7_runtime_transaction_result_t transaction;
+  int rc = kafs_v7_runtime_transaction_commit(ctx->c_v7_runtime_transactions, &patch, 1u,
+                                               &transaction);
+
+  const kafs_v7_inode_t *mapped = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(ctx, ino);
+  kafs_v7_inode_t before;
+  if (rc == 0 && mapped)
+    memcpy(&before, mapped, sizeof(before));
+  else if (rc == 0)
+    rc = -EIO;
+  uint8_t byte = 0x5au;
+  if (rc == 0 && kafs_v7_fuse_write_direct(ctx, ino, &byte, 1u, inline_capacity + 1u, NULL) !=
+                     -EOPNOTSUPP)
+    rc = -1;
+  mapped = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(ctx, ino);
+  if (rc == 0 && (!mapped || memcmp(mapped, &before, sizeof(before)) != 0))
+    rc = -1;
+
+  size_t oversized_bytes = (size_t)ctx->c_v7_block_size - inline_capacity + 1u;
+  uint8_t *oversized = malloc(oversized_bytes);
+  if (rc == 0 && !oversized)
+    rc = -ENOMEM;
+  if (rc == 0)
+  {
+    memset(oversized, 0xa7, oversized_bytes);
+    if (kafs_v7_fuse_write_direct(ctx, ino, oversized, oversized_bytes, inline_capacity, NULL) !=
+        -EOPNOTSUPP)
+      rc = -1;
+  }
+  free(oversized);
+  mapped = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(ctx, ino);
+  if (rc == 0 && (!mapped || memcmp(mapped, &before, sizeof(before)) != 0))
+    rc = -1;
+
+  static const uint8_t appended[] = {0x91u, 0x82u, 0x73u, 0x64u, 0x55u, 0x46u, 0x37u};
+  kafs_v7_fuse_write_result_t result;
+  if (rc == 0)
+    rc = kafs_v7_fuse_write_direct(ctx, ino, appended, sizeof(appended), inline_capacity, &result);
+  if (rc == (int)sizeof(appended))
+    rc = 0;
+  if (rc != 0)
+    fprintf(stderr, "inline regular promotion failed: %d\n", rc);
+
+  mapped = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(ctx, ino);
+  if (rc == 0 &&
+      (!mapped || le64toh(mapped->size) != inline_capacity + sizeof(appended) ||
+       le32toh(mapped->blocks) != 1u || !has_direct_reference(mapped, 0u) ||
+       result.retained_logical_block != KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK ||
+       result.retirement_rc != 0))
+    rc = -1;
+  for (uint32_t slot = 1u; rc == 0 && slot < KAFS_V7_INODE_REFERENCE_COUNT; ++slot)
+    if (has_direct_reference(mapped, slot))
+      rc = -1;
+
+  uint8_t *expected = NULL;
+  uint64_t physical_off = 0u;
+  if (rc == 0)
+  {
+    expected = calloc(1u, ctx->c_v7_block_size);
+    if (!expected)
+      rc = -ENOMEM;
+  }
+  if (rc == 0)
+  {
+    memcpy(expected, original, sizeof(original));
+    memcpy(expected + inline_capacity, appended, sizeof(appended));
+    rc = kafs_ctx_v7_data_ref_physical_offset(ctx, (kafs_blkcnt_t)result.new_logical_block + 1u,
+                                              &physical_off);
+  }
+  if (rc == 0 && memcmp((uint8_t *)ctx->c_img_base + physical_off, expected,
+                        ctx->c_v7_block_size) != 0)
+    rc = -1;
+
+  uint64_t promoted_block = result.new_logical_block;
+  static const uint8_t replacement[] = {0x11u, 0x22u, 0x33u};
+  if (rc == 0)
+  {
+    memcpy(expected + 10u, replacement, sizeof(replacement));
+    rc = kafs_v7_fuse_write_direct(ctx, ino, replacement, sizeof(replacement), 10u, &result);
+  }
+  if (rc == (int)sizeof(replacement))
+    rc = 0;
+  if (rc == 0 && (result.retained_logical_block != promoted_block ||
+                  result.new_logical_block == promoted_block || result.retirement_rc != 0))
+    rc = -1;
+  if (rc == 0)
+    rc = kafs_ctx_v7_data_ref_physical_offset(ctx, (kafs_blkcnt_t)result.new_logical_block + 1u,
+                                              &physical_off);
+  if (rc == 0 && memcmp((uint8_t *)ctx->c_img_base + physical_off, expected,
+                        ctx->c_v7_block_size) != 0)
+    rc = -1;
+  kafs_v7_inode_t before_truncate;
+  mapped = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(ctx, ino);
+  if (rc == 0 && mapped)
+    memcpy(&before_truncate, mapped, sizeof(before_truncate));
+  else if (rc == 0)
+    rc = -EIO;
+  kafs_v7_fuse_truncate_result_t truncate_result;
+  if (rc == 0 &&
+      kafs_v7_fuse_truncate_direct(ctx, ino, inline_capacity, &truncate_result) != -EOPNOTSUPP)
+    rc = -1;
+  mapped = (const kafs_v7_inode_t *)kafs_ctx_v7_inode(ctx, ino);
+  if (rc == 0 && (!mapped || memcmp(mapped, &before_truncate, sizeof(before_truncate)) != 0))
+    rc = -1;
+  free(expected);
+  return rc;
+}
+
 static int seed_regular_file(kafs_context_t *ctx, kafs_inocnt_t ino, uint32_t group_id,
                              const void *data, uint64_t logical_blocks_out[3])
 {
@@ -342,6 +470,8 @@ static int test_direct_overwrite(void)
   }
 
   kafs_inocnt_t ino = 2u;
+  if (rc == 0)
+    rc = test_inline_promotion(&ctx, 3u);
   const kafs_v7_inode_runtime_shard_t *shard = NULL;
   if (rc == 0)
     shard = kafs_ctx_v7_inode_shard_for_ino(&ctx, ino);

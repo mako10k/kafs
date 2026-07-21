@@ -226,6 +226,7 @@ required_workloads = {
     "directory_direct_append_and_growth",
     "directory_inline_append_and_growth",
     "open_truncate",
+    "regular_file_inline_to_direct_promotion",
 }
 required_boundaries = {"journal_publish", "metadata_apply", "checkpoint_copy", "journal_reclaim"}
 plan = matrix.get("test_plan")

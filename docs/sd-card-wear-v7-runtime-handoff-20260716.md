@@ -61,11 +61,11 @@ The accepted v7 surface currently provides:
   direct/HRL reference set, clears the allocator state, and closes out retry;
 - v7-only FUSE `fsync` / `release` closeout barriers;
 - explicit controlled-write admission for direct regular-file overwrite,
-  contiguous growth, shrinking truncate, and `O_TRUNC`, including partial and
-  multi-block COW;
+  contiguous growth, shrinking above the inline boundary or to zero, and
+  `O_TRUNC`, including partial and multi-block COW;
 - same-group empty regular-file create, inline-file write through the create
-  handle, and inline/direct directory append or growth through the twelve
-  direct references;
+  handle, regular-file inline-to-one-direct-block promotion, and inline/direct
+  directory append or growth through the twelve direct references;
 - negotiated FUSE `max_write` and a startup diagnostic that distinguishes the
   per-request atomic limit from application-system-call atomicity;
 - admission recovery and diagnostics for interruption after journal
@@ -73,11 +73,11 @@ The accepted v7 surface currently provides:
 - v7-owned direct/single/double/triple indirect address calculation, traversal,
   and retirement guards, without admitting indirect mutation.
 
-Runtime controlled write remains fail closed outside that allowlist. Holes,
-inline regular-file conversion to block storage, indirect mutation,
-cross-group allocation, and wider metadata mutations are rejected. Production
-`kafs` remains the v4/v5 runtime and does not admit v7. Frozen experimental v6
-behavior is not a compatibility contract for v7.
+Runtime controlled write remains fail closed outside that allowlist. Non-zero
+direct-to-inline conversion, holes, inline promotion beyond one direct block,
+indirect mutation, cross-group allocation, and wider metadata mutations are
+rejected. Production `kafs` remains the v4/v5 runtime and does not admit v7.
+Frozen experimental v6 behavior is not a compatibility contract for v7.
 
 The metadata durability order fixed by T14 is:
 
@@ -108,6 +108,7 @@ checksum-consistent foreign-group mutation.
 | M7 | T48: controlled-write RC qualification, real-media power interruption, and independent review | Selected next; destructive execution not authorized |
 | M8-A | Existing-inode growth, allocation, hole policy, and truncate | Complete for bounded direct files |
 | M8-B | Create and directory-record mutation | Complete for bounded same-group inline/direct directories after R1 correction |
+| M8-B.1 | T49 regular-file inline-to-one-direct-block promotion | Complete with file-image normal/recovery qualification refresh |
 | M8-C | Indirect-block COW, traversal, and retirement | Address/walk/retirement foundation present; mutation not admitted |
 | M9 | v5-to-v7 data migration beyond destination creation | Destination creation present; full data migration/cutover not complete |
 | M10 | Cross-group HRL and multi-group atomic mutation | Not started |
@@ -120,8 +121,11 @@ indirect mutation, holes, cross-group allocation, and most metadata mutations
 remain outside the admitted contract.
 
 The post-R2 Task Start and Goal And Critical Path Gate selected M7 controlled-
-write RC qualification before further mutation expansion. The current matrix,
-alternative ordering, and T48 exit criteria are recorded in
+write RC qualification before further mutation expansion. Exact media identity
+remained unavailable, so the user explicitly deferred that external dependency.
+The refreshed gate selected T49 as the smallest software-only capability closure
+and required the file-image and DRAFT real-media matrices to grow with it. The
+ordering record is maintained in
 `docs/sd-card-wear-v7-capability-rebaseline-20260721.md`.
 
 ## T15 Closeout
@@ -354,15 +358,16 @@ T19 validation completed on 2026-07-17:
 
 ## Recommended Next Slice
 
-Complete the `SDW-V7RT-T48-B1` draft matrix described in
+When the required hardware is available, complete the `SDW-V7RT-T48-B1` draft matrix described in
 `docs/sd-card-wear-v7-real-media-qualification-approval.md`. T48-A has validated
-the non-destructive file-image path, and T48-B1 has fixed the fail-closed matrix,
-destructive-impact, evidence-retention, digest-bound approval, and independent-
-review contract. Supply the exact native/passthrough host, physical card unit,
-reader/controller, isolated power-cut apparatus, trigger protocol, and cycle
-count; validate `READY_FOR_APPROVAL`; then approve that exact matrix digest. Do
-not format a real device, add a `/dev/*` execution path, or introduce a physical
-power interruption before that approval.
+the non-destructive file-image path, T49 refreshed it for regular-file promotion,
+and T48-B1 has fixed the fail-closed matrix, destructive-impact, evidence-
+retention, digest-bound approval, and independent-review contract. Supply the
+exact native/passthrough host, physical card unit, reader/controller, isolated
+power-cut apparatus, trigger protocol, and cycle count; validate
+`READY_FOR_APPROVAL`; then approve that exact matrix digest. Do not format a real
+device, add a `/dev/*` execution path, or introduce a physical power interruption
+before that approval.
 
 ## Resume Checklist
 

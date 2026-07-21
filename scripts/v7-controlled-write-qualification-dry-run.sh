@@ -139,6 +139,9 @@ required_cases=(
   direct_growth
   direct_truncate
   create_inline_write
+  regular_inline_promotion
+  direct_to_inline_truncate_rejection
+  regular_inline_promotion_recovery
   directory_inline_append
   directory_inline_growth
   inspection_remount
@@ -202,6 +205,9 @@ required_cases = [
     "direct_growth",
     "direct_truncate",
     "create_inline_write",
+    "regular_inline_promotion",
+    "direct_to_inline_truncate_rejection",
+    "regular_inline_promotion_recovery",
     "directory_inline_append",
     "directory_inline_growth",
     "inspection_remount",
@@ -228,6 +234,13 @@ evidence = {
     "direct_growth": ["artifacts/logs/v7-controlled-write.log"],
     "direct_truncate": ["artifacts/logs/v7-controlled-write.log"],
     "create_inline_write": ["artifacts/logs/v7-controlled-write.log"],
+    "regular_inline_promotion": ["artifacts/logs/v7-controlled-write.log"],
+    "direct_to_inline_truncate_rejection": ["artifacts/logs/v7-controlled-write.log"],
+    "regular_inline_promotion_recovery": [
+        "artifacts/logs/v7-inline-promotion-journal_publish-recovery.log",
+        "artifacts/logs/v7-inline-promotion-metadata_apply-recovery.log",
+        "artifacts/logs/v7-inline-promotion-checkpoint_copy-recovery.log",
+    ],
     "directory_inline_append": ["artifacts/logs/v7-controlled-write.log"],
     "directory_inline_growth": ["artifacts/logs/v7-controlled-write.log"],
     "inspection_remount": ["artifacts/logs/v7-controlled-remount.log"],
@@ -383,6 +396,9 @@ required_logs=(
   v7-controlled-write.log
   v7-controlled-remount.log
   v7-controlled-open-trunc.log
+  v7-inline-promotion-journal_publish-recovery.log
+  v7-inline-promotion-metadata_apply-recovery.log
+  v7-inline-promotion-checkpoint_copy-recovery.log
   v7-journal_publish-recovery.log
   v7-metadata_apply-recovery.log
   v7-checkpoint_copy-recovery.log

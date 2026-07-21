@@ -195,14 +195,16 @@ after-images in one transaction. Independent post-checkpoint retirement clears
 retained blocks only after direct, indirect-walk, and HRL reference checks.
 
 Controlled write is now explicitly admitted for the bounded same-group direct
-surface: partial/multi-block overwrite, contiguous growth, shrinking truncate,
-`O_TRUNC`, empty regular-file create, inline-file write, and inline/direct
-directory append/growth. FUSE negotiation caps and reports the per-request
-atomic boundary. Recovery tests cover journal publication, metadata apply,
-checkpoint-copy, and journal-reclaim interruptions. Indirect mutation, holes,
-cross-group allocation, and unrelated metadata mutation remain fail closed.
-The v7 policy state and helpers are v7-owned; production `kafs` and frozen
-`kafs-v6` behavior remain separate.
+surface: partial/multi-block overwrite, contiguous growth, direct shrinking
+truncate above the inline boundary or to zero, `O_TRUNC`, empty regular-file create, inline-file write,
+inline-to-one-direct-block regular-file promotion, and inline/direct directory
+append/growth. FUSE negotiation caps and reports the per-request atomic boundary.
+Recovery tests cover journal publication, metadata apply, checkpoint-copy, and
+journal-reclaim interruptions, including promotion-specific recovery. Indirect
+mutation, non-zero direct-to-inline conversion, holes, cross-group allocation,
+and unrelated metadata mutation remain fail closed. The v7 policy state and
+helpers are v7-owned; production `kafs` and frozen `kafs-v6` behavior remain
+separate.
 
 V7-owned direct/single/double/triple address calculation, walking, and
 retirement guards now exist. That foundation does not admit indirect write,
@@ -230,9 +232,12 @@ raw-layout specification and does not relax any software recovery gate.
    bounded surface. Add the non-destructive procedure and evidence contract
    first; require explicit operator authorization for the exact real-device
    sample matrix and destructive actions.
-2. Keep M8-C indirect mutation behind M7. Address calculation and traversal do
+2. T49 is the bounded exception made while exact real-media preparation is
+   deferred: it closes regular-file inline-to-one-direct-block promotion and
+   refreshes both qualification matrices without making an RC claim.
+3. Keep M8-C indirect mutation behind M7. Address calculation and traversal do
    not justify widening journal/recovery admission before the direct surface is
    qualified.
-3. Treat full M9 migration/cutover as distinct from the implemented v7
+4. Treat full M9 migration/cutover as distinct from the implemented v7
    destination-image creation path, and keep M10 cross-group mutation behind an
    explicit design-direction decision.
