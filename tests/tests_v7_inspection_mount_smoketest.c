@@ -705,7 +705,7 @@ static int apply_namespace_payload_fault(const char *path, const v7_fixture_t *f
   return rc;
 }
 
-static int namespace_image_rejected(const char *path)
+static int v7_image_rejected(const char *path)
 {
   int fd = open(path, O_RDONLY);
   if (fd < 0)
@@ -719,7 +719,7 @@ static int namespace_image_rejected(const char *path)
   return rc == 0 ? -1 : 0;
 }
 
-static int namespace_fault_consumers_reject(const char *path)
+static int v7_fault_consumers_reject(const char *path)
 {
   char output[8192];
   char *dump_argv[] = {(char *)kafs_test_kafsdump_bin(), (char *)"--json", (char *)path, NULL};
@@ -753,8 +753,123 @@ static int test_namespace_payload_faults(const char *source, const v7_fixture_t 
     char path[64];
     snprintf(path, sizeof(path), "v7-namespace-fault-%zu.img", i);
     if (copy_image(source, path) != 0 || apply_namespace_payload_fault(path, fixture, faults[i]) != 0 ||
-        namespace_image_rejected(path) != 0 ||
-        (i == 0u && namespace_fault_consumers_reject(path) != 0))
+        v7_image_rejected(path) != 0 || (i == 0u && v7_fault_consumers_reject(path) != 0))
+      return -1;
+  }
+  return 0;
+}
+
+enum direct_inode_fault
+{
+  DIRECT_INODE_BLOCK_COUNT,
+  DIRECT_INODE_MISSING_REFERENCE,
+  DIRECT_INODE_OUT_OF_RANGE_REFERENCE,
+  DIRECT_INODE_FREE_REFERENCE,
+  DIRECT_INODE_UNUSED_DIRECT_REFERENCE,
+  DIRECT_INODE_INDIRECT_REFERENCE,
+};
+
+static int find_free_group_reference(int fd, const kafs_v7_layout_report_t *report,
+                                     uint32_t group_id, uint32_t *reference)
+{
+  if (!report || !reference || group_id >= report->group_count)
+    return -EINVAL;
+  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(report);
+  const kafs_v7_shard_desc_t *shards = kafs_v7_report_shards(report);
+  const kafs_v7_shard_desc_t *bitmap = &shards[le32toh(groups[group_id].first_shard_index)];
+  uint64_t bytes = le64toh(bitmap->physical_bytes);
+  if (bytes == 0u || bytes > SIZE_MAX)
+    return -ERANGE;
+  uint8_t *bits = malloc((size_t)bytes);
+  if (!bits)
+    return -ENOMEM;
+  int rc = kafs_pread_all(fd, bits, (size_t)bytes, (off_t)le64toh(bitmap->physical_off));
+  uint64_t start = le64toh(bitmap->logical_start);
+  uint64_t count = le64toh(bitmap->logical_count);
+  for (uint64_t local = 0u; rc == 0 && local < count; ++local)
+  {
+    uint64_t logical = start + local;
+    if ((bits[local / 8u] & (uint8_t)(1u << (local % 8u))) == 0u && logical < UINT32_MAX)
+    {
+      *reference = (uint32_t)logical + 1u;
+      free(bits);
+      return 0;
+    }
+  }
+  free(bits);
+  return rc == 0 ? -ENOSPC : rc;
+}
+
+static int apply_direct_inode_fault(const char *path, const v7_fixture_t *fixture,
+                                    enum direct_inode_fault fault)
+{
+  int fd = open(path, O_RDWR);
+  if (fd < 0)
+    return -errno;
+  kafs_ssuperblock_t sb;
+  uint64_t file_size = 0u;
+  kafs_v7_layout_report_t report = {0};
+  int rc = validate_image_fd(fd, &sb, &file_size, &report);
+  kafs_v7_inode_t inode;
+  if (rc == 0)
+    rc = read_inode(fd, &report, fixture->block_ino, &inode);
+  uint32_t first_reference = 0u;
+  if (rc == 0)
+  {
+    memcpy(&first_reference, inode.inline_or_block_refs, sizeof(first_reference));
+    if (first_reference == 0u || le32toh(inode.blocks) != 3u)
+      rc = -EUCLEAN;
+  }
+  if (rc == 0 && fault == DIRECT_INODE_BLOCK_COUNT)
+    inode.blocks = htole32(2u);
+  else if (rc == 0 && fault == DIRECT_INODE_MISSING_REFERENCE)
+    memset(inode.inline_or_block_refs + sizeof(uint32_t), 0, sizeof(uint32_t));
+  else if (rc == 0 && fault == DIRECT_INODE_OUT_OF_RANGE_REFERENCE)
+  {
+    uint32_t reference = htole32(UINT32_MAX);
+    memcpy(inode.inline_or_block_refs + sizeof(uint32_t), &reference, sizeof(reference));
+  }
+  else if (rc == 0 && fault == DIRECT_INODE_FREE_REFERENCE)
+  {
+    uint32_t reference = 0u;
+    rc = find_free_group_reference(fd, &report, 3u, &reference);
+    if (rc == 0)
+    {
+      reference = htole32(reference);
+      memcpy(inode.inline_or_block_refs + sizeof(uint32_t), &reference, sizeof(reference));
+    }
+  }
+  else if (rc == 0 && fault == DIRECT_INODE_UNUSED_DIRECT_REFERENCE)
+    memcpy(inode.inline_or_block_refs + 3u * sizeof(uint32_t), &first_reference,
+           sizeof(first_reference));
+  else if (rc == 0 && fault == DIRECT_INODE_INDIRECT_REFERENCE)
+    memcpy(inode.inline_or_block_refs + KAFS_V7_INODE_DIRECT_REFERENCE_COUNT * sizeof(uint32_t),
+           &first_reference, sizeof(first_reference));
+  if (rc == 0)
+    rc = write_inode(fd, &report, fixture->block_ino, &inode);
+  if (rc == 0 && fdatasync(fd) != 0)
+    rc = -errno;
+  kafs_v7_layout_report_clear(&report);
+  close(fd);
+  return rc;
+}
+
+static int test_direct_inode_faults(const char *source, const v7_fixture_t *fixture)
+{
+  const enum direct_inode_fault faults[] = {
+      DIRECT_INODE_BLOCK_COUNT,
+      DIRECT_INODE_MISSING_REFERENCE,
+      DIRECT_INODE_OUT_OF_RANGE_REFERENCE,
+      DIRECT_INODE_FREE_REFERENCE,
+      DIRECT_INODE_UNUSED_DIRECT_REFERENCE,
+      DIRECT_INODE_INDIRECT_REFERENCE,
+  };
+  for (size_t i = 0u; i < sizeof(faults) / sizeof(faults[0]); ++i)
+  {
+    char path[64];
+    snprintf(path, sizeof(path), "v7-direct-inode-fault-%zu.img", i);
+    if (copy_image(source, path) != 0 || apply_direct_inode_fault(path, fixture, faults[i]) != 0 ||
+        v7_image_rejected(path) != 0 || (i == 0u && v7_fault_consumers_reject(path) != 0))
       return -1;
   }
   return 0;
@@ -1987,6 +2102,11 @@ int main(void)
   if (test_namespace_payload_faults(image, &fixture) != 0)
   {
     fprintf(stderr, "v7 namespace payload fault matrix failed\n");
+    return 1;
+  }
+  if (test_direct_inode_faults(image, &fixture) != 0)
+  {
+    fprintf(stderr, "v7 direct inode fault matrix failed\n");
     return 1;
   }
 

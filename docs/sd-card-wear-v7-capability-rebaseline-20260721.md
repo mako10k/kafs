@@ -2,7 +2,7 @@
 
 - Branch: `feat/v7-runtime-admission-foundation`
 - Baseline: `460f7b0`
-- Status: baseline accepted; T49 expansion and T50/T51 validator hardening complete while M7 awaits hardware identity
+- Status: baseline accepted; T49 expansion and T50-T52 validator hardening complete while M7 awaits hardware identity
 
 ## Purpose
 
@@ -40,7 +40,7 @@ been collected.
 | Surface | Current capability | Boundary |
 | --- | --- | --- |
 | Image creation | `mkfs.kafs` creates explicit format v7 images | v7 is not the default production format |
-| Offline validation | `fsck.kafs`, `kafsdump`, layout/policy checks, allocated-inode representation checks, bounded namespace payload checks, and wear-placement proof understand the current v7 image contract | This is software/image evidence, not physical NAND/FTL proof; indirect block-tree and whole-namespace graph semantics remain separately bounded |
+| Offline validation | `fsck.kafs`, `kafsdump`, layout/policy checks, allocated-inode representation checks, dense direct-reference/bitmap checks, bounded namespace payload checks, and wear-placement proof understand the current v7 image contract | This is software/image evidence, not physical NAND/FTL proof; indirect block-tree, duplicate ownership, and whole-namespace graph semantics remain separately bounded |
 | Offline migration | `kafsresize --migrate-create` can build a v7 destination image | No in-place metadata relocation or automatic cutover |
 | Runtime admission | Dedicated `kafs-v7` entrypoint supports inspection and explicit controlled-write mounts | Successful admission does not route through v5/v6 public entrypoints |
 | Inspection mount | Read-only FUSE view with selected recovery state and recovered `statfs` counters | Mutation fails closed |
@@ -182,6 +182,39 @@ validator functions remain below the complexity warning threshold after
 decomposition. The refreshed non-destructive file-image qualification passed
 26/26 required cases with 90 digest-checked artifacts; its RC, real-media, and
 controller-independent-wear claims remain false.
+
+## T52 Direct-Inode Reference Safety Addendum
+
+The enabled controlled-write surface stores every non-inline payload densely in
+at most twelve direct references. Before T52, common image admission trusted the
+`blocks` field and direct slots for `size > 60`; it could therefore admit a
+missing or out-of-range reference, a reference to a bitmap-free block, or an
+unused direct/indirect slot before a consumer reached that inode.
+
+T52 validates every allocated inode with `60 < size <= 12 * block_size` against
+the selected recovered state. `blocks` must equal `ceil(size / block_size)`,
+each required plus-one reference must resolve to an allocated data block, and
+every remaining reference slot must be zero. Inode tables and group bitmaps are
+both read through the journal overlay, so pending committed direct mutations
+are checked as one recovered state. A neutral v7-owned resolver supplies the
+same group-local mapping to this pass and bounded namespace reads.
+
+This is direct-representation hardening, not whole-image ownership proof. It
+does not reject duplicate references, establish namespace reachability or link
+counts, validate `size > 12 * block_size` indirect trees, add repair, or widen
+mutation admission. Corruption regressions cover block-count mismatch, missing,
+out-of-range, and bitmap-free required references, a non-zero unused direct
+slot, and a non-zero indirect root. A representative fault is rejected by
+`kafsdump`, detect-only `fsck.kafs`, and `kafs-v7` preflight.
+
+Observed T52 evidence includes the focused raw-layout, checkpoint-publication,
+FUSE-write, and inspection regressions; the full 43-test Automake suite with 40
+passes and three environment-limited FUSE mount-timeout skips; and passing
+format, lint, v7 ownership, clone, and aggregate static gates. The active-source
+clone result remains 41 clones and 409 duplicated lines (0.85%), with no new
+complexity warning. The refreshed non-destructive file-image qualification
+passed 26/26 required results with 90 digest-checked artifacts; its RC,
+real-media, and controller-independent-wear claims remain false.
 
 ## Next Task: SDW-V7RT-T48 Controlled-write RC Qualification Gate
 
