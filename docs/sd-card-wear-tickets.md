@@ -3487,6 +3487,32 @@
   - qualification dry runはrequired case 26/26 PASS、digest検証済みartifact 90件となり、synthetic gateもPASSした。
   - DRAFT real-media matrixに`regular_file_inline_to_direct_promotion`を追加し、旧draft digestを無効化した。
 
+### SDW-V7RT-T50 v7 allocated-inode representation validation
+
+- 目的: accepted v7 wire contractに反するallocated inodeを共通image validatorでfail closedにし、runtime、
+  `fsck.kafs`、`kafsdump`のadmission判断を一致させる。
+- Task Start/critical-path判断:
+  - 実媒体M7はexact hardware identity待ちとして後回しのまま維持し、既存controlled-write surfaceの
+    correctnessを先に固めるsoftware-only safety sliceとして`PASS`とした。
+  - T49でinline/direct representation transitionを追加したため、wire contractと共通validatorのgapは
+    後続mutation拡張より先に閉じる。indirect/cross-group mutationやrepairは追加しない。
+- 変更:
+  - rootを含む全allocated inodeで14-byte disabled tailがzeroであることを検証する。
+  - `size <= 60`では`blocks == 0`かつinline payload後方の未使用byteがzeroであることを検証する。
+  - inline inodeのnon-zero block count、non-zero padding、rootのnon-zero disabled tailを作る破損fixtureを追加し、
+    共通validatorが全件を拒否することを確認する。
+  - 代表fixtureに対して`kafsdump`、detect-only `fsck`、`kafs-v7` inspection preflightがすべて拒否することを確認する。
+- 完了条件:
+  - accepted inline/direct imagesとruntime transaction regressionは引き続き通る。
+  - 破損表現はconsumer固有の後段処理へ進む前に共通validatorで拒否される。
+  - `size > 60`のblock tree/count semantics、namespace payload semantic validation、repair、real-media実行は本sliceに含めない。
+- 完了結果（2026-07-21）:
+  - focused raw-layout/checkpoint-publication regressionはPASSし、3種類の破損表現を共通validatorが拒否した。
+  - 代表fixtureは`kafsdump` exit 1、`fsck --check` exit 13、`kafs-v7` preflight exit 2でfail closedとなった。
+  - full `make check -j2`は41/41 PASS、既存FUSE test 2件はmount timeoutでSKIPとなった。v7 inspection、
+    controlled-write、checkpoint publicationを含む正当なinline/direct imageは引き続きPASSした。
+  - format、lint、clone、aggregate static gateはPASSし、active source cloneは41件、409 duplicated lines、0.86%だった。
+
 ---
 
 ## 次に着手する候補
@@ -3494,7 +3520,7 @@
 この節はhandoff用の開始候補であり、実装開始許可または最新の完了条件ではない。着手前に`AGENTS.md`の
 Task Start Gateでcurrent checkoutのevidenceを再確認し、`PASS`・`REPLAN`・`BLOCKED`を判定する。
 
-T49は完了している。実媒体準備を再開できる時点では、次を行う。
+T49とT50は完了している。実媒体準備を再開できる時点では、次を行う。
 
 1. `SDW-V7RT-T48-B1` matrixへexact host/card/reader/power-cut identityとcycle countを入力し、
    `READY_FOR_APPROVAL` gateが返すSHA-256をoperatorへ提示する。

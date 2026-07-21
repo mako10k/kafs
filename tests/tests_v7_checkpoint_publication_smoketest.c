@@ -771,7 +771,6 @@ static int data_retirement_reference_guards(data_retirement_test_state_t *state)
 {
   kafs_v7_runtime_transaction_result_t transaction;
   data_retirement_inode_reference_set(state->inode_record, 1u, state->retired_block);
-  state->inode_record->size = htole64(sizeof(state->inode_record->inline_or_block_refs));
   state->inode_record->blocks = htole32(2u);
   int rc = data_retirement_inode_commit(state, &transaction);
   if (rc == 0 && transaction.publication.sequence != 4u)
@@ -786,7 +785,6 @@ static int data_retirement_reference_guards(data_retirement_test_state_t *state)
 
   data_retirement_inode_reference_set(state->inode_record, 1u, UINT64_MAX);
   data_retirement_inode_reference_set(state->inode_record, 12u, state->current_block);
-  state->inode_record->size = htole64(state->fixture->layout.block_size);
   if (rc == 0)
     rc = data_retirement_inode_commit(state, &transaction);
   if (rc == 0 && transaction.publication.sequence != 5u)

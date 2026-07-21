@@ -49,6 +49,9 @@ The accepted v7 surface currently provides:
 - accepted image creation with `mkfs.kafs --format-version 7`;
 - descriptor/checkpoint/journal inspection through `kafsdump`;
 - detect-only validation through `fsck.kafs`;
+- common fail-closed validation of allocated-inode representation, including
+  inline block counts/padding and the disabled tail, before offline or runtime
+  consumers proceed;
 - explicit read-only inspection admission through `kafs-v7`;
 - v7-owned journal encoding, replay, metadata apply, checkpoint publication,
   and journal reclamation APIs exercised by focused regression tests;
@@ -109,6 +112,7 @@ checksum-consistent foreign-group mutation.
 | M8-A | Existing-inode growth, allocation, hole policy, and truncate | Complete for bounded direct files |
 | M8-B | Create and directory-record mutation | Complete for bounded same-group inline/direct directories after R1 correction |
 | M8-B.1 | T49 regular-file inline-to-one-direct-block promotion | Complete with file-image normal/recovery qualification refresh |
+| M8-B.2 | T50 allocated-inode representation validation | Complete for inline block count/padding and all allocated disabled tails |
 | M8-C | Indirect-block COW, traversal, and retirement | Address/walk/retirement foundation present; mutation not admitted |
 | M9 | v5-to-v7 data migration beyond destination creation | Destination creation present; full data migration/cutover not complete |
 | M10 | Cross-group HRL and multi-group atomic mutation | Not started |
@@ -125,7 +129,9 @@ write RC qualification before further mutation expansion. Exact media identity
 remained unavailable, so the user explicitly deferred that external dependency.
 The refreshed gate selected T49 as the smallest software-only capability closure
 and required the file-image and DRAFT real-media matrices to grow with it. The
-ordering record is maintained in
+following T50 safety slice aligned the common image validator with the accepted
+inline-inode wire contract without widening mutation admission. The ordering
+record is maintained in
 `docs/sd-card-wear-v7-capability-rebaseline-20260721.md`.
 
 ## T15 Closeout
@@ -361,7 +367,8 @@ T19 validation completed on 2026-07-17:
 When the required hardware is available, complete the `SDW-V7RT-T48-B1` draft matrix described in
 `docs/sd-card-wear-v7-real-media-qualification-approval.md`. T48-A has validated
 the non-destructive file-image path, T49 refreshed it for regular-file promotion,
-and T48-B1 has fixed the fail-closed matrix, destructive-impact, evidence-
+T50 hardened the shared inode admission boundary, and T48-B1 has fixed the
+fail-closed matrix, destructive-impact, evidence-
 retention, digest-bound approval, and independent-review contract. Supply the
 exact native/passthrough host, physical card unit, reader/controller, isolated
 power-cut apparatus, trigger protocol, and cycle count; validate

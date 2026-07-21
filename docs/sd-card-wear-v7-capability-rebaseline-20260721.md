@@ -2,7 +2,7 @@
 
 - Branch: `feat/v7-runtime-admission-foundation`
 - Baseline: `460f7b0`
-- Status: baseline accepted; T49 software-only expansion complete while M7 awaits hardware identity
+- Status: baseline accepted; T49 expansion and T50 validator hardening complete while M7 awaits hardware identity
 
 ## Purpose
 
@@ -40,7 +40,7 @@ been collected.
 | Surface | Current capability | Boundary |
 | --- | --- | --- |
 | Image creation | `mkfs.kafs` creates explicit format v7 images | v7 is not the default production format |
-| Offline validation | `fsck.kafs`, `kafsdump`, layout/policy checks, and wear-placement proof understand the current v7 image contract | This is software/image evidence, not physical NAND/FTL proof |
+| Offline validation | `fsck.kafs`, `kafsdump`, layout/policy checks, allocated-inode representation checks, and wear-placement proof understand the current v7 image contract | This is software/image evidence, not physical NAND/FTL proof; block-tree and namespace semantics remain separately bounded |
 | Offline migration | `kafsresize --migrate-create` can build a v7 destination image | No in-place metadata relocation or automatic cutover |
 | Runtime admission | Dedicated `kafs-v7` entrypoint supports inspection and explicit controlled-write mounts | Successful admission does not route through v5/v6 public entrypoints |
 | Inspection mount | Read-only FUSE view with selected recovery state and recovered `statfs` counters | Mutation fails closed |
@@ -127,6 +127,30 @@ path-copy contract. M9 cutover still depends on a qualified destination runtime,
 and M10 still requires an explicit cross-group design decision. When hardware is
 available, M7 resumes against the expanded matrix, including the T49 promotion
 workload.
+
+## T50 Inode-Representation Safety Addendum
+
+T49 made the inline/direct boundary a live controlled-write transition. The
+accepted wire contract already required every disabled-tail byte to be zero and,
+for `size <= 60`, required `blocks == 0` plus zero padding after the inline
+payload. Before T50, the common image validator did not enforce the latter two
+requirements and excluded the allocated root from its tail check.
+
+T50 applies those representation checks to every allocated inode through
+`kafs_v7_validate_image_fd()`. Consequently, detect-only `fsck.kafs`,
+`kafsdump`, and `kafs-v7` admission reject the same malformed image before
+consumer-specific processing. Corruption regressions cover an inline inode with
+a block count, non-zero inline padding, and a non-zero root disabled tail.
+
+This is validator hardening, not a new repair or mutation capability. It does
+not validate the complete `size > 60` block tree/count relationship, add
+namespace semantic validation, admit indirect mutation, or alter the real-media
+authorization boundary.
+
+Observed T50 evidence includes focused raw-layout and checkpoint-publication
+regressions, the full 41-test Automake suite with two unrelated mount-timeout
+skips, and passing format, lint, clone, and aggregate static gates. The active
+source clone result remained 409 duplicated lines (0.86%).
 
 ## Next Task: SDW-V7RT-T48 Controlled-write RC Qualification Gate
 
