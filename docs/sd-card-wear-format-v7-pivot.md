@@ -201,21 +201,23 @@ blocks, and publishes direct references, inode attributes, and allocator
 after-images in one transaction. Independent post-checkpoint retirement clears
 retained blocks only after direct, indirect-walk, and HRL reference checks.
 
-Controlled write is now explicitly admitted for the bounded same-group direct
-surface: partial/multi-block overwrite, contiguous growth, direct shrinking
-truncate above the inline boundary or to zero, `O_TRUNC`, empty regular-file create, inline-file write,
+Controlled write is now explicitly admitted for the bounded same-group dense
+regular-file surface through one single-indirect root: partial/multi-block
+overwrite, contiguous growth, shrinking truncate above the inline boundary or
+to zero, single-to-direct truncate, `O_TRUNC`, empty regular-file create, inline-file write,
 inline-to-one-direct-block regular-file promotion, and inline/direct directory
 append/growth. FUSE negotiation caps and reports the per-request atomic boundary.
 Recovery tests cover journal publication, metadata apply, checkpoint-copy, and
-journal-reclaim interruptions, including promotion-specific recovery. Indirect
-mutation, non-zero direct-to-inline conversion, holes, cross-group allocation,
-and unrelated metadata mutation remain fail closed. The v7 policy state and
-helpers are v7-owned; production `kafs` and frozen `kafs-v6` behavior remain
-separate.
+journal-reclaim interruptions, including promotion- and single-indirect-specific
+recovery. Double/triple-indirect mutation, indirect-directory mutation,
+non-zero direct-to-inline conversion, holes, cross-group allocation, and
+unrelated metadata mutation remain fail closed. The v7 policy state and helpers
+are v7-owned; production `kafs` and frozen `kafs-v6` behavior remain separate.
 
 V7-owned direct/single/double/triple address calculation, walking, and
-retirement guards now exist. That foundation does not admit indirect write,
-create, growth, or truncate.
+retirement guards now exist. Single-indirect regular-file write/growth/truncate
+is admitted by T53; double/triple and directory-indirect mutation remain outside
+the current boundary.
 
 FTL/ECC correlated-failure injection is not in this implementation blocker
 list.  It is governed by the RC media-qualification boundary in the accepted
@@ -245,9 +247,13 @@ raw-layout specification and does not relax any software recovery gate.
 3. T50 closes the corresponding common-admission gap: every allocated inode
    has a zero disabled tail, and inline records have zero block count and zero
    padding. It does not add repair or widen mutation admission.
-4. Keep M8-C indirect mutation behind M7. Address calculation and traversal do
-   not justify widening journal/recovery admission before the direct surface is
-   qualified.
+4. The earlier direction to keep all M8-C mutation behind M7 was superseded on
+   2026-07-21 after the required pre-proposal PERT was introduced and physical
+   media preparation was explicitly deferred. T53 closes the single-indirect
+   regular-file lifecycle before qualification so the later software/physical
+   matrices do not have to be repeated for that expansion. Double/triple and
+   indirect-directory mutation remain separate waves selected only by a fresh
+   closeout PERT.
 5. Treat full M9 migration/cutover as distinct from the implemented v7
    destination-image creation path, and keep M10 cross-group mutation behind an
    explicit design-direction decision.

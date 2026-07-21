@@ -121,19 +121,19 @@ Every listed sample runs the current bounded surface normally and at every
 controlled interruption boundary. `interruption_cross_product_required=true`
 means the approved cycle count applies to each workload/boundary combination.
 
-Normal workloads cover partial and multi-block overwrite, contiguous direct
-growth, direct shrink above the inline boundary or to zero, non-zero
-direct-to-inline rejection, `O_TRUNC`, inline create/write, regular-file
-inline-to-one-direct-block promotion, inline directory append/growth, and
-direct directory append/growth. Interruption boundaries are journal
+Normal workloads cover partial and multi-block overwrite, contiguous
+direct/single-indirect growth, shrink above the inline boundary or to zero,
+single-to-direct truncate, non-zero direct-to-inline rejection, `O_TRUNC`,
+inline create/write, regular-file inline-to-one-direct-block promotion, inline
+directory append/growth, and direct directory append/growth. Interruption boundaries are journal
 publication, metadata apply, checkpoint-copy publication, and journal reclaim.
 Each cycle uses the controlled-write safe option set and full fsync, then
 remounts or fails closed and runs `fsck.kafs --check` plus `kafsdump --json`.
 
-T49 added the regular-file promotion workload while this matrix remained
-`DRAFT`. Any previously calculated draft digest is therefore obsolete; later
-operator approval must bind the byte-for-byte digest of the completed matrix
-that includes this workload.
+T49 added regular-file promotion and T53 added the single-indirect lifecycle
+while this matrix remained `DRAFT`. Any previously calculated draft digest is
+therefore obsolete; later operator approval must bind the byte-for-byte digest
+of the completed matrix that includes both workloads.
 
 Results are only `PASS`, `FAIL`, `SKIP`, or `INCONCLUSIVE`. Missing timing
 evidence, uncertain power isolation, or an environment-limited cycle is not

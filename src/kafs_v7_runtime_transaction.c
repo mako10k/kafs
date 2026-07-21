@@ -275,29 +275,6 @@ static void kafs_v7_runtime_data_cow_advance_cursor(kafs_v7_runtime_transaction_
   service->allocation_cursors[plan->group_id] = next;
 }
 
-static int kafs_v7_runtime_data_cow_patch_references(const kafs_v7_journal_patch_t *patch,
-                                                     const uint32_t *expected,
-                                                     const kafs_v7_inode_t *before,
-                                                     const uint32_t *retained)
-{
-  if (patch->target_type != KAFS_V7_JOURNAL_TARGET_INODE || !patch->patch)
-    return 0;
-  const uint32_t first_ref = offsetof(kafs_v7_inode_t, inline_or_block_refs);
-  for (uint32_t slot = 0; slot < KAFS_V7_INODE_DIRECT_REFERENCE_COUNT; ++slot)
-  {
-    uint32_t ref_off = first_ref + slot * sizeof(uint32_t);
-    if (patch->patch_off > ref_off || patch->patch_bytes < sizeof(uint32_t) ||
-        ref_off - patch->patch_off > patch->patch_bytes - sizeof(uint32_t))
-      continue;
-    if (memcmp((const uint8_t *)patch->patch + ref_off - patch->patch_off, expected,
-               sizeof(*expected)) != 0)
-      continue;
-    if (!before || memcmp((const uint8_t *)before + ref_off, retained, sizeof(*retained)) == 0)
-      return 1;
-  }
-  return 0;
-}
-
 static int kafs_v7_runtime_data_cow_load_inode(const kafs_v7_runtime_transaction_service_t *service,
                                                const kafs_v7_layout_report_t *layout,
                                                uint32_t group_id,
@@ -313,43 +290,179 @@ static int kafs_v7_runtime_data_cow_load_inode(const kafs_v7_runtime_transaction
   return rc;
 }
 
-static int kafs_v7_runtime_data_cow_validate_direct_reference(
-    const kafs_v7_runtime_transaction_service_t *service, const kafs_v7_layout_report_t *layout,
-    const kafs_v7_data_cow_plan_t *plan, const kafs_v7_journal_patch_t *patches, size_t patch_count)
+typedef struct kafs_v7_runtime_data_cow_reachability
 {
-  if (plan->logical_block >= UINT32_MAX)
-    return -ERANGE;
-  uint32_t expected = htole32((uint32_t)plan->logical_block + 1u);
-  uint32_t retained = 0u;
-  int needs_retained = plan->retained_logical_block != KAFS_V7_DATA_COW_NO_BLOCK;
-  if (needs_retained && plan->retained_logical_block >= UINT32_MAX)
-    return -ERANGE;
-  if (needs_retained)
-    retained = htole32((uint32_t)plan->retained_logical_block + 1u);
+  const kafs_v7_runtime_data_cow_batch_t *operation;
+  const kafs_v7_journal_replay_t *replay;
+  uint8_t *found;
+  size_t unresolved;
+  int before;
+} kafs_v7_runtime_data_cow_reachability_t;
+
+static int
+kafs_v7_runtime_data_cow_read_graph_block(const kafs_v7_runtime_data_cow_reachability_t *scan,
+                                          uint64_t logical_block, void *block)
+{
+  const kafs_v7_runtime_data_cow_batch_t *operation = scan->operation;
+  if (!scan->before)
+  {
+    for (size_t i = 0; i < operation->plan_count; ++i)
+      if (operation->plans[i].logical_block == logical_block)
+      {
+        if (!operation->staged_data[i])
+          return -EAGAIN;
+        memcpy(block, operation->staged_data[i], operation->layout.block_size);
+        return 0;
+      }
+  }
+
+  const kafs_v7_group_desc_t *groups = kafs_v7_report_groups(&operation->layout);
+  if (!groups)
+    return -EUCLEAN;
+  for (uint32_t group_id = 0; group_id < operation->layout.group_count; ++group_id)
+  {
+    uint64_t start = le64toh(groups[group_id].data_logical_start);
+    uint64_t count = le64toh(groups[group_id].data_logical_count);
+    if (logical_block < start || logical_block - start >= count)
+      continue;
+    uint64_t local = logical_block - start;
+    uint64_t physical_off = le64toh(groups[group_id].data_physical_off);
+    if (local > (UINT64_MAX - physical_off) / operation->layout.block_size)
+      return -EUCLEAN;
+    physical_off += local * operation->layout.block_size;
+    return kafs_v7_journal_overlay_pread(scan->replay, operation->service->fd, block,
+                                         operation->layout.block_size, physical_off);
+  }
+  return -EUCLEAN;
+}
+
+static void kafs_v7_runtime_data_cow_mark_reference(kafs_v7_runtime_data_cow_reachability_t *scan,
+                                                    uint32_t reference)
+{
+  if (reference == 0u)
+    return;
+  for (size_t i = 0; i < scan->operation->plan_count; ++i)
+  {
+    uint64_t sought = scan->before ? scan->operation->plans[i].retained_logical_block
+                                   : scan->operation->plans[i].logical_block;
+    if (!scan->found[i] && sought != KAFS_V7_DATA_COW_NO_BLOCK && sought < UINT32_MAX &&
+        reference == sought + 1u)
+    {
+      scan->found[i] = 1u;
+      --scan->unresolved;
+    }
+  }
+}
+
+static int kafs_v7_runtime_data_cow_scan_reference(kafs_v7_runtime_data_cow_reachability_t *scan,
+                                                   uint32_t reference, uint32_t levels)
+{
+  if (reference == 0u)
+    return 0;
+  kafs_v7_runtime_data_cow_mark_reference(scan, reference);
+  if (levels == 0u || scan->unresolved == 0u)
+    return 0;
+
+  uint32_t *references = malloc(scan->operation->layout.block_size);
+  if (!references)
+    return -ENOMEM;
+  int rc = kafs_v7_runtime_data_cow_read_graph_block(scan, (uint64_t)reference - 1u, references);
+  size_t count = scan->operation->layout.block_size / sizeof(*references);
+  for (size_t i = 0; rc == 0 && scan->unresolved != 0u && i < count; ++i)
+    rc = kafs_v7_runtime_data_cow_scan_reference(scan, le32toh(references[i]), levels - 1u);
+  free(references);
+  return rc;
+}
+
+static int kafs_v7_runtime_data_cow_scan_inode(kafs_v7_runtime_data_cow_reachability_t *scan,
+                                               const kafs_v7_inode_t *inode)
+{
+  if (le32toh(inode->blocks) == 0u)
+    return 0;
+  int rc = 0;
+  for (uint32_t slot = 0; rc == 0 && slot < KAFS_V7_INODE_REFERENCE_COUNT; ++slot)
+  {
+    uint32_t reference = 0u;
+    memcpy(&reference, inode->inline_or_block_refs + slot * sizeof(reference), sizeof(reference));
+    reference = le32toh(reference);
+    uint32_t levels = slot < KAFS_V7_INODE_DIRECT_REFERENCE_COUNT
+                          ? 0u
+                          : slot - KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 1u;
+    rc = kafs_v7_runtime_data_cow_scan_reference(scan, reference, levels);
+  }
+  return rc;
+}
+
+static int
+kafs_v7_runtime_data_cow_validate_reachability(const kafs_v7_runtime_data_cow_batch_t *operation,
+                                               const kafs_v7_journal_patch_t *patches,
+                                               size_t patch_count)
+{
+  uint8_t *expected = calloc(operation->plan_count, sizeof(*expected));
+  uint8_t *retained = calloc(operation->plan_count, sizeof(*retained));
+  if (!expected || !retained)
+  {
+    free(expected);
+    free(retained);
+    return -ENOMEM;
+  }
 
   kafs_v7_journal_replay_t replay;
   memset(&replay, 0, sizeof(replay));
-  int rc = needs_retained ? kafs_v7_journal_analyze_fd(service->fd, layout, &replay) : 0;
-  int found = 0;
-  for (size_t patch_id = 0; rc == 0 && !found && patch_id < patch_count; ++patch_id)
+  int rc = kafs_v7_journal_analyze_fd(operation->service->fd, &operation->layout, &replay);
+  for (size_t patch_id = 0; rc == 0 && patch_id < patch_count; ++patch_id)
   {
     const kafs_v7_journal_patch_t *patch = &patches[patch_id];
-    if (!kafs_v7_runtime_data_cow_patch_references(patch, &expected, NULL, NULL))
+    if (patch->target_type != KAFS_V7_JOURNAL_TARGET_INODE || !patch->patch ||
+        patch->patch_off > sizeof(kafs_v7_inode_t) ||
+        patch->patch_bytes > sizeof(kafs_v7_inode_t) - patch->patch_off)
       continue;
-    if (!needs_retained)
-    {
-      found = 1;
-      continue;
-    }
+
     kafs_v7_inode_t before;
-    memset(&before, 0, sizeof(before));
-    rc = kafs_v7_runtime_data_cow_load_inode(service, layout, plan->group_id, &replay,
+    rc = kafs_v7_runtime_data_cow_load_inode(operation->service, &operation->layout,
+                                             operation->plans[0].group_id, &replay,
                                              patch->logical_index, &before);
+    kafs_v7_inode_t after;
     if (rc == 0)
-      found = kafs_v7_runtime_data_cow_patch_references(patch, &expected, &before, &retained);
+    {
+      memcpy(&after, &before, sizeof(after));
+      memcpy((uint8_t *)&after + patch->patch_off, patch->patch, patch->patch_bytes);
+      kafs_v7_runtime_data_cow_reachability_t after_scan = {
+          .operation = operation,
+          .replay = &replay,
+          .found = expected,
+      };
+      for (size_t i = 0; i < operation->plan_count; ++i)
+        if (!expected[i])
+          ++after_scan.unresolved;
+      rc = kafs_v7_runtime_data_cow_scan_inode(&after_scan, &after);
+    }
+    if (rc == 0)
+    {
+      kafs_v7_runtime_data_cow_reachability_t before_scan = {
+          .operation = operation,
+          .replay = &replay,
+          .found = retained,
+          .before = 1,
+      };
+      for (size_t i = 0; i < operation->plan_count; ++i)
+        if (!retained[i] && operation->plans[i].retained_logical_block != KAFS_V7_DATA_COW_NO_BLOCK)
+          ++before_scan.unresolved;
+      rc = kafs_v7_runtime_data_cow_scan_inode(&before_scan, &before);
+    }
+  }
+  for (size_t i = 0; rc == 0 && i < operation->plan_count; ++i)
+  {
+    if (!expected[i])
+      rc = -EINVAL;
+    else if (operation->plans[i].retained_logical_block != KAFS_V7_DATA_COW_NO_BLOCK &&
+             !retained[i])
+      rc = -EINVAL;
   }
   kafs_v7_journal_replay_clear(&replay);
-  return rc != 0 ? rc : found ? 0 : -EINVAL;
+  free(expected);
+  free(retained);
+  return rc;
 }
 
 static void kafs_v7_runtime_data_cow_batch_release(kafs_v7_runtime_data_cow_batch_t *operation)
@@ -496,16 +609,15 @@ int kafs_v7_runtime_data_cow_batch_commit(kafs_v7_runtime_data_cow_batch_t **ope
     if (rc == 0)
       rc = kafs_v7_data_cow_verify_fd(operation->service->fd, &operation->plans[i],
                                       operation->staged_data[i], operation->plans[i].block_size);
-    if (rc == 0)
-      rc = kafs_v7_runtime_data_cow_validate_direct_reference(
-          operation->service, &operation->layout, &operation->plans[i], metadata_patches,
-          metadata_patch_count);
     int last = 1;
     for (size_t j = i + 1u; j < operation->plan_count; ++j)
       if (operation->plans[j].bitmap_word_logical == operation->plans[i].bitmap_word_logical)
         last = 0;
     bitmap_count += last;
   }
+  if (rc == 0)
+    rc = kafs_v7_runtime_data_cow_validate_reachability(operation, metadata_patches,
+                                                        metadata_patch_count);
   if (rc != 0)
     return rc;
   if (bitmap_count == SIZE_MAX || metadata_patch_count > SIZE_MAX - bitmap_count - 1u)

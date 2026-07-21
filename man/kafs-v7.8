@@ -40,13 +40,15 @@ reported by
 .BR statfs (2).
 .PP
 Controlled-write admission opens the image read-write and requires the explicit
-safe option set shown in the synopsis.  It permits only overwrites of existing,
-allocated direct blocks in regular files.  A request may span multiple direct
-blocks and may extend the current file contiguously within the twelve direct
-slots.  Newly allocated blocks are zero initialized.  Partial first and last
-blocks use read-modify-COW.  All replacement blocks, inode references, size,
-and block count are published in one v7 journal transaction, checkpointed, and
-then the old blocks are retired.  Full
+safe option set shown in the synopsis.  It permits dense same-group regular-file
+writes through the twelve direct references and one single-indirect root.  A
+request may span multiple blocks and may extend the current file contiguously
+within that boundary.  Newly allocated blocks are zero initialized.  Partial
+first and last blocks use read-modify-COW.  When a single-indirect root is
+needed, the requested data blocks and a copied root are staged together.  All
+replacement blocks, inode and root references, size, and data-plus-root block
+count are published in one v7 journal transaction, checkpointed, and then the
+old data and root blocks are retired.  Full
 .BR fsync (2)
 is required for the supported durability contract.
 .PP
@@ -113,9 +115,10 @@ Alias for FUSE
 Inline form of
 .BR --option .
 .SH CURRENT LIMITS
-Controlled-write mounts support shrinking existing direct-only regular files
-through truncate and ftruncate while the result remains above 60 bytes, or to
-zero through truncate, ftruncate, and write-access opens using O_TRUNC.
+Controlled-write mounts support shrinking existing dense regular files through
+the single-indirect boundary using truncate and ftruncate while the result
+remains above 60 bytes, or to zero through truncate, ftruncate, and write-access
+opens using O_TRUNC.  This includes single-to-direct truncation.
 Non-zero direct-to-inline conversion and truncate growth are rejected.
 Empty regular-file creation is supported when the parent occupies one direct
 block or is inline, can append or grow within the twelve direct references,
@@ -124,9 +127,10 @@ and may be written through the create handle.  A contiguous write that grows an
 inline regular file beyond 60 bytes may convert it to one direct block.  Growth
 beyond that block continues through the bounded direct path.  Inline
 directories may convert to one direct block, and direct directories may append
-or grow through the twelve direct references.  Cross-group allocation, holes,
-requests beyond the twelve direct blocks, indirect-block mutation, and other
-metadata mutations are rejected.  Offline repair,
+or grow through the twelve direct references.  Directory indirect mutation is
+not enabled.  Cross-group allocation, holes, regular-file requests beyond the
+single-indirect capacity, double/triple-indirect mutation, and other metadata
+mutations are rejected.  Offline repair,
 cross-group HRL mutation, and hotplug write delegation are not enabled.
 .SH EXIT STATUS
 .TP

@@ -784,15 +784,12 @@ static int data_retirement_reference_guards(data_retirement_test_state_t *state)
   if (rc == 0 && kafs_v7_runtime_data_retire(*state->service, &request, &result) != -EBUSY)
     rc = -1;
 
-  data_retirement_inode_reference_set(state->inode_record, 1u, UINT64_MAX);
+  for (uint32_t slot = 0u; slot < KAFS_V7_INODE_DIRECT_REFERENCE_COUNT; ++slot)
+    data_retirement_inode_reference_set(state->inode_record, slot, state->current_block);
   data_retirement_inode_reference_set(state->inode_record, 12u, state->current_block);
   state->inode_record->size = htole64(
       (uint64_t)KAFS_V7_INODE_DIRECT_REFERENCE_COUNT * state->fixture->layout.block_size + 1u);
-  if (rc == 0)
-    rc = data_retirement_inode_commit(state, &transaction);
-  if (rc == 0 && transaction.publication.sequence != 5u)
-    rc = -1;
-
+  state->inode_record->blocks = htole32(KAFS_V7_INODE_DIRECT_REFERENCE_COUNT + 2u);
   uint64_t indirect_physical_off = 0u;
   uint32_t *indirect = calloc(1u, state->fixture->layout.block_size);
   if (rc == 0 && !indirect)
@@ -805,14 +802,15 @@ static int data_retirement_reference_guards(data_retirement_test_state_t *state)
     rc = kafs_pwrite_all(state->fixture->fd, indirect, state->fixture->layout.block_size,
                          (off_t)indirect_physical_off);
   }
+  if (rc == 0)
+    rc = data_retirement_inode_commit(state, &transaction);
+  if (rc == 0 && transaction.publication.sequence != 5u)
+    rc = -1;
   if (rc == 0 && kafs_v7_runtime_data_retire(*state->service, &request, &result) != -EBUSY)
     rc = -1;
 
-  if (rc == 0)
-    rc = kafs_pwrite_all(state->fixture->fd, state->data, state->fixture->layout.block_size,
-                         (off_t)indirect_physical_off);
-  free(indirect);
-
+  for (uint32_t slot = 1u; slot < KAFS_V7_INODE_DIRECT_REFERENCE_COUNT; ++slot)
+    data_retirement_inode_reference_set(state->inode_record, slot, UINT64_MAX);
   data_retirement_inode_reference_set(state->inode_record, 12u, UINT64_MAX);
   state->inode_record->size = htole64(state->fixture->layout.block_size);
   state->inode_record->blocks = htole32(1u);
@@ -820,6 +818,10 @@ static int data_retirement_reference_guards(data_retirement_test_state_t *state)
     rc = data_retirement_inode_commit(state, &transaction);
   if (rc == 0 && transaction.publication.sequence != 6u)
     rc = -1;
+  if (rc == 0)
+    rc = kafs_pwrite_all(state->fixture->fd, state->data, state->fixture->layout.block_size,
+                         (off_t)indirect_physical_off);
+  free(indirect);
   request.group_id = 1u;
   if (rc == 0 && kafs_v7_runtime_data_retire(*state->service, &request, &result) != -EXDEV)
     rc = -1;
