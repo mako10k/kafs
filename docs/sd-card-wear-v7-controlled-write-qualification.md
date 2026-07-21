@@ -1,9 +1,9 @@
 # KAFS format v7 controlled-write qualification plan
 
 - Task: `SDW-V7RT-T48`
-- Current slice: `T48-A end-to-end non-destructive qualification dry run`
-- Baseline: `3a86fde`
-- Status: T48-A complete; real-media qualification not started
+- Current software refresh: `SDW-V7RT-T49 regular-file inline-to-direct promotion`
+- T48-A baseline: `3a86fde`
+- Status: T48-A and the T49 file-image refresh complete; real-media qualification not started
 
 ## Goal And Critical Path
 
@@ -56,9 +56,10 @@ to expose block-backed files and directory boundary states before mounting the
 image through `kafs-v7`.
 
 The fixture preparation is explicit evidence scaffolding, not an operator image
-creation claim. A plain new v7 image cannot currently create a block-backed
-regular file through the public controlled-write surface because inline regular
-file conversion remains unsupported.
+creation claim. T49 now permits a file created through the public
+controlled-write surface to cross the 60-byte inline boundary into one direct
+block. Pre-seeded block-backed files remain necessary to exercise the wider
+multi-block and direct-limit matrix.
 
 The workload emits one stable marker for each completed case. A zero test exit
 without every required marker and raw log is a failed qualification dry run.
@@ -69,10 +70,10 @@ without every required marker and raw log is a failed qualification dry run.
 | --- | --- |
 | Format and inspection | accepted format/seed image, inspection mount |
 | Direct overwrite | partial and multi-block overwrite through FUSE |
-| Direct geometry | contiguous growth, shrinking truncate, `O_TRUNC` |
-| Create | create plus inline-file write and full fsync |
+| Direct geometry | contiguous growth, shrinking above the inline boundary or to zero, non-zero direct-to-inline rejection, `O_TRUNC` |
+| Create | create, inline-file write, inline-to-one-direct-block promotion, and full fsync |
 | Directory transitions | inline append/growth, direct append/growth representatives, direct-limit rejection |
-| Recovery | journal publication, metadata apply, checkpoint copy, and journal reclaim process interruption |
+| Recovery | journal publication, metadata apply, checkpoint copy, journal reclaim, and promotion-specific process interruption |
 | Admission | degraded inspection succeeds; unpaired generation fails closed |
 | Closeout | inspection remount, offline `fsck.kafs`, and `kafsdump --json` |
 
@@ -179,6 +180,20 @@ Validation results:
 
 This closes T48-A only. It does not satisfy the controlled power-interruption,
 real-media, or independent-review conditions of T48 and M7.
+
+## T49 File-Image Refresh
+
+The 2026-07-21 T49 working-tree dry run completed with all 26 required cases at
+PASS and 90 digest-checked artifacts. The three added cases are
+`regular_inline_promotion`, `direct_to_inline_truncate_rejection`, and
+`regular_inline_promotion_recovery`; the latter covers journal publication,
+metadata apply, and checkpoint-copy interruption for the representation change.
+The synthetic validate-only gate also passed with all three cases required.
+
+This refresh widens only the software/file-image evidence. All RC, real-media,
+and controller-independent-wear claims remain false. The DRAFT real-media
+matrix now includes the promotion workload and must receive a new digest-bound
+approval after exact hardware identities are supplied.
 
 ## Follow-On Boundary
 

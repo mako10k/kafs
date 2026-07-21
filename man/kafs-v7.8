@@ -114,17 +114,19 @@ Inline form of
 .BR --option .
 .SH CURRENT LIMITS
 Controlled-write mounts support shrinking existing direct-only regular files
-through truncate, ftruncate, and write-access opens using O_TRUNC.  Truncate
-growth is rejected.
+through truncate and ftruncate while the result remains above 60 bytes, or to
+zero through truncate, ftruncate, and write-access opens using O_TRUNC.
+Non-zero direct-to-inline conversion and truncate growth are rejected.
 Empty regular-file creation is supported when the parent occupies one direct
 block or is inline, can append or grow within the twelve direct references,
 and a free inode exists in the same group.  Files up to 60 bytes remain inline
-and may be written through the create handle.  Inline regular-file conversion
-to block storage is not supported.  Inline directories may convert to one
-direct block, and direct directories may append or grow through the twelve
-direct references.  Cross-group allocation, holes, requests beyond the twelve
-direct blocks, indirect-block mutation, and other metadata mutations are
-rejected.  Offline repair,
+and may be written through the create handle.  A contiguous write that grows an
+inline regular file beyond 60 bytes may convert it to one direct block.  Growth
+beyond that block continues through the bounded direct path.  Inline
+directories may convert to one direct block, and direct directories may append
+or grow through the twelve direct references.  Cross-group allocation, holes,
+requests beyond the twelve direct blocks, indirect-block mutation, and other
+metadata mutations are rejected.  Offline repair,
 cross-group HRL mutation, and hotplug write delegation are not enabled.
 .SH EXIT STATUS
 .TP

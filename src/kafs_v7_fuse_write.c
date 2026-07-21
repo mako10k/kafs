@@ -69,6 +69,84 @@ static int kafs_v7_fuse_write_validate(const kafs_context_t *ctx, kafs_inocnt_t 
   return 0;
 }
 
+static int kafs_v7_fuse_commit_data_cow_inode(kafs_v7_runtime_data_cow_batch_t **operation,
+                                              kafs_inocnt_t ino, const kafs_v7_inode_t *inode,
+                                              int rc)
+{
+  kafs_v7_journal_patch_t inode_patch = {
+      .target_type = KAFS_V7_JOURNAL_TARGET_INODE,
+      .logical_index = ino,
+      .patch_bytes = sizeof(*inode),
+      .patch = inode,
+  };
+  kafs_v7_runtime_transaction_result_t transaction;
+  if (rc == 0)
+    rc = kafs_v7_runtime_data_cow_batch_commit(operation, &inode_patch, 1u, &transaction);
+  if (*operation)
+    (void)kafs_v7_runtime_data_cow_batch_abort(operation);
+  return rc;
+}
+
+static int kafs_v7_fuse_promote_inline_regular(kafs_context_t *ctx, kafs_inocnt_t ino,
+                                               const kafs_v7_inode_t *mapped, const void *buf,
+                                               size_t size, uint64_t offset,
+                                               kafs_v7_fuse_write_result_t *result)
+{
+  const kafs_v7_inode_runtime_shard_t *shard = kafs_ctx_v7_inode_shard_for_ino(ctx, ino);
+  uint64_t old_size = le64toh(mapped->size);
+  uint64_t request_end = offset + size;
+  if (!shard || ctx->c_v7_block_size == 0u || request_end > ctx->c_v7_block_size ||
+      old_size > ctx->c_v7_block_size)
+    return -EOPNOTSUPP;
+
+  kafs_v7_runtime_data_cow_request_t request = {
+      .group_id = shard->group_id,
+      .retained_logical_block = KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK,
+  };
+  kafs_v7_runtime_data_cow_batch_t *operation = NULL;
+  kafs_v7_runtime_data_cow_plan_t plan;
+  int rc = kafs_v7_runtime_data_cow_batch_prepare(ctx->c_v7_runtime_transactions, &request, 1u,
+                                                  &operation, &plan);
+  uint8_t *block = NULL;
+  if (rc == 0)
+  {
+    block = calloc(1u, plan.block_size);
+    if (!block)
+      rc = -ENOMEM;
+  }
+  if (rc == 0)
+  {
+    memcpy(block, mapped->inline_or_block_refs, (size_t)old_size);
+    memcpy(block + offset, buf, size);
+    rc = kafs_v7_runtime_data_cow_batch_stage(operation, 0u, block, plan.block_size);
+  }
+  free(block);
+
+  kafs_v7_inode_t inode;
+  memcpy(&inode, mapped, sizeof(inode));
+  if (rc == 0 && plan.logical_block >= UINT32_MAX)
+    rc = -ERANGE;
+  if (rc == 0)
+  {
+    uint32_t reference = htole32((uint32_t)plan.logical_block + 1u);
+    memset(inode.inline_or_block_refs, 0, sizeof(inode.inline_or_block_refs));
+    memcpy(inode.inline_or_block_refs, &reference, sizeof(reference));
+    inode.size = htole64(request_end);
+    inode.blocks = htole32(1u);
+  }
+  rc = kafs_v7_fuse_commit_data_cow_inode(&operation, ino, &inode, rc);
+  if (rc != 0)
+    return rc;
+
+  if (result)
+  {
+    result->new_logical_block = plan.logical_block;
+    result->retained_logical_block = KAFS_V7_RUNTIME_DATA_COW_NO_BLOCK;
+    result->retirement_rc = 0;
+  }
+  return (int)size;
+}
+
 int kafs_v7_fuse_write_direct(kafs_context_t *ctx, kafs_inocnt_t ino, const void *buf, size_t size,
                               uint64_t offset, kafs_v7_fuse_write_result_t *result)
 {
@@ -102,6 +180,10 @@ int kafs_v7_fuse_write_direct(kafs_context_t *ctx, kafs_inocnt_t ino, const void
                                                          &inode_patch, 1u, &transaction);
       return inline_rc == 0 ? (int)size : inline_rc;
     }
+    if (mapped && S_ISREG(le16toh(mapped->mode)) && old_size <= inline_capacity &&
+        le32toh(mapped->blocks) == 0u && offset <= old_size && size <= UINT64_MAX - offset &&
+        offset + size > inline_capacity)
+      return kafs_v7_fuse_promote_inline_regular(ctx, ino, mapped, buf, size, offset, result);
     if (mapped && old_size <= inline_capacity && le32toh(mapped->blocks) == 0u)
       return -EOPNOTSUPP;
   }
@@ -179,17 +261,7 @@ int kafs_v7_fuse_write_direct(kafs_context_t *ctx, kafs_inocnt_t ino, const void
       rc = -EOVERFLOW;
     if (rc == 0)
       inode.blocks = htole32(le32toh(inode.blocks) + added_blocks);
-    kafs_v7_journal_patch_t inode_patch = {
-        .target_type = KAFS_V7_JOURNAL_TARGET_INODE,
-        .logical_index = ino,
-        .patch_bytes = sizeof(inode),
-        .patch = &inode,
-    };
-    kafs_v7_runtime_transaction_result_t transaction;
-    if (rc == 0)
-      rc = kafs_v7_runtime_data_cow_batch_commit(&operation, &inode_patch, 1u, &transaction);
-    if (operation)
-      (void)kafs_v7_runtime_data_cow_batch_abort(&operation);
+    rc = kafs_v7_fuse_commit_data_cow_inode(&operation, ino, &inode, rc);
     if (rc != 0)
       return rc;
     int retirement_rc = 0;
@@ -605,6 +677,8 @@ int kafs_v7_fuse_truncate_direct(kafs_context_t *ctx, kafs_inocnt_t ino, uint64_
   uint64_t old_size = le64toh(mapped->size);
   if (size > old_size ||
       old_size > KAFS_V7_INODE_DIRECT_REFERENCE_COUNT * (uint64_t)ctx->c_v7_block_size)
+    return -EOPNOTSUPP;
+  if (le32toh(mapped->blocks) != 0u && size != 0u && size <= sizeof(mapped->inline_or_block_refs))
     return -EOPNOTSUPP;
   if (size == old_size)
     return 0;

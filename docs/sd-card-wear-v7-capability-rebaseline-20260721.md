@@ -2,7 +2,7 @@
 
 - Branch: `feat/v7-runtime-admission-foundation`
 - Baseline: `460f7b0`
-- Status: current-checkout baseline accepted; M7 qualification selected next
+- Status: baseline accepted; T49 software-only expansion complete while M7 awaits hardware identity
 
 ## Purpose
 
@@ -10,9 +10,10 @@ This document closes the post-RCA R2 recovery wave, replaces milestone status
 that predates the direct-mutation recovery work, and selects the next product
 slice from the capability that is present in the current checkout.
 
-It does not widen the admitted mutation surface. In particular, it does not
-enable indirect-block mutation, cross-group allocation, stable/GA claims, or
-real-device destructive testing.
+The original rebaseline did not widen the admitted mutation surface. The T49
+addendum widens one direct transition only: an inline regular file may promote
+to one direct block. It does not enable indirect-block mutation, cross-group
+allocation, stable/GA claims, or real-device destructive testing.
 
 ## Evidence Baseline
 
@@ -43,7 +44,7 @@ been collected.
 | Offline migration | `kafsresize --migrate-create` can build a v7 destination image | No in-place metadata relocation or automatic cutover |
 | Runtime admission | Dedicated `kafs-v7` entrypoint supports inspection and explicit controlled-write mounts | Successful admission does not route through v5/v6 public entrypoints |
 | Inspection mount | Read-only FUSE view with selected recovery state and recovered `statfs` counters | Mutation fails closed |
-| Controlled write | Existing direct-block regular-file overwrite/growth, direct-only shrink, empty-file creation, inline-file writes, and same-group inline/direct directory append/growth through the twelve direct references | Holes, indirect mutation, cross-group allocation, and unrelated metadata mutation are rejected |
+| Controlled write | Existing direct-block regular-file overwrite/growth, direct-only shrink above the inline boundary or to zero, empty-file creation, inline-file writes, inline-to-one-direct-block regular-file promotion, and same-group inline/direct directory append/growth through the twelve direct references | Non-zero direct-to-inline conversion, holes, promotion beyond one block, indirect mutation, cross-group allocation, and unrelated metadata mutation are rejected |
 | Request contract | One FUSE write callback is one journal transaction; negotiated `max_write` is capped at twelve v7 blocks | No application-system-call atomicity claim across kernel-split requests |
 | Recovery | Admission closeout, interruption matrices, offline fsck, and readback cover the enabled direct mutation transitions | No real-card power-interruption qualification yet |
 | Indirect foundation | Direct/single/double/triple address calculation, walk, and retirement guard exist in v7-owned code | Indirect write/create/truncate admission remains `EOPNOTSUPP` |
@@ -96,6 +97,36 @@ M7 is selected before M8-C, M9, and M10:
   operator cutover claim should depend on a qualified destination runtime.
 - **M10 cross-group allocation** remains behind an explicit design-direction
   decision and is not inferred from the current same-group implementation.
+
+## T49 Deferred-Media Addendum
+
+Exact SD-card, reader/controller, and isolated power-cut identities were not yet
+available, and the user explicitly deferred their preparation. This blocks the
+physical part of M7 without changing its priority once hardware is ready. The
+2026-07-21 refreshed Task Start Gate therefore selected
+`SDW-V7RT-T49 regular-file inline-to-direct promotion` as the smallest coherent
+software-only closure.
+
+T49 reuses the existing same-group data COW transaction and the already proven
+directory representation-transition pattern. Its admitted state is limited to
+a regular inode with `blocks=0`, size at most 60 bytes, no hole, and a request
+ending within one filesystem block. It zero-initializes and stages one new data
+block, preserves the old inline bytes, applies the request, and atomically
+publishes allocator state plus the inode's first direct reference, size, and
+block count. There is no retained block to retire.
+
+Observed T49 software evidence includes the low-level transition and immediate
+direct-COW chaining, actual FUSE write/full-fsync/read-only-remount, offline
+fsck, and journal-publication, metadata-apply, and checkpoint-copy recovery.
+The refreshed non-destructive qualification report passed 26/26 required cases
+with 90 digest-checked artifacts. Its RC, real-media, and
+controller-independent-wear claims remain false.
+
+This exception is smaller than M8-C because it adds no indirect reachability or
+path-copy contract. M9 cutover still depends on a qualified destination runtime,
+and M10 still requires an explicit cross-group design decision. When hardware is
+available, M7 resumes against the expanded matrix, including the T49 promotion
+workload.
 
 ## Next Task: SDW-V7RT-T48 Controlled-write RC Qualification Gate
 

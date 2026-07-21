@@ -44,6 +44,9 @@ static const char k_inline_payload[] = "v7 inline payload\n";
 static const char k_block_payload[] =
     "v7 block-backed payload across a nonzero data group; "
     "the second sentence keeps this payload beyond the sixty-byte inline boundary.\n";
+static const char k_promoted_payload[] =
+    "v7-created-file grows from inline storage into one direct block while preserving its "
+    "original prefix.\n";
 static const char k_symlink_target[] = "nested/inline";
 
 static void qualification_case_pass(const char *case_id)
@@ -1100,7 +1103,7 @@ static int check_persisted_blocks(const char *image, uint32_t ino, const void *e
 
 static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_t block_size)
 {
-  static const char created_payload[] = "v7-created-file";
+  const size_t created_inline_bytes = sizeof("v7-created-file") - 1u;
   const char *mnt = "mnt-controlled";
   const char *log_path = "v7-controlled-write.log";
   kafs_test_mount_options_t options = {
@@ -1217,8 +1220,8 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
       fprintf(stderr, "controlled create failed: errno=%d\n", errno);
       rc = -1;
     }
-    if (rc == 0 && write(created_fd, created_payload, sizeof(created_payload) - 1u) !=
-                       (ssize_t)(sizeof(created_payload) - 1u))
+    if (rc == 0 && write(created_fd, k_promoted_payload, created_inline_bytes) !=
+                       (ssize_t)created_inline_bytes)
     {
       fprintf(stderr, "controlled created-file write failed: errno=%d\n", errno);
       rc = -1;
@@ -1228,10 +1231,35 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
       fprintf(stderr, "controlled created-file fsync failed: errno=%d\n", errno);
       rc = -1;
     }
-    if (created_fd >= 0 && close(created_fd) != 0 && rc == 0)
-      rc = -1;
     if (rc == 0)
       qualification_case_pass("create_inline_write");
+    if (rc == 0 &&
+        write(created_fd, k_promoted_payload + created_inline_bytes,
+              sizeof(k_promoted_payload) - 1u - created_inline_bytes) !=
+            (ssize_t)(sizeof(k_promoted_payload) - 1u - created_inline_bytes))
+    {
+      fprintf(stderr, "controlled inline-file promotion write failed: errno=%d\n", errno);
+      rc = -1;
+    }
+    if (rc == 0 && fsync(created_fd) != 0)
+    {
+      fprintf(stderr, "controlled inline-file promotion fsync failed: errno=%d\n", errno);
+      rc = -1;
+    }
+    if (rc == 0)
+      qualification_case_pass("regular_inline_promotion");
+    errno = 0;
+    if (rc == 0 &&
+        (ftruncate(created_fd, (off_t)created_inline_bytes) == 0 || errno != EOPNOTSUPP))
+    {
+      fprintf(stderr, "controlled direct-to-inline truncate did not fail closed: errno=%d\n",
+              errno);
+      rc = -1;
+    }
+    if (rc == 0)
+      qualification_case_pass("direct_to_inline_truncate_rejection");
+    if (created_fd >= 0 && close(created_fd) != 0 && rc == 0)
+      rc = -1;
   }
   if (rc == 0)
   {
@@ -1294,13 +1322,14 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
       snprintf(path, sizeof(path), "%s/created", "mnt-controlled-remount");
       struct stat created_st;
       if (rc == 0 && (stat(path, &created_st) != 0 || !S_ISREG(created_st.st_mode) ||
-                      created_st.st_size != (off_t)(sizeof(created_payload) - 1u)))
+                      created_st.st_size != (off_t)(sizeof(k_promoted_payload) - 1u)))
       {
         fprintf(stderr, "controlled created file remount stat failed: errno=%d size=%jd\n", errno,
                 stat(path, &created_st) == 0 ? (intmax_t)created_st.st_size : (intmax_t)-1);
         rc = -1;
       }
-      if (rc == 0 && read_block_equals(path, created_payload, sizeof(created_payload) - 1u) != 0)
+      if (rc == 0 &&
+          read_block_equals(path, k_promoted_payload, sizeof(k_promoted_payload) - 1u) != 0)
       {
         fprintf(stderr, "controlled created file remount payload failed\n");
         rc = -1;
@@ -1428,6 +1457,71 @@ static int check_controlled_write_recovery(const char *image, uint32_t ino, uint
     kafs_test_dump_log(recovery_log, "v7 controlled-write recovery failed");
   }
   free(payload);
+  return rc;
+}
+
+static int check_controlled_inline_promotion_recovery(const char *image,
+                                                      kafs_v7_test_fault_point_t fault)
+{
+  char crash_log[PATH_MAX];
+  char recovery_log[PATH_MAX];
+  snprintf(crash_log, sizeof(crash_log), "v7-inline-promotion-%s-crash.log",
+           kafs_v7_test_fault_name(fault));
+  snprintf(recovery_log, sizeof(recovery_log), "v7-inline-promotion-%s-recovery.log",
+           kafs_v7_test_fault_name(fault));
+  kafs_test_mount_options_t options = {
+      .log_path = crash_log,
+      .extra_options = "rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full",
+      .timeout_ms = 15000,
+  };
+  if (setenv(KAFS_V7_TEST_CRASH_POINT_ENV, kafs_v7_test_fault_name(fault), 1) != 0)
+    return -1;
+  pid_t pid = kafs_test_start_kafs_v7_controlled_write(image, "mnt-inline-promotion-crash",
+                                                       &options);
+  unsetenv(KAFS_V7_TEST_CRASH_POINT_ENV);
+  if (pid <= 0)
+    return -1;
+
+  char path[PATH_MAX];
+  snprintf(path, sizeof(path), "%s/nested/inline", "mnt-inline-promotion-crash");
+  int fd = open(path, O_WRONLY);
+  ssize_t written = fd >= 0 ? write(fd, k_promoted_payload, sizeof(k_promoted_payload) - 1u) : -1;
+  int rc = fd >= 0 && written != (ssize_t)(sizeof(k_promoted_payload) - 1u) ? 0 : -1;
+  if (fd >= 0)
+    close(fd);
+  int status = 0;
+  if (rc == 0 && (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) ||
+                  WEXITSTATUS(status) != kafs_v7_test_fault_exit_status(fault)))
+    rc = -1;
+  kafs_test_stop_kafs("mnt-inline-promotion-crash", pid);
+
+  options.log_path = recovery_log;
+  pid = rc == 0 ? kafs_test_start_kafs_v7_controlled_write(
+                     image, "mnt-inline-promotion-recovery", &options)
+               : -1;
+  if (pid <= 0)
+    rc = -1;
+  else
+  {
+    struct stat st = {0};
+    snprintf(path, sizeof(path), "%s/nested/inline", "mnt-inline-promotion-recovery");
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) ||
+        st.st_size != (off_t)(sizeof(k_promoted_payload) - 1u) ||
+        read_block_equals(path, k_promoted_payload, sizeof(k_promoted_payload) - 1u) != 0)
+      rc = -1;
+    kafs_test_stop_kafs("mnt-inline-promotion-recovery", pid);
+  }
+  if (rc == 0 && check_recovery_log(recovery_log, fault, 3u, 1u) != 0)
+    rc = -1;
+  if (rc == 0 && run_fsck(image) != 0)
+    rc = -1;
+  if (rc != 0)
+  {
+    fprintf(stderr, "inline promotion recovery failed fault=%s written=%zd status=%d\n",
+            kafs_v7_test_fault_name(fault), written, status);
+    kafs_test_dump_log(crash_log, "v7 inline promotion crash failed");
+    kafs_test_dump_log(recovery_log, "v7 inline promotion recovery failed");
+  }
   return rc;
 }
 
@@ -1803,11 +1897,21 @@ int main(void)
   }
   qualification_case_pass("journal_reclaim_recovery");
 
-  const kafs_v7_test_fault_point_t create_faults[] = {
+  const kafs_v7_test_fault_point_t mutation_faults[] = {
       KAFS_V7_TEST_FAULT_JOURNAL_PUBLISH,
       KAFS_V7_TEST_FAULT_METADATA_APPLY,
       KAFS_V7_TEST_FAULT_CHECKPOINT_COPY,
   };
+  for (size_t i = 0u; i < sizeof(mutation_faults) / sizeof(mutation_faults[0]); ++i)
+  {
+    char promotion_recovery[PATH_MAX];
+    snprintf(promotion_recovery, sizeof(promotion_recovery),
+             "v7-inline-promotion-recovery-%zu.img", i);
+    if (copy_image(image, promotion_recovery) != 0 ||
+        check_controlled_inline_promotion_recovery(promotion_recovery, mutation_faults[i]) != 0)
+      return 1;
+  }
+  qualification_case_pass("regular_inline_promotion_recovery");
   const char *direct_min_growth = "v7-direct-min-growth.img";
   if (copy_image(image, direct_min_growth) != 0 ||
       seed_full_root_directory(direct_min_growth, "expanded", 1u) != 0 ||
@@ -1897,9 +2001,9 @@ int main(void)
        .relative_path = "limit-append",
        .mutation_count = 4u},
   };
-  for (size_t i = 0u; i < sizeof(create_faults) / sizeof(create_faults[0]); ++i)
+  for (size_t i = 0u; i < sizeof(mutation_faults) / sizeof(mutation_faults[0]); ++i)
     for (size_t j = 0u; j < sizeof(create_cases) / sizeof(create_cases[0]); ++j)
-      if (run_create_recovery_case(&create_cases[j], create_faults[i], i, j) != 0)
+      if (run_create_recovery_case(&create_cases[j], mutation_faults[i], i, j) != 0)
         return 1;
   qualification_case_pass("directory_transition_recovery_matrix");
 
