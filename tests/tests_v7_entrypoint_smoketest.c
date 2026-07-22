@@ -119,8 +119,7 @@ static int check_v7_fuse_policy_direct(void)
 
   kafs_v7_fuse_policy_set_controlled_write(&ctx, 1);
   if (!kafs_v7_fuse_policy_controlled_write_active(&ctx) ||
-      kafs_v7_fuse_policy_reject_legacy_mutation(&ctx) != -EOPNOTSUPP ||
-      ctx.c_v6_controlled_write_enabled != 0u)
+      kafs_v7_fuse_policy_reject_legacy_mutation(&ctx) != -EOPNOTSUPP)
     return -EINVAL;
 
   const kafs_v7_controlled_write_op_t allowed[] = {

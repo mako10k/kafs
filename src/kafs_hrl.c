@@ -15,9 +15,9 @@ extern uint32_t kafs_diag_current_write_ino(void) __attribute__((weak));
 
 static inline int hrl_descriptor_mapping_enabled(const kafs_context_t *ctx)
 {
-  return ctx && ctx->c_v6_hrl_mapping_enabled && ctx->c_v6_hrl_index_shards &&
-         ctx->c_v6_hrl_entry_shards && ctx->c_v6_hrl_index_shard_count > 0u &&
-         ctx->c_v6_hrl_entry_shard_count > 0u && ctx->c_img_base && ctx->c_img_size > 0u;
+  return ctx && ctx->c_descriptor_hrl_mapping_enabled && ctx->c_descriptor_hrl_index_shards &&
+         ctx->c_descriptor_hrl_entry_shards && ctx->c_descriptor_hrl_index_shard_count > 0u &&
+         ctx->c_descriptor_hrl_entry_shard_count > 0u && ctx->c_img_base && ctx->c_img_size > 0u;
 }
 
 static inline uint32_t *hrl_index_ptr(kafs_context_t *ctx, uint32_t bucket)
@@ -25,9 +25,9 @@ static inline uint32_t *hrl_index_ptr(kafs_context_t *ctx, uint32_t bucket)
   if (!hrl_descriptor_mapping_enabled(ctx))
     return &((uint32_t *)ctx->c_hrl_index)[bucket];
 
-  for (uint32_t i = 0; i < ctx->c_v6_hrl_index_shard_count; ++i)
+  for (uint32_t i = 0; i < ctx->c_descriptor_hrl_index_shard_count; ++i)
   {
-    const kafs_v6_hrl_runtime_shard_t *shard = &ctx->c_v6_hrl_index_shards[i];
+    const kafs_descriptor_hrl_runtime_shard_t *shard = &ctx->c_descriptor_hrl_index_shards[i];
     if ((uint64_t)bucket < shard->logical_start ||
         (uint64_t)bucket >= shard->logical_start + shard->logical_count)
       continue;
@@ -51,9 +51,9 @@ static inline kafs_hrl_entry_t *hrl_entry_ptr(kafs_context_t *ctx, uint32_t idx)
     return (kafs_hrl_entry_t *)(base + off + (uintptr_t)idx * sizeof(kafs_hrl_entry_t));
   }
 
-  for (uint32_t i = 0; i < ctx->c_v6_hrl_entry_shard_count; ++i)
+  for (uint32_t i = 0; i < ctx->c_descriptor_hrl_entry_shard_count; ++i)
   {
-    const kafs_v6_hrl_runtime_shard_t *shard = &ctx->c_v6_hrl_entry_shards[i];
+    const kafs_descriptor_hrl_runtime_shard_t *shard = &ctx->c_descriptor_hrl_entry_shards[i];
     if ((uint64_t)idx < shard->logical_start ||
         (uint64_t)idx >= shard->logical_start + shard->logical_count)
       continue;
@@ -586,17 +586,17 @@ int kafs_hrl_format(kafs_context_t *ctx)
   uint32_t entry_cnt = kafs_sb_hrl_entry_cnt_get(ctx->c_superblock);
   if (hrl_descriptor_mapping_enabled(ctx))
   {
-    for (uint32_t i = 0; i < ctx->c_v6_hrl_index_shard_count; ++i)
+    for (uint32_t i = 0; i < ctx->c_descriptor_hrl_index_shard_count; ++i)
     {
-      const kafs_v6_hrl_runtime_shard_t *shard = &ctx->c_v6_hrl_index_shards[i];
+      const kafs_descriptor_hrl_runtime_shard_t *shard = &ctx->c_descriptor_hrl_index_shards[i];
       memset((char *)ctx->c_img_base + shard->physical_off, 0,
              (size_t)(shard->physical_end - shard->physical_off));
       kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_INDEX,
                                 shard->physical_end - shard->physical_off);
     }
-    for (uint32_t i = 0; i < ctx->c_v6_hrl_entry_shard_count; ++i)
+    for (uint32_t i = 0; i < ctx->c_descriptor_hrl_entry_shard_count; ++i)
     {
-      const kafs_v6_hrl_runtime_shard_t *shard = &ctx->c_v6_hrl_entry_shards[i];
+      const kafs_descriptor_hrl_runtime_shard_t *shard = &ctx->c_descriptor_hrl_entry_shards[i];
       memset((char *)ctx->c_img_base + shard->physical_off, 0,
              (size_t)(shard->physical_end - shard->physical_off));
       kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES,

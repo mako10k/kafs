@@ -359,6 +359,99 @@ The refreshed frontier therefore makes `V6_ACTIVE_COMMON_DECOUPLING` the only
 waits for the single primary resource and has `TF=6.167d`; it is not promoted
 ahead of the critical retirement path.
 
+## `V6_ACTIVE_COMMON_DECOUPLING` Task Start and closeout
+
+- Started from: branch `feat/v7-runtime-admission-foundation`, HEAD
+  `fcb7fa632436250be4d21f3a8e1991e85cffdf53`, clean worktree
+- Task source: freshly rerun
+  `./scripts/pert-next-task.sh plans/cli-v6-retirement.pert`; the task was the
+  only `RUNNABLE NOW` zero-slack node
+- Start decision: `PASS`
+- Closed at: `2026-07-22T17:56:51+09:00`
+- Edge result: `V6_ACTIVE_COMMON_DECOUPLED` is `state reached` and
+  `V6_ACTIVE_COMMON_DECOUPLING` is `status done`
+
+The start gate confirmed that shared runtime branches and context fields still
+carried retired v6 policy ownership, while v7 already had an independent
+runtime-view and policy state. The neutral descriptor API remained required by
+bounded offline fixtures, but its context fields and shard types were still
+named as v6-owned. `lsp-cli` was installed but `clangd` was unavailable, so the
+review used explicit reference searches plus warning-clean compilation and
+regression tests rather than claiming an LSP-backed rename.
+
+The wave preserved these boundaries:
+
+- v4/v5 runtime behavior and the explicit v6 rejection diagnostic remain;
+- v7 admission and worker suppression use only v7-owned validation;
+- neutral descriptor mapping remains an offline diagnostic boundary and is
+  not a v7 compatibility facade;
+- offline v6 dump/fsck/fixtures and the final `kafs-v6` placeholder remain for
+  their ordered successor waves.
+
+Direct closeout evidence:
+
+- `src/kafs_v6_fuse_init_policy.h` and `src/kafs_v6_fuse_policy.h` and their
+  build references are deleted.
+- Shared FUSE callbacks no longer contain v6 controlled-write gates or v6
+  worker-policy state. The guarded v7 initialization path validates the
+  v7-owned runtime view before suppressing background workers.
+- Descriptor mapping fields, shard types, and helpers in common code now have
+  neutral ownership; explicit v7 runtime view state remains separate.
+- `scripts/check-v7-runtime-policy-ownership.sh` covers common/shared/v7 build
+  paths, asserts the retired headers remain absent, and rejects v6 policy/state
+  dependencies.
+- The residual inventory query now returns 75 files including its own record,
+  down from 81. Two policy headers were deleted and four active files left the
+  result through neutral or v7-owned naming; the remaining matches keep an
+  explicit negative, offline, historical, or final-placeholder disposition.
+
+Validation passed:
+
+- focused compile: `make -C src -j2 kafs kafs-v7 kafsctl kafs-back`
+- focused tests: `make -C tests check TESTS='v7_entrypoint_smoketest v6_descriptor_validation journal_boundary'`
+  (`3/3` passed)
+- Autotools/build: `autoreconf -fi`, `./configure`, `make -j2`
+- full regression: `make check -j2` (`41` passed, `7` FUSE-dependent tests not
+  run by the existing harness)
+- repository gates: `git diff --check`, `./scripts/format.sh`,
+  `./scripts/lint.sh`, `./scripts/check-v7-runtime-policy-ownership.sh`,
+  `./scripts/clones.sh`, and `./scripts/static-checks.sh`
+- the unchanged 80-file strict clone population improved from 48 to 45 clones,
+  490 to 466 duplicated lines, and 3546 to 3393 duplicated tokens; complexity
+  NLOC/warnings moved from 46342/118 to 46011/116
+
+The successful closeout run of
+`./scripts/pert-next-task.sh plans/cli-v6-retirement.pert` reported:
+
+```text
+OK plans/cli-v6-retirement.pert project=KAFS_CLI_V6_RETIREMENT milestones=13 tasks=7 gates=6 resources=1
+
+PRECEDENCE
+MAKESPAN 9.5d
+PRECEDENCE CRITICAL
+TASKS V6_OFFLINE_RETIREMENT, V6_FINAL_ENTRYPOINT_RETIREMENT, INTEGRATED_REMEDIATION_QUALIFICATION
+GATES V6_RETIREMENT_REQUIRED
+REPRESENTATIVE PATH V6_OFFLINE_RETIREMENT -> V6_FINAL_ENTRYPOINT_RETIREMENT -> V6_RETIREMENT_REQUIRED -> INTEGRATED_REMEDIATION_QUALIFICATION
+
+RESOURCE SCHEDULE
+MAKESPAN 15d
+DELAY 5.5d
+
+RUNNABLE NOW
+V6_OFFLINE_RETIREMENT priority=0 expected=5.333d TF=0d precedence_critical=true schedule_critical=true owner=KAFS implementation stream resources=PRIMARY_STREAM=1
+
+READY / WAITING RESOURCE
+CLI_FAIL_CLOSED_CONTRACT priority=0 expected=2.167d TF=1.833d precedence_critical=false schedule_critical=true owner=KAFS implementation stream resources=PRIMARY_STREAM=1
+  PRIMARY_STREAM capacity=1 used=1 required=1 available=0 deficit=1 occupants=V6_OFFLINE_RETIREMENT
+
+BLOCKED NOW
+-
+```
+
+The refreshed frontier selects `V6_OFFLINE_RETIREMENT` as the sole runnable
+zero-slack successor. This closeout records that result but does not authorize
+implementation of the successor wave.
+
 ## Refresh triggers
 
 Refresh this plan and rerun all three `perttool` commands when any of the

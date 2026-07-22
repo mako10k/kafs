@@ -1,9 +1,9 @@
 # KAFS format v6 residual inventory 2026-07-22
 
-Status: completed `V6_RESIDUAL_CONTRACT` ownership record
+Status: completed `V6_ACTIVE_COMMON_DECOUPLING` ownership record
 
-Baseline: planning commit `0d4b5d80d7f50e330a3bc75d043a9c3479aea8db`;
-dispositions were verified against the completed `V6_RESIDUAL_CONTRACT` wave.
+Baseline: task-start commit `fcb7fa632436250be4d21f3a8e1991e85cffdf53`;
+dispositions were refreshed after the completed active-common decoupling wave.
 
 This inventory owns every file returned before adding this inventory itself by:
 
@@ -13,7 +13,11 @@ rg -l -i '(^|[^a-z0-9])v6([^a-z0-9]|$)|KAFS_FORMAT_VERSION_V6|kafs-v6' \
   --glob '!**/*.o' --glob '!**/*.a' --glob '!**/*.so' .
 ```
 
-The query returned 80 files. A textual match is not automatically a defect:
+The closeout query returned 75 files, including this inventory. The prior wave
+reported 81 files including this inventory. Six paths left the result: the two
+v6 policy headers were deleted, while `src/kafs_context.h`, `src/kafs_hrl.c`,
+`src/kafs_shared_fuse_runner.h`, and `src/kafs_v7_runtime_view.c` now use only
+neutral descriptor or v7-owned names. A textual match is not automatically a defect:
 negative admission rules, staged-removal evidence, and clearly labeled history
 are distinct from supported behavior. Each path below has one primary owner;
 mixed files are re-enumerated by their owning wave before modification.
@@ -25,10 +29,10 @@ mixed files are re-enumerated by their owning wave before modification.
 - `CONFIRMED`: the two repository v6 controlled-write operator scripts required
   a runtime entrypoint that now always rejects their operation.
 - `CONFIRMED`: v6-specific offline dump/fsck and fixture-building code remains.
-- `CONFIRMED`: active shared runtime/context source still contains v6-owned
-  policy and state.
-- `INFERRED`: v6 controlled-write code in shipped runtime binaries is
-  unreachable because the enabling field has no assignment in tracked C source.
+- `CONFIRMED`: active shared runtime/context source has no v6-owned
+  controlled-write policy, worker-policy helper, context field, or shard type.
+- `CONFIRMED`: v7 worker suppression is validated through the v7-owned runtime
+  view; v7 admission does not route through a v6 compatibility policy.
 - `UNKNOWN`: whether an external experimental v6 image creates a recovery
   obligation beyond the accepted recreate-as-v7 policy. Such evidence blocks
   the later offline-removal wave and requires `REPLAN`.
@@ -111,36 +115,33 @@ prevent compatibility leakage or to explain the pivot; they are not v6 support.
 - `docs/sd-card-wear-v7-runtime-handoff-20260716.md`
 - `docs/sd-card-wear-v7-vhdx-handoff-20260721.md`
 - `man/kafs-v7.8`
-
-Disposition: retain accurate negative boundaries. Remove only stale references
-to deleted symbols or workflows; do not weaken v7 rejection of legacy tokens.
-
-## Active common and v7 source decoupling
-
-Next owner: `V6_ACTIVE_COMMON_DECOUPLING`.
-
-- `scripts/check-v7-runtime-policy-ownership.sh`
-- `src/kafs.h`
-- `src/kafs_block.h`
-- `src/kafs_context.h`
-- `src/kafs_hrl.c`
-- `src/kafs_inode.h`
 - `src/kafs_mount_options_common.c`
-- `src/kafs_shared_fuse_runner.h`
 - `src/kafs_shared_fuse_runtime.c`
-- `src/kafs_v6_fuse_init_policy.h`
-- `src/kafs_v6_fuse_policy.h`
 - `src/kafs_v7.c`
 - `src/kafs_v7_entrypoint_adapter.h`
 - `src/kafs_v7_mount_options.c`
 - `src/kafs_v7_runtime.c`
-- `src/kafs_v7_runtime_view.c`
 - `tests/tests_v7_entrypoint_smoketest.c`
 
-Disposition: remove v6 runtime-policy behavior and v6-owned state from active
-common/v7 code, or rename a proven format-neutral concept under neutral
-ownership. Keep explicit v7 legacy-token rejection where it remains a useful
-fail-closed input boundary. Extend the ownership check to include shared code.
+Disposition: retain accurate negative boundaries. Remove only stale references
+to deleted symbols or workflows; do not weaken v7 rejection of legacy tokens.
+
+## Completed active common and v7 source decoupling
+
+Completed owner: `V6_ACTIVE_COMMON_DECOUPLING`. The retained ownership check is
+next owned by integrated qualification.
+
+- `scripts/check-v7-runtime-policy-ownership.sh`
+- `src/kafs_context.h`
+- `src/kafs_hrl.c`
+- `src/kafs_shared_fuse_runner.h`
+- `src/kafs_v7_runtime_view.c`
+
+Disposition: complete. The two v6 FUSE policy headers and their build references
+were deleted. Shared controlled-write branches were removed, descriptor-backed
+offline mapping state is neutral, and v7 worker suppression calls the v7-owned
+runtime-view validator. The check now covers shared and v7 build paths, asserts
+the retired headers remain absent, and forbids v6 policy/state dependencies.
 
 ## Offline diagnostics and deterministic fixtures
 
@@ -154,8 +155,11 @@ consumer inventory.
 - `scripts/check-v7-layout-ownership.sh`
 - `scripts/clones.sh`
 - `scripts/metadata-heatmap-report.sh`
+- `src/kafs.h`
+- `src/kafs_block.h`
 - `src/fsck_kafs.c`
 - `src/kafs_descriptor_layout.h`
+- `src/kafs_inode.h`
 - `src/kafsdump.c`
 - `src/mkfs_kafs.c`
 - `tests/test_utils.c`

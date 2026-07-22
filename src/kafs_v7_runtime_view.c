@@ -168,9 +168,9 @@ int kafs_v7_runtime_view_validate(const kafs_context_t *ctx)
       ctx->c_v7_data_group_count != ctx->c_v7_inode_shard_count || ctx->c_v7_block_size == 0u ||
       ctx->c_v7_checkpoint_generation == 0u)
     return -EPROTO;
-  if (ctx->c_v6_layout_desc || ctx->c_v6_bitmap_mapping_enabled ||
-      ctx->c_v6_inode_mapping_enabled || ctx->c_v6_alloc_summary_mapping_enabled ||
-      ctx->c_v6_hrl_mapping_enabled)
+  if (ctx->c_descriptor_layout_desc || ctx->c_descriptor_bitmap_mapping_enabled ||
+      ctx->c_descriptor_inode_mapping_enabled || ctx->c_descriptor_alloc_summary_mapping_enabled ||
+      ctx->c_descriptor_hrl_mapping_enabled)
     return -EPROTO;
   return 0;
 }

@@ -220,7 +220,7 @@ static int test_v6_descriptor_journal_routing(void)
   kafs_descriptor_journal_segment_lookup_t lookup;
   memset(&lookup, 0, sizeof(lookup));
   if (!failed &&
-      kafs_descriptor_journal_segment_lookup(ctx.c_v6_layout_desc, ctx.c_v6_layout_desc_bytes, 0,
+      kafs_descriptor_journal_segment_lookup(ctx.c_descriptor_layout_desc, ctx.c_descriptor_layout_desc_bytes, 0,
                                      &lookup) != 0)
     failed = 1;
 

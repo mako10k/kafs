@@ -48,6 +48,7 @@ milestone V6_RESIDUAL_SCOPE_BOUND:
 
 milestone V6_ACTIVE_COMMON_DECOUPLED:
   title "Active common and v7 build paths have no v6 runtime-policy dependency"
+  state reached
 
 milestone V6_OFFLINE_SURFACES_RETIRED:
   title "Format-v6 offline diagnostics, fixture creation, and tests are retired"
@@ -135,6 +136,7 @@ task V6_ACTIVE_COMMON_DECOUPLING V6_RESIDUAL_SCOPE_BOUND -> V6_ACTIVE_COMMON_DEC
     optimistic 2d
     most_likely 4d
     pessimistic 8d
+  status done
   owner "KAFS implementation stream"
   source "src/Makefile.am, src/kafs_shared_fuse_runtime.c, and src/kafs_context.h"
   requires:

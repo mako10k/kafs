@@ -46,16 +46,26 @@ justification to retain excluded code.
 
 ## Current phase
 
-The `V6_RESIDUAL_CONTRACT` wave is complete under
+The `V6_ACTIVE_COMMON_DECOUPLING` wave is complete under
 [`plans/cli-v6-retirement.pert`](../plans/cli-v6-retirement.pert). Its ownership
 record is
 [`sd-card-wear-v6-retirement-inventory-20260722.md`](sd-card-wear-v6-retirement-inventory-20260722.md).
-It retired false current guidance and unreachable operator scripts while
-leaving shared runtime state, bounded offline diagnostics and fixtures, and the
-final placeholder to their explicitly ordered successor waves.
-The refreshed `dag next` frontier names `V6_ACTIVE_COMMON_DECOUPLING` as the
-only `RUNNABLE NOW` zero-slack task; this closeout records the frontier but does
-not itself authorize that successor wave.
+It deleted the retired v6 FUSE policy headers, removed unreachable v6
+controlled-write branches from the shared runtime, neutralized descriptor-backed
+offline mapping state, and made v7 worker suppression depend only on v7-owned
+policy validation. Bounded offline diagnostics and fixtures and the final
+placeholder remain assigned to their explicitly ordered successor waves.
+
+The closeout gate covered `autoreconf -fi`, configure/build, three focused tests,
+all 41 runnable regression tests, formatting, lint, ownership, clone, and static
+checks. Seven FUSE-permission-dependent tests were reported as not run by the
+existing Automake harness. Under the unchanged 80-file clone-analysis
+population, findings fell from 48 to 45, duplicated lines from 490 to 466, and
+duplicated tokens from 3546 to 3393. Complexity NLOC fell from 46342 to 46011
+and warnings from 118 to 116.
+
+The refreshed `dag next` frontier is recorded in the companion selection record;
+it does not itself authorize a successor wave.
 
 Phase 1 retired v6 runtime mounting. `kafs-v6` remains only as a fail-closed
 placeholder.

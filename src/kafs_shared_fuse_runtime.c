@@ -13,10 +13,9 @@
 #include "kafs_core.h"
 #include "kafs_shared_fuse_runner.h"
 #include "kafs_tailmeta.h"
-#include "kafs_v6_fuse_init_policy.h"
-#include "kafs_v6_fuse_policy.h"
 #ifdef KAFS_V7_RUNTIME_ENTRYPOINT
 #include "kafs_v7_fuse_policy.h"
+#include "kafs_v7_runtime_view.h"
 #include "kafs_v7_runtime_transaction.h"
 #include "kafs_v7_fuse_write.h"
 #endif
@@ -4892,11 +4891,7 @@ static int kafs_pwrite_commit_block(struct kafs_context *ctx, kafs_sinode_t *ino
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
 
   if (kafs_ino_size_get(inoent) > KAFS_INODE_DIRECT_BYTES && kafs_blk_is_zero(buf, blksize))
-  {
-    if (kafs_v6_controlled_write_preserve_zero_block(ctx))
-      return kafs_ino_iblk_write(ctx, inoent, iblo, buf);
     return kafs_ino_iblk_release(ctx, inoent, iblo);
-  }
 
   return kafs_ino_iblk_write(ctx, inoent, iblo, buf);
 }
@@ -4950,9 +4945,6 @@ static int kafs_pwrite_prepare_tail_layout(struct kafs_context *ctx, kafs_sinode
   const kafs_sinode_taildesc_v5_t *taildesc = kafs_ctx_inode_taildesc_v5_const(ctx, inoent);
 
   *completed_out = 0;
-  if (kafs_v6_controlled_write_skip_tail_layout(ctx))
-    return 0;
-
   if (taildesc &&
       kafs_ino_taildesc_v5_layout_kind_get(taildesc) == KAFS_TAIL_LAYOUT_MIXED_FULL_TAIL)
   {
@@ -5027,9 +5019,6 @@ static int kafs_pwrite_extend_inode_size(struct kafs_context *ctx, kafs_sinode_t
 static void kafs_pwrite_sync_regular_taildesc(struct kafs_context *ctx, kafs_sinode_t *inoent,
                                               kafs_off_t filesize)
 {
-  if (kafs_v6_controlled_write_skip_tail_layout(ctx))
-    return;
-
   if (!kafs_tailmeta_inode_is_regular_v5(ctx, inoent))
     return;
   if (filesize <= (kafs_off_t)KAFS_INODE_DIRECT_BYTES)
@@ -7176,9 +7165,6 @@ void kafs_ctx_init_runtime_journal(kafs_context_t *ctx, const char *image_path,
   (void)kafs_journal_init(ctx, image_path);
   kafs_ctx_setup_meta_delta(ctx, r_blkcnt);
   (void)kafs_journal_replay(ctx, NULL, NULL);
-  if (ctx->c_v6_delayed_mutation_policy_applied)
-    return;
-
   (void)kafs_pendinglog_init_or_load(ctx);
   if (ctx->c_pendinglog_enabled)
   {
@@ -8982,9 +8968,6 @@ static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_
     int gate = kafs_runtime_write_guard(ctx);
     if (gate != 0)
       return gate;
-    gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_REFLINK);
-    if (gate != 0)
-      return gate;
     return kafs_ioctl_handle_ficlone(fctx, ctx, path, cmd, arg, fi, data);
   }
   if ((unsigned int)cmd == (unsigned int)FICLONERANGE)
@@ -8994,9 +8977,6 @@ static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_
   if ((unsigned int)cmd == (unsigned int)KAFS_IOCTL_COPY)
   {
     int gate = kafs_runtime_write_guard(ctx);
-    if (gate != 0)
-      return gate;
-    gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_COPY);
     if (gate != 0)
       return gate;
     return kafs_ioctl_handle_copy(fctx, ctx, arg, data);
@@ -9015,11 +8995,6 @@ static ssize_t kafs_op_copy_file_range(const char *path_in, struct fuse_file_inf
   struct fuse_context *fctx = fuse_get_context();
   kafs_context_t *ctx = (kafs_context_t *)fctx->private_data;
   int gate = kafs_runtime_write_guard(ctx);
-  if (gate != 0)
-    return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, flags != 0
-                                                     ? KAFS_V6_CONTROLLED_WRITE_OP_REFLINK
-                                                     : KAFS_V6_CONTROLLED_WRITE_OP_COPY_FILE_RANGE);
   if (gate != 0)
     return gate;
 
@@ -9069,14 +9044,6 @@ static int kafs_op_open(const char *path, struct fuse_file_info *fi)
       (kafs_is_ctl_path(path) || accmode == O_WRONLY || accmode == O_RDWR ||
        (fi->flags & O_TRUNC) != 0))
     return -EROFS;
-  int gate = kafs_v6_controlled_write_reject_if_op(ctx, kafs_is_ctl_path(path),
-                                                   KAFS_V6_CONTROLLED_WRITE_OP_CONTROL_PLANE_OPEN);
-  if (gate != 0)
-    return gate;
-  gate = kafs_v6_controlled_write_reject_if_op(ctx, (fi->flags & O_TRUNC) != 0,
-                                               KAFS_V6_CONTROLLED_WRITE_OP_OPEN_TRUNC);
-  if (gate != 0)
-    return gate;
   if (kafs_is_ctl_path(path))
   {
     if (accmode != O_RDWR)
@@ -9486,9 +9453,6 @@ static int kafs_op_mknod(const char *path, mode_t mode, dev_t dev)
   int gate = kafs_mutation_path_context(path, NULL, &ctx);
   if (gate != 0)
     return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_MKNOD);
-  if (gate != 0)
-    return gate;
   KAFS_CALL(kafs_create, path, mode, dev, NULL, NULL);
   return 0;
 }
@@ -9512,9 +9476,6 @@ static int kafs_op_truncate(const char *path, off_t size, struct fuse_file_info 
       gate = -EACCES;
   }
 #endif
-  if (gate != 0)
-    return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_TRUNCATE);
   if (gate != 0)
     return gate;
   kafs_sinode_t *inoent;
@@ -9716,9 +9677,6 @@ static int kafs_op_fallocate(const char *path, int mode, off_t offset, off_t len
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
   if (gate != 0)
     return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_FALLOCATE);
-  if (gate != 0)
-    return gate;
   kafs_off_t end_req;
   int rc = kafs_fallocate_validate_request(path, offset, length, &end_req);
   if (rc != 0)
@@ -9857,9 +9815,6 @@ static int kafs_op_mkdir(const char *path, mode_t mode)
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
   if (gate != 0)
     return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_MKDIR);
-  if (gate != 0)
-    return gate;
   uint64_t jseq = kafs_journal_begin(ctx, "MKDIR", "path=%s mode=%o", path, (unsigned)mode);
   kafs_inocnt_t ino_dir;
   kafs_inocnt_t ino_new;
@@ -9929,9 +9884,6 @@ static int kafs_op_rmdir(const char *path)
   struct fuse_context *fctx = NULL;
   struct kafs_context *ctx = NULL;
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
-  if (gate != 0)
-    return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_RMDIR);
   if (gate != 0)
     return gate;
   uint64_t jseq = kafs_journal_begin(ctx, "RMDIR", "path=%s", path);
@@ -10097,13 +10049,6 @@ static int kafs_op_write_fallback(struct kafs_context *ctx, const char *path, co
              (unsigned)mode);
     return -EISDIR;
   }
-  int gate = kafs_v6_controlled_write_require_regular_write(ctx, S_ISREG(mode));
-  if (gate != 0)
-  {
-    kafs_inode_unlock(ctx, (uint32_t)ino);
-    return gate;
-  }
-
   kafs_diag_write_scope_t write_scope =
       kafs_diag_write_scope_enter(path ? path : "(null)", (uint32_t)ino);
   int rc_write = kafs_pwrite(ctx, inoent, buf, size, offset);
@@ -10141,10 +10086,6 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
   if (kafs_v7_fuse_policy_controlled_write_active(ctx) && kafs_is_ctl_path(path))
     return kafs_v7_fuse_policy_reject_legacy_mutation(ctx);
 #endif
-  gate = kafs_v6_controlled_write_reject_if_op(ctx, kafs_is_ctl_path(path),
-                                               KAFS_V6_CONTROLLED_WRITE_OP_CONTROL_PLANE_WRITE);
-  if (gate != 0)
-    return gate;
   if (kafs_is_ctl_path(path))
     return kafs_op_write_ctl(ctx, fi, buf, size, offset);
   kafs_inocnt_t ino = fi->fh;
@@ -10179,13 +10120,6 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
     return write_rc;
   }
 #endif
-  gate = kafs_v6_controlled_write_reject_if_op(ctx, ctx && ctx->c_hotplug_active,
-                                               KAFS_V6_CONTROLLED_WRITE_OP_HOTPLUG_DELEGATED_WRITE);
-  if (gate != 0)
-    return gate;
-  if (kafs_v6_controlled_write_use_local_write_path(ctx))
-    return kafs_op_write_fallback(ctx, path, buf, size, offset, ino);
-
   ssize_t rc_hp = kafs_hotplug_call_write(fctx, ctx, ino, buf, size, offset);
   if (rc_hp >= 0)
   {
@@ -10213,9 +10147,6 @@ static int kafs_op_utimens(const char *path, const struct timespec tv[2], struct
   struct fuse_context *fctx = NULL;
   struct kafs_context *ctx = NULL;
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
-  if (gate != 0)
-    return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_UTIMENS);
   if (gate != 0)
     return gate;
   uint64_t t0_ns = kafs_now_ns();
@@ -10326,9 +10257,6 @@ static int kafs_op_unlink(const char *path)
   struct fuse_context *fctx = NULL;
   struct kafs_context *ctx = NULL;
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
-  if (gate != 0)
-    return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_UNLINK);
   if (gate != 0)
     return gate;
   uint64_t jseq = kafs_journal_begin(ctx, "UNLINK", "path=%s", path);
@@ -10738,9 +10666,6 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
   int gate = kafs_runtime_write_guard(ctx);
   if (gate != 0)
     return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_RENAME);
-  if (gate != 0)
-    return gate;
   kafs_sinode_t *inoent_src;
   int src_is_dir = 0;
   int rc = kafs_rename_validate_request(from, to, flags);
@@ -10829,9 +10754,6 @@ static int kafs_op_chmod(const char *path, mode_t mode, struct fuse_file_info *f
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
   if (gate != 0)
     return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_CHMOD);
-  if (gate != 0)
-    return gate;
   uint64_t jseq = kafs_journal_begin(ctx, "CHMOD", "path=%s mode=%o", path, (unsigned)mode);
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
@@ -10849,9 +10771,6 @@ static int kafs_op_chown(const char *path, uid_t uid, gid_t gid, struct fuse_fil
   struct fuse_context *fctx = NULL;
   struct kafs_context *ctx = NULL;
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
-  if (gate != 0)
-    return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_CHOWN);
   if (gate != 0)
     return gate;
   uint64_t jseq =
@@ -10872,9 +10791,6 @@ static int kafs_op_symlink(const char *target, const char *linkpath)
   struct fuse_context *fctx = NULL;
   struct kafs_context *ctx = NULL;
   int gate = kafs_mutation_path_context(linkpath, &fctx, &ctx);
-  if (gate != 0)
-    return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_SYMLINK);
   if (gate != 0)
     return gate;
   uint64_t jseq = kafs_journal_begin(ctx, "SYMLINK", "target=%s linkpath=%s", target, linkpath);
@@ -10985,9 +10901,6 @@ static int kafs_op_link(const char *from, const char *to)
   int gate = kafs_runtime_write_guard(ctx);
   if (gate != 0)
     return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_LINK);
-  if (gate != 0)
-    return gate;
 
   kafs_sinode_t *inoent_src;
   int rc = kafs_link_validate_source(fctx, ctx, from, &inoent_src);
@@ -11055,9 +10968,6 @@ static uint32_t kafs_fsync_resolve_inode(struct fuse_context *fctx, struct kafs_
 
 static int kafs_fsync_prepare_inode(struct kafs_context *ctx, const char *path, uint32_t ino)
 {
-  if (kafs_v6_controlled_write_skip_tail_layout(ctx))
-    return 0;
-
   kafs_inode_lock(ctx, ino);
   int nrc = kafs_tailmeta_normalize_block_layout(ctx, kafs_ctx_inode(ctx, ino));
   kafs_inode_unlock(ctx, ino);
@@ -11181,20 +11091,34 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
 
 static int kafs_op_fsyncdir(const char *path, int isdatasync, struct fuse_file_info *fi)
 {
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx ? fctx->private_data : NULL;
-#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
   int v7_rc = kafs_v7_fuse_policy_reject_legacy_mutation(ctx);
   if (v7_rc != 0)
     return v7_rc;
 #endif
-  int gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_FSYNCDIR);
-  if (gate != 0)
-    return gate;
   return kafs_op_fsync(path, isdatasync, fi);
 }
 
 static int g_kafs_writeback_cache_enabled = 1;
+
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+static int kafs_v7_fuse_init_suppresses_background_workers(kafs_context_t *ctx)
+{
+  if (!ctx || !ctx->c_superblock ||
+      kafs_sb_format_version_get(ctx->c_superblock) != KAFS_FORMAT_VERSION_V7)
+    return 0;
+
+  int rc = kafs_v7_runtime_view_validate_policy(ctx);
+  if (rc != 0)
+    kafs_log(KAFS_LOG_ERR,
+             "kafs: invalid format v7 worker policy in FUSE init rc=%d; "
+             "delayed/background workers remain suppressed\n",
+             rc);
+  return 1;
+}
+#endif
 
 static void *kafs_op_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 {
@@ -11238,8 +11162,10 @@ static void *kafs_op_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 #endif
   if (ctx && ctx->c_runtime_read_only)
     return ctx;
-  if (kafs_v6_fuse_init_suppresses_background_workers(ctx))
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (kafs_v7_fuse_init_suppresses_background_workers(ctx))
     return ctx;
+#endif
   if (ctx && ctx->c_pendinglog_enabled)
   {
     int prc = kafs_pending_worker_start(ctx);
@@ -11342,12 +11268,6 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
   }
 #endif
   if (ctx && ctx->c_runtime_read_only)
-  {
-    if (ctx->c_open_cnt)
-      (void)__atomic_sub_fetch(&ctx->c_open_cnt[ino], 1u, __ATOMIC_RELAXED);
-    return kafs_op_flush(path, fi);
-  }
-  if (kafs_v6_controlled_write_skip_release_reclaim(ctx))
   {
     if (ctx->c_open_cnt)
       (void)__atomic_sub_fetch(&ctx->c_open_cnt[ino], 1u, __ATOMIC_RELAXED);
@@ -13346,7 +13266,7 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
   kafs_blkcnt_t r_blkcnt = 0;
   if (kafs_format_uses_layout_descriptor(fmt_ver))
   {
-    if (mount_read_only_requested && fmt_ver != KAFS_FORMAT_VERSION_V6)
+    if (mount_read_only_requested && fmt_ver == KAFS_FORMAT_VERSION_V7)
       fprintf(stderr,
               "format v%u inspection mount requires %s --inspection-mount with "
               "-o ro; -o ro through kafs keeps v%u unsupported.\n",
