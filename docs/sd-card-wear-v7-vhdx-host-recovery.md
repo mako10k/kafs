@@ -1,6 +1,9 @@
 # KAFS v7 Windows-host VHDX recovery prequalification
 
-- Status: harness implemented; Windows-host terminate/restart execution pending
+- Status: harness implemented; Windows-host terminate/restart execution deferred
+  until the user identifies a safe maintenance window
+- Evidence-audit status: T57 read-only aggregate gate registered and waiting for
+  the primary implementation stream; no WSL stop is required for that work
 - Scope: format-v7 controlled-write recovery on a dedicated regular-file image
 - Controller: `scripts/v7-vhdx-host-recovery.ps1`
 - WSL runner: `scripts/v7-vhdx-host-recovery.sh`
@@ -94,6 +97,10 @@ filesystem. It also requires the already-built workload, `fsck.kafs`, and
 
 ## Execute from native Windows
 
+Do not start this section while the active Ubuntu distro is running other tasks.
+The user must first identify a safe maintenance window and explicitly resume the
+qualification; then refresh the Task Start Gate and host preflight.
+
 After reviewing the discovered distro, exact VHDX path, length, state root, and
 false claim fields, run:
 
@@ -157,11 +164,20 @@ KAFS_V7_VHDX_HOST_RECOVERY PASS run_id=<run-id>
 Absent either marker, the result is incomplete. A preflight-only result is never
 host-recovery evidence.
 
+The per-fault files are the capture contract, not by themselves an aggregate
+qualification decision. T57 must provide a validate-only gate that binds one
+run ID to the exact four unique faults, common host/distro/VHDX identity,
+successful controller exits, false claims, per-fault recovery/fsck/dump/payload
+results, and every artifact digest. Missing or duplicate faults, identity drift,
+claim escalation, incomplete state, or digest mismatch must fail closed. The
+gate must not mount/write the image or terminate/restart WSL.
+
 ## Remaining physical-media gate
 
 This prequalification is an additional predecessor, not a substitute for the
 real-media join. After all four host runs pass, `plans/current.pert` may mark
-`VHDX_HOST_RECOVERY_RUN` complete. `HARDWARE_APPROVAL` remains blocked until an
-exact disposable card, reader/controller, isolated power apparatus, cycle count,
-matrix digest, and time-bounded destructive approval are present. Only then may
-the real-media runner be selected.
+the capture milestone reached; VHDX qualification closes only after the T57
+audit also passes. `HARDWARE_APPROVAL` remains blocked until an exact disposable
+card, reader/controller, isolated power apparatus, cycle count, matrix digest,
+and time-bounded destructive approval are present. The separate T58 evidence
+contract must also be ready before real-media execution may start.

@@ -1,9 +1,9 @@
 # KAFS format v7 controlled-write qualification plan
 
 - Task: `SDW-V7RT-T48`
-- Current software refresh: `SDW-V7RT-T49 regular-file inline-to-direct promotion`
+- Current software refresh: `SDW-V7RT-T49` through `SDW-V7RT-T55`
 - T48-A baseline: `3a86fde`
-- Status: T48-A and the T49 file-image refresh complete; real-media qualification not started
+- Status: T48-A and the T49-T55 file-image refreshes complete; real-media qualification not started
 
 ## Goal And Critical Path
 
@@ -247,9 +247,18 @@ obsolete and cannot authorize execution.
 T48-B1 adds the fail-closed matrix and digest-bound approval contract in
 `docs/sd-card-wear-v7-real-media-qualification-approval.md`. Current read-only
 discovery found no eligible real-media device, so the repository matrix remains
-`DRAFT`. The next hardware-path action is to supply the exact host, card unit,
+`DRAFT`.
+
+The 2026-07-22 blocker-decomposition PERT selects T58 before hardware execution:
+define and validate the immutable execution-artifact manifest, approval/matrix
+digest binding, device/power identity continuity, per-cycle status, artifact
+hashes, and a separate independent-review decision. This work uses synthetic
+evidence only and must not add `/dev/*` access, format/mount, power interruption,
+or an RC claim.
+
+The hardware-path action remains to supply the exact host, card unit,
 reader/controller, isolated power-cut apparatus, trigger protocol, and cycle
 count, then request approval for the resulting matrix SHA-256. Only after that
-approval may a later T48 slice add a `/dev/*` runner and physical
-controlled-interruption procedure. Independent review remains required before
-any bounded RC decision.
+approval, the T58 contract, and audited VHDX qualification are ready may a later
+T48 slice add a `/dev/*` runner and physical controlled-interruption procedure.
+Independent review remains required before any bounded RC decision.

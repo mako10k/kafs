@@ -547,3 +547,155 @@ and both precedence/resource critical status. `HARDWARE_APPROVAL` remains a
 blocked zero-slack critical join branch. The next-task decision is therefore
 `SELECT VHDX_HOST_RECOVERY_RUN`, executable only from native Windows outside the
 target Ubuntu distro.
+
+## VHDX host-recovery scheduling deferral
+
+- Record ID/time: `KAFS-PERTTOOL-20260722-VHDX-DEFER`, 2026-07-22 10:20 JST.
+- Baseline: branch `feat/v7-runtime-admission-foundation`, HEAD `1d77098`;
+  upstream matched HEAD, tracked worktree state was clean, and the known test
+  executables remained untracked build outputs.
+- Trigger: the user confirmed that the active Ubuntu distro runs other tasks,
+  making `wsl.exe --terminate Ubuntu` and `wsl.exe --shutdown` unsuitable until
+  the user identifies a safe maintenance window.
+- Accepted goal and capability position: unchanged. The VHDX harness remains
+  ready, host-level terminate/restart evidence remains incomplete, and both the
+  virtual recovery and physical approval branches remain mandatory predecessors
+  of real-media qualification and production-cutover evidence.
+- Dependency and estimate treatment: no edge or O/M/P estimate changed. The
+  unknown external wait for a maintenance window is excluded from the existing
+  low-confidence 1/1/2-day implementation-effort estimate.
+- Plan change: `VHDX_HOST_RECOVERY_RUN` is now explicitly blocked until the user
+  resumes it. It is neither completed nor removed from the network.
+- Plan and machine result: `plans/current.pert` checked by
+  `./scripts/pert-next-task.sh plans/current.pert` with
+  `perttool 0.1.0-alpha.1` passes validation. The two precedence critical paths
+  are `HARDWARE_APPROVAL -> HARDWARE_APPROVAL_REQUIRED ->
+  REAL_MEDIA_QUALIFICATION -> MIGRATION_CUTOVER_EVIDENCE` and
+  `VHDX_HOST_RECOVERY_RUN -> VHDX_RECOVERY_REQUIRED ->
+  REAL_MEDIA_QUALIFICATION -> MIGRATION_CUTOVER_EVIDENCE`. The conditional
+  resource critical path is `HARDWARE_APPROVAL -> VHDX_HOST_RECOVERY_RUN ->
+  REAL_MEDIA_QUALIFICATION -> MIGRATION_CUTOVER_EVIDENCE` under capacity one.
+  `ACTIVE` and `RUNNABLE NOW` are empty; both join predecessors are `BLOCKED
+  NOW`; and the downstream tasks are `UPCOMING`.
+- Alternative ordering: whole-namespace validation and other locally available
+  work still have no causal edge to the accepted finish. Selecting one would
+  consume capacity without closing either blocked join predecessor and would
+  leave the same qualification work for later.
+- Decision: `BLOCKED`. Do not substitute an off-goal task. When the user names a
+  safe window, rediscover host/VHDX identity, rerun the Task Start Gate and
+  `perttool`, and only then consider the four-point matrix.
+
+## Blocker-decomposition replan
+
+- Record ID/time: `KAFS-PERTTOOL-20260722-BLOCKER-DECOMPOSITION`,
+  2026-07-22 10:36 JST.
+- Baseline: branch `feat/v7-runtime-admission-foundation`, HEAD `1d77098`;
+  upstream matched HEAD. The tracked worktree contained only the preceding
+  planning/handoff updates, and the known generated test executables remained
+  untracked.
+- Plan and tool: `plans/current.pert`, `perttool 0.1.0-alpha.1`.
+- Accepted goal: unchanged. The finish remains accepted evidence for a
+  qualified v7 migration and production-cutover decision.
+- Trigger: both disruptive execution predecessors were blocked, but the prior
+  residual plan bundled evidence validation into those executions and bundled
+  destination creation with the final migration/cutover wave. The resulting
+  empty runnable frontier therefore did not represent all currently observed
+  goal-path capabilities.
+
+### Refreshed evidence and decomposition
+
+Directly observed gaps are:
+
+- the VHDX harness emits per-fault manifests and hashes, but no read-only gate
+  proves that one run contains the exact four faults with consistent host,
+  distro, VHDX, claim, controller, fsck, dump, payload, diagnostic, and digest
+  evidence;
+- the real-media approval gate validates only the matrix and approval. No
+  versioned execution-artifact schema or independently signed review-decision
+  gate exists;
+- T29 creates and validates a v7 migration destination, but does not rehearse
+  v5 data copy, interruption/resume, rollback, or namespace/payload comparison.
+
+Those gaps are registered as goal-relevant capabilities, not as files or test
+fixtures:
+
+| PERT ID | Ticket | Capability | O | M | P | TE | Confidence | Current classification |
+| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |
+| `VHDX_EVIDENCE_AUDIT` | T57 | Read-only four-point VHDX evidence audit | 1 | 2 | 4 | 2.167 | Medium | `READY / WAITING RESOURCE` |
+| `REAL_MEDIA_EVIDENCE_CONTRACT` | T58 | Real-media artifact and independent-review validation | 2 | 4 | 7 | 4.167 | Low | `RUNNABLE NOW` |
+| `V5_V7_MIGRATION_REHEARSAL` | T59 | v5-to-v7 data migration, resume, and rollback rehearsal | 3 | 6 | 10 | 6.167 | Low | `READY / WAITING RESOURCE` |
+| `REAL_MEDIA_EXECUTION` | existing physical run | Approved destructive evidence capture | 2 | 4 | 7 | 4.167 | Low | `UPCOMING` |
+| `INDEPENDENT_REAL_MEDIA_REVIEW` | existing approval contract | Independent bounded-evidence decision | 1 | 1 | 2 | 1.167 | Medium | `UPCOMING` |
+| `CUTOVER_EVIDENCE_DECISION` | existing migration/cutover outcome | Final qualified cutover evidence | 2 | 4 | 8 | 4.333 | Low | `UPCOMING` |
+
+External calendar waits are excluded from O/M/P. `HARDWARE_APPROVAL` and
+`VHDX_HOST_RECOVERY_RUN` retain low-confidence 1/1/2-day post-unblock effort
+estimates and explicit blocked reasons. `PRIMARY_STREAM` capacity is one;
+`INDEPENDENT_REVIEW_STREAM` capacity is one and may be used only by a reviewer
+separate from the execution operator.
+
+### Machine result and ordering decision
+
+`./scripts/pert-next-task.sh plans/current.pert` passed `dsl check`, precedence
+and resource scheduling, and `dag next` in order.
+
+- Precedence makespan: 13.833 implementation days, conditional on external
+  blocks resolving.
+- Precedence critical path:
+  `REAL_MEDIA_EVIDENCE_CONTRACT -> REAL_MEDIA_CONTRACT_REQUIRED ->
+  REAL_MEDIA_EXECUTION -> INDEPENDENT_REAL_MEDIA_REVIEW ->
+  QUALIFIED_MEDIA_REQUIRED -> CUTOVER_EVIDENCE_DECISION`.
+- Resource makespan: 23.333 implementation days under primary capacity one.
+- Resource critical path:
+  `REAL_MEDIA_EVIDENCE_CONTRACT -> VHDX_EVIDENCE_AUDIT ->
+  HARDWARE_APPROVAL -> VHDX_HOST_RECOVERY_RUN -> REAL_MEDIA_EXECUTION ->
+  V5_V7_MIGRATION_REHEARSAL -> CUTOVER_EVIDENCE_DECISION`.
+- `ACTIVE`: none.
+- `RUNNABLE NOW`: `REAL_MEDIA_EVIDENCE_CONTRACT`, total float 0 days,
+  precedence and resource critical.
+- `READY / WAITING RESOURCE`: `VHDX_EVIDENCE_AUDIT`, total float 2 days; and
+  `V5_V7_MIGRATION_REHEARSAL`, total float 3.333 days. Both wait because the
+  selected node consumes the only primary stream.
+- `BLOCKED NOW`: `HARDWARE_APPROVAL` and `VHDX_HOST_RECOVERY_RUN`, each with
+  total float 3 days. The schedule is conditional on both blocks resolving at
+  time zero and is not a calendar forecast.
+- `UPCOMING`: `REAL_MEDIA_EXECUTION`, `INDEPENDENT_REAL_MEDIA_REVIEW`, and
+  `CUTOVER_EVIDENCE_DECISION`.
+
+Credible alternative orderings were compared as follows:
+
+| Ordering | Immediate effect | Opportunity cost and later debt |
+| --- | --- | --- |
+| T58 first | Closes the only runnable zero-slack contract before destructive evidence can be collected | Selected; execution evidence will not need a retrofitted schema or review boundary |
+| T57 first | Prepares audit of the deferred VHDX capture | Delays zero-slack T58 by 2.167 days and leaves destructive evidence collection without its contract |
+| T59 first | Advances the migration leg without hardware | Delays zero-slack T58 by 6.167 days; a rehearsed destination still cannot be qualified or accepted |
+| Whole-namespace validation first | Closes a separately owned correctness gap | Has no current edge to the accepted finish and does not reduce either external blocker |
+
+The old `RUNNABLE NOW`-empty conclusion depended on the coarse bundled model
+and is invalidated as the current selection result. It remains valid only as a
+historical statement about that prior model. The refreshed decision is
+`SELECT REAL_MEDIA_EVIDENCE_CONTRACT` (T58). T57 and T59 are registered and
+ready but not selected while primary capacity is occupied.
+
+### Task Start Record for replan registration
+
+- Evidence baseline: branch/HEAD/worktree above; affected scripts, approval and
+  qualification contracts, migration destination behavior, tests, and current
+  handoffs were read before changing the plan.
+- Assumptions: the VHDX and hardware windows remain blocked; independent
+  evidence validation and disposable file-image migration rehearsal do not
+  require either window; whether their detailed implementation boundaries pass
+  remains unknown until their own start gates.
+- Semantic boundaries: evidence validation never performs the event it audits;
+  authorization, execution, and independent review remain distinct states;
+  migration rehearsal may use disposable file images but cannot assert physical
+  qualification or production cutover.
+- Exit criteria for this registration wave: T57-T59 have owned ticket records,
+  estimates, causal edges, resource classifications, non-goals, and matching
+  handoff text; the repository plan validates and selects T58 mechanically.
+- Non-goals: implementing T57-T59, opening a device, formatting or mounting
+  media, terminating WSL, claiming VHDX/real-media qualification, or selecting
+  off-path namespace work.
+- Start decision: `PASS` for plan reconstruction and task registration only.
+  T58 implementation still requires a fresh Task Start Gate on its actual
+  baseline.
