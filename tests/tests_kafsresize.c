@@ -291,8 +291,7 @@ static int expect_v5_migrate_source_dump_json(const char *json)
                                KAFS_FORMAT_VERSION_V5) ||
          expect_json_u64_field("v5 source kafsdump JSON", json, "inode_count", 2048u) ||
          expect_json_bool_field("v5 source kafsdump JSON", json, "tailmeta_enabled", 1) ||
-         expect_text_contains("v5 source kafsdump JSON", json, "\"v6_layout_descriptor\"") ||
-         expect_text_contains("v5 source kafsdump JSON", json, "\"status\": \"not_applicable\"") ||
+         expect_text_absent("v5 source kafsdump JSON", json, "\"v6_layout_descriptor\"") ||
          expect_text_contains("v5 source kafsdump JSON", json,
                               "\"name\": \"tail_metadata\", \"available\": true") ||
          expect_text_contains("v5 source kafsdump JSON", json, "\"inode_summary\"") ||

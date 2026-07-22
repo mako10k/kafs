@@ -102,6 +102,22 @@ static int expect_not_contains(const char *label, const char *text, const char *
   return 1;
 }
 
+static int write_format_marker(const char *path, uint32_t format_version)
+{
+  int fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0600);
+  if (fd < 0)
+    return -errno;
+
+  kafs_ssuperblock_t sb;
+  memset(&sb, 0, sizeof(sb));
+  kafs_sb_magic_set(&sb, KAFS_MAGIC);
+  kafs_sb_format_version_set(&sb, format_version);
+  int rc = kafs_pwrite_all(fd, &sb, sizeof(sb), 0);
+  if (close(fd) != 0 && rc == 0)
+    rc = -errno;
+  return rc;
+}
+
 static int check_v7_fuse_policy_direct(void)
 {
   kafs_context_t ctx;
@@ -332,6 +348,12 @@ int main(void)
       expect_contains("v7 fsck", out, "status=selected"))
     return 1;
 
+  char *fsck_repair_argv[] = {(char *)kafs_test_fsck_bin(), (char *)"--repair", (char *)img,
+                              NULL};
+  if (run_cmd_capture(fsck_repair_argv, 2, out, sizeof(out)) != 0 ||
+      expect_contains("v7 fsck repair reject", out, "repair/write modes are not supported"))
+    return 1;
+
   char *v7_mount_argv[] = {(char *)kafs_test_kafs_v7_bin(), (char *)"--image", (char *)img,
                            (char *)"--inspection-mount", (char *)"missing-mnt", (char *)"-o",
                            (char *)"ro", NULL};
@@ -359,12 +381,9 @@ int main(void)
     return 1;
 
   const char *img_v6 = "v6.img";
-  char *mkfs_v6_argv[] = {(char *)kafs_test_v6_fixture_mkfs_bin(), (char *)img_v6,
-                          (char *)"--format-version", (char *)"6", (char *)"--size-bytes",
-                          (char *)"64M", (char *)"--yes", NULL};
-  if (run_cmd_capture(mkfs_v6_argv, 0, out, sizeof(out)) != 0)
+  if (write_format_marker(img_v6, KAFS_FORMAT_VERSION_V6) != 0)
   {
-    tlogf("mkfs v6 fixture failed: %s", out);
+    tlogf("failed to write v6 format marker");
     return 1;
   }
   char *kafsv7_v6_argv[] = {(char *)kafs_test_kafs_v7_bin(), (char *)"--image", (char *)img_v6,
@@ -377,6 +396,22 @@ int main(void)
   }
   if (expect_contains("kafs-v7 rejects v6", out, "expected format v7") ||
       expect_contains("kafs-v7 rejects v6", out, "image is format v6"))
+    return 1;
+
+  char *kafs_v6_argv[] = {(char *)kafs_test_kafs_bin(), (char *)img_v6, (char *)"mnt", NULL};
+  if (run_cmd_capture(kafs_v6_argv, 2, out, sizeof(out)) != 0 ||
+      expect_contains("production kafs rejects v6", out, "v6 support has been retired") ||
+      expect_not_contains("production kafs rejects v6", out, "Use offline tools"))
+    return 1;
+
+  char *fsck_v6_argv[] = {(char *)kafs_test_fsck_bin(), (char *)img_v6, NULL};
+  if (run_cmd_capture(fsck_v6_argv, 13, out, sizeof(out)) != 0 ||
+      expect_contains("fsck rejects v6", out, "v6 offline fsck support has been retired"))
+    return 1;
+
+  char *dump_v6_argv[] = {(char *)kafs_test_kafsdump_bin(), (char *)img_v6, NULL};
+  if (run_cmd_capture(dump_v6_argv, 1, out, sizeof(out)) != 0 ||
+      expect_contains("kafsdump rejects v6", out, "v6 offline dump support has been retired"))
     return 1;
 
   return 0;

@@ -23,7 +23,6 @@ run_jscpd() {
     --ignore "**/.deps/**"
     --ignore "**/Makefile.in"
     --ignore "**/Makefile"
-    --ignore "**/kafs_v6*"
     --format "c,c-header"
     --pattern "$pattern"
     --output "$output_dir"

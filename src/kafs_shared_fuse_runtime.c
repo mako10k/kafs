@@ -6987,7 +6987,6 @@ static void kafs_ctx_close_fd(kafs_context_t *ctx)
 
 static void kafs_ctx_reset_mapping(kafs_context_t *ctx)
 {
-  kafs_bitmap_descriptor_mapping_clear(ctx);
   kafs_ctx_v7_runtime_view_clear(ctx);
   ctx->c_img_base = NULL;
   ctx->c_img_size = 0;
@@ -7123,8 +7122,7 @@ static void kafs_ctx_setup_meta_delta(kafs_context_t *ctx, kafs_blkcnt_t r_blkcn
 {
   if (!ctx)
     return;
-  if (ctx->c_superblock &&
-      kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(ctx->c_superblock)))
+  if (ctx->c_superblock && kafs_sb_format_version_get(ctx->c_superblock) == KAFS_FORMAT_VERSION_V7)
   {
     ctx->c_meta_delta_enabled = 0;
     ctx->c_meta_bitmap_words_enabled = 0;
@@ -7263,7 +7261,6 @@ void kafs_core_close_image(kafs_context_t *ctx)
   kafs_pending_worker_stop(ctx);
   (void)kafs_journal_shutdown(ctx);
   (void)kafs_hrl_close(ctx);
-  kafs_bitmap_descriptor_mapping_clear(ctx);
   free(ctx->c_meta_bitmap_words);
   free(ctx->c_meta_bitmap_dirty);
   ctx->c_meta_bitmap_words = NULL;
@@ -11634,7 +11631,6 @@ static void kafs_migrate_ctx_close(kafs_context_t *ctx)
   if (!ctx)
     return;
   (void)kafs_hrl_close(ctx);
-  kafs_bitmap_descriptor_mapping_clear(ctx);
   free(ctx->c_ino_epoch);
   ctx->c_ino_epoch = NULL;
   free(ctx->c_diag_create_seq);
@@ -13107,15 +13103,15 @@ static void kafs_main_validate_image_format(const char *image_path, uint32_t fmt
 {
   if (fmt_ver == KAFS_FORMAT_VERSION)
     return;
-  if (kafs_format_uses_layout_descriptor(fmt_ver))
+  if (fmt_ver == KAFS_FORMAT_VERSION_V6)
   {
-    if (fmt_ver == KAFS_FORMAT_VERSION_V6)
-    {
-      fprintf(stderr, "unsupported format version: v6 runtime support has been retired.\n"
-                      "Use offline tools while migrating or recreate the image as format v7.\n");
-      exit(2);
-    }
-    const char *entrypoint = kafs_format_runtime_entrypoint(fmt_ver);
+    fprintf(stderr, "unsupported format version: v6 support has been retired.\n"
+                    "Recreate the image as format v7.\n");
+    exit(2);
+  }
+  if (fmt_ver == KAFS_FORMAT_VERSION_V7)
+  {
+    const char *entrypoint = "kafs-v7";
     fprintf(stderr,
             "unsupported format version: v%u runtime admission is owned by %s.\n"
             "Use %s --inspection-mount for read-only v%u inspection or "
@@ -13264,13 +13260,13 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
   uint32_t fmt_ver = kafs_sb_format_version_get(&sbdisk);
   kafs_inocnt_t inocnt = 0;
   kafs_blkcnt_t r_blkcnt = 0;
-  if (kafs_format_uses_layout_descriptor(fmt_ver))
+  if (fmt_ver == KAFS_FORMAT_VERSION_V7)
   {
-    if (mount_read_only_requested && fmt_ver == KAFS_FORMAT_VERSION_V7)
+    if (mount_read_only_requested)
       fprintf(stderr,
               "format v%u inspection mount requires %s --inspection-mount with "
               "-o ro; -o ro through kafs keeps v%u unsupported.\n",
-              fmt_ver, kafs_format_runtime_entrypoint(fmt_ver), fmt_ver);
+              fmt_ver, "kafs-v7", fmt_ver);
   }
   kafs_main_validate_image_format(image_path, fmt_ver, auto_migrate, migrate_yes);
   kafs_main_map_runtime_image(ctx, &sbdisk, fmt_ver, &inocnt, &r_blkcnt);
@@ -13297,7 +13293,6 @@ static int kafs_shared_fuse_cleanup_after_run(kafs_context_t *ctx, const char *h
     pthread_cond_destroy(&ctx->c_hotplug_wait_cond);
     pthread_mutex_destroy(&ctx->c_hotplug_wait_lock);
   }
-  kafs_bitmap_descriptor_mapping_clear(ctx);
   kafs_ctx_v7_runtime_view_clear(ctx);
   free(ctx->c_meta_bitmap_words);
   free(ctx->c_meta_bitmap_dirty);

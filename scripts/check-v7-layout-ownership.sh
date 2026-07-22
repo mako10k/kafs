@@ -18,7 +18,7 @@ done
 
 forbidden='kafs_sv6_|kafs_v6_|kafs_descriptor_layout|#include "kafs_v6_layout.h"'
 if rg -n "$forbidden" "${owned_files[@]}"; then
-  echo "v7 raw-layout ownership check: forbidden v6/scaffold dependency found" >&2
+  echo "v7 raw-layout ownership check: forbidden retired-format/scaffold dependency found" >&2
   exit 1
 fi
 

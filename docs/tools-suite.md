@@ -32,8 +32,8 @@
       unsupported/sparse/pending/capacity/partial state は fail closed とし、cutover は行わない。
   - `mkfs.kafs` / `fsck.kafs`
     - `mkfs.kafs` は `--format-version` に対応し、新規 image は既定で v5 を作成する。legacy v4 image が必要な場合は `--format-version 4` を明示する。
-    - `--format-version 7` は v6 実験実装を足掛かりにした破壊的変更用の descriptor-backed format を作成し、runtime 入口は `kafs-v7` が所有する。
-    - `fsck.kafs` は統合モードに加えて tail metadata region の境界と owner 整合、v6/v7 descriptor-backed image の detect-only validation も検査する。
+    - `--format-version 7` は独立した v7-owned descriptor-backed format を作成し、runtime 入口は `kafs-v7` が所有する。
+    - `fsck.kafs` は統合モードに加えて tail metadata region の境界と owner 整合、v7 descriptor-backed image の detect-only validation も検査する。format v6 の offline 検査は廃止済みで、再作成案内とともに fail closed する。
   - `stress_fs` テスト（Automake tests）。マウント/並行操作のストレス検証で PASS。
   - offline tool 回帰は `tests/tests_kafsresize.c` と `tests/tests_v5_v7_import_smoketest.c` にあり、empty v5
     scaffold の tool coverage に加え、nested directory、inline/tail/indirect regular file、symlink、hardlink、

@@ -5,10 +5,9 @@
 - Generated artifacts stay out of scope, including `.deps/**` and generated `Makefile*` files.
 - The strict gate scans active `src/**/*.{c,h}` with `--min-lines=8` and
   `--threshold=1`.
-- `src/kafs_v6*` is excluded from clone remediation because format v6 is a
-  frozen experimental implementation retained only for existing tests and
-  images. It remains in build, test, lint, complexity, and cppcheck coverage;
-  the exclusion is not a compatibility promise or permission for new v6 work.
+- The temporary fail-closed `src/kafs_v6.c` placeholder is included in the
+  strict source gate. Its presence is not a compatibility promise or permission
+  for new v6 work; it is removed with the final packaged command surface.
 - Neutral helpers and active production/v7 sources remain in the strict clone
   gate. A v7 path may not call or copy a v6-owned entrypoint to evade it.
 - A separate informational report scans `tests/**/*.{c,h}` with the same minimum match size and a non-gating threshold.
