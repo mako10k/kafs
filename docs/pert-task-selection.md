@@ -148,20 +148,21 @@ critical predecessor. If that result cannot be obtained without a false edge,
 arbitrary priority, or invented estimate, the decision is `REPLAN`, not a
 directory-task `SELECT`.
 
-The current post-T57 plan is also a blocker-decomposition replay. It must not
-hide evidence validation or migration rehearsal inside disruptive execution
-nodes merely because the execution windows are blocked. For
+The T59 start replan is also a capability-resolution replay. It must not
+hide a missing offline import surface inside one final rehearsal node merely
+because a disposable destination scaffold exists. For
 `plans/current.pert`, the expected classification is:
 
-- `V5_V7_MIGRATION_REHEARSAL` alone in `RUNNABLE NOW`, total float 0.333 days;
+- `V7_MIGRATION_IMPORT_SURFACE` alone in `RUNNABLE NOW`, total float zero;
 - no node in `READY / WAITING RESOURCE`;
 - `HARDWARE_APPROVAL` and `VHDX_HOST_RECOVERY_RUN` in `BLOCKED NOW`; and
-- physical execution, independent review, and cutover decision in `UPCOMING`.
+- final migration rehearsal, physical execution, independent review, and
+  cutover decision in `UPCOMING`.
 
-This result permits `SELECT V5_V7_MIGRATION_REHEARSAL` because both zero-slack
-critical nodes are externally blocked and this is the only runnable goal-path
-node. The selection record must preserve its 0.333-day float and the risk that
-a newly available critical window would compete for the primary stream. It
-does not remove either blocker or permit an off-goal substitute. The VHDX
+T59-A closed the lifecycle/evidence predecessor, so this result requires
+`SELECT V7_MIGRATION_IMPORT_SURFACE`: it is the only runnable zero-slack
+predecessor to rehearsal. Selection authorizes a fresh Task Start Gate, not an
+implementation boundary inferred from the contract. It does not authorize a
+runtime mutation expansion, production data access, or cutover. The VHDX
 execution task becomes eligible only after the user identifies a safe
 maintenance window and the plan is refreshed from a new host preflight.

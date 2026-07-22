@@ -3756,27 +3756,65 @@
   - device、mount、format、power、WSL terminate/shutdown操作は実施していない。
 - 状態: 完了。`REAL_MEDIA_EVIDENCE_CONTRACT_READY`をreachedとし、planから実装taskを除いた。
 
-### SDW-V7RT-T59 v5-to-v7 migration rehearsal
+### SDW-V7RT-T59-A migration lifecycle evidence contract
 
-- 目的: T29のv7 destination creationを、disposable file image上のv5 data copy、検証、再開、rollbackまで
-  含むmigration capabilityへ拡張する。
+- 目的: importer実装より先に、v5 source snapshot、v7 work destination、accepted destination、resume、rollback、
+  idempotenceをversioned evidence contractへ固定する。
+- 再計画根拠:
+  - 2026-07-22のTask Start再調査で、現行`kafs-v7` write surfaceはregular-file
+    create/write/truncateに限定され、`mkdir`、symlink作成、所有者・時刻変更、indirect-directory、
+    cross-group mutationはfail closedであることを確認した。
+  - 従ってT29 destination scaffoldから直接full rehearsalへ進む前提は不成立。単一fixtureをcopy capabilityへ
+    誤昇格しないため、contract、v7-owned offline importer、rehearsalを独立capabilityへ分解した。
 - PERT/依存:
-  - `V7_MIGRATION_TARGET_READY`をpredecessorとし、real-media executionとは独立に先行できるが、qualified
-    runtimeとのjoin後にだけproduction cutover evidenceを許可する。
-  - T57完了後の2026-07-22再計算では`V5_V7_MIGRATION_REHEARSAL`として唯一の`RUNNABLE NOW`、
-    TE 6.167日、total float 0.333日、resource critical。zero-slack critical tasksはexternal blocker中のため、
-    次waveとして`SELECT`する。
+  - `V7_MIGRATION_TARGET_READY`をpredecessorとする。
+  - 再計算では`MIGRATION_EVIDENCE_CONTRACT`だけが`RUNNABLE NOW`、TE 4.167日、total float 0日、
+    precedence/resource criticalとして`SELECT`された。
 - スコープ:
-  - disposable v5 sourceとv7 destinationを作り、source freeze/immutability、namespace、payload、metadata、
+  - source identityとimmutable namespace/metadata/payload inventory、destination geometry/identity、copy ledger、
+    phase transition、digest、false cutover claimをschema化する。
+  - incomplete/failed destinationはacceptedにならず、resumeは同じsource/destination/planへbindし、rollbackは
+    sourceを変更せずfailed destinationを保存するcontractとする。
+  - validate-only gateとsynthetic positive/negative regressionを用意する。
+- 完了条件: completeなevidenceだけがaccepted stateを表現でき、identity drift、source mutation、欠落entry、
+  digest不一致、illegal phase transition、partial destination、claim昇格をfail closedにする。
+- 非目標: actual data import、runtime mutation拡張、mount、production source、physical media、cutover承認。
+- 実績:
+  - `KAFS.V5V7MigrationPlan.v1`、source/copy-ledger/destination/decisionの各schema、byte digest chain、
+    exact artifact inventoryを`v5-v7-migration-evidence-gate.sh`でfail closedに検証する。
+  - resumed `ACCEPT`、partial `RESUME_REQUIRED`、preserved `ROLLBACK`のpositive regressionと、identity/source
+    mutation、欠落・payload・phase・attempt・claim・resume・rollback・hardlink・artifact境界のnegative regressionを追加した。
+  - build、focused test、full `make check` 46件、format、lint、clone/static、`make dist`がPASSした。
+    新規テストはsynthetic JSONだけを使い、image/mount/PowerShell/VHDX/WSL/device操作は行っていない。
+- 状態: 完了。`MIGRATION_CONTRACT_READY`をreachedとし、planから実装taskを除いた。
+
+### SDW-V7RT-T59-B v7 offline migration import surface
+
+- 目的: T59-A contractに従い、v5のdirectory、regular file、symlink、metadata、payloadをdisposable v7 imageへ
+  取り込むv7-owned offline pathを実装する。
+- 依存: `MIGRATION_CONTRACT_READY`。
+- スコープ:
+  - v5/v6 runtime entrypointやbounded controlled-write FUSE surfaceを経由せず、v7 ownershipでdestinationを構築する。
+  - unsupported source type、uid/gid/mode/timeの表現不能、capacity不足、partial importをwrite前またはadmission前に拒否する。
+  - directory traversal、hardlink policy、dense/sparse payload、group assignment、source immutabilityをcontractから導出する。
+- 完了条件: 複数shapeのdisposable sourceをimportし、fsck/dumpとcontract inventoryが一致する。失敗destinationは
+  accepted/admittedされない。
+- 非目標: production cutover、in-place relocation、v6 compatibility、runtime metadata mutation拡張。
+- 状態: 登録済み。T59-A完了後のPERT再計算で唯一の`RUNNABLE NOW`、TE 10.5日、total float 0日、
+  precedence/resource criticalとして選定された。実装前にfresh Task Start Gateが必要。
+
+### SDW-V7RT-T59-C v5-to-v7 migration rehearsal
+
+- 目的: T59-A contractとT59-B importerをnormal/resume/rollback/idempotenceのdata-copy lifecycle全体で演習する。
+- 依存: `MIGRATION_IMPORT_READY`。qualified runtimeとのjoin後にだけproduction cutover evidenceを許可する。
+- スコープ:
+  - disposable v5 sourceとv7 destinationでsource freeze/immutability、namespace/payload/metadata equivalence、
     geometry、fsck/dump evidenceを比較する。
-  - interrupted copyの再開境界、partial destinationの拒否またはrollback、再実行時のidempotenceを明文化し、
-    operatorがproduction sourceを変更せずに演習できるcontractを作る。
-  - migration boundaryはfixtureや単一file例ではなく、cutover前に必要なdata-copy lifecycle全体で閉じる。
-- 完了条件:
-  - normal/restart/rollback rehearsalがsource immutabilityとdestination completenessを証明し、失敗時に
-    incomplete destinationをmount/cutover対象へ昇格させない。
+  - interruption後の再開、partial destination拒否、rollback、同じplan再実行のidempotenceを検証する。
+- 完了条件: normal/resume/rollback rehearsalがsource immutabilityとdestination completenessを証明し、失敗時に
+  incomplete destinationをmount/cutover対象へ昇格させない。
 - 非目標: production cutover、in-place metadata relocation、physical media、v6 compatibility、自動RC承認。
-- 状態: 登録済み、PERT選定済み。実装前にcurrent checkoutで改めてTask Start Gateを実施する。
+- 状態: 登録済み。T59-B待ち。
 
 ---
 ---
@@ -3786,16 +3824,17 @@
 この節はhandoff用の開始候補であり、実装開始許可または最新の完了条件ではない。着手前に`AGENTS.md`の
 Task Start Gateでcurrent checkoutのevidenceを再確認し、`PASS`・`REPLAN`・`BLOCKED`を判定する。
 
-T49-T58は完了している。2026-07-22にblockerの前後をcapability単位で再調査し、T57-T59を登録した。
+T49-T58とT59-Aは完了している。2026-07-22にblockerの前後をcapability単位で再調査し、T57-T59を登録した。
 `VHDX_HOST_RECOVERY_RUN`とexact physical hardware identity/approvalはcompleteや削除にせずblockedのまま
-残す。T57完了を反映した`plans/current.pert`の唯一の`RUNNABLE NOW`はT59
-`V5_V7_MIGRATION_REHEARSAL`であり、これを次waveとして選定する。T59のtotal floatは0.333日で、blocked
-critical windowが途中で解消すればprimary stream競合が生じるため、その時点でplanを再計算する。
+残す。T59開始時のcurrent capability調査でfull rehearsalの前提となるoffline import surfaceが存在しないことを
+確認したため、T59をA contract、B importer、C rehearsalへ再計画した。T59-A closeout後の唯一の
+`RUNNABLE NOW`はT59-B `V7_MIGRATION_IMPORT_SURFACE`で、TE 10.5日、total float 0日である。
 whole-namespace graph validation `N`は引き続きoff-pathであり、代替選定しない。
 
-T59着手時はcurrent checkoutでTask Start Gateを再実行し、source freeze/immutability、namespace/payload/
-metadata equivalence、partial destination rejection、resume/rollback/idempotence、cutover claim boundaryを再導出する。
-production source、in-place relocation、physical media、v6 compatibility、production cutoverはこのwaveへ含めない。
+T59-BはT59-Aのcontractを入力として、v5/v6 runtime entrypointやbounded FUSE write surfaceを再利用しない
+v7-owned offline importer capabilityを閉じる。Task Start Gateではcurrent v5 traversal、v7 layout construction、
+hardlink/metadata/sparse/unsupported-type/capacityの表現境界から実装単位とexit criteriaを再導出する。
+production source、in-place relocation、physical media、v6 compatibility、production cutoverは含めない。
 
 ユーザーが実施可能時期を明示した後に限り、native Windows PowerShellから次を行う。
 
