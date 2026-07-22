@@ -3848,7 +3848,17 @@
 - 完了条件: normal/resume/rollback rehearsalがsource immutabilityとdestination completenessを証明し、失敗時に
   incomplete destinationをmount/cutover対象へ昇格させない。
 - 非目標: production cutover、in-place metadata relocation、physical media、v6 compatibility、自動RC承認。
-- 状態: 登録済み。T59-B closeout後の唯一の`RUNNABLE NOW`として選定済み。着手前にfresh Task Start Gateを行う。
+- 実績:
+  - caller-supplied image/device/mountpointを受け取らない`v5-v7-migration-rehearsal.sh`を追加し、disposable v5
+    source、normal v7、attempt-1 partial、attempt-2 v7、rollback-preserved v7を生成・保存する。
+  - source/normal/attempt-2のread-only mounted semantic inventory一致、source identity/SHA-256不変、fsck/dump、
+    published destinationのno-replace idempotenceを確認する。
+  - attempt 1は2 object後に中断してpartialを保存し、attempt 2は同じfrozen sourceから全量replayする。
+    in-place partial continuationとは主張せず、4つのT59-A bundleを既存gateで検証する。
+  - T59-B-F1/F2 shapeのpending referenceとbitmap不整合はfinal destinationをpublishせずfail closedとなる。
+    root causeや一般発生条件は引き続き`UNKNOWN`のままowned backlogへ残す。
+- 状態: 完了。`MIGRATION_REHEARSAL_READY`をreachedとし、planから実装taskを除いた。PowerShell/VHDX、WSL
+  terminate/shutdown、physical device、production source、cutoverは実施していない。
 
 ---
 ---
@@ -3858,18 +3868,11 @@
 この節はhandoff用の開始候補であり、実装開始許可または最新の完了条件ではない。着手前に`AGENTS.md`の
 Task Start Gateでcurrent checkoutのevidenceを再確認し、`PASS`・`REPLAN`・`BLOCKED`を判定する。
 
-T49-T58とT59-A/T59-Bは完了している。2026-07-22にblockerの前後をcapability単位で再調査し、T57-T59を登録した。
+T49-T58とT59-A/T59-B/T59-Cは完了している。2026-07-22にblockerの前後をcapability単位で再調査し、T57-T59を登録した。
 `VHDX_HOST_RECOVERY_RUN`とexact physical hardware identity/approvalはcompleteや削除にせずblockedのまま
-残す。T59開始時のcurrent capability調査でfull rehearsalの前提となるoffline import surfaceが存在しないことを
-確認したため、T59をA contract、B importer、C rehearsalへ再計画した。T59-B closeout後の唯一の
-`RUNNABLE NOW`はT59-C `V5_V7_MIGRATION_REHEARSAL`で、TE 6.167日、total float 0.333日、
-resource-criticalである。
-whole-namespace graph validation `N`は引き続きoff-pathであり、代替選定しない。
-
-T59-CはT59-AのcontractとT59-Bのv7-owned offline importerを入力として、normal/resume/rollback/idempotenceの
-lifecycle evidenceをdisposable file imageだけで閉じる。fresh Task Start Gateではsource freeze、partial-state、
-retry identity、rollback preservation、acceptanceの境界から実装単位とexit criteriaを再導出する。
-production source、in-place relocation、physical media、v6 compatibility、production cutoverは含めない。
+残す。T59-C closeout後のvalid residual planには`RUNNABLE NOW`がなく、両external blockerがzero-slack
+`BLOCKED NOW`であるため、次wave選定は`BLOCKED`である。whole-namespace graph validation `N`と
+T59-B-F1/F2はowned dispositionを維持するが、accepted finishを短縮しないため代替選定しない。
 
 ユーザーが実施可能時期を明示した後に限り、native Windows PowerShellから次を行う。
 

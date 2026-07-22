@@ -2,7 +2,7 @@
 
 - Branch: `feat/v7-runtime-admission-foundation`
 - Baseline: `460f7b0`
-- Status: baseline accepted; T49-T58 and T59-A/T59-B complete; T59-C selected while hardware and VHDX execution wait
+- Status: baseline accepted; T49-T59 complete; hardware and VHDX execution remain blocked
 
 ## Purpose
 
@@ -444,6 +444,23 @@ After marking `MIGRATION_IMPORT_READY` reached and removing the superseded
 6.167 days, total float 0.333 days, and resource-critical status. Hardware and
 VHDX execution remain `BLOCKED NOW`; no WSL termination, VHDX, device,
 production-source, or cutover action was performed by T59-B.
+
+## 2026-07-22 T59-C Closeout
+
+T59-C joined the contract and importer with a disposable-only lifecycle runner.
+It retains real source, normal, interrupted, replayed, and rollback images,
+compares read-only mounted semantic inventories, verifies source identity and
+SHA-256 immutability, runs fsck/dump, and validates normal ACCEPT,
+RESUME_REQUIRED, replayed ACCEPT, and ROLLBACK bundles. The supported recovery
+is a complete attempt-2 replay from the frozen source while preserving the
+attempt-1 partial; it is not in-place partial continuation.
+
+After marking `MIGRATION_REHEARSAL_READY` reached and removing the completed
+task plus superseded `MIGRATION_IMPORT_READY` residual start, the valid plan has
+no `RUNNABLE NOW` task. `VHDX_HOST_RECOVERY_RUN` and `HARDWARE_APPROVAL` remain
+`BLOCKED NOW`, so the next-wave result is `BLOCKED`, not an off-path substitute.
+No PowerShell, VHDX, WSL termination, device, production-source, or cutover
+action was performed by T59-C.
 
 ## Deferred Gate: SDW-V7RT-T48 Controlled-write RC Qualification
 

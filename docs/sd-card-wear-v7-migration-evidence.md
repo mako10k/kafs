@@ -261,6 +261,55 @@ the existing runtime use its synchronous write path. This isolates importer
 coverage from the unresolved pending-enabled source path; no bitmap check or
 repair policy was weakened.
 
+## T59-C Disposable Lifecycle Rehearsal
+
+T59-C joins the T59-A contract and T59-B importer in one repository runner:
+
+```sh
+./scripts/v5-v7-migration-rehearsal.sh
+```
+
+The runner accepts report-location and timeout options only. It does not accept
+a source image, destination image, device, or mountpoint from the caller. Its C
+workload creates a disposable clean v5 source, captures its read-only mounted
+semantic inventory and whole-image SHA-256, and produces fresh v7 destination
+images through `kafsresize --migrate-import-v7`.
+
+One passed report retains the disposable source, normal destination, resumed
+destination, attempt-1 partial image, and rollback-preserved failed image. It
+also retains fsck/dump output, mounted source/normal/resumed inventories,
+executable digests, raw workload output, a SHA-256 artifact manifest, and four
+gate-validated lifecycle bundles:
+
+- normal `ACCEPT`;
+- interrupted `RESUME_REQUIRED` after exactly two copied objects;
+- attempt-2 `ACCEPT`; and
+- preserved `ROLLBACK` with the unchanged source selected.
+
+The supported attempt-2 strategy is explicit: preserve the attempt-1 partial
+image for evidence, then replay the complete import from the same frozen source
+and destination identity. This is restart/replay recovery, not in-place
+continuation of the partial image. The final source, normal destination, and
+attempt-2 destination semantic inventories must be byte-identical JSON. The
+source device/inode/size/time identity and whole-image SHA-256 must remain
+unchanged. A retry against the already published normal destination must fail
+without changing that destination.
+
+The workload also constructs pending-reference and referenced-block/bitmap
+inconsistency shapes and proves that neither publishes a final destination.
+These are rejection coverage for the owned T59-B-F1/F2 finding shapes; they do
+not identify the general trigger or root cause of either finding.
+
+The report marker is:
+
+```text
+KAFS_V5_V7_MIGRATION_REHEARSAL PASS
+```
+
+It proves only the disposable-file-image matrix. It does not qualify production
+data, an in-place resume algorithm, VHDX recovery, physical media, RC status, or
+production cutover. No WSL termination or shutdown is part of the runner.
+
 ## Closeout Evidence
 
 T59-A completed on 2026-07-22 at start HEAD `7a5c750`. The implementation
@@ -302,3 +351,24 @@ device, production source, or cutover action ran. The confirmed
 `SDW-V7RT-T59-B-F1` and `SDW-V7RT-T59-B-F2` source-preparation findings remain
 owned and do not change the importer's fail-closed pending-reference or bitmap
 policy.
+
+T59-C completed on 2026-07-22 at start HEAD `d46cefd`. The focused workload and
+Automake rehearsal regression passed with real disposable v5/v7 images and all
+four T59-A lifecycle decisions.
+
+- shell and Python syntax checks: PASS;
+- focused `v5_v7_migration_rehearsal_test.sh`: PASS;
+- `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: all 48 tests passed;
+- `./scripts/format.sh`, `./scripts/lint.sh`, `./scripts/clones.sh`, and
+  `./scripts/static-checks.sh`: PASS; the strict source clone ratio remains
+  0.94%;
+- `make dist`: PASS, with the runner, mounted-inventory helper, regression, and
+  this document in `kafs-0.4.0.tar.gz`;
+- `./scripts/pert-next-task.sh plans/current.pert`: PASS with no `RUNNABLE NOW`
+  node and both external tasks in `BLOCKED NOW`; and
+- `git diff --check`: PASS.
+
+All T59-C image and mount activity was created by the test workload under
+`${TMPDIR:-/tmp}` or the chosen report directory. No PowerShell, VHDX, WSL
+terminate/shutdown, physical device, production source, in-place migration, or
+cutover action ran.

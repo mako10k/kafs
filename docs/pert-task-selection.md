@@ -148,21 +148,18 @@ critical predecessor. If that result cannot be obtained without a false edge,
 arbitrary priority, or invented estimate, the decision is `REPLAN`, not a
 directory-task `SELECT`.
 
-The T59 start replan is also a capability-resolution replay. It must not
-hide a missing offline import surface inside one final rehearsal node merely
-because a disposable destination scaffold exists. For
-`plans/current.pert`, the expected classification is:
+The T59 start replan is also a capability-resolution replay. It must not hide a
+missing offline import surface inside one final rehearsal node merely because a
+disposable destination scaffold exists. T59-A, T59-B, and T59-C have now
+closed the contract, importer, and disposable lifecycle-rehearsal capabilities.
+For `plans/current.pert`, the expected classification is therefore:
 
-- `V5_V7_MIGRATION_REHEARSAL` alone in `RUNNABLE NOW`, total float 0.333 days
-  and resource-critical;
-- no node in `READY / WAITING RESOURCE`;
+- no node in `RUNNABLE NOW`, `READY / WAITING RESOURCE`, or `ACTIVE`;
 - `HARDWARE_APPROVAL` and `VHDX_HOST_RECOVERY_RUN` in `BLOCKED NOW`; and
 - physical execution, independent review, and cutover decision in `UPCOMING`.
 
-T59-A closed the lifecycle/evidence predecessor and T59-B closed the v7-owned
-offline construction predecessor, so this result requires
-`SELECT V5_V7_MIGRATION_REHEARSAL`: it is the only runnable least-slack task.
-Selection authorizes a fresh Task Start Gate, not production data access,
-runtime mutation expansion, or cutover. The VHDX execution task becomes
-eligible only after the user identifies a safe maintenance window and the plan
-is refreshed from a new host preflight.
+This result requires `BLOCKED`; it does not authorize selection of an off-path
+finding or convenience refactor. The VHDX execution task becomes eligible only
+after the user identifies a safe maintenance window and the plan is refreshed
+from a new host preflight. The hardware path likewise requires the exact
+apparatus and digest-bound destructive approval before execution.

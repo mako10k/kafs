@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- disposable file imageだけを使うv5-to-v7 lifecycle rehearsalを追加し、normal、2-object後の中断、
+  frozen sourceからの全量replay、rollback、idempotence、semantic inventory、source digest不変、
+  T59 evidence bundleを一括検証する。in-place resume、VHDX/WSL停止、実媒体、production cutoverは行わない。
 - `kafsresize --migrate-import-v7` に、frozen clean v5 image の directory、regular file、symlink、
   hardlink、metadata、dense payload を v7-owned offline path で新規 v7 image へ取り込む機能を追加した。
   unsupported/sparse/pending/capacity/partial state は final path を publish せず fail closed にする。
