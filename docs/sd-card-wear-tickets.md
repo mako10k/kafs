@@ -3699,8 +3699,8 @@
   独立したcapabilityとして用意する。
 - PERT/依存:
   - `VHDX_HARNESS_READY`をpredecessorとし、actual host runとは独立に実装できる。
-  - 2026-07-22再計算では`VHDX_EVIDENCE_AUDIT`として`READY / WAITING RESOURCE`、TE 2.167日、
-    total float 2日。selected nodeではない。
+  - T58完了後の2026-07-22再計算では`VHDX_EVIDENCE_AUDIT`として唯一の`RUNNABLE NOW`、TE 2.167日、
+    total float 0日、precedence/resource critical。次waveとして`SELECT`する。
 - スコープ:
   - 一つのrun IDにexact 4 fault directoryが重複なく揃うことを検査する。
   - host/distro/VHDX identity、controllerのterminate/restart exit、時刻順序、false claim、各faultの
@@ -3711,7 +3711,7 @@
   - validate-only commandが完全な4点証跡だけをPASSし、個別faultの成功をhost qualificationへ誤昇格しない。
   - gate自体はimage/deviceへwrite、mount、WSL terminate/restartを行わない。
 - 非目標: native Windows host run、`wsl.exe --terminate`/`--shutdown`、raw VHDX access、real-media claim。
-- 状態: 登録済み。primary streamはT58が占有するため、実装着手はresource待ち。
+- 状態: 登録済み、PERT選定済み。実装前にcurrent checkoutで改めてTask Start Gateを実施する。
 
 ### SDW-V7RT-T58 real-media evidence review gate
 
@@ -3720,8 +3720,8 @@
 - PERT/依存:
   - `SOFTWARE_QUALIFIED`をpredecessorとし、hardware identity/approval、physical device、VHDX maintenance
     windowなしで完了できる。
-  - 2026-07-22再計算では`REAL_MEDIA_EVIDENCE_CONTRACT`として唯一の`RUNNABLE NOW`、TE 4.167日、
-    total float 0日、precedence/resource critical。次waveとして`SELECT`する。
+  - 着手前の2026-07-22再計算では`REAL_MEDIA_EVIDENCE_CONTRACT`として唯一の`RUNNABLE NOW`、
+    TE 4.167日、total float 0日、precedence/resource criticalとして`SELECT`された。
 - スコープ:
   - exact approval/matrix digest、before/after device identity、reader/controllerとisolated-power identity、
     workload/boundary/cycle、`PASS`/`FAIL`/`SKIP`/`INCONCLUSIVE`、artifact hashをschemaへ固定する。
@@ -3733,7 +3733,17 @@
   - execution前artifact contractとexecution後review contractがversioned schemaとvalidate-only gateで閉じる。
   - DRAFT matrix/approval gateとのbindingが検証され、deviceを開かずに全regressionがPASSする。
 - 非目標: `/dev/*` open、format、mount、power interruption、cycle execution、actual reviewer承認、RC claim。
-- 状態: 登録済み、PERT選定済み。実装前にcurrent checkoutで改めてTask Start Gateを実施する。
+- 完了結果（2026-07-22）:
+  - `KAFS.V7RealMediaQualificationEvidence.v1`と`KAFS.V7RealMediaQualificationReview.v1`、および
+    validate-only gateを追加した。matrix/approval/evidenceのbyte digest、run開始時approval、exact sample identity、
+    workload/boundary/cycle cross-product、artifact path/size/SHA-256、operator/reviewer分離をfail closedで検証する。
+  - `ACCEPT`は全resultが`PASS`かつ全review checkがtrueの場合だけ許可し、非PASSはfinding付きの
+    `REJECT`または`INCONCLUSIVE`として保持する。RC、real-media-qualified、controller-independent-wear claimは
+    evidence/reviewともfalseに固定した。
+  - synthetic positive/negative regression、focused Automake 3件、full `make check` 43件がPASSし、`stress_fs`だけ
+    FUSE環境制約でSKIPした。format、lint、clone/static checks、build、`make dist`もPASSした。
+  - device、mount、format、power、WSL terminate/shutdown操作は実施していない。
+- 状態: 完了。`REAL_MEDIA_EVIDENCE_CONTRACT_READY`をreachedとし、planから実装taskを除いた。
 
 ### SDW-V7RT-T59 v5-to-v7 migration rehearsal
 
@@ -3742,8 +3752,8 @@
 - PERT/依存:
   - `V7_MIGRATION_TARGET_READY`をpredecessorとし、real-media executionとは独立に先行できるが、qualified
     runtimeとのjoin後にだけproduction cutover evidenceを許可する。
-  - 2026-07-22再計算では`V5_V7_MIGRATION_REHEARSAL`として`READY / WAITING RESOURCE`、TE 6.167日、
-    total float 3.333日。selected nodeではない。
+  - T58完了後の2026-07-22再計算では`V5_V7_MIGRATION_REHEARSAL`として`READY / WAITING RESOURCE`、
+    TE 6.167日、total float 1.333日。selected T57がprimary streamを占有する。
 - スコープ:
   - disposable v5 sourceとv7 destinationを作り、source freeze/immutability、namespace、payload、metadata、
     geometry、fsck/dump evidenceを比較する。
@@ -3754,7 +3764,7 @@
   - normal/restart/rollback rehearsalがsource immutabilityとdestination completenessを証明し、失敗時に
     incomplete destinationをmount/cutover対象へ昇格させない。
 - 非目標: production cutover、in-place metadata relocation、physical media、v6 compatibility、自動RC承認。
-- 状態: 登録済み。primary streamはT58が占有するため、実装着手はresource待ち。
+- 状態: 登録済み。primary streamはT57が占有するため、実装着手はresource待ち。
 
 ---
 ---
@@ -3764,17 +3774,16 @@
 この節はhandoff用の開始候補であり、実装開始許可または最新の完了条件ではない。着手前に`AGENTS.md`の
 Task Start Gateでcurrent checkoutのevidenceを再確認し、`PASS`・`REPLAN`・`BLOCKED`を判定する。
 
-T49-T56は完了している。2026-07-22にblockerの前後をcapability単位で再調査し、T57-T59を登録した。
+T49-T56とT58は完了している。2026-07-22にblockerの前後をcapability単位で再調査し、T57-T59を登録した。
 `VHDX_HOST_RECOVERY_RUN`とexact physical hardware identity/approvalはcompleteや削除にせずblockedのまま
-残す。更新した`plans/current.pert`の唯一の`RUNNABLE NOW`はT58
-`REAL_MEDIA_EVIDENCE_CONTRACT`であり、これを次waveとして選定する。T57 `VHDX_EVIDENCE_AUDIT`とT59
-`V5_V7_MIGRATION_REHEARSAL`もblockerなしでreadyだが、capacity 1のprimary streamをT58が占有するため
-`READY / WAITING RESOURCE`である。whole-namespace graph validation `N`は引き続きoff-pathであり、代替選定
-しない。
+残す。T58完了を反映した`plans/current.pert`の唯一の`RUNNABLE NOW`はT57
+`VHDX_EVIDENCE_AUDIT`であり、これを次waveとして選定する。T59 `V5_V7_MIGRATION_REHEARSAL`もblockerなしで
+readyだが、capacity 1のprimary streamをT57が占有するため`READY / WAITING RESOURCE`である。
+whole-namespace graph validation `N`は引き続きoff-pathであり、代替選定しない。
 
-T58着手時はcurrent checkoutでTask Start Gateを再実行し、schema ownership、execution artifactとreview
-decisionのsemantic boundary、approval binding、reviewer independence、negative state matrixを再導出する。
-deviceを開く処理、format/mount、power interruption、actual approvalはこのwaveへ含めない。
+T57着手時はcurrent checkoutでTask Start Gateを再実行し、aggregate manifest ownership、exact four-fault
+coverage、host/distro/VHDX identity continuity、per-fault artifact digest、qualification claim boundaryを再導出する。
+VHDXのwrite/mount/raw access、WSL terminate/restart、actual host captureはこのwaveへ含めない。
 
 ユーザーが実施可能時期を明示した後に限り、native Windows PowerShellから次を行う。
 

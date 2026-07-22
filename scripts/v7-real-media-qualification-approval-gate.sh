@@ -7,11 +7,14 @@ Usage:
   scripts/v7-real-media-qualification-approval-gate.sh \
     --matrix FILE --validate-only
   scripts/v7-real-media-qualification-approval-gate.sh \
-    --matrix FILE --approval FILE --validate-only --require-approved
+    --matrix FILE --approval FILE --validate-only --require-approved [--as-of ISO-8601]
 
 Validate the format-v7 real-media matrix and, when requested, an operator
 approval bound to the exact matrix SHA-256. This command never opens a device,
 mounts a filesystem, formats media, or controls power.
+
+--as-of validates that the approval was active at the supplied evidence time.
+It is accepted only with --require-approved; the default is the current time.
 EOF
 }
 
@@ -19,6 +22,7 @@ MATRIX=""
 APPROVAL=""
 VALIDATE_ONLY=0
 REQUIRE_APPROVED=0
+AS_OF=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -39,6 +43,11 @@ while [[ $# -gt 0 ]]; do
     --require-approved)
       REQUIRE_APPROVED=1
       shift
+      ;;
+    --as-of)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      AS_OF="$2"
+      shift 2
       ;;
     -h|--help)
       usage
@@ -66,12 +75,16 @@ elif [[ -n "$APPROVAL" ]]; then
   echo "approval gate: --approval requires --require-approved" >&2
   exit 2
 fi
+if [[ -n "$AS_OF" && "$REQUIRE_APPROVED" -ne 1 ]]; then
+  echo "approval gate: --as-of requires --require-approved" >&2
+  exit 2
+fi
 command -v python3 >/dev/null 2>&1 || {
   echo "approval gate: python3 is required" >&2
   exit 2
 }
 
-python3 - "$MATRIX" "$APPROVAL" "$REQUIRE_APPROVED" <<'PY'
+python3 - "$MATRIX" "$APPROVAL" "$REQUIRE_APPROVED" "$AS_OF" <<'PY'
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -84,6 +97,7 @@ import sys
 matrix_path = Path(sys.argv[1])
 approval_path = Path(sys.argv[2]) if sys.argv[2] else None
 require_approved = sys.argv[3] == "1"
+as_of_text = sys.argv[4]
 errors: list[str] = []
 
 
@@ -138,6 +152,27 @@ def require_fields(obj: object, fields: tuple[str, ...], prefix: str) -> dict:
     for field in fields:
         require_string(obj, field, prefix)
     return obj
+
+
+def parse_timestamp(value: str, label: str):
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("timezone missing")
+        return parsed.astimezone(timezone.utc)
+    except ValueError:
+        fail(f"{label} must be an ISO-8601 value with timezone")
+        return None
+
+
+current_time = datetime.now(timezone.utc)
+reference_time = current_time
+if as_of_text:
+    parsed_reference = parse_timestamp(as_of_text, "--as-of")
+    if parsed_reference is not None:
+        reference_time = parsed_reference
+        if reference_time > current_time:
+            fail("--as-of must not be in the future")
 
 
 matrix_bytes = matrix_path.read_bytes()
@@ -384,19 +419,15 @@ if require_approved and approval_path is not None:
     expected_confirmation = f"AUTHORIZE T48 {matrix_id} {matrix_digest}"
     if confirmation != expected_confirmation:
         fail("approval.confirmation does not bind the T48 matrix id and digest")
-    try:
-        approved = datetime.fromisoformat(approved_at.replace("Z", "+00:00"))
-        expires = datetime.fromisoformat(valid_until.replace("Z", "+00:00"))
-        if approved.tzinfo is None or expires.tzinfo is None:
-            raise ValueError("timezone missing")
-        if approved > datetime.now(timezone.utc):
-            fail("approval.approved_at_utc must not be in the future")
+    approved = parse_timestamp(approved_at, "approval.approved_at_utc")
+    expires = parse_timestamp(valid_until, "approval.valid_until_utc")
+    if approved is not None and expires is not None:
+        if approved > reference_time:
+            fail("approval was not active at the validation time")
         if expires <= approved:
             fail("approval.valid_until_utc must be later than approved_at_utc")
-        if expires <= datetime.now(timezone.utc):
-            fail("approval.valid_until_utc has expired")
-    except ValueError:
-        fail("approval timestamps must be ISO-8601 values with timezone")
+        if expires <= reference_time:
+            fail("approval was expired at the validation time")
 
 if errors:
     for error in errors:

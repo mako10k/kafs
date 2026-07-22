@@ -172,6 +172,10 @@ results, and every artifact digest. Missing or duplicate faults, identity drift,
 claim escalation, incomplete state, or digest mismatch must fail closed. The
 gate must not mount/write the image or terminate/restart WSL.
 
+T58 closed on 2026-07-22, and the rebuilt PERT plan now selects T57 as the only
+zero-slack `RUNNABLE NOW` task. This selects only the read-only aggregate gate;
+the actual host capture remains blocked until the user supplies a safe window.
+
 ## Remaining physical-media gate
 
 This prequalification is an additional predecessor, not a substitute for the
@@ -180,4 +184,4 @@ the capture milestone reached; VHDX qualification closes only after the T57
 audit also passes. `HARDWARE_APPROVAL` remains blocked until an exact disposable
 card, reader/controller, isolated power apparatus, cycle count, matrix digest,
 and time-bounded destructive approval are present. The separate T58 evidence
-contract must also be ready before real-media execution may start.
+contract is ready, but does not remove those hardware or VHDX predecessors.

@@ -81,6 +81,22 @@ An execution preflight must additionally require an approval record:
 Passing either command only validates records. No real-media execution path is
 introduced by T48-B1.
 
+The later evidence gate may validate approval validity at the recorded run
+start instead of the current wall clock:
+
+```sh
+./scripts/v7-real-media-qualification-approval-gate.sh \
+  --matrix <ready-matrix.json> \
+  --approval <approval.json> \
+  --validate-only \
+  --require-approved \
+  --as-of <evidence-start-ISO-8601>
+```
+
+`--as-of` is read-only and is accepted only with `--require-approved`. It does
+not authenticate the timestamp; the raw evidence and independent review remain
+responsible for that claim.
+
 ## Exact Identity Requirements
 
 Each approved sample must record:
@@ -166,6 +182,21 @@ or `INCONCLUSIVE` from raw artifacts. The review checks:
 
 Independent acceptance may support a bounded M7 RC recommendation. It does not
 itself alter release state.
+
+## T58 Executable Evidence And Review Contract
+
+The checklist above is enforced by
+`scripts/v7-real-media-qualification-evidence-gate.sh` and the versioned
+contract in
+`docs/sd-card-wear-v7-real-media-qualification-evidence.md`. It binds the
+approved matrix and approval bytes to an immutable evidence directory, requires
+the complete sample/workload/boundary/cycle cross product, verifies identity
+continuity and every artifact digest, and validates a separate reviewer
+decision whose author differs from the operator.
+
+T58 added no runner or device operation. A passing synthetic contract does not
+resolve the missing hardware or VHDX execution blockers and does not authorize
+the physical-media wave.
 
 ## Approval Record
 

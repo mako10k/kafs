@@ -20,11 +20,13 @@ bashcompletion_DATA = completions/kafs completions/mount.kafs
 
 EXTRA_DIST = $(man_MANS) $(bashcompletion_DATA) \
 	docs/sd-card-wear-v7-real-media-qualification-approval.md \
+	docs/sd-card-wear-v7-real-media-qualification-evidence.md \
 	docs/sd-card-wear-v7-real-media-qualification-matrix.json \
 	docs/sd-card-wear-v7-vhdx-host-recovery.md \
 	scripts/v7-controlled-write-qualification-dry-run.sh \
 	scripts/v7-controlled-write-qualification-gate.sh \
 	scripts/v7-real-media-qualification-approval-gate.sh \
+	scripts/v7-real-media-qualification-evidence-gate.sh \
 	scripts/v7-vhdx-host-recovery.ps1 \
 	scripts/v7-vhdx-host-recovery.sh
 

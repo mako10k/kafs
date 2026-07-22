@@ -3,9 +3,10 @@ project KAFS_CURRENT:
   title "KAFS accepted-goal residual plan"
   description |
     Residual network for qualified v7 migration and production-cutover evidence.
-    Hardware and WSL maintenance windows remain blocked, while independent
-    evidence-verifier and migration-rehearsal capabilities are separated so
-    they can close before the disruptive execution windows become available.
+    Hardware and WSL maintenance windows remain blocked. The real-media
+    evidence contract is complete; the remaining independent VHDX audit and
+    migration rehearsal stay explicit so they can close before disruptive
+    execution windows become available.
   as_of 2026-07-22
   duration_unit day
   finish PRODUCTION_CUTOVER_DECIDED
@@ -17,10 +18,6 @@ resource PRIMARY_STREAM:
 resource INDEPENDENT_REVIEW_STREAM:
   title "Reviewer independent from the qualification operator"
   capacity 1
-
-milestone SOFTWARE_QUALIFIED:
-  title "Expanded v7 software qualification complete"
-  state reached
 
 milestone VHDX_HARNESS_READY:
   title "Resumable Windows-host VHDX recovery harness ready"
@@ -45,6 +42,7 @@ milestone VHDX_HOST_RECOVERY_QUALIFIED:
 
 milestone REAL_MEDIA_EVIDENCE_CONTRACT_READY:
   title "Real-media artifact and independent-review gate ready"
+  state reached
 
 milestone MEDIA_AUTHORIZED:
   title "Exact media apparatus and destructive run authorized"
@@ -103,21 +101,6 @@ gate VHDX_AUDIT_REQUIRED VHDX_EVIDENCE_AUDIT_READY -> VHDX_HOST_RECOVERY_QUALIFI
 
 gate VHDX_CAPTURE_REQUIRED VHDX_HOST_RECOVERY_CAPTURED -> VHDX_HOST_RECOVERY_QUALIFIED:
   reason "Qualification requires the actual four-point host interruption capture"
-
-task REAL_MEDIA_EVIDENCE_CONTRACT SOFTWARE_QUALIFIED -> REAL_MEDIA_EVIDENCE_CONTRACT_READY:
-  title "Build real-media artifact and independent-review validation"
-  description |
-    Define and validate immutable artifact manifests, per-cycle outcomes,
-    device/power identity continuity, approval binding, reviewer separation,
-    and ACCEPT/REJECT/INCONCLUSIVE decisions without opening a device.
-  estimate:
-    optimistic 2d
-    most_likely 4d
-    pessimistic 7d
-  owner "KAFS implementation stream"
-  source "docs/sd-card-wear-tickets.md#sdw-v7rt-t58-real-media-evidence-review-gate"
-  requires:
-    PRIMARY_STREAM 1
 
 task HARDWARE_APPROVAL REAL_MEDIA_APPROVAL_CONTRACT_READY -> MEDIA_AUTHORIZED:
   title "Bind exact card, reader, power-cut apparatus, cycle count, and approval"

@@ -2,7 +2,7 @@
 
 - Branch: `feat/v7-runtime-admission-foundation`
 - Baseline: `460f7b0`
-- Status: baseline accepted; T49-T55 complete; T58 evidence contract selected while hardware and VHDX execution wait
+- Status: baseline accepted; T49-T56 and T58 complete; T57 evidence audit selected while hardware and VHDX execution wait
 
 ## Purpose
 
@@ -375,6 +375,24 @@ independent review, and the T59 rehearsal.
 This addendum changes task granularity and ordering, not the accepted end goal
 or qualification claim. T58 must pass its own Task Start Gate before code edits,
 and it may not open a device, format/mount media, interrupt power, or assert RC.
+
+## 2026-07-22 T58 Closeout Addendum
+
+T58 passed its Task Start Gate and closed the real-media artifact and
+independent-review contract. The versioned evidence/review records bind the
+approved matrix and approval by byte digest, preserve exact before/after
+apparatus identity, require complete workload/boundary/cycle coverage, verify
+relative artifact sizes and SHA-256 values, and separate the operator from the
+reviewer. `ACCEPT` is fail closed unless every result is `PASS` and every review
+check is true. Synthetic positive/negative regression and the full test suite
+passed without device, mount, power, or WSL operations.
+
+After marking `REAL_MEDIA_EVIDENCE_CONTRACT_READY` reached and rebuilding the
+stored network, `dag next` selects T57 `VHDX_EVIDENCE_AUDIT` as the only
+zero-slack `RUNNABLE NOW` node. T59 remains `READY / WAITING RESOURCE` with
+1.333 days total float. The actual VHDX run and hardware approval remain
+`BLOCKED NOW`. This closeout changes the selected non-disruptive predecessor;
+it does not authorize host capture or physical-media execution.
 
 ## Deferred Gate: SDW-V7RT-T48 Controlled-write RC Qualification
 
