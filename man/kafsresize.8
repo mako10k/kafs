@@ -25,7 +25,7 @@ kafsresize \- grow offline KAFS images and create or populate migration images
 .B --dst-image
 .I image
 .B --format-version
-.I 6|7
+.I 7
 .B --inodes
 .I I
 .RI [ --dry-run ]
@@ -109,8 +109,6 @@ is omitted, size is auto-detected from
 Validate migration-create inputs without writing
 .BR --dst-image .
 For
-.B --format-version 6
-or
 .B --format-version 7
 this requires
 .B --src-image
@@ -131,8 +129,6 @@ The final destination must not exist; this mode does not accept
 .B --src-image image
 Source image used by
 migration precheck. It is required for
-.B --format-version 6
-or
 .B --format-version 7
 and is validated before the destination image is overwritten.
 For
@@ -176,12 +172,6 @@ default (v5).
 Use
 .BR --format-version 4
 to keep a legacy v4 destination image.
-Use
-.BR --format-version 6
-with
-.B --src-image
-to run the clean-v5 source precheck before creating the offline v6 descriptor
-destination scaffold.
 Use
 .BR --format-version 7
 with

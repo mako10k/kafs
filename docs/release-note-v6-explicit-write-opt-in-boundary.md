@@ -1,5 +1,9 @@
 # Draft release note: format v6 controlled write opt-in boundary
 
+> **Historical v6 record:** This draft preserves an earlier experimental boundary. Format v6
+> creation and runtime operations are retired; do not execute its commands. See
+> [the current retirement plan](sd-card-wear-v6-retirement-plan.md).
+
 Status: experimental boundary. This note documents the release wording for the
 explicit controlled opt-in and does not announce format v6 write mount as a
 default production path.

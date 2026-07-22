@@ -1,5 +1,9 @@
 # KAFS format v6 write-mount dependency audit
 
+> **Historical v6 audit:** The runtime paths and follow-up actions below are retired. The audit
+> remains as evidence for deleting their residual common-source dependencies. See
+> [the current retirement plan](sd-card-wear-v6-retirement-plan.md).
+
 最終更新: 2026-06-26
 
 対象: `SDW-V6RT-T3 v6 write-mount dependency audit`

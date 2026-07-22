@@ -1,5 +1,9 @@
 # KAFS format v6 runtime entrypoint plan
 
+> **Historical v6 plan:** The successful mount modes below have been retired. Do not treat this
+> plan as current CLI or operator guidance. See
+> [the current retirement plan](sd-card-wear-v6-retirement-plan.md).
+
 Date: 2026-07-07
 Status: superseded for new format work by
 [sd-card-wear-format-v7-pivot.md](sd-card-wear-format-v7-pivot.md)

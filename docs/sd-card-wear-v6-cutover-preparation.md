@@ -1,5 +1,9 @@
 # KAFS format v6 cutover preparation policy
 
+> **Historical v6 record:** Format v6 creation, runtime, and cutover workflows are retired.
+> Preserve this document only as decision history; do not execute its commands. See
+> [the current retirement plan](sd-card-wear-v6-retirement-plan.md).
+
 Date: 2026-07-02
 Status: superseded by
 [sd-card-wear-format-v7-pivot.md](sd-card-wear-format-v7-pivot.md)

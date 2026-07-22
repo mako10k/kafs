@@ -1,5 +1,9 @@
 # KAFS format v6 runtime mount admission checkpoint
 
+> **Historical v6 checkpoint:** The admitted inspection and write paths below are retired.
+> Preserve this only as decision evidence; do not execute its commands. See
+> [the current retirement plan](sd-card-wear-v6-retirement-plan.md).
+
 最終更新: 2026-07-07
 
 対象: `SDW-V6RT-T1 v6 runtime mount admission design checkpoint`

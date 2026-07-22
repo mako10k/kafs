@@ -1,5 +1,9 @@
 # KAFS format v6 lock/stress gate
 
+> **Historical v6 record:** This gate describes a retired experimental runtime and remains only
+> as source-retirement evidence. It is not an executable acceptance gate. See
+> [the current retirement plan](sd-card-wear-v6-retirement-plan.md).
+
 最終更新: 2026-06-26
 
 対象: `SDW-V6RT-T8 v6 write mount lock/stress gate`

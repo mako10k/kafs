@@ -1,5 +1,9 @@
 # KAFS SDカード劣化対策 実装計画
 
+> Format v6 sections below preserve the historical path that led to v7. Format v6 creation and
+> runtime operations are retired; they are not current implementation or operator instructions.
+> See [the v6 source retirement plan](sd-card-wear-v6-retirement-plan.md).
+
 最終更新: 2026-06-17
 
 ## 背景

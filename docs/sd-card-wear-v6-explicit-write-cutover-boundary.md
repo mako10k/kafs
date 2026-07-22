@@ -1,5 +1,9 @@
 # KAFS format v6 explicit write opt-in cutover boundary
 
+> **Historical v6 record:** The opt-in and smoke commands below are retired and no longer have a
+> successful runtime entrypoint. Do not execute them. See
+> [the current retirement plan](sd-card-wear-v6-retirement-plan.md).
+
 最終更新: 2026-07-01
 
 対象: `SDW-V6RT-T9 v6 explicit write opt-in cutover boundary`

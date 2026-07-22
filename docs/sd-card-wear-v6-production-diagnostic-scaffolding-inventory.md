@@ -1,5 +1,9 @@
 # KAFS format v6 production diagnostic scaffolding inventory
 
+> **Superseded v6 inventory:** Runtime paths described below are retired. This document is kept
+> as historical evidence; use the
+> [current residual inventory](sd-card-wear-v6-retirement-inventory-20260722.md) for ownership.
+
 Date: 2026-07-07
 Status: updated through SDW-V6RT-T57 legacy v6 token guidance retirement
 
