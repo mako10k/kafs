@@ -1,0 +1,193 @@
+project KAFS_CLI_V6_RETIREMENT:
+  version 1
+  title "KAFS migration CLI remediation and format-v6 source retirement"
+  description |
+    Scoped residual network for the user-requested migration-command UI fixes
+    and staged removal of retired format-v6 operational, shared-runtime,
+    offline-diagnostic, fixture, and final placeholder surfaces. Historical
+    records may retain clearly labeled v6 context, but current operator
+    guidance, built runtime dependencies, and supported-command contracts may
+    not advertise or depend on retired behavior.
+  as_of 2026-07-22
+  duration_unit day
+  finish REMEDIATION_ACCEPTED
+
+resource PRIMARY_STREAM:
+  title "Primary implementation and validation stream"
+  capacity 1
+
+milestone REVIEW_EVIDENCE_READY:
+  title "Current migration CLI and v6-remnant review evidence captured"
+  state reached
+
+milestone V5_V7_MIGRATION_READY:
+  title "v5-to-v7 importer and disposable lifecycle rehearsal ready"
+  state reached
+
+milestone V6_RUNTIME_RETIRED:
+  title "Format-v6 runtime operations fail closed through the placeholder"
+  state reached
+
+milestone CLI_REMEDIATION_BASE_READY:
+  title "Migration UI remediation baseline ready"
+  state reached
+
+milestone V6_RETIREMENT_REBASE_READY:
+  title "Format-v6 retirement rebaseline ready"
+  state reached
+
+milestone CLI_INPUT_CONTRACT_STRICT:
+  title "Migration commands reject malformed and mode-inapplicable input"
+
+milestone MIGRATION_AUTOMATION_CONTRACT_READY:
+  title "Migration command, rehearsal, and evidence output contracts are stable"
+
+milestone V6_RESIDUAL_SCOPE_BOUND:
+  title "Remaining format-v6 recovery and historical boundaries are truthful"
+
+milestone V6_ACTIVE_COMMON_DECOUPLED:
+  title "Active common and v7 build paths have no v6 runtime-policy dependency"
+
+milestone V6_OFFLINE_SURFACES_RETIRED:
+  title "Format-v6 offline diagnostics, fixture creation, and tests are retired"
+
+milestone V6_ENTRYPOINT_REMOVED:
+  title "Final format-v6 placeholder, packaging, manual, and completion are removed"
+
+milestone REMEDIATION_QUALIFICATION_READY:
+  title "Migration UI and format-v6 retirement changes are ready for integrated qualification"
+
+milestone REMEDIATION_ACCEPTED:
+  title "Migration UI remediation and format-v6 source retirement are accepted"
+
+gate REVIEW_REQUIRED_FOR_CLI REVIEW_EVIDENCE_READY -> CLI_REMEDIATION_BASE_READY:
+  reason "The strict command contract must be derived from the current UI review"
+
+gate MIGRATION_SURFACE_REQUIRED V5_V7_MIGRATION_READY -> CLI_REMEDIATION_BASE_READY:
+  reason "Remediation applies to the current importer and lifecycle rehearsal surface"
+
+gate REVIEW_REQUIRED_FOR_V6 REVIEW_EVIDENCE_READY -> V6_RETIREMENT_REBASE_READY:
+  reason "Retirement must use the current source, UI, and build-reference inventory"
+
+gate RETIRED_RUNTIME_REQUIRED V6_RUNTIME_RETIRED -> V6_RETIREMENT_REBASE_READY:
+  reason "Source removal starts only after operational v6 runtime admission is fail closed"
+
+task CLI_FAIL_CLOSED_CONTRACT CLI_REMEDIATION_BASE_READY -> CLI_INPUT_CONTRACT_STRICT:
+  title "Make migration command parsing and documented behavior fail closed"
+  description |
+    Reject malformed numeric values, stray operands, missing values, and
+    options that do not apply to the selected mode. Align help, manual, exit
+    status, and completion behavior for the supported command modes. Removal
+    of false v6 guidance belongs to V6_RESIDUAL_CONTRACT so the two branches do
+    not edit the same contract for different reasons.
+  estimate:
+    optimistic 1d
+    most_likely 2d
+    pessimistic 4d
+  owner "KAFS implementation stream"
+  source "2026-07-22 migration command UI review"
+  requires:
+    PRIMARY_STREAM 1
+
+task MIGRATION_AUTOMATION_CONTRACT CLI_INPUT_CONTRACT_STRICT -> MIGRATION_AUTOMATION_CONTRACT_READY:
+  title "Make migration lifecycle semantics and automation output unambiguous"
+  description |
+    Define a stable machine-readable result contract for importer, rehearsal,
+    and evidence validation; keep human output compatible where justified.
+    Use replay rather than partial-resume terminology, document prerequisites,
+    report locations, retention behavior, and exit 77, and test the published
+    contract rather than unversioned human substrings.
+  estimate:
+    optimistic 2d
+    most_likely 3d
+    pessimistic 6d
+  owner "KAFS implementation stream"
+  source "2026-07-22 migration command UI review"
+  requires:
+    PRIMARY_STREAM 1
+
+task V6_RESIDUAL_CONTRACT V6_RETIREMENT_REBASE_READY -> V6_RESIDUAL_SCOPE_BOUND:
+  title "Make the residual format-v6 support boundary truthful and bounded"
+  description |
+    Remove current operator instructions and scripts that invoke retired v6
+    runtime or creation paths, correct current manuals and Unreleased notes,
+    and explicitly separate recoverability evidence that must remain until
+    decoupling from historical records that may be retained as history.
+  estimate:
+    optimistic 1d
+    most_likely 2d
+    pessimistic 3d
+  owner "KAFS implementation stream"
+  source "docs/sd-card-wear-v6-retirement-plan.md and 2026-07-22 remnant review"
+  requires:
+    PRIMARY_STREAM 1
+
+task V6_ACTIVE_COMMON_DECOUPLING V6_RESIDUAL_SCOPE_BOUND -> V6_ACTIVE_COMMON_DECOUPLED:
+  title "Remove retired v6 runtime policy and ownership from active common paths"
+  description |
+    Eliminate unreachable v6 controlled-write policy from the shared FUSE
+    runtime, replace v6-owned context and shard names with genuinely neutral or
+    v7-owned state where still required, and extend ownership checks to cover
+    shared sources linked into active binaries.
+  estimate:
+    optimistic 2d
+    most_likely 4d
+    pessimistic 8d
+  owner "KAFS implementation stream"
+  source "src/Makefile.am, src/kafs_shared_fuse_runtime.c, and src/kafs_context.h"
+  requires:
+    PRIMARY_STREAM 1
+
+task V6_OFFLINE_RETIREMENT V6_ACTIVE_COMMON_DECOUPLED -> V6_OFFLINE_SURFACES_RETIRED:
+  title "Retire the remaining v6 offline diagnostic and fixture capability"
+  description |
+    Remove v6-specific fsck and dump behavior, test-only image creation,
+    descriptor fixtures, regression wiring, static-analysis exclusions, and
+    obsolete v6-only documentation after enumerating every active consumer.
+    Preserve no v6 compatibility facade for v7 or neutral code.
+  estimate:
+    optimistic 2d
+    most_likely 5d
+    pessimistic 10d
+  owner "KAFS implementation stream"
+  source "docs/sd-card-wear-v6-retirement-plan.md"
+  requires:
+    PRIMARY_STREAM 1
+
+task V6_FINAL_ENTRYPOINT_RETIREMENT V6_OFFLINE_SURFACES_RETIRED -> V6_ENTRYPOINT_REMOVED:
+  title "Remove the final v6 retirement placeholder and packaged command surface"
+  description |
+    Remove kafs-v6 only after no remaining source, offline tool, fixture, or
+    operator workflow needs its deterministic retirement diagnostic. Remove
+    its build and install rules, manual, completion, and final placeholder-only
+    tests in the same capability closure.
+  estimate:
+    optimistic 1d
+    most_likely 2d
+    pessimistic 3d
+  owner "KAFS implementation stream"
+  source "docs/sd-card-wear-v6-retirement-plan.md"
+  requires:
+    PRIMARY_STREAM 1
+
+gate CLI_CONTRACT_REQUIRED MIGRATION_AUTOMATION_CONTRACT_READY -> REMEDIATION_QUALIFICATION_READY:
+  reason "Integrated qualification requires the complete migration command contract"
+
+gate V6_RETIREMENT_REQUIRED V6_ENTRYPOINT_REMOVED -> REMEDIATION_QUALIFICATION_READY:
+  reason "Integrated qualification requires the staged v6 source retirement to be complete"
+
+task INTEGRATED_REMEDIATION_QUALIFICATION REMEDIATION_QUALIFICATION_READY -> REMEDIATION_ACCEPTED:
+  title "Qualify the final migration UI and v6-retired repository surface"
+  description |
+    Re-run focused CLI, importer, rehearsal, fsck/dump, packaging, ownership,
+    static, clone, and full regression gates. Confirm current guidance contains
+    no executable v6 workflow and that permitted historical references are
+    explicitly labeled and excluded from supported behavior.
+  estimate:
+    optimistic 1d
+    most_likely 2d
+    pessimistic 4d
+  owner "KAFS implementation stream"
+  source "AGENTS.md verification and v6 retirement exit gates"
+  requires:
+    PRIMARY_STREAM 1
