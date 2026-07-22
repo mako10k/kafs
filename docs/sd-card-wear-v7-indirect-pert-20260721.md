@@ -856,3 +856,163 @@ blocker resolves during T59, refresh resource capacity and `dag next` before
 continuing because the remaining T59 duration may delay newly runnable critical
 work. Selection does not authorize production migration, in-place relocation,
 physical media, v6 compatibility, or production cutover.
+
+## T59 Task Start replan and rebuilt PERT (2026-07-22)
+
+- Record ID: `KAFS-PERTTOOL-20260722-T59-START-REPLAN`
+- Calculation time: 2026-07-22 13:11 JST
+- Baseline: branch `feat/v7-runtime-admission-foundation`, HEAD `7a5c750`,
+  tracked worktree clean before the planning edit
+- Accepted goal: unchanged; produce qualified v7 migration and production
+  cutover evidence without collapsing import, rehearsal, media, or review
+  boundaries
+
+### Evidence that invalidated the inherited T59 boundary
+
+T29 proves only that `kafsresize --migrate-create` can precheck a clean v5
+source and create a valid empty v7 destination. Current `kafs-v7` controlled
+write admits regular-file create/write/truncate and direct-directory append as
+part of file creation. Its policy rejects `mkdir`, symlink creation, ownership
+and timestamp mutation, indirect-directory mutation, cross-group mutation, and
+other metadata changes. The inspection regression's nested directory and
+symlink are constructed by test-owned raw fixture seeding, not by a production
+importer.
+
+Therefore a direct jump from destination creation to full
+namespace/metadata/payload rehearsal would either test only a convenient
+fixture or silently broaden the controlled runtime surface. Neither closes the
+accepted migration capability. The inherited implementation boundary is
+`REPLAN`, while the accepted migration goal remains valid.
+
+The residual migration leg is decomposed as:
+
+| PERT ID | Ticket | Capability | O | M | P | TE | Confidence |
+| --- | --- | --- | ---: | ---: | ---: | ---: | --- |
+| `MIGRATION_EVIDENCE_CONTRACT` | T59-A | Versioned source/destination inventory, phase, resume, rollback, and false-claim validation | 2 | 4 | 7 | 4.167 | Low |
+| `V7_MIGRATION_IMPORT_SURFACE` | T59-B | V7-owned offline directory, regular-file, symlink, metadata, and payload import | 5 | 10 | 18 | 10.5 | Low |
+| `V5_V7_MIGRATION_REHEARSAL` | T59-C | Normal/resume/rollback/idempotence rehearsal over the contract and importer | 3 | 6 | 10 | 6.167 | Low |
+
+All three tasks use `PRIMARY_STREAM` capacity one. T59-A follows the reached
+`V7_MIGRATION_TARGET_READY` milestone; T59-B follows T59-A, and T59-C follows
+T59-B. This preserves source freeze, representability, destination admission,
+and lifecycle evidence as causal predecessors rather than test details.
+
+### Machine result
+
+`./scripts/pert-next-task.sh plans/current.pert` passed `dsl check`,
+`dag analyze --schedule both`, and `dag next`, in that order. The plan contains
+16 milestones, 8 tasks, 7 gates, and 2 resources.
+
+- Precedence makespan: 25.167 implementation days, conditional on both external
+  blockers resolving.
+- Precedence critical path:
+  `MIGRATION_EVIDENCE_CONTRACT -> V7_MIGRATION_IMPORT_SURFACE ->
+  V5_V7_MIGRATION_REHEARSAL -> MIGRATION_REHEARSAL_REQUIRED ->
+  CUTOVER_EVIDENCE_DECISION`.
+- Resource makespan: 32.833 implementation days under primary capacity one.
+- Resource critical path begins with all three migration tasks, then continues
+  through the conditional hardware/VHDX/media work and cutover decision.
+
+| Classification | Node | TE | TF | Capability unlocked or wait reason |
+| --- | --- | ---: | ---: | --- |
+| `RUNNABLE NOW` | T59-A `MIGRATION_EVIDENCE_CONTRACT` | 4.167d | 0d | Freezes lifecycle and evidence semantics before importer work |
+| `BLOCKED NOW` | `HARDWARE_APPROVAL` | 1.167d | 14.333d | Exact apparatus and digest-bound approval remain unavailable |
+| `BLOCKED NOW` | `VHDX_HOST_RECOVERY_RUN` | 1.167d | 14.333d | No safe terminate/restart window has been supplied |
+| `UPCOMING` | T59-B `V7_MIGRATION_IMPORT_SURFACE` | 10.5d | 0d | Waits for the migration contract |
+| `UPCOMING` | T59-C `V5_V7_MIGRATION_REHEARSAL` | 6.167d | 0d | Waits for the offline importer |
+| `UPCOMING` | `CUTOVER_EVIDENCE_DECISION` | 4.333d | 0d | Waits for migration rehearsal and qualified media |
+
+`READY / WAITING RESOURCE` and `ACTIVE` are empty. The resource schedule is
+conditional on blocked work becoming available at time zero and is not a
+calendar forecast.
+
+### Ordering decision
+
+| Ordering | Immediate effect | Opportunity cost and rework |
+| --- | --- | --- |
+| T59-A contract first | Closes the only runnable zero-slack migration predecessor | Selected; importer and rehearsal share one versioned lifecycle boundary |
+| T59-B importer first | Starts data construction sooner | Invalid ordering because source representability, partial state, resume, and acceptance semantics are not fixed |
+| Original T59 rehearsal first | Produces a quick fixture demonstration | Cannot prove general namespace/metadata copy and would leave the missing importer hidden |
+| Expand FUSE mutation first | Could reuse mounted copy tools later | Broadens runtime durability and qualification scope although an offline importer is the accepted boundary |
+
+The decision is `SELECT MIGRATION_EVIDENCE_CONTRACT` (T59-A). It authorizes
+only a versioned validate-only contract plus synthetic regression. It does not
+authorize actual import, mount, production source access, v5/v6 entrypoint
+reuse, physical media, or a cutover claim.
+
+## T59-A closeout and next-task refresh (2026-07-22)
+
+- Record ID: `KAFS-PERTTOOL-20260722-T59A-CLOSEOUT`
+- Calculation time: 2026-07-22 13:37 JST
+- Baseline: branch `feat/v7-runtime-admission-foundation`, start HEAD
+  `7a5c750`, tracked changes limited to the reviewed T59-A wave
+- Plan: `plans/current.pert`
+- Tool: `perttool 0.1.0-alpha.1`
+- Accepted goal: unchanged; produce qualified v7 migration and production
+  cutover evidence without collapsing importer, rehearsal, media, or review
+  boundaries
+
+### Closed dependency
+
+The validate-only T59-A gate now binds exact plan, source inventory, copy
+ledger, destination inventory, and decision bytes. It rejects source mutation,
+identity drift, incomplete or divergent destination semantics, illegal resume
+transitions, artifact tampering, and cutover-claim escalation. Synthetic
+regression proves the contract's ACCEPT, RESUME_REQUIRED, and ROLLBACK states;
+it does not claim an importer or actual migration.
+
+Build, focused regression, all 46 Automake tests, format, lint, clone/static
+checks, and distribution passed. No PowerShell, VHDX, WSL termination, device,
+production source, or cutover action ran. This closes
+`MIGRATION_EVIDENCE_CONTRACT`; `MIGRATION_CONTRACT_READY` is reached.
+
+The residual plan removes the completed task and its superseded
+`V7_MIGRATION_TARGET_READY` starting milestone. The first closeout check
+correctly rejected that old milestone when it no longer reached the residual
+finish; removing the superseded start point made
+`MIGRATION_CONTRACT_READY` the truthful current migration position.
+
+### Machine result
+
+`./scripts/pert-next-task.sh plans/current.pert` then passed `dsl check`,
+`dag analyze --schedule both`, and `dag next`, in that order. The residual plan
+contains 15 milestones, 7 tasks, 7 gates, and 2 resources.
+
+- Precedence makespan: 21 implementation days, conditional on both external
+  blockers resolving.
+- Precedence critical path:
+  `V7_MIGRATION_IMPORT_SURFACE -> V5_V7_MIGRATION_REHEARSAL ->
+  MIGRATION_REHEARSAL_REQUIRED -> CUTOVER_EVIDENCE_DECISION`.
+- Resource makespan: 28.667 implementation days under primary capacity one.
+- Resource critical path starts with T59-B and T59-C, then conditionally
+  schedules the two blocked primary-stream tasks, real-media execution,
+  independent review, and cutover decision.
+
+| Classification | Node | TE | TF | Capability unlocked or wait reason |
+| --- | --- | ---: | ---: | --- |
+| `RUNNABLE NOW` | T59-B `V7_MIGRATION_IMPORT_SURFACE` | 10.5d | 0d | Supplies the v7-owned offline construction path required by rehearsal |
+| `BLOCKED NOW` | `HARDWARE_APPROVAL` | 1.167d | 10.167d | Exact apparatus and digest-bound approval remain unavailable |
+| `BLOCKED NOW` | `VHDX_HOST_RECOVERY_RUN` | 1.167d | 10.167d | No safe terminate/restart window has been supplied |
+| `UPCOMING` | T59-C `V5_V7_MIGRATION_REHEARSAL` | 6.167d | 0d | Waits for the offline importer |
+| `UPCOMING` | `CUTOVER_EVIDENCE_DECISION` | 4.333d | 0d | Waits for rehearsal and qualified media |
+| `UPCOMING` | `REAL_MEDIA_EXECUTION` | 4.167d | 10.167d | Waits for both external qualification predecessors |
+| `UPCOMING` | `INDEPENDENT_REAL_MEDIA_REVIEW` | 1.167d | 10.167d | Waits for real-media evidence capture |
+
+`READY / WAITING RESOURCE` and `ACTIVE` are empty. The resource schedule is
+conditional on blocked work becoming available at time zero and is not a
+calendar forecast.
+
+### Ordering decision
+
+| Ordering | Immediate effect | Opportunity cost and rework |
+| --- | --- | --- |
+| T59-B importer next | Closes the only runnable zero-slack predecessor | Selected; the contract is fixed and T59-C directly consumes this capability |
+| T59-C rehearsal next | Starts lifecycle testing sooner | Invalid because no general importer exists and the predecessor is unsatisfied |
+| Wait for VHDX or hardware | Preserves primary capacity | Both remain externally blocked, so waiting closes no capability |
+| Expand mounted FUSE writes | Makes generic copy tools more convenient | Broadens runtime durability scope and repeats qualification instead of supplying the selected offline boundary |
+
+The closeout decision is `SELECT V7_MIGRATION_IMPORT_SURFACE` (T59-B). It is
+the only `RUNNABLE NOW` zero-slack task and requires its own fresh Task Start
+Gate before edits. Selection does not authorize production data access,
+in-place migration, v5/v6 runtime reuse, physical media, VHDX interruption, or
+cutover.

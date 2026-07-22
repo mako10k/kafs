@@ -8,12 +8,14 @@
 - The harness remains complete and the four-point host-recovery matrix remains
   incomplete. This is a scheduling block, not qualification evidence.
 - `plans/current.pert` keeps `VHDX_HOST_RECOVERY_RUN` as a mandatory predecessor
-  but marks it blocked alongside `HARDWARE_APPROVAL`; the post-T57 residual plan
-  gives both zero total float without treating either as runnable.
+  but marks it blocked alongside `HARDWARE_APPROVAL`; the T59-A closeout plan
+  gives each 10.167 days total float and schedule-critical status without
+  treating either as runnable.
 - The 2026-07-22 blocker-decomposition refresh registers T57, a read-only
-  four-point evidence audit gate, separately from the disruptive capture. T57
-  and T58 are now complete, so the refreshed plan selects the disposable-image
-  T59 rehearsal while both disruptive paths remain blocked.
+  four-point evidence audit gate, separately from the disruptive capture. T57,
+  T58, and the replanned T59-A migration contract are now complete, so the
+  refreshed plan selects the T59-B offline importer while both disruptive paths
+  remain blocked.
 - Do not run the commands in this handoff until the user explicitly resumes the
   qualification. At that time, refresh Git state, host/VHDX identity, state-root
   freshness, Task Start evidence, and `perttool` output before execution.
@@ -92,8 +94,8 @@ The closeout `./scripts/pert-next-task.sh plans/current.pert` result was:
 The original restart point was therefore the fresh Task Start Gate for
 `VHDX_HOST_RECOVERY_RUN`, followed by native Windows read-only preflight. The
 2026-07-22 deferral and blocker-decomposition plan supersede that selection:
-T57 and T58 are complete, T59 is selected, and host execution remains blocked.
-Do not select namespace validation or another off-goal task.
+T57, T58, and T59-A are complete, T59-B is selected, and host execution remains
+blocked. Do not select namespace validation or another off-goal task.
 
 ## Resume Task Start Gate
 
@@ -103,11 +105,11 @@ Before any terminate command, refresh these facts:
 2. Run `git status --short --branch`. The only expected untracked files are the
    known generated test executables; any tracked diff requires `REPLAN`.
 3. Run `./scripts/pert-next-task.sh plans/current.pert`. On the current deferred
-   plan, require T59 in `RUNNABLE NOW` and the VHDX run in `BLOCKED NOW`. The T57
-   gate is complete, but an actual four-point capture still must pass it. After
-   the user supplies a window, remove only the now-resolved blocker, refresh all
-   dependency/resource state, and proceed only if `dag next` places the run in
-   `RUNNABLE NOW` for available capacity.
+   plan, require T59-B in `RUNNABLE NOW` and the VHDX run in `BLOCKED NOW`. The
+   T57 gate is complete, but an actual four-point capture still must pass it.
+   After the user supplies a window, remove only the now-resolved blocker,
+   refresh all dependency/resource state, and proceed only if `dag next` places
+   the run in `RUNNABLE NOW` for available capacity.
 4. Confirm the target is the registered Ubuntu distro and that the controller
    rediscovers a `.vhdx`; do not reuse today's path or size without discovery.
 5. From native Windows PowerShell, run the preflight command below without

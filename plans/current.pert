@@ -4,9 +4,10 @@ project KAFS_CURRENT:
   description |
     Residual network for qualified v7 migration and production-cutover evidence.
     Hardware and WSL maintenance windows remain blocked. The real-media
-    evidence contract and independent VHDX audit are complete; the remaining
-    migration rehearsal stays explicit so it can close before disruptive
-    execution windows become available.
+    evidence contract and independent VHDX audit are complete. The migration
+    leg is decomposed into its lifecycle/evidence contract, v7-owned offline
+    import surface, and final rehearsal so unsupported runtime mutation is not
+    mistaken for a complete data-copy path.
   as_of 2026-07-22
   duration_unit day
   finish PRODUCTION_CUTOVER_DECIDED
@@ -25,10 +26,6 @@ milestone VHDX_HARNESS_READY:
 
 milestone REAL_MEDIA_APPROVAL_CONTRACT_READY:
   title "Fail-closed real-media matrix and approval contract ready"
-  state reached
-
-milestone V7_MIGRATION_TARGET_READY:
-  title "Validated v7 migration destination creation ready"
   state reached
 
 milestone VHDX_EVIDENCE_AUDIT_READY:
@@ -59,6 +56,13 @@ milestone MEDIA_QUALIFIED:
 
 milestone MIGRATION_REHEARSAL_READY:
   title "v5-to-v7 data migration and rollback rehearsal ready"
+
+milestone MIGRATION_CONTRACT_READY:
+  title "Versioned v5-to-v7 migration lifecycle and evidence contract ready"
+  state reached
+
+milestone MIGRATION_IMPORT_READY:
+  title "V7-owned offline namespace, metadata, and payload import ready"
 
 milestone CUTOVER_EXECUTION_READY:
   title "Qualified runtime and rehearsed migration ready for cutover evidence"
@@ -134,19 +138,35 @@ task INDEPENDENT_REAL_MEDIA_REVIEW REAL_MEDIA_EVIDENCE_CAPTURED -> MEDIA_QUALIFI
   requires:
     INDEPENDENT_REVIEW_STREAM 1
 
-task V5_V7_MIGRATION_REHEARSAL V7_MIGRATION_TARGET_READY -> MIGRATION_REHEARSAL_READY:
-  title "Implement and rehearse v5-to-v7 data migration and rollback"
+task V7_MIGRATION_IMPORT_SURFACE MIGRATION_CONTRACT_READY -> MIGRATION_IMPORT_READY:
+  title "Implement the v7-owned offline migration import surface"
   description |
-    Complete data-copy rehearsal beyond destination creation using disposable
-    file images, verify source immutability and destination namespace/payload,
-    and produce resumable rollback and evidence contracts without production
-    cutover or physical media.
+    Import validated v5 directory, regular-file, symlink, metadata, and payload
+    state into a disposable v7 destination without routing writes through v5,
+    v6, or the bounded controlled-write FUSE surface. Reject unsupported source
+    states and incomplete destinations before admission.
+  estimate:
+    optimistic 5d
+    most_likely 10d
+    pessimistic 18d
+  owner "KAFS implementation stream"
+  source "docs/sd-card-wear-tickets.md#sdw-v7rt-t59-b-v7-offline-migration-import-surface"
+  requires:
+    PRIMARY_STREAM 1
+
+task V5_V7_MIGRATION_REHEARSAL MIGRATION_IMPORT_READY -> MIGRATION_REHEARSAL_READY:
+  title "Rehearse v5-to-v7 data migration, resume, and rollback"
+  description |
+    Exercise the versioned contract and offline importer using disposable file
+    images, prove source immutability and destination namespace/metadata/payload
+    equivalence, and verify interruption resume, rollback, and idempotence
+    without production cutover or physical media.
   estimate:
     optimistic 3d
     most_likely 6d
     pessimistic 10d
   owner "KAFS implementation stream"
-  source "docs/sd-card-wear-tickets.md#sdw-v7rt-t59-v5-to-v7-migration-rehearsal"
+  source "docs/sd-card-wear-tickets.md#sdw-v7rt-t59-c-v5-to-v7-migration-rehearsal"
   requires:
     PRIMARY_STREAM 1
 

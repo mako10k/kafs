@@ -2,7 +2,7 @@
 
 - Branch: `feat/v7-runtime-admission-foundation`
 - Baseline: `460f7b0`
-- Status: baseline accepted; T49-T58 complete; T59 migration rehearsal selected while hardware and VHDX execution wait
+- Status: baseline accepted; T49-T58 and T59-A complete; T59-B offline importer selected while hardware and VHDX execution wait
 
 ## Purpose
 
@@ -411,6 +411,22 @@ hardware approval are both zero-slack `BLOCKED NOW` nodes. T59
 total float and resource-critical status. It is selected because no critical
 task is runnable; if either external window opens, the primary-stream schedule
 must be refreshed before continuing T59.
+
+## 2026-07-22 T59 Start Replan And T59-A Closeout
+
+Fresh code evidence showed that destination creation and the bounded v7 FUSE
+write surface do not provide a general namespace/metadata/payload importer.
+T59 was therefore decomposed into T59-A lifecycle/evidence contract, T59-B
+v7-owned offline importer, and T59-C rehearsal. T59-A completed with a
+validate-only digest-bound contract and synthetic ACCEPT, RESUME_REQUIRED, and
+ROLLBACK regression; all 46 tests and the repository static/distribution gates
+passed without PowerShell, VHDX, WSL termination, device, or production data
+access.
+
+After marking `MIGRATION_CONTRACT_READY` reached, `dag next` selects T59-B
+`V7_MIGRATION_IMPORT_SURFACE` alone in `RUNNABLE NOW`, with expected duration
+10.5 days and total float zero. Hardware approval and VHDX host recovery remain
+`BLOCKED NOW`; neither is removed or treated as qualified evidence.
 
 ## Deferred Gate: SDW-V7RT-T48 Controlled-write RC Qualification
 
