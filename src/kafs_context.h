@@ -13,16 +13,16 @@
 #include <sys/mman.h>
 #include <sys/un.h>
 
-typedef struct kafs_v6_inode_runtime_shard
+typedef struct kafs_descriptor_inode_runtime_shard
 {
   uint64_t logical_start;
   uint64_t logical_count;
   uint64_t physical_off;
   uint64_t physical_end;
   uint32_t record_bytes;
-} kafs_v6_inode_runtime_shard_t;
+} kafs_descriptor_inode_runtime_shard_t;
 
-typedef struct kafs_v6_alloc_summary_runtime_shard
+typedef struct kafs_descriptor_alloc_summary_runtime_shard
 {
   uint64_t logical_start;
   uint64_t logical_count;
@@ -31,9 +31,9 @@ typedef struct kafs_v6_alloc_summary_runtime_shard
   uint64_t l0_bytes;
   uint64_t l1_bytes;
   uint64_t l2_bytes;
-} kafs_v6_alloc_summary_runtime_shard_t;
+} kafs_descriptor_alloc_summary_runtime_shard_t;
 
-typedef struct kafs_v6_hrl_runtime_shard
+typedef struct kafs_descriptor_hrl_runtime_shard
 {
   uint64_t logical_start;
   uint64_t logical_count;
@@ -41,11 +41,7 @@ typedef struct kafs_v6_hrl_runtime_shard
   uint64_t physical_end;
   uint32_t record_bytes;
   uint32_t group_id;
-} kafs_v6_hrl_runtime_shard_t;
-
-typedef kafs_v6_inode_runtime_shard_t kafs_descriptor_inode_runtime_shard_t;
-typedef kafs_v6_alloc_summary_runtime_shard_t kafs_descriptor_alloc_summary_runtime_shard_t;
-typedef kafs_v6_hrl_runtime_shard_t kafs_descriptor_hrl_runtime_shard_t;
+} kafs_descriptor_hrl_runtime_shard_t;
 
 typedef struct kafs_v7_inode_runtime_shard
 {
@@ -214,8 +210,6 @@ struct kafs_context
 
   // --- Runtime admission mode ---
   uint32_t c_runtime_read_only;
-  uint32_t c_v6_controlled_write_enabled;
-  uint32_t c_v6_delayed_mutation_policy_applied;
   uint32_t c_v7_controlled_write_enabled;
   uint32_t c_v7_fuse_kernel_max_write;
   uint32_t c_v7_fuse_negotiated_max_write;
@@ -233,22 +227,22 @@ struct kafs_context
   size_t c_meta_bitmap_wordcnt;
   size_t c_meta_bitmap_dirty_count;
 
-  // --- Descriptor-backed runtime mapping (introduced by experimental v6) ---
-  uint32_t c_v6_bitmap_mapping_enabled;
-  uint32_t c_v6_inode_mapping_enabled;
-  uint32_t c_v6_alloc_summary_mapping_enabled;
-  uint32_t c_v6_hrl_mapping_enabled;
-  const void *c_v6_layout_desc;
-  uint32_t c_v6_layout_desc_bytes;
-  uint32_t c_v6_layout_desc_owned;
-  kafs_v6_inode_runtime_shard_t *c_v6_inode_shards;
-  uint32_t c_v6_inode_shard_count;
-  kafs_v6_alloc_summary_runtime_shard_t *c_v6_alloc_summary_shards;
-  uint32_t c_v6_alloc_summary_shard_count;
-  kafs_v6_hrl_runtime_shard_t *c_v6_hrl_index_shards;
-  uint32_t c_v6_hrl_index_shard_count;
-  kafs_v6_hrl_runtime_shard_t *c_v6_hrl_entry_shards;
-  uint32_t c_v6_hrl_entry_shard_count;
+  // --- Neutral descriptor-backed mapping used by bounded offline diagnostics ---
+  uint32_t c_descriptor_bitmap_mapping_enabled;
+  uint32_t c_descriptor_inode_mapping_enabled;
+  uint32_t c_descriptor_alloc_summary_mapping_enabled;
+  uint32_t c_descriptor_hrl_mapping_enabled;
+  const void *c_descriptor_layout_desc;
+  uint32_t c_descriptor_layout_desc_bytes;
+  uint32_t c_descriptor_layout_desc_owned;
+  kafs_descriptor_inode_runtime_shard_t *c_descriptor_inode_shards;
+  uint32_t c_descriptor_inode_shard_count;
+  kafs_descriptor_alloc_summary_runtime_shard_t *c_descriptor_alloc_summary_shards;
+  uint32_t c_descriptor_alloc_summary_shard_count;
+  kafs_descriptor_hrl_runtime_shard_t *c_descriptor_hrl_index_shards;
+  uint32_t c_descriptor_hrl_index_shard_count;
+  kafs_descriptor_hrl_runtime_shard_t *c_descriptor_hrl_entry_shards;
+  uint32_t c_descriptor_hrl_entry_shard_count;
 
   // --- v7-owned read-only runtime view ---
   uint32_t c_v7_runtime_view_enabled;
@@ -424,11 +418,6 @@ static inline const char *kafs_ctx_descriptor_worker_policy_summary(void)
          "bg_dedup_worker=disabled hotplug=disabled)";
 }
 
-static inline const char *kafs_ctx_v6_worker_policy_summary(void)
-{
-  return kafs_ctx_descriptor_worker_policy_summary();
-}
-
 static inline int kafs_ctx_map_descriptor_runtime_admission_memory(kafs_context_t *ctx,
                                                                    const kafs_ssuperblock_t *sbdisk,
                                                                    uint64_t file_size, int prot)
@@ -453,137 +442,28 @@ static inline int kafs_ctx_map_descriptor_runtime_admission_memory(kafs_context_
   return 0;
 }
 
-static inline int kafs_ctx_map_v6_runtime_admission_memory(kafs_context_t *ctx,
-                                                           const kafs_ssuperblock_t *sbdisk,
-                                                           uint64_t file_size, int prot)
-{
-  return kafs_ctx_map_descriptor_runtime_admission_memory(ctx, sbdisk, file_size, prot);
-}
-
-static inline void kafs_ctx_v6_apply_delayed_mutation_policy(kafs_context_t *ctx)
-{
-  if (!ctx || !ctx->c_superblock ||
-      !kafs_format_uses_layout_descriptor(kafs_u32_stoh(ctx->c_superblock->s_format_version)))
-    return;
-
-  ctx->c_pendinglog_enabled = 0u;
-  ctx->c_pendinglog_base = NULL;
-  ctx->c_pendinglog_size = 0u;
-  ctx->c_pendinglog_capacity = 0u;
-  ctx->c_pending_worker_stop = 1;
-  ctx->c_tombstone_gc_worker_stop = 1;
-  ctx->c_bg_dedup_enabled = 0u;
-  ctx->c_bg_dedup_worker_stop = 1;
-  ctx->c_v6_delayed_mutation_policy_applied = 1u;
-}
-
-static inline void kafs_ctx_descriptor_apply_delayed_mutation_policy(kafs_context_t *ctx)
-{
-  kafs_ctx_v6_apply_delayed_mutation_policy(ctx);
-}
-
-static inline int kafs_ctx_v6_pending_policy_sealed(const kafs_context_t *ctx)
-{
-  if (ctx->c_pendinglog_enabled)
-    return 0;
-  if (ctx->c_pendinglog_base)
-    return 0;
-  if (ctx->c_pendinglog_size != 0u)
-    return 0;
-  if (ctx->c_pendinglog_capacity != 0u)
-    return 0;
-  if (ctx->c_pending_worker_running)
-    return 0;
-  if (ctx->c_pending_worker_lock_init)
-    return 0;
-  return ctx->c_pending_worker_stop != 0;
-}
-
-static inline int kafs_ctx_v6_tombstone_gc_policy_sealed(const kafs_context_t *ctx)
-{
-  if (ctx->c_tombstone_gc_worker_running)
-    return 0;
-  if (ctx->c_tombstone_gc_worker_lock_init)
-    return 0;
-  return ctx->c_tombstone_gc_worker_stop != 0;
-}
-
-static inline int kafs_ctx_v6_bg_dedup_policy_sealed(const kafs_context_t *ctx)
-{
-  if (ctx->c_bg_dedup_enabled)
-    return 0;
-  if (ctx->c_bg_dedup_worker_running)
-    return 0;
-  if (ctx->c_bg_dedup_worker_lock_init)
-    return 0;
-  return ctx->c_bg_dedup_worker_stop != 0;
-}
-
-static inline int kafs_ctx_v6_hotplug_policy_sealed(const kafs_context_t *ctx)
-{
-  if (ctx->c_hotplug_active)
-    return 0;
-  if (ctx->c_hotplug_fd >= 0)
-    return 0;
-  if (ctx->c_hotplug_state != KAFS_HOTPLUG_STATE_DISABLED)
-    return 0;
-  if (ctx->c_hotplug_connecting)
-    return 0;
-  return ctx->c_hotplug_uds_path[0] == '\0';
-}
-
-static inline int kafs_ctx_v6_validate_worker_policy(const kafs_context_t *ctx)
-{
-  if (!ctx || !ctx->c_superblock ||
-      !kafs_format_uses_layout_descriptor(kafs_u32_stoh(ctx->c_superblock->s_format_version)))
-    return -EINVAL;
-  if (!ctx->c_v6_delayed_mutation_policy_applied)
-    return -EPROTO;
-
-  if (!kafs_ctx_v6_pending_policy_sealed(ctx))
-    return -EPROTO;
-  if (!kafs_ctx_v6_tombstone_gc_policy_sealed(ctx))
-    return -EPROTO;
-  if (!kafs_ctx_v6_bg_dedup_policy_sealed(ctx))
-    return -EPROTO;
-  if (!kafs_ctx_v6_hotplug_policy_sealed(ctx))
-    return -EPROTO;
-
-  return 0;
-}
-
-static inline int kafs_ctx_descriptor_validate_worker_policy(const kafs_context_t *ctx)
-{
-  return kafs_ctx_v6_validate_worker_policy(ctx);
-}
-
-static inline int kafs_ctx_v6_validate_runtime_views(const kafs_context_t *ctx)
+static inline int kafs_ctx_descriptor_validate_runtime_views(const kafs_context_t *ctx)
 {
   if (!ctx || !ctx->c_superblock ||
       !kafs_format_uses_layout_descriptor(kafs_u32_stoh(ctx->c_superblock->s_format_version)))
     return -EINVAL;
   if (ctx->c_blkmasktbl || ctx->c_inotbl || ctx->c_mapsize != 0u)
     return -EPROTO;
-  if (!ctx->c_v6_layout_desc_owned || !ctx->c_v6_bitmap_mapping_enabled ||
-      !ctx->c_v6_inode_mapping_enabled || !ctx->c_v6_alloc_summary_mapping_enabled ||
-      !ctx->c_v6_hrl_mapping_enabled)
+  if (!ctx->c_descriptor_layout_desc_owned || !ctx->c_descriptor_bitmap_mapping_enabled ||
+      !ctx->c_descriptor_inode_mapping_enabled ||
+      !ctx->c_descriptor_alloc_summary_mapping_enabled || !ctx->c_descriptor_hrl_mapping_enabled)
     return -EPROTO;
   return 0;
 }
 
-static inline int kafs_ctx_descriptor_validate_runtime_views(const kafs_context_t *ctx)
-{
-  return kafs_ctx_v6_validate_runtime_views(ctx);
-}
-
 static inline const void *kafs_ctx_descriptor_layout_desc(const kafs_context_t *ctx)
 {
-  return ctx ? ctx->c_v6_layout_desc : NULL;
+  return ctx ? ctx->c_descriptor_layout_desc : NULL;
 }
 
 static inline uint32_t kafs_ctx_descriptor_layout_desc_bytes(const kafs_context_t *ctx)
 {
-  return ctx ? ctx->c_v6_layout_desc_bytes : 0u;
+  return ctx ? ctx->c_descriptor_layout_desc_bytes : 0u;
 }
 
 static inline void kafs_ctx_v7_runtime_view_clear(kafs_context_t *ctx)
@@ -721,24 +601,24 @@ static inline int kafs_ctx_v7_data_ref_physical_offset(const kafs_context_t *ctx
   return -EIO;
 }
 
-static inline int kafs_ctx_v6_inode_mapping_enabled(const kafs_context_t *ctx)
+static inline int kafs_ctx_descriptor_inode_mapping_enabled(const kafs_context_t *ctx)
 {
   return ctx && ctx->c_superblock &&
          kafs_format_uses_layout_descriptor(kafs_ctx_inode_format(ctx)) &&
-         ctx->c_v6_inode_mapping_enabled && ctx->c_v6_inode_shards &&
-         ctx->c_v6_inode_shard_count > 0u && ctx->c_img_base && ctx->c_img_size > 0u;
+         ctx->c_descriptor_inode_mapping_enabled && ctx->c_descriptor_inode_shards &&
+         ctx->c_descriptor_inode_shard_count > 0u && ctx->c_img_base && ctx->c_img_size > 0u;
 }
 
-static inline const kafs_v6_inode_runtime_shard_t *
-kafs_ctx_v6_inode_shard_for_ino(const kafs_context_t *ctx, kafs_inocnt_t ino)
+static inline const kafs_descriptor_inode_runtime_shard_t *
+kafs_ctx_descriptor_inode_shard_for_ino(const kafs_context_t *ctx, kafs_inocnt_t ino)
 {
-  if (!kafs_ctx_v6_inode_mapping_enabled(ctx))
+  if (!kafs_ctx_descriptor_inode_mapping_enabled(ctx))
     return NULL;
 
   uint64_t ino64 = (uint64_t)ino;
-  for (uint32_t i = 0; i < ctx->c_v6_inode_shard_count; ++i)
+  for (uint32_t i = 0; i < ctx->c_descriptor_inode_shard_count; ++i)
   {
-    const kafs_v6_inode_runtime_shard_t *shard = &ctx->c_v6_inode_shards[i];
+    const kafs_descriptor_inode_runtime_shard_t *shard = &ctx->c_descriptor_inode_shards[i];
     uint64_t logical_end = shard->logical_start + shard->logical_count;
     if (ino64 >= shard->logical_start && ino64 < logical_end)
       return shard;
@@ -746,9 +626,10 @@ kafs_ctx_v6_inode_shard_for_ino(const kafs_context_t *ctx, kafs_inocnt_t ino)
   return NULL;
 }
 
-static inline kafs_sinode_t *kafs_ctx_v6_inode(kafs_context_t *ctx, kafs_inocnt_t ino)
+static inline kafs_sinode_t *kafs_ctx_descriptor_inode(kafs_context_t *ctx, kafs_inocnt_t ino)
 {
-  const kafs_v6_inode_runtime_shard_t *shard = kafs_ctx_v6_inode_shard_for_ino(ctx, ino);
+  const kafs_descriptor_inode_runtime_shard_t *shard =
+      kafs_ctx_descriptor_inode_shard_for_ino(ctx, ino);
   return shard ? kafs_ctx_inode_from_runtime_shard(ctx, ino, shard->logical_start,
                                                    shard->record_bytes, shard->physical_off)
                : NULL;
@@ -759,8 +640,8 @@ static inline kafs_sinode_t *kafs_ctx_inode(kafs_context_t *ctx, kafs_inocnt_t i
   assert(ctx != NULL);
   if (kafs_ctx_v7_inode_mapping_enabled(ctx))
     return kafs_ctx_v7_inode(ctx, ino);
-  if (kafs_ctx_v6_inode_mapping_enabled(ctx))
-    return kafs_ctx_v6_inode(ctx, ino);
+  if (kafs_ctx_descriptor_inode_mapping_enabled(ctx))
+    return kafs_ctx_descriptor_inode(ctx, ino);
   return (kafs_sinode_t *)kafs_inode_ptr_in_table(ctx->c_inotbl, kafs_ctx_inode_format(ctx), ino);
 }
 
@@ -770,8 +651,8 @@ static inline const kafs_sinode_t *kafs_ctx_inode_const(const kafs_context_t *ct
   assert(ctx != NULL);
   if (kafs_ctx_v7_inode_mapping_enabled(ctx))
     return (const kafs_sinode_t *)kafs_ctx_v7_inode((kafs_context_t *)ctx, ino);
-  if (kafs_ctx_v6_inode_mapping_enabled(ctx))
-    return (const kafs_sinode_t *)kafs_ctx_v6_inode((kafs_context_t *)ctx, ino);
+  if (kafs_ctx_descriptor_inode_mapping_enabled(ctx))
+    return (const kafs_sinode_t *)kafs_ctx_descriptor_inode((kafs_context_t *)ctx, ino);
   return (const kafs_sinode_t *)kafs_inode_ptr_const_in_table(ctx->c_inotbl,
                                                               kafs_ctx_inode_format(ctx), ino);
 }
@@ -806,16 +687,16 @@ static inline kafs_inocnt_t kafs_ctx_ino_no(const kafs_context_t *ctx, const kaf
     }
     abort();
   }
-  if (kafs_ctx_v6_inode_mapping_enabled(ctx))
+  if (kafs_ctx_descriptor_inode_mapping_enabled(ctx))
   {
     uintptr_t base = (uintptr_t)ctx->c_img_base;
     uintptr_t addr = (uintptr_t)inoent;
     if (addr < base)
       abort();
     uint64_t off = (uint64_t)(addr - base);
-    for (uint32_t i = 0; i < ctx->c_v6_inode_shard_count; ++i)
+    for (uint32_t i = 0; i < ctx->c_descriptor_inode_shard_count; ++i)
     {
-      const kafs_v6_inode_runtime_shard_t *shard = &ctx->c_v6_inode_shards[i];
+      const kafs_descriptor_inode_runtime_shard_t *shard = &ctx->c_descriptor_inode_shards[i];
       if (off < shard->physical_off || off >= shard->physical_end)
         continue;
       if (shard->record_bytes == 0u)
@@ -862,7 +743,7 @@ static inline int kafs_ctx_ino_find_free(kafs_context_t *ctx, kafs_inocnt_t *pin
   if (kafs_ctx_v7_inode_mapping_enabled(ctx))
     return -EROFS;
 
-  if (!kafs_ctx_v6_inode_mapping_enabled(ctx))
+  if (!kafs_ctx_descriptor_inode_mapping_enabled(ctx))
     return kafs_ino_find_free(ctx->c_inotbl, kafs_ctx_inode_format(ctx), pino, pino_search, inocnt);
 
   kafs_inocnt_t ino_search = *pino_search;

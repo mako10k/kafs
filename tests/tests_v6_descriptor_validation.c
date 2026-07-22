@@ -1511,15 +1511,15 @@ static int test_allocator_summary_runtime_allocation_mapping(void)
     int admit_rc = kafs_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL, NULL,
                                                        &alloc_coverage, NULL, NULL);
     if (admit_rc != 0 ||
-        !ctx.c_v6_bitmap_mapping_enabled || !ctx.c_v6_inode_mapping_enabled ||
-        !ctx.c_v6_alloc_summary_mapping_enabled || alloc_coverage.shard_count != 2u ||
-        ctx.c_v6_alloc_summary_shard_count != 2u)
+        !ctx.c_descriptor_bitmap_mapping_enabled || !ctx.c_descriptor_inode_mapping_enabled ||
+        !ctx.c_descriptor_alloc_summary_mapping_enabled || alloc_coverage.shard_count != 2u ||
+        ctx.c_descriptor_alloc_summary_shard_count != 2u)
       failed = 1;
   }
 
   if (!failed)
   {
-    const kafs_v6_alloc_summary_runtime_shard_t *second = &ctx.c_v6_alloc_summary_shards[1];
+    const kafs_descriptor_alloc_summary_runtime_shard_t *second = &ctx.c_descriptor_alloc_summary_shards[1];
     kafs_blkcnt_t fdb = kafs_sb_first_data_block_get(ctx.c_superblock);
     kafs_blkcnt_t blocnt = kafs_sb_blkcnt_get(ctx.c_superblock);
     if (second->logical_start < (uint64_t)fdb || second->logical_start >= (uint64_t)blocnt ||
@@ -1544,7 +1544,7 @@ static int test_allocator_summary_runtime_allocation_mapping(void)
 
       kafs_descriptor_allocator_summary_lookup_t lookup;
       if (!failed &&
-          (kafs_descriptor_allocator_summary_lookup(ctx.c_v6_layout_desc, ctx.c_v6_layout_desc_bytes,
+          (kafs_descriptor_allocator_summary_lookup(ctx.c_descriptor_layout_desc, ctx.c_descriptor_layout_desc_bytes,
                                             (uint64_t)blo, &lookup) != 0 ||
            lookup.l1_byte_off < second->physical_off || lookup.l1_byte_off >= second->physical_end ||
            lookup.l2_byte_off < second->physical_off || lookup.l2_byte_off >= second->physical_end))
@@ -1699,9 +1699,9 @@ static int test_hrl_runtime_shard_mapping(void)
     kafs_descriptor_hrl_entries_coverage_report_t entries_report;
     int rc = kafs_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL, NULL, NULL,
                                                  &index_report, &entries_report);
-    if (rc != 0 || !ctx.c_v6_hrl_mapping_enabled || index_report.shard_count != 2u ||
-        entries_report.shard_count != 2u || ctx.c_v6_hrl_index_shard_count != 2u ||
-        ctx.c_v6_hrl_entry_shard_count != 2u)
+    if (rc != 0 || !ctx.c_descriptor_hrl_mapping_enabled || index_report.shard_count != 2u ||
+        entries_report.shard_count != 2u || ctx.c_descriptor_hrl_index_shard_count != 2u ||
+        ctx.c_descriptor_hrl_entry_shard_count != 2u)
       failed = 1;
   }
 
@@ -1723,17 +1723,17 @@ static int test_hrl_runtime_shard_mapping(void)
     block = calloc(1, block_size);
     if (!block)
       failed = 1;
-    uint64_t second_bucket_start = ctx.c_v6_hrl_index_shards[1].logical_start;
+    uint64_t second_bucket_start = ctx.c_descriptor_hrl_index_shards[1].logical_start;
     if (!failed &&
         choose_block_for_bucket_range(block, block_size, ctx.c_hrl_bucket_cnt, second_bucket_start,
                                       &bucket) != 0)
       failed = 1;
 
-    forced_hrid = (uint32_t)ctx.c_v6_hrl_entry_shards[1].logical_start;
+    forced_hrid = (uint32_t)ctx.c_descriptor_hrl_entry_shards[1].logical_start;
     if (!failed &&
-        (kafs_descriptor_hrl_index_lookup(ctx.c_v6_layout_desc, ctx.c_v6_layout_desc_bytes, bucket,
+        (kafs_descriptor_hrl_index_lookup(ctx.c_descriptor_layout_desc, ctx.c_descriptor_layout_desc_bytes, bucket,
                                   &index_lookup) != 0 ||
-         kafs_descriptor_hrl_entry_lookup(ctx.c_v6_layout_desc, ctx.c_v6_layout_desc_bytes, forced_hrid,
+         kafs_descriptor_hrl_entry_lookup(ctx.c_descriptor_layout_desc, ctx.c_descriptor_layout_desc_bytes, forced_hrid,
                                   &entry_lookup) != 0))
       failed = 1;
   }
@@ -1803,15 +1803,15 @@ static int test_inode_runtime_descriptor_mapping(void)
     kafs_descriptor_inode_coverage_report_t inode_coverage;
     if (kafs_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL,
                                             &inode_coverage, NULL, NULL, NULL) != 0 ||
-        !ctx.c_v6_bitmap_mapping_enabled || !ctx.c_v6_inode_mapping_enabled ||
-        !ctx.c_v6_layout_desc_owned || inode_coverage.shard_count != ctx.c_v6_inode_shard_count)
+        !ctx.c_descriptor_bitmap_mapping_enabled || !ctx.c_descriptor_inode_mapping_enabled ||
+        !ctx.c_descriptor_layout_desc_owned || inode_coverage.shard_count != ctx.c_descriptor_inode_shard_count)
       failed = 1;
   }
 
   if (!failed)
   {
     kafs_descriptor_inode_lookup_t lookup;
-    if (kafs_descriptor_inode_lookup(ctx.c_v6_layout_desc, ctx.c_v6_layout_desc_bytes, KAFS_INO_ROOTDIR,
+    if (kafs_descriptor_inode_lookup(ctx.c_descriptor_layout_desc, ctx.c_descriptor_layout_desc_bytes, KAFS_INO_ROOTDIR,
                              &lookup) != 0)
       failed = 1;
     kafs_sinode_t *root = failed ? NULL : kafs_ctx_inode(&ctx, KAFS_INO_ROOTDIR);
@@ -1862,15 +1862,15 @@ static int test_inode_runtime_allocation_mapping(void)
     kafs_descriptor_inode_coverage_report_t inode_coverage;
     if (kafs_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL,
                                             &inode_coverage, NULL, NULL, NULL) != 0 ||
-        !ctx.c_v6_inode_mapping_enabled || inode_coverage.shard_count != 2u ||
-        ctx.c_v6_inode_shard_count != 2u)
+        !ctx.c_descriptor_inode_mapping_enabled || inode_coverage.shard_count != 2u ||
+        ctx.c_descriptor_inode_shard_count != 2u)
       failed = 1;
   }
 
   if (!failed)
   {
     kafs_inocnt_t inocnt = kafs_sb_inocnt_get(ctx.c_superblock);
-    uint64_t second_start = ctx.c_v6_inode_shards[1].logical_start;
+    uint64_t second_start = ctx.c_descriptor_inode_shards[1].logical_start;
     if (second_start == 0u || second_start >= inocnt)
       failed = 1;
     if (!failed)
@@ -1883,7 +1883,7 @@ static int test_inode_runtime_allocation_mapping(void)
       kafs_sinode_t *inoent = failed ? NULL : kafs_ctx_inode(&ctx, ino);
       kafs_descriptor_inode_lookup_t lookup;
       if (!failed &&
-          kafs_descriptor_inode_lookup(ctx.c_v6_layout_desc, ctx.c_v6_layout_desc_bytes, ino, &lookup) != 0)
+          kafs_descriptor_inode_lookup(ctx.c_descriptor_layout_desc, ctx.c_descriptor_layout_desc_bytes, ino, &lookup) != 0)
         failed = 1;
       if (!failed && inoent != (kafs_sinode_t *)((char *)map + lookup.inode_off))
         failed = 1;
@@ -1908,8 +1908,8 @@ static int test_inode_runtime_allocation_mapping(void)
 static int exercise_bitmap_mapping_blo(kafs_context_t *ctx, kafs_blkcnt_t blo, uint32_t *out_shard)
 {
   kafs_descriptor_bitmap_lookup_t lookup;
-  if (!ctx || !ctx->c_v6_layout_desc ||
-      kafs_descriptor_bitmap_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes, (uint64_t)blo,
+  if (!ctx || !ctx->c_descriptor_layout_desc ||
+      kafs_descriptor_bitmap_lookup(ctx->c_descriptor_layout_desc, ctx->c_descriptor_layout_desc_bytes, (uint64_t)blo,
                             &lookup) != 0)
     return -1;
   if (lookup.bitmap_byte_off >= ctx->c_img_size)
@@ -1995,7 +1995,7 @@ static int test_bitmap_runtime_descriptor_mapping(void)
     ctx.c_superblock = (kafs_ssuperblock_t *)map;
     ctx.c_fd = info.fd;
     if (kafs_bitmap_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL) != 0 ||
-        !ctx.c_v6_bitmap_mapping_enabled || !ctx.c_v6_layout_desc_owned)
+        !ctx.c_descriptor_bitmap_mapping_enabled || !ctx.c_descriptor_layout_desc_owned)
       failed = 1;
   }
 
@@ -2043,7 +2043,7 @@ static int test_bitmap_multi_shard_runtime_mapping(void)
     ctx.c_fd = info.fd;
     kafs_descriptor_bitmap_coverage_report_t coverage;
     if (kafs_bitmap_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, &coverage) != 0 ||
-        !ctx.c_v6_bitmap_mapping_enabled || coverage.shard_count != 2u)
+        !ctx.c_descriptor_bitmap_mapping_enabled || coverage.shard_count != 2u)
       failed = 1;
   }
 
@@ -2051,10 +2051,10 @@ static int test_bitmap_multi_shard_runtime_mapping(void)
   {
     kafs_descriptor_bitmap_lookup_t first;
     kafs_descriptor_bitmap_lookup_t second;
-    if (kafs_descriptor_bitmap_lookup(ctx.c_v6_layout_desc, ctx.c_v6_layout_desc_bytes, 0, &first) != 0)
+    if (kafs_descriptor_bitmap_lookup(ctx.c_descriptor_layout_desc, ctx.c_descriptor_layout_desc_bytes, 0, &first) != 0)
       failed = 1;
     if (!failed &&
-        kafs_descriptor_bitmap_lookup(ctx.c_v6_layout_desc, ctx.c_v6_layout_desc_bytes,
+        kafs_descriptor_bitmap_lookup(ctx.c_descriptor_layout_desc, ctx.c_descriptor_layout_desc_bytes,
                               first.logical_start + first.logical_count, &second) != 0)
       failed = 1;
     if (!failed && second.shard_index == first.shard_index)
@@ -2077,11 +2077,11 @@ static int test_bitmap_multi_shard_runtime_mapping(void)
 static int exercise_live_bitmap_allocator_mutation(kafs_context_t *ctx, void *map,
                                                    kafs_blkcnt_t *out_blo)
 {
-  if (!ctx || !map || !out_blo || ctx->c_v6_alloc_summary_shard_count < 2u)
+  if (!ctx || !map || !out_blo || ctx->c_descriptor_alloc_summary_shard_count < 2u)
     return -1;
 
-  const kafs_v6_alloc_summary_runtime_shard_t *second_alloc =
-      &ctx->c_v6_alloc_summary_shards[1];
+  const kafs_descriptor_alloc_summary_runtime_shard_t *second_alloc =
+      &ctx->c_descriptor_alloc_summary_shards[1];
   kafs_blkcnt_t fdb = kafs_sb_first_data_block_get(ctx->c_superblock);
   kafs_blkcnt_t blocnt = kafs_sb_blkcnt_get(ctx->c_superblock);
   uint64_t target64 = second_alloc->logical_start;
@@ -2100,11 +2100,11 @@ static int exercise_live_bitmap_allocator_mutation(kafs_context_t *ctx, void *ma
   kafs_descriptor_bitmap_lookup_t alloc_bitmap;
   kafs_descriptor_allocator_summary_lookup_t alloc_first;
   kafs_descriptor_allocator_summary_lookup_t alloc_second;
-  if (kafs_descriptor_bitmap_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes,
+  if (kafs_descriptor_bitmap_lookup(ctx->c_descriptor_layout_desc, ctx->c_descriptor_layout_desc_bytes,
                             (uint64_t)target, &alloc_bitmap) != 0 ||
-      kafs_descriptor_allocator_summary_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes,
+      kafs_descriptor_allocator_summary_lookup(ctx->c_descriptor_layout_desc, ctx->c_descriptor_layout_desc_bytes,
                                        (uint64_t)fdb, &alloc_first) != 0 ||
-      kafs_descriptor_allocator_summary_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes,
+      kafs_descriptor_allocator_summary_lookup(ctx->c_descriptor_layout_desc, ctx->c_descriptor_layout_desc_bytes,
                                        (uint64_t)target, &alloc_second) != 0)
   {
     tlogf("bitmap/alloc matrix: lookup failed fdb=%" PRIuFAST32 " target=%" PRIuFAST32, fdb,
@@ -2125,7 +2125,7 @@ static int exercise_live_bitmap_allocator_mutation(kafs_context_t *ctx, void *ma
   for (uint64_t i = 0; i < 8u; ++i)
   {
     kafs_descriptor_bitmap_lookup_t group_bitmap;
-    if (kafs_descriptor_bitmap_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes, target64 + i,
+    if (kafs_descriptor_bitmap_lookup(ctx->c_descriptor_layout_desc, ctx->c_descriptor_layout_desc_bytes, target64 + i,
                               &group_bitmap) != 0)
       return -1;
     uint8_t *byte = (uint8_t *)map + (size_t)group_bitmap.bitmap_byte_off;
@@ -2212,9 +2212,9 @@ static int exercise_live_bitmap_allocator_mutation(kafs_context_t *ctx, void *ma
 
   kafs_descriptor_bitmap_lookup_t bitmap_first;
   kafs_descriptor_bitmap_lookup_t bitmap_second;
-  if (kafs_descriptor_bitmap_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes, 0,
+  if (kafs_descriptor_bitmap_lookup(ctx->c_descriptor_layout_desc, ctx->c_descriptor_layout_desc_bytes, 0,
                             &bitmap_first) != 0 ||
-      kafs_descriptor_bitmap_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes,
+      kafs_descriptor_bitmap_lookup(ctx->c_descriptor_layout_desc, ctx->c_descriptor_layout_desc_bytes,
                             bitmap_first.logical_start + bitmap_first.logical_count,
                             &bitmap_second) != 0)
     return -1;
@@ -2271,7 +2271,7 @@ static int exercise_live_bitmap_allocator_mutation(kafs_context_t *ctx, void *ma
 
 static int exercise_live_inode_mutation(kafs_context_t *ctx, void *map)
 {
-  if (!ctx || !map || ctx->c_v6_inode_shard_count < 2u)
+  if (!ctx || !map || ctx->c_descriptor_inode_shard_count < 2u)
     return -1;
 
   size_t inode_bytes = kafs_ctx_inode_bytes(ctx);
@@ -2281,16 +2281,16 @@ static int exercise_live_inode_mutation(kafs_context_t *ctx, void *map)
     return -1;
 
   kafs_inocnt_t inocnt = kafs_sb_inocnt_get(ctx->c_superblock);
-  uint64_t second_start = ctx->c_v6_inode_shards[1].logical_start;
+  uint64_t second_start = ctx->c_descriptor_inode_shards[1].logical_start;
   if (second_start == 0u || second_start >= (uint64_t)inocnt || second_start > UINT32_MAX)
     return -1;
 
   kafs_inocnt_t ino = (kafs_inocnt_t)second_start;
   kafs_descriptor_inode_lookup_t root_lookup;
   kafs_descriptor_inode_lookup_t ino_lookup;
-  if (kafs_descriptor_inode_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes, KAFS_INO_ROOTDIR,
+  if (kafs_descriptor_inode_lookup(ctx->c_descriptor_layout_desc, ctx->c_descriptor_layout_desc_bytes, KAFS_INO_ROOTDIR,
                            &root_lookup) != 0 ||
-      kafs_descriptor_inode_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes, (uint64_t)ino,
+      kafs_descriptor_inode_lookup(ctx->c_descriptor_layout_desc, ctx->c_descriptor_layout_desc_bytes, (uint64_t)ino,
                            &ino_lookup) != 0)
     return -1;
   if (root_lookup.shard_index == ino_lookup.shard_index ||
@@ -2326,8 +2326,8 @@ static int exercise_live_inode_mutation(kafs_context_t *ctx, void *map)
 
 static int exercise_live_hrl_mutation(kafs_context_t *ctx, void *map)
 {
-  if (!ctx || !map || ctx->c_v6_hrl_index_shard_count < 2u ||
-      ctx->c_v6_hrl_entry_shard_count < 2u)
+  if (!ctx || !map || ctx->c_descriptor_hrl_index_shard_count < 2u ||
+      ctx->c_descriptor_hrl_entry_shard_count < 2u)
     return -1;
 
   int failed = 0;
@@ -2355,25 +2355,25 @@ static int exercise_live_hrl_mutation(kafs_context_t *ctx, void *map)
     block = calloc(1, block_size);
     if (!block)
       failed = 1;
-    uint64_t second_bucket_start = ctx->c_v6_hrl_index_shards[1].logical_start;
+    uint64_t second_bucket_start = ctx->c_descriptor_hrl_index_shards[1].logical_start;
     if (!failed &&
         choose_block_for_bucket_range(block, block_size, ctx->c_hrl_bucket_cnt,
                                       second_bucket_start, &bucket) != 0)
       failed = 1;
-    uint64_t forced64 = ctx->c_v6_hrl_entry_shards[1].logical_start;
+    uint64_t forced64 = ctx->c_descriptor_hrl_entry_shards[1].logical_start;
     if (!failed && (forced64 == 0u || forced64 >= UINT32_MAX))
       failed = 1;
     forced_hrid = (uint32_t)forced64;
   }
 
   if (!failed &&
-      (kafs_descriptor_hrl_index_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes, 0,
+      (kafs_descriptor_hrl_index_lookup(ctx->c_descriptor_layout_desc, ctx->c_descriptor_layout_desc_bytes, 0,
                                 &first_index_lookup) != 0 ||
-       kafs_descriptor_hrl_index_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes, bucket,
+       kafs_descriptor_hrl_index_lookup(ctx->c_descriptor_layout_desc, ctx->c_descriptor_layout_desc_bytes, bucket,
                                 &second_index_lookup) != 0 ||
-       kafs_descriptor_hrl_entry_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes, 0,
+       kafs_descriptor_hrl_entry_lookup(ctx->c_descriptor_layout_desc, ctx->c_descriptor_layout_desc_bytes, 0,
                                 &first_entry_lookup) != 0 ||
-       kafs_descriptor_hrl_entry_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes, forced_hrid,
+       kafs_descriptor_hrl_entry_lookup(ctx->c_descriptor_layout_desc, ctx->c_descriptor_layout_desc_bytes, forced_hrid,
                                 &forced_entry_lookup) != 0))
     failed = 1;
   if (!failed &&
@@ -2414,7 +2414,7 @@ static int exercise_live_hrl_mutation(kafs_context_t *ctx, void *map)
   {
     uint64_t index_writes_before = ctx->c_meta_region_writes[KAFS_META_REGION_HRL_INDEX];
     uint64_t entry_writes_before = ctx->c_meta_region_writes[KAFS_META_REGION_HRL_ENTRIES];
-    ctx->c_blo_search = (kafs_blkcnt_t)ctx->c_v6_alloc_summary_shards[1].logical_start;
+    ctx->c_blo_search = (kafs_blkcnt_t)ctx->c_descriptor_alloc_summary_shards[1].logical_start;
     kafs_hrid_t hrid = 0;
     int is_new = 0;
     kafs_blkcnt_t blo = KAFS_BLO_NONE;
@@ -2492,13 +2492,13 @@ static int test_live_metadata_mutation_routing_matrix(void)
     int rc = kafs_descriptor_mapping_admit_fd(
         &ctx, info.fd, info.file_size, &bitmap_coverage, &inode_coverage, &alloc_coverage,
         &hrl_index_coverage, &hrl_entry_coverage);
-    if (rc != 0 || !ctx.c_v6_bitmap_mapping_enabled || !ctx.c_v6_inode_mapping_enabled ||
-        !ctx.c_v6_alloc_summary_mapping_enabled || !ctx.c_v6_hrl_mapping_enabled ||
+    if (rc != 0 || !ctx.c_descriptor_bitmap_mapping_enabled || !ctx.c_descriptor_inode_mapping_enabled ||
+        !ctx.c_descriptor_alloc_summary_mapping_enabled || !ctx.c_descriptor_hrl_mapping_enabled ||
         bitmap_coverage.shard_count != 2u || inode_coverage.shard_count != 2u ||
         alloc_coverage.shard_count != 2u || hrl_index_coverage.shard_count != 2u ||
-        hrl_entry_coverage.shard_count != 2u || ctx.c_v6_inode_shard_count != 2u ||
-        ctx.c_v6_alloc_summary_shard_count != 2u ||
-        ctx.c_v6_hrl_index_shard_count != 2u || ctx.c_v6_hrl_entry_shard_count != 2u)
+        hrl_entry_coverage.shard_count != 2u || ctx.c_descriptor_inode_shard_count != 2u ||
+        ctx.c_descriptor_alloc_summary_shard_count != 2u ||
+        ctx.c_descriptor_hrl_index_shard_count != 2u || ctx.c_descriptor_hrl_entry_shard_count != 2u)
       failed = 1;
   }
 
@@ -2770,9 +2770,9 @@ static int test_v6_write_lock_stress_gate(void)
     int rc =
         kafs_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL, NULL, NULL, NULL,
                                             NULL);
-    if (rc != 0 || !ctx.c_v6_bitmap_mapping_enabled ||
-        !ctx.c_v6_alloc_summary_mapping_enabled || !ctx.c_v6_hrl_mapping_enabled ||
-        ctx.c_v6_hrl_index_shard_count != 2u || ctx.c_v6_hrl_entry_shard_count != 2u)
+    if (rc != 0 || !ctx.c_descriptor_bitmap_mapping_enabled ||
+        !ctx.c_descriptor_alloc_summary_mapping_enabled || !ctx.c_descriptor_hrl_mapping_enabled ||
+        ctx.c_descriptor_hrl_index_shard_count != 2u || ctx.c_descriptor_hrl_entry_shard_count != 2u)
       failed = 1;
   }
 
@@ -3406,11 +3406,11 @@ static int expect_full_admission_rejected(const char *img)
 
     int rc = kafs_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL, NULL, NULL,
                                                  NULL, NULL);
-    if (rc == 0 || ctx.c_v6_bitmap_mapping_enabled || ctx.c_v6_inode_mapping_enabled ||
-        ctx.c_v6_alloc_summary_mapping_enabled || ctx.c_v6_hrl_mapping_enabled ||
-        ctx.c_v6_layout_desc || ctx.c_v6_layout_desc_bytes != 0u || ctx.c_v6_layout_desc_owned ||
-        ctx.c_v6_inode_shards || ctx.c_v6_alloc_summary_shards || ctx.c_v6_hrl_index_shards ||
-        ctx.c_v6_hrl_entry_shards)
+    if (rc == 0 || ctx.c_descriptor_bitmap_mapping_enabled || ctx.c_descriptor_inode_mapping_enabled ||
+        ctx.c_descriptor_alloc_summary_mapping_enabled || ctx.c_descriptor_hrl_mapping_enabled ||
+        ctx.c_descriptor_layout_desc || ctx.c_descriptor_layout_desc_bytes != 0u || ctx.c_descriptor_layout_desc_owned ||
+        ctx.c_descriptor_inode_shards || ctx.c_descriptor_alloc_summary_shards || ctx.c_descriptor_hrl_index_shards ||
+        ctx.c_descriptor_hrl_entry_shards)
       failed = 1;
   }
 
@@ -3613,9 +3613,9 @@ static int test_allocator_summary_admission_rejects_gap(void)
     int rc = kafs_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL, NULL,
                                                  &alloc_coverage, NULL, NULL);
     if (rc == 0 || !alloc_coverage.has_gap || !alloc_coverage.missing_coverage ||
-        ctx.c_v6_bitmap_mapping_enabled || ctx.c_v6_inode_mapping_enabled ||
-        ctx.c_v6_alloc_summary_mapping_enabled || ctx.c_v6_layout_desc ||
-        ctx.c_v6_layout_desc_owned || ctx.c_v6_inode_shards || ctx.c_v6_alloc_summary_shards)
+        ctx.c_descriptor_bitmap_mapping_enabled || ctx.c_descriptor_inode_mapping_enabled ||
+        ctx.c_descriptor_alloc_summary_mapping_enabled || ctx.c_descriptor_layout_desc ||
+        ctx.c_descriptor_layout_desc_owned || ctx.c_descriptor_inode_shards || ctx.c_descriptor_alloc_summary_shards)
       failed = 1;
   }
 
@@ -3657,11 +3657,11 @@ static int test_hrl_admission_rejects_gap(void)
     int rc = kafs_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL, NULL, NULL,
                                                  &hrl_index_coverage, NULL);
     if (rc == 0 || !hrl_index_coverage.has_gap || !hrl_index_coverage.missing_coverage ||
-        ctx.c_v6_bitmap_mapping_enabled || ctx.c_v6_inode_mapping_enabled ||
-        ctx.c_v6_alloc_summary_mapping_enabled || ctx.c_v6_hrl_mapping_enabled ||
-        ctx.c_v6_layout_desc || ctx.c_v6_layout_desc_owned || ctx.c_v6_inode_shards ||
-        ctx.c_v6_alloc_summary_shards || ctx.c_v6_hrl_index_shards ||
-        ctx.c_v6_hrl_entry_shards)
+        ctx.c_descriptor_bitmap_mapping_enabled || ctx.c_descriptor_inode_mapping_enabled ||
+        ctx.c_descriptor_alloc_summary_mapping_enabled || ctx.c_descriptor_hrl_mapping_enabled ||
+        ctx.c_descriptor_layout_desc || ctx.c_descriptor_layout_desc_owned || ctx.c_descriptor_inode_shards ||
+        ctx.c_descriptor_alloc_summary_shards || ctx.c_descriptor_hrl_index_shards ||
+        ctx.c_descriptor_hrl_entry_shards)
       failed = 1;
   }
 
@@ -3702,7 +3702,7 @@ static int test_bitmap_admission_rejects_gap(void)
     kafs_descriptor_bitmap_coverage_report_t coverage;
     int rc = kafs_bitmap_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, &coverage);
     if (rc == 0 || !coverage.has_gap || !coverage.missing_coverage ||
-        ctx.c_v6_bitmap_mapping_enabled || ctx.c_v6_layout_desc || ctx.c_v6_layout_desc_owned)
+        ctx.c_descriptor_bitmap_mapping_enabled || ctx.c_descriptor_layout_desc || ctx.c_descriptor_layout_desc_owned)
       failed = 1;
   }
 
@@ -3744,8 +3744,8 @@ static int test_inode_admission_rejects_gap(void)
     int rc = kafs_descriptor_mapping_admit_fd(&ctx, info.fd, info.file_size, NULL,
                                                  &inode_coverage, NULL, NULL, NULL);
     if (rc == 0 || !inode_coverage.has_gap || !inode_coverage.missing_coverage ||
-        ctx.c_v6_bitmap_mapping_enabled || ctx.c_v6_inode_mapping_enabled ||
-        ctx.c_v6_layout_desc || ctx.c_v6_layout_desc_owned || ctx.c_v6_inode_shards)
+        ctx.c_descriptor_bitmap_mapping_enabled || ctx.c_descriptor_inode_mapping_enabled ||
+        ctx.c_descriptor_layout_desc || ctx.c_descriptor_layout_desc_owned || ctx.c_descriptor_inode_shards)
       failed = 1;
   }
 
