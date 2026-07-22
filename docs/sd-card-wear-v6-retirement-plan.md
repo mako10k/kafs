@@ -46,6 +46,17 @@ justification to retain excluded code.
 
 ## Current phase
 
+The `V6_RESIDUAL_CONTRACT` wave is complete under
+[`plans/cli-v6-retirement.pert`](../plans/cli-v6-retirement.pert). Its ownership
+record is
+[`sd-card-wear-v6-retirement-inventory-20260722.md`](sd-card-wear-v6-retirement-inventory-20260722.md).
+It retired false current guidance and unreachable operator scripts while
+leaving shared runtime state, bounded offline diagnostics and fixtures, and the
+final placeholder to their explicitly ordered successor waves.
+The refreshed `dag next` frontier names `V6_ACTIVE_COMMON_DECOUPLING` as the
+only `RUNNABLE NOW` zero-slack task; this closeout records the frontier but does
+not itself authorize that successor wave.
+
 Phase 1 retired v6 runtime mounting. `kafs-v6` remains only as a fail-closed
 placeholder.
 

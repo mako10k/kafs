@@ -10,7 +10,8 @@
 - Repository-default plan: `plans/current.pert` (unchanged)
 - `perttool`: `0.1.0-alpha.1`
 - Decision: `SELECT V6_RESIDUAL_CONTRACT` for the first implementation wave
-- Execution authorization: not granted by this planning record
+- Execution authorization: granted by the user on `2026-07-22`; Task Start
+  Record passed at HEAD `0d4b5d80d7f50e330a3bc75d043a9c3479aea8db`
 
 ## Why this is a scoped plan
 
@@ -244,9 +245,11 @@ and fits `PRIMARY_STREAM=1`. It unlocks safe removal of active v6 source by
 first defining what is unsupported, what remains temporarily for recovery, and
 which historical records are not current instructions.
 
-This selection does not authorize implementation. A fresh Task Start Record
-must re-enumerate the exact current documents, scripts, package surfaces, and
-tests before editing that wave.
+The user subsequently authorized implementation. The fresh Task Start Record at
+HEAD `0d4b5d80d7f50e330a3bc75d043a9c3479aea8db` re-enumerated the exact current
+documents, scripts, package surfaces, and tests and returned `PASS` for
+`V6_RESIDUAL_CONTRACT`. The wave-close record below supersedes its temporary
+active state.
 
 ## Credible alternative orderings
 
@@ -277,6 +280,84 @@ This avoids short-term deletion risk but preserves fixture creation, tests,
 static-analysis population, and neutral-source ownership debt without an end
 condition. The plan instead makes discovery of a real recovery obligation a
 `REPLAN` trigger and otherwise closes the accepted retirement path.
+
+## `V6_RESIDUAL_CONTRACT` closeout
+
+- Closed at: `2026-07-22T17:18:38+09:00`
+- Closeout HEAD: `3840ccd3c4099df8a24e7e478bfc822ddcf6c811`
+  (two reviewed-scope WIP commits; plan closeout changes were still unstaged)
+- Edge result: `V6_RESIDUAL_SCOPE_BOUND` is `state reached` and
+  `V6_RESIDUAL_CONTRACT` is `status done`
+- Decision: `PASS`; the selected capability edge is closed
+
+Direct closeout evidence:
+
+- `scripts/test-cli-surface.sh` rejects retired v6 workflows in current
+  migration guidance and confirms both controlled-write operator scripts are
+  absent.
+- The residual query returns 81 current files, including its own inventory;
+  every result has an owner and disposition in
+  `sd-card-wear-v6-retirement-inventory-20260722.md`.
+- `kafsresize` help and its manual no longer advertise v6 migration creation.
+- Historical v6 records are visibly labeled and routed out of the current
+  design path in `docs/INDEX.md`.
+- `make -C src kafsresize`, `shellcheck scripts/test-cli-surface.sh`,
+  `bash -n scripts/test-cli-surface.sh`, `./scripts/test-cli-surface.sh`, and the
+  isolated `make -C tests check TESTS=kafsresize` all passed.
+
+The first attempted milestone-only plan update failed validation because a
+reached milestone cannot retain an unsatisfied incoming task. Adding the
+truthful `status done` task state resolved that plan-model error. The successful
+closeout run of
+`./scripts/pert-next-task.sh plans/cli-v6-retirement.pert` reported:
+
+```text
+OK plans/cli-v6-retirement.pert project=KAFS_CLI_V6_RETIREMENT milestones=13 tasks=7 gates=6 resources=1
+
+PRECEDENCE
+MAKESPAN 13.833d
+PRECEDENCE CRITICAL
+TASKS V6_ACTIVE_COMMON_DECOUPLING, V6_OFFLINE_RETIREMENT, V6_FINAL_ENTRYPOINT_RETIREMENT, INTEGRATED_REMEDIATION_QUALIFICATION
+GATES V6_RETIREMENT_REQUIRED
+REPRESENTATIVE PATH V6_ACTIVE_COMMON_DECOUPLING -> V6_OFFLINE_RETIREMENT -> V6_FINAL_ENTRYPOINT_RETIREMENT -> V6_RETIREMENT_REQUIRED -> INTEGRATED_REMEDIATION_QUALIFICATION
+PATH COUNT 1
+
+RESOURCE SCHEDULE
+ALGORITHM parallel-sgs@1 optimal=false
+PRECEDENCE LOWER BOUND 13.833d
+MAKESPAN 19.333d
+DELAY 5.5d
+
+RESOURCE CRITICAL
+TASKS V6_ACTIVE_COMMON_DECOUPLING, V6_OFFLINE_RETIREMENT, V6_FINAL_ENTRYPOINT_RETIREMENT, CLI_FAIL_CLOSED_CONTRACT, MIGRATION_AUTOMATION_CONTRACT, INTEGRATED_REMEDIATION_QUALIFICATION
+RESOURCE ARCS resource:V6_FINAL_ENTRYPOINT_RETIREMENT:CLI_FAIL_CLOSED_CONTRACT
+REPRESENTATIVE PATH V6_ACTIVE_COMMON_DECOUPLING -> V6_OFFLINE_RETIREMENT -> V6_FINAL_ENTRYPOINT_RETIREMENT -> CLI_FAIL_CLOSED_CONTRACT -> MIGRATION_AUTOMATION_CONTRACT -> INTEGRATED_REMEDIATION_QUALIFICATION
+PATH COUNT 1
+
+ACTIVE
+-
+
+RUNNABLE NOW
+V6_ACTIVE_COMMON_DECOUPLING priority=0 expected=4.333d TF=0d precedence_critical=true schedule_critical=true owner=KAFS implementation stream resources=PRIMARY_STREAM=1
+
+READY / WAITING RESOURCE
+CLI_FAIL_CLOSED_CONTRACT priority=0 expected=2.167d TF=6.167d precedence_critical=false schedule_critical=true owner=KAFS implementation stream resources=PRIMARY_STREAM=1
+  PRIMARY_STREAM capacity=1 used=1 required=1 available=0 deficit=1 occupants=V6_ACTIVE_COMMON_DECOUPLING
+
+BLOCKED NOW
+-
+
+UPCOMING
+V6_OFFLINE_RETIREMENT expected=5.333d TF=0d
+V6_FINAL_ENTRYPOINT_RETIREMENT expected=2d TF=0d
+INTEGRATED_REMEDIATION_QUALIFICATION expected=2.167d TF=0d
+MIGRATION_AUTOMATION_CONTRACT expected=3.333d TF=6.167d
+```
+
+The refreshed frontier therefore makes `V6_ACTIVE_COMMON_DECOUPLING` the only
+`RUNNABLE NOW` zero-slack task. `CLI_FAIL_CLOSED_CONTRACT` remains ready but
+waits for the single primary resource and has `TF=6.167d`; it is not promoted
+ahead of the critical retirement path.
 
 ## Refresh triggers
 

@@ -1,5 +1,9 @@
 # KAFS format v6 metadata layout descriptor spec
 
+> **Historical v6 record:** This specification is retained for source-retirement archaeology
+> and bounded offline-fixture removal. It is not a supported creation or runtime contract. See
+> [the current retirement plan](sd-card-wear-v6-retirement-plan.md).
+
 最終更新: 2026-06-25
 
 対象: `SDW-P3-T1 Format v6 descriptor spec`, `SDW-P3-T2 Descriptor replica policy`,

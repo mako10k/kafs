@@ -1,5 +1,9 @@
 # KAFS SDカード劣化対策 バックログ
 
+> Completed format v6 tickets below are historical evidence. Their creation, mount,
+> controlled-write, smoke, and cutover commands are retired. Current v6 work is source removal
+> under [the retirement plan](sd-card-wear-v6-retirement-plan.md).
+
 最終更新: 2026-07-16
 
 計画: [sd-card-wear-plan.md](sd-card-wear-plan.md)

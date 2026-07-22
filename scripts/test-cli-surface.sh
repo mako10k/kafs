@@ -23,6 +23,38 @@ for bin in "${help_bins[@]}"; do
   fi
 done
 
+kafsresize_help=$(./src/kafsresize --help 2>&1)
+if grep -Fq -- "v6 migration" <<<"$kafsresize_help"; then
+  echo "FAIL: kafsresize help advertises retired v6 migration" >&2
+  exit 1
+fi
+
+declare -a retired_v6_operator_scripts=(
+  "scripts/v6-controlled-write-smoke.sh"
+  "scripts/v6-controlled-write-acceptance-gate.sh"
+)
+
+for path in "${retired_v6_operator_scripts[@]}"; do
+  if [[ -e "$path" ]]; then
+    echo "FAIL: retired v6 operator script is present: $path" >&2
+    exit 1
+  fi
+done
+
+declare -a current_migration_guidance=(
+  "README.md"
+  "CHANGELOG.md"
+  "docs/INDEX.md"
+  "docs/kafsresize-cutover-playbook.md"
+  "man/kafsresize.8"
+)
+
+retired_v6_pattern='--format-version 6|v6-controlled-write-(smoke|acceptance)|kafs-v6.*(--inspection-mount|--controlled-write-mount)'
+if grep -En -- "$retired_v6_pattern" "${current_migration_guidance[@]}"; then
+  echo "FAIL: current migration guidance contains a retired v6 workflow" >&2
+  exit 1
+fi
+
 declare -a subcommand_help_cmds=(
   "./src/kafsctl help fsstat"
   "./src/kafsctl fsstat --help"

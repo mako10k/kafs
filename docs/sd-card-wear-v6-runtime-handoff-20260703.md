@@ -1,5 +1,9 @@
 # KAFS format v6 runtime handoff 2026-07-03
 
+> **Historical v6 handoff:** This preserves a past implementation checkpoint. Its mount and
+> controlled-write commands are retired and must not be used operationally. See
+> [the current retirement plan](sd-card-wear-v6-retirement-plan.md).
+
 ## Scope
 
 This is the short end-of-day handoff for the v6 runtime pureification work on

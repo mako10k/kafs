@@ -44,6 +44,7 @@ milestone MIGRATION_AUTOMATION_CONTRACT_READY:
 
 milestone V6_RESIDUAL_SCOPE_BOUND:
   title "Remaining format-v6 recovery and historical boundaries are truthful"
+  state reached
 
 milestone V6_ACTIVE_COMMON_DECOUPLED:
   title "Active common and v7 build paths have no v6 runtime-policy dependency"
@@ -117,6 +118,7 @@ task V6_RESIDUAL_CONTRACT V6_RETIREMENT_REBASE_READY -> V6_RESIDUAL_SCOPE_BOUND:
     optimistic 1d
     most_likely 2d
     pessimistic 3d
+  status done
   owner "KAFS implementation stream"
   source "docs/sd-card-wear-v6-retirement-plan.md and 2026-07-22 remnant review"
   requires:

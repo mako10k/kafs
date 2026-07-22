@@ -86,7 +86,7 @@ static void usage(const char *prog)
       "    - migrate-create without --size-bytes auto-detects size from --dst-image\n"
       "    - migrate-import-v7 publishes dst-image only after full offline validation\n"
       "  options for --migrate-create:\n"
-      "    --src-image IMAGE       source image used by v6/v7 migration precheck/dry-run\n"
+      "    --src-image IMAGE       source image used by v7 migration precheck/dry-run\n"
       "    --format-version V      on-disk format version passed to mkfs.kafs\n"
       "    --journal-size-bytes N   journal size passed to mkfs.kafs\n"
       "    --blksize-log L          block-size log2 passed to mkfs.kafs\n"

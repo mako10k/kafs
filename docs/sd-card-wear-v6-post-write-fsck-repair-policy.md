@@ -1,5 +1,9 @@
 # KAFS format v6 post-write fsck and repair policy
 
+> **Historical v6 record:** Runtime write and repair workflows are retired. The bounded
+> detect-only code remains temporarily for later offline-surface retirement. See
+> [the current retirement plan](sd-card-wear-v6-retirement-plan.md).
+
 最終更新: 2026-06-26
 
 対象: `SDW-V6RT-T7 v6 post-write fsck and repair policy`

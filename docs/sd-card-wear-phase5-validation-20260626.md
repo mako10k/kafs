@@ -1,5 +1,9 @@
 # SDカード劣化対策 Phase 5 validation（2026-06-26）
 
+> **Historical v6 validation:** The commands and successful paths below describe the 2026-06-26
+> experiment and are now retired. Do not use them operationally. See
+> [the current retirement plan](sd-card-wear-v6-retirement-plan.md).
+
 対象: `SDW-P5-T4 Phase 5 validation`
 
 ## 実行条件
