@@ -148,19 +148,20 @@ critical predecessor. If that result cannot be obtained without a false edge,
 arbitrary priority, or invented estimate, the decision is `REPLAN`, not a
 directory-task `SELECT`.
 
-The current post-T58 plan is also a blocker-decomposition replay. It must not
+The current post-T57 plan is also a blocker-decomposition replay. It must not
 hide evidence validation or migration rehearsal inside disruptive execution
 nodes merely because the execution windows are blocked. For
 `plans/current.pert`, the expected classification is:
 
-- `VHDX_EVIDENCE_AUDIT` alone in `RUNNABLE NOW`, total float zero;
-- `V5_V7_MIGRATION_REHEARSAL` in `READY / WAITING RESOURCE` behind the
-  selected primary stream;
+- `V5_V7_MIGRATION_REHEARSAL` alone in `RUNNABLE NOW`, total float 0.333 days;
+- no node in `READY / WAITING RESOURCE`;
 - `HARDWARE_APPROVAL` and `VHDX_HOST_RECOVERY_RUN` in `BLOCKED NOW`; and
 - physical execution, independent review, and cutover decision in `UPCOMING`.
 
-This result requires `SELECT VHDX_EVIDENCE_AUDIT`. It authorizes only the
-read-only aggregate audit implementation, not VHDX execution. It does not
-remove either blocker or permit an off-goal substitute. The VHDX execution task
-becomes eligible only after the user identifies a safe maintenance window and
-the plan is refreshed from a new host preflight.
+This result permits `SELECT V5_V7_MIGRATION_REHEARSAL` because both zero-slack
+critical nodes are externally blocked and this is the only runnable goal-path
+node. The selection record must preserve its 0.333-day float and the risk that
+a newly available critical window would compete for the primary stream. It
+does not remove either blocker or permit an off-goal substitute. The VHDX
+execution task becomes eligible only after the user identifies a safe
+maintenance window and the plan is refreshed from a new host preflight.

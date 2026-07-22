@@ -777,3 +777,82 @@ The closeout decision is `SELECT VHDX_EVIDENCE_AUDIT` (T57). Selection permits
 only a fresh Task Start Gate and the read-only audit implementation. It does
 not authorize VHDX write/mount/raw access, `wsl.exe --terminate` or
 `--shutdown`, host capture, real-media access, or a qualification claim.
+
+## Post-T57 closeout and rebuilt PERT (2026-07-22)
+
+- Record ID: `KAFS-PERTTOOL-20260722-POST-T57`
+- Calculation time: 2026-07-22 12:08 JST
+- Baseline: branch `feat/v7-runtime-admission-foundation`, start HEAD
+  `17d8820`, plus the reviewed T57 working-tree unit
+- Accepted goal: unchanged; produce qualified v7 migration and production
+  cutover evidence without collapsing hardware, VHDX, migration, or review
+  boundaries
+
+### Closed capability and current evidence
+
+T57 added a validate-only aggregate gate over the exact current T56 producer
+schemas. It binds a controller-shaped run ID to all four durability points,
+checks stable distro/VHDX/WSL filesystem/Git identity and non-overlapping host
+timestamps, validates recovery/full-fsck/kafsdump/payload facts and the clean
+format-v7 dump, and requires the SHA-256 inventory to cover every retained
+top-level regular file. Process-kill substitute evidence and every tested
+missing, drifted, tampered, incomplete, or claim-escalated state fail closed.
+
+Focused T57/inspection regression passed. Full
+`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` passed 44 tests;
+`min_git_hooks` was the only environment-limited FUSE skip. Format, lint,
+clone/static checks, build, and `make dist` passed; the strict source clone
+baseline remained 48 clones, 490 duplicated lines, and 0.97%. No PowerShell,
+VHDX, mount, image-write, device, or WSL lifecycle operation occurred.
+
+The plan marks `VHDX_EVIDENCE_AUDIT_READY` reached and removes the completed
+implementation task. It does not mark `VHDX_HOST_RECOVERY_CAPTURED` or
+`VHDX_HOST_RECOVERY_QUALIFIED` reached because no actual four-point host run was
+performed.
+
+### Machine result
+
+`./scripts/pert-next-task.sh plans/current.pert` passed `dsl check`,
+`dag analyze --schedule both`, and `dag next`, in that order. The residual plan
+contains 14 milestones, 6 tasks, 7 gates, and 2 resources.
+
+- Precedence makespan: 10.833 implementation days, conditional on both external
+  blockers resolving.
+- There are two zero-slack precedence paths into `REAL_MEDIA_EXECUTION`: one
+  through `HARDWARE_APPROVAL -> HARDWARE_APPROVAL_REQUIRED`, and one through
+  `VHDX_HOST_RECOVERY_RUN -> VHDX_CAPTURE_REQUIRED ->
+  VHDX_QUALIFICATION_REQUIRED`. Both continue through
+  `INDEPENDENT_REAL_MEDIA_REVIEW -> QUALIFIED_MEDIA_REQUIRED ->
+  CUTOVER_EVIDENCE_DECISION`.
+- Resource makespan: 17 implementation days under primary capacity one.
+- Resource critical path:
+  `HARDWARE_APPROVAL -> VHDX_HOST_RECOVERY_RUN -> REAL_MEDIA_EXECUTION ->
+  V5_V7_MIGRATION_REHEARSAL -> CUTOVER_EVIDENCE_DECISION`.
+
+| Classification | Node | TE | ES/EF | LS/LF | TF | Capability unlocked or wait reason |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `RUNNABLE NOW` | T59 `V5_V7_MIGRATION_REHEARSAL` | 6.167d | 0d/6.167d | 0.333d/6.5d | 0.333d | Closes disposable-image migration, resume, and rollback evidence |
+| `BLOCKED NOW` | `HARDWARE_APPROVAL` | 1.167d | 0d/1.167d | 0d/1.167d | 0d | Exact apparatus and digest-bound approval remain unavailable |
+| `BLOCKED NOW` | `VHDX_HOST_RECOVERY_RUN` | 1.167d | 0d/1.167d | 0d/1.167d | 0d | The user has not supplied a safe terminate/restart window |
+| `UPCOMING` | `REAL_MEDIA_EXECUTION` | 4.167d | 1.167d/5.333d | 1.167d/5.333d | 0d | Waits for both blocked predecessors |
+| `UPCOMING` | `INDEPENDENT_REAL_MEDIA_REVIEW` | 1.167d | 5.333d/6.5d | 5.333d/6.5d | 0d | Waits for real-media evidence capture |
+| `UPCOMING` | `CUTOVER_EVIDENCE_DECISION` | 4.333d | 6.5d/10.833d | 6.5d/10.833d | 0d | Waits for qualified media and migration rehearsal |
+
+`READY / WAITING RESOURCE` and `ACTIVE` are empty. The resource schedule assumes
+blocked work becomes available at time zero and is not a calendar forecast.
+
+### Ordering decision
+
+| Ordering | Immediate effect | Opportunity cost and qualification debt |
+| --- | --- | --- |
+| T59 first | Closes the only runnable residual goal-path capability using disposable file images | Selected; it is resource critical, but has only 0.333 days precedence float |
+| Wait for VHDX capture | Preserves the primary stream for a disruptive critical node | The user has not supplied a safe window, so no capability closes while waiting |
+| Wait for hardware | Preserves the primary stream for the parallel critical node | Exact apparatus and approval remain unavailable |
+| Whole-namespace validation first | Closes a separately owned correctness gap | It has no edge to the accepted finish and leaves T59 open |
+
+The closeout decision is `SELECT V5_V7_MIGRATION_REHEARSAL` (T59). It is the
+only runnable node while all zero-slack tasks are externally blocked. If either
+blocker resolves during T59, refresh resource capacity and `dag next` before
+continuing because the remaining T59 duration may delay newly runnable critical
+work. Selection does not authorize production migration, in-place relocation,
+physical media, v6 compatibility, or production cutover.

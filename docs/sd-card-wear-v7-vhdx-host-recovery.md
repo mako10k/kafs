@@ -172,9 +172,17 @@ results, and every artifact digest. Missing or duplicate faults, identity drift,
 claim escalation, incomplete state, or digest mismatch must fail closed. The
 gate must not mount/write the image or terminate/restart WSL.
 
-T58 closed on 2026-07-22, and the rebuilt PERT plan now selects T57 as the only
-zero-slack `RUNNABLE NOW` task. This selects only the read-only aggregate gate;
-the actual host capture remains blocked until the user supplies a safe window.
+That aggregate contract is implemented by
+`scripts/v7-vhdx-evidence-audit-gate.sh` and documented in
+`docs/sd-card-wear-v7-vhdx-evidence-audit.md`. It accepts only the exact parent
+run directory and reads the retained files in place. A successful audit emits
+`KAFS_V7_VHDX_EVIDENCE_AUDIT PASS run_id=<run-id>`; it does not itself perform
+or authorize host capture.
+
+T57 and T58 closed on 2026-07-22. The read-only aggregate gate is ready, but no
+actual four-point host run has passed it. The actual host capture remains
+blocked until the user supplies a safe window; the rebuilt PERT plan selects
+only the separate disposable-image T59 rehearsal.
 
 ## Remaining physical-media gate
 

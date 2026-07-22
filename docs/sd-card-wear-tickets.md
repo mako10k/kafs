@@ -3699,8 +3699,8 @@
   独立したcapabilityとして用意する。
 - PERT/依存:
   - `VHDX_HARNESS_READY`をpredecessorとし、actual host runとは独立に実装できる。
-  - T58完了後の2026-07-22再計算では`VHDX_EVIDENCE_AUDIT`として唯一の`RUNNABLE NOW`、TE 2.167日、
-    total float 0日、precedence/resource critical。次waveとして`SELECT`する。
+  - 着手前の2026-07-22再計算では`VHDX_EVIDENCE_AUDIT`として唯一の`RUNNABLE NOW`、TE 2.167日、
+    total float 0日、precedence/resource criticalとして`SELECT`された。
 - スコープ:
   - 一つのrun IDにexact 4 fault directoryが重複なく揃うことを検査する。
   - host/distro/VHDX identity、controllerのterminate/restart exit、時刻順序、false claim、各faultの
@@ -3711,7 +3711,18 @@
   - validate-only commandが完全な4点証跡だけをPASSし、個別faultの成功をhost qualificationへ誤昇格しない。
   - gate自体はimage/deviceへwrite、mount、WSL terminate/restartを行わない。
 - 非目標: native Windows host run、`wsl.exe --terminate`/`--shutdown`、raw VHDX access、real-media claim。
-- 状態: 登録済み、PERT選定済み。実装前にcurrent checkoutで改めてTask Start Gateを実施する。
+- 完了結果（2026-07-22）:
+  - `v7-vhdx-evidence-audit-gate.sh`を追加し、controller形式のrun ID、exact 4 fault、per-fault schema、
+    共通distro/VHDX/WSL filesystem/Git identity、非重複時刻、zero exit、false claimを検証する。
+  - 全top-level regular artifactを`artifacts.sha256`と相互に完全一致させ、recovered image digest、
+    recovery diagnostic、full-fsck/kafsdump/payload manifest、clean format-v7 dumpを照合する。
+  - synthetic complete bundleをPASSし、missing/extra fault、identity drift、claim昇格、tamper/unlisted/incomplete
+    artifact、marker/diagnostic/dump mismatch、時刻重複、process-kill substituteを拒否する回帰を追加した。
+  - focused VHDX 2件とfull `make check` 44件がPASSし、`min_git_hooks`だけFUSE permissionでSKIPした。
+    format、lint、clone/static checks、build、`make dist`もPASSした。
+  - VHDX、mount、image write、PowerShell、WSL terminate/restart、実媒体操作は実施していない。
+- 状態: 完了。`VHDX_EVIDENCE_AUDIT_READY`をreachedとし、planから実装taskを除いた。actual host captureと
+  `VHDX_HOST_RECOVERY_QUALIFIED`は未完了のまま保持する。
 
 ### SDW-V7RT-T58 real-media evidence review gate
 
@@ -3752,8 +3763,9 @@
 - PERT/依存:
   - `V7_MIGRATION_TARGET_READY`をpredecessorとし、real-media executionとは独立に先行できるが、qualified
     runtimeとのjoin後にだけproduction cutover evidenceを許可する。
-  - T58完了後の2026-07-22再計算では`V5_V7_MIGRATION_REHEARSAL`として`READY / WAITING RESOURCE`、
-    TE 6.167日、total float 1.333日。selected T57がprimary streamを占有する。
+  - T57完了後の2026-07-22再計算では`V5_V7_MIGRATION_REHEARSAL`として唯一の`RUNNABLE NOW`、
+    TE 6.167日、total float 0.333日、resource critical。zero-slack critical tasksはexternal blocker中のため、
+    次waveとして`SELECT`する。
 - スコープ:
   - disposable v5 sourceとv7 destinationを作り、source freeze/immutability、namespace、payload、metadata、
     geometry、fsck/dump evidenceを比較する。
@@ -3764,7 +3776,7 @@
   - normal/restart/rollback rehearsalがsource immutabilityとdestination completenessを証明し、失敗時に
     incomplete destinationをmount/cutover対象へ昇格させない。
 - 非目標: production cutover、in-place metadata relocation、physical media、v6 compatibility、自動RC承認。
-- 状態: 登録済み。primary streamはT57が占有するため、実装着手はresource待ち。
+- 状態: 登録済み、PERT選定済み。実装前にcurrent checkoutで改めてTask Start Gateを実施する。
 
 ---
 ---
@@ -3774,16 +3786,16 @@
 この節はhandoff用の開始候補であり、実装開始許可または最新の完了条件ではない。着手前に`AGENTS.md`の
 Task Start Gateでcurrent checkoutのevidenceを再確認し、`PASS`・`REPLAN`・`BLOCKED`を判定する。
 
-T49-T56とT58は完了している。2026-07-22にblockerの前後をcapability単位で再調査し、T57-T59を登録した。
+T49-T58は完了している。2026-07-22にblockerの前後をcapability単位で再調査し、T57-T59を登録した。
 `VHDX_HOST_RECOVERY_RUN`とexact physical hardware identity/approvalはcompleteや削除にせずblockedのまま
-残す。T58完了を反映した`plans/current.pert`の唯一の`RUNNABLE NOW`はT57
-`VHDX_EVIDENCE_AUDIT`であり、これを次waveとして選定する。T59 `V5_V7_MIGRATION_REHEARSAL`もblockerなしで
-readyだが、capacity 1のprimary streamをT57が占有するため`READY / WAITING RESOURCE`である。
+残す。T57完了を反映した`plans/current.pert`の唯一の`RUNNABLE NOW`はT59
+`V5_V7_MIGRATION_REHEARSAL`であり、これを次waveとして選定する。T59のtotal floatは0.333日で、blocked
+critical windowが途中で解消すればprimary stream競合が生じるため、その時点でplanを再計算する。
 whole-namespace graph validation `N`は引き続きoff-pathであり、代替選定しない。
 
-T57着手時はcurrent checkoutでTask Start Gateを再実行し、aggregate manifest ownership、exact four-fault
-coverage、host/distro/VHDX identity continuity、per-fault artifact digest、qualification claim boundaryを再導出する。
-VHDXのwrite/mount/raw access、WSL terminate/restart、actual host captureはこのwaveへ含めない。
+T59着手時はcurrent checkoutでTask Start Gateを再実行し、source freeze/immutability、namespace/payload/
+metadata equivalence、partial destination rejection、resume/rollback/idempotence、cutover claim boundaryを再導出する。
+production source、in-place relocation、physical media、v6 compatibility、production cutoverはこのwaveへ含めない。
 
 ユーザーが実施可能時期を明示した後に限り、native Windows PowerShellから次を行う。
 
