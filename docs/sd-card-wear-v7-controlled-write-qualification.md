@@ -249,16 +249,17 @@ T48-B1 adds the fail-closed matrix and digest-bound approval contract in
 discovery found no eligible real-media device, so the repository matrix remains
 `DRAFT`.
 
-The 2026-07-22 blocker-decomposition PERT selects T58 before hardware execution:
-define and validate the immutable execution-artifact manifest, approval/matrix
-digest binding, device/power identity continuity, per-cycle status, artifact
-hashes, and a separate independent-review decision. This work uses synthetic
-evidence only and must not add `/dev/*` access, format/mount, power interruption,
-or an RC claim.
+T58 completed on 2026-07-22. The validate-only gate now enforces the immutable
+execution-artifact manifest, approval/matrix digest binding at run start,
+device/power identity continuity, complete per-cycle status, artifact hashes,
+and a separate independent-review decision. Synthetic positive/negative
+regression and the full test suite passed without `/dev/*` access, format/mount,
+power interruption, or an RC claim.
 
 The hardware-path action remains to supply the exact host, card unit,
 reader/controller, isolated power-cut apparatus, trigger protocol, and cycle
 count, then request approval for the resulting matrix SHA-256. Only after that
-approval, the T58 contract, and audited VHDX qualification are ready may a later
-T48 slice add a `/dev/*` runner and physical controlled-interruption procedure.
-Independent review remains required before any bounded RC decision.
+approval, the completed T58 contract, and audited VHDX qualification are ready
+may a later T48 slice add a `/dev/*` runner and physical
+controlled-interruption procedure. Independent review remains required before
+any bounded RC decision.

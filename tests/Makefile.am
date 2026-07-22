@@ -25,8 +25,9 @@ AM_TESTS_ENVIRONMENT = \
 	KAFS_TEST_KAFS_BACK='$(abs_top_builddir)/src/kafs-back'; \
 	KAFS_TEST_V7_QUALIFICATION_GATE='$(abs_top_srcdir)/scripts/v7-controlled-write-qualification-gate.sh'; \
 	KAFS_TEST_V7_REAL_MEDIA_APPROVAL_GATE='$(abs_top_srcdir)/scripts/v7-real-media-qualification-approval-gate.sh'; \
+	KAFS_TEST_V7_REAL_MEDIA_EVIDENCE_GATE='$(abs_top_srcdir)/scripts/v7-real-media-qualification-evidence-gate.sh'; \
 	KAFS_TEST_V7_REAL_MEDIA_MATRIX='$(abs_top_srcdir)/docs/sd-card-wear-v7-real-media-qualification-matrix.json'; \
-	export KAFS_TEST_KAFS KAFS_TEST_KAFS_V6 KAFS_TEST_KAFS_V7 KAFS_TEST_KAFSCTL KAFS_TEST_MKFS KAFS_TEST_FSCK KAFS_TEST_KAFS_INFO KAFS_TEST_KAFSRESIZE KAFS_TEST_KAFSDUMP KAFS_TEST_KAFS_BACK KAFS_TEST_V7_QUALIFICATION_GATE KAFS_TEST_V7_REAL_MEDIA_APPROVAL_GATE KAFS_TEST_V7_REAL_MEDIA_MATRIX;
+	export KAFS_TEST_KAFS KAFS_TEST_KAFS_V6 KAFS_TEST_KAFS_V7 KAFS_TEST_KAFSCTL KAFS_TEST_MKFS KAFS_TEST_FSCK KAFS_TEST_KAFS_INFO KAFS_TEST_KAFSRESIZE KAFS_TEST_KAFSDUMP KAFS_TEST_KAFS_BACK KAFS_TEST_V7_QUALIFICATION_GATE KAFS_TEST_V7_REAL_MEDIA_APPROVAL_GATE KAFS_TEST_V7_REAL_MEDIA_EVIDENCE_GATE KAFS_TEST_V7_REAL_MEDIA_MATRIX;
 
 # --- Tests ---
 # NOTE: stress_fs mounts in multithread mode and exercises heavier workloads.
@@ -45,9 +46,11 @@ check_PROGRAMS = v6_fixture_mkfs tailmeta_parser hrl_smoketest hrl_dec_ref_by_bl
 	stress_fs hotplug_rpc e2e_hotplug kafsresize journal_boundary fallocate_lseek_block
 
 TESTS = $(filter-out v6_fixture_mkfs,$(check_PROGRAMS)) \
-	v7_qualification_gate_test.sh v7_real_media_approval_gate_test.sh
+	v7_qualification_gate_test.sh v7_real_media_approval_gate_test.sh \
+	v7_real_media_evidence_gate_test.sh
 
-EXTRA_DIST = v7_qualification_gate_test.sh v7_real_media_approval_gate_test.sh
+EXTRA_DIST = v7_qualification_gate_test.sh v7_real_media_approval_gate_test.sh \
+	v7_real_media_evidence_gate_test.sh
 
 v6_fixture_mkfs_SOURCES = $(top_srcdir)/src/mkfs_kafs.c \
 	$(top_srcdir)/src/kafs_v7_layout.c $(top_srcdir)/src/kafs_v7_journal.c \

@@ -127,6 +127,17 @@ expect_failure() {
   fi
 }
 
+"$gate" --matrix "$ready" --approval "$approval" --validate-only \
+  --require-approved --as-of 2026-07-22T00:00:00Z >/dev/null
+expect_failure as-of-without-approval "$gate" --matrix "$ready" --validate-only \
+  --as-of 2026-07-22T00:00:00Z
+expect_failure as-of-before-approval "$gate" --matrix "$ready" --approval "$approval" \
+  --validate-only --require-approved --as-of 1999-12-31T23:59:59Z
+expect_failure invalid-as-of "$gate" --matrix "$ready" --approval "$approval" \
+  --validate-only --require-approved --as-of not-a-time
+expect_failure future-as-of "$gate" --matrix "$ready" --approval "$approval" \
+  --validate-only --require-approved --as-of 2998-01-01T00:00:00Z
+
 unsafe_draft="$workdir/unsafe-draft.json"
 python3 - "$draft" "$unsafe_draft" <<'PY'
 import json
