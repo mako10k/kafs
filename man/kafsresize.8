@@ -50,6 +50,13 @@ It also supports creating a migration target image with new geometry
 .B --migrate-create
 for cutover workflows.
 
+The three operation modes are mutually exclusive. Options are accepted only
+by the modes that list them below. Missing option values, malformed numeric
+values, unknown options, extra operands, and mode-inapplicable options are
+rejected with exit status 2 before an image is opened or created.
+Prefix a path value that begins with a hyphen with
+.BR ./ .
+
 .B --migrate-import-v7
 builds a new format-v7 image directly from a frozen format-v5 regular-file
 image. The offline importer preserves inode numbers, directories, regular-file
@@ -120,6 +127,8 @@ For
 .BR --migrate-import-v7 ,
 dry-run performs the full read-only source and exact destination-capacity
 preflight but creates neither the work image nor the final destination.
+This option does not apply to
+.BR --grow .
 .TP
 .B --migrate-import-v7
 Import a frozen, clean format-v5 regular-file image into a new format-v7 image.
@@ -128,9 +137,12 @@ The final destination must not exist; this mode does not accept
 .TP
 .B --src-image image
 Source image used by
-migration precheck. It is required for
+migration precheck. For
+.BR --migrate-create ,
+it applies only with
 .B --format-version 7
-and is validated before the destination image is overwritten.
+and is required by that format. The source is validated before the destination
+image is overwritten.
 For
 .BR --migrate-import-v7 ,
 it must be an unmounted, clean, dense, representable format-v5 regular-file
@@ -192,6 +204,7 @@ Optional journal size forwarded to
 .B --blksize-log L
 Optional log2 block size forwarded to
 .BR mkfs.kafs .
+The accepted CLI range is 1 through 31.
 For
 .BR --migrate-import-v7 ,
 it defaults to the source block size.
@@ -226,10 +239,11 @@ Overwrite existing destination image for
 Resize succeeded.
 .TP
 .B 1
-I/O, bounds, unsupported-headroom, or migration-create execution error.
+Runtime I/O, bounds, unsupported-headroom, or migration execution error after
+the command line has passed validation.
 .TP
 .B 2
-Usage error.
+Command-line contract error, including malformed or mode-inapplicable input.
 .SH SEE ALSO
 .BR kafs (1),
 .BR kafsctl (1),

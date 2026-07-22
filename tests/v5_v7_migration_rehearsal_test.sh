@@ -6,12 +6,24 @@ runner=${KAFS_TEST_V5_V7_MIGRATION_REHEARSAL:-../scripts/v5-v7-migration-rehears
   echo "v5-to-v7 migration rehearsal runner is not executable: $runner" >&2
   exit 1
 }
+runner=$(cd "$(dirname "$runner")" && printf '%s/%s\n' "$(pwd)" "$(basename "$runner")")
 
 workdir=$(mktemp -d "${TMPDIR:-/tmp}/kafs-v5-v7-migration-rehearsal.XXXXXX")
 cleanup() {
   find "$workdir" -depth -delete
 }
 trap cleanup EXIT
+
+set +e
+missing_value_output=$(cd "$workdir" && "$runner" --report-dir --keep-workdir 2>&1)
+missing_value_rc=$?
+set -e
+if [[ "$missing_value_rc" -ne 2 ]] ||
+  ! grep -Fq "missing value for --report-dir" <<<"$missing_value_output"; then
+  echo "rehearsal runner did not reject an option token used as a value" >&2
+  exit 1
+fi
+[[ ! -e "$workdir/--keep-workdir" ]]
 
 set +e
 output=$("$runner" --report-dir "$workdir/report" \

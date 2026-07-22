@@ -168,6 +168,18 @@ static int expect_text_absent(const char *label, const char *text, const char *n
   return 1;
 }
 
+static int expect_cli_usage_error(const char *label, char *const argv[], const char *needle)
+{
+  char output[4096];
+  int rc = run_cmd_capture_combined(argv, output, sizeof(output));
+  if (rc != 2)
+  {
+    fprintf(stderr, "%s returned %d instead of usage status 2\n", label, rc);
+    return 1;
+  }
+  return expect_text_contains(label, output, needle);
+}
+
 static int expect_json_u64_field(const char *label, const char *json, const char *field,
                                  uint64_t value)
 {
@@ -659,6 +671,58 @@ int main(void)
   if (kafs_test_enter_tmpdir("kafsresize") != 0)
   {
     fprintf(stderr, "failed to enter tmpdir\n");
+    return 1;
+  }
+
+  char *invalid_inodes_argv[] = {
+      (char *)resize_abs,       (char *)"--migrate-create", (char *)"--dst-image",
+      (char *)"unused.img",    (char *)"--size-bytes",     (char *)"64M",
+      (char *)"--inodes",      (char *)"4junk",            (char *)"--dry-run",
+      NULL};
+  char *overflow_size_argv[] = {
+      (char *)resize_abs,    (char *)"--migrate-create", (char *)"--dst-image",
+      (char *)"unused.img", (char *)"--size-bytes",     (char *)"18446744073709551615G",
+      (char *)"--inodes",   (char *)"4",                (char *)"--dry-run",
+      NULL};
+  char *invalid_ratio_argv[] = {
+      (char *)resize_abs,    (char *)"--migrate-create", (char *)"--dst-image",
+      (char *)"unused.img", (char *)"--size-bytes",     (char *)"64M",
+      (char *)"--inodes",   (char *)"4",                (char *)"--hrl-entry-ratio",
+      (char *)"nan",        (char *)"--dry-run",        NULL};
+  char *missing_value_argv[] = {(char *)resize_abs, (char *)"--migrate-create",
+                                (char *)"--dst-image", (char *)"--inodes", (char *)"4", NULL};
+  char *stray_operand_argv[] = {(char *)resize_abs, (char *)"--grow",
+                                (char *)"--size-bytes", (char *)"1K", (char *)"first.img",
+                                (char *)"second.img", NULL};
+  char *grow_inapplicable_argv[] = {(char *)resize_abs, (char *)"--grow",
+                                    (char *)"--size-bytes", (char *)"1K", (char *)"--inodes",
+                                    (char *)"4", (char *)"unused.img", NULL};
+  char *create_inapplicable_argv[] = {
+      (char *)resize_abs,       (char *)"--migrate-create", (char *)"--dst-image",
+      (char *)"unused.img",    (char *)"--size-bytes",     (char *)"64M",
+      (char *)"--inodes",      (char *)"4",                (char *)"--v7-group-count",
+      (char *)"2",             (char *)"--dry-run",        NULL};
+  char *import_inapplicable_argv[] = {
+      (char *)resize_abs,          (char *)"--migrate-import-v7", (char *)"--src-image",
+      (char *)"missing-v5.img",   (char *)"--dst-image",         (char *)"unused-v7.img",
+      (char *)"--force",          NULL};
+  if (expect_cli_usage_error("trailing inode count", invalid_inodes_argv, "invalid inodes") != 0 ||
+      expect_cli_usage_error("overflowing size", overflow_size_argv, "invalid size-bytes") != 0 ||
+      expect_cli_usage_error("non-finite ratio", invalid_ratio_argv,
+                             "invalid hrl-entry-ratio") != 0 ||
+      expect_cli_usage_error("missing path value", missing_value_argv,
+                             "missing value for --dst-image") != 0 ||
+      expect_cli_usage_error("extra operand", stray_operand_argv, "unexpected operand") != 0 ||
+      expect_cli_usage_error("grow-only options", grow_inapplicable_argv,
+                             "--inodes does not apply to --grow") != 0 ||
+      expect_cli_usage_error("create-only options", create_inapplicable_argv,
+                             "--v7-group-count does not apply to --migrate-create") != 0 ||
+      expect_cli_usage_error("import-only options", import_inapplicable_argv,
+                             "--force does not apply to --migrate-import-v7") != 0)
+    return 1;
+  if (access("unused.img", F_OK) == 0 || access("unused-v7.img", F_OK) == 0)
+  {
+    fprintf(stderr, "invalid CLI input created a destination image\n");
     return 1;
   }
 

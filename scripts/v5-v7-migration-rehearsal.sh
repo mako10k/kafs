@@ -36,12 +36,20 @@ Options:
   --timeout-ms N       FUSE mount timeout (default: 15000)
   --keep-workdir       Keep all disposable workload images
   -h, --help           Show this help
+
+Prefix a path value that begins with '-' with './'.
 EOF
 }
 
 die() {
   echo "ERROR: $*" >&2
   exit 2
+}
+
+require_option_value() {
+  local option=$1
+  [[ $# -ge 2 ]] || die "missing value for $option"
+  [[ -n "$2" && "$2" != -* ]] || die "missing value for $option"
 }
 
 resolve_exe() {
@@ -66,17 +74,17 @@ trap cleanup EXIT
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --report-root)
-      [[ $# -ge 2 ]] || die "missing value for --report-root"
+      require_option_value "$@"
       REPORT_ROOT=$2
       shift 2
       ;;
     --report-dir)
-      [[ $# -ge 2 ]] || die "missing value for --report-dir"
+      require_option_value "$@"
       REPORT_DIR=$2
       shift 2
       ;;
     --timeout-ms)
-      [[ $# -ge 2 ]] || die "missing value for --timeout-ms"
+      require_option_value "$@"
       MOUNT_TIMEOUT_MS=$2
       shift 2
       ;;
