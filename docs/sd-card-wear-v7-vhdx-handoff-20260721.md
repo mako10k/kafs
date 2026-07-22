@@ -1,5 +1,23 @@
 # KAFS v7 VHDX host-recovery WIP handoff (2026-07-21)
 
+## 2026-07-22 scheduling deferral
+
+- The active Ubuntu distro runs other tasks, so the user deferred every
+  `wsl.exe --terminate` / `wsl.exe --shutdown` recovery run until they identify
+  a safe maintenance window.
+- The harness remains complete and the four-point host-recovery matrix remains
+  incomplete. This is a scheduling block, not qualification evidence.
+- `plans/current.pert` keeps `VHDX_HOST_RECOVERY_RUN` as a mandatory predecessor
+  but marks it blocked alongside `HARDWARE_APPROVAL`; the decomposed plan gives
+  each 3 days of total float rather than treating either as the only frontier.
+- The 2026-07-22 blocker-decomposition refresh registers T57, a read-only
+  four-point evidence audit gate, separately from the disruptive capture. T57
+  is `READY / WAITING RESOURCE` behind the selected T58 real-media evidence
+  contract; it does not require terminating WSL.
+- Do not run the commands in this handoff until the user explicitly resumes the
+  qualification. At that time, refresh Git state, host/VHDX identity, state-root
+  freshness, Task Start evidence, and `perttool` output before execution.
+
 ## Closeout status
 
 - Closeout time: 2026-07-21 21:14 JST
@@ -61,9 +79,9 @@ a per-run discovery fact, not a value to hard-code tomorrow.
 The substitute process-kill matrix validates the harness only. It is not
 Windows-host interruption evidence.
 
-## Machine-selected next task
+## 2026-07-21 machine-selected state
 
-Current `./scripts/pert-next-task.sh plans/current.pert` result:
+The closeout `./scripts/pert-next-task.sh plans/current.pert` result was:
 
 - `RUNNABLE NOW`: `VHDX_HOST_RECOVERY_RUN`, total float `0d`, precedence and
   resource critical;
@@ -71,19 +89,25 @@ Current `./scripts/pert-next-task.sh plans/current.pert` result:
   branch;
 - `UPCOMING`: real-media qualification and migration/cutover evidence.
 
-Tomorrow's restart point is therefore **the fresh Task Start Gate for
-`VHDX_HOST_RECOVERY_RUN`, followed by native Windows read-only preflight**. Do
-not select namespace validation or another locally easy task.
+The original restart point was therefore the fresh Task Start Gate for
+`VHDX_HOST_RECOVERY_RUN`, followed by native Windows read-only preflight. The
+2026-07-22 deferral and blocker-decomposition plan supersede that selection:
+T58 is now selected, T57 and T59 wait for the primary stream, and host execution
+remains blocked. Do not select namespace validation or another off-goal task.
 
-## Tomorrow's Task Start Gate
+## Resume Task Start Gate
 
 Before any terminate command, refresh these facts:
 
 1. Confirm the fetched branch contains `224de59` and this handoff WIP commit.
 2. Run `git status --short --branch`. The only expected untracked files are the
    known generated test executables; any tracked diff requires `REPLAN`.
-3. Run `./scripts/pert-next-task.sh plans/current.pert` and require
-   `VHDX_HOST_RECOVERY_RUN` to remain the runnable zero-slack frontier.
+3. Run `./scripts/pert-next-task.sh plans/current.pert`. On the current deferred
+   plan, require T58 in `RUNNABLE NOW`, T57/T59 in
+   `READY / WAITING RESOURCE`, and the VHDX run in `BLOCKED NOW`. After the user
+   supplies a window, remove only the now-resolved blocker, refresh all
+   dependency/resource state, and proceed only if `dag next` places the run in
+   `RUNNABLE NOW` for available capacity.
 4. Confirm the target is the registered Ubuntu distro and that the controller
    rediscovers a `.vhdx`; do not reuse today's path or size without discovery.
 5. From native Windows PowerShell, run the preflight command below without
@@ -130,9 +154,10 @@ The task is complete only when all four fresh fault directories contain valid:
 - `artifacts.sha256` passing `sha256sum -c`;
 - controller output `KAFS_V7_VHDX_HOST_RECOVERY PASS run_id=<run-id>`.
 
-After those checks, update `plans/current.pert` to mark the host recovery
-milestone reached, rerun the three-command perttool gate, and record the new
-frontier. Physical `HARDWARE_APPROVAL` must remain in the graph.
+After those checks, mark only `VHDX_HOST_RECOVERY_CAPTURED` reached. Run the T57
+read-only audit gate over the exact four-fault run; only its PASS may close
+`VHDX_HOST_RECOVERY_QUALIFIED`. Then rerun the three-command perttool gate and
+record the new frontier. Physical `HARDWARE_APPROVAL` must remain in the graph.
 
 ## Stop and preserve conditions
 

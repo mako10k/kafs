@@ -2,7 +2,7 @@
 
 - Branch: `feat/v7-runtime-admission-foundation`
 - Baseline: `460f7b0`
-- Status: baseline accepted; T49-T55 software expansion/hardening complete while M7 awaits hardware identity
+- Status: baseline accepted; T49-T55 complete; T58 evidence contract selected while hardware and VHDX execution wait
 
 ## Purpose
 
@@ -347,9 +347,34 @@ physical power, and controller-independent wear claims false.
 
 T56 makes the host interruption run executable and resumable across WSL
 restart; it does not perform that interruption while the controlling Codex
-session resides inside the target distro. The actual four-point native Windows
-run remains the next PERT node. Hardware identity and destructive approval are
-still required in parallel before any real-media execution can start.
+session resides inside the target distro. Hardware identity and destructive
+approval are still required in parallel before any real-media execution can
+start. The next-node statement at T56 closeout is superseded by the following
+2026-07-22 blocker-decomposition addendum.
+
+## 2026-07-22 Blocker-Decomposition Addendum
+
+The user deferred the native Windows run because the target Ubuntu distro hosts
+other tasks. Refreshed evidence also showed that the coarse plan hid three
+goal-path capabilities that do not require either disruptive window:
+
+- T57: a read-only aggregate audit of all four VHDX evidence directories;
+- T58: the real-media execution-artifact and independent-review validation
+  contract; and
+- T59: disposable-file-image v5-to-v7 data migration, resume, and rollback
+  rehearsal beyond destination creation.
+
+`plans/current.pert` now models those capabilities separately. The checked
+`dag next` result selects T58 as the only zero-slack `RUNNABLE NOW` node. T57
+and T59 are `READY / WAITING RESOURCE` behind T58 under primary capacity one.
+The actual VHDX run and exact hardware approval remain `BLOCKED NOW`; neither is
+removed or treated as complete. Physical execution and production cutover still
+join through audited VHDX capture, authorized media, the T58 evidence contract,
+independent review, and the T59 rehearsal.
+
+This addendum changes task granularity and ordering, not the accepted end goal
+or qualification claim. T58 must pass its own Task Start Gate before code edits,
+and it may not open a device, format/mount media, interrupt power, or assert RC.
 
 ## Deferred Gate: SDW-V7RT-T48 Controlled-write RC Qualification
 

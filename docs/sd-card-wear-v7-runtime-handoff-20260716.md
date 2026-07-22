@@ -1,4 +1,4 @@
-# KAFS format v7 runtime handoff (updated 2026-07-21)
+# KAFS format v7 runtime handoff (updated 2026-07-22)
 
 ## Scope
 
@@ -120,7 +120,7 @@ checksum-consistent foreign-group mutation.
 | M5 | T18-T19: internal full-block data COW and retained-block retirement | Complete |
 | M6 | T20-T32: bounded direct overwrite, admission, diagnostics, partial/multi-block COW, interruption recovery | Complete |
 | M6.1 | T33: FUSE request negotiation and supported atomic-request observability | Complete |
-| M7 | T48: controlled-write RC qualification, real-media power interruption, and independent review | External hardware/approval join blocked and deferred; destructive execution not authorized |
+| M7 | T48/T58: controlled-write RC qualification, real-media power interruption, and independent review | T58 evidence/review contract selected; external hardware/approval and VHDX execution blocked; destructive execution not authorized |
 | M8-A | Existing-inode growth, allocation, hole policy, and truncate | Complete for dense same-group regular files through triple depth |
 | M8-B | Create and directory-record mutation | Complete for bounded same-group inline/direct directories after R1 correction |
 | M8-B.1 | T49 regular-file inline-to-one-direct-block promotion | Complete with file-image normal/recovery qualification refresh |
@@ -128,7 +128,7 @@ checksum-consistent foreign-group mutation.
 | M8-B.3 | T51 namespace payload structural validation | Complete for inline and bounded direct KDIR/symlink admission |
 | M8-B.4 | T52 bounded direct-inode reference validation | Complete for dense direct count/slots and recovered-bitmap allocation admission |
 | M8-C | Indirect-block COW, traversal, and retirement | Triple-indirect regular-file lifecycle complete through T55; indirect directories remain |
-| M9 | v5-to-v7 data migration beyond destination creation | Destination creation present; full data migration/cutover not complete |
+| M9 | T59: v5-to-v7 data migration beyond destination creation | Rehearsal registered and resource-waiting; full data migration/cutover not complete |
 | M10 | Cross-group HRL and multi-group atomic mutation | Not started |
 
 The bounded direct portions of M8-A and M8-B are implemented. R1 replaced the
@@ -380,12 +380,24 @@ T19 validation completed on 2026-07-17:
 
 ## Recommended Next Slice
 
-The post-T56 `plans/current.pert` marks the VHDX harness ready. Its machine
-frontier selects `VHDX_HOST_RECOVERY_RUN` as the only runnable zero-slack task.
-Tomorrow begins with its fresh Task Start Gate and read-only native Windows
-preflight, followed by the four-point terminate/restart matrix only after PASS.
-Use [the dated VHDX handoff](sd-card-wear-v7-vhdx-handoff-20260721.md) as the
-exact restart procedure.
+The 2026-07-22 blocker-decomposition refresh keeps
+`VHDX_HOST_RECOVERY_RUN` blocked because the active Ubuntu distro runs other
+tasks, and keeps physical hardware approval blocked. It separates three
+non-disruptive capabilities that the prior plan had bundled into later waves.
+The machine-selected next slice is T58 `REAL_MEDIA_EVIDENCE_CONTRACT`, the only
+`RUNNABLE NOW` zero-slack node. It defines fail-closed execution-artifact and
+independent-review validation without opening a device.
+
+T57 read-only VHDX evidence audit and T59 disposable-file-image v5-to-v7
+migration/rollback rehearsal are also ready, but wait for the capacity-one
+primary stream behind T58. Neither may be substituted for T58 while that
+resource classification holds. T58 implementation requires its own fresh Task
+Start Gate; this handoff does not authorize device access or destructive work.
+
+Use [the dated VHDX handoff](sd-card-wear-v7-vhdx-handoff-20260721.md) only
+after the user explicitly names a safe maintenance window. The actual four-point
+capture must later pass the T57 audit gate before the VHDX qualification join
+can close.
 
 The hardware path remains in the same network as blocked critical node `H`.
 When the required hardware becomes available, complete the `SDW-V7RT-T48-B1`
@@ -407,7 +419,7 @@ interruption before that approval.
    - [sd-card-wear-v7-vhdx-host-recovery.md](sd-card-wear-v7-vhdx-host-recovery.md);
    - [sd-card-wear-v7-capability-rebaseline-20260721.md](sd-card-wear-v7-capability-rebaseline-20260721.md);
    - this handoff;
-   - [sd-card-wear-tickets.md](sd-card-wear-tickets.md) at T49-T56;
+   - [sd-card-wear-tickets.md](sd-card-wear-tickets.md) at T49-T59;
    - [sd-card-wear-v7-indirect-pert-20260721.md](sd-card-wear-v7-indirect-pert-20260721.md);
    - [sd-card-wear-format-v7-pivot.md](sd-card-wear-format-v7-pivot.md);
    - [.github/lock-policy.md](../.github/lock-policy.md).
@@ -420,10 +432,13 @@ interruption before that approval.
    make -C tests check TESTS='v7_fuse_write_smoketest v7_checkpoint_publication_smoketest v7_inspection_mount_smoketest'
    ```
 
-6. Run `./scripts/pert-next-task.sh plans/current.pert`. Require
-   `VHDX_HOST_RECOVERY_RUN` to remain the runnable critical frontier, then run
-   the dated handoff's native Windows preflight and Task Start decision. Keep
-   real-device actions behind explicit approval and do not substitute off-path
-   namespace work.
+6. Run `./scripts/pert-next-task.sh plans/current.pert`. Require T58
+   `REAL_MEDIA_EVIDENCE_CONTRACT` alone in `RUNNABLE NOW`, T57 and T59 in
+   `READY / WAITING RESOURCE`, and both `VHDX_HOST_RECOVERY_RUN` and
+   `HARDWARE_APPROVAL` in `BLOCKED NOW`. Any different frontier requires plan
+   refresh before selection. When the user resumes the VHDX task, refresh the
+   host identity, Task Start evidence, and plan before the dated handoff's
+   native Windows preflight. Keep real-device actions behind explicit approval
+   and do not substitute off-path namespace work.
 7. Follow the reviewed file/hunk WIP workflow in
    [github-dev-rules.md](../.github/github-dev-rules.md).

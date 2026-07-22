@@ -2,15 +2,11 @@ project KAFS_CURRENT:
   version 1
   title "KAFS accepted-goal residual plan"
   description |
-    Canonical residual network for next-task selection. The v7 dense
-    regular-file block tree and non-destructive software qualification are
-    complete through T55. The active Ubuntu system disk is a Windows-host VHDX,
-    so the dedicated-image Windows-host harness is now ready. Its actual
-    terminate/restart recovery run remains the runnable predecessor of approved
-    real-media qualification. Physical wear and isolated power-cut claims remain
-    blocked. Off-goal work is owned in its linked backlog or PERT narrative and
-    is not added here as a false predecessor.
-  as_of 2026-07-21
+    Residual network for qualified v7 migration and production-cutover evidence.
+    Hardware and WSL maintenance windows remain blocked, while independent
+    evidence-verifier and migration-rehearsal capabilities are separated so
+    they can close before the disruptive execution windows become available.
+  as_of 2026-07-22
   duration_unit day
   finish PRODUCTION_CUTOVER_DECIDED
 
@@ -18,39 +14,113 @@ resource PRIMARY_STREAM:
   title "Primary implementation and qualification stream"
   capacity 1
 
+resource INDEPENDENT_REVIEW_STREAM:
+  title "Reviewer independent from the qualification operator"
+  capacity 1
+
 milestone SOFTWARE_QUALIFIED:
   title "Expanded v7 software qualification complete"
-  description |
-    Dense direct, single-, double-, and triple-indirect regular-file mutation,
-    recovery, detect-only fsck, and non-destructive qualification are complete.
   state reached
-
-milestone MEDIA_AUTHORIZED:
-  title "Exact media apparatus and destructive run authorized"
 
 milestone VHDX_HARNESS_READY:
   title "Resumable Windows-host VHDX recovery harness ready"
   state reached
 
+milestone REAL_MEDIA_APPROVAL_CONTRACT_READY:
+  title "Fail-closed real-media matrix and approval contract ready"
+  state reached
+
+milestone V7_MIGRATION_TARGET_READY:
+  title "Validated v7 migration destination creation ready"
+  state reached
+
+milestone VHDX_EVIDENCE_AUDIT_READY:
+  title "Offline VHDX four-point evidence audit gate ready"
+
+milestone VHDX_HOST_RECOVERY_CAPTURED:
+  title "Windows-host VHDX terminate/restart evidence captured"
+
 milestone VHDX_HOST_RECOVERY_QUALIFIED:
   title "Windows-host VHDX terminate/restart recovery qualified"
 
+milestone REAL_MEDIA_EVIDENCE_CONTRACT_READY:
+  title "Real-media artifact and independent-review gate ready"
+
+milestone MEDIA_AUTHORIZED:
+  title "Exact media apparatus and destructive run authorized"
+
 milestone REAL_MEDIA_EXECUTION_READY:
-  title "Virtual prequalification and physical-media authorization complete"
+  title "All physical execution prerequisites ready"
+
+milestone REAL_MEDIA_EVIDENCE_CAPTURED:
+  title "Approved real-media recovery evidence captured"
 
 milestone MEDIA_QUALIFIED:
-  title "Real-media recovery and wear qualification complete"
+  title "Independent review accepted bounded real-media evidence"
+
+milestone MIGRATION_REHEARSAL_READY:
+  title "v5-to-v7 data migration and rollback rehearsal ready"
+
+milestone CUTOVER_EXECUTION_READY:
+  title "Qualified runtime and rehearsed migration ready for cutover evidence"
 
 milestone PRODUCTION_CUTOVER_DECIDED:
   title "Migration and production cutover evidence accepted"
 
-task HARDWARE_APPROVAL SOFTWARE_QUALIFIED -> MEDIA_AUTHORIZED:
-  title "Bind exact card, reader, power-cut apparatus, cycle count, and approval"
+task VHDX_EVIDENCE_AUDIT VHDX_HARNESS_READY -> VHDX_EVIDENCE_AUDIT_READY:
+  title "Build a read-only four-point VHDX evidence audit gate"
   description |
-    The low-confidence estimate covers repository and operator work after the
-    external inputs become available. It intentionally excludes unknown
-    external calendar wait and does not affect ordering in this serial residual
-    network.
+    Validate the complete run id, exact four fault directories, host/distro/VHDX
+    identity, false claims, fsck/dump/payload results, and every artifact digest.
+    Use synthetic and substitute-process evidence only; do not terminate WSL.
+  estimate:
+    optimistic 1d
+    most_likely 2d
+    pessimistic 4d
+  owner "KAFS implementation stream"
+  source "docs/sd-card-wear-tickets.md#sdw-v7rt-t57-vhdx-evidence-audit-gate"
+  requires:
+    PRIMARY_STREAM 1
+
+task VHDX_HOST_RECOVERY_RUN VHDX_HARNESS_READY -> VHDX_HOST_RECOVERY_CAPTURED:
+  title "Capture VHDX-backed recovery across WSL terminate/restart"
+  estimate:
+    optimistic 1d
+    most_likely 1d
+    pessimistic 2d
+  status blocked
+  blocked_reason |
+    The active Ubuntu distro runs other tasks. The user deferred every
+    wsl.exe --terminate/--shutdown recovery run until they identify a safe
+    maintenance window and explicitly resume this qualification.
+  owner "Windows host operator and KAFS implementation stream"
+  source "docs/sd-card-wear-v7-vhdx-host-recovery.md"
+  requires:
+    PRIMARY_STREAM 1
+
+gate VHDX_AUDIT_REQUIRED VHDX_EVIDENCE_AUDIT_READY -> VHDX_HOST_RECOVERY_QUALIFIED:
+  reason "Captured host evidence must pass the offline audit gate"
+
+gate VHDX_CAPTURE_REQUIRED VHDX_HOST_RECOVERY_CAPTURED -> VHDX_HOST_RECOVERY_QUALIFIED:
+  reason "Qualification requires the actual four-point host interruption capture"
+
+task REAL_MEDIA_EVIDENCE_CONTRACT SOFTWARE_QUALIFIED -> REAL_MEDIA_EVIDENCE_CONTRACT_READY:
+  title "Build real-media artifact and independent-review validation"
+  description |
+    Define and validate immutable artifact manifests, per-cycle outcomes,
+    device/power identity continuity, approval binding, reviewer separation,
+    and ACCEPT/REJECT/INCONCLUSIVE decisions without opening a device.
+  estimate:
+    optimistic 2d
+    most_likely 4d
+    pessimistic 7d
+  owner "KAFS implementation stream"
+  source "docs/sd-card-wear-tickets.md#sdw-v7rt-t58-real-media-evidence-review-gate"
+  requires:
+    PRIMARY_STREAM 1
+
+task HARDWARE_APPROVAL REAL_MEDIA_APPROVAL_CONTRACT_READY -> MEDIA_AUTHORIZED:
+  title "Bind exact card, reader, power-cut apparatus, cycle count, and approval"
   estimate:
     optimistic 1d
     most_likely 1d
@@ -64,45 +134,65 @@ task HARDWARE_APPROVAL SOFTWARE_QUALIFIED -> MEDIA_AUTHORIZED:
   requires:
     PRIMARY_STREAM 1
 
-task VHDX_HOST_RECOVERY_RUN VHDX_HARNESS_READY -> VHDX_HOST_RECOVERY_QUALIFIED:
-  title "Run and verify VHDX-backed recovery across WSL terminate/restart"
-  description |
-    Run the resumable harness from Windows Host against only its disposable KAFS
-    image. Terminate and restart the Ubuntu distro at the defined boundaries,
-    then preserve fsck, dump, payload, host, distro, and VHDX identity evidence.
-    Make no physical-media, wear, controller, or isolated-power claim.
-  estimate:
-    optimistic 1d
-    most_likely 1d
-    pessimistic 2d
-  owner "Windows host operator and KAFS implementation stream"
-  source "docs/sd-card-wear-v7-indirect-pert-20260721.md"
-  requires:
-    PRIMARY_STREAM 1
-
-gate VHDX_RECOVERY_REQUIRED VHDX_HOST_RECOVERY_QUALIFIED -> REAL_MEDIA_EXECUTION_READY:
+gate VHDX_QUALIFICATION_REQUIRED VHDX_HOST_RECOVERY_QUALIFIED -> REAL_MEDIA_EXECUTION_READY:
   reason "Host-level virtual-media recovery evidence is required before physical execution"
 
 gate HARDWARE_APPROVAL_REQUIRED MEDIA_AUTHORIZED -> REAL_MEDIA_EXECUTION_READY:
-  reason "Physical execution still requires disposable media and isolated-power approval"
+  reason "Physical execution requires disposable media and isolated-power approval"
 
-task REAL_MEDIA_QUALIFICATION REAL_MEDIA_EXECUTION_READY -> MEDIA_QUALIFIED:
+gate REAL_MEDIA_CONTRACT_REQUIRED REAL_MEDIA_EVIDENCE_CONTRACT_READY -> REAL_MEDIA_EXECUTION_READY:
+  reason "The evidence and review contract must exist before collecting destructive evidence"
+
+task REAL_MEDIA_EXECUTION REAL_MEDIA_EXECUTION_READY -> REAL_MEDIA_EVIDENCE_CAPTURED:
   title "Run approved real-media recovery and wear qualification"
   estimate:
-    optimistic 3d
-    most_likely 5d
-    pessimistic 9d
+    optimistic 2d
+    most_likely 4d
+    pessimistic 7d
   owner "KAFS operator"
   source "docs/sd-card-wear-v7-controlled-write-qualification.md"
   requires:
     PRIMARY_STREAM 1
 
-task MIGRATION_CUTOVER_EVIDENCE MEDIA_QUALIFIED -> PRODUCTION_CUTOVER_DECIDED:
-  title "Produce migration and production cutover evidence"
+task INDEPENDENT_REAL_MEDIA_REVIEW REAL_MEDIA_EVIDENCE_CAPTURED -> MEDIA_QUALIFIED:
+  title "Independently review bounded real-media evidence"
   estimate:
-    optimistic 5d
-    most_likely 10d
-    pessimistic 18d
+    optimistic 1d
+    most_likely 1d
+    pessimistic 2d
+  owner "independent KAFS reviewer"
+  source "docs/sd-card-wear-v7-real-media-qualification-approval.md"
+  requires:
+    INDEPENDENT_REVIEW_STREAM 1
+
+task V5_V7_MIGRATION_REHEARSAL V7_MIGRATION_TARGET_READY -> MIGRATION_REHEARSAL_READY:
+  title "Implement and rehearse v5-to-v7 data migration and rollback"
+  description |
+    Complete data-copy rehearsal beyond destination creation using disposable
+    file images, verify source immutability and destination namespace/payload,
+    and produce resumable rollback and evidence contracts without production
+    cutover or physical media.
+  estimate:
+    optimistic 3d
+    most_likely 6d
+    pessimistic 10d
+  owner "KAFS implementation stream"
+  source "docs/sd-card-wear-tickets.md#sdw-v7rt-t59-v5-to-v7-migration-rehearsal"
+  requires:
+    PRIMARY_STREAM 1
+
+gate QUALIFIED_MEDIA_REQUIRED MEDIA_QUALIFIED -> CUTOVER_EXECUTION_READY:
+  reason "Production cutover evidence requires the accepted destination runtime qualification"
+
+gate MIGRATION_REHEARSAL_REQUIRED MIGRATION_REHEARSAL_READY -> CUTOVER_EXECUTION_READY:
+  reason "Production cutover evidence requires a validated migration and rollback rehearsal"
+
+task CUTOVER_EVIDENCE_DECISION CUTOVER_EXECUTION_READY -> PRODUCTION_CUTOVER_DECIDED:
+  title "Produce migration and production cutover decision evidence"
+  estimate:
+    optimistic 2d
+    most_likely 4d
+    pessimistic 8d
   owner "KAFS implementation stream"
   source "docs/sd-card-wear-v7-indirect-pert-20260721.md"
   requires:

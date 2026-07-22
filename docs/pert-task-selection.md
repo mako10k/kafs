@@ -148,8 +148,18 @@ critical predecessor. If that result cannot be obtained without a false edge,
 arbitrary priority, or invented estimate, the decision is `REPLAN`, not a
 directory-task `SELECT`.
 
-The current post-T55 plan is the blocked-state replay. For
-`plans/current.pert`, the expected classification is no `RUNNABLE NOW`,
-`HARDWARE_APPROVAL` in `BLOCKED NOW` with zero total float, and the media and
-cutover tasks in `UPCOMING`. That result requires `BLOCKED`; it does not
-authorize an off-goal substitute.
+The current post-T56 deferment plan is also a blocker-decomposition replay. It
+must not hide evidence validation or migration rehearsal inside disruptive
+execution nodes merely because the execution windows are blocked. For
+`plans/current.pert`, the expected classification is:
+
+- `REAL_MEDIA_EVIDENCE_CONTRACT` alone in `RUNNABLE NOW`, total float zero;
+- `VHDX_EVIDENCE_AUDIT` and `V5_V7_MIGRATION_REHEARSAL` in
+  `READY / WAITING RESOURCE` behind the selected primary stream;
+- `HARDWARE_APPROVAL` and `VHDX_HOST_RECOVERY_RUN` in `BLOCKED NOW`; and
+- physical execution, independent review, and cutover decision in `UPCOMING`.
+
+This result requires `SELECT REAL_MEDIA_EVIDENCE_CONTRACT`. It does not
+authorize execution, remove either blocker, or permit an off-goal substitute.
+The VHDX execution task becomes eligible only after the user identifies a safe
+maintenance window and the plan is refreshed from a new host preflight.

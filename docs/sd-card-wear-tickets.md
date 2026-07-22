@@ -3693,6 +3693,69 @@
     Windows 4点実行`VHDX_HOST_RECOVERY_RUN`を唯一の`RUNNABLE NOW`、zero-slack critical taskとして選択する。
   - physical `HARDWARE_APPROVAL`はzero-slackのblocked parallel branchとして残り、VHDX結果で代替しない。
 
+### SDW-V7RT-T57 VHDX evidence audit gate
+
+- 目的: maintenance window中の4点terminate/restart実行を再実行せずに判定できる、read-onlyの集約証跡監査を
+  独立したcapabilityとして用意する。
+- PERT/依存:
+  - `VHDX_HARNESS_READY`をpredecessorとし、actual host runとは独立に実装できる。
+  - 2026-07-22再計算では`VHDX_EVIDENCE_AUDIT`として`READY / WAITING RESOURCE`、TE 2.167日、
+    total float 2日。selected nodeではない。
+- スコープ:
+  - 一つのrun IDにexact 4 fault directoryが重複なく揃うことを検査する。
+  - host/distro/VHDX identity、controllerのterminate/restart exit、時刻順序、false claim、各faultの
+    verify/fsck/dump/payload/recovery diagnostic、artifact SHA-256をmanifestから照合する。
+  - missing/duplicate fault、identity不一致、claim昇格、digest不一致、incomplete stateをfail closedにする。
+  - synthetic evidenceと既存process-kill substitute evidenceでpositive/negative regressionを作る。
+- 完了条件:
+  - validate-only commandが完全な4点証跡だけをPASSし、個別faultの成功をhost qualificationへ誤昇格しない。
+  - gate自体はimage/deviceへwrite、mount、WSL terminate/restartを行わない。
+- 非目標: native Windows host run、`wsl.exe --terminate`/`--shutdown`、raw VHDX access、real-media claim。
+- 状態: 登録済み。primary streamはT58が占有するため、実装着手はresource待ち。
+
+### SDW-V7RT-T58 real-media evidence review gate
+
+- 目的: destructive real-media executionより前に、artifact manifestと独立review decisionを機械検証できる
+  fail-closed contractを確立する。
+- PERT/依存:
+  - `SOFTWARE_QUALIFIED`をpredecessorとし、hardware identity/approval、physical device、VHDX maintenance
+    windowなしで完了できる。
+  - 2026-07-22再計算では`REAL_MEDIA_EVIDENCE_CONTRACT`として唯一の`RUNNABLE NOW`、TE 4.167日、
+    total float 0日、precedence/resource critical。次waveとして`SELECT`する。
+- スコープ:
+  - exact approval/matrix digest、before/after device identity、reader/controllerとisolated-power identity、
+    workload/boundary/cycle、`PASS`/`FAIL`/`SKIP`/`INCONCLUSIVE`、artifact hashをschemaへ固定する。
+  - operatorとreviewerのidentityを分離し、reviewerが全必須resultとdigestを独立照合した
+    `ACCEPT`/`REJECT`/`INCONCLUSIVE` decisionだけを受理する。
+  - synthetic manifestによるpositive/negative regressionで、missing cycle、identity drift、approval digest
+    不一致、hash不一致、operator-self-review、claim昇格を拒否する。
+- 完了条件:
+  - execution前artifact contractとexecution後review contractがversioned schemaとvalidate-only gateで閉じる。
+  - DRAFT matrix/approval gateとのbindingが検証され、deviceを開かずに全regressionがPASSする。
+- 非目標: `/dev/*` open、format、mount、power interruption、cycle execution、actual reviewer承認、RC claim。
+- 状態: 登録済み、PERT選定済み。実装前にcurrent checkoutで改めてTask Start Gateを実施する。
+
+### SDW-V7RT-T59 v5-to-v7 migration rehearsal
+
+- 目的: T29のv7 destination creationを、disposable file image上のv5 data copy、検証、再開、rollbackまで
+  含むmigration capabilityへ拡張する。
+- PERT/依存:
+  - `V7_MIGRATION_TARGET_READY`をpredecessorとし、real-media executionとは独立に先行できるが、qualified
+    runtimeとのjoin後にだけproduction cutover evidenceを許可する。
+  - 2026-07-22再計算では`V5_V7_MIGRATION_REHEARSAL`として`READY / WAITING RESOURCE`、TE 6.167日、
+    total float 3.333日。selected nodeではない。
+- スコープ:
+  - disposable v5 sourceとv7 destinationを作り、source freeze/immutability、namespace、payload、metadata、
+    geometry、fsck/dump evidenceを比較する。
+  - interrupted copyの再開境界、partial destinationの拒否またはrollback、再実行時のidempotenceを明文化し、
+    operatorがproduction sourceを変更せずに演習できるcontractを作る。
+  - migration boundaryはfixtureや単一file例ではなく、cutover前に必要なdata-copy lifecycle全体で閉じる。
+- 完了条件:
+  - normal/restart/rollback rehearsalがsource immutabilityとdestination completenessを証明し、失敗時に
+    incomplete destinationをmount/cutover対象へ昇格させない。
+- 非目標: production cutover、in-place metadata relocation、physical media、v6 compatibility、自動RC承認。
+- 状態: 登録済み。primary streamはT58が占有するため、実装着手はresource待ち。
+
 ---
 ---
 
@@ -3701,19 +3764,26 @@
 この節はhandoff用の開始候補であり、実装開始許可または最新の完了条件ではない。着手前に`AGENTS.md`の
 Task Start Gateでcurrent checkoutのevidenceを再確認し、`PASS`・`REPLAN`・`BLOCKED`を判定する。
 
-T49-T56は完了している。最新のcloseout PERTはVHDX harnessをcompleteとし、実際のnative Windows
-terminate/restart matrix `VHDX_HOST_RECOVERY_RUN`を唯一のrunnable critical taskとする。exact physical
-hardware identityとdigest-bound approval `H`は並行するblocked critical branchであり、virtual evidenceで
-置換しない。whole-namespace graph validation `N`はoff-pathのままである。
+T49-T56は完了している。2026-07-22にblockerの前後をcapability単位で再調査し、T57-T59を登録した。
+`VHDX_HOST_RECOVERY_RUN`とexact physical hardware identity/approvalはcompleteや削除にせずblockedのまま
+残す。更新した`plans/current.pert`の唯一の`RUNNABLE NOW`はT58
+`REAL_MEDIA_EVIDENCE_CONTRACT`であり、これを次waveとして選定する。T57 `VHDX_EVIDENCE_AUDIT`とT59
+`V5_V7_MIGRATION_REHEARSAL`もblockerなしでreadyだが、capacity 1のprimary streamをT58が占有するため
+`READY / WAITING RESOURCE`である。whole-namespace graph validation `N`は引き続きoff-pathであり、代替選定
+しない。
 
-次はnative Windows PowerShellから次を行う。
+T58着手時はcurrent checkoutでTask Start Gateを再実行し、schema ownership、execution artifactとreview
+decisionのsemantic boundary、approval binding、reviewer independence、negative state matrixを再導出する。
+deviceを開く処理、format/mount、power interruption、actual approvalはこのwaveへ含めない。
+
+ユーザーが実施可能時期を明示した後に限り、native Windows PowerShellから次を行う。
 
 1. `scripts/v7-vhdx-host-recovery.ps1 -Distro Ubuntu`でread-only preflightを実行し、registryで発見した
    exact VHDX path/length、Linux runner、state root、false claimを確認する。
 2. target Ubuntuの外側にあるnative Windows PowerShellから`-Execute -Confirm`を付けて、4 faultすべての
    marker確認、distro terminate/restart、resume verifyを実行する。target WSL内のCodexからは実行しない。
-3. 4 state directoryのhost-controller、fsck、dump、payload/recovery diagnostic、manifest、SHA-256とfinal
-   PASS markerを確認してから、PERTの`VHDX_HOST_RECOVERY_RUN`をcompleteへ移す。
+3. 4 state directoryのhost-controller、fsck、dump、payload/recovery diagnostic、manifest、SHA-256が揃えば
+   capture taskをcompleteとし、T57 gateの監査PASS後にだけVHDX qualification joinを閉じる。
 
 実媒体準備を再開できる時点では、並行するexternal blocker `H`について次を行う。
 
@@ -3721,6 +3791,8 @@ hardware identityとdigest-bound approval `H`は並行するblocked critical bra
    `READY_FOR_APPROVAL` gateが返すSHA-256をoperatorへ提示する。
 2. そのexact digestに対する期限付きapprovalを得た後だけ、承認されたsampleを対象にreal-media runnerを
    実装する。承認前はformat、mount、power interruption、`/dev/*` execution pathを追加しない。
+3. execution evidenceをT58 contractへ固定し、operatorと異なるreviewerのdecisionがPASSして初めて
+   `MEDIA_QUALIFIED`をclosedとする。
 
 現在の選定根拠と非目標は
 `docs/sd-card-wear-v7-indirect-pert-20260721.md`と
