@@ -8,13 +8,13 @@ kafs-v6 \- retired format v6 runtime placeholder
 .SH DESCRIPTION
 .B kafs-v6
 is a temporary fail-closed placeholder for the retired format v6 runtime.
-Operational requests exit without opening or mounting an image. Use offline
-tools while migrating remaining experimental v6 images, or recreate them as
-format v7 images for use with
+Operational requests exit without opening or mounting an image. Format v6
+offline inspection has also been retired; recreate remaining experimental
+images as format v7 images for use with
 .BR kafs-v7 (8).
 .PP
-The placeholder command will be removed after the remaining v6 offline and
-layout sources have been retired.
+The placeholder command remains only to provide a deterministic retirement
+diagnostic and is removed with the final packaged v6 command surface.
 .SH OPTIONS
 .TP
 .BR -h ", " --help

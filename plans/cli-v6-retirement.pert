@@ -52,6 +52,7 @@ milestone V6_ACTIVE_COMMON_DECOUPLED:
 
 milestone V6_OFFLINE_SURFACES_RETIRED:
   title "Format-v6 offline diagnostics, fixture creation, and tests are retired"
+  state reached
 
 milestone V6_ENTRYPOINT_REMOVED:
   title "Final format-v6 placeholder, packaging, manual, and completion are removed"
@@ -153,6 +154,7 @@ task V6_OFFLINE_RETIREMENT V6_ACTIVE_COMMON_DECOUPLED -> V6_OFFLINE_SURFACES_RET
     optimistic 2d
     most_likely 5d
     pessimistic 10d
+  status done
   owner "KAFS implementation stream"
   source "docs/sd-card-wear-v6-retirement-plan.md"
   requires:

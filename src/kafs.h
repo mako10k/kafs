@@ -177,16 +177,6 @@ typedef uint_fast32_t kafs_hrid_t;
 #define KAFS_HASH_FAST_XXH64 1u
 #define KAFS_HASH_STRONG_BLAKE3_256 1u
 
-static inline int kafs_format_uses_layout_descriptor(uint32_t format_version)
-{
-  return format_version == KAFS_FORMAT_VERSION_V6 || format_version == KAFS_FORMAT_VERSION_V7;
-}
-
-static inline const char *kafs_format_runtime_entrypoint(uint32_t format_version)
-{
-  return format_version == KAFS_FORMAT_VERSION_V7 ? "kafs-v7" : "kafs-v6";
-}
-
 #define KAFS_PENDING_WORKER_PRIO_NORMAL 0u
 #define KAFS_PENDING_WORKER_PRIO_IDLE 1u
 

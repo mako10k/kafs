@@ -182,8 +182,7 @@ fsck/dump, or digest mismatch:
   or RC evidence.
 - Do not remove `HARDWARE_APPROVAL` from PERT or substitute off-path namespace
   work because it is locally easier.
-- Do not stage the existing generated `tests/v7_*` and `tests/v6_fixture_mkfs`
-  executables.
+- Do not stage generated `tests/v7_*` executables.
 
 ## First files to read tomorrow
 

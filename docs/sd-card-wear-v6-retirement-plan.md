@@ -46,45 +46,34 @@ justification to retain excluded code.
 
 ## Current phase
 
-The `V6_ACTIVE_COMMON_DECOUPLING` wave is complete under
+The `V6_OFFLINE_RETIREMENT` wave is complete under
 [`plans/cli-v6-retirement.pert`](../plans/cli-v6-retirement.pert). Its ownership
 record is
 [`sd-card-wear-v6-retirement-inventory-20260722.md`](sd-card-wear-v6-retirement-inventory-20260722.md).
-It deleted the retired v6 FUSE policy headers, removed unreachable v6
-controlled-write branches from the shared runtime, neutralized descriptor-backed
-offline mapping state, and made v7 worker suppression depend only on v7-owned
-policy validation. Bounded offline diagnostics and fixtures and the final
-placeholder remain assigned to their explicitly ordered successor waves.
+It removed the neutral descriptor implementation, v6 fixture creation and
+descriptor tests, shared descriptor mappings and journal routing, and v6
+offline fsck/dump behavior. `fsck.kafs` and `kafsdump` now reject a minimal v6
+format marker with recreate-as-v7 guidance. The production v4/v5 path and the
+v7-owned raw layout remain independent. The v5 metadata heatmap script remains;
+only its v6 JSON ingestion mode was retired.
 
-The closeout gate covered `autoreconf -fi`, configure/build, three focused tests,
-all 41 runnable regression tests, formatting, lint, ownership, clone, and static
-checks. Seven FUSE-permission-dependent tests were reported as not run by the
-existing Automake harness. Under the unchanged 80-file clone-analysis
-population, findings fell from 48 to 45, duplicated lines from 490 to 466, and
-duplicated tokens from 3546 to 3393. Complexity NLOC fell from 46342 to 46011
-and warnings from 118 to 116.
+The closeout gate covered `autoreconf -fi`, configure/build, three focused
+tests, all 46 current regression tests, formatting, lint, ownership, CLI,
+clone, and static checks. The strict clone population remains 80 source files
+after including the temporary placeholder and deleting the descriptor header;
+findings fell from 45 to 37, duplicated lines from 466 to 382, and duplicated
+tokens from 3393 to 2812. Complexity NLOC fell from 46011 to 42327 and warnings
+from 116 to 104.
 
 The refreshed `dag next` frontier is recorded in the companion selection record;
 it does not itself authorize a successor wave.
 
-Phase 1 retired v6 runtime mounting. `kafs-v6` remains only as a fail-closed
-placeholder.
+`kafs-v6` now remains only as the intentionally ordered fail-closed placeholder.
+Its binary, build/install rule, manual, and completion surface belong together
+to `V6_FINAL_ENTRYPOINT_RETIREMENT`; explicit legacy-format rejection in active
+v4/v5/v7 tools is a negative boundary, not a v6 compatibility implementation.
 
-Phase 2 moved descriptor structures and validation into
-`kafs_descriptor_layout.h`. Active common/v7 code no longer includes the v6
-layout header. Offline callers now use neutral descriptor names and the
-`kafs_v6_layout.h` adapter has been deleted. Production `mkfs.kafs` and
-`kafsresize --migrate-create` no longer create v6 images. The former mkfs path
-is enabled only in the uninstalled `tests/v6_fixture_mkfs` build so bounded
-read-only diagnostics can still be verified against deterministic fixtures.
-
-The former parameterized `kafs_descriptor_*_wire` path has also been removed
-from the neutral header. It had no consumers after v7 moved to its owned raw
-layout implementation; retaining it duplicated the active neutral descriptor
-implementation without preserving a live format boundary. The non-parameterized
-neutral API remains the explicit owner for the bounded v6 fixture and offline
-diagnostic callers.
-
-The final entrypoint-removal phase must not be pulled forward merely to make the
-tree smaller: until the other v6 surfaces are gone, the placeholder provides a
-deterministic explanation to existing callers.
+No repository evidence established an external recovery obligation beyond the
+accepted recreate-as-v7 policy. External image holdings remain unverified; new
+contrary evidence requires `REPLAN` before deleting a recovery artifact, but it
+does not justify restoring the retired implementation.

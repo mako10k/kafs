@@ -24,7 +24,7 @@ with invented causal edges would make the default critical path false, so this
 record names `plans/cli-v6-retirement.pert` as the scoped replacement for this
 remediation selection only.
 
-## Accepted goal and current capability
+## Accepted goal and selection-time capability
 
 The accepted scoped end goal is:
 
@@ -35,7 +35,8 @@ The accepted scoped end goal is:
 > are removed, after which the final placeholder and packaged command surface
 > are retired. Clearly labeled historical records may remain as history.
 
-Directly observed current capabilities:
+Directly observed capabilities at initial selection (later closeout sections
+supersede this snapshot):
 
 - `CONFIRMED`: v5-to-v7 importer and disposable lifecycle rehearsal are
   complete at current HEAD.
@@ -451,6 +452,97 @@ BLOCKED NOW
 The refreshed frontier selects `V6_OFFLINE_RETIREMENT` as the sole runnable
 zero-slack successor. This closeout records that result but does not authorize
 implementation of the successor wave.
+
+## `V6_OFFLINE_RETIREMENT` Task Start and closeout
+
+- Started from: branch `feat/v7-runtime-admission-foundation`, HEAD
+  `58ac5635741e140cdc034b45088801d2daf3d2ac`, clean worktree
+- Task source: freshly rerun
+  `./scripts/pert-next-task.sh plans/cli-v6-retirement.pert`; the task was the
+  only `RUNNABLE NOW` zero-slack node
+- Start decision: `PASS`
+- Closed at: `2026-07-22T18:48:10+09:00`
+- Edge result: `V6_OFFLINE_SURFACES_RETIRED` is `state reached` and
+  `V6_OFFLINE_RETIREMENT` is `status done`
+
+The start inventory found one descriptor implementation shared only by retired
+v6 offline consumers, a test-only v6 mkfs target, two v6 descriptor suites,
+descriptor journal/mapping branches, v6 fsck/dump reporting, and temporary
+clone exclusions. V7 already owned its raw layout, recovery, runtime view, and
+wire contract independently. No repository evidence established an external
+recovery obligation beyond the accepted recreate-as-v7 policy; external image
+holdings remain unverified and are still a replan trigger if contrary evidence
+appears.
+
+The completed boundary is:
+
+- `kafs_descriptor_layout.h`, v6 fixture creation, two v6-only tests, and their
+  build/helper wiring are deleted;
+- common context, bitmap, inode, HRL, and journal code no longer owns a neutral
+  descriptor compatibility path;
+- production `kafs`, `kafs-v7`, `fsck.kafs`, and `kafsdump` explicitly reject a
+  minimal v6 marker; v7 fsck detect-only output and usage-error semantics remain
+  unchanged;
+- the v5 metadata heatmap workload remains available while its v6 JSON mode is
+  removed;
+- historical documents remain labeled history, and current manuals no longer
+  advertise v6 offline inspection;
+- `kafs-v6` remains only as the final fail-closed packaged placeholder owned by
+  `V6_FINAL_ENTRYPOINT_RETIREMENT`.
+
+Review caught and corrected three boundary escapes before closeout: the v7 fsck
+policy line was restored, the prior v7 repair rejection exit code `2` was
+preserved and tested, and an over-broad deletion of the v5 metadata heatmap
+script was reduced to removal of its v6-only mode.
+
+Validation passed:
+
+- Autotools/build: `autoreconf -fi`, `./configure`, `make -j2`
+- focused regression:
+  `make -C tests check TESTS='journal_boundary kafsresize v7_entrypoint_smoketest'`
+  (`3/3` passed)
+- full regression: `make check -j2` (`46/46` passed)
+- ownership/UI: `./scripts/check-v7-layout-ownership.sh`,
+  `./scripts/check-v7-runtime-policy-ownership.sh`, and
+  `./scripts/test-cli-surface.sh`
+- retained script: `bash -n scripts/metadata-heatmap-report.sh` and its help
+  path
+- repository gates: `git diff --check`, `./scripts/format.sh`, and
+  `./scripts/static-checks.sh` (format, lint, clones, complexity)
+- strict clone population: 80 files; 45 to 37 clones, 466 to 382 duplicated
+  lines, and 3393 to 2812 duplicated tokens
+- complexity: NLOC/warnings moved from 46011/116 to 42327/104
+
+The closeout run of
+`./scripts/pert-next-task.sh plans/cli-v6-retirement.pert` reported:
+
+```text
+OK plans/cli-v6-retirement.pert project=KAFS_CLI_V6_RETIREMENT milestones=13 tasks=7 gates=6 resources=1
+
+PRECEDENCE
+MAKESPAN 7.667d
+PRECEDENCE CRITICAL
+TASKS CLI_FAIL_CLOSED_CONTRACT, MIGRATION_AUTOMATION_CONTRACT, INTEGRATED_REMEDIATION_QUALIFICATION
+GATES CLI_CONTRACT_REQUIRED
+
+RESOURCE SCHEDULE
+MAKESPAN 9.667d
+DELAY 2d
+
+RUNNABLE NOW
+CLI_FAIL_CLOSED_CONTRACT priority=0 expected=2.167d TF=0d precedence_critical=true schedule_critical=true owner=KAFS implementation stream resources=PRIMARY_STREAM=1
+
+READY / WAITING RESOURCE
+V6_FINAL_ENTRYPOINT_RETIREMENT priority=0 expected=2d TF=3.5d precedence_critical=false schedule_critical=true owner=KAFS implementation stream resources=PRIMARY_STREAM=1
+
+BLOCKED NOW
+-
+```
+
+The refreshed frontier selects `CLI_FAIL_CLOSED_CONTRACT` as the sole runnable
+zero-slack task. The final v6 packaged-placeholder retirement is ready but waits
+for the single implementation resource and has 3.5 days precedence float; it
+must not displace the calculated critical task.
 
 ## Refresh triggers
 

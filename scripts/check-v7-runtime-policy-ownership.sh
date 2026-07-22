@@ -40,14 +40,12 @@ for retired_header in src/kafs_v6_fuse_init_policy.h src/kafs_v6_fuse_policy.h; 
   fi
 done
 
-forbidden='c_v6_|kafs_ctx_v6_|kafs_v6_controlled_write|kafs_v6_fuse_(init_)?policy|#include "kafs_v6_'
+forbidden='c_v6_|c_descriptor_|kafs_ctx_v6_|kafs_ctx_descriptor_|kafs_descriptor_|kafs_v6_controlled_write|kafs_v6_fuse_(init_)?policy|#include "kafs_v6_'
 if rg -n "$forbidden" "${active_policy_boundary_files[@]}"; then
   echo "v7 runtime policy ownership check: forbidden v6 policy/state dependency found" >&2
   exit 1
 fi
 
-rg -q 'c_descriptor_layout_desc' src/kafs_context.h
-rg -q 'c_descriptor_inode_shards' src/kafs_context.h
 rg -q 'c_v7_controlled_write_enabled' src/kafs_context.h
 rg -q 'c_v7_runtime_transactions' src/kafs_context.h
 rg -q 'kafs_v7_fuse_policy.h' src/Makefile.am

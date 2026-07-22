@@ -55,15 +55,10 @@ descriptor build, and v7 wire magic are owned by `kafs_v7_layout.h`.  The v7
 wire identifiers are separate from experimental v6: the superblock descriptor
 anchor uses `K7SA`, and the layout descriptor uses `K7LD`.
 
-The neutral `kafs_descriptor_layout.h` implementation is a low-level descriptor
-scaffold shared by descriptor-backed formats. It owns the in-memory descriptor
-structures, selected-descriptor loading, coverage validation, journal segment
-validation, and explicit-wire helpers. The former `kafs_v6_layout.h` name
-adapter has been removed; offline v6 readers call the neutral implementation
-directly. It is not the public v7 layout entrypoint. The unqualified legacy
-builder/discovery values remain v6 wire values until offline v6 creation and
-diagnostics are retired; v7 keeps its wire contract in `kafs_v7_layout.*` and
-does not use those legacy defaults.
+The former neutral descriptor scaffold and its v6 offline consumers have been
+retired. V7 descriptor structures, discovery, validation, and wire identifiers
+are owned directly by `kafs_v7_layout.*`; v7 does not call a compatibility
+facade or retain legacy v6 descriptor defaults.
 
 The current builder emits accepted `K7SA` locator / `K7LD` descriptor version 2
 with v7-owned group, shard, checkpoint, and replica records.  It supports the
@@ -78,11 +73,9 @@ loss, asymmetric surviving copies, interrupted generation publication, and
 same-generation divergence.  These are filesystem-offset fault domains, not a
 claim about an SD controller's physical erase-block or FTL placement.
 
-Diagnostic keys are format-specific:
-
-- v6 keeps `v6_layout_descriptor`, `v6_bitmap_shards`, and
-  `v6_journal_segments` for existing diagnostic consumers.
-- v7 uses `layout_descriptor`, `bitmap_shards`, and `journal_segments`.
+V7 diagnostics use the v7-owned `layout_descriptor`, `bitmap_shards`, and
+`journal_segments` keys. V6 diagnostic keys and offline descriptor inspection
+have been retired.
 
 User-facing entrypoints and on-disk format numbers are no longer ambiguous:
 
@@ -92,7 +85,7 @@ User-facing entrypoints and on-disk format numbers are no longer ambiguous:
 | `kafs-v6` | Temporary fail-closed placeholder for the retired v6 runtime; removed in the final retirement phase. |
 | `kafs-v7` | Breaking-change descriptor-backed entrypoint; admits accepted v7 images for read-only inspection or explicitly bounded controlled write. |
 | `mkfs.kafs --format-version 7` | Emits the accepted version 2 grouped raw layout for offline validation and inspection. |
-| `fsck.kafs` / `kafsdump` | Validate/report descriptor-backed v6/v7 images offline. |
+| `fsck.kafs` / `kafsdump` | Validate/report descriptor-backed v7 images offline and reject v6 with recreate guidance. |
 
 ## Runtime Implementation History
 

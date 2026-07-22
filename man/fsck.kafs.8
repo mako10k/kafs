@@ -33,12 +33,8 @@ By default it runs
 (equivalent to
 .BR --balanced-check )
 (journal validation + dirent->ino orphan scan).
-For descriptor-backed format version 6 scaffold images,
-.B fsck.kafs
-supports detect-only validation only.  It performs read-only layout descriptor
-discovery and bounds validation, reports all descriptor replicas, validates
-descriptor-backed metadata shard coverage and journal segment health, and
-rejects repair/write options fail-closed.
+Format version 6 offline checking has been retired.  Such images are rejected
+with recreate-as-v7 guidance; no descriptor discovery or repair is attempted.
 .PP
 For accepted format version 7 images, detect-only validation follows the
 K7SA root locators to independently validate and select K7LD descriptor and
@@ -151,8 +147,8 @@ Journal replay operation failed.
 Punch-hole completed with partial failures.
 .TP
 .B 13
-Descriptor-backed format version 6 or 7 discovery, replica selection, bounds,
-coverage, checkpoint, or metadata validation failed.
+Format version 6 was rejected as retired, or format version 7 discovery,
+replica selection, bounds, coverage, checkpoint, or metadata validation failed.
 .SH SEE ALSO
 .BR mkfs.kafs (8),
 .BR kafs (1),

@@ -31,11 +31,6 @@ typedef struct kafs_test_mount_options
 pid_t kafs_test_start_kafs(const char *img, const char *mnt,
                            const kafs_test_mount_options_t *options);
 
-// Start kafs-v6 in read-only inspection mode for mount-based tests.
-// Returns the child pid on success, negative/zero on failure.
-pid_t kafs_test_start_kafs_v6(const char *img, const char *mnt,
-                              const kafs_test_mount_options_t *options);
-
 // Start kafs-v7 in read-only inspection mode for mount-based tests.
 // Returns the child pid on success, negative/zero on failure.
 pid_t kafs_test_start_kafs_v7(const char *img, const char *mnt,
@@ -44,11 +39,6 @@ pid_t kafs_test_start_kafs_v7(const char *img, const char *mnt,
 // Start kafs-v7 in controlled-write mode for mount-based tests.
 // Returns the child pid on success, negative/zero on failure.
 pid_t kafs_test_start_kafs_v7_controlled_write(const char *img, const char *mnt,
-                                               const kafs_test_mount_options_t *options);
-
-// Start kafs-v6 in controlled-write mode for mount-based tests.
-// Returns the child pid on success, negative/zero on failure.
-pid_t kafs_test_start_kafs_v6_controlled_write(const char *img, const char *mnt,
                                                const kafs_test_mount_options_t *options);
 
 // Dump a previously captured kafs log file to stderr if it exists.
@@ -69,17 +59,11 @@ int kafs_test_lookup_root_dirent_ino(void *base, off_t mapsize, const char *name
 // If KAFS_TEST_KAFS is set, it is used; otherwise falls back to "./kafs".
 const char *kafs_test_kafs_bin(void);
 
-// If KAFS_TEST_KAFS_V6 is set, it is used; otherwise resolves kafs-v6 near the test binary.
-const char *kafs_test_kafs_v6_bin(void);
-
 // If KAFS_TEST_KAFS_V7 is set, it is used; otherwise resolves kafs-v7 near the test binary.
 const char *kafs_test_kafs_v7_bin(void);
 
 // If KAFS_TEST_MKFS is set, it is used; otherwise resolves mkfs.kafs near the test binary.
 const char *kafs_test_mkfs_bin(void);
-
-// Resolves the test-only mkfs build that can create v6 fixtures.
-const char *kafs_test_v6_fixture_mkfs_bin(void);
 
 // If KAFS_TEST_KAFSCTL is set, it is used; otherwise falls back to "./kafsctl".
 const char *kafs_test_kafsctl_bin(void);

@@ -2,7 +2,6 @@
 #include "kafs_cli_opts.h"
 #include "kafs_hash.h"
 #include "kafs_inode.h"
-#include "kafs_descriptor_layout.h"
 #include "kafs_superblock.h"
 #include "kafs_tailmeta.h"
 #include "kafs_tool_util.h"
@@ -306,6 +305,23 @@ static uint64_t kafsresize_align_up_u64(uint64_t value, uint64_t align_mask)
   return (value + align_mask) & ~align_mask;
 }
 
+static int kafsresize_allocator_summary_size(uint64_t block_count, uint64_t *out_size)
+{
+  if (!out_size || block_count > UINT64_MAX - 7u)
+    return -ERANGE;
+  uint64_t l0_bytes = (block_count + 7u) >> 3;
+  if (l0_bytes == 0u || l0_bytes > UINT64_MAX - 7u)
+    return -ERANGE;
+  uint64_t l1_bytes = (l0_bytes + 7u) >> 3;
+  if (l1_bytes == 0u || l1_bytes > UINT64_MAX - 7u)
+    return -ERANGE;
+  uint64_t l2_bytes = (l1_bytes + 7u) >> 3;
+  if (l2_bytes == 0u || l1_bytes > UINT64_MAX - l2_bytes)
+    return -ERANGE;
+  *out_size = l1_bytes + l2_bytes;
+  return 0;
+}
+
 static int kafsresize_collect_source_info(const char *src_image, kafsresize_source_info_t *out)
 {
   if (!src_image || !*src_image || !out)
@@ -409,8 +425,7 @@ static void kafsresize_compute_mkfs_layout_once(uint32_t format_version, uint64_
   mapsize = kafsresize_align_up_u64(mapsize, block_mask);
 
   uint64_t allocator_size = 0;
-  if (kafs_descriptor_allocator_summary_shape(block_count, &(uint64_t){0}, &(uint64_t){0},
-                                              &(uint64_t){0}, &allocator_size) != 0 ||
+  if (kafsresize_allocator_summary_size(block_count, &allocator_size) != 0 ||
       allocator_size < 4096u)
     allocator_size = 4096u;
   allocator_size = kafsresize_align_up_u64(allocator_size, block_mask);

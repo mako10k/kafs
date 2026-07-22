@@ -14,7 +14,6 @@ noinst_HEADERS = test_utils.h
 # Provide deterministic paths to the built tools for tests that exec them.
 AM_TESTS_ENVIRONMENT = \
 	KAFS_TEST_KAFS='$(abs_top_builddir)/src/kafs'; \
-	KAFS_TEST_KAFS_V6='$(abs_top_builddir)/src/kafs-v6'; \
 	KAFS_TEST_KAFS_V7='$(abs_top_builddir)/src/kafs-v7'; \
 	KAFS_TEST_KAFSCTL='$(abs_top_builddir)/src/kafsctl'; \
 	KAFS_TEST_MKFS='$(abs_top_builddir)/src/mkfs.kafs'; \
@@ -32,14 +31,14 @@ AM_TESTS_ENVIRONMENT = \
 	KAFS_TEST_V5_V7_MIGRATION_EVIDENCE_GATE='$(abs_top_srcdir)/scripts/v5-v7-migration-evidence-gate.sh'; \
 	KAFS_TEST_V7_VHDX_EVIDENCE_AUDIT_GATE='$(abs_top_srcdir)/scripts/v7-vhdx-evidence-audit-gate.sh'; \
 	KAFS_TEST_V7_REAL_MEDIA_MATRIX='$(abs_top_srcdir)/docs/sd-card-wear-v7-real-media-qualification-matrix.json'; \
-	export KAFS_TEST_KAFS KAFS_TEST_KAFS_V6 KAFS_TEST_KAFS_V7 KAFS_TEST_KAFSCTL KAFS_TEST_MKFS KAFS_TEST_FSCK KAFS_TEST_KAFS_INFO KAFS_TEST_KAFSRESIZE KAFS_TEST_KAFSDUMP KAFS_TEST_KAFS_BACK KAFS_TEST_V5_V7_MOUNTED_INVENTORY KAFS_TEST_V5_V7_MIGRATION_REHEARSAL KAFS_TEST_V5_V7_IMPORT_WORKLOAD KAFS_TEST_V7_QUALIFICATION_GATE KAFS_TEST_V7_REAL_MEDIA_APPROVAL_GATE KAFS_TEST_V7_REAL_MEDIA_EVIDENCE_GATE KAFS_TEST_V5_V7_MIGRATION_EVIDENCE_GATE KAFS_TEST_V7_VHDX_EVIDENCE_AUDIT_GATE KAFS_TEST_V7_REAL_MEDIA_MATRIX;
+	export KAFS_TEST_KAFS KAFS_TEST_KAFS_V7 KAFS_TEST_KAFSCTL KAFS_TEST_MKFS KAFS_TEST_FSCK KAFS_TEST_KAFS_INFO KAFS_TEST_KAFSRESIZE KAFS_TEST_KAFSDUMP KAFS_TEST_KAFS_BACK KAFS_TEST_V5_V7_MOUNTED_INVENTORY KAFS_TEST_V5_V7_MIGRATION_REHEARSAL KAFS_TEST_V5_V7_IMPORT_WORKLOAD KAFS_TEST_V7_QUALIFICATION_GATE KAFS_TEST_V7_REAL_MEDIA_APPROVAL_GATE KAFS_TEST_V7_REAL_MEDIA_EVIDENCE_GATE KAFS_TEST_V5_V7_MIGRATION_EVIDENCE_GATE KAFS_TEST_V7_VHDX_EVIDENCE_AUDIT_GATE KAFS_TEST_V7_REAL_MEDIA_MATRIX;
 
 # --- Tests ---
 # NOTE: stress_fs mounts in multithread mode and exercises heavier workloads.
 # To minimize any residual side effects on subsequent tests, run it last.
-check_PROGRAMS = v6_fixture_mkfs tailmeta_parser hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured min_git_hooks fs_semantics \
+check_PROGRAMS = tailmeta_parser hrl_smoketest hrl_dec_ref_by_blo hrl_unconfigured min_git_hooks fs_semantics \
 	v5_mount_smoketest v5_tail_smallfile_smoketest v5_tail_mixed_smoketest v5_default_promotion_smoketest \
-	v6_descriptor_smoketest v6_descriptor_validation v7_entrypoint_smoketest \
+	v7_entrypoint_smoketest \
 	v7_raw_layout_smoketest v7_multi_group_smoketest v7_replica_fault_smoketest \
 	v7_inspection_mount_smoketest v7_journal_replay_smoketest v7_mutation_routing_smoketest \
 	v7_checkpoint_publication_smoketest v7_recovery_diagnostic v7_locks_smoketest \
@@ -51,7 +50,7 @@ check_PROGRAMS = v6_fixture_mkfs tailmeta_parser hrl_smoketest hrl_dec_ref_by_bl
 	kafsctl_links bg_dedup_skip_dirs \
 	stress_fs hotplug_rpc e2e_hotplug kafsresize journal_boundary fallocate_lseek_block
 
-TESTS = $(filter-out v6_fixture_mkfs,$(check_PROGRAMS)) \
+TESTS = $(check_PROGRAMS) \
 	v7_qualification_gate_test.sh v7_real_media_approval_gate_test.sh \
 	v7_real_media_evidence_gate_test.sh v5_v7_migration_evidence_gate_test.sh \
 	v5_v7_migration_rehearsal_test.sh \
@@ -61,14 +60,6 @@ EXTRA_DIST = v7_qualification_gate_test.sh v7_real_media_approval_gate_test.sh \
 	v7_real_media_evidence_gate_test.sh v5_v7_migration_evidence_gate_test.sh \
 	v5_v7_migration_rehearsal_test.sh \
 	v7_vhdx_evidence_audit_gate_test.sh
-
-v6_fixture_mkfs_SOURCES = $(top_srcdir)/src/mkfs_kafs.c \
-	$(top_srcdir)/src/kafs_v7_layout.c $(top_srcdir)/src/kafs_v7_journal.c \
-	$(top_srcdir)/src/kafs_v7_mutation.c $(top_srcdir)/src/kafs_hrl.c \
-	$(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
-v6_fixture_mkfs_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter \
-	-DKAFS_ENABLE_V6_FIXTURE_MKFS=1
-v6_fixture_mkfs_LDADD = $(KAFS_LIBS)
 
 tailmeta_parser_SOURCES = tests_tailmeta_parser.c
 tailmeta_parser_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
@@ -118,17 +109,6 @@ v5_default_promotion_smoketest_SOURCES = tests_v5_default_promotion_smoketest.c 
 	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
 v5_default_promotion_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
 v5_default_promotion_smoketest_LDADD = $(KAFS_LIBS)
-
-v6_descriptor_smoketest_SOURCES = tests_v6_descriptor_smoketest.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
-v6_descriptor_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
-v6_descriptor_smoketest_LDADD = $(KAFS_LIBS)
-
-v6_descriptor_validation_SOURCES = tests_v6_descriptor_validation.c test_utils.c \
-	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
-v6_descriptor_validation_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -pthread
-v6_descriptor_validation_LDADD = $(KAFS_LIBS)
-v6_descriptor_validation_LDFLAGS = -pthread
 
 v7_entrypoint_smoketest_SOURCES = tests_v7_entrypoint_smoketest.c test_utils.c \
 	$(top_srcdir)/src/kafs_v7_layout.c $(top_srcdir)/src/kafs_v7_journal.c \

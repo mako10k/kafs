@@ -45,11 +45,6 @@ In-image journal header fields and header CRC validation result.
 .B metadata_regions
 Offline metadata span summary used for SD-card wear diagnostics.
 .TP
-.B v6_layout_descriptor
-For descriptor-backed format version 6 images, descriptor anchor status,
-selected replica, generation, descriptor geometry, and per-replica status.  The
-key name is retained for compatibility with existing v6 diagnostic consumers.
-.TP
 .B layout_descriptor
 For accepted format version 7 images, selected version 2 K7LD generation and
 geometry.  Version 1 pre-specification scaffolds fail the accepted-layout
@@ -80,11 +75,10 @@ physical erase-block wear.
 .B journal_segments
 Group-local rotating-header segment count, selected state, and checkpoint
 sequence.
-.TP
-.B v6_bitmap_shards
-For descriptor-backed format version 6 images with a selected descriptor, block
-bitmap shard coverage, gap/overlap flags, physical overlap flags, and a sample
-bitmap lookup.
+.PP
+Format version 6 offline dumping has been retired.  Such images are rejected
+with recreate-as-v7 guidance; no descriptor data or compatibility keys are
+emitted.
 .SH OPTIONS
 .TP
 .B --json

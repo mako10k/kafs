@@ -483,7 +483,7 @@ int kafs_v7_runtime_admit_mount_context(kafs_context_t *ctx, const kafs_ssuperbl
               "inode/bitmap tables are not installed; %s; delayed/background mutations are "
               "disabled; FUSE mount is "
               "inspection-only and write admission remains disabled.\n",
-              KAFS_V7_TOOL_FORMAT_LABEL, kafs_ctx_descriptor_worker_policy_summary());
+              KAFS_V7_TOOL_FORMAT_LABEL, kafs_ctx_v7_worker_policy_summary());
     }
     else
     {
@@ -493,7 +493,7 @@ int kafs_v7_runtime_admit_mount_context(kafs_context_t *ctx, const kafs_ssuperbl
               "tables are not installed; %s; delayed/background mutations are disabled; FUSE "
               "write surface is limited "
               "to regular-file create/write/fsync/release.\n",
-              KAFS_V7_TOOL_FORMAT_LABEL, kafs_ctx_descriptor_worker_policy_summary());
+              KAFS_V7_TOOL_FORMAT_LABEL, kafs_ctx_v7_worker_policy_summary());
     }
   }
   else
