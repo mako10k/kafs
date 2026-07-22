@@ -108,7 +108,8 @@ static void usage(const char *prog)
       "    --hrl-entry-ratio R      destination HRL entries/data-block ratio\n"
       "    --v7-group-count N       destination group count (default: automatic)\n"
       "    --format-version 7       optional explicit import format\n"
-      "    --dry-run                validate source and exact destination capacity only\n",
+      "    --dry-run                validate source and exact destination capacity only\n"
+      "    --json                   print one versioned JSON result; diagnostics stay on stderr\n",
       prog, prog, prog);
 }
 
@@ -988,10 +989,86 @@ static int cmd_migrate_create(const char *src_image, const char *dst_image, uint
   return 0;
 }
 
+static void kafsresize_print_json_string(const char *value)
+{
+  putchar('"');
+  for (const unsigned char *cursor = (const unsigned char *)(value ? value : ""); *cursor; ++cursor)
+  {
+    switch (*cursor)
+    {
+    case '"':
+      fputs("\\\"", stdout);
+      break;
+    case '\\':
+      fputs("\\\\", stdout);
+      break;
+    case '\b':
+      fputs("\\b", stdout);
+      break;
+    case '\f':
+      fputs("\\f", stdout);
+      break;
+    case '\n':
+      fputs("\\n", stdout);
+      break;
+    case '\r':
+      fputs("\\r", stdout);
+      break;
+    case '\t':
+      fputs("\\t", stdout);
+      break;
+    default:
+      if (*cursor < 0x20u)
+        printf("\\u%04x", (unsigned int)*cursor);
+      else
+        putchar((int)*cursor);
+      break;
+    }
+  }
+  putchar('"');
+}
+
+static void kafsresize_print_import_result_json(const char *src_image, const char *dst_image,
+                                                int dry_run, int import_rc,
+                                                const kafs_v7_import_report_t *report)
+{
+  int exit_status = import_rc != 0;
+  printf("{\"schema\":\"KAFS.V5V7MigrationImportResult.v1\","
+         "\"operation\":\"migrate-import-v7\",\"status\":\"%s\","
+         "\"exit_status\":%d,\"mode\":\"%s\",\"source_image\":",
+         exit_status == 0 ? "PASS" : "FAIL", exit_status, dry_run ? "dry-run" : "import");
+  kafsresize_print_json_string(src_image);
+  fputs(",\"destination_image\":", stdout);
+  kafsresize_print_json_string(dst_image);
+  fputs(",\"result\":", stdout);
+  if (import_rc == 0)
+  {
+    printf("{\"source_crc32\":\"%08" PRIx32 "\",\"source_inode_count\":%" PRIu32
+           ",\"imported_inodes\":%" PRIu32 ",\"imported_directories\":%" PRIu32
+           ",\"imported_regular_files\":%" PRIu32 ",\"imported_symlinks\":%" PRIu32
+           ",\"payload_bytes\":%" PRIu64 ",\"destination_size_bytes\":%" PRIu64
+           ",\"destination_block_size\":%" PRIu32 ",\"destination_group_count\":%" PRIu32
+           ",\"allocated_blocks\":%" PRIu64
+           ",\"writes_performed\":%s,\"destination_admission_ready\":%s}",
+           report->source_crc32, report->source_inode_count, report->imported_inode_count,
+           report->imported_directory_count, report->imported_regular_count,
+           report->imported_symlink_count, report->payload_bytes, report->destination_size_bytes,
+           report->destination_block_size, report->destination_group_count,
+           report->allocated_blocks, dry_run ? "false" : "true", dry_run ? "false" : "true");
+  }
+  else
+  {
+    fputs("null", stdout);
+  }
+  fputs(",\"claims\":{\"production_cutover_authorized\":false,"
+        "\"migration_lifecycle_accepted\":false}}\n",
+        stdout);
+}
+
 static int cmd_migrate_import_v7(const char *src_image, const char *dst_image, uint64_t size_bytes,
                                  uint32_t inodes, uint64_t journal_bytes, int blksize_log,
                                  double hrl_entry_ratio, uint32_t group_count,
-                                 uint32_t format_version, int force, int dry_run)
+                                 uint32_t format_version, int force, int dry_run, int json_output)
 {
   if (!src_image || !*src_image || !dst_image || !*dst_image)
   {
@@ -1031,8 +1108,13 @@ static int cmd_migrate_import_v7(const char *src_image, const char *dst_image, u
       .group_count = group_count,
       .dry_run = dry_run,
   };
-  kafs_v7_import_report_t report;
+  kafs_v7_import_report_t report = {0};
   int rc = kafs_v7_import_image(&options, &report);
+  if (json_output)
+  {
+    kafsresize_print_import_result_json(src_image, dst_image, dry_run, rc, &report);
+    return rc != 0;
+  }
   if (rc != 0)
     return 1;
   printf("kafsresize: migrate-import-v7 %s PASS\n", dry_run ? "dry-run" : "completed");
@@ -1062,6 +1144,7 @@ typedef struct kafsresize_options
   int assume_yes;
   int force;
   int dry_run;
+  int json_output;
   uint64_t target_bytes;
   uint32_t format_version;
   uint64_t journal_bytes;
@@ -1094,6 +1177,7 @@ enum kafsresize_option_bit
   KAFSRESIZE_OPT_YES = 1u << 12,
   KAFSRESIZE_OPT_FORCE = 1u << 13,
   KAFSRESIZE_OPT_DRY_RUN = 1u << 14,
+  KAFSRESIZE_OPT_JSON = 1u << 15,
 };
 
 typedef struct kafsresize_option_name
@@ -1118,6 +1202,7 @@ static const kafsresize_option_name_t kafsresize_option_names[] = {
     {KAFSRESIZE_OPT_YES, "--yes"},
     {KAFSRESIZE_OPT_FORCE, "--force"},
     {KAFSRESIZE_OPT_DRY_RUN, "--dry-run"},
+    {KAFSRESIZE_OPT_JSON, "--json"},
 };
 
 static int kafsresize_parse_u32_arg(const char *name, const char *value, uint32_t *out)
@@ -1185,6 +1270,12 @@ static int kafsresize_parse_flag_arg(const char *arg, kafsresize_options_t *opts
   {
     opts->dry_run = 1;
     opts->provided_options |= KAFSRESIZE_OPT_DRY_RUN;
+    return 1;
+  }
+  if (strcmp(arg, "--json") == 0)
+  {
+    opts->json_output = 1;
+    opts->provided_options |= KAFSRESIZE_OPT_JSON;
     return 1;
   }
   return 0;
@@ -1450,14 +1541,14 @@ static int kafsresize_run(const kafsresize_options_t *opts)
                              KAFSRESIZE_OPT_BLKSIZE | KAFSRESIZE_OPT_HRL_RATIO |
                              KAFSRESIZE_OPT_INODES | KAFSRESIZE_OPT_V7_GROUPS |
                              KAFSRESIZE_OPT_SRC_IMAGE | KAFSRESIZE_OPT_DST_IMAGE |
-                             KAFSRESIZE_OPT_DRY_RUN;
+                             KAFSRESIZE_OPT_DRY_RUN | KAFSRESIZE_OPT_JSON;
     const uint32_t required = KAFSRESIZE_OPT_SRC_IMAGE | KAFSRESIZE_OPT_DST_IMAGE;
     if (kafsresize_validate_mode_options(opts, "--migrate-import-v7", allowed, required) != 0)
       return 2;
     return cmd_migrate_import_v7(opts->src_image, opts->dst_image, opts->target_bytes, opts->inodes,
                                  opts->journal_bytes, opts->blksize_log, opts->hrl_entry_ratio,
                                  opts->v7_group_count, opts->format_version, opts->force,
-                                 opts->dry_run);
+                                 opts->dry_run, opts->json_output);
   }
 
   return 2;

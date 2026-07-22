@@ -642,6 +642,107 @@ The refreshed frontier selects `MIGRATION_AUTOMATION_CONTRACT` as the sole
 runnable zero-slack task. Final v6 placeholder retirement remains ready but has
 1.333 days precedence float and waits for the single implementation resource.
 
+## `MIGRATION_AUTOMATION_CONTRACT` Task Start and closeout
+
+The task-start refresh ran on branch `feat/v7-runtime-admission-foundation` at
+HEAD `3af5ce0`. The tracked worktree was clean; the focused preflight had left
+only its untracked test executable. The branch was five commits ahead of its
+configured upstream. The candidate came from the same-day migration command UI
+review, but was accepted only after the current plan passed
+`./scripts/pert-next-task.sh plans/cli-v6-retirement.pert` and selected
+`MIGRATION_AUTOMATION_CONTRACT` as its sole runnable zero-slack task.
+
+The refreshed implementation evidence showed three automation consumers with
+different, unversioned result surfaces: importer success was human text,
+rehearsal status was spread across text and retained artifacts, and evidence
+validation exposed only human diagnostics. Existing regressions depended on
+those strings. The inherited need for a stable machine-readable contract and
+for retaining human-readable defaults therefore remained valid. Partial-resume
+wording was contradicted by the implementation, which can only replay from the
+frozen source. Production acceptance, physical-media behavior, and native
+Windows recovery remained unknown and outside this repository-only wave.
+
+The relevant states were PASS, FAIL, and rehearsal SKIP; the variability
+dimensions were human versus JSON output, dry-run versus execution, report
+allocation, cleanup success, prerequisite availability, and validation
+success. The invariants were fail-closed parsing, one versioned schema per
+surface, truthful exit status and retention claims, diagnostics on stderr, no
+partial resume, and no claim of production cutover or lifecycle acceptance.
+Exit required schema-parsing regressions for all three surfaces, preserved
+default human output where justified, documented prerequisites/report
+location/retention/exit 77, full-replay terminology, proportional repository
+validation, and a refreshed PERT frontier. V6 entrypoint removal, WSL or VHDX
+operations, physical-media qualification, production migration, and cutover
+were explicit non-goals. The Task Start Gate decision was `PASS`.
+
+The completed boundary adds these stable result contracts:
+
+- `KAFS.V5V7MigrationImportResult.v1` for `kafsresize --migrate-import-v7
+  --json`;
+- `KAFS.V5V7MigrationRehearsalResult.v1`, retained as `result.json` after a
+  rehearsal report is allocated; and
+- `KAFS.V5V7MigrationEvidenceValidation.v1` for evidence validation with
+  `--json`.
+
+Importer and evidence-validation human output remains the default. Rehearsal
+reports now describe full replay from the frozen source, expose actual report
+and work-directory retention, distinguish PASS/FAIL/SKIP with exit status
+0/1/77, and retain the importer and evidence-validator JSON results. CLI usage
+errors remain exit 2 before a result exists. The manual, completion, README,
+cutover playbook, and migration evidence contract document these semantics; the
+playbook is now included in `make dist`.
+
+Validation passed:
+
+- `make -j2` and the focused `kafsresize`, v5-to-v7 importer, evidence-gate,
+  and disposable-rehearsal regressions;
+- `bash -n` for the modified shell scripts and regressions;
+- `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 45 tests passed and
+  `stress_fs` self-reported SKIP after its mount attempt failed;
+- `lsp-cli` diagnostics for `src/kafsresize.c`: none;
+- `./scripts/format.sh`, `./scripts/lint.sh`, `./scripts/clones.sh`, and
+  `./scripts/static-checks.sh`: PASS;
+- strict clone population: 80 files, 37 clones, 382 duplicated lines, and
+  2812 duplicated tokens; complexity: 42582 NLOC and 104 warnings, with
+  `cmd_migrate_import_v7` at CCN 15;
+- `make dist`: PASS, including the scripts, tests, source, manual, completion,
+  README, migration evidence document, and cutover playbook; and
+- `git diff --check`: PASS.
+
+No PowerShell, VHDX, WSL terminate/shutdown, physical-media, production-source,
+production-mount, or cutover action ran.
+
+After marking `MIGRATION_AUTOMATION_CONTRACT_READY` reached and the task done,
+the closeout run reported:
+
+```text
+OK plans/cli-v6-retirement.pert project=KAFS_CLI_V6_RETIREMENT milestones=13 tasks=7 gates=6 resources=1
+
+PRECEDENCE MAKESPAN 4.167d
+PRECEDENCE CRITICAL
+TASKS V6_FINAL_ENTRYPOINT_RETIREMENT, INTEGRATED_REMEDIATION_QUALIFICATION
+GATES V6_RETIREMENT_REQUIRED
+
+RESOURCE SCHEDULE MAKESPAN 4.167d
+DELAY 0d
+
+RUNNABLE NOW
+V6_FINAL_ENTRYPOINT_RETIREMENT priority=0 expected=2d TF=0d precedence_critical=true schedule_critical=true owner=KAFS implementation stream resources=PRIMARY_STREAM=1
+
+READY / WAITING RESOURCE
+-
+
+BLOCKED NOW
+-
+
+UPCOMING
+INTEGRATED_REMEDIATION_QUALIFICATION priority=0 expected=2.167d TF=0d precedence_critical=true schedule_critical=true owner=KAFS implementation stream resources=PRIMARY_STREAM=1
+```
+
+The migration automation dependency is closed. The new sole runnable critical
+frontier is `V6_FINAL_ENTRYPOINT_RETIREMENT`; this closeout does not implement
+that separate wave.
+
 ## Refresh triggers
 
 Refresh this plan and rerun all three `perttool` commands when any of the

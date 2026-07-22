@@ -39,6 +39,7 @@ kafsresize \- grow offline KAFS images and create or populate migration images
 .I destination-v7
 .RI [ --size-bytes " " N ]
 .RI [ --inodes " " I ]
+.RI [ --json ]
 .RI [ options ]
 .SH DESCRIPTION
 .B kafsresize
@@ -134,6 +135,17 @@ This option does not apply to
 Import a frozen, clean format-v5 regular-file image into a new format-v7 image.
 The final destination must not exist; this mode does not accept
 .BR --force .
+.TP
+.B --json
+For
+.BR --migrate-import-v7
+only, replace the normal human success summary with one
+.B KAFS.V5V7MigrationImportResult.v1
+JSON object on standard output.  The object records PASS or FAIL, the exit
+status, dry-run or import mode, source and destination paths, a typed result
+object on success (or null on execution failure), and non-authorization
+claims.  Diagnostics remain on standard error.  Command-line errors exit 2
+before a JSON result is emitted.
 .TP
 .B --src-image image
 Source image used by

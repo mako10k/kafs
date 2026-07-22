@@ -42,6 +42,7 @@ milestone CLI_INPUT_CONTRACT_STRICT:
 
 milestone MIGRATION_AUTOMATION_CONTRACT_READY:
   title "Migration command, rehearsal, and evidence output contracts are stable"
+  state reached
 
 milestone V6_RESIDUAL_SCOPE_BOUND:
   title "Remaining format-v6 recovery and historical boundaries are truthful"
@@ -106,6 +107,7 @@ task MIGRATION_AUTOMATION_CONTRACT CLI_INPUT_CONTRACT_STRICT -> MIGRATION_AUTOMA
     optimistic 2d
     most_likely 3d
     pessimistic 6d
+  status done
   owner "KAFS implementation stream"
   source "2026-07-22 migration command UI review"
   requires:
