@@ -235,6 +235,17 @@ leave the requested destination absent, while a directory-sync/rollback error
 reports both paths for inspection. The command does not perform production
 cutover.
 
+For a repository-owned disposable lifecycle rehearsal, run:
+
+```sh
+./scripts/v5-v7-migration-rehearsal.sh
+```
+
+It retains normal, interrupted/replayed, and rollback images plus digest-bound
+T59 evidence under `report/v5-v7-migration-rehearsal/`. It does not accept a
+caller-supplied image, device, or mountpoint and does not perform an in-place
+partial continuation, production migration, WSL restart, or cutover.
+
 Operator guidance:
 - Existing v4 images can remain in place; runtime mount continues to accept v4 images.
 - Newly created images default to v5 so tail metadata scaffolding is provisioned from mkfs time.

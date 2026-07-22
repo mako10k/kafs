@@ -96,6 +96,9 @@ const char *kafs_test_kafsresize_bin(void);
 // If KAFS_TEST_KAFSDUMP is set, it is used; otherwise resolves kafsdump near the test binary.
 const char *kafs_test_kafsdump_bin(void);
 
+// Resolve the mounted-tree semantic inventory helper used by v5-to-v7 rehearsal tests.
+const char *kafs_test_v5_v7_mounted_inventory_bin(void);
+
 static inline int kafs_test_mkimg_with_hrl(const char *path, size_t bytes, unsigned log_bs,
                                            unsigned inodes, kafs_context_t *out_ctx,
                                            off_t *out_mapsize)

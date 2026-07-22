@@ -278,6 +278,27 @@ const char *kafs_test_kafsdump_bin(void)
   return kafs_test_resolve_tool("KAFS_TEST_KAFSDUMP", "kafsdump", path);
 }
 
+const char *kafs_test_v5_v7_mounted_inventory_bin(void)
+{
+  static char path[PATH_MAX];
+  const char *env = getenv("KAFS_TEST_V5_V7_MOUNTED_INVENTORY");
+  if (env && *env)
+    return env;
+  char exe_path[PATH_MAX];
+  ssize_t exe_len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+  if (exe_len <= 0)
+    return "../scripts/v5-v7-mounted-inventory.py";
+  exe_path[exe_len] = '\0';
+  char *slash = strrchr(exe_path, '/');
+  if (!slash)
+    return "../scripts/v5-v7-mounted-inventory.py";
+  *slash = '\0';
+  if ((size_t)snprintf(path, sizeof(path), "%s/../scripts/v5-v7-mounted-inventory.py", exe_path) >=
+      sizeof(path))
+    return "../scripts/v5-v7-mounted-inventory.py";
+  return path;
+}
+
 void kafs_test_dump_log(const char *log_path, const char *reason)
 {
   const char *path = (log_path && *log_path) ? log_path : "minisrv.log";

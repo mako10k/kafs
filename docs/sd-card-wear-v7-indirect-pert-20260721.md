@@ -1092,3 +1092,72 @@ only `RUNNABLE NOW` least-slack task and requires its own fresh Task Start Gate.
 Selection does not authorize production data access, automatic repair of an
 ineligible v5 source, runtime mutation expansion, physical media, VHDX
 interruption, or cutover.
+
+## T59-C closeout and next-task refresh (2026-07-22)
+
+- Record ID: `KAFS-PERTTOOL-20260722-T59C-CLOSEOUT`
+- Calculation time: 2026-07-22 16:19 JST
+- Baseline: branch `feat/v7-runtime-admission-foundation`, start HEAD
+  `d46cefd`, tracked changes limited to the reviewed T59-C wave
+- Plan: `plans/current.pert`
+- Tool: `perttool 0.1.0-alpha.1`
+- Accepted goal: unchanged; produce qualified v7 migration and production
+  cutover evidence without collapsing rehearsal, media, or independent-review
+  boundaries
+
+### Closed dependency
+
+The disposable-only rehearsal runner now creates and retains real clean v5,
+normal v7, injected-partial, replayed v7, and rollback-preserved images. It
+binds mounted semantic inventories, source identity and SHA-256 immutability,
+fsck/dump, no-replace idempotence, and four T59-A lifecycle bundles into one
+artifact manifest. Attempt 2 deliberately preserves the failed attempt-1 image
+and performs a full replay from the same frozen source; it does not claim an
+in-place continuation algorithm.
+
+The focused workload, all 48 Automake tests, format, lint, clone/static, and
+distribution gates passed. No PowerShell, VHDX, WSL termination, device,
+production source, or cutover action ran. This closes
+`V5_V7_MIGRATION_REHEARSAL`;
+`MIGRATION_REHEARSAL_READY` is reached. The residual plan removes the completed
+task and its superseded `MIGRATION_IMPORT_READY` starting milestone.
+
+### Machine result
+
+`./scripts/pert-next-task.sh plans/current.pert` passed `dsl check`,
+`dag analyze --schedule both`, and `dag next`, in that order. The residual plan
+contains 13 milestones, 5 tasks, 7 gates, and 2 resources.
+
+- Precedence makespan: 10.833 implementation days, conditional on both
+  external blockers resolving.
+- Precedence has two zero-slack critical paths, one through hardware approval
+  and one through VHDX host recovery; both join real-media execution,
+  independent review, and the cutover decision.
+- Resource makespan: 12 implementation days under primary capacity one, with
+  1.167 days conditional contention between the two blocked primary tasks.
+- The resource schedule assumes both blockers resolve at time zero and is not
+  a calendar forecast.
+
+| Classification | Node | TE | TF | Capability unlocked or wait reason |
+| --- | --- | ---: | ---: | --- |
+| `BLOCKED NOW` | `HARDWARE_APPROVAL` | 1.167d | 0d | Exact apparatus, cycle count, and digest-bound destructive approval remain unavailable |
+| `BLOCKED NOW` | `VHDX_HOST_RECOVERY_RUN` | 1.167d | 0d | The active Ubuntu distro still has no safe terminate/restart window |
+| `UPCOMING` | `REAL_MEDIA_EXECUTION` | 4.167d | 0d | Waits for both blocked qualification predecessors |
+| `UPCOMING` | `INDEPENDENT_REAL_MEDIA_REVIEW` | 1.167d | 0d | Waits for real-media evidence capture |
+| `UPCOMING` | `CUTOVER_EVIDENCE_DECISION` | 4.333d | 0d | Waits for qualified media; migration rehearsal is already reached |
+
+`RUNNABLE NOW`, `READY / WAITING RESOURCE`, and `ACTIVE` are empty.
+
+### Ordering decision
+
+| Ordering | Immediate effect | Opportunity cost and rework |
+| --- | --- | --- |
+| Wait for an explicitly available VHDX window | Makes the zero-slack host-recovery task runnable after refresh | Selected disposition; no terminate/restart is authorized before the user names that window |
+| Prepare and approve exact physical hardware | Makes the other zero-slack external task runnable after refresh | Equally valid blocker-resolution path, but exact apparatus and destructive approval are absent |
+| Investigate T59-B-F1/F2 | Could explain owned source-preparation findings | Does not shorten the accepted residual finish; pending/bitmap-invalid sources already fail closed |
+| Continue indirect-directory or cross-group runtime work | Advances a separate product capability | Creates qualification debt and does not reduce either current critical blocker |
+
+The closeout decision is `BLOCKED`: the valid plan has no runnable critical or
+least-slack task. No next implementation wave is selected. Resume only after a
+safe WSL maintenance window or exact physical-media apparatus/approval is
+available, then refresh current evidence, the plan, and the Task Start Gate.

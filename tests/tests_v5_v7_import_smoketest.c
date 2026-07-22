@@ -82,6 +82,34 @@ static int run_command(char *const argv[], char *output, size_t output_bytes)
   return WIFEXITED(status) ? WEXITSTATUS(status) : 128;
 }
 
+static int capture_inventory(const char *mountpoint, const char *output_path)
+{
+  const char *inventory = kafs_test_v5_v7_mounted_inventory_bin();
+  char *argv[] = {(char *)inventory, (char *)"--root", (char *)mountpoint, (char *)"--output",
+                  (char *)output_path, NULL};
+  char output[4096];
+  int rc = run_command(argv, output, sizeof(output));
+  if (rc != 0)
+    tlogf("mounted inventory failed: %s", output);
+  return rc;
+}
+
+static int capture_sha256(const char *path, const char *output_path)
+{
+  char *argv[] = {(char *)"/usr/bin/env", (char *)"sha256sum", (char *)path, NULL};
+  char output[4096];
+  int rc = run_command(argv, output, sizeof(output));
+  if (rc != 0 || strlen(output) < 64u)
+    return -EIO;
+  FILE *stream = fopen(output_path, "wx");
+  if (!stream)
+    return -errno;
+  rc = fprintf(stream, "%.64s\n", output) == 65 ? 0 : -EIO;
+  if (fclose(stream) != 0 && rc == 0)
+    rc = -errno;
+  return rc;
+}
+
 static int mkfs_v5(const char *path)
 {
   const char *mkfs = kafs_test_mkfs_bin();
@@ -398,20 +426,30 @@ static int copy_file(const char *source, const char *destination)
   return rc;
 }
 
+static int source_inode_location(int fd, kafs_ssuperblock_t *superblock, uint32_t ino,
+                                 uint64_t *bitmap_off, uint64_t *inode_off)
+{
+  ssize_t got = pread(fd, superblock, sizeof(*superblock), 0);
+  if (got != (ssize_t)sizeof(*superblock))
+    return got < 0 ? -errno : -EIO;
+  uint64_t block_size = kafs_sb_blksize_get(superblock);
+  uint64_t bitmap_bytes = ((uint64_t)kafs_sb_blkcnt_get(superblock) + 7u) / 8u;
+  *bitmap_off = block_size;
+  *inode_off = (*bitmap_off + bitmap_bytes + 7u) & ~UINT64_C(7);
+  *inode_off = (*inode_off + block_size - 1u) & ~(block_size - 1u);
+  *inode_off += (uint64_t)ino * sizeof(kafs_sinode_v5_t);
+  return 0;
+}
+
 static int mutate_inode(const char *path, uint32_t ino, int sparse)
 {
   int fd = open(path, O_RDWR);
   if (fd < 0)
     return -errno;
   kafs_ssuperblock_t sb;
-  int rc = pread(fd, &sb, sizeof(sb), 0) == (ssize_t)sizeof(sb) ? 0 : -EIO;
-  uint64_t block_size = rc == 0 ? kafs_sb_blksize_get(&sb) : 0u;
-  uint64_t bitmap_off = rc == 0 ? block_size : 0u;
-  uint64_t bitmap_bytes = rc == 0 ? ((uint64_t)kafs_sb_blkcnt_get(&sb) + 7u) / 8u : 0u;
-  uint64_t inode_off = rc == 0 ? (bitmap_off + bitmap_bytes + 7u) & ~UINT64_C(7) : 0u;
-  if (rc == 0)
-    inode_off = (inode_off + block_size - 1u) & ~(block_size - 1u);
-  inode_off += (uint64_t)ino * sizeof(kafs_sinode_v5_t);
+  uint64_t bitmap_off = 0u;
+  uint64_t inode_off = 0u;
+  int rc = source_inode_location(fd, &sb, ino, &bitmap_off, &inode_off);
   kafs_sinode_v5_t inode;
   if (rc == 0 && pread(fd, &inode, sizeof(inode), (off_t)inode_off) != (ssize_t)sizeof(inode))
     rc = -EIO;
@@ -422,6 +460,64 @@ static int mutate_inode(const char *path, uint32_t ino, int sparse)
   if (rc == 0 && pwrite(fd, &inode, sizeof(inode), (off_t)inode_off) != (ssize_t)sizeof(inode))
     rc = -EIO;
   close(fd);
+  return rc;
+}
+
+static int mutate_source_reference(const char *path, uint32_t ino, int pending)
+{
+  int fd = open(path, O_RDWR);
+  if (fd < 0)
+    return -errno;
+  kafs_ssuperblock_t superblock;
+  uint64_t bitmap_off = 0u;
+  uint64_t inode_off = 0u;
+  int rc = source_inode_location(fd, &superblock, ino, &bitmap_off, &inode_off);
+  kafs_sinode_v5_t inode;
+  if (rc == 0 && pread(fd, &inode, sizeof(inode), (off_t)inode_off) != (ssize_t)sizeof(inode))
+    rc = -EIO;
+  kafs_blkcnt_t block = rc == 0 ? kafs_blkcnt_stoh(inode.i_blkreftbl[0]) : 0u;
+  if (rc == 0 && block == 0u)
+    rc = -EINVAL;
+  if (rc == 0 && pending)
+  {
+    inode.i_blkreftbl[0] = kafs_blkcnt_htos(block | UINT32_C(0x80000000));
+    if (pwrite(fd, &inode, sizeof(inode), (off_t)inode_off) != (ssize_t)sizeof(inode))
+      rc = -EIO;
+  }
+  else if (rc == 0)
+  {
+    uint8_t byte = 0u;
+    off_t byte_off = (off_t)(bitmap_off + block / 8u);
+    if (pread(fd, &byte, sizeof(byte), byte_off) != (ssize_t)sizeof(byte))
+      rc = -EIO;
+    else
+    {
+      byte &= (uint8_t)~(1u << (block % 8u));
+      if (pwrite(fd, &byte, sizeof(byte), byte_off) != (ssize_t)sizeof(byte))
+        rc = -EIO;
+    }
+  }
+  if (rc == 0 && fsync(fd) != 0)
+    rc = -errno;
+  close(fd);
+  return rc;
+}
+
+static int verify_v7_image(const char *image, const char *mountpoint, const char *log_path,
+                           const char *inventory_path, const import_fixture_t *fixture)
+{
+  const kafs_test_mount_options_t options = {
+      .debug = "1", .log_path = log_path, .extra_options = "ro", .timeout_ms = 10000};
+  pid_t pid = kafs_test_start_kafs_v7(image, mountpoint, &options);
+  if (pid <= 0)
+  {
+    kafs_test_dump_log(log_path, "import destination mount failed");
+    return -EIO;
+  }
+  int rc = verify_v7(mountpoint, fixture);
+  if (rc == 0 && inventory_path)
+    rc = capture_inventory(mountpoint, inventory_path) == 0 ? 0 : -EIO;
+  kafs_test_stop_kafs(mountpoint, pid);
   return rc;
 }
 
@@ -468,7 +564,8 @@ int main(void)
   if (kafs_test_enter_tmpdir("v5_v7_import_smoketest") != 0)
     return 77;
   if (access("/dev/fuse", R_OK | W_OK) != 0 || access(kafs_test_kafsresize_bin(), X_OK) != 0 ||
-      access(kafs_test_fsck_bin(), X_OK) != 0 || access(kafs_test_kafsdump_bin(), X_OK) != 0)
+      access(kafs_test_fsck_bin(), X_OK) != 0 || access(kafs_test_kafsdump_bin(), X_OK) != 0 ||
+      access(kafs_test_v5_v7_mounted_inventory_bin(), X_OK) != 0)
     return 77;
   const char *source = "source-v5.img";
   const char *destination = "destination-v7.img";
@@ -500,8 +597,15 @@ int main(void)
   if (source_pid <= 0)
     return 1;
   int capture_rc = capture_fixture("source-mount", &fixture);
+  if (capture_rc == 0)
+    capture_rc = capture_inventory("source-mount", "source-inventory.json");
   kafs_test_stop_kafs("source-mount", source_pid);
   if (capture_rc != 0)
+    return 1;
+
+  struct stat source_before;
+  if (stat(source, &source_before) != 0 ||
+      capture_sha256(source, "source-before.sha256") != 0)
     return 1;
 
   char output[16384];
@@ -562,22 +666,15 @@ int main(void)
     tlogf("destination dump failed: %s", output);
     return 1;
   }
-  const kafs_test_mount_options_t destination_mount_options = {
-      .debug = "1", .log_path = "destination-v7.log", .extra_options = "ro", .timeout_ms = 10000};
-  pid_t destination_pid =
-      kafs_test_start_kafs_v7(destination, "destination-mount", &destination_mount_options);
-  if (destination_pid <= 0)
-  {
-    kafs_test_dump_log(destination_mount_options.log_path, "import destination mount failed");
-    return 1;
-  }
-  int verify_rc = verify_v7("destination-mount", &fixture);
-  kafs_test_stop_kafs("destination-mount", destination_pid);
+  int verify_rc = verify_v7_image(destination, "destination-mount", "destination-v7.log",
+                                   "destination-inventory.json", &fixture);
   if (verify_rc != 0)
   {
     tlogf("destination semantic verification failed: %s", strerror(-verify_rc));
     return 1;
   }
+  tlogf("KAFS_V5_V7_MIGRATION_CASE normal PASS");
+  tlogf("KAFS_V5_V7_MIGRATION_CASE idempotence PASS");
 
   if (copy_file(source, "unsupported-v5.img") != 0 ||
       mutate_inode("unsupported-v5.img", (uint32_t)fixture.inline_ino, 0) != 0 ||
@@ -589,15 +686,65 @@ int main(void)
     return 1;
   if (assert_failed_without_final(source, "capacity-v7.img", "1M") != 0)
     return 1;
+
+  if (copy_file(source, "pending-ref-v5.img") != 0 ||
+      mutate_source_reference("pending-ref-v5.img", (uint32_t)fixture.block_ino, 1) != 0 ||
+      assert_failed_without_final("pending-ref-v5.img", "pending-ref-v7.img", "96M") != 0)
+    return 1;
+  tlogf("KAFS_V5_V7_MIGRATION_CASE pending_ref_rejection PASS");
+  if (copy_file(source, "bitmap-invalid-v5.img") != 0 ||
+      mutate_source_reference("bitmap-invalid-v5.img", (uint32_t)fixture.block_ino, 0) != 0 ||
+      assert_failed_without_final("bitmap-invalid-v5.img", "bitmap-invalid-v7.img", "96M") != 0)
+    return 1;
+  tlogf("KAFS_V5_V7_MIGRATION_CASE bitmap_invalid_rejection PASS");
+
   if (setenv("KAFS_V7_IMPORT_FAIL_AFTER_OBJECTS", "2", 1) != 0)
     return 1;
-  int partial_rc = assert_failed_without_final(source, "partial-v7.img", "96M");
+  int partial_rc = assert_failed_without_final(source, "resume-v7.img", "96M");
   unsetenv("KAFS_V7_IMPORT_FAIL_AFTER_OBJECTS");
-  if (partial_rc != 0 || access("partial-v7.img.kafs-import-partial", F_OK) != 0)
+  if (partial_rc != 0 || access("resume-v7.img.kafs-import-partial", F_OK) != 0 ||
+      rename("resume-v7.img.kafs-import-partial", "resume-attempt1-preserved.img") != 0)
   {
-    tlogf("partial import did not preserve private work image");
+    tlogf("interrupted import did not preserve the attempt-1 work image");
     return 1;
   }
+  tlogf("KAFS_V5_V7_MIGRATION_CASE resume_required PASS");
+  if (run_import(source, "resume-v7.img", "96M", 0, output, sizeof(output)) != 0 ||
+      !strstr(output, "destination_admission_ready: yes") ||
+      verify_v7_image("resume-v7.img", "resume-mount", "resume-v7.log",
+                      "resume-inventory.json", &fixture) != 0)
+  {
+    tlogf("resume replay failed: %s", output);
+    return 1;
+  }
+  tlogf("KAFS_V5_V7_MIGRATION_CASE resumed_accept PASS");
+
+  if (setenv("KAFS_V7_IMPORT_FAIL_AFTER_OBJECTS", "2", 1) != 0)
+    return 1;
+  partial_rc = assert_failed_without_final(source, "rollback-v7.img", "96M");
+  unsetenv("KAFS_V7_IMPORT_FAIL_AFTER_OBJECTS");
+  if (partial_rc != 0 || access("rollback-v7.img", F_OK) == 0 ||
+      rename("rollback-v7.img.kafs-import-partial", "rollback-preserved-failed.img") != 0)
+  {
+    tlogf("rollback did not preserve the failed destination");
+    return 1;
+  }
+  tlogf("KAFS_V5_V7_MIGRATION_CASE rollback PASS");
+
+  struct stat source_after;
+  if (stat(source, &source_after) != 0 || source_before.st_dev != source_after.st_dev ||
+      source_before.st_ino != source_after.st_ino || source_before.st_size != source_after.st_size ||
+      source_before.st_mtim.tv_sec != source_after.st_mtim.tv_sec ||
+      source_before.st_mtim.tv_nsec != source_after.st_mtim.tv_nsec ||
+      source_before.st_ctim.tv_sec != source_after.st_ctim.tv_sec ||
+      source_before.st_ctim.tv_nsec != source_after.st_ctim.tv_nsec)
+  {
+    tlogf("source image identity changed during migration rehearsal");
+    return 1;
+  }
+  if (capture_sha256(source, "source-after.sha256") != 0)
+    return 1;
+  tlogf("KAFS_V5_V7_MIGRATION_CASE source_immutability PASS");
   tlogf("v5_v7_import_smoketest OK");
   return 0;
 }

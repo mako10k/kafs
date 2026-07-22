@@ -30,6 +30,8 @@ EXTRA_DIST = $(man_MANS) $(bashcompletion_DATA) \
 	scripts/v7-real-media-qualification-approval-gate.sh \
 	scripts/v7-real-media-qualification-evidence-gate.sh \
 	scripts/v5-v7-migration-evidence-gate.sh \
+	scripts/v5-v7-migration-rehearsal.sh \
+	scripts/v5-v7-mounted-inventory.py \
 	scripts/v7-vhdx-evidence-audit-gate.sh \
 	scripts/v7-vhdx-host-recovery.ps1 \
 	scripts/v7-vhdx-host-recovery.sh

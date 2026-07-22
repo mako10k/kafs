@@ -132,7 +132,7 @@ checksum-consistent foreign-group mutation.
 | M8-B.3 | T51 namespace payload structural validation | Complete for inline and bounded direct KDIR/symlink admission |
 | M8-B.4 | T52 bounded direct-inode reference validation | Complete for dense direct count/slots and recovered-bitmap allocation admission |
 | M8-C | Indirect-block COW, traversal, and retirement | Triple-indirect regular-file lifecycle complete through T55; indirect directories remain |
-| M9 | T59: v5-to-v7 data migration beyond destination creation | T59-A contract and T59-B offline importer complete; T59-C rehearsal/cutover incomplete |
+| M9 | T59: v5-to-v7 data migration beyond destination creation | T59-A contract, T59-B offline importer, and T59-C disposable lifecycle rehearsal complete; production cutover remains gated |
 | M10 | Cross-group HRL and multi-group atomic mutation | Not started |
 
 The bounded direct portions of M8-A and M8-B are implemented. R1 replaced the
@@ -384,20 +384,19 @@ T19 validation completed on 2026-07-17:
 
 ## Recommended Next Slice
 
-T57 `VHDX_EVIDENCE_AUDIT`, T58 `REAL_MEDIA_EVIDENCE_CONTRACT`, T59-A
-`MIGRATION_EVIDENCE_CONTRACT`, and T59-B `V7_MIGRATION_IMPORT_SURFACE`
-completed on 2026-07-22. The refreshed plan keeps
-`VHDX_HOST_RECOVERY_RUN` blocked because the active Ubuntu distro runs other
-tasks, and keeps physical hardware approval blocked. The machine-selected next
-slice is T59-C `V5_V7_MIGRATION_REHEARSAL`, the only `RUNNABLE NOW` node. It
-has 0.333 days total float, is resource-critical, and joins the T59-A contract
-with the T59-B importer across resume, rollback, and idempotence evidence.
+T57 `VHDX_EVIDENCE_AUDIT`, T58 `REAL_MEDIA_EVIDENCE_CONTRACT`, and T59-A/B/C
+completed on 2026-07-22. T59-C closed the disposable migration lifecycle with
+normal, interruption, full replay from a frozen source, rollback, idempotence,
+and digest-bound evidence. It did not implement in-place partial continuation
+or authorize production migration.
 
-T59-C requires its own fresh Task Start Gate. If either disruptive window
-becomes available while T59-C is active, refresh the PERT resource schedule
-before continuing because the primary stream would be contested. This handoff
-does not authorize host capture, device access, production migration, or
-destructive work.
+The refreshed plan keeps `VHDX_HOST_RECOVERY_RUN` blocked because the active
+Ubuntu distro runs other tasks, and keeps physical hardware approval blocked.
+There is no node in `RUNNABLE NOW`, so the machine decision is `BLOCKED`; no
+implementation slice is selected as a substitute. Refresh the plan only when a
+safe WSL maintenance window or the exact approved physical apparatus becomes
+available. This handoff does not authorize host capture, device access,
+production migration, or destructive work.
 
 Use [the dated VHDX handoff](sd-card-wear-v7-vhdx-handoff-20260721.md) only
 after the user explicitly names a safe maintenance window. The actual four-point
@@ -437,13 +436,11 @@ interruption before that approval.
    make -C tests check TESTS='v7_fuse_write_smoketest v7_checkpoint_publication_smoketest v7_inspection_mount_smoketest'
    ```
 
-6. Run `./scripts/pert-next-task.sh plans/current.pert`. Require T59-C
-   `V5_V7_MIGRATION_REHEARSAL` alone in `RUNNABLE NOW`, no node in
-   `READY / WAITING RESOURCE`, and both `VHDX_HOST_RECOVERY_RUN` and
-   `HARDWARE_APPROVAL` in `BLOCKED NOW`. Any different frontier requires plan
-   refresh before selection. T59-C requires a fresh Task Start Gate and remains
-   limited to disposable file images and versioned lifecycle evidence. When the user
-   resumes the VHDX capture, refresh the host identity, Task Start evidence, and
+6. Run `./scripts/pert-next-task.sh plans/current.pert`. Require no node in
+   `RUNNABLE NOW`, `READY / WAITING RESOURCE`, or `ACTIVE`, and require both
+   `VHDX_HOST_RECOVERY_RUN` and `HARDWARE_APPROVAL` in `BLOCKED NOW`. Any
+   different frontier requires plan refresh before selection. When the user
+   resumes the VHDX capture, refresh host identity, Task Start evidence, and the
    plan before the dated handoff's native Windows preflight. Keep real-device
    actions behind explicit approval and do not substitute off-path namespace
    work.
