@@ -286,7 +286,41 @@ for name in ("decision.json", "destination.json", "ledger.json", "plan.json", "s
 (root / "artifacts.sha256").write_text("\n".join(inventory) + "\n")
 PY
 
-"$gate" --evidence-dir "$bundle" --require-decision ACCEPT --validate-only >/dev/null
+gate_result="$workdir/gate-result.json"
+"$gate" --evidence-dir "$bundle" --require-decision ACCEPT --validate-only --json >"$gate_result"
+python3 - "$gate_result" "$bundle" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+
+result = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if set(result) != {
+    "schema", "operation", "status", "exit_status", "evidence_dir",
+    "required_decision", "validated", "errors", "claims",
+}:
+    raise SystemExit("evidence result fields do not match the validation v1 contract")
+if (
+    result["schema"] != "KAFS.V5V7MigrationEvidenceValidation.v1"
+    or result["operation"] != "validate-v5-v7-migration-evidence"
+    or result["status"] != "PASS"
+    or result["exit_status"] != 0
+    or result["evidence_dir"] != str(Path(sys.argv[2]).resolve())
+    or result["required_decision"] != "ACCEPT"
+    or result["errors"] != []
+    or set(result["validated"]) != {
+        "migration_id", "decision", "source_objects", "source_entries", "attempt",
+    }
+    or result["validated"]["decision"] != "ACCEPT"
+    or result["claims"] != {
+        "data_imported": False,
+        "production_cutover_authorized": False,
+    }
+):
+    raise SystemExit("evidence result does not match the passed validation v1 contract")
+PY
+human_result=$("$gate" --evidence-dir "$bundle" --require-decision ACCEPT --validate-only)
+grep -Fq "KAFS_V5_V7_MIGRATION_EVIDENCE PASS" <<<"$human_result"
 
 expect_failure() {
   local label=$1
@@ -437,6 +471,29 @@ rebind_bundle "$rollback"
 
 expect_failure required-decision-mismatch "$gate" --evidence-dir "$bundle" \
   --require-decision ROLLBACK --validate-only
+set +e
+"$gate" --evidence-dir "$bundle" --require-decision ROLLBACK --validate-only --json \
+  >"$workdir/gate-failure-result.json" 2>"$workdir/gate-failure.stderr"
+failure_rc=$?
+set -e
+[[ "$failure_rc" -eq 1 ]]
+python3 - "$workdir/gate-failure-result.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+
+result = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if (
+    result["schema"] != "KAFS.V5V7MigrationEvidenceValidation.v1"
+    or result["status"] != "FAIL"
+    or result["exit_status"] != 1
+    or result["required_decision"] != "ROLLBACK"
+    or result["validated"] is not None
+    or not result["errors"]
+):
+    raise SystemExit("evidence failure result does not match the validation v1 contract")
+PY
 
 source_mutation=$(clone_bundle source-mutation)
 python3 - "$source_mutation/ledger.json" <<'PY'

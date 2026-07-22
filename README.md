@@ -221,6 +221,10 @@ Offline resize and migration-image creation:
 # Import a frozen, clean v5 image into a new v7 image:
 ./kafsresize --migrate-import-v7 --src-image /tmp/source-v5.img \
 	--dst-image /tmp/destination-v7.img --v7-group-count 2
+
+# Emit the versioned automation result on stdout:
+./kafsresize --migrate-import-v7 --src-image /tmp/source-v5.img \
+	--dst-image /tmp/destination-v7.img --v7-group-count 2 --dry-run --json
 ```
 
 Current v0 constraint: growth is only supported within preallocated headroom
@@ -238,11 +242,13 @@ cutover.
 For a repository-owned disposable lifecycle rehearsal, run:
 
 ```sh
-./scripts/v5-v7-migration-rehearsal.sh
+./scripts/v5-v7-migration-rehearsal.sh --json
 ```
 
 It retains normal, interrupted/replayed, and rollback images plus digest-bound
-T59 evidence under `report/v5-v7-migration-rehearsal/`. It does not accept a
+T59 evidence under `report/v5-v7-migration-rehearsal/`. Each allocated report
+retains `result.json`; PASS also retains `rehearsal.json`. Exit 77 is a retained
+environment `SKIP`, not PASS. It does not accept a
 caller-supplied image, device, or mountpoint and does not perform an in-place
 partial continuation, production migration, WSL restart, or cutover.
 

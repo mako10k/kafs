@@ -6,6 +6,7 @@ STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 REPORT_ROOT="$ROOT_DIR/report/v5-v7-migration-rehearsal"
 REPORT_DIR=""
 KEEP_WORKDIR=0
+JSON_OUTPUT=0
 MOUNT_TIMEOUT_MS=${KAFS_V5_V7_REHEARSAL_MOUNT_TIMEOUT_MS:-15000}
 
 WORKLOAD_BIN=${KAFS_TEST_V5_V7_IMPORT_WORKLOAD:-$ROOT_DIR/tests/v5_v7_import_smoketest}
@@ -19,13 +20,17 @@ INVENTORY_BIN=${KAFS_TEST_V5_V7_MOUNTED_INVENTORY:-$ROOT_DIR/scripts/v5-v7-mount
 GATE_BIN=${KAFS_TEST_V5_V7_MIGRATION_EVIDENCE_GATE:-$ROOT_DIR/scripts/v5-v7-migration-evidence-gate.sh}
 
 WORK_ROOT=""
+RESULT_ENABLED=0
+RESULT_STATUS=""
+RESULT_REASON=""
+FUSE_STATUS="UNKNOWN"
 
 usage() {
   cat <<'EOF'
 Usage:
   scripts/v5-v7-migration-rehearsal.sh [options]
 
-Run the v5-to-v7 normal, interrupted/resumed, rollback, and idempotence matrix
+Run the v5-to-v7 normal, interrupted/replayed, rollback, and idempotence matrix
 against disposable file images. The runner emits four T59 lifecycle bundles
 and validates each with the migration evidence gate. It never accepts a
 caller-supplied image, device, mountpoint, or production path.
@@ -35,15 +40,26 @@ Options:
   --report-dir DIR     Exact new or empty report directory
   --timeout-ms N       FUSE mount timeout (default: 15000)
   --keep-workdir       Keep all disposable workload images
+  --json               Print one versioned JSON result instead of human summary
   -h, --help           Show this help
 
+Results are retained as REPORT_DIR/result.json after report allocation.
+Exit 0 is PASS, 1 is an execution/validation failure, 2 is a usage or
+prerequisite error, and 77 is an environment SKIP such as unavailable FUSE.
 Prefix a path value that begins with '-' with './'.
 EOF
 }
 
 die() {
+  RESULT_REASON=$*
   echo "ERROR: $*" >&2
   exit 2
+}
+
+run_fail() {
+  RESULT_REASON=$*
+  echo "ERROR: $*" >&2
+  exit 1
 }
 
 require_option_value() {
@@ -64,12 +80,94 @@ resolve_exe() {
   command -v "$value"
 }
 
-cleanup() {
+cleanup_workdir() {
   if [[ -n "$WORK_ROOT" && -d "$WORK_ROOT" && "$KEEP_WORKDIR" -eq 0 ]]; then
     find "$WORK_ROOT" -depth -delete
   fi
 }
-trap cleanup EXIT
+
+write_result() {
+  local exit_status=$1
+  local result_path="$REPORT_DIR/result.json"
+  python3 - "$result_path" "$RESULT_STATUS" "$exit_status" "$REPORT_DIR" \
+    "$RESULT_REASON" "$FUSE_STATUS" <<'PY'
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import sys
+
+
+result_path = Path(sys.argv[1])
+status = sys.argv[2]
+exit_status = int(sys.argv[3])
+report_dir = Path(sys.argv[4])
+workdir_retained = (report_dir / "work").is_dir()
+reason = sys.argv[5]
+fuse_status = sys.argv[6]
+manifest = report_dir / "rehearsal.json"
+result = {
+    "schema": "KAFS.V5V7MigrationRehearsalResult.v1",
+    "operation": "disposable-v5-v7-migration-rehearsal",
+    "status": status,
+    "exit_status": exit_status,
+    "report_dir": str(report_dir),
+    "report_retained": True,
+    "workdir_retained": workdir_retained,
+    "artifacts_dir": "artifacts",
+    "bundles_dir": "bundles",
+    "rehearsal_manifest": "rehearsal.json" if manifest.is_file() else None,
+    "recovery_strategy": "full-replay-from-frozen-source",
+    "reason": reason,
+    "prerequisites": {"fuse": fuse_status},
+    "claims": {
+        "production_cutover_authorized": False,
+        "real_media_qualified": False,
+        "physical_media_qualified": False,
+        "release_candidate_qualified": False,
+    },
+}
+temporary = result_path.with_name(result_path.name + ".tmp")
+temporary.write_text(
+    json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+)
+temporary.replace(result_path)
+PY
+}
+
+finalize() {
+  local exit_status=$?
+  trap - EXIT
+  set +e
+  if ! cleanup_workdir; then
+    RESULT_STATUS=FAIL
+    RESULT_REASON="failed to remove disposable work directory; report retained"
+    exit_status=1
+  fi
+  if [[ "$RESULT_ENABLED" -eq 1 ]]; then
+    if [[ -z "$RESULT_STATUS" ]]; then
+      RESULT_STATUS=FAIL
+      [[ -n "$RESULT_REASON" ]] || RESULT_REASON="command failed; inspect retained report"
+      [[ "$exit_status" -ne 0 ]] || exit_status=1
+    fi
+    if ! write_result "$exit_status"; then
+      echo "ERROR: failed to retain migration rehearsal result in $REPORT_DIR" >&2
+      exit_status=1
+    elif [[ "$JSON_OUTPUT" -eq 1 ]]; then
+      cat "$REPORT_DIR/result.json" || exit_status=1
+    elif [[ "$RESULT_STATUS" == PASS ]]; then
+      echo "KAFS_V5_V7_MIGRATION_REHEARSAL PASS"
+      echo "report: $REPORT_DIR"
+    elif [[ "$RESULT_STATUS" == SKIP ]]; then
+      echo "v5-to-v7 migration rehearsal SKIP"
+      echo "report: $REPORT_DIR"
+    elif [[ "$RESULT_STATUS" == FAIL ]]; then
+      echo "report: $REPORT_DIR" >&2
+    fi
+  fi
+  exit "$exit_status"
+}
+trap finalize EXIT
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -90,6 +188,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --keep-workdir)
       KEEP_WORKDIR=1
+      shift
+      ;;
+    --json)
+      JSON_OUTPUT=1
       shift
       ;;
     -h|--help)
@@ -131,15 +233,18 @@ ARTIFACT_DIR="$REPORT_DIR/artifacts"
 BUNDLE_DIR="$REPORT_DIR/bundles"
 WORK_ROOT="$REPORT_DIR/work"
 mkdir -p "$ARTIFACT_DIR/images" "$ARTIFACT_DIR/logs" "$BUNDLE_DIR" "$WORK_ROOT"
+RESULT_ENABLED=1
 
 if [[ ! -r /dev/fuse || ! -w /dev/fuse ]]; then
+  FUSE_STATUS="UNAVAILABLE"
   printf '77\n' >"$ARTIFACT_DIR/workload.status"
   printf 'skip: /dev/fuse is unavailable\n' >"$ARTIFACT_DIR/workload.stderr"
   : >"$ARTIFACT_DIR/workload.stdout"
-  echo "v5-to-v7 migration rehearsal SKIP"
-  echo "report: $REPORT_DIR"
+  RESULT_STATUS=SKIP
+  RESULT_REASON="/dev/fuse is unavailable"
   exit 77
 fi
+FUSE_STATUS="AVAILABLE"
 
 printf 'TMPDIR=%q KAFS_TEST_KEEP_WORKDIR=1 KAFS_TEST_MOUNT_TIMEOUT_MS=%q %q\n' \
   "$WORK_ROOT" "$MOUNT_TIMEOUT_MS" "$WORKLOAD_BIN" >"$ARTIFACT_DIR/workload.command"
@@ -159,64 +264,68 @@ workload_rc=$?
 set -e
 printf '%s\n' "$workload_rc" >"$ARTIFACT_DIR/workload.status"
 if [[ "$workload_rc" -eq 77 ]]; then
-  echo "v5-to-v7 migration rehearsal SKIP"
-  echo "report: $REPORT_DIR"
+  RESULT_STATUS=SKIP
+  RESULT_REASON="migration workload reported an environment skip"
   exit 77
 fi
-[[ "$workload_rc" -eq 0 ]] || die "migration workload failed; inspect $ARTIFACT_DIR"
+[[ "$workload_rc" -eq 0 ]] || run_fail "migration workload failed; inspect $ARTIFACT_DIR"
 
 TEST_WORKDIR=$(find "$WORK_ROOT" -mindepth 1 -maxdepth 1 -type d \
   -name 'kafs-v5_v7_import_smoketest-*' -print -quit)
-[[ -n "$TEST_WORKDIR" ]] || die "migration workload did not retain its workdir"
+[[ -n "$TEST_WORKDIR" ]] || run_fail "migration workload did not retain its workdir"
 
 required_markers=(
   normal
   idempotence
   pending_ref_rejection
   bitmap_invalid_rejection
-  resume_required
-  resumed_accept
+  replay_required
+  replayed_accept
   rollback
   source_immutability
 )
 for case_id in "${required_markers[@]}"; do
   grep -Fqx "KAFS_V5_V7_MIGRATION_CASE $case_id PASS" \
-    "$ARTIFACT_DIR/workload.stderr" || die "missing workload marker: $case_id"
+    "$ARTIFACT_DIR/workload.stderr" || run_fail "missing workload marker: $case_id"
 done
 
 required_files=(
   source-v5.img
   destination-v7.img
-  resume-v7.img
-  resume-attempt1-preserved.img
+  replay-v7.img
+  replay-attempt1-preserved.img
   rollback-preserved-failed.img
   source-before.sha256
   source-after.sha256
+  import-dry-run-result.json
+  import-result.json
   source-inventory.json
   destination-inventory.json
-  resume-inventory.json
+  replay-inventory.json
 )
 for name in "${required_files[@]}"; do
   [[ -f "$TEST_WORKDIR/$name" && ! -L "$TEST_WORKDIR/$name" ]] ||
-    die "required workload artifact is missing: $name"
+    run_fail "required workload artifact is missing: $name"
 done
 
 source_before=$(<"$TEST_WORKDIR/source-before.sha256")
 source_after=$(<"$TEST_WORKDIR/source-after.sha256")
 [[ "$source_before" =~ ^[0-9a-f]{64}$ && "$source_before" == "$source_after" ]] ||
-  die "source digest changed during migration workload"
+  run_fail "source digest changed during migration workload"
 
 cp -- "$TEST_WORKDIR/source-inventory.json" "$ARTIFACT_DIR/source-inventory.json"
 cp -- "$TEST_WORKDIR/destination-inventory.json" "$ARTIFACT_DIR/destination-inventory.json"
-cp -- "$TEST_WORKDIR/resume-inventory.json" "$ARTIFACT_DIR/resume-inventory.json"
+cp -- "$TEST_WORKDIR/replay-inventory.json" "$ARTIFACT_DIR/replay-inventory.json"
+cp -- "$TEST_WORKDIR/import-dry-run-result.json" "$ARTIFACT_DIR/import-dry-run-result.json"
+cp -- "$TEST_WORKDIR/import-result.json" "$ARTIFACT_DIR/import-result.json"
 cp --sparse=always -- "$TEST_WORKDIR/source-v5.img" \
   "$ARTIFACT_DIR/images/source-v5.img"
 cp --sparse=always -- "$TEST_WORKDIR/destination-v7.img" \
   "$ARTIFACT_DIR/images/destination-v7.img"
-cp --sparse=always -- "$TEST_WORKDIR/resume-v7.img" \
-  "$ARTIFACT_DIR/images/resume-v7.img"
-cp --sparse=always -- "$TEST_WORKDIR/resume-attempt1-preserved.img" \
-  "$ARTIFACT_DIR/images/resume-attempt1-preserved.img"
+cp --sparse=always -- "$TEST_WORKDIR/replay-v7.img" \
+  "$ARTIFACT_DIR/images/replay-v7.img"
+cp --sparse=always -- "$TEST_WORKDIR/replay-attempt1-preserved.img" \
+  "$ARTIFACT_DIR/images/replay-attempt1-preserved.img"
 cp --sparse=always -- "$TEST_WORKDIR/rollback-preserved-failed.img" \
   "$ARTIFACT_DIR/images/rollback-preserved-failed.img"
 printf '%s\n' "$source_before" >"$ARTIFACT_DIR/images/source-before.sha256"
@@ -224,7 +333,7 @@ printf '%s\n' "$source_after" >"$ARTIFACT_DIR/images/source-after.sha256"
 
 "$FSCK_BIN" --full-check "$TEST_WORKDIR/source-v5.img" \
   >"$ARTIFACT_DIR/source-fsck.stdout" 2>"$ARTIFACT_DIR/source-fsck.stderr"
-for prefix in destination resume; do
+for prefix in destination replay; do
   image="$TEST_WORKDIR/${prefix}-v7.img"
   "$FSCK_BIN" "$image" >"$ARTIFACT_DIR/${prefix}-fsck.stdout" \
     2>"$ARTIFACT_DIR/${prefix}-fsck.stderr"
@@ -233,12 +342,12 @@ for prefix in destination resume; do
 done
 
 normal_sha=$(sha256sum "$TEST_WORKDIR/destination-v7.img" | awk '{print $1}')
-resume_sha=$(sha256sum "$TEST_WORKDIR/resume-v7.img" | awk '{print $1}')
-partial_sha=$(sha256sum "$ARTIFACT_DIR/images/resume-attempt1-preserved.img" | awk '{print $1}')
+replay_sha=$(sha256sum "$TEST_WORKDIR/replay-v7.img" | awk '{print $1}')
+partial_sha=$(sha256sum "$ARTIFACT_DIR/images/replay-attempt1-preserved.img" | awk '{print $1}')
 rollback_sha=$(sha256sum "$ARTIFACT_DIR/images/rollback-preserved-failed.img" | awk '{print $1}')
 source_size=$(stat -c '%s' "$TEST_WORKDIR/source-v5.img")
 
-python3 - "$ARTIFACT_DIR" "$BUNDLE_DIR" "$source_before" "$normal_sha" "$resume_sha" \
+python3 - "$ARTIFACT_DIR" "$BUNDLE_DIR" "$source_before" "$normal_sha" "$replay_sha" \
   "$partial_sha" "$rollback_sha" "$source_size" <<'PY'
 from __future__ import annotations
 
@@ -251,7 +360,7 @@ import sys
 
 artifacts = Path(sys.argv[1])
 bundles = Path(sys.argv[2])
-source_image_sha, normal_sha, resume_sha, partial_sha, rollback_sha = sys.argv[3:8]
+source_image_sha, normal_sha, replay_sha, partial_sha, rollback_sha = sys.argv[3:8]
 image_size = int(sys.argv[8])
 
 
@@ -261,9 +370,41 @@ def load(name):
 
 source_inventory = load("source-inventory.json")
 normal_inventory = load("destination-inventory.json")
-resume_inventory = load("resume-inventory.json")
-if source_inventory != normal_inventory or source_inventory != resume_inventory:
+replay_inventory = load("replay-inventory.json")
+if source_inventory != normal_inventory or source_inventory != replay_inventory:
     raise SystemExit("mounted source/destination semantic inventories differ")
+for name, mode, writes, admission in (
+    ("import-dry-run-result.json", "dry-run", False, False),
+    ("import-result.json", "import", True, True),
+):
+    result = load(name)
+    expected_keys = {
+        "schema", "operation", "status", "exit_status", "mode", "source_image",
+        "destination_image", "result", "claims",
+    }
+    if set(result) != expected_keys:
+        raise SystemExit(f"{name} command-result fields do not match the v1 contract")
+    if (
+        result["schema"] != "KAFS.V5V7MigrationImportResult.v1"
+        or result["operation"] != "migrate-import-v7"
+        or result["status"] != "PASS"
+        or result["exit_status"] != 0
+        or result["mode"] != mode
+        or result["result"]["writes_performed"] is not writes
+        or result["result"]["destination_admission_ready"] is not admission
+        or set(result["result"]) != {
+            "source_crc32", "source_inode_count", "imported_inodes",
+            "imported_directories", "imported_regular_files", "imported_symlinks",
+            "payload_bytes", "destination_size_bytes", "destination_block_size",
+            "destination_group_count", "allocated_blocks", "writes_performed",
+            "destination_admission_ready",
+        }
+        or result["claims"] != {
+            "production_cutover_authorized": False,
+            "migration_lifecycle_accepted": False,
+        }
+    ):
+        raise SystemExit(f"{name} command result does not match the v1 contract")
 
 dump = load("destination-dump.json")
 block_size = dump["superblock"]["block_size"]
@@ -458,21 +599,21 @@ normal_history = [
     ("PLANNED", 1), ("SOURCE_CAPTURED", 1), ("DESTINATION_CREATED", 1),
     ("COPYING", 1), ("VERIFYING", 1), ("ACCEPTED", 1),
 ]
-resume_required_history = [
+replay_required_history = [
     ("PLANNED", 1), ("SOURCE_CAPTURED", 1), ("DESTINATION_CREATED", 1),
     ("COPYING", 1), ("RESUME_REQUIRED", 1),
 ]
-resumed_history = resume_required_history + [
+replayed_history = replay_required_history + [
     ("COPYING", 2), ("VERIFYING", 2), ("ACCEPTED", 2),
 ]
-rollback_history = resume_required_history + [("ROLLED_BACK", 1)]
+rollback_history = replay_required_history + [("ROLLED_BACK", 1)]
 
 build_bundle("normal-accept", "destination-v7.img", "ACCEPT", normal_sha, 1,
              normal_history, "all", "COMPLETE")
-build_bundle("resume-required", "resume-v7.img", "RESUME_REQUIRED", partial_sha, 1,
-             resume_required_history, True, "PARTIAL", "injected interruption after two objects")
-build_bundle("resumed-accept", "resume-v7.img", "ACCEPT", resume_sha, 2,
-             resumed_history, "all", "COMPLETE")
+build_bundle("replay-required", "replay-v7.img", "RESUME_REQUIRED", partial_sha, 1,
+             replay_required_history, True, "PARTIAL", "injected interruption after two objects; full replay required")
+build_bundle("replayed-accept", "replay-v7.img", "ACCEPT", replay_sha, 2,
+             replayed_history, "all", "COMPLETE")
 build_bundle("rollback", "rollback-v7.img", "ROLLBACK", rollback_sha, 1,
              rollback_history, True, "PRESERVED_FAILED",
              "operator rollback preserved failed destination and selected unchanged source")
@@ -480,15 +621,41 @@ PY
 
 declare -A bundle_decisions=(
   [normal-accept]=ACCEPT
-  [resume-required]=RESUME_REQUIRED
-  [resumed-accept]=ACCEPT
+  [replay-required]=RESUME_REQUIRED
+  [replayed-accept]=ACCEPT
   [rollback]=ROLLBACK
 )
-for bundle in normal-accept resume-required resumed-accept rollback; do
+for bundle in normal-accept replay-required replayed-accept rollback; do
   "$GATE_BIN" --evidence-dir "$BUNDLE_DIR/$bundle" \
-    --require-decision "${bundle_decisions[$bundle]}" --validate-only \
-    >"$ARTIFACT_DIR/${bundle}.gate.stdout" 2>"$ARTIFACT_DIR/${bundle}.gate.stderr"
+    --require-decision "${bundle_decisions[$bundle]}" --validate-only --json \
+    >"$ARTIFACT_DIR/${bundle}.gate-result.json" \
+    2>"$ARTIFACT_DIR/${bundle}.gate.stderr"
 done
+
+python3 - "$ARTIFACT_DIR" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+
+root = Path(sys.argv[1])
+for bundle in ("normal-accept", "replay-required", "replayed-accept", "rollback"):
+    path = root / f"{bundle}.gate-result.json"
+    result = json.loads(path.read_text(encoding="utf-8"))
+    if set(result) != {
+        "schema", "operation", "status", "exit_status", "evidence_dir",
+        "required_decision", "validated", "errors", "claims",
+    }:
+        raise SystemExit(f"{path.name} fields do not match the validation v1 contract")
+    if (
+        result["schema"] != "KAFS.V5V7MigrationEvidenceValidation.v1"
+        or result["operation"] != "validate-v5-v7-migration-evidence"
+        or result["status"] != "PASS"
+        or result["exit_status"] != 0
+        or result["errors"] != []
+    ):
+        raise SystemExit(f"{path.name} does not contain a passed validation v1 result")
+PY
 
 python3 - "$REPORT_DIR" "$(git -C "$ROOT_DIR" rev-parse HEAD)" <<'PY'
 from __future__ import annotations
@@ -520,12 +687,12 @@ for path in sorted((root / "artifacts").rglob("*")):
             "sha256": digest(path),
         })
 manifest = {
-    "schema": "KAFS.V5V7MigrationRehearsal.v1",
+    "schema": "KAFS.V5V7MigrationRehearsal.v2",
     "scope": "disposable-file-images",
     "status": "PASS",
     "generated_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     "git_commit": sys.argv[2],
-    "resume_semantics": "preserve-attempt-partial-and-replay-from-frozen-source",
+    "recovery_strategy": "full-replay-from-frozen-source",
     "fault_after_objects": 2,
     "cases": [
         {
@@ -535,16 +702,18 @@ manifest = {
             "image": "artifacts/images/destination-v7.img",
         },
         {
-            "id": "resume_required",
+            "id": "replay_required",
             "status": "PASS",
-            "bundle": "bundles/resume-required",
-            "image": "artifacts/images/resume-attempt1-preserved.img",
+            "bundle": "bundles/replay-required",
+            "image": "artifacts/images/replay-attempt1-preserved.img",
+            "decision": "RESUME_REQUIRED",
+            "strategy": "full-replay-from-frozen-source",
         },
         {
-            "id": "resumed_accept",
+            "id": "replayed_accept",
             "status": "PASS",
-            "bundle": "bundles/resumed-accept",
-            "image": "artifacts/images/resume-v7.img",
+            "bundle": "bundles/replayed-accept",
+            "image": "artifacts/images/replay-v7.img",
             "strategy": "full-replay-from-frozen-source",
         },
         {
@@ -576,5 +745,5 @@ manifest = {
 )
 PY
 
-echo "KAFS_V5_V7_MIGRATION_REHEARSAL PASS"
-echo "report: $REPORT_DIR"
+RESULT_STATUS=PASS
+RESULT_REASON="disposable migration lifecycle matrix completed"

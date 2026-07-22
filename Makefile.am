@@ -19,6 +19,7 @@ bashcompletiondir = $(datadir)/bash-completion/completions
 bashcompletion_DATA = completions/kafs completions/mount.kafs
 
 EXTRA_DIST = $(man_MANS) $(bashcompletion_DATA) \
+	docs/kafsresize-cutover-playbook.md \
 	docs/sd-card-wear-v7-real-media-qualification-approval.md \
 	docs/sd-card-wear-v7-real-media-qualification-evidence.md \
 	docs/sd-card-wear-v7-real-media-qualification-matrix.json \

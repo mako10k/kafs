@@ -244,7 +244,7 @@ _kafsresize() {
       words="-h --help --size-bytes --src-image --dst-image --inodes --format-version --journal-size-bytes --blksize-log --hrl-entry-ratio --src-mount --dst-mount --dry-run --yes --force"
       ;;
     migrate-import-v7)
-      words="-h --help --size-bytes --src-image --dst-image --inodes --format-version --journal-size-bytes --blksize-log --hrl-entry-ratio --v7-group-count --dry-run"
+      words="-h --help --size-bytes --src-image --dst-image --inodes --format-version --journal-size-bytes --blksize-log --hrl-entry-ratio --v7-group-count --dry-run --json"
       ;;
     *)
       words="-h --help --grow --migrate-create --migrate-import-v7"

@@ -130,11 +130,14 @@ Do not continue if the source changes after this point.
 	--size-bytes 128G \
 	--inodes 524288 \
 	--v7-group-count 2 \
-	--dry-run
+	--dry-run --json
 ```
 
 The final destination and `<destination>.kafs-import-partial` must not already
 exist. Import mode intentionally rejects `--force`.
+`--json` emits `KAFS.V5V7MigrationImportResult.v1` on stdout; a PASS dry-run
+records `writes_performed=false` and `destination_admission_ready=false`.
+Diagnostics remain on stderr. Omit `--json` for the compatible human summary.
 
 ### 3. Import through the v7-owned offline path
 
@@ -173,14 +176,21 @@ controlled-write surface or production cutover.
 For repository-owned disposable file images only, run:
 
 ```sh
-./scripts/v5-v7-migration-rehearsal.sh
+./scripts/v5-v7-migration-rehearsal.sh --json
 ```
 
 The rehearsal does not accept a caller-supplied image, device, mountpoint, or
 production path. It exercises normal import, interrupted full replay, rollback,
 and idempotence, and writes evidence under
-`report/v5-v7-migration-rehearsal/`. It performs no WSL shutdown, physical-media
-operation, or production cutover.
+`report/v5-v7-migration-rehearsal/`. The host needs the built KAFS tools,
+`python3`, `sha256sum`, and usable FUSE for a PASS. Every report allocated by
+the runner retains `result.json`; PASS additionally retains `rehearsal.json`,
+while FAIL/SKIP retain the available diagnostics and artifacts. Exit 0 is PASS,
+1 is an execution or validation failure, 2 is invalid input or a missing
+prerequisite before execution, and 77 is an environment SKIP. The JSON result
+records the exact report path and whether the disposable work directory was
+retained. The runner performs no WSL shutdown, physical-media operation, or
+production cutover.
 
 ## Failure And Rollback Boundary
 

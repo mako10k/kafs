@@ -155,14 +155,14 @@ source. Acceptance has neither a resume object nor a failure reason.
 ./scripts/v5-v7-migration-evidence-gate.sh \
   --evidence-dir <bundle> \
   --require-decision ACCEPT \
-  --validate-only
+  --validate-only --json
 ```
 
 Replace `ACCEPT` with `RESUME_REQUIRED` or `ROLLBACK` when validating those
 retained states. Requiring the decision at the command line prevents a valid
 rollback bundle from being mistaken for accepted migration evidence.
 
-Success includes:
+Without `--json`, success includes the compatible human marker:
 
 ```text
 KAFS_V5_V7_MIGRATION_EVIDENCE PASS migration_id=<id> decision=<decision>
@@ -170,13 +170,17 @@ KAFS_V5_V7_MIGRATION_EVIDENCE PASS migration_id=<id> decision=<decision>
 
 The marker proves schema, lifecycle, semantic-inventory, and digest
 consistency only. It does not prove a working importer or authorize cutover.
+With `--json`, stdout is one
+`KAFS.V5V7MigrationEvidenceValidation.v1` object for both PASS (exit 0) and
+validation FAIL (exit 1); diagnostics remain on stderr. Invalid invocation or
+an invalid evidence-directory argument exits 2 without a JSON result.
 
 ## Regression Boundary
 
 The regression constructs source semantics containing nested directories,
 regular files including an empty file, a symlink, and a two-path hardlink. It
-validates a resumed `ACCEPT`, an interrupted `RESUME_REQUIRED`, and a preserved
-`ROLLBACK` without creating or mounting KAFS images.
+validates an attempt-2 replayed `ACCEPT`, an interrupted `RESUME_REQUIRED`, and
+a preserved `ROLLBACK` without creating or mounting KAFS images.
 
 Negative cases cover required-decision mismatch, source mutation, identity
 drift, incomplete accepted inventory, payload mismatch, illegal phase and
@@ -195,7 +199,7 @@ provide:
   --dst-image <new-v7.img> \
   [--size-bytes N] [--inodes I] [--blksize-log L] \
   [--journal-size-bytes N] [--hrl-entry-ratio R] \
-  [--v7-group-count N] [--dry-run]
+  [--v7-group-count N] [--dry-run] [--json]
 ```
 
 The importer is an offline, v7-owned writer. It parses v5 inode, KDIR,
@@ -224,9 +228,15 @@ command and identifies both paths for inspection. Successful publication
 normally removes the partial name; if
 post-publication name cleanup or its directory sync fails, the durable final
 image remains successful and a warning identifies the retained/uncertain work
-name. This is an admission-ready image boundary, not migration-lifecycle acceptance or cutover;
-T59-C still owns evidence-bundle generation, interruption resume, rollback,
-and idempotence rehearsal.
+name. This is an admission-ready image boundary, not migration-lifecycle
+acceptance or cutover; T59-C still owns evidence-bundle generation,
+interruption recovery by full replay, rollback, and idempotence rehearsal.
+
+`--json` replaces only the normal human result on stdout with
+`KAFS.V5V7MigrationImportResult.v1`; diagnostics remain on stderr. PASS records
+the exact geometry and counts in `result`, while execution FAIL returns exit 1
+with `result: null`. CLI contract errors return exit 2 without JSON. Dry-run
+PASS explicitly records no writes and no destination admission readiness.
 
 The disposable-image regression covers nested directories, an inline regular
 file, a v5 tail-only regular file, single- and double-indirect regular files, an empty
@@ -266,24 +276,26 @@ repair policy was weakened.
 T59-C joins the T59-A contract and T59-B importer in one repository runner:
 
 ```sh
-./scripts/v5-v7-migration-rehearsal.sh
+./scripts/v5-v7-migration-rehearsal.sh [--json]
 ```
 
-The runner accepts report-location and timeout options only. It does not accept
-a source image, destination image, device, or mountpoint from the caller. Its C
+The runner accepts report-location, timeout, retention, and JSON-output options
+only. It does not accept a source image, destination image, device, or
+mountpoint from the caller. Its C
 workload creates a disposable clean v5 source, captures its read-only mounted
 semantic inventory and whole-image SHA-256, and produces fresh v7 destination
 images through `kafsresize --migrate-import-v7`.
 
-One passed report retains the disposable source, normal destination, resumed
+One passed report retains the disposable source, normal destination, replayed
 destination, attempt-1 partial image, and rollback-preserved failed image. It
-also retains fsck/dump output, mounted source/normal/resumed inventories,
+also retains fsck/dump output, mounted source/normal/replayed inventories,
 executable digests, raw workload output, a SHA-256 artifact manifest, and four
 gate-validated lifecycle bundles:
 
 - normal `ACCEPT`;
-- interrupted `RESUME_REQUIRED` after exactly two copied objects;
-- attempt-2 `ACCEPT`; and
+- interrupted `RESUME_REQUIRED` after exactly two copied objects, meaning a
+  full replay is required rather than partial continuation;
+- attempt-2 replayed `ACCEPT`; and
 - preserved `ROLLBACK` with the unchanged source selected.
 
 The supported attempt-2 strategy is explicit: preserve the attempt-1 partial
@@ -300,15 +312,66 @@ inconsistency shapes and proves that neither publishes a final destination.
 These are rejection coverage for the owned T59-B-F1/F2 finding shapes; they do
 not identify the general trigger or root cause of either finding.
 
-The report marker is:
+The prerequisites for PASS are the built repository KAFS tools and workload,
+`python3`, `sha256sum`, and a usable FUSE device. The default report root is
+`report/v5-v7-migration-rehearsal/`; `--report-root` selects another timestamped
+parent and `--report-dir` selects one exact new or empty directory.
+
+After report allocation, every outcome retains `result.json` using
+`KAFS.V5V7MigrationRehearsalResult.v1`. PASS additionally retains the v2
+`rehearsal.json` manifest, bundles, images, and diagnostics. FAIL and SKIP keep
+all artifacts produced before the stop. The disposable `work/` tree is removed
+unless `--keep-workdir` was specified, and the result records the actual
+retention choice. Exit 0 is PASS, 1 is an execution or validation FAIL, 2 is a
+usage or prerequisite error, and 77 is an environment SKIP. A usage error
+before report allocation has no result file. With `--json`, stdout is exactly
+the retained `result.json`; otherwise the compatible human summary is printed.
+
+The default PASS marker remains:
 
 ```text
 KAFS_V5_V7_MIGRATION_REHEARSAL PASS
 ```
 
 It proves only the disposable-file-image matrix. It does not qualify production
-data, an in-place resume algorithm, VHDX recovery, physical media, RC status, or
+data, an in-place continuation algorithm, VHDX recovery, physical media, RC status, or
 production cutover. No WSL termination or shutdown is part of the runner.
+
+## Automation Result Schema Boundary
+
+The three command-result schemas are separate because they describe different
+operations. Their v1 top-level fields are closed contracts; adding, removing,
+or changing a field or enum requires a new schema version.
+
+- `KAFS.V5V7MigrationImportResult.v1`: `schema`, `operation`, `status`,
+  `exit_status`, `mode`, `source_image`, `destination_image`, `result`, and
+  `claims`. `status` is `PASS` or `FAIL`; `mode` is `dry-run` or `import`.
+  A PASS `result` contains `source_crc32`, `source_inode_count`,
+  `imported_inodes`, `imported_directories`, `imported_regular_files`,
+  `imported_symlinks`, `payload_bytes`, `destination_size_bytes`,
+  `destination_block_size`, `destination_group_count`, `allocated_blocks`,
+  `writes_performed`, and `destination_admission_ready`. FAIL uses null.
+  `claims` contains false `production_cutover_authorized` and
+  `migration_lifecycle_accepted` values.
+- `KAFS.V5V7MigrationEvidenceValidation.v1`: `schema`, `operation`, `status`,
+  `exit_status`, `evidence_dir`, `required_decision`, `validated`, `errors`, and
+  `claims`. `validated` is populated only on PASS; FAIL has a non-empty
+  `errors` array. A populated `validated` object contains `migration_id`,
+  `decision`, `source_objects`, `source_entries`, and `attempt`. `claims`
+  contains false `data_imported` and `production_cutover_authorized` values.
+- `KAFS.V5V7MigrationRehearsalResult.v1`: `schema`, `operation`, `status`,
+  `exit_status`, `report_dir`, `report_retained`, `workdir_retained`,
+  `artifacts_dir`, `bundles_dir`, `rehearsal_manifest`, `recovery_strategy`,
+  `reason`, `prerequisites`, and `claims`. `status` is `PASS`, `FAIL`, or
+  `SKIP`, and `recovery_strategy` is `full-replay-from-frozen-source`.
+  `prerequisites.fuse` is `AVAILABLE`, `UNAVAILABLE`, or `UNKNOWN`. `claims`
+  contains false production-cutover, real-media, physical-media, and
+  release-candidate qualification values.
+
+All three emit JSON only when requested; human output remains the default.
+Machine consumers must check both process exit status and the matching JSON
+`exit_status`, reject unknown schema versions, and must not infer cutover or
+media qualification from any PASS result.
 
 ## Closeout Evidence
 
@@ -372,3 +435,27 @@ All T59-C image and mount activity was created by the test workload under
 `${TMPDIR:-/tmp}` or the chosen report directory. No PowerShell, VHDX, WSL
 terminate/shutdown, physical device, production source, in-place migration, or
 cutover action ran.
+
+`MIGRATION_AUTOMATION_CONTRACT` completed on 2026-07-22 at start HEAD
+`3af5ce0`. The three automation surfaces now publish versioned JSON results,
+while the established human-readable output remains the default where it was
+already public. Rehearsal recovery is explicitly a full replay from the frozen
+source, not a partial resume, and `result.json` truthfully records exit status,
+prerequisites, report retention, work-directory retention, and the absence of
+production acceptance claims.
+
+- `make -j2` and focused importer, evidence-gate, rehearsal, and `kafsresize`
+  regressions: PASS;
+- `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 45 tests passed and
+  `stress_fs` self-reported SKIP after its mount attempt failed;
+- `./scripts/format.sh`, `./scripts/lint.sh`, `./scripts/clones.sh`, and
+  `./scripts/static-checks.sh`: PASS;
+- `make dist`: PASS, including the migration scripts, tests, documentation,
+  manual, completion, importer source, and cutover playbook;
+- `./scripts/pert-next-task.sh plans/cli-v6-retirement.pert`: PASS, with
+  `V6_FINAL_ENTRYPOINT_RETIREMENT` as the sole `RUNNABLE NOW` task; and
+- `git diff --check`: PASS.
+
+The validation used repository tests and disposable paths only. No PowerShell,
+VHDX, WSL terminate/shutdown, physical device, production source,
+production mount, in-place migration, or cutover action ran.

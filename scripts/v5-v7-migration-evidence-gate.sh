@@ -7,11 +7,13 @@ Usage:
   scripts/v5-v7-migration-evidence-gate.sh \
     --evidence-dir DIR \
     --require-decision ACCEPT|RESUME_REQUIRED|ROLLBACK \
-    --validate-only
+    --validate-only [--json]
 
 Validate one versioned v5-to-v7 migration lifecycle evidence bundle. The gate
 only reads retained JSON and SHA-256 inventory files. It never opens or writes
 a KAFS image, mounts a filesystem, imports data, or authorizes cutover.
+With --json, stdout is one KAFS.V5V7MigrationEvidenceValidation.v1 result;
+diagnostics remain on stderr. CLI usage errors exit 2 without a JSON result.
 Prefix a path value that begins with '-' with './'.
 EOF
 }
@@ -31,6 +33,7 @@ require_option_value() {
 EVIDENCE_DIR=""
 REQUIRED_DECISION=""
 VALIDATE_ONLY=0
+JSON_OUTPUT=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -46,6 +49,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --validate-only)
       VALIDATE_ONLY=1
+      shift
+      ;;
+    --json)
+      JSON_OUTPUT=1
       shift
       ;;
     -h|--help)
@@ -77,7 +84,7 @@ command -v python3 >/dev/null 2>&1 || {
   exit 2
 }
 
-python3 - "$EVIDENCE_DIR" "$REQUIRED_DECISION" <<'PY'
+python3 - "$EVIDENCE_DIR" "$REQUIRED_DECISION" "$JSON_OUTPUT" <<'PY'
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -90,6 +97,7 @@ import sys
 
 root = Path(sys.argv[1]).resolve()
 required_decision = sys.argv[2]
+json_output = sys.argv[3] == "1"
 required_files = {
     "plan.json",
     "source.json",
@@ -719,18 +727,41 @@ elif actual_decision == "ROLLBACK":
     if decision.get("rollback_source_selected") is not True or not failure_reason:
         fail("ROLLBACK must select the unchanged source and record a reason")
 
+result = {
+    "schema": "KAFS.V5V7MigrationEvidenceValidation.v1",
+    "operation": "validate-v5-v7-migration-evidence",
+    "status": "FAIL" if errors else "PASS",
+    "exit_status": 1 if errors else 0,
+    "evidence_dir": str(root),
+    "required_decision": required_decision,
+    "validated": None if errors else {
+        "migration_id": migration_id,
+        "decision": actual_decision,
+        "source_objects": len(source_objects),
+        "source_entries": len(source_entries),
+        "attempt": attempt,
+    },
+    "errors": errors,
+    "claims": {
+        "data_imported": False,
+        "production_cutover_authorized": False,
+    },
+}
 if errors:
     for error in errors:
         print(f"FAIL: {error}", file=sys.stderr)
     print(f"v5-to-v7 migration evidence FAIL ({len(errors)} failures)", file=sys.stderr)
+if json_output:
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+elif not errors:
+    print(
+        f"KAFS_V5_V7_MIGRATION_EVIDENCE PASS migration_id={migration_id} "
+        f"decision={actual_decision}"
+    )
+    print(f"source_objects: {len(source_objects)}")
+    print(f"source_entries: {len(source_entries)}")
+    print(f"attempt: {attempt}")
+    print("NOTE: contract validation does not import data or authorize production cutover")
+if errors:
     raise SystemExit(1)
-
-print(
-    f"KAFS_V5_V7_MIGRATION_EVIDENCE PASS migration_id={migration_id} "
-    f"decision={actual_decision}"
-)
-print(f"source_objects: {len(source_objects)}")
-print(f"source_entries: {len(source_entries)}")
-print(f"attempt: {attempt}")
-print("NOTE: contract validation does not import data or authorize production cutover")
 PY

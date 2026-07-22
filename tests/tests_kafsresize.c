@@ -706,6 +706,11 @@ int main(void)
       (char *)resize_abs,          (char *)"--migrate-import-v7", (char *)"--src-image",
       (char *)"missing-v5.img",   (char *)"--dst-image",         (char *)"unused-v7.img",
       (char *)"--force",          NULL};
+  char *create_json_inapplicable_argv[] = {
+      (char *)resize_abs,       (char *)"--migrate-create", (char *)"--dst-image",
+      (char *)"unused.img",   (char *)"--size-bytes",     (char *)"64M",
+      (char *)"--inodes",     (char *)"4",                (char *)"--json",
+      (char *)"--dry-run",    NULL};
   if (expect_cli_usage_error("trailing inode count", invalid_inodes_argv, "invalid inodes") != 0 ||
       expect_cli_usage_error("overflowing size", overflow_size_argv, "invalid size-bytes") != 0 ||
       expect_cli_usage_error("non-finite ratio", invalid_ratio_argv,
@@ -718,7 +723,9 @@ int main(void)
       expect_cli_usage_error("create-only options", create_inapplicable_argv,
                              "--v7-group-count does not apply to --migrate-create") != 0 ||
       expect_cli_usage_error("import-only options", import_inapplicable_argv,
-                             "--force does not apply to --migrate-import-v7") != 0)
+                             "--force does not apply to --migrate-import-v7") != 0 ||
+      expect_cli_usage_error("JSON import result on create", create_json_inapplicable_argv,
+                             "--json does not apply to --migrate-create") != 0)
     return 1;
   if (access("unused.img", F_OK) == 0 || access("unused-v7.img", F_OK) == 0)
   {

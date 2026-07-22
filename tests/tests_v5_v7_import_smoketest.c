@@ -110,6 +110,39 @@ static int capture_sha256(const char *path, const char *output_path)
   return rc;
 }
 
+static int write_text_result(const char *path, const char *text)
+{
+  FILE *stream = fopen(path, "wx");
+  if (!stream)
+    return -errno;
+  size_t bytes = strlen(text);
+  int rc = fwrite(text, 1u, bytes, stream) == bytes ? 0 : -EIO;
+  if (fclose(stream) != 0 && rc == 0)
+    rc = -errno;
+  return rc;
+}
+
+static int validate_import_result(const char *output, const char *mode, const char *status,
+                                  int exit_status, int admission_ready)
+{
+  char mode_field[64];
+  char status_field[64];
+  char exit_field[64];
+  snprintf(mode_field, sizeof(mode_field), "\"mode\":\"%s\"", mode);
+  snprintf(status_field, sizeof(status_field), "\"status\":\"%s\"", status);
+  snprintf(exit_field, sizeof(exit_field), "\"exit_status\":%d", exit_status);
+  if (!strstr(output, "\"schema\":\"KAFS.V5V7MigrationImportResult.v1\"") ||
+      !strstr(output, "\"operation\":\"migrate-import-v7\"") || !strstr(output, mode_field) ||
+      !strstr(output, status_field) || !strstr(output, exit_field))
+    return -EINVAL;
+  if (exit_status != 0)
+    return strstr(output, "\"result\":null") ? 0 : -EINVAL;
+  return strstr(output, admission_ready ? "\"destination_admission_ready\":true"
+                                        : "\"destination_admission_ready\":false")
+             ? 0
+             : -EINVAL;
+}
+
 static int mkfs_v5(const char *path)
 {
   const char *mkfs = kafs_test_mkfs_bin();
@@ -521,8 +554,8 @@ static int verify_v7_image(const char *image, const char *mountpoint, const char
   return rc;
 }
 
-static int run_import(const char *source, const char *destination, const char *size,
-                      int dry_run, char *output, size_t output_bytes)
+static int run_import_with_output(const char *source, const char *destination, const char *size,
+                                  int dry_run, int json_output, char *output, size_t output_bytes)
 {
   const char *resize = kafs_test_kafsresize_bin();
   char *argv[16];
@@ -539,10 +572,18 @@ static int run_import(const char *source, const char *destination, const char *s
   argv[index++] = (char *)"256";
   argv[index++] = (char *)"--v7-group-count";
   argv[index++] = (char *)"2";
+  if (json_output)
+    argv[index++] = (char *)"--json";
   if (dry_run)
     argv[index++] = (char *)"--dry-run";
   argv[index] = NULL;
   return run_command(argv, output, output_bytes);
+}
+
+static int run_import(const char *source, const char *destination, const char *size,
+                      int dry_run, char *output, size_t output_bytes)
+{
+  return run_import_with_output(source, destination, size, dry_run, 1, output, output_bytes);
 }
 
 static int assert_failed_without_final(const char *source, const char *destination,
@@ -550,7 +591,8 @@ static int assert_failed_without_final(const char *source, const char *destinati
 {
   char output[8192];
   int status = run_import(source, destination, size, 0, output, sizeof(output));
-  if (status == 0 || access(destination, F_OK) == 0)
+  if (status == 0 || validate_import_result(output, "import", "FAIL", 1, 0) != 0 ||
+      access(destination, F_OK) == 0)
   {
     tlogf("negative import unexpectedly published %s: status=%d output=%s", destination, status,
           output);
@@ -617,13 +659,23 @@ int main(void)
     return 1;
   }
   if (run_import(source, destination, "96M", 1, output, sizeof(output)) != 0 ||
-      !strstr(output, "migrate-import-v7 dry-run PASS") || access(destination, F_OK) == 0)
+      validate_import_result(output, "dry-run", "PASS", 0, 0) != 0 ||
+      write_text_result("import-dry-run-result.json", output) != 0 || access(destination, F_OK) == 0)
   {
     tlogf("dry-run failed: %s", output);
     return 1;
   }
+  if (run_import_with_output(source, "human-dry-run-v7.img", "96M", 1, 0, output,
+                             sizeof(output)) != 0 ||
+      !strstr(output, "kafsresize: migrate-import-v7 dry-run PASS") ||
+      access("human-dry-run-v7.img", F_OK) == 0)
+  {
+    tlogf("compatible human dry-run result failed: %s", output);
+    return 1;
+  }
   if (run_import(source, destination, "96M", 0, output, sizeof(output)) != 0 ||
-      !strstr(output, "destination_admission_ready: yes"))
+      validate_import_result(output, "import", "PASS", 0, 1) != 0 ||
+      write_text_result("import-result.json", output) != 0)
   {
     tlogf("normal import failed: %s", output);
     return 1;
@@ -700,24 +752,24 @@ int main(void)
 
   if (setenv("KAFS_V7_IMPORT_FAIL_AFTER_OBJECTS", "2", 1) != 0)
     return 1;
-  int partial_rc = assert_failed_without_final(source, "resume-v7.img", "96M");
+  int partial_rc = assert_failed_without_final(source, "replay-v7.img", "96M");
   unsetenv("KAFS_V7_IMPORT_FAIL_AFTER_OBJECTS");
-  if (partial_rc != 0 || access("resume-v7.img.kafs-import-partial", F_OK) != 0 ||
-      rename("resume-v7.img.kafs-import-partial", "resume-attempt1-preserved.img") != 0)
+  if (partial_rc != 0 || access("replay-v7.img.kafs-import-partial", F_OK) != 0 ||
+      rename("replay-v7.img.kafs-import-partial", "replay-attempt1-preserved.img") != 0)
   {
     tlogf("interrupted import did not preserve the attempt-1 work image");
     return 1;
   }
-  tlogf("KAFS_V5_V7_MIGRATION_CASE resume_required PASS");
-  if (run_import(source, "resume-v7.img", "96M", 0, output, sizeof(output)) != 0 ||
-      !strstr(output, "destination_admission_ready: yes") ||
-      verify_v7_image("resume-v7.img", "resume-mount", "resume-v7.log",
-                      "resume-inventory.json", &fixture) != 0)
+  tlogf("KAFS_V5_V7_MIGRATION_CASE replay_required PASS");
+  if (run_import(source, "replay-v7.img", "96M", 0, output, sizeof(output)) != 0 ||
+      validate_import_result(output, "import", "PASS", 0, 1) != 0 ||
+      verify_v7_image("replay-v7.img", "replay-mount", "replay-v7.log",
+                      "replay-inventory.json", &fixture) != 0)
   {
-    tlogf("resume replay failed: %s", output);
+    tlogf("full replay failed: %s", output);
     return 1;
   }
-  tlogf("KAFS_V5_V7_MIGRATION_CASE resumed_accept PASS");
+  tlogf("KAFS_V5_V7_MIGRATION_CASE replayed_accept PASS");
 
   if (setenv("KAFS_V7_IMPORT_FAIL_AFTER_OBJECTS", "2", 1) != 0)
     return 1;
