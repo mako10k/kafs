@@ -2,7 +2,7 @@
 
 - Branch: `feat/v7-runtime-admission-foundation`
 - Baseline: `460f7b0`
-- Status: baseline accepted; T49-T56 and T58 complete; T57 evidence audit selected while hardware and VHDX execution wait
+- Status: baseline accepted; T49-T58 complete; T59 migration rehearsal selected while hardware and VHDX execution wait
 
 ## Purpose
 
@@ -393,6 +393,24 @@ zero-slack `RUNNABLE NOW` node. T59 remains `READY / WAITING RESOURCE` with
 1.333 days total float. The actual VHDX run and hardware approval remain
 `BLOCKED NOW`. This closeout changes the selected non-disruptive predecessor;
 it does not authorize host capture or physical-media execution.
+
+## 2026-07-22 T57 Closeout Addendum
+
+T57 closed the read-only aggregate audit capability over the existing T56
+producer schemas. The gate requires one controller-shaped run ID with the exact
+four unique faults, stable host/WSL/VHDX/Git identity, non-overlapping ordered
+timestamps, successful terminate/restart facts, complete recovery/fsck/dump/
+payload manifests, and an exact SHA-256 inventory. Process-kill substitute
+evidence, missing or mixed evidence, tampering, and claim escalation fail
+closed. Synthetic regression and the full suite passed without running
+PowerShell, accessing a VHDX, or terminating WSL.
+
+After marking `VHDX_EVIDENCE_AUDIT_READY` reached, the actual host capture and
+hardware approval are both zero-slack `BLOCKED NOW` nodes. T59
+`V5_V7_MIGRATION_REHEARSAL` is the only `RUNNABLE NOW` node, with 0.333 days
+total float and resource-critical status. It is selected because no critical
+task is runnable; if either external window opens, the primary-stream schedule
+must be refreshed before continuing T59.
 
 ## Deferred Gate: SDW-V7RT-T48 Controlled-write RC Qualification
 

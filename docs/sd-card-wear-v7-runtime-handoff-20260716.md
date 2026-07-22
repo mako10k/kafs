@@ -120,7 +120,7 @@ checksum-consistent foreign-group mutation.
 | M5 | T18-T19: internal full-block data COW and retained-block retirement | Complete |
 | M6 | T20-T32: bounded direct overwrite, admission, diagnostics, partial/multi-block COW, interruption recovery | Complete |
 | M6.1 | T33: FUSE request negotiation and supported atomic-request observability | Complete |
-| M7 | T48/T57/T58: controlled-write RC qualification, VHDX audit, real-media power interruption, and independent review | T58 evidence/review contract complete; T57 audit selected; external hardware/approval and VHDX execution blocked; destructive execution not authorized |
+| M7 | T48/T57/T58: controlled-write RC qualification, VHDX audit, real-media power interruption, and independent review | T57 audit and T58 evidence/review contract complete; external hardware/approval and VHDX execution blocked; destructive execution not authorized |
 | M8-A | Existing-inode growth, allocation, hole policy, and truncate | Complete for dense same-group regular files through triple depth |
 | M8-B | Create and directory-record mutation | Complete for bounded same-group inline/direct directories after R1 correction |
 | M8-B.1 | T49 regular-file inline-to-one-direct-block promotion | Complete with file-image normal/recovery qualification refresh |
@@ -380,18 +380,19 @@ T19 validation completed on 2026-07-17:
 
 ## Recommended Next Slice
 
-T58 `REAL_MEDIA_EVIDENCE_CONTRACT` completed on 2026-07-22. The refreshed plan
+T57 `VHDX_EVIDENCE_AUDIT` and T58 `REAL_MEDIA_EVIDENCE_CONTRACT` completed on
+2026-07-22. The refreshed plan
 keeps `VHDX_HOST_RECOVERY_RUN` blocked because the active Ubuntu distro runs
 other tasks, and keeps physical hardware approval blocked. The machine-selected
-next slice is T57 `VHDX_EVIDENCE_AUDIT`, the only `RUNNABLE NOW` zero-slack
-node. It validates aggregate four-point evidence without mounting or writing a
-VHDX and without terminating or restarting WSL.
+next slice is T59 `V5_V7_MIGRATION_REHEARSAL`, the only `RUNNABLE NOW` node. It
+uses disposable file images and has 0.333 days total float; the two zero-slack
+critical nodes remain externally blocked.
 
-T59 disposable-file-image v5-to-v7 migration/rollback rehearsal is also ready,
-but waits for the capacity-one primary stream behind T57. It may not be
-substituted for T57 while that resource classification holds. T57 implementation
-requires its own fresh Task Start Gate; this handoff does not authorize host
-capture, device access, or disruptive work.
+T59 requires its own fresh Task Start Gate. If either disruptive window becomes
+available while T59 is active, refresh the PERT resource schedule before
+continuing because the primary stream would be contested. This handoff does not
+authorize host capture, device access, production migration, or destructive
+work.
 
 Use [the dated VHDX handoff](sd-card-wear-v7-vhdx-handoff-20260721.md) only
 after the user explicitly names a safe maintenance window. The actual four-point
@@ -431,14 +432,14 @@ interruption before that approval.
    make -C tests check TESTS='v7_fuse_write_smoketest v7_checkpoint_publication_smoketest v7_inspection_mount_smoketest'
    ```
 
-6. Run `./scripts/pert-next-task.sh plans/current.pert`. Require T57
-   `VHDX_EVIDENCE_AUDIT` alone in `RUNNABLE NOW`, T59 in
+6. Run `./scripts/pert-next-task.sh plans/current.pert`. Require T59
+   `V5_V7_MIGRATION_REHEARSAL` alone in `RUNNABLE NOW`, no node in
    `READY / WAITING RESOURCE`, and both `VHDX_HOST_RECOVERY_RUN` and
    `HARDWARE_APPROVAL` in `BLOCKED NOW`. Any different frontier requires plan
-   refresh before selection. T57 is a read-only evidence-gate wave and requires
-   a fresh Task Start Gate. When the user resumes the VHDX capture, refresh the
-   host identity, Task Start evidence, and plan before the dated handoff's
-   native Windows preflight. Keep real-device actions behind explicit approval
-   and do not substitute off-path namespace work.
+   refresh before selection. T59 requires a fresh Task Start Gate and remains
+   limited to disposable file images. When the user resumes the VHDX capture,
+   refresh the host identity, Task Start evidence, and plan before the dated
+   handoff's native Windows preflight. Keep real-device actions behind explicit
+   approval and do not substitute off-path namespace work.
 7. Follow the reviewed file/hunk WIP workflow in
    [github-dev-rules.md](../.github/github-dev-rules.md).
