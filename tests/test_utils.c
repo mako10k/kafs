@@ -266,6 +266,12 @@ const char *kafs_test_kafs_info_bin(void)
   return kafs_test_resolve_tool("KAFS_TEST_KAFS_INFO", "kafs-info", path);
 }
 
+const char *kafs_test_kafsresize_bin(void)
+{
+  static char path[PATH_MAX];
+  return kafs_test_resolve_tool("KAFS_TEST_KAFSRESIZE", "kafsresize", path);
+}
+
 const char *kafs_test_kafsdump_bin(void)
 {
   static char path[PATH_MAX];

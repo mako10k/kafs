@@ -184,6 +184,83 @@ attempt transitions, partial acceptance, claim escalation, the wrong resume
 object, rollback without a reason, hardlink-count mismatch, artifact tampering,
 unexpected files, and symlinked evidence.
 
+## T59-B Offline Import Surface
+
+T59-B adds the data-construction surface that T59-A deliberately did not
+provide:
+
+```sh
+./kafsresize --migrate-import-v7 \
+  --src-image <frozen-clean-v5.img> \
+  --dst-image <new-v7.img> \
+  [--size-bytes N] [--inodes I] [--blksize-log L] \
+  [--journal-size-bytes N] [--hrl-entry-ratio R] \
+  [--v7-group-count N] [--dry-run]
+```
+
+The importer is an offline, v7-owned writer. It parses v5 inode, KDIR,
+direct/single/double/triple block-reference, and tail-metadata state read-only;
+it does not call a v5/v6 runtime entrypoint and does not broaden the bounded v7
+FUSE mutation surface. It preserves stable inode numbers, regular-file
+hardlinks, directory parents, symlink payload, permissions, 16-bit uid/gid,
+atime/mtime/ctime/dtime, and dense payload bytes. Tombstoned directory records
+are omitted from the canonical v7 KDIR output.
+
+Source preflight rejects formats other than v5, a dirty checkpoint/commit
+pair, special inode types, invalid or unreachable namespace graphs,
+inconsistent regular-file/symlink hardlinks, invalid time or tail descriptors,
+pending block references, sparse payloads, and source changes detected by
+identity plus whole-image CRC32. Capacity planning includes destination data
+and all indirect-index blocks before creation. `--dry-run` performs these
+checks without creating either destination path.
+
+Normal execution creates `<dst>.kafs-import-partial` with mode 0600, constructs
+group-local v7 inode/data/bitmap/allocator/checkpoint state, runs the full v7
+image validator, synchronizes the image, changes it to mode 0644, and only then
+publishes `<dst>` without replacement. A failure before the publication link
+keeps the final path absent and preserves the private partial image where one
+was created. A directory-sync or rollback failure after linking fails the
+command and identifies both paths for inspection. Successful publication
+normally removes the partial name; if
+post-publication name cleanup or its directory sync fails, the durable final
+image remains successful and a warning identifies the retained/uncertain work
+name. This is an admission-ready image boundary, not migration-lifecycle acceptance or cutover;
+T59-C still owns evidence-bundle generation, interruption resume, rollback,
+and idempotence rehearsal.
+
+The disposable-image regression covers nested directories, an inline regular
+file, a v5 tail-only regular file, single- and double-indirect regular files, an empty
+file, a symlink, a two-path hardlink, metadata equality from a frozen read-only
+source view, a two-group destination, `fsck.kafs`, `kafsdump`, and v7
+read-only inspection. Negative cases cover special files, sparse block
+references, insufficient capacity, and injected partial construction; none
+publishes the final destination.
+
+During fixture development, a `13 * 4096 + 73` byte v5 mixed-tail file was
+directly observed with one unresolved pending reference and an HRL mismatch
+after the attempted source drain. The importer correctly rejected that image;
+the normal fixture was changed to the clean exact `13 * 4096` indirect shape.
+This is not evidence of an importer cause or a reason to accept pending state.
+It remains owned as `SDW-V7RT-T59-B-F1` for v5 source-preparation investigation
+and T59-C rejection coverage, off the current importer critical edge.
+
+A second disposable source with 1040 identical 4096-byte blocks reproduced a
+different v5 source inconsistency. Inode 6 retained single-indirect root block
+720 while the source bitmap marked block 720 free. Default fsck and
+`--full-check` both exited zero; the latter reported zero pending, invalid, and
+mismatched references. The importer rejected the bitmap-aware traversal with
+`EUCLEAN`. The raw mismatch and fsck detection gap are confirmed, while the
+causal component and general trigger remain unknown despite correlation with
+high duplication, background dedup, and pending-worker activity. A correctly
+built block-unique run with background dedup disabled and full fsync still
+reproduced the importer rejection, so those controls are not sufficient. This
+is owned as `SDW-V7RT-T59-B-F2` by the v5 source-preparation/full-fsck backlog
+and T59-C rejection coverage. The double-indirect regression now uses
+block-unique data and a valid v5 image with no pending-log region, which makes
+the existing runtime use its synchronous write path. This isolates importer
+coverage from the unresolved pending-enabled source path; no bitmap check or
+repair policy was weakened.
+
 ## Closeout Evidence
 
 T59-A completed on 2026-07-22 at start HEAD `7a5c750`. The implementation
@@ -203,3 +280,25 @@ closed the contract edge only; no importer or actual migration was added.
 The regression used only synthetic JSON under `${TMPDIR:-/tmp}`. No KAFS
 image was created or mounted by the new test, and no PowerShell, VHDX, WSL
 terminate/shutdown, physical-device, production-source, or cutover action ran.
+
+T59-B completed on 2026-07-22 at start HEAD `4bebbaa`. The implementation
+closed the offline construction edge only; it did not add lifecycle acceptance
+or perform a production migration.
+
+- `make -j2` and the focused `v5_v7_import_smoketest`: PASS;
+- the final import regression repeated ten times before the final gate: PASS;
+- `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: all 47 tests passed;
+- `./scripts/format.sh`, `./scripts/lint.sh`, `./scripts/clones.sh`, and
+  `./scripts/static-checks.sh`: PASS; the strict source clone ratio is 0.94%
+  and no importer clone is reported;
+- `make dist`: PASS, with `kafs_v7_import.c`, `kafs_v7_import.h`, the import
+  regression, this document, and `kafsresize.8` present in
+  `kafs-0.4.0.tar.gz`; and
+- `git diff --check`: PASS.
+
+All new image and mount activity used disposable test paths under
+`${TMPDIR:-/tmp}`. No PowerShell, VHDX, WSL terminate/shutdown, physical
+device, production source, or cutover action ran. The confirmed
+`SDW-V7RT-T59-B-F1` and `SDW-V7RT-T59-B-F2` source-preparation findings remain
+owned and do not change the importer's fail-closed pending-reference or bitmap
+policy.

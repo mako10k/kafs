@@ -86,7 +86,11 @@ The accepted v7 surface currently provides:
   publication, metadata apply, checkpoint copy, or journal reclamation;
 - v7-owned direct/single/double/triple indirect address calculation, traversal,
   and retirement guards, with all regular-file depths admitted through T55 and
-  indirect-directory mutation still rejected.
+  indirect-directory mutation still rejected;
+- a v7-owned offline importer exposed as `kafsresize --migrate-import-v7` that
+  converts a frozen clean v5 namespace, metadata, hardlinks, symlinks, and
+  dense payload into a fully validated new v7 image before publishing its
+  final path.
 
 Runtime controlled write remains fail closed outside that allowlist. Non-zero
 direct-to-inline conversion, holes, indirect-directory
@@ -128,7 +132,7 @@ checksum-consistent foreign-group mutation.
 | M8-B.3 | T51 namespace payload structural validation | Complete for inline and bounded direct KDIR/symlink admission |
 | M8-B.4 | T52 bounded direct-inode reference validation | Complete for dense direct count/slots and recovered-bitmap allocation admission |
 | M8-C | Indirect-block COW, traversal, and retirement | Triple-indirect regular-file lifecycle complete through T55; indirect directories remain |
-| M9 | T59: v5-to-v7 data migration beyond destination creation | T59-A contract complete; T59-B offline importer selected; rehearsal/cutover incomplete |
+| M9 | T59: v5-to-v7 data migration beyond destination creation | T59-A contract and T59-B offline importer complete; T59-C rehearsal/cutover incomplete |
 | M10 | Cross-group HRL and multi-group atomic mutation | Not started |
 
 The bounded direct portions of M8-A and M8-B are implemented. R1 replaced the
@@ -380,16 +384,17 @@ T19 validation completed on 2026-07-17:
 
 ## Recommended Next Slice
 
-T57 `VHDX_EVIDENCE_AUDIT`, T58 `REAL_MEDIA_EVIDENCE_CONTRACT`, and T59-A
-`MIGRATION_EVIDENCE_CONTRACT` completed on 2026-07-22. The refreshed plan keeps
+T57 `VHDX_EVIDENCE_AUDIT`, T58 `REAL_MEDIA_EVIDENCE_CONTRACT`, T59-A
+`MIGRATION_EVIDENCE_CONTRACT`, and T59-B `V7_MIGRATION_IMPORT_SURFACE`
+completed on 2026-07-22. The refreshed plan keeps
 `VHDX_HOST_RECOVERY_RUN` blocked because the active Ubuntu distro runs other
 tasks, and keeps physical hardware approval blocked. The machine-selected next
-slice is T59-B `V7_MIGRATION_IMPORT_SURFACE`, the only `RUNNABLE NOW` node. It
-has zero total float and closes the offline construction capability required by
-the T59-C rehearsal.
+slice is T59-C `V5_V7_MIGRATION_REHEARSAL`, the only `RUNNABLE NOW` node. It
+has 0.333 days total float, is resource-critical, and joins the T59-A contract
+with the T59-B importer across resume, rollback, and idempotence evidence.
 
-T59-B requires its own fresh Task Start Gate. If either disruptive window
-becomes available while T59-B is active, refresh the PERT resource schedule
+T59-C requires its own fresh Task Start Gate. If either disruptive window
+becomes available while T59-C is active, refresh the PERT resource schedule
 before continuing because the primary stream would be contested. This handoff
 does not authorize host capture, device access, production migration, or
 destructive work.
@@ -432,12 +437,12 @@ interruption before that approval.
    make -C tests check TESTS='v7_fuse_write_smoketest v7_checkpoint_publication_smoketest v7_inspection_mount_smoketest'
    ```
 
-6. Run `./scripts/pert-next-task.sh plans/current.pert`. Require T59-B
-   `V7_MIGRATION_IMPORT_SURFACE` alone in `RUNNABLE NOW`, no node in
+6. Run `./scripts/pert-next-task.sh plans/current.pert`. Require T59-C
+   `V5_V7_MIGRATION_REHEARSAL` alone in `RUNNABLE NOW`, no node in
    `READY / WAITING RESOURCE`, and both `VHDX_HOST_RECOVERY_RUN` and
    `HARDWARE_APPROVAL` in `BLOCKED NOW`. Any different frontier requires plan
-   refresh before selection. T59-B requires a fresh Task Start Gate and remains
-   limited to a v7-owned offline path and disposable file images. When the user
+   refresh before selection. T59-C requires a fresh Task Start Gate and remains
+   limited to disposable file images and versioned lifecycle evidence. When the user
    resumes the VHDX capture, refresh the host identity, Task Start evidence, and
    plan before the dated handoff's native Windows preflight. Keep real-device
    actions behind explicit approval and do not substitute off-path namespace

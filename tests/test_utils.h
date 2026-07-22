@@ -90,6 +90,9 @@ const char *kafs_test_fsck_bin(void);
 // If KAFS_TEST_KAFS_INFO is set, it is used; otherwise resolves kafs-info near the test binary.
 const char *kafs_test_kafs_info_bin(void);
 
+// If KAFS_TEST_KAFSRESIZE is set, it is used; otherwise resolves kafsresize near the test binary.
+const char *kafs_test_kafsresize_bin(void);
+
 // If KAFS_TEST_KAFSDUMP is set, it is used; otherwise resolves kafsdump near the test binary.
 const char *kafs_test_kafsdump_bin(void);
 
