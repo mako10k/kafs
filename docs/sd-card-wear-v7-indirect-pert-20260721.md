@@ -1016,3 +1016,79 @@ the only `RUNNABLE NOW` zero-slack task and requires its own fresh Task Start
 Gate before edits. Selection does not authorize production data access,
 in-place migration, v5/v6 runtime reuse, physical media, VHDX interruption, or
 cutover.
+
+## T59-B closeout and next-task refresh (2026-07-22)
+
+- Record ID: `KAFS-PERTTOOL-20260722-T59B-CLOSEOUT`
+- Calculation time: 2026-07-22 15:12 JST
+- Baseline: branch `feat/v7-runtime-admission-foundation`, start HEAD
+  `4bebbaa`, tracked changes limited to the reviewed T59-B wave
+- Plan: `plans/current.pert`
+- Tool: `perttool 0.1.0-alpha.1`
+- Accepted goal: unchanged; produce qualified v7 migration and production
+  cutover evidence without collapsing importer, rehearsal, media, or review
+  boundaries
+
+### Closed dependency
+
+The offline `kafsresize --migrate-import-v7` surface now validates a frozen
+clean v5 image, computes exact v7 data and indirect-index capacity, preserves
+the supported namespace, inode identity, hardlinks, metadata, and dense
+payload, constructs a private v7 work image, applies the full v7 validator,
+and only then publishes the final path without replacement. Unsupported,
+sparse, pending, changed, undersized, and injected-partial cases fail closed.
+
+Build, the final import regression repeated ten times, all 47 Automake tests,
+format, lint, clone/static checks, and distribution passed. No PowerShell,
+VHDX, WSL termination, device, production-source, or cutover action ran. This
+closes `V7_MIGRATION_IMPORT_SURFACE`; `MIGRATION_IMPORT_READY` is reached. The
+owned `SDW-V7RT-T59-B-F1` pending-reference and `SDW-V7RT-T59-B-F2`
+indirect-index bitmap findings remain off this importer edge and remain T59-C
+rejection cases.
+
+The first closeout calculation correctly rejected the superseded
+`MIGRATION_CONTRACT_READY` residual start because it no longer reached the
+finish after T59-B was removed. Removing that superseded starting milestone
+made `MIGRATION_IMPORT_READY` the truthful current migration position.
+
+### Machine result
+
+`./scripts/pert-next-task.sh plans/current.pert` passed `dsl check`,
+`dag analyze --schedule both`, and `dag next`, in that order. The residual plan
+contains 14 milestones, 6 tasks, 7 gates, and 2 resources.
+
+- Precedence makespan: 10.833 implementation days, conditional on both
+  external blockers resolving.
+- Precedence critical paths contain the hardware/VHDX qualification branches,
+  real-media execution, independent review, and cutover decision.
+- Resource makespan: 17 implementation days under primary capacity one.
+- T59-C is resource critical; the conditional resource schedule places it
+  after blocked primary-stream work and real-media execution.
+
+| Classification | Node | TE | TF | Capability unlocked or wait reason |
+| --- | --- | ---: | ---: | --- |
+| `RUNNABLE NOW` | T59-C `V5_V7_MIGRATION_REHEARSAL` | 6.167d | 0.333d | Proves lifecycle resume, rollback, idempotence, and evidence over the completed importer |
+| `BLOCKED NOW` | `HARDWARE_APPROVAL` | 1.167d | 0d | Exact apparatus and digest-bound approval remain unavailable |
+| `BLOCKED NOW` | `VHDX_HOST_RECOVERY_RUN` | 1.167d | 0d | No safe terminate/restart window has been supplied |
+| `UPCOMING` | `REAL_MEDIA_EXECUTION` | 4.167d | 0d | Waits for both external qualification predecessors |
+| `UPCOMING` | `INDEPENDENT_REAL_MEDIA_REVIEW` | 1.167d | 0d | Waits for real-media evidence capture |
+| `UPCOMING` | `CUTOVER_EVIDENCE_DECISION` | 4.333d | 0d | Waits for migration rehearsal and qualified media |
+
+`READY / WAITING RESOURCE` and `ACTIVE` are empty. The resource schedule is
+conditional on blocked work becoming available at time zero and is not a
+calendar forecast.
+
+### Ordering decision
+
+| Ordering | Immediate effect | Opportunity cost and rework |
+| --- | --- | --- |
+| T59-C rehearsal next | Closes the only runnable least-slack residual migration capability | Selected; it directly consumes the completed contract and importer |
+| Wait for VHDX or hardware | Preserves primary capacity | Both remain externally blocked, so waiting closes no capability |
+| Expand mounted v7 writes | Makes generic copy tools more convenient | Repeats runtime durability qualification and bypasses the accepted offline lifecycle boundary |
+| Investigate T59-B-F1/F2 first | Could explain rejected v5 source states and a full-fsck detection gap | They remain owned but are off the accepted goal path because pending and bitmap-invalid sources already fail closed |
+
+The closeout decision is `SELECT V5_V7_MIGRATION_REHEARSAL` (T59-C). It is the
+only `RUNNABLE NOW` least-slack task and requires its own fresh Task Start Gate.
+Selection does not authorize production data access, automatic repair of an
+ineligible v5 source, runtime mutation expansion, physical media, VHDX
+interruption, or cutover.

@@ -2,7 +2,7 @@
 
 - Branch: `feat/v7-runtime-admission-foundation`
 - Baseline: `460f7b0`
-- Status: baseline accepted; T49-T58 and T59-A complete; T59-B offline importer selected while hardware and VHDX execution wait
+- Status: baseline accepted; T49-T58 and T59-A/T59-B complete; T59-C selected while hardware and VHDX execution wait
 
 ## Purpose
 
@@ -43,7 +43,7 @@ been collected.
 | --- | --- | --- |
 | Image creation | `mkfs.kafs` creates explicit format v7 images | v7 is not the default production format |
 | Offline validation | `fsck.kafs`, `kafsdump`, layout/policy checks, allocated-inode representation checks, dense direct/single/double/triple-reference and bitmap checks, bounded namespace payload checks, and wear-placement proof understand the current v7 image contract | This is software/image evidence, not physical NAND/FTL proof; duplicate ownership and whole-namespace graph semantics remain separately bounded |
-| Offline migration | `kafsresize --migrate-create` can build a v7 destination image | No in-place metadata relocation or automatic cutover |
+| Offline migration | `kafsresize --migrate-create` builds an empty v7 destination; `--migrate-import-v7` imports a frozen clean v5 namespace, metadata, hardlinks, symlinks, and dense payload through a v7-owned offline path | Partial work is never the final path; no in-place relocation, lifecycle acceptance, or automatic cutover |
 | Runtime admission | Dedicated `kafs-v7` entrypoint supports inspection and explicit controlled-write mounts | Successful admission does not route through v5/v6 public entrypoints |
 | Inspection mount | Read-only FUSE view with selected recovery state and recovered `statfs` counters | Mutation fails closed |
 | Controlled write | Dense same-group regular-file overwrite/growth/shrink through triple-indirect depth, empty-file creation, inline-file writes, inline-to-one-direct-block regular-file promotion, and same-group inline/direct directory append/growth through twelve direct references | Non-zero direct-to-inline conversion, holes, indirect-directory mutation, cross-group allocation, and unrelated metadata mutation are rejected |
@@ -427,6 +427,23 @@ After marking `MIGRATION_CONTRACT_READY` reached, `dag next` selects T59-B
 `V7_MIGRATION_IMPORT_SURFACE` alone in `RUNNABLE NOW`, with expected duration
 10.5 days and total float zero. Hardware approval and VHDX host recovery remain
 `BLOCKED NOW`; neither is removed or treated as qualified evidence.
+
+T59-B subsequently closed the missing construction edge with
+`kafsresize --migrate-import-v7`. The importer reads a frozen v5 regular-file
+image, validates representability and exact destination capacity, builds a
+private v7 work image without v5/v6 or FUSE write entrypoints, validates the
+complete v7 image, and only then publishes the final path. Disposable
+regression covers nested namespace, stable inode IDs, inline/tail/direct/
+single- and double-indirect payload, hardlinks, symlink, metadata, a two-group
+destination, fsck/dump/inspection, and fail-closed source/capacity/partial
+cases.
+
+After marking `MIGRATION_IMPORT_READY` reached and removing the superseded
+`MIGRATION_CONTRACT_READY` residual starting point, `dag next` selects T59-C
+`V5_V7_MIGRATION_REHEARSAL` alone in `RUNNABLE NOW`, with expected duration
+6.167 days, total float 0.333 days, and resource-critical status. Hardware and
+VHDX execution remain `BLOCKED NOW`; no WSL termination, VHDX, device,
+production-source, or cutover action was performed by T59-B.
 
 ## Deferred Gate: SDW-V7RT-T48 Controlled-write RC Qualification
 

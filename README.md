@@ -217,12 +217,23 @@ Offline resize and migration-image creation:
 # Create migration destination image with custom HRL ratio:
 ./kafsresize --migrate-create --dst-image /tmp/kafs-new.img --inodes 524288 \
 	--size-bytes 128G --hrl-entry-ratio 0.75 --yes --force
+
+# Import a frozen, clean v5 image into a new v7 image:
+./kafsresize --migrate-import-v7 --src-image /tmp/source-v5.img \
+	--dst-image /tmp/destination-v7.img --v7-group-count 2
 ```
 
 Current v0 constraint: growth is only supported within preallocated headroom
 (`s_blkcnt < s_r_blkcnt`). Shrink is not supported.
 `--grow` accepts both v4 and v5 images when the requested size stays within preallocated headroom.
 `--migrate-create` now defaults to a v5 destination image; pass `--format-version 4` when you need a legacy v4 destination.
+`--migrate-import-v7` reads only an unmounted v5 regular-file image, rejects
+special files, sparse or pending payloads, and inconsistent namespace/link
+state, then publishes the final v7 path only after full offline validation.
+Failures preserve `<destination>.kafs-import-partial`; pre-publication failures
+leave the requested destination absent, while a directory-sync/rollback error
+reports both paths for inspection. The command does not perform production
+cutover.
 
 Operator guidance:
 - Existing v4 images can remain in place; runtime mount continues to accept v4 images.

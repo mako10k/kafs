@@ -5,9 +5,8 @@ project KAFS_CURRENT:
     Residual network for qualified v7 migration and production-cutover evidence.
     Hardware and WSL maintenance windows remain blocked. The real-media
     evidence contract and independent VHDX audit are complete. The migration
-    leg is decomposed into its lifecycle/evidence contract, v7-owned offline
-    import surface, and final rehearsal so unsupported runtime mutation is not
-    mistaken for a complete data-copy path.
+    lifecycle/evidence contract and v7-owned offline import surface are also
+    complete; the residual migration leg is the final lifecycle rehearsal.
   as_of 2026-07-22
   duration_unit day
   finish PRODUCTION_CUTOVER_DECIDED
@@ -57,12 +56,9 @@ milestone MEDIA_QUALIFIED:
 milestone MIGRATION_REHEARSAL_READY:
   title "v5-to-v7 data migration and rollback rehearsal ready"
 
-milestone MIGRATION_CONTRACT_READY:
-  title "Versioned v5-to-v7 migration lifecycle and evidence contract ready"
-  state reached
-
 milestone MIGRATION_IMPORT_READY:
   title "V7-owned offline namespace, metadata, and payload import ready"
+  state reached
 
 milestone CUTOVER_EXECUTION_READY:
   title "Qualified runtime and rehearsed migration ready for cutover evidence"
@@ -137,22 +133,6 @@ task INDEPENDENT_REAL_MEDIA_REVIEW REAL_MEDIA_EVIDENCE_CAPTURED -> MEDIA_QUALIFI
   source "docs/sd-card-wear-v7-real-media-qualification-approval.md"
   requires:
     INDEPENDENT_REVIEW_STREAM 1
-
-task V7_MIGRATION_IMPORT_SURFACE MIGRATION_CONTRACT_READY -> MIGRATION_IMPORT_READY:
-  title "Implement the v7-owned offline migration import surface"
-  description |
-    Import validated v5 directory, regular-file, symlink, metadata, and payload
-    state into a disposable v7 destination without routing writes through v5,
-    v6, or the bounded controlled-write FUSE surface. Reject unsupported source
-    states and incomplete destinations before admission.
-  estimate:
-    optimistic 5d
-    most_likely 10d
-    pessimistic 18d
-  owner "KAFS implementation stream"
-  source "docs/sd-card-wear-tickets.md#sdw-v7rt-t59-b-v7-offline-migration-import-surface"
-  requires:
-    PRIMARY_STREAM 1
 
 task V5_V7_MIGRATION_REHEARSAL MIGRATION_IMPORT_READY -> MIGRATION_REHEARSAL_READY:
   title "Rehearse v5-to-v7 data migration, resume, and rollback"

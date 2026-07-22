@@ -153,16 +153,16 @@ hide a missing offline import surface inside one final rehearsal node merely
 because a disposable destination scaffold exists. For
 `plans/current.pert`, the expected classification is:
 
-- `V7_MIGRATION_IMPORT_SURFACE` alone in `RUNNABLE NOW`, total float zero;
+- `V5_V7_MIGRATION_REHEARSAL` alone in `RUNNABLE NOW`, total float 0.333 days
+  and resource-critical;
 - no node in `READY / WAITING RESOURCE`;
 - `HARDWARE_APPROVAL` and `VHDX_HOST_RECOVERY_RUN` in `BLOCKED NOW`; and
-- final migration rehearsal, physical execution, independent review, and
-  cutover decision in `UPCOMING`.
+- physical execution, independent review, and cutover decision in `UPCOMING`.
 
-T59-A closed the lifecycle/evidence predecessor, so this result requires
-`SELECT V7_MIGRATION_IMPORT_SURFACE`: it is the only runnable zero-slack
-predecessor to rehearsal. Selection authorizes a fresh Task Start Gate, not an
-implementation boundary inferred from the contract. It does not authorize a
-runtime mutation expansion, production data access, or cutover. The VHDX
-execution task becomes eligible only after the user identifies a safe
-maintenance window and the plan is refreshed from a new host preflight.
+T59-A closed the lifecycle/evidence predecessor and T59-B closed the v7-owned
+offline construction predecessor, so this result requires
+`SELECT V5_V7_MIGRATION_REHEARSAL`: it is the only runnable least-slack task.
+Selection authorizes a fresh Task Start Gate, not production data access,
+runtime mutation expansion, or cutover. The VHDX execution task becomes
+eligible only after the user identifies a safe maintenance window and the plan
+is refreshed from a new host preflight.

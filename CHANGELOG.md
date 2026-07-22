@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- `kafsresize --migrate-import-v7` に、frozen clean v5 image の directory、regular file、symlink、
+  hardlink、metadata、dense payload を v7-owned offline path で新規 v7 image へ取り込む機能を追加した。
+  unsupported/sparse/pending/capacity/partial state は final path を publish せず fail closed にする。
 - `kafsresize --migrate-create --format-version 6` に clean v5 source precheck を追加し、通常実行でも
   `--src-image` を必須にした。
 - v5 source / v6 destination の `kafsdump --json` pre/post summary と、v6 destination の

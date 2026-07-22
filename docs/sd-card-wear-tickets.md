@@ -3800,8 +3800,42 @@
 - 完了条件: 複数shapeのdisposable sourceをimportし、fsck/dumpとcontract inventoryが一致する。失敗destinationは
   accepted/admittedされない。
 - 非目標: production cutover、in-place relocation、v6 compatibility、runtime metadata mutation拡張。
-- 状態: 登録済み。T59-A完了後のPERT再計算で唯一の`RUNNABLE NOW`、TE 10.5日、total float 0日、
-  precedence/resource criticalとして選定された。実装前にfresh Task Start Gateが必要。
+- 実績:
+  - `kafsresize --migrate-import-v7`とv7-owned `kafs_v7_import` moduleを追加した。sourceはread-only
+    regular-file v5 imageに限定し、stable inode ID、directory、regular-file hardlink、symlink、mode、uid/gid、
+    time、dense payloadをnew v7 imageへ構築する。
+  - v5 KDIR、tail-only、direct/single/double/triple referenceをpreflightし、special type、pending reference、
+    sparse hole、namespace/link不整合、capacity不足、source identity/CRC driftをfail closedにする。
+  - destinationは`<dst>.kafs-import-partial`へprivate constructionし、bitmap/allocator/checkpointを更新して
+    full v7 validatorがPASSした後だけno-replaceでfinal pathをpublishする。失敗時はfinalを残さずpartialを保存する。
+  - disposable regressionでnested directory、inline/tail-only/single-/double-indirect file、empty file、symlink、2-path
+    hardlink、frozen-source metadata、two-group layout、fsck/dump/inspection mountとnegative casesを確認した。
+- 非目標の維持: WSL terminate/shutdown、PowerShell/VHDX、physical device、production source、cutover、v6
+  compatibility、in-place/runtime mutationは実施・追加していない。resume/rollback/idempotence evidenceはT59-C。
+- 状態: 完了。build、全47 test、format、lint、clone/static、distribution gateがPASSし、
+  `MIGRATION_IMPORT_READY`をreachedとしてresidual planから実装taskを除いた。
+
+#### SDW-V7RT-T59-B-F1 v5 mixed-tail pending-reference source finding
+
+- 観測: importer fixtureの`13 * 4096 + 73` byte mixed-tail fileで、source drain後にもpending reference 1件と
+  HRL mismatchが残り、full source fsck/import preflightが拒否した。exact `13 * 4096` indirect fixtureはclean。
+- 状態: `CONFIRMED`なのは当該fixtureの非importable persisted stateまで。一般的な発生条件、v5 runtime cause、
+  recovery方法は`UNKNOWN`であり、T59-B importer causeとはしない。
+- disposition/owner: v5 source-preparation backlogとしてowned、T59-Cでfail-closed rejection evidenceを保持する。
+  production sourceに同状態があればmigration eligibility blockerとして別途調査する。pendingをimport許可しない。
+
+#### SDW-V7RT-T59-B-F2 v5 indirect-index bitmap source finding
+
+- 観測: blockごとに同一内容を持つ1040-block fileのsource preparationで、inode 6のsingle-indirect rootが
+  block 720を参照したまま、そのblockがbitmap上freeとなるpersisted stateを1件確認した。default fsckと
+  `--full-check`はいずれもexit 0で、full-checkは`pending_refs=0`、`invalid_refs=0`、`mismatches=0`を報告したが、
+  importerのbitmap-aware traversalは`EUCLEAN`で拒否した。
+- 状態: raw reference/bitmap不一致とfsck検出欠落は`CONFIRMED`。高重複payload、background dedup、pending workerとの
+  相関はあるが、block-unique payload、background dedup off、full fsyncでも同じimporter拒否が再現したため、
+  それらは十分条件ではない。一般的な発生条件とcausal componentは`UNKNOWN`である。
+- disposition/owner: v5 source-preparation/full-fsck backlogとしてowned、T59-Cでfail-closed rejection evidenceを
+  保持する。double-indirect importer regressionはblockごとに一意なpayloadと、runtimeが許容するpending-log
+  region無しのv5同期write fixtureへ分離し、importerのbitmap checkを緩和せず、自動repairもしない。
 
 ### SDW-V7RT-T59-C v5-to-v7 migration rehearsal
 
@@ -3814,7 +3848,7 @@
 - 完了条件: normal/resume/rollback rehearsalがsource immutabilityとdestination completenessを証明し、失敗時に
   incomplete destinationをmount/cutover対象へ昇格させない。
 - 非目標: production cutover、in-place metadata relocation、physical media、v6 compatibility、自動RC承認。
-- 状態: 登録済み。T59-B待ち。
+- 状態: 登録済み。T59-B closeout後の唯一の`RUNNABLE NOW`として選定済み。着手前にfresh Task Start Gateを行う。
 
 ---
 ---
@@ -3824,16 +3858,17 @@
 この節はhandoff用の開始候補であり、実装開始許可または最新の完了条件ではない。着手前に`AGENTS.md`の
 Task Start Gateでcurrent checkoutのevidenceを再確認し、`PASS`・`REPLAN`・`BLOCKED`を判定する。
 
-T49-T58とT59-Aは完了している。2026-07-22にblockerの前後をcapability単位で再調査し、T57-T59を登録した。
+T49-T58とT59-A/T59-Bは完了している。2026-07-22にblockerの前後をcapability単位で再調査し、T57-T59を登録した。
 `VHDX_HOST_RECOVERY_RUN`とexact physical hardware identity/approvalはcompleteや削除にせずblockedのまま
 残す。T59開始時のcurrent capability調査でfull rehearsalの前提となるoffline import surfaceが存在しないことを
-確認したため、T59をA contract、B importer、C rehearsalへ再計画した。T59-A closeout後の唯一の
-`RUNNABLE NOW`はT59-B `V7_MIGRATION_IMPORT_SURFACE`で、TE 10.5日、total float 0日である。
+確認したため、T59をA contract、B importer、C rehearsalへ再計画した。T59-B closeout後の唯一の
+`RUNNABLE NOW`はT59-C `V5_V7_MIGRATION_REHEARSAL`で、TE 6.167日、total float 0.333日、
+resource-criticalである。
 whole-namespace graph validation `N`は引き続きoff-pathであり、代替選定しない。
 
-T59-BはT59-Aのcontractを入力として、v5/v6 runtime entrypointやbounded FUSE write surfaceを再利用しない
-v7-owned offline importer capabilityを閉じる。Task Start Gateではcurrent v5 traversal、v7 layout construction、
-hardlink/metadata/sparse/unsupported-type/capacityの表現境界から実装単位とexit criteriaを再導出する。
+T59-CはT59-AのcontractとT59-Bのv7-owned offline importerを入力として、normal/resume/rollback/idempotenceの
+lifecycle evidenceをdisposable file imageだけで閉じる。fresh Task Start Gateではsource freeze、partial-state、
+retry identity、rollback preservation、acceptanceの境界から実装単位とexit criteriaを再導出する。
 production source、in-place relocation、physical media、v6 compatibility、production cutoverは含めない。
 
 ユーザーが実施可能時期を明示した後に限り、native Windows PowerShellから次を行う。

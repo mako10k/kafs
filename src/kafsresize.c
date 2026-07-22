@@ -6,6 +6,7 @@
 #include "kafs_superblock.h"
 #include "kafs_tailmeta.h"
 #include "kafs_tool_util.h"
+#include "kafs_v7_import.h"
 #include "kafs_v7_layout.h"
 
 #include <errno.h>
@@ -77,11 +78,13 @@ static void usage(const char *prog)
       stderr,
       "Usage: %s --grow --size-bytes N <image>\n"
       "       %s --migrate-create --dst-image <image> [--size-bytes N] --inodes I [options]\n"
+      "       %s --migrate-import-v7 --src-image <v5> --dst-image <v7> [options]\n"
       "  notes:\n"
       "    - grow-only (no shrink)\n"
       "    - v0 grow supports only preallocated headroom (s_blkcnt < s_r_blkcnt)\n"
       "    - migrate-create builds a new image with target size/inodes via mkfs.kafs\n"
       "    - migrate-create without --size-bytes auto-detects size from --dst-image\n"
+      "    - migrate-import-v7 publishes dst-image only after full offline validation\n"
       "  options for --migrate-create:\n"
       "    --src-image IMAGE       source image used by v6/v7 migration precheck/dry-run\n"
       "    --format-version V      on-disk format version passed to mkfs.kafs\n"
@@ -92,8 +95,16 @@ static void usage(const char *prog)
       "    --dst-mount PATH         print suggested destination mount\n"
       "    --dry-run                validate migration-create inputs without writing dst-image\n"
       "    --yes                    skip confirmation prompt\n"
-      "    --force                  overwrite existing --dst-image\n",
-      prog, prog);
+      "    --force                  overwrite existing --dst-image\n"
+      "  options for --migrate-import-v7:\n"
+      "    --size-bytes N           destination size (default: source file size)\n"
+      "    --inodes I               destination inode count (default: source count)\n"
+      "    --blksize-log L          destination block-size log2 (default: source)\n"
+      "    --journal-size-bytes N   destination journal size\n"
+      "    --hrl-entry-ratio R      destination HRL entries/data-block ratio\n"
+      "    --v7-group-count N       destination group count (default: automatic)\n"
+      "    --dry-run                validate source and exact destination capacity only\n",
+      prog, prog, prog);
 }
 
 static int confirm_yes_stdin(void)
@@ -956,10 +967,77 @@ static int cmd_migrate_create(const char *src_image, const char *dst_image, uint
   return 0;
 }
 
+static int cmd_migrate_import_v7(const char *src_image, const char *dst_image, uint64_t size_bytes,
+                                 uint32_t inodes, uint64_t journal_bytes, int blksize_log,
+                                 double hrl_entry_ratio, uint32_t group_count,
+                                 uint32_t format_version, int force, int dry_run)
+{
+  if (!src_image || !*src_image || !dst_image || !*dst_image)
+  {
+    fprintf(stderr, "--migrate-import-v7 requires --src-image and --dst-image\n");
+    return 2;
+  }
+  if (format_version != 0u && format_version != KAFS_FORMAT_VERSION_V7)
+  {
+    fprintf(stderr, "--migrate-import-v7 supports only --format-version 7\n");
+    return 2;
+  }
+  if (force)
+  {
+    fprintf(stderr,
+            "--force is not supported by --migrate-import-v7; the final destination must not "
+            "exist\n");
+    return 2;
+  }
+  uint32_t block_size = 0u;
+  if (blksize_log > 0)
+  {
+    if (blksize_log >= 32)
+    {
+      fprintf(stderr, "invalid blksize-log: %d\n", blksize_log);
+      return 2;
+    }
+    block_size = 1u << blksize_log;
+  }
+  kafs_v7_import_options_t options = {
+      .source_path = src_image,
+      .destination_path = dst_image,
+      .destination_size_bytes = size_bytes,
+      .destination_inode_count = inodes,
+      .destination_block_size = block_size,
+      .journal_bytes = journal_bytes,
+      .hrl_entry_ratio = hrl_entry_ratio,
+      .group_count = group_count,
+      .dry_run = dry_run,
+  };
+  kafs_v7_import_report_t report;
+  int rc = kafs_v7_import_image(&options, &report);
+  if (rc != 0)
+    return 1;
+  printf("kafsresize: migrate-import-v7 %s PASS\n", dry_run ? "dry-run" : "completed");
+  printf("  src_image: %s\n", src_image);
+  printf("  dst_image: %s\n", dst_image);
+  printf("  source_crc32: %08" PRIx32 "\n", report.source_crc32);
+  printf("  source_inode_count: %" PRIu32 "\n", report.source_inode_count);
+  printf("  imported_inodes: %" PRIu32 "\n", report.imported_inode_count);
+  printf("  imported_directories: %" PRIu32 "\n", report.imported_directory_count);
+  printf("  imported_regular_files: %" PRIu32 "\n", report.imported_regular_count);
+  printf("  imported_symlinks: %" PRIu32 "\n", report.imported_symlink_count);
+  printf("  payload_bytes: %" PRIu64 "\n", report.payload_bytes);
+  printf("  destination_size_bytes: %" PRIu64 "\n", report.destination_size_bytes);
+  printf("  destination_block_size: %" PRIu32 "\n", report.destination_block_size);
+  printf("  destination_group_count: %" PRIu32 "\n", report.destination_group_count);
+  printf("  allocated_blocks: %" PRIu64 "\n", report.allocated_blocks);
+  printf("  writes_performed: %s\n", dry_run ? "no" : "yes");
+  printf("  destination_admission_ready: %s\n", dry_run ? "no" : "yes");
+  return 0;
+}
+
 typedef struct kafsresize_options
 {
   int do_grow;
   int do_migrate_create;
+  int do_migrate_import_v7;
   int assume_yes;
   int force;
   int dry_run;
@@ -969,6 +1047,7 @@ typedef struct kafsresize_options
   int blksize_log;
   double hrl_entry_ratio;
   uint32_t inodes;
+  uint32_t v7_group_count;
   const char *image;
   const char *src_image;
   const char *dst_image;
@@ -998,6 +1077,11 @@ static int kafsresize_parse_flag_arg(const char *arg, kafsresize_options_t *opts
   if (strcmp(arg, "--migrate-create") == 0)
   {
     opts->do_migrate_create = 1;
+    return 1;
+  }
+  if (strcmp(arg, "--migrate-import-v7") == 0)
+  {
+    opts->do_migrate_import_v7 = 1;
     return 1;
   }
   if (strcmp(arg, "--yes") == 0)
@@ -1078,6 +1162,12 @@ static int kafsresize_parse_setting_value_arg(int argc, char **argv, int *index,
       return 2;
     return 1;
   }
+  if (strcmp(arg, "--v7-group-count") == 0 && *index + 1 < argc)
+  {
+    if (kafsresize_parse_u32_arg("v7-group-count", argv[++(*index)], &opts->v7_group_count) != 0)
+      return 2;
+    return 1;
+  }
   return 0;
 }
 
@@ -1148,9 +1238,10 @@ static int kafsresize_parse_args(int argc, char **argv, kafsresize_options_t *op
 
 static int kafsresize_run(const char *prog, const kafsresize_options_t *opts)
 {
-  if (opts->do_grow && opts->do_migrate_create)
+  int mode_count = opts->do_grow + opts->do_migrate_create + opts->do_migrate_import_v7;
+  if (mode_count > 1)
   {
-    fprintf(stderr, "--grow and --migrate-create are mutually exclusive\n");
+    fprintf(stderr, "--grow, --migrate-create, and --migrate-import-v7 are mutually exclusive\n");
     return 2;
   }
 
@@ -1176,6 +1267,12 @@ static int kafsresize_run(const char *prog, const kafsresize_options_t *opts)
                               opts->hrl_entry_ratio, opts->src_mount, opts->dst_mount,
                               opts->assume_yes, opts->force, opts->dry_run);
   }
+
+  if (opts->do_migrate_import_v7)
+    return cmd_migrate_import_v7(opts->src_image, opts->dst_image, opts->target_bytes, opts->inodes,
+                                 opts->journal_bytes, opts->blksize_log, opts->hrl_entry_ratio,
+                                 opts->v7_group_count, opts->format_version, opts->force,
+                                 opts->dry_run);
 
   usage(prog);
   return 2;

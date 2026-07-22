@@ -1,7 +1,7 @@
 '.\" -*- nroff -*-
-.TH KAFSRESIZE 8 "2026-07-19" "kafs 0.4.0" "System Administration"
+.TH KAFSRESIZE 8 "2026-07-22" "kafs 0.4.0" "System Administration"
 .SH NAME
-kafsresize \- grow offline KAFS images and create migration target images
+kafsresize \- grow offline KAFS images and create or populate migration images
 .SH SYNOPSIS
 .B kafsresize
 .B --grow
@@ -30,6 +30,16 @@ kafsresize \- grow offline KAFS images and create migration target images
 .I I
 .RI [ --dry-run ]
 .RI [ options ]
+.br
+.B kafsresize
+.B --migrate-import-v7
+.B --src-image
+.I source-v5
+.B --dst-image
+.I destination-v7
+.RI [ --size-bytes " " N ]
+.RI [ --inodes " " I ]
+.RI [ options ]
 .SH DESCRIPTION
 .B kafsresize
 performs offline image growth within preallocated headroom and can also create
@@ -39,6 +49,29 @@ It also supports creating a migration target image with new geometry
 (size/inode count) via
 .B --migrate-create
 for cutover workflows.
+
+.B --migrate-import-v7
+builds a new format-v7 image directly from a frozen format-v5 regular-file
+image. The offline importer preserves inode numbers, directories, regular-file
+hardlinks, symlink payloads, permissions, uid/gid, timestamps, and dense file
+payloads. It does not route writes through the v5/v6 runtime or the bounded v7
+FUSE write surface.
+
+The importer validates the source namespace and representation before writing,
+constructs a private
+.IB destination-v7 .kafs-import-partial
+work image, validates the complete v7 layout, and publishes the requested final
+path only after validation. On an interrupted or rejected import before the
+publication link, the final path is absent and an existing partial work image
+is preserved for diagnosis. If publication directory sync or its rollback
+fails after linking, the command fails and reports that both paths require
+inspection.
+After the final path itself is durably published, a failure to remove or sync
+the redundant work-image name is reported as a warning without invalidating
+the final image.
+Special files, sparse payloads, pending block references, inconsistent
+namespace/link state, insufficient destination geometry, and an existing final
+or work path are rejected. This command does not perform cutover.
 
 When
 .B --src-mount
@@ -84,6 +117,16 @@ this requires
 and checks that the source is a clean v5 image, that destination inode and data
 capacity can hold the currently used source counts, and that the selected
 descriptor-backed layout is valid.
+.br
+For
+.BR --migrate-import-v7 ,
+dry-run performs the full read-only source and exact destination-capacity
+preflight but creates neither the work image nor the final destination.
+.TP
+.B --migrate-import-v7
+Import a frozen, clean format-v5 regular-file image into a new format-v7 image.
+The final destination must not exist; this mode does not accept
+.BR --force .
 .TP
 .B --src-image image
 Source image used by
@@ -92,6 +135,11 @@ migration precheck. It is required for
 or
 .B --format-version 7
 and is validated before the destination image is overwritten.
+For
+.BR --migrate-import-v7 ,
+it must be an unmounted, clean, dense, representable format-v5 regular-file
+image and remains opened read-only. Its identity and whole-image CRC32 are
+checked again before destination publication.
 .TP
 .B --size-bytes N
 Target logical size in bytes (supports `K/M/G` suffixes).
@@ -99,14 +147,22 @@ For
 .BR --migrate-create ,
 this is optional and defaults to auto-detect from
 .BR --dst-image .
+For
+.BR --migrate-import-v7 ,
+it defaults to the source image byte size.
 .TP
 .B --dst-image image
 Destination image path used by
-.BR --migrate-create .
+.BR --migrate-create
+or
+.BR --migrate-import-v7 .
 .TP
 .B --inodes I
 Destination inode count for
 .BR --migrate-create .
+For
+.BR --migrate-import-v7 ,
+it defaults to the source inode count and may not be smaller.
 .TP
 .B --format-version V
 Optional on-disk format version forwarded to
@@ -135,6 +191,9 @@ layout planner before creating a destination accepted by
 .BR kafsdump (8),
 .BR fsck.kafs (8),
 and the v7 inspection runtime.
+For
+.BR --migrate-import-v7 ,
+version 7 is implicit; any explicit value other than 7 is rejected.
 .TP
 .B --journal-size-bytes N
 Optional journal size forwarded to
@@ -143,11 +202,19 @@ Optional journal size forwarded to
 .B --blksize-log L
 Optional log2 block size forwarded to
 .BR mkfs.kafs .
+For
+.BR --migrate-import-v7 ,
+it defaults to the source block size.
 .TP
 .B --hrl-entry-ratio R
 Optional HRL entry ratio forwarded to
 .BR mkfs.kafs .
 Valid range is greater than 0 and less than or equal to 1.0.
+.TP
+.B --v7-group-count N
+Optional destination group count for
+.BR --migrate-import-v7 .
+When omitted, the v7 layout planner selects the group count.
 .TP
 .B --src-mount PATH
 Optional source mount path; printed in suggested rsync commands.

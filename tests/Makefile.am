@@ -42,6 +42,7 @@ check_PROGRAMS = v6_fixture_mkfs tailmeta_parser hrl_smoketest hrl_dec_ref_by_bl
 	v7_checkpoint_publication_smoketest v7_recovery_diagnostic v7_locks_smoketest \
 	v7_block_tree_smoketest \
 	v7_fuse_write_smoketest \
+	v5_v7_import_smoketest \
 	clone_template_copy git_template_copy_mt rename_overwrite_dirfsync open_unlink_visibility \
 	prune_indirect_single prune_indirect_double prune_indirect_triple truncate_prune reflink_clone \
 	kafsctl_links bg_dedup_skip_dirs \
@@ -228,6 +229,12 @@ v7_fuse_write_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function \
 	-Wno-unused-parameter -pthread
 v7_fuse_write_smoketest_LDADD = $(KAFS_LIBS)
 v7_fuse_write_smoketest_LDFLAGS = -pthread
+
+v5_v7_import_smoketest_SOURCES = tests_v5_v7_import_smoketest.c test_utils.c \
+	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c \
+	$(top_srcdir)/src/kafs_locks.c
+v5_v7_import_smoketest_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter
+v5_v7_import_smoketest_LDADD = $(KAFS_LIBS)
 
 clone_template_copy_SOURCES = tests_clone_template_copy.c test_utils.c \
 	$(top_srcdir)/src/kafs_hrl.c $(top_srcdir)/src/kafs_lock_order.c $(top_srcdir)/src/kafs_locks.c
