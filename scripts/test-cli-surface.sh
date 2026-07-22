@@ -99,4 +99,31 @@ for token in "${required_completion_tokens[@]}"; do
   fi
 done
 
+source "$completion_file"
+completion_words() {
+  COMP_WORDS=(kafsresize "$1" "")
+  COMP_CWORD=2
+  _kafsresize
+  printf '%s\n' "${COMPREPLY[@]}"
+}
+
+grow_completion=$(completion_words --grow)
+create_completion=$(completion_words --migrate-create)
+import_completion=$(completion_words --migrate-import-v7)
+grep -Fqx -- "--size-bytes" <<<"$grow_completion"
+if grep -Fqx -- "--inodes" <<<"$grow_completion"; then
+  echo "FAIL: kafsresize grow completion exposes --inodes" >&2
+  exit 1
+fi
+grep -Fqx -- "--force" <<<"$create_completion"
+if grep -Fqx -- "--v7-group-count" <<<"$create_completion"; then
+  echo "FAIL: kafsresize migrate-create completion exposes --v7-group-count" >&2
+  exit 1
+fi
+grep -Fqx -- "--v7-group-count" <<<"$import_completion"
+if grep -Eq '^(--force|--yes)$' <<<"$import_completion"; then
+  echo "FAIL: kafsresize import completion exposes write-confirmation options" >&2
+  exit 1
+fi
+
 echo "PASS: CLI help and completion surface checks"

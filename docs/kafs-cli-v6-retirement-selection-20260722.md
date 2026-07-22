@@ -544,6 +544,104 @@ zero-slack task. The final v6 packaged-placeholder retirement is ready but waits
 for the single implementation resource and has 3.5 days precedence float; it
 must not displace the calculated critical task.
 
+## `CLI_FAIL_CLOSED_CONTRACT` Task Start and closeout
+
+- Recorded at: `2026-07-22T19:13:35+09:00`
+- Started from: branch `feat/v7-runtime-admission-foundation`, HEAD
+  `9839b5cd3b35f27f13c8dc57b08f8c3ac6adc790`, clean worktree
+- Task source: freshly rerun
+  `./scripts/pert-next-task.sh plans/cli-v6-retirement.pert`; the task was the
+  only `RUNNABLE NOW` zero-slack node
+- Start decision: `PASS`
+- Closed at: `2026-07-22T19:26:55+09:00`
+- Edge result: `CLI_INPUT_CONTRACT_STRICT` is `state reached` and
+  `CLI_FAIL_CLOSED_CONTRACT` is `status done`
+
+Direct checks reproduced three accepted review findings before implementation:
+
+- `--inodes 4junk` reached a successful migrate-create dry-run because its
+  parser did not check the numeric suffix;
+- `--grow` accepted `--inodes` and entered the runtime path; and
+- a second positional image silently replaced the first and entered the
+  runtime path.
+
+Source review also found that path-valued options in the lifecycle rehearsal
+and evidence gate checked only the remaining argument count. A following
+option token could therefore be consumed as the missing value. This refuted the
+initial assumption that those two shell parsers needed tests only, so the wave
+was rebaselined to include their value boundary while preserving the same
+capability scope.
+
+The implementation boundary is strict numeric syntax and range detection,
+single-mode option masks, exact positional arity, missing-value rejection,
+mode-aware help/manual/completion, and negative regression for `kafsresize`,
+the disposable rehearsal, and the validate-only evidence gate. All input
+validation must finish before an image or report path is created. Machine
+output schema/versioning, replay/report semantics, exit 77 documentation, the
+final v6 placeholder, VHDX/WSL work, and physical-media qualification remain
+non-goals of this wave.
+
+The completed boundary is:
+
+- `kafsresize` strictly parses nonzero sizes, bounded positive integer fields,
+  finite ratios, and suffix multiplication without overflow;
+- exactly one mode and one grow image operand are required, and each mode has
+  an explicit allowed/required option mask evaluated before runtime work;
+- path-valued options reject missing or option-like values in the disposable
+  rehearsal and validate-only evidence gate before report directories or
+  evidence are accessed;
+- help, `kafsresize(8)`, and bash completion now expose mode-specific behavior;
+  and
+- regression covers malformed and overflowing numbers, missing values, extra
+  operands, mode-inapplicable options, absence of destination creation, shell
+  value boundaries, and mode-aware completion.
+
+Validation passed:
+
+- build: `make -j2`
+- focused `kafsresize`, migration evidence gate, and disposable migration
+  rehearsal regressions
+- full regression: `make check -j2` (`46/46` passed)
+- semantic checks: `lsp-cli` symbols plus zero diagnostics for
+  `src/kafsresize.c` and `tests/tests_kafsresize.c`
+- CLI and shell checks: `./scripts/test-cli-surface.sh` and `bash -n` for both
+  modified migration scripts
+- repository gates: `git diff --check` and `./scripts/static-checks.sh`
+  (format, lint, clones, complexity)
+- strict clone population stayed at 80 files, 37 clones, 382 duplicated lines,
+  and 2812 duplicated tokens; complexity moved from 42327/104 to 42493/104
+  NLOC/warnings
+
+The closeout run of
+`./scripts/pert-next-task.sh plans/cli-v6-retirement.pert` reported:
+
+```text
+OK plans/cli-v6-retirement.pert project=KAFS_CLI_V6_RETIREMENT milestones=13 tasks=7 gates=6 resources=1
+
+PRECEDENCE
+MAKESPAN 5.5d
+PRECEDENCE CRITICAL
+TASKS MIGRATION_AUTOMATION_CONTRACT, INTEGRATED_REMEDIATION_QUALIFICATION
+GATES CLI_CONTRACT_REQUIRED
+
+RESOURCE SCHEDULE
+MAKESPAN 7.5d
+DELAY 2d
+
+RUNNABLE NOW
+MIGRATION_AUTOMATION_CONTRACT priority=0 expected=3.333d TF=0d precedence_critical=true schedule_critical=true owner=KAFS implementation stream resources=PRIMARY_STREAM=1
+
+READY / WAITING RESOURCE
+V6_FINAL_ENTRYPOINT_RETIREMENT priority=0 expected=2d TF=1.333d precedence_critical=false schedule_critical=true owner=KAFS implementation stream resources=PRIMARY_STREAM=1
+
+BLOCKED NOW
+-
+```
+
+The refreshed frontier selects `MIGRATION_AUTOMATION_CONTRACT` as the sole
+runnable zero-slack task. Final v6 placeholder retirement remains ready but has
+1.333 days precedence float and waits for the single implementation resource.
+
 ## Refresh triggers
 
 Refresh this plan and rerun all three `perttool` commands when any of the

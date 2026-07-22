@@ -3,6 +3,7 @@
 #include "kafs_config.h"
 #include <ctype.h>
 #include <errno.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -14,7 +15,7 @@
 
 static inline int kafs_parse_size_bytes_u64(const char *arg, uint64_t *out)
 {
-  if (!arg || !out || *arg == '\0')
+  if (!arg || !out || *arg == '\0' || *arg == '-' || isspace((unsigned char)*arg))
     return -1;
 
   char *endp = NULL;
@@ -32,20 +33,25 @@ static inline int kafs_parse_size_bytes_u64(const char *arg, uint64_t *out)
   if (endp[1] != '\0')
     return -1;
 
+  unsigned int shift = 0u;
   switch ((int)tolower((unsigned char)endp[0]))
   {
   case 'k':
-    v <<= 10;
+    shift = 10u;
     break;
   case 'm':
-    v <<= 20;
+    shift = 20u;
     break;
   case 'g':
-    v <<= 30;
+    shift = 30u;
     break;
   default:
     return -1;
   }
+
+  if (v > (UINT64_MAX >> shift))
+    return -1;
+  v <<= shift;
 
   *out = (uint64_t)v;
   return 0;
@@ -59,7 +65,7 @@ static inline int kafs_parse_ratio_0_to_1(const char *arg, double *out)
   char *endp = NULL;
   errno = 0;
   double v = strtod(arg, &endp);
-  if (errno != 0 || endp == arg || *endp != '\0' || v <= 0.0 || v > 1.0)
+  if (errno != 0 || endp == arg || *endp != '\0' || !isfinite(v) || v <= 0.0 || v > 1.0)
     return -1;
 
   *out = v;

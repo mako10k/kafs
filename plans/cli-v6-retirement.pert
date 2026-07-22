@@ -38,6 +38,7 @@ milestone V6_RETIREMENT_REBASE_READY:
 
 milestone CLI_INPUT_CONTRACT_STRICT:
   title "Migration commands reject malformed and mode-inapplicable input"
+  state reached
 
 milestone MIGRATION_AUTOMATION_CONTRACT_READY:
   title "Migration command, rehearsal, and evidence output contracts are stable"
@@ -87,6 +88,7 @@ task CLI_FAIL_CLOSED_CONTRACT CLI_REMEDIATION_BASE_READY -> CLI_INPUT_CONTRACT_S
     optimistic 1d
     most_likely 2d
     pessimistic 4d
+  status done
   owner "KAFS implementation stream"
   source "2026-07-22 migration command UI review"
   requires:

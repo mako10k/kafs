@@ -13,6 +13,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
+set +e
+missing_value_output=$("$gate" --evidence-dir --validate-only 2>&1)
+missing_value_rc=$?
+set -e
+if [[ "$missing_value_rc" -ne 2 ]] ||
+  ! grep -Fq "missing value for --evidence-dir" <<<"$missing_value_output"; then
+  echo "migration evidence gate did not reject an option token used as a value" >&2
+  exit 1
+fi
+
 bundle="$workdir/accepted"
 mkdir "$bundle"
 

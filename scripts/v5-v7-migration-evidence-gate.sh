@@ -12,7 +12,20 @@ Usage:
 Validate one versioned v5-to-v7 migration lifecycle evidence bundle. The gate
 only reads retained JSON and SHA-256 inventory files. It never opens or writes
 a KAFS image, mounts a filesystem, imports data, or authorizes cutover.
+Prefix a path value that begins with '-' with './'.
 EOF
+}
+
+usage_error() {
+  echo "migration evidence gate: $*" >&2
+  usage >&2
+  exit 2
+}
+
+require_option_value() {
+  local option=$1
+  [[ $# -ge 2 ]] || usage_error "missing value for $option"
+  [[ -n "$2" && "$2" != -* ]] || usage_error "missing value for $option"
 }
 
 EVIDENCE_DIR=""
@@ -22,12 +35,12 @@ VALIDATE_ONLY=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --evidence-dir)
-      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      require_option_value "$@"
       EVIDENCE_DIR="$2"
       shift 2
       ;;
     --require-decision)
-      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      require_option_value "$@"
       REQUIRED_DECISION="$2"
       shift 2
       ;;
