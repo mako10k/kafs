@@ -1,9 +1,9 @@
 # KAFS v7 Windows-host VHDX recovery prequalification
 
-- Status: harness implemented; Windows-host terminate/restart execution deferred
-  until the user identifies a safe maintenance window
-- Evidence-audit status: T57 read-only aggregate gate registered and waiting for
-  the primary implementation stream; no WSL stop is required for that work
+- Status: harness implemented; safe maintenance window and native Windows
+  preflight available as of 2026-07-29; host capture selected but not yet run
+- Evidence-audit status: T57 read-only aggregate gate ready; it must validate
+  the completed four-point capture before qualification can close
 - Scope: format-v7 controlled-write recovery on a dedicated regular-file image
 - Controller: `scripts/v7-vhdx-host-recovery.ps1`
 - WSL runner: `scripts/v7-vhdx-host-recovery.sh`
@@ -180,9 +180,9 @@ run directory and reads the retained files in place. A successful audit emits
 or authorize host capture.
 
 T57 and T58 closed on 2026-07-22. The read-only aggregate gate is ready, but no
-actual four-point host run has passed it. The actual host capture remains
-blocked until the user supplies a safe window; the rebuilt PERT plan selects
-only the separate disposable-image T59 rehearsal.
+actual four-point host run has passed it. On 2026-07-29 the user supplied a safe
+window and native Windows preflight passed. The refreshed PERT plan selects the
+host capture while preserving the physical-hardware blocker.
 
 ## Remaining physical-media gate
 
