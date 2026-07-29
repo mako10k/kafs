@@ -8,7 +8,7 @@ Decide whether each process can start or finish based on objective criteria.
 - Require current-checkout evidence and exit criteria re-derived independently
   from handoff wording before a start PASS.
 - Require a `.pert` record created before candidate selection, a successful
-  `perttool dsl check`, `dag analyze --schedule both`, and `dag next`, and
+  `perttool document check`, `dag analyze --schedule both`, and `dag next`, and
   evidence that the candidate is in `RUNNABLE NOW` on the critical or
   least-slack frontier. Also require the accepted goal, causal capability edges,
   estimate confidence, alternative-order comparison, and downstream unlock.

@@ -64,7 +64,7 @@
 - 次waveの名前、推奨、優先順位を示す前に、`AGENTS.md`のGoal And Critical Path Gateと
   `docs/pert-task-selection.md`に従い、`plans/current.pert`または記録で指定したscoped planを
   current evidenceから更新する。候補の提案・了承後にplanを後付けしてはならない。
-- `./scripts/pert-next-task.sh [plan.pert]`で`perttool dsl check`、`dag analyze --schedule both`、
+- `./scripts/pert-next-task.sh [plan.pert]`で`perttool document check`、`dag analyze --schedule both`、
   `dag next`をこの順に実行する。手計算、Markdown表、Mermaid、backlog順は説明用であり、
   `perttool`の計算・分類を置換または上書きしてはならない。
 - 優先順位は`dag next`の`RUNNABLE NOW`に含まれるcriticalまたはleast-slack frontierから決定する。

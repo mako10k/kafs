@@ -39,7 +39,7 @@ Before mentioning a next-task candidate:
    This must execute the following operations successfully and in order:
 
    ```sh
-   perttool dsl check plans/current.pert
+   perttool document check plans/current.pert
    perttool dag analyze plans/current.pert --schedule both --format text
    perttool dag next plans/current.pert --format text
    ```
@@ -48,9 +48,9 @@ Before mentioning a next-task candidate:
    their future rework or qualification debt; and
 5. issue `SELECT`, `REPLAN`, or `BLOCKED` from the rules below.
 
-If `perttool` is missing, `dsl check` fails, or evidence shows the plan is stale
-or incomplete, the result is `REPLAN`. A task must not be selected from a stale
-last-known output.
+If `perttool` is missing, `document check` fails, or evidence shows the plan is
+stale or incomplete, the result is `REPLAN`. A task must not be selected from a
+stale last-known output.
 
 ## Plan modeling rules
 
@@ -131,7 +131,7 @@ At every wave closeout:
 1. verify from current evidence whether the selected capability edge closed;
 2. update task/milestone state and remaining estimates in the `.pert` plan;
 3. refresh resource capacity and external blockers;
-4. rerun `dsl check`, `dag analyze --schedule both`, and `dag next`; and
+4. rerun `document check`, `dag analyze --schedule both`, and `dag next`; and
 5. publish the new result before mentioning another task.
 
 Rebuild rather than edit around a preferred candidate when the accepted goal,

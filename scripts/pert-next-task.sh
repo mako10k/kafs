@@ -22,6 +22,6 @@ fi
 
 echo "PLAN $PLAN"
 perttool --version
-perttool dsl check "$PLAN"
+perttool document check "$PLAN"
 perttool dag analyze "$PLAN" --schedule both --format text
 perttool dag next "$PLAN" --format text
