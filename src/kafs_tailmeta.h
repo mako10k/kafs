@@ -740,7 +740,7 @@ static inline int kafs_tailmeta_slot_expected_len_for_inode(kafs_off_t inode_siz
 
   if (!out_len || blksize == 0)
     return -EINVAL;
-  if (inode_size <= 0)
+  if (inode_size == 0)
     return -ERANGE;
 
   if (inode_size < (kafs_off_t)blksize)
@@ -752,7 +752,7 @@ static inline int kafs_tailmeta_slot_expected_len_for_inode(kafs_off_t inode_siz
   }
 
   rem = inode_size % (kafs_off_t)blksize;
-  if (rem <= 0 || rem > UINT16_MAX)
+  if (rem == 0 || rem > UINT16_MAX)
     return -ERANGE;
   *out_len = (uint16_t)rem;
   return 0;

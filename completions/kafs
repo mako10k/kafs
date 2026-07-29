@@ -186,9 +186,9 @@ _mkfs_kafs() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local opts="-h --help -s --size-bytes -b --blksize-log -i --inodes -J --journal-size-bytes --hrl-entry-ratio --yes --trim-data-area"
+  local opts="-h --help -s --size-bytes -b --blksize-log --format-version -i --inodes -J --journal-size-bytes --v7-group-count --journal-header-rotation --hrl-entry-ratio --yes --trim-data-area"
 
-  if [[ "${prev}" == "-s" || "${prev}" == "--size-bytes" || "${prev}" == "-b" || "${prev}" == "--blksize-log" || "${prev}" == "-i" || "${prev}" == "--inodes" || "${prev}" == "-J" || "${prev}" == "--journal-size-bytes" || "${prev}" == "--hrl-entry-ratio" ]]; then
+  if [[ "${prev}" == "-s" || "${prev}" == "--size-bytes" || "${prev}" == "-b" || "${prev}" == "--blksize-log" || "${prev}" == "--format-version" || "${prev}" == "-i" || "${prev}" == "--inodes" || "${prev}" == "-J" || "${prev}" == "--journal-size-bytes" || "${prev}" == "--v7-group-count" || "${prev}" == "--hrl-entry-ratio" ]]; then
     return
   fi
 
@@ -216,20 +216,46 @@ _kafsimage() {
 }
 
 _kafsresize() {
-  local cur prev
+  local cur prev mode words
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
+  mode=""
+
+  case " ${COMP_WORDS[*]} " in
+    *" --grow "*) mode="grow" ;;
+    *" --migrate-create "*) mode="migrate-create" ;;
+    *" --migrate-import-v7 "*) mode="migrate-import-v7" ;;
+  esac
 
   if [[ "${prev}" == "--dst-image" || "${prev}" == "--src-image" || "${prev}" == "--src-mount" || "${prev}" == "--dst-mount" ]]; then
     _kafs__path_complete "$prev" "$cur"
     return
   fi
 
-  if [[ "${prev}" == "--size-bytes" || "${prev}" == "--journal-size-bytes" || "${prev}" == "--blksize-log" || "${prev}" == "--hrl-entry-ratio" || "${prev}" == "--inodes" || "${prev}" == "--format-version" ]]; then
+  if [[ "${prev}" == "--size-bytes" || "${prev}" == "--journal-size-bytes" || "${prev}" == "--blksize-log" || "${prev}" == "--hrl-entry-ratio" || "${prev}" == "--inodes" || "${prev}" == "--format-version" || "${prev}" == "--v7-group-count" ]]; then
     return
   fi
 
-  COMPREPLY=( $(compgen -W "-h --help --grow --migrate-create --size-bytes --src-image --dst-image --inodes --format-version --journal-size-bytes --blksize-log --hrl-entry-ratio --src-mount --dst-mount --dry-run --yes --force" -- "${cur}") )
+  case "${mode}" in
+    grow)
+      words="-h --help --size-bytes"
+      ;;
+    migrate-create)
+      words="-h --help --size-bytes --src-image --dst-image --inodes --format-version --journal-size-bytes --blksize-log --hrl-entry-ratio --src-mount --dst-mount --dry-run --yes --force"
+      ;;
+    migrate-import-v7)
+      words="-h --help --size-bytes --src-image --dst-image --inodes --format-version --journal-size-bytes --blksize-log --hrl-entry-ratio --v7-group-count --dry-run --json"
+      ;;
+    *)
+      words="-h --help --grow --migrate-create --migrate-import-v7"
+      ;;
+  esac
+
+  if [[ "${mode}" == "grow" && -n "${cur}" && "${cur}" != -* ]]; then
+    _kafs__path_complete "image" "${cur}"
+    return
+  fi
+  COMPREPLY=( $(compgen -W "${words}" -- "${cur}") )
 }
 
 _kafsctl() {

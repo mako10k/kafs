@@ -1,0 +1,38 @@
+version = 1
+SPDX-PackageName = "KAFS"
+SPDX-PackageSupplier = "KAFS contributors"
+SPDX-PackageDownloadLocation = "NOASSERTION"
+
+[[annotations]]
+path = [
+    ".clang-format",
+    ".codex/**",
+    ".github/**",
+    ".gitignore",
+    ".indent.pro",
+    ".vscode/**",
+    ".worktree/**",
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "Doxyfile",
+    "LICENSE",
+    "Makefile.am",
+    "README.md",
+    "completions/**",
+    "configure.ac",
+    "docs/**",
+    "man/**",
+    "plans/**",
+    "scripts/**",
+    "src/**",
+    "tests/**",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2025-2026 KAFS contributors"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = "test-driver"
+precedence = "override"
+SPDX-FileCopyrightText = "2011-2021 Free Software Foundation, Inc."
+SPDX-License-Identifier = "GPL-2.0-or-later WITH Autoconf-exception-3.0"

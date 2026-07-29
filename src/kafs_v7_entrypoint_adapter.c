@@ -265,6 +265,12 @@ int kafs_v7_entrypoint_adapter_open_context(kafs_context_t *ctx, const char *ima
   kafs_ssuperblock_t sbdisk;
   if (kafs_v7_runtime_open_context_image(ctx, image_path, runtime_mode, &sbdisk, err) != 0)
     return 2;
+  ctx->c_runtime_read_only = runtime_mode == KAFS_V7_RUNTIME_MODE_INSPECTION ? 1u : 0u;
+  if (kafs_v7_entrypoint_adapter_lock_runtime_image(ctx, image_path) != 0)
+  {
+    kafs_v7_entrypoint_adapter_close_context_fd(ctx);
+    return 2;
+  }
 
   kafs_inocnt_t inocnt = 0;
   kafs_blkcnt_t r_blkcnt = 0;
@@ -323,14 +329,6 @@ int kafs_v7_entrypoint_adapter_mount_main(const char *image_path, const char *mo
     kafs_v7_mount_options_free_owned(owned, owned_count);
     return 2;
   }
-  if (kafs_v7_entrypoint_adapter_lock_runtime_image(&ctx, image_path) != 0)
-  {
-    kafs_ctx_unmap_image(&ctx);
-    kafs_v7_entrypoint_adapter_close_context_fd(&ctx);
-    kafs_v7_mount_options_free_owned(owned, owned_count);
-    return 2;
-  }
-
   char *argv_fuse[argc_clean + 10];
   char mt_opt_buf[64];
   int argc_fuse = 0;
@@ -348,6 +346,8 @@ int kafs_v7_entrypoint_adapter_mount_main(const char *image_path, const char *mo
       .runtime_options = &fuse_opts,
   };
   int rc = kafs_shared_fuse_run_request(&fuse_request);
+  kafs_v7_runtime_destroy_mount_services(&ctx);
+  kafs_v7_entrypoint_adapter_close_context_fd(&ctx);
   kafs_v7_mount_options_free_owned(owned, owned_count);
   return rc;
 }

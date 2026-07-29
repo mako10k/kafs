@@ -49,6 +49,13 @@ static void kafs_test_cleanup_workdir(void)
   if (!g_test_workdir_set)
     return;
 
+  const char *keep = getenv("KAFS_TEST_KEEP_WORKDIR");
+  if (keep && *keep && strcmp(keep, "0") != 0)
+  {
+    fprintf(stderr, "kafs test workdir kept: %s\n", g_test_workdir);
+    return;
+  }
+
   // Ensure we're not sitting inside the directory we want to delete.
   if (chdir("/") != 0)
     return;
@@ -200,6 +207,9 @@ static const char *kafs_test_resolve_tool(const char *env_name, const char *tool
       if ((size_t)snprintf(out, PATH_MAX, "%s/../src/%s", exe_path, tool_name) < PATH_MAX &&
           access(out, X_OK) == 0)
         return out;
+      if ((size_t)snprintf(out, PATH_MAX, "%s/%s", exe_path, tool_name) < PATH_MAX &&
+          access(out, X_OK) == 0)
+        return out;
     }
   }
 
@@ -212,12 +222,6 @@ const char *kafs_test_kafs_bin(void)
 {
   static char path[PATH_MAX];
   return kafs_test_resolve_tool("KAFS_TEST_KAFS", "kafs", path);
-}
-
-const char *kafs_test_kafs_v6_bin(void)
-{
-  static char path[PATH_MAX];
-  return kafs_test_resolve_tool("KAFS_TEST_KAFS_V6", "kafs-v6", path);
 }
 
 const char *kafs_test_kafs_v7_bin(void)
@@ -250,10 +254,37 @@ const char *kafs_test_kafs_info_bin(void)
   return kafs_test_resolve_tool("KAFS_TEST_KAFS_INFO", "kafs-info", path);
 }
 
+const char *kafs_test_kafsresize_bin(void)
+{
+  static char path[PATH_MAX];
+  return kafs_test_resolve_tool("KAFS_TEST_KAFSRESIZE", "kafsresize", path);
+}
+
 const char *kafs_test_kafsdump_bin(void)
 {
   static char path[PATH_MAX];
   return kafs_test_resolve_tool("KAFS_TEST_KAFSDUMP", "kafsdump", path);
+}
+
+const char *kafs_test_v5_v7_mounted_inventory_bin(void)
+{
+  static char path[PATH_MAX];
+  const char *env = getenv("KAFS_TEST_V5_V7_MOUNTED_INVENTORY");
+  if (env && *env)
+    return env;
+  char exe_path[PATH_MAX];
+  ssize_t exe_len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+  if (exe_len <= 0)
+    return "../scripts/v5-v7-mounted-inventory.py";
+  exe_path[exe_len] = '\0';
+  char *slash = strrchr(exe_path, '/');
+  if (!slash)
+    return "../scripts/v5-v7-mounted-inventory.py";
+  *slash = '\0';
+  if ((size_t)snprintf(path, sizeof(path), "%s/../scripts/v5-v7-mounted-inventory.py", exe_path) >=
+      sizeof(path))
+    return "../scripts/v5-v7-mounted-inventory.py";
+  return path;
 }
 
 void kafs_test_dump_log(const char *log_path, const char *reason)
@@ -425,14 +456,14 @@ static int kafs_test_mount_timeout_ms(const kafs_test_mount_options_t *options)
   return 5000;
 }
 
-typedef enum kafs_test_v6_tool_mode
+typedef enum kafs_test_tool_mode
 {
-  KAFS_TEST_V6_TOOL_MODE_NONE = 0,
-  KAFS_TEST_V6_TOOL_MODE_INSPECTION,
-  KAFS_TEST_V6_TOOL_MODE_CONTROLLED_WRITE,
-} kafs_test_v6_tool_mode_t;
+  KAFS_TEST_TOOL_MODE_NONE = 0,
+  KAFS_TEST_TOOL_MODE_INSPECTION,
+  KAFS_TEST_TOOL_MODE_CONTROLLED_WRITE,
+} kafs_test_tool_mode_t;
 
-static pid_t kafs_test_start_kafs_tool(const char *tool, kafs_test_v6_tool_mode_t v6_mode,
+static pid_t kafs_test_start_kafs_tool(const char *tool, kafs_test_tool_mode_t mode,
                                        const char *img, const char *mnt,
                                        const kafs_test_mount_options_t *options)
 {
@@ -480,9 +511,9 @@ static pid_t kafs_test_start_kafs_tool(const char *tool, kafs_test_v6_tool_mode_
     int argc = 0;
     args[argc++] = (char *)kafs;
     args[argc++] = (char *)mp;
-    if (v6_mode == KAFS_TEST_V6_TOOL_MODE_INSPECTION)
+    if (mode == KAFS_TEST_TOOL_MODE_INSPECTION)
       args[argc++] = "--inspection-mount";
-    else if (v6_mode == KAFS_TEST_V6_TOOL_MODE_CONTROLLED_WRITE)
+    else if (mode == KAFS_TEST_TOOL_MODE_CONTROLLED_WRITE)
       args[argc++] = "--controlled-write-mount";
     args[argc++] = "-f";
     if (options && options->extra_options && *options->extra_options)
@@ -508,7 +539,11 @@ static pid_t kafs_test_start_kafs_tool(const char *tool, kafs_test_v6_tool_mode_
     if (w == pid)
     {
       if (WIFEXITED(st))
+      {
+        if (options && options->early_exit_status)
+          *options->early_exit_status = WEXITSTATUS(st);
         fprintf(stderr, "kafs test server exited early with status=%d\n", WEXITSTATUS(st));
+      }
       else if (WIFSIGNALED(st))
         fprintf(stderr, "kafs test server exited early with signal=%d\n", WTERMSIG(st));
       kafs_test_dump_log(log_path, "mount start failed");
@@ -535,22 +570,22 @@ static pid_t kafs_test_start_kafs_tool(const char *tool, kafs_test_v6_tool_mode_
 pid_t kafs_test_start_kafs(const char *img, const char *mnt,
                            const kafs_test_mount_options_t *options)
 {
-  return kafs_test_start_kafs_tool(kafs_test_kafs_bin(), KAFS_TEST_V6_TOOL_MODE_NONE, img, mnt,
+  return kafs_test_start_kafs_tool(kafs_test_kafs_bin(), KAFS_TEST_TOOL_MODE_NONE, img, mnt,
                                    options);
 }
 
-pid_t kafs_test_start_kafs_v6(const char *img, const char *mnt,
+pid_t kafs_test_start_kafs_v7(const char *img, const char *mnt,
                               const kafs_test_mount_options_t *options)
 {
-  return kafs_test_start_kafs_tool(kafs_test_kafs_v6_bin(), KAFS_TEST_V6_TOOL_MODE_INSPECTION, img,
+  return kafs_test_start_kafs_tool(kafs_test_kafs_v7_bin(), KAFS_TEST_TOOL_MODE_INSPECTION, img,
                                    mnt, options);
 }
 
-pid_t kafs_test_start_kafs_v6_controlled_write(const char *img, const char *mnt,
+pid_t kafs_test_start_kafs_v7_controlled_write(const char *img, const char *mnt,
                                                const kafs_test_mount_options_t *options)
 {
-  return kafs_test_start_kafs_tool(kafs_test_kafs_v6_bin(),
-                                   KAFS_TEST_V6_TOOL_MODE_CONTROLLED_WRITE, img, mnt, options);
+  return kafs_test_start_kafs_tool(kafs_test_kafs_v7_bin(),
+                                   KAFS_TEST_TOOL_MODE_CONTROLLED_WRITE, img, mnt, options);
 }
 
 void kafs_test_stop_kafs(const char *mnt, pid_t kafs_pid)

@@ -1,0 +1,120 @@
+project KAFS_CURRENT:
+  version 1
+  title "KAFS accepted-goal residual plan"
+  description |
+    Residual network for qualified v7 migration and production-cutover evidence.
+    The WSL maintenance window and native host preflight are available as of
+    2026-07-29; physical hardware remains blocked. The real-media evidence
+    contract is complete. The migration
+    lifecycle/evidence contract, v7-owned offline import surface, and disposable
+    lifecycle rehearsal and host-recovery execution guards are complete. The
+    host capture and read-only aggregate qualification are complete.
+    Physical-media qualification remains externally blocked.
+  as_of 2026-07-29
+  duration_unit day
+  finish PRODUCTION_CUTOVER_DECIDED
+
+resource PRIMARY_STREAM:
+  title "Primary implementation and qualification stream"
+  capacity 1
+
+resource INDEPENDENT_REVIEW_STREAM:
+  title "Reviewer independent from the qualification operator"
+  capacity 1
+
+milestone REAL_MEDIA_APPROVAL_CONTRACT_READY:
+  title "Fail-closed real-media matrix and approval contract ready"
+  state reached
+
+milestone VHDX_HOST_RECOVERY_QUALIFIED:
+  title "Windows-host VHDX terminate/restart recovery qualified"
+  state reached
+
+milestone REAL_MEDIA_EVIDENCE_CONTRACT_READY:
+  title "Real-media artifact and independent-review gate ready"
+  state reached
+
+milestone MEDIA_AUTHORIZED:
+  title "Exact media apparatus and destructive run authorized"
+
+milestone REAL_MEDIA_EXECUTION_READY:
+  title "All physical execution prerequisites ready"
+
+milestone REAL_MEDIA_EVIDENCE_CAPTURED:
+  title "Approved real-media recovery evidence captured"
+
+milestone MEDIA_QUALIFIED:
+  title "Independent review accepted bounded real-media evidence"
+
+milestone MIGRATION_REHEARSAL_READY:
+  title "v5-to-v7 data migration and rollback rehearsal ready"
+  state reached
+
+milestone CUTOVER_EXECUTION_READY:
+  title "Qualified runtime and rehearsed migration ready for cutover evidence"
+
+milestone PRODUCTION_CUTOVER_DECIDED:
+  title "Migration and production cutover evidence accepted"
+
+task HARDWARE_APPROVAL REAL_MEDIA_APPROVAL_CONTRACT_READY -> MEDIA_AUTHORIZED:
+  title "Bind exact card, reader, power-cut apparatus, cycle count, and approval"
+  estimate:
+    optimistic 1d
+    most_likely 1d
+    pessimistic 2d
+  status blocked
+  blocked_reason |
+    Exact card, reader/controller, isolated power-cut apparatus, cycle count,
+    and digest-bound destructive approval are unavailable and deferred.
+  owner "external approver and KAFS operator"
+  source "docs/sd-card-wear-v7-real-media-qualification-approval.md"
+  requires:
+    PRIMARY_STREAM 1
+
+gate VHDX_QUALIFICATION_REQUIRED VHDX_HOST_RECOVERY_QUALIFIED -> REAL_MEDIA_EXECUTION_READY:
+  reason "Host-level virtual-media recovery evidence is required before physical execution"
+
+gate HARDWARE_APPROVAL_REQUIRED MEDIA_AUTHORIZED -> REAL_MEDIA_EXECUTION_READY:
+  reason "Physical execution requires disposable media and isolated-power approval"
+
+gate REAL_MEDIA_CONTRACT_REQUIRED REAL_MEDIA_EVIDENCE_CONTRACT_READY -> REAL_MEDIA_EXECUTION_READY:
+  reason "The evidence and review contract must exist before collecting destructive evidence"
+
+task REAL_MEDIA_EXECUTION REAL_MEDIA_EXECUTION_READY -> REAL_MEDIA_EVIDENCE_CAPTURED:
+  title "Run approved real-media recovery and wear qualification"
+  estimate:
+    optimistic 2d
+    most_likely 4d
+    pessimistic 7d
+  owner "KAFS operator"
+  source "docs/sd-card-wear-v7-controlled-write-qualification.md"
+  requires:
+    PRIMARY_STREAM 1
+
+task INDEPENDENT_REAL_MEDIA_REVIEW REAL_MEDIA_EVIDENCE_CAPTURED -> MEDIA_QUALIFIED:
+  title "Independently review bounded real-media evidence"
+  estimate:
+    optimistic 1d
+    most_likely 1d
+    pessimistic 2d
+  owner "independent KAFS reviewer"
+  source "docs/sd-card-wear-v7-real-media-qualification-approval.md"
+  requires:
+    INDEPENDENT_REVIEW_STREAM 1
+
+gate QUALIFIED_MEDIA_REQUIRED MEDIA_QUALIFIED -> CUTOVER_EXECUTION_READY:
+  reason "Production cutover evidence requires the accepted destination runtime qualification"
+
+gate MIGRATION_REHEARSAL_REQUIRED MIGRATION_REHEARSAL_READY -> CUTOVER_EXECUTION_READY:
+  reason "Production cutover evidence requires a validated migration and rollback rehearsal"
+
+task CUTOVER_EVIDENCE_DECISION CUTOVER_EXECUTION_READY -> PRODUCTION_CUTOVER_DECIDED:
+  title "Produce migration and production cutover decision evidence"
+  estimate:
+    optimistic 2d
+    most_likely 4d
+    pessimistic 8d
+  owner "KAFS implementation stream"
+  source "docs/sd-card-wear-v7-indirect-pert-20260721.md"
+  requires:
+    PRIMARY_STREAM 1

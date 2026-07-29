@@ -74,6 +74,7 @@ int kafs_v7_runtime_admit_mount_context(kafs_context_t *ctx, const kafs_ssuperbl
 int kafs_v7_runtime_init_mount_services(kafs_context_t *ctx, const char *image_path,
                                         kafs_v7_runtime_mode_t mode, kafs_inocnt_t inocnt,
                                         kafs_blkcnt_t r_blkcnt, FILE *err);
+void kafs_v7_runtime_destroy_mount_services(kafs_context_t *ctx);
 int kafs_v7_runtime_admission_preflight_fd(int fd, const kafs_ssuperblock_t *sbdisk, FILE *err,
                                            const char *tool_name);
 int kafs_v7_runtime_admission_preflight_image(const char *image_path, FILE *err,

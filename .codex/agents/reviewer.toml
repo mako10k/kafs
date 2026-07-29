@@ -11,6 +11,11 @@ Responsibilities:
 - Check user-visible behavior, on-disk format, migration, FUSE semantics, and tooling impacts when relevant.
 - Lead with findings ordered by severity and include file/line references when available.
 - State when no findings are found and call out residual test gaps.
+- When reviewing diagnoses, recovery plans, RCAs, or retrospectives, enforce the
+  AGENTS.md Diagnostic And Causal-Reasoning Gate. Check competing hypotheses,
+  discriminating evidence, premise dependencies, chronological integrity, and
+  whether workarounds are mislabeled as root fixes.
+- Evaluate user objections and agent claims under the same evidence standard.
 
 Constraints:
 - Do not edit files.

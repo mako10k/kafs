@@ -2,9 +2,15 @@
 
 #include "kafs_context.h"
 #include "kafs_v7_admission.h"
+#include "kafs_v7_checkpoint.h"
+#include "kafs_v7_fuse_policy.h"
+#include "kafs_v7_layout.h"
+#include "kafs_v7_recovery_diagnostic.h"
+#include "kafs_v7_runtime_transaction.h"
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -378,6 +384,68 @@ static int kafs_v7_runtime_admit_context(kafs_context_t *ctx, const kafs_ssuperb
   return kafs_v7_admission_runtime_context(ctx, sbdisk, prot);
 }
 
+static int kafs_v7_runtime_recover_controlled_write(kafs_context_t *ctx,
+                                                    const kafs_ssuperblock_t *sbdisk, FILE *err)
+{
+  uint64_t file_size = 0u;
+  int rc = kafs_offline_detect_file_size(ctx->c_fd, &file_size);
+  kafs_v7_layout_report_t layout;
+  memset(&layout, 0, sizeof(layout));
+  if (rc == 0)
+    rc = kafs_v7_validate_image_fd(ctx->c_fd, sbdisk, file_size, &layout);
+  if (rc != 0 || layout.journal.selected_nonempty_segment_count == 0u)
+  {
+    kafs_v7_layout_report_clear(&layout);
+    return rc;
+  }
+
+  uint64_t initial_checkpoint_generation = layout.checkpoint_generation;
+  uint64_t initial_checkpoint_sequence = layout.checkpoint_sequence;
+  uint32_t initial_nonempty_segments = layout.journal.selected_nonempty_segment_count;
+  kafs_v7_recovery_resume_from_t resume_from = KAFS_V7_RECOVERY_RESUME_JOURNAL_RECLAIM;
+  if (kafs_v7_layout_checkpoint_copy_count(&layout) < 2u)
+    resume_from = KAFS_V7_RECOVERY_RESUME_CHECKPOINT_COPY;
+  else if (layout.journal.last_sequence > layout.checkpoint_sequence)
+    resume_from = layout.journal.replay_mutation_count != 0u
+                      ? KAFS_V7_RECOVERY_RESUME_JOURNAL_PUBLISH
+                      : KAFS_V7_RECOVERY_RESUME_METADATA_APPLY;
+
+  kafs_v7_lock_state_t *locks = NULL;
+  rc = kafs_v7_locks_init(layout.group_count, 0u, &locks);
+  kafs_v7_layout_report_clear(&layout);
+  kafs_v7_metadata_closeout_result_t result;
+  memset(&result, 0, sizeof(result));
+  if (rc == 0)
+    rc = kafs_v7_metadata_closeout_fd(locks, ctx->c_fd, sbdisk, file_size, &result);
+  kafs_v7_locks_destroy(locks);
+  if (rc == 0)
+    rc = kafs_v7_validate_image_fd(ctx->c_fd, sbdisk, file_size, &layout);
+  if (rc == 0 && layout.journal.selected_nonempty_segment_count != 0u)
+    rc = -EUCLEAN;
+  if (rc == 0)
+  {
+    kafs_v7_recovery_diagnostic_t diagnostic = {
+        .resume_from = resume_from,
+        .initial_checkpoint_generation = initial_checkpoint_generation,
+        .initial_checkpoint_sequence = initial_checkpoint_sequence,
+        .initial_nonempty_segments = initial_nonempty_segments,
+        .applied_targets = result.apply.written_target_count,
+        .applied_mutations = result.apply.applied_mutation_count,
+        .already_applied_mutations = result.apply.already_applied_mutation_count,
+        .checkpoint_publications = result.checkpoint_publication_count,
+        .checkpoint_resumes = result.checkpoint_resume_count,
+        .reclaimed_segments = result.reclaim.reset_segment_count,
+        .already_empty_segments = result.reclaim.already_empty_segment_count,
+        .final_checkpoint_generation = result.final_checkpoint_generation,
+        .final_checkpoint_sequence = result.final_checkpoint_sequence,
+        .final_nonempty_segments = layout.journal.selected_nonempty_segment_count,
+    };
+    rc = kafs_v7_recovery_diagnostic_write(err, &diagnostic);
+  }
+  kafs_v7_layout_report_clear(&layout);
+  return rc;
+}
+
 int kafs_v7_runtime_admit_mount_context(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk,
                                         kafs_v7_runtime_mode_t mode, kafs_inocnt_t *inocnt_out,
                                         kafs_blkcnt_t *r_blkcnt_out, FILE *err)
@@ -387,13 +455,18 @@ int kafs_v7_runtime_admit_mount_context(kafs_context_t *ctx, const kafs_ssuperbl
   if (!ctx || !sbdisk)
     return -EINVAL;
 
-  int rc = kafs_v7_runtime_admit_context(ctx, sbdisk, mode);
+  kafs_v7_fuse_policy_set_controlled_write(ctx, 0);
+  int rc = mode == KAFS_V7_RUNTIME_MODE_CONTROLLED_WRITE
+               ? kafs_v7_runtime_recover_controlled_write(ctx, sbdisk, err)
+               : 0;
+  if (rc == 0)
+    rc = kafs_v7_runtime_admit_context(ctx, sbdisk, mode);
   if (rc == 0)
   {
     if (mode == KAFS_V7_RUNTIME_MODE_INSPECTION)
       ctx->c_runtime_read_only = 1u;
     else if (mode == KAFS_V7_RUNTIME_MODE_CONTROLLED_WRITE)
-      ctx->c_v6_controlled_write_enabled = 1u;
+      kafs_v7_fuse_policy_set_controlled_write(ctx, 1);
     else
       return -EINVAL;
 
@@ -410,7 +483,7 @@ int kafs_v7_runtime_admit_mount_context(kafs_context_t *ctx, const kafs_ssuperbl
               "inode/bitmap tables are not installed; %s; delayed/background mutations are "
               "disabled; FUSE mount is "
               "inspection-only and write admission remains disabled.\n",
-              KAFS_V7_TOOL_FORMAT_LABEL, kafs_ctx_descriptor_worker_policy_summary());
+              KAFS_V7_TOOL_FORMAT_LABEL, kafs_ctx_v7_worker_policy_summary());
     }
     else
     {
@@ -420,7 +493,7 @@ int kafs_v7_runtime_admit_mount_context(kafs_context_t *ctx, const kafs_ssuperbl
               "tables are not installed; %s; delayed/background mutations are disabled; FUSE "
               "write surface is limited "
               "to regular-file create/write/fsync/release.\n",
-              KAFS_V7_TOOL_FORMAT_LABEL, kafs_ctx_descriptor_worker_policy_summary());
+              KAFS_V7_TOOL_FORMAT_LABEL, kafs_ctx_v7_worker_policy_summary());
     }
   }
   else
@@ -444,22 +517,36 @@ int kafs_v7_runtime_init_mount_services(kafs_context_t *ctx, const char *image_p
 
   kafs_ctx_init_diag_state(ctx, image_path, inocnt);
   ctx->c_alloc_v3_summary_dirty = 1;
-  if (mode == KAFS_V7_RUNTIME_MODE_CONTROLLED_WRITE)
-    kafs_ctx_init_runtime_journal(ctx, image_path, r_blkcnt, 0);
-  else if (mode != KAFS_V7_RUNTIME_MODE_INSPECTION)
+  if (mode != KAFS_V7_RUNTIME_MODE_INSPECTION && mode != KAFS_V7_RUNTIME_MODE_CONTROLLED_WRITE)
     return -EINVAL;
 
-  int rc = kafs_ctx_descriptor_validate_runtime_views(ctx);
+  int rc = kafs_v7_runtime_view_validate(ctx);
   if (rc == 0)
-    rc = kafs_ctx_descriptor_validate_worker_policy(ctx);
+    rc = kafs_v7_runtime_view_validate_policy(ctx);
+  if (rc == 0 && mode == KAFS_V7_RUNTIME_MODE_CONTROLLED_WRITE)
+  {
+    rc = kafs_v7_runtime_transaction_service_init(ctx->c_fd, ctx->c_superblock, ctx->c_img_size,
+                                                  &ctx->c_v7_runtime_transactions);
+  }
   if (rc != 0)
   {
+    kafs_v7_runtime_transaction_service_destroy(ctx->c_v7_runtime_transactions);
+    ctx->c_v7_runtime_transactions = NULL;
     char errbuf[128];
     fprintf(err, "%s %s runtime policy failed after service init: %s.\n", KAFS_V7_TOOL_NAME,
             mode == KAFS_V7_RUNTIME_MODE_CONTROLLED_WRITE ? "controlled write" : "inspection",
             kafs_v7_runtime_rc_text(rc, errbuf, sizeof(errbuf)));
   }
+  (void)r_blkcnt;
   return rc;
+}
+
+void kafs_v7_runtime_destroy_mount_services(kafs_context_t *ctx)
+{
+  if (!ctx)
+    return;
+  kafs_v7_runtime_transaction_service_destroy(ctx->c_v7_runtime_transactions);
+  ctx->c_v7_runtime_transactions = NULL;
 }
 
 static void kafs_v7_runtime_preflight_message_prefix(FILE *err, const char *tool_name)
@@ -479,8 +566,8 @@ int kafs_v7_runtime_admission_preflight_fd(int fd, const kafs_ssuperblock_t *sbd
   if (rc == 0)
   {
     fprintf(err,
-            "format %s admission preflight: descriptor-backed metadata checks OK; "
-            "runtime mount remains offline-only.\n",
+            "format %s admission preflight: v7 descriptor/checkpoint recovery and "
+            "read-only runtime views OK; inspection mount eligible.\n",
             KAFS_V7_TOOL_FORMAT_LABEL);
   }
   else

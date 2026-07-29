@@ -1,4 +1,5 @@
 #include "kafs.h"
+#include "kafs_block.h"
 #include "kafs_context.h"
 #include "kafs_superblock.h"
 #include "kafs_hash.h"
@@ -38,9 +39,22 @@ int main(void)
   assert(b1 == b2);
   assert(h1 == h2);
 
-  // Decrement twice should free the entry and block
+  // The first decrement leaves one live reference.
   assert(kafs_hrl_dec_ref(&ctx, h1) == 0);
+
+  // A failed final release must preserve the entry and allocation for retry.
+  int rw_fd = ctx.c_fd;
+  int ro_fd = open(img, O_RDONLY);
+  assert(ro_fd >= 0);
+  ctx.c_fd = ro_fd;
+  assert(kafs_hrl_dec_ref(&ctx, h2) == -EIO);
+  assert(kafs_blk_get_usage_locked(&ctx, b1) != 0);
+  ctx.c_fd = rw_fd;
+  close(ro_fd);
+
+  // Retrying with a writable descriptor should free the entry and block.
   assert(kafs_hrl_dec_ref(&ctx, h2) == 0);
+  assert(kafs_blk_get_usage_locked(&ctx, b1) == 0);
 
   // Ensure freeing again fails
   assert(kafs_hrl_dec_ref(&ctx, h1) != 0);

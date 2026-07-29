@@ -10,11 +10,28 @@ This document defines lock design and implementation rules for `kafs`.
 
 ## 2. Global Lock Order (Rank)
 Acquire locks only in ascending rank order:
-1. `hrl_global` (rank 10)
-2. `inode_alloc` (rank 20)
-3. `inode` (rank 30)
-4. `hrl_bucket` (rank 40)
-5. `bitmap` (rank 50)
+1. `v7_write_gate` (rank 1)
+2. `v7_sequence` (rank 2)
+3. `v7_group` (rank 3)
+4. `hrl_global` (rank 10)
+5. `inode_alloc` (rank 20)
+6. `inode` (rank 30)
+7. `hrl_bucket` (rank 40)
+8. `bitmap` (rank 50)
+
+The v7 composite transaction API acquires ranks 1, 2, and 3 in that order and
+permits one group only.  Checkpoint publication holds `v7_write_gate` alone,
+excluding transactions.  Until a multi-group protocol is accepted, callers
+must not acquire a second `v7_group` lock.  If a v7 transaction also needs the
+existing metadata locks, it acquires them only after `v7_group` and releases
+them before the v7 composite unlock.
+
+The format-neutral `kafs_lock_order` tracker owns one per-thread rank stack for
+the v7-owned and existing metadata wrappers.  A v7 acquisition preflights this
+shared stack before touching its mutex and returns `EDEADLK` when any rank
+10-50 lock is already held.  Existing metadata wrappers publish their rank and
+mutex identity to the same stack, so the permitted v7 rank 1-3 -> metadata rank
+10-50 order and strict cross-family reverse release are checked at runtime.
 
 Rules:
 - Never acquire a lower rank while holding a higher rank.

@@ -1,4 +1,5 @@
 #include "kafs.h"
+#include "kafs_block.h"
 #include "kafs_context.h"
 #include "kafs_superblock.h"
 #include "kafs_hash.h"
@@ -35,14 +36,20 @@ int main(void)
   assert(is_new == 1);
   assert(kafs_hrl_inc_ref(&ctx, h) == 0); // take a second reference (total refs = 2)
 
-  // dec by physical block: should reduce by one ref, not free
-  assert(kafs_hrl_dec_ref_by_blo(&ctx, blo) == 0);
-  // second dec by hrid: should free
+  // Leave one reference, then verify final release by physical block is retryable.
   assert(kafs_hrl_dec_ref(&ctx, h) == 0);
 
-  // ensure the block becomes free in bitmap afterward (by attempting to mark as free again)
-  // first, if still marked used, unmark should succeed; calling unmark twice would assert, so just
-  // check used->free transition This is indirectly validated by not crashing and final cleanup.
+  int rw_fd = ctx.c_fd;
+  int ro_fd = open(img, O_RDONLY);
+  assert(ro_fd >= 0);
+  ctx.c_fd = ro_fd;
+  assert(kafs_hrl_dec_ref_by_blo(&ctx, blo) == -EIO);
+  assert(kafs_blk_get_usage_locked(&ctx, blo) != 0);
+  ctx.c_fd = rw_fd;
+  close(ro_fd);
+
+  assert(kafs_hrl_dec_ref_by_blo(&ctx, blo) == 0);
+  assert(kafs_blk_get_usage_locked(&ctx, blo) == 0);
 
   munmap(ctx.c_superblock, mapsize);
   close(ctx.c_fd);

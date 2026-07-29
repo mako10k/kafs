@@ -24,15 +24,20 @@
     - `--metadata-only` / `--raw` / `--sparse` と `--verify` を提供。
     - metadata-only ではメタデータ先頭領域 `[0, first_data_block * block_size)` を書き出す。
   - `kafsresize`（オフライン image の resize / migration-image 作成）
-    - `--grow --size-bytes` と `--migrate-create` を提供。
+    - `--grow --size-bytes`、`--migrate-create`、`--migrate-import-v7` を提供。
     - 事前確保ヘッドルーム（`s_blkcnt < s_r_blkcnt`）内の増設のみ対応。
     - format version 5 scaffold image の grow と offline migrate-create を受け付ける。
+    - `--migrate-import-v7` は frozen clean v5 regular-file image の namespace、metadata、dense payload を
+      v7-owned offline path で新規 v7 image へ取り込み、full validation 後だけ final path を publish する。
+      unsupported/sparse/pending/capacity/partial state は fail closed とし、cutover は行わない。
   - `mkfs.kafs` / `fsck.kafs`
     - `mkfs.kafs` は `--format-version` に対応し、新規 image は既定で v5 を作成する。legacy v4 image が必要な場合は `--format-version 4` を明示する。
-    - `--format-version 7` は v6 実験実装を足掛かりにした破壊的変更用の descriptor-backed format を作成し、runtime 入口は `kafs-v7` が所有する。
-    - `fsck.kafs` は統合モードに加えて tail metadata region の境界と owner 整合、v6/v7 descriptor-backed image の detect-only validation も検査する。
+    - `--format-version 7` は独立した v7-owned descriptor-backed format を作成し、runtime 入口は `kafs-v7` が所有する。
+    - `fsck.kafs` は統合モードに加えて tail metadata region の境界と owner 整合、v7 descriptor-backed image の detect-only validation も検査する。format v6 の offline 検査は廃止済みで、再作成案内とともに fail closed する。
   - `stress_fs` テスト（Automake tests）。マウント/並行操作のストレス検証で PASS。
-  - offline tool 回帰は `tests/tests_kafsresize.c` に集約され、empty v5 tailmeta scaffold に対する mkfs/fsck/kafsresize/kafsdump/kafsimage/kafs-info の read-only coverage を持つ。
+  - offline tool 回帰は `tests/tests_kafsresize.c` と `tests/tests_v5_v7_import_smoketest.c` にあり、empty v5
+    scaffold の tool coverage に加え、nested directory、inline/tail/indirect regular file、symlink、hardlink、
+    metadata、multi-group v7 import と fail-closed cases を検証する。
 - ドキュメント
   - man page は `kafs-info(8)` / `kafs-v6(8)` / `kafs-v7(8)` / `kafsdump(8)` / `kafsimage(8)` / `kafsresize(8)` / `mkfs.kafs(8)` / `fsck.kafs(8)` を提供。
   - `docs/journal-plan.md`（M1〜M4 の計画）。
@@ -84,6 +89,7 @@
   - `-b, --blksize-log L` ブロックサイズの log2（既定 12=4096B）
   - `-i, --inodes I` inode 数（既定 65536）
   - `-J, --journal-size-bytes J` ジャーナル領域サイズ（既定 1MiB、最小 4KiB）
+  - `--v7-group-count N` v7 group 数の明示指定（power-of-two、1..64。既定は image size から自動）
 - `kafs`（または `mount.kafs`）
   - `-f` フォアグラウンド、`-o allow_other,ro,...` FUSE オプション。
   - 環境変数: `KAFS_MT`、`KAFS_MAX_THREADS`、`KAFS_JOURNAL_GC_NS`。

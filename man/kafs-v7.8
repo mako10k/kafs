@@ -1,5 +1,5 @@
 '.\" -*- nroff -*-
-.TH KAFS-V7 8 "2026-07-07" "kafs 0.4.0" "System Administration"
+.TH KAFS-V7 8 "2026-07-21" "kafs 0.4.0" "System Administration"
 .SH NAME
 kafs-v7 \- dedicated format v7 runtime entrypoint
 .SH SYNOPSIS
@@ -10,7 +10,7 @@ kafs-v7 \- dedicated format v7 runtime entrypoint
 .I mountpoint
 .BR -o " " ro
 .RI [ FUSE\ options ]
-.PP
+.br
 .B kafs-v7
 .RB --image
 .I image
@@ -22,17 +22,61 @@ kafs-v7 \- dedicated format v7 runtime entrypoint
 is the dedicated format v7 runtime entrypoint.
 It validates the format v7 CLI boundary, rejects legacy
 .B v6_*
-mount-option mode tokens, runs descriptor preflight, and then admits the
-selected descriptor-backed runtime contract.
+mount-option mode tokens, runs descriptor/checkpoint preflight, and admits an
+accepted format v7 image for read-only inspection or explicitly bounded
+controlled write.
+.PP
+Inspection admission requires a selected descriptor/checkpoint pair and empty
+journal segments.  A clean nonzero checkpoint and a single surviving valid
+recovery pair may be mounted read-only.  Divergent or unpaired state fails
+closed before FUSE starts.
+.PP
+The backing image is opened read-only, mapped read-only, and mounted with FUSE
+.BR ro .
+Mutation requests fail with
+.BR EROFS ,
+and the selected checkpoint's recovered free-block and free-inode counters are
+reported by
+.BR statfs (2).
+.PP
+Controlled-write admission opens the image read-write and requires the explicit
+safe option set shown in the synopsis.  It permits dense same-group regular-file
+writes through the twelve direct references and one single-indirect root.  A
+request may span multiple blocks and may extend the current file contiguously
+within that boundary.  Newly allocated blocks are zero initialized.  Partial
+first and last blocks use read-modify-COW.  When a single-indirect root is
+needed, the requested data blocks and a copied root are staged together.  All
+replacement blocks, inode and root references, size, and data-plus-root block
+count are published in one v7 journal transaction, checkpointed, and then the
+old data and root blocks are retired.  Full
+.BR fsync (2)
+is required for the supported durability contract.
+.PP
+Atomicity applies to one request delivered to the FUSE write callback.  With
+writeback caching disabled, the kernel may split a large or unaligned
+application write into multiple FUSE requests; the entrypoint does not claim
+application-system-call atomicity across those requests.
+.PP
+At FUSE initialization the controlled-write entrypoint caps the negotiated
+.B max_write
+at twelve v7 blocks.  It reports the kernel value, negotiated value, and
+per-request atomic limit in a
+.B kafs-v7-fuse-contract
+startup diagnostic.  Inspection mounts report an atomic write limit of zero.
+.PP
+If a prior controlled write stopped after journal publication, metadata apply,
+one checkpoint copy, or partial journal reclaim, the next controlled-write
+admission resumes closeout before FUSE starts.  Invalid or incomplete journal
+state fails closed.
 .PP
 Format v6 was an experimental implementation used to split the runtime
 entrypoint, descriptor admission, and controlled-write policy away from the
 production
 .BR kafs (1)
 binary.  Format v7 is the breaking-change continuation of that work.  The
-current v7 implementation has its own entrypoint/runtime/adapter source set;
-only the low-level descriptor scaffold helper still carries historical v6
-internal names pending a neutral rename.
+current v7 implementation has its own entrypoint, admission, selected runtime
+view, layout, and adapter source set and does not route successful admission
+through the v6 public wire/layout entrypoint.
 .PP
 The existing
 .B kafs
@@ -55,9 +99,13 @@ The request must include
 .BR -o " " ro .
 .TP
 .B --controlled-write-mount
-Select the experimental v7 controlled write contract.
-The request must include
-.BR -o " " rw,no_writeback_cache,no_trim_on_free,bg_dedup_scan=off,fsync_policy=full .
+Select the bounded v7 controlled-write contract.  The request must include
+.BR rw ,
+.BR no_writeback_cache ,
+.BR no_trim_on_free ,
+.BR bg_dedup_scan=off ,
+and
+.BR fsync_policy=full .
 .TP
 .BR --option " " <opt[,opt...]>
 Alias for FUSE
@@ -66,6 +114,24 @@ Alias for FUSE
 .BR --option= "<opt[,opt...]>"
 Inline form of
 .BR --option .
+.SH CURRENT LIMITS
+Controlled-write mounts support shrinking existing dense regular files through
+the single-indirect boundary using truncate and ftruncate while the result
+remains above 60 bytes, or to zero through truncate, ftruncate, and write-access
+opens using O_TRUNC.  This includes single-to-direct truncation.
+Non-zero direct-to-inline conversion and truncate growth are rejected.
+Empty regular-file creation is supported when the parent occupies one direct
+block or is inline, can append or grow within the twelve direct references,
+and a free inode exists in the same group.  Files up to 60 bytes remain inline
+and may be written through the create handle.  A contiguous write that grows an
+inline regular file beyond 60 bytes may convert it to one direct block.  Growth
+beyond that block continues through the bounded direct path.  Inline
+directories may convert to one direct block, and direct directories may append
+or grow through the twelve direct references.  Directory indirect mutation is
+not enabled.  Cross-group allocation, holes, regular-file requests beyond the
+single-indirect capacity, double/triple-indirect mutation, and other metadata
+mutations are rejected.  Offline repair,
+cross-group HRL mutation, and hotplug write delegation are not enabled.
 .SH EXIT STATUS
 .TP
 .B 0

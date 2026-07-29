@@ -21,6 +21,12 @@ historical investigations and deep design notes.
 ## Design And Planning
 
 - [codex-review-orchestration.md](codex-review-orchestration.md)
+- [pert-task-selection.md](pert-task-selection.md): mandatory `perttool` gate for capability-level task ordering
+- [../plans/current.pert](../plans/current.pert): canonical residual network for current next-task selection
+- [../plans/cli-v6-retirement.pert](../plans/cli-v6-retirement.pert): scoped migration-CLI and v6 source-retirement network
+- [kafs-cli-v6-retirement-selection-20260722.md](kafs-cli-v6-retirement-selection-20260722.md): perttool selection and remediation boundaries
+- [sd-card-wear-v6-retirement-plan.md](sd-card-wear-v6-retirement-plan.md): accepted staged v6 source-retirement order
+- [sd-card-wear-v6-retirement-inventory-20260722.md](sd-card-wear-v6-retirement-inventory-20260722.md): current residual ownership and disposition
 - [hotplug-plan.md](hotplug-plan.md)
 - [hotplug-requirements.md](hotplug-requirements.md)
 - [hotplug-design.md](hotplug-design.md)
@@ -37,20 +43,15 @@ historical investigations and deep design notes.
 - [journal-plan.md](journal-plan.md)
 - [sd-card-wear-plan.md](sd-card-wear-plan.md)
 - [sd-card-wear-tickets.md](sd-card-wear-tickets.md)
-- [sd-card-wear-phase2-validation-20260617.md](sd-card-wear-phase2-validation-20260617.md)
-- [sd-card-wear-phase5-validation-20260626.md](sd-card-wear-phase5-validation-20260626.md)
-- [sd-card-wear-format-v6-descriptor.md](sd-card-wear-format-v6-descriptor.md)
-- [sd-card-wear-v6-runtime-mount-checkpoint.md](sd-card-wear-v6-runtime-mount-checkpoint.md)
-- [sd-card-wear-v6-write-mount-dependency-audit.md](sd-card-wear-v6-write-mount-dependency-audit.md)
-- [sd-card-wear-v6-delayed-background-policy.md](sd-card-wear-v6-delayed-background-policy.md)
-- [sd-card-wear-v6-post-write-fsck-repair-policy.md](sd-card-wear-v6-post-write-fsck-repair-policy.md)
-- [sd-card-wear-v6-lock-stress-gate.md](sd-card-wear-v6-lock-stress-gate.md)
-- [sd-card-wear-v6-explicit-write-cutover-boundary.md](sd-card-wear-v6-explicit-write-cutover-boundary.md)
-- [sd-card-wear-v6-runtime-binary-split-decision.md](sd-card-wear-v6-runtime-binary-split-decision.md)
-- [sd-card-wear-v6-cutover-preparation.md](sd-card-wear-v6-cutover-preparation.md)
-- [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md)
-- [sd-card-wear-v6-runtime-entrypoint-plan.md](sd-card-wear-v6-runtime-entrypoint-plan.md)
-- [sd-card-wear-v6-runtime-handoff-20260626.md](sd-card-wear-v6-runtime-handoff-20260626.md)
+- [sd-card-wear-v7-capability-rebaseline-20260721.md](sd-card-wear-v7-capability-rebaseline-20260721.md): current v7 capability, R2 closeout, and selected M7 qualification task
+- [sd-card-wear-v7-controlled-write-qualification.md](sd-card-wear-v7-controlled-write-qualification.md): T48 qualification path, non-destructive evidence contract, and real-media boundary
+- [sd-card-wear-v7-real-media-qualification-approval.md](sd-card-wear-v7-real-media-qualification-approval.md): T48-B1 real-media matrix, destructive-impact, digest-bound approval, and independent-review contract
+- [sd-card-wear-v7-real-media-qualification-evidence.md](sd-card-wear-v7-real-media-qualification-evidence.md): T58 immutable real-media artifact and independent-review validation contract
+- [sd-card-wear-v7-migration-evidence.md](sd-card-wear-v7-migration-evidence.md): T59-A-C v5-to-v7 evidence contract, offline importer boundary, and disposable lifecycle rehearsal
+- [sd-card-wear-v7-vhdx-evidence-audit.md](sd-card-wear-v7-vhdx-evidence-audit.md): T57 read-only aggregate audit contract for one complete four-fault VHDX recovery run
+- [sd-card-wear-v7-vhdx-host-recovery.md](sd-card-wear-v7-vhdx-host-recovery.md): safe Windows-host VHDX-backed terminate/restart prequalification and evidence boundary
+- [sd-card-wear-v7-vhdx-handoff-20260721.md](sd-card-wear-v7-vhdx-handoff-20260721.md): WIP closeout, tomorrow's Task Start Gate, and native Windows restart point
+- [sd-card-wear-v7-runtime-handoff-20260716.md](sd-card-wear-v7-runtime-handoff-20260716.md): detailed v7 runtime implementation handoff
 - [write-performance-ideas.md](write-performance-ideas.md)
 - [bottleneck-measurement-plan.md](bottleneck-measurement-plan.md)
 - [perf-evaluation-20260228.md](perf-evaluation-20260228.md)
@@ -74,6 +75,30 @@ historical investigations and deep design notes.
 
 These documents remain useful for archaeology and incident follow-up, but they
 are no longer the recommended first-read path for normal product usage.
+
+### Retired format v6 records
+
+The following documents preserve experiments and decisions. Their v6 creation,
+mount, controlled-write, smoke, and cutover commands are retired and must not be
+used as current operator instructions.
+
+- [sd-card-wear-format-v6-descriptor.md](sd-card-wear-format-v6-descriptor.md)
+- [sd-card-wear-phase2-validation-20260617.md](sd-card-wear-phase2-validation-20260617.md)
+- [sd-card-wear-phase5-validation-20260626.md](sd-card-wear-phase5-validation-20260626.md)
+- [sd-card-wear-v6-cutover-preparation.md](sd-card-wear-v6-cutover-preparation.md)
+- [sd-card-wear-v6-delayed-background-policy.md](sd-card-wear-v6-delayed-background-policy.md)
+- [sd-card-wear-v6-explicit-write-cutover-boundary.md](sd-card-wear-v6-explicit-write-cutover-boundary.md)
+- [sd-card-wear-v6-fuse-write-surface-audit.md](sd-card-wear-v6-fuse-write-surface-audit.md)
+- [sd-card-wear-v6-lock-stress-gate.md](sd-card-wear-v6-lock-stress-gate.md)
+- [sd-card-wear-v6-post-write-fsck-repair-policy.md](sd-card-wear-v6-post-write-fsck-repair-policy.md)
+- [sd-card-wear-v6-production-diagnostic-scaffolding-inventory.md](sd-card-wear-v6-production-diagnostic-scaffolding-inventory.md)
+- [sd-card-wear-v6-runtime-binary-split-decision.md](sd-card-wear-v6-runtime-binary-split-decision.md)
+- [sd-card-wear-v6-runtime-entrypoint-plan.md](sd-card-wear-v6-runtime-entrypoint-plan.md)
+- [sd-card-wear-v6-runtime-handoff-20260626.md](sd-card-wear-v6-runtime-handoff-20260626.md)
+- [sd-card-wear-v6-runtime-handoff-20260703.md](sd-card-wear-v6-runtime-handoff-20260703.md)
+- [sd-card-wear-v6-runtime-mount-checkpoint.md](sd-card-wear-v6-runtime-mount-checkpoint.md)
+- [sd-card-wear-v6-shared-artifact-boundary-plan.md](sd-card-wear-v6-shared-artifact-boundary-plan.md)
+- [sd-card-wear-v6-write-mount-dependency-audit.md](sd-card-wear-v6-write-mount-dependency-audit.md)
 
 - [README_STRACE_ANALYSIS.md](README_STRACE_ANALYSIS.md)
 - [STRACE_MINIMAL_REPRODUCTION_FINAL.md](STRACE_MINIMAL_REPRODUCTION_FINAL.md)

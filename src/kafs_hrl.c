@@ -13,60 +13,16 @@ extern uint32_t kafs_diag_current_write_ino(void) __attribute__((weak));
 
 // In-memory helpers derived from superblock HRL fields (entry type is declared in kafs_hash.h)
 
-static inline int hrl_descriptor_mapping_enabled(const kafs_context_t *ctx)
-{
-  return ctx && ctx->c_v6_hrl_mapping_enabled && ctx->c_v6_hrl_index_shards &&
-         ctx->c_v6_hrl_entry_shards && ctx->c_v6_hrl_index_shard_count > 0u &&
-         ctx->c_v6_hrl_entry_shard_count > 0u && ctx->c_img_base && ctx->c_img_size > 0u;
-}
-
 static inline uint32_t *hrl_index_ptr(kafs_context_t *ctx, uint32_t bucket)
 {
-  if (!hrl_descriptor_mapping_enabled(ctx))
-    return &((uint32_t *)ctx->c_hrl_index)[bucket];
-
-  for (uint32_t i = 0; i < ctx->c_v6_hrl_index_shard_count; ++i)
-  {
-    const kafs_v6_hrl_runtime_shard_t *shard = &ctx->c_v6_hrl_index_shards[i];
-    if ((uint64_t)bucket < shard->logical_start ||
-        (uint64_t)bucket >= shard->logical_start + shard->logical_count)
-      continue;
-    uint64_t delta = (uint64_t)bucket - shard->logical_start;
-    if (delta > UINT64_MAX / sizeof(uint32_t))
-      return NULL;
-    uint64_t off = shard->physical_off + delta * sizeof(uint32_t);
-    if (off > (uint64_t)ctx->c_img_size || sizeof(uint32_t) > (uint64_t)ctx->c_img_size - off)
-      return NULL;
-    return (uint32_t *)((char *)ctx->c_img_base + off);
-  }
-  return NULL;
+  return &((uint32_t *)ctx->c_hrl_index)[bucket];
 }
 
 static inline kafs_hrl_entry_t *hrl_entry_ptr(kafs_context_t *ctx, uint32_t idx)
 {
-  if (!hrl_descriptor_mapping_enabled(ctx))
-  {
-    uintptr_t base = (uintptr_t)ctx->c_superblock;
-    uintptr_t off = (uintptr_t)kafs_sb_hrl_entry_offset_get(ctx->c_superblock);
-    return (kafs_hrl_entry_t *)(base + off + (uintptr_t)idx * sizeof(kafs_hrl_entry_t));
-  }
-
-  for (uint32_t i = 0; i < ctx->c_v6_hrl_entry_shard_count; ++i)
-  {
-    const kafs_v6_hrl_runtime_shard_t *shard = &ctx->c_v6_hrl_entry_shards[i];
-    if ((uint64_t)idx < shard->logical_start ||
-        (uint64_t)idx >= shard->logical_start + shard->logical_count)
-      continue;
-    uint64_t delta = (uint64_t)idx - shard->logical_start;
-    if (delta > UINT64_MAX / sizeof(kafs_hrl_entry_t))
-      return NULL;
-    uint64_t off = shard->physical_off + delta * sizeof(kafs_hrl_entry_t);
-    if (off > (uint64_t)ctx->c_img_size ||
-        sizeof(kafs_hrl_entry_t) > (uint64_t)ctx->c_img_size - off)
-      return NULL;
-    return (kafs_hrl_entry_t *)((char *)ctx->c_img_base + off);
-  }
-  return NULL;
+  uintptr_t base = (uintptr_t)ctx->c_superblock;
+  uintptr_t off = (uintptr_t)kafs_sb_hrl_entry_offset_get(ctx->c_superblock);
+  return (kafs_hrl_entry_t *)(base + off + (uintptr_t)idx * sizeof(kafs_hrl_entry_t));
 }
 
 static inline uint32_t hrl_capacity(kafs_context_t *ctx)
@@ -285,11 +241,26 @@ static int hrl_release_blo(kafs_context_t *ctx, kafs_blkcnt_t *pblo)
 {
   if (!pblo || *pblo == KAFS_BLO_NONE)
     return 0;
+  if (!ctx || !ctx->c_superblock || *pblo >= kafs_sb_blkcnt_get(ctx->c_superblock))
+    return -ERANGE;
+
   kafs_blksize_t bs = hrl_blksize(ctx);
   char z[bs];
   memset(z, 0, bs);
-  (void)hrl_write_blo(ctx, *pblo, z);
-  (void)kafs_blk_set_usage(ctx, *pblo, KAFS_FALSE);
+
+  kafs_bitmap_lock(ctx);
+  kafs_bitmap_word_ref_t ref;
+  int rc = kafs_blk_load_word(ctx, *pblo, &ref);
+  if (rc == 0 && (ref.word & ref.bit) == 0)
+    rc = -EIO;
+  if (rc == 0)
+    rc = hrl_write_blo(ctx, *pblo, z);
+  if (rc == 0)
+    rc = kafs_blk_set_usage_nolock(ctx, *pblo, KAFS_FALSE);
+  kafs_bitmap_unlock(ctx);
+  if (rc != 0)
+    return rc;
+
   *pblo = KAFS_BLO_NONE;
   return 0;
 }
@@ -525,7 +496,7 @@ int kafs_hrl_open(kafs_context_t *ctx)
   uintptr_t base = (uintptr_t)ctx->c_superblock;
   uint64_t index_off = kafs_sb_hrl_index_offset_get(ctx->c_superblock);
   uint64_t index_size = kafs_sb_hrl_index_size_get(ctx->c_superblock);
-  if (!hrl_descriptor_mapping_enabled(ctx) && (index_off == 0 || index_size == 0))
+  if (index_off == 0 || index_size == 0)
   {
     ctx->c_hrl_index = NULL;
     ctx->c_hrl_bucket_cnt = 0;
@@ -533,11 +504,8 @@ int kafs_hrl_open(kafs_context_t *ctx)
     ctx->c_hrl_free_slot_count = 0;
     return 0;
   }
-  if (!hrl_descriptor_mapping_enabled(ctx))
-  {
-    ctx->c_hrl_index = (void *)(base + index_off);
-    ctx->c_hrl_bucket_cnt = (uint32_t)(index_size / sizeof(uint32_t));
-  }
+  ctx->c_hrl_index = (void *)(base + index_off);
+  ctx->c_hrl_bucket_cnt = (uint32_t)(index_size / sizeof(uint32_t));
   ctx->c_hrl_free_head_plus1 = 0;
   ctx->c_hrl_free_slot_count = 0;
   uint32_t cap = hrl_capacity(ctx);
@@ -569,31 +537,12 @@ int kafs_hrl_format(kafs_context_t *ctx)
   uint64_t index_size = kafs_sb_hrl_index_size_get(ctx->c_superblock);
   uint64_t entry_off = kafs_sb_hrl_entry_offset_get(ctx->c_superblock);
   uint32_t entry_cnt = kafs_sb_hrl_entry_cnt_get(ctx->c_superblock);
-  if (hrl_descriptor_mapping_enabled(ctx))
-  {
-    for (uint32_t i = 0; i < ctx->c_v6_hrl_index_shard_count; ++i)
-    {
-      const kafs_v6_hrl_runtime_shard_t *shard = &ctx->c_v6_hrl_index_shards[i];
-      memset((char *)ctx->c_img_base + shard->physical_off, 0,
-             (size_t)(shard->physical_end - shard->physical_off));
-      kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_INDEX,
-                                shard->physical_end - shard->physical_off);
-    }
-    for (uint32_t i = 0; i < ctx->c_v6_hrl_entry_shard_count; ++i)
-    {
-      const kafs_v6_hrl_runtime_shard_t *shard = &ctx->c_v6_hrl_entry_shards[i];
-      memset((char *)ctx->c_img_base + shard->physical_off, 0,
-             (size_t)(shard->physical_end - shard->physical_off));
-      kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES,
-                                shard->physical_end - shard->physical_off);
-    }
-  }
-  else if (index_off && index_size)
+  if (index_off && index_size)
   {
     memset((void *)(base + index_off), 0, (size_t)index_size);
     kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_INDEX, index_size);
   }
-  if (!hrl_descriptor_mapping_enabled(ctx) && entry_off && entry_cnt)
+  if (entry_off && entry_cnt)
   {
     memset((void *)(base + entry_off), 0, (size_t)entry_cnt * sizeof(kafs_hrl_entry_t));
     kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES,
@@ -790,27 +739,28 @@ int kafs_hrl_dec_ref(kafs_context_t *ctx, kafs_hrid_t hrid)
     kafs_hrl_bucket_unlock(ctx, bucket);
     return -EINVAL;
   }
-  e->refcnt -= 1u;
-  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(*e));
-  if (e->refcnt == 0)
+  if (e->refcnt > 1u)
   {
-    // free physical block and remove from index chain
-    kafs_blkcnt_t blo = e->blo;
-    uint64_t fast = e->fast;
-    rc = hrl_release_blo(ctx, &blo);
-    if (rc != 0)
-    {
-      kafs_hrl_bucket_unlock(ctx, bucket);
-      return rc;
-    }
-    (void)hrl_chain_remove(ctx, hrid, fast);
-    hrl_slot_reset(e);
+    e->refcnt -= 1u;
     kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(*e));
     kafs_hrl_bucket_unlock(ctx, bucket);
-    hrl_publish_free_slot(ctx, hrid);
     return 0;
   }
+
+  // Keep the last reference live until the block is safely released.
+  kafs_blkcnt_t blo = e->blo;
+  uint64_t fast = e->fast;
+  rc = hrl_release_blo(ctx, &blo);
+  if (rc != 0)
+  {
+    kafs_hrl_bucket_unlock(ctx, bucket);
+    return rc;
+  }
+  (void)hrl_chain_remove(ctx, hrid, fast);
+  hrl_slot_reset(e);
+  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(*e));
   kafs_hrl_bucket_unlock(ctx, bucket);
+  hrl_publish_free_slot(ctx, hrid);
   return 0;
 }
 
@@ -862,10 +812,10 @@ int kafs_hrl_inc_ref_by_blo(kafs_context_t *ctx, kafs_blkcnt_t blo)
 static int hrl_dec_ref_matched_locked(kafs_context_t *ctx, uint32_t bucket, uint32_t idx,
                                       kafs_hrl_entry_t *e)
 {
-  e->refcnt -= 1u;
-  kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(*e));
-  if (e->refcnt != 0)
+  if (e->refcnt > 1u)
   {
+    e->refcnt -= 1u;
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, sizeof(*e));
     kafs_hrl_bucket_unlock(ctx, bucket);
     return 0;
   }

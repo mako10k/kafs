@@ -1,6 +1,10 @@
 # KAFS SDカード劣化対策 バックログ
 
-最終更新: 2026-07-07
+> Completed format v6 tickets below are historical evidence. Their creation, mount,
+> controlled-write, smoke, and cutover commands are retired. Current v6 work is source removal
+> under [the retirement plan](sd-card-wear-v6-retirement-plan.md).
+
+最終更新: 2026-07-16
 
 計画: [sd-card-wear-plan.md](sd-card-wear-plan.md)
 
@@ -12,12 +16,13 @@
 - format v6 は実験的実装として凍結し、descriptor-backed runtime entrypoint split と
   controlled-write opt-in boundary の検証結果として扱う。
 - 破壊的変更を伴う descriptor-backed format work は、format v7 / `kafs-v7` を入口にする。
-- v7 の RAW LAYOUT は、まず
+- v7 の accepted RAW LAYOUT は、
   [sd-card-wear-format-v7-inception-deck.md](sd-card-wear-format-v7-inception-deck.md)
-  の decision model / scope と metadata region coverage matrix を固め、HRL index/entry
-  placement と recovery invariant を first-class に扱ってから仕様化する。
-- v7 RAW LAYOUT の作業 draft は
-  [sd-card-wear-format-v7-raw-layout.md](sd-card-wear-format-v7-raw-layout.md) に置く。
+  の accepted decision model / scope と metadata region coverage matrix、および
+  [sd-card-wear-format-v7-raw-layout.md](sd-card-wear-format-v7-raw-layout.md) の
+  `K7LD` descriptor version 2 contract を正とする。
+- v7 は wear distribution と fault tolerance / deterministic fsck recovery を同率最優先とし、
+  recovery が曖昧になる placement は採用しない。
 - 各実装 PR では、関連する最小テストと metadata durability / wear-distribution 前提を明記する。
 - 現行の v7 方針は
   [sd-card-wear-format-v7-pivot.md](sd-card-wear-format-v7-pivot.md) を正とする。
@@ -2217,6 +2222,8 @@
     `kafs_v7_entrypoint_adapter.*` を持つ独立 source set として実装した。
   - 低レベル descriptor scaffold parser/builder は、次の中立名抽出まで歴史名の
     `kafs_v6_layout.h` を参照する。
+  - この時点で生成する `K7LD` version 1 image は pre-specification scaffold であり、
+    2026-07-13 accepted raw-layout の descriptor version 2 image ではない。
   - v6 は frozen experimental entrypoint として残し、今後の破壊的 layout/policy work は
     v7 側へ進める方針を文書化した。
   - v6 の `v6_layout_descriptor` JSON key は report consumer 互換のため残し、v7 は
@@ -2231,14 +2238,1687 @@
     `make -C tests check TESTS=kafsresize` が成功した。
   - `make check -j2` は 29 tests passed / 1 skipped で成功した。
 
+### SDW-V7RT-T2 v7 raw-layout decision closeout
+
+- 目的: wear distribution と fault tolerance / deterministic fsck recovery を同率最優先にし、
+  v7 raw-layout の implementation-blocking decision を code 変更前に accepted contract として閉じる。
+- 決定:
+  - accepted layout は pre-spec `K7LD` version 1 scaffold と wire meaning を共有せず、
+    v7-owned 96-byte group/shard record と replicated `K7CP` を持つ descriptor version 2 とする。
+  - group は metadata physical span と data logical/physical span を明示し、shard は
+    `storage_class` と physical/logical coverage を wire field として持つ。
+  - mutable free counts は rotated `K7CP` replica が authoritative であり、offset 0 superblock は
+    immutable identity/discovery state とする。
+  - journal header/data は同一 group に置き、segment sequence/replay order は filesystem-global
+    とする。multi-group transaction protocol がない path は mutation 前に fail closed する。
+  - HRL bucket/entry group consistency を必須とし、cross-group 対応は incompatible flag、
+    mapping、recovery、fsck proof を伴う将来の独立変更にする。
+  - valid image は primary/tail descriptor/checkpoint replica を必須とし、決定的に配置可能なら
+    midpoint replica も必須とする。one-replica test-image exception は設けない。
+  - offset 0 の locator 破損だけで offline discovery を失わないよう、final block 全体を予約し、
+    その final 32 bytes に block size を持つ byte-identical tail `K7SA` version 2 locator を置く。
+  - CRC は reflected polynomial `0xEDB88320` / init・final XOR `0xffffffff` に固定し、CRC 一致を
+    replica 同値判定には使わない。同世代 locator/descriptor/checkpoint は covered span の
+    byte-identical 比較で divergence を判定する。
+  - inode、bitmap、allocator、HRL、journal は size/offset/endianness/padding を v7-owned wire shape
+    として自己完結に固定する。journal は rotating `K7JH` slot と structured transaction を使い、
+    全 valid segment の transaction を global sequence で merge する。
+- 完了条件:
+  - inception deck と raw-layout specification が `Status: accepted` になり、open question が残らない。
+  - record size/offset、little-endian、alignment、overflow、type/class、generation/CRC、replica
+    selection/copy-update、same-generation divergence の扱いが一意に記録されている。
+  - pending log / tail metadata、cross-group HRL、multi-group atomic mutation は明示的に fail closed
+    または deferred であり、暗黙の v5/v6 fallback がない。
+  - accepted version 2 と現行 version 1 scaffold の境界、および次の offline implementation slice
+    が明記されている。
+- 実装結果:
+  - [sd-card-wear-format-v7-inception-deck.md](sd-card-wear-format-v7-inception-deck.md) と
+    [sd-card-wear-format-v7-raw-layout.md](sd-card-wear-format-v7-raw-layout.md) を accepted にした。
+  - [sd-card-wear-format-v7-pivot.md](sd-card-wear-format-v7-pivot.md) の current boundary と
+    follow-up order を accepted version 2 contract に合わせた。
+  - single-group は wear-leveling completion ではなく、multi-group placement と障害耐性検証の
+    foundation であることを明記した。
+- 検証:
+  - `git diff --check` が成功した。
+  - `rg -n '^(Accepted: 2026-07-13|Status: accepted)$|K7LD.*version 2|K7JH|SDW-V7RT-T3' docs/sd-card-wear-format-v7-*.md docs/sd-card-wear-tickets.md`
+    で accepted status、version 2 wire contract、journal header、T3 handoff を確認した。
+  - `! rg -n '^## (Open Questions|Questions To Resolve)$' docs/sd-card-wear-format-v7-*.md`
+    で未解決 question heading がないことを確認した。
+  - docs-only decision closeout のため build/test は実施していない。
+
+### SDW-V7RT-T3 v7-owned single-group raw-layout offline round trip
+
+- 目的: accepted descriptor version 2 の strict subset として `group_count == 1` の
+  `mkfs.kafs -> kafsdump -> fsck.kafs` offline round trip と replica failover を証明する。
+  これは wear leveling 完了ではなく、後続 multi-group placement の v7-owned foundation とする。
+- 変更:
+  - v7-owned `K7LD` header/group/shard/replica、`K7SA` version 2 locator、`K7CP` checkpoint の
+    encode/decode、CRC、coverage validator を実装する。`sizeof` / `offsetof` assertion を持ち、
+    successful v7 path は v6 wire typedef や v6 public layout entrypoint を通らない。
+  - `src/kafs_v7_layout.c` / `src/kafs_v7_layout.h` を accepted wire の所有元とし、
+    `scripts/check-v7-layout-ownership.sh` で v6 wire/layout facade への逆依存を拒否する。
+  - mkfs は group 0 の metadata/data physical/logical span、required shard、最低2組の
+    descriptor/checkpoint replica と最低2つの空 journal segment を構築し、決定式で配置可能な
+    image では midpoint も構築する。raw-layout の canonical seven-shard order と最大データ数の
+    fixed-point rule を使い、midpoint のために data block を減らさない。
+  - fsck/kafsdump は `K7SA -> K7LD -> K7CP/shards` の discovery chain、各 replica selection、
+    全shard coverage、journal pair/global order、HRL group invariant、recovered-state free counts を
+    v7-owned names で検証・報告する。
+  - `kafsdump --json` は `root_locators`、`layout_descriptor`、`descriptor_replicas`、
+    `checkpoints`、`groups`、`shards`、`journal_segments` key を持つ。各 replica の `status` は
+    `valid|invalid|stale|divergent`、選択・縮退は `selected` / `degraded` boolean で表す。
+  - `man/mkfs.kafs.8`、`man/fsck.kafs.8`、`man/kafsdump.8` を accepted v2 と pre-spec v1 の
+    境界に合わせ、JSON parse regression を dedicated test に含める。
+  - dedicated `v7_raw_layout_smoketest` を追加する。T3 完了後も
+    `kafs-v7 --inspection-mount` と controlled-write admission は後続 ticket まで明示的に拒否する。
+- 完了条件:
+  - valid image は primary identity と `K7SA -> K7LD -> K7CP/shards` だけから offline round trip が
+    成功する。legacy prefix offset/free-count field を non-authoritative 値へ変えても authoritative
+    state と admission/validation 結果は変わらないが、raw diagnostic 値の表示は変わってよい。
+  - locator、descriptor、checkpoint の各々について、primary 1本の破損から backup を選択でき、
+    same-generation non-byte-identical divergence を個別に拒否する。
+  - 全replica破損、同世代divergence、gap/overlap/out-of-bounds、unknown type/class/flag、
+    required incompat bit 欠落、reserved 非ゼロ、table/range 算術 overflow、unknown mapping policy、
+    non-zero mapping seed、unsupported block-size/hash id、primary `K7SA` offset/remaining
+    reserved-byte 違反、LE64 bitmap alignment/padding 違反、canonical free-inode/count 違反、
+    bitmap/checkpoint 不整合、journal free-count delta/sequence gap/divergence、HRL cross-group
+    corruption を決定的に拒否する。
+  - canonical single-group mkfs の2-replica geometry、midpoint slack を持つ valid 3-replica parser
+    fixture、too-small rejection を sparse image で検証し、pre-spec version 1 scaffold を accepted
+    layout として読まない。
+  - test workdir は `${TMPDIR:-/tmp}` 配下に作成し、成功・失敗の双方で repo tree を汚さない。
+  - v6 fixture/test と production `kafs` の v7 fail-closed behavior は変わらない。
+- 対象外:
+  - multi-group placement/wear proof、runtime mount、controlled write、multi-group atomicity、
+    cross-group HRL、pending/tail、v5-to-v7 migration、in-place relocation。
+- 実装結果:
+  - `src/kafs_v7_layout.c` / `src/kafs_v7_layout.h` に accepted version 2 の wire record、
+    checked geometry planner、CRC、single-group builder、independent replica selector/validator を実装した。
+    successful path は v6 public layout/wire entrypoint を使わない。mkfs publication は旧 root 無効化、
+    metadata、non-primary copy、primary copy、tail locator、primary root の順に flush boundary を持つ。
+  - `mkfs.kafs` は primary/tail の descriptor/checkpoint、canonical seven-shard group、2つの空 journal
+    segment を構築する。`kafsdump` / `fsck.kafs` は authoritative discovery chain と recovered count を
+    v7-owned path だけで検証・報告する。
+  - primary locator/descriptor/checkpoint の個別 failover、lower generation と descriptor-generation
+    mismatch の `stale` 扱い、same-generation divergence、3-replica parser fixture、unowned slack zero、
+    malformed descriptor/payload/root identity を dedicated regression に固定した。
+  - `kafs-v7 --inspection-mount`、production `kafs`、v6 entrypoint から accepted v7 layout への admission は
+    offline-only error で fail closed のままとした。runtime mount、write、cross-group HRL は有効化していない。
+- 完了時の検証:
+  - `./scripts/format.sh fix`
+  - `autoreconf -fi && ./configure && make -j2`
+  - `lsp-cli --root . --server clangd --server-cmd clangd-18 --format pretty symbols src/kafs_v7_layout.c`
+  - `lsp-cli --root . --server clangd --server-cmd clangd-18 --format pretty ws-symbols kafs_v7_layout`
+  - `lsp-cli --root . --server clangd --server-cmd clangd-18 --format pretty diagnostics src/kafs_v7_layout.c`
+  - `lsp-cli --root . --server clangd --server-cmd clangd-18 --format pretty diagnostics tests/tests_v7_raw_layout_smoketest.c`
+  - `./scripts/check-v7-layout-ownership.sh`
+  - `! rg -n 'kafs_sv6_|kafs_v6_|kafs_descriptor_layout|#include "kafs_v6_layout.h"' src/kafs_v7_layout.c src/kafs_v7_layout.h tests/tests_v7_raw_layout_smoketest.c`
+  - 上記 build/LSP/ownership check 後、次の同一 shell block で test 前後の status を比較する。未commitの
+    意図した T3変更自体ではなく、gateが新しいtracked/untracked artifactを増やしていないことを判定する。
+
+    ```sh
+    set -euo pipefail
+    status_before=$(mktemp "${TMPDIR:-/tmp}/kafs-t3-status-before.XXXXXX")
+    status_after=$(mktemp "${TMPDIR:-/tmp}/kafs-t3-status-after.XXXXXX")
+    trap 'rm -f "$status_before" "$status_after"' EXIT
+    git status --short --untracked-files=all >"$status_before"
+    make -C tests check TESTS=v7_raw_layout_smoketest
+    make -C tests check TESTS='v7_entrypoint_smoketest v6_descriptor_validation v6_descriptor_smoketest kafsresize'
+    ./scripts/lint.sh
+    ./scripts/clones.sh
+    ./scripts/static-checks.sh
+    KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2
+    git diff --check
+    git status --short --untracked-files=all >"$status_after"
+    diff -u "$status_before" "$status_after"
+    ```
+- 検証結果（2026-07-13）:
+  - `autoreconf -fi && ./configure && make -j2`、`./scripts/format.sh`、`./scripts/lint.sh`、
+    `git diff --check` は PASS。
+  - 指定した4つの LSP query は成功し、source/test diagnostics はともに 0 件。
+  - `./scripts/check-v7-layout-ownership.sh` と v6 facade 禁止 pattern check は PASS。
+  - dedicated `v7_raw_layout_smoketest` と `v7_entrypoint_smoketest` は 2/2 PASS。
+    `v7_entrypoint_smoketest v6_descriptor_validation v6_descriptor_smoketest kafsresize` は 4/4 PASS。
+    64 MiB sparse image の 1024-byte / 65536-byte block-size round trip も PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` は 30/31 PASS。今回の v7 test は PASS したが、
+    既存 v5/FUSE hotplug 経路の `e2e_hotplug` は全体実行と単独再実行の双方で
+    `hotplug connect timeout` となった。
+  - `./scripts/clones.sh` は 87 clones / 2.9% で 1.0% threshold を超え FAIL。基準 commit
+    `b737ce0` も 87 clones / 3.1% で FAIL しており、新規 `src/kafs_v7_layout.c` の clone は検出されない。
+    `./scripts/static-checks.sh` の唯一の non-passing step も同じ clone gate で、format/lint は PASS。
+  - test/gate 前後の `git status --short --untracked-files=all` は一致し、新しい tracked/untracked artifact は
+    増えていない。
+
+### SDW-V7RT-T4 v7 multi-group placement and filesystem wear-distribution proof
+
+- 目的: accepted version 2 record の group-local mapping を実際の multi-group geometry に広げ、
+  mutable metadata を image prefix 一箇所へ集中させない filesystem-level placement と、group 境界破損を
+  deterministic に拒否する offline proof を追加する。SD controller の FTL/erase-block 配置を観測したとは
+  主張しない。
+- 変更:
+  - canonical group count は power-of-two の 1..64 とし、1024 HRL bucket を等分する。
+    自動選択は image 64 MiB あたり1 group を上限に supported power-of-two へ丸め、geometry 不成立時は
+    半減する。`mkfs.kafs --v7-group-count N` は exact override であり、別 count への fallback を行わない。
+  - logical data は完全な64-block bitmap wordを quotient/remainder で分け、末尾 partial word は最終 group
+    だけに置く。inode/HRL entry は exact coverage、HRL bucket は等分し、multi-group journal は1 group
+    1 segment とする。
+  - physical order は group-id 順の `[seven metadata shards][data]` interleave とし、midpoint replica は
+    最大 data geometry 後の zero slack に自然に収まる場合だけ追加する。
+  - validator は全 group の logical/physical coverage、canonical shard owner/order/size、inode/free count、
+    bitmap/allocator、HRL、journal segment id を集計する。cross-group HRL head/chain は引き続き fail closed。
+  - `kafsdump` に `wear_distribution` を追加し、group count、metadata placement span/arena、group data
+    min/max を text/JSON で報告する。`scripts/check-v7-wear-distribution.sh` は512 MiB sparse imageで
+    8 group、data skew 64 blocks 以下、metadata span 70%以上を固定する。
+  - `v7_multi_group_smoketest` は自動8 group、明示4 group、invalid/too-small/non-v7 CLI rejection、
+    logical gap、physical overlap、group owner偽装、journal logical gap、cross-group HRL headを検証する。
+- 完了条件:
+  - `mkfs.kafs --format-version 7` の512 MiB imageが8 groupで offline round tripし、全 group の free
+    block/inode/journal countが selected checkpoint と一致する。
+  - internal data logical boundaryは64-block alignment、group data skewは64 blocks以下、physical metadata
+    startはgroup順に分散する。
+  - group descriptor/shardのgap、overlap、owner、logical coverage、およびcross-group HRL破損を
+    descriptor replicaがbyte-identicalでも確実に拒否する。
+  - v6 public wire/layout entrypointへの依存を追加せず、runtime inspection/write admission、cross-group HRL、
+    multi-group atomic mutationを有効化しない。
+- 実装結果:
+  - `src/kafs_v7_layout.*` のplanner/builder/validatorを最大64 groupへ拡張し、single-group accepted imageと
+    既存 fault/recovery behaviorを維持した。
+  - `mkfs.kafs` に自動 policy と exact `--v7-group-count`、全 group data spanのtrimを追加した。
+  - `kafsdump` と dedicated script/test からfilesystem placement分散を観測可能にした。
+- 検証結果（2026-07-16）:
+  - `autoreconf -fi && ./configure` と clean `bear -- make -j2` は PASS。更新した
+    `compile_commands.json` に対する `clangd` diagnostics は layout、mkfs、kafsdump、multi-group test の
+    4ファイルすべて0件。
+  - `./scripts/check-v7-layout-ownership.sh` は PASS。
+    `./scripts/check-v7-wear-distribution.sh` は
+    `groups=8 span=469684224/536838144 data_blocks=16128..16192` で PASS。
+  - dedicated `v7_multi_group_smoketest v7_raw_layout_smoketest` は2/2 PASS。
+    `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` は32/32 PASSし、v5/v6/FUSEを含む全回帰も通過した。
+  - 512 MiB sparse imageの1024-byte / 65536-byte block-size双方で、自動8 groupの
+    `mkfs.kafs -> fsck.kafs -> kafsdump` round tripがPASSした。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`git diff --check`、complexity reportはPASS。
+    strict clone gateは既存87件・2.9%が1.0%閾値を超えるためnon-passingだが、今回追加した
+    `src/kafs_v7_layout.c` 内のcloneは0件で、変更前相当の87件へ戻した。
+
+### SDW-V7RT-T5 v7 recovery replica placement and fault-matrix proof
+
+- 目的: multi-group配置後のdescriptor/checkpoint recovery copyについて、filesystem address上の
+  primary/midpoint/tail分散、独立損傷、世代選択、同世代divergenceをoffline fixtureで固定する。
+  SD controller内部のFTL、ECC、erase-block相関故障を再現したとは主張しない。
+- 変更:
+  - `v7_replica_fault_smoketest` は512 MiB/8-groupのcanonical 2-copy imageと、それを1 GiBへ
+    sparse拡張してzero slackへmidpoint pairを置くaccepted 3-copy fixtureを使う。
+  - primary/tail spanはimage address rangeの95%以上、midpointはimage中央、各checkpointは対応する
+    descriptorの隣接block、全recovery rangeはgroup metadata/data外であることを確認する。
+  - descriptor spanとcheckpoint blockを独立にzero化し、2-copyの片系喪失、非対称損傷、全copy喪失、
+    3-copyの任意1/2 recovery neighborhood喪失を検証する。
+  - checkpointだけが新世代、descriptorだけが新世代、descriptor/checkpoint pairが協調して新世代、
+    3-copy中2-copyが新世代の各publication途中状態を検証する。
+  - independently shape-validな別geometry descriptorと、CRC-validな別checkpointを使い、
+    selected generationのnon-byte-identical copyがmajorityで解決されず`EUCLEAN`になることを固定する。
+- 完了条件:
+  - 2-copyは一方のdescriptor/checkpoint喪失からdegradedで復旧し、全descriptorまたは全checkpoint喪失を
+    fail closedにする。
+  - 3-copyは任意1/2 neighborhood喪失後もoffline読取可能で、残存descriptor/checkpointのreplica idが
+    異なる場合もそれぞれを独立選択する。全descriptorまたは全checkpoint喪失はfail closedにする。
+  - highest generationを選択し、descriptor generationに一致するcheckpointがないpublication途中は
+    fail closed、協調pairがあればdegradedでoffline読取可能とする。
+  - runtime inspection/write、repair、actual-media fault claim、cross-group HRL、multi-group mutationは
+    有効化しない。
+- 実装結果:
+  - 現行selectorがaccepted contractどおり動作することを専用回帰testで固定した。production selectorの
+    変更は不要だった。
+  - testは各caseで`${TMPDIR:-/tmp}`配下の独立sparse imageを使い、repo treeを汚さない。
+- 検証結果（2026-07-16）:
+  - `autoreconf -fi && ./configure` と clean `bear -- make -j2` は PASS。更新した
+    `compile_commands.json` に対する `tests/tests_v7_replica_fault_smoketest.c` の clangd diagnostics は0件。
+  - dedicated `make -C tests check TESTS=v7_replica_fault_smoketest` と
+    `./scripts/check-v7-layout-ownership.sh` は PASS。
+  - `v7_replica_fault_smoketest v7_multi_group_smoketest v7_raw_layout_smoketest
+    v7_entrypoint_smoketest` は4/4 PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` は33/33 PASSし、v5/v6/FUSEを含む全回帰も通過した。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`git diff --check`、complexity reportはPASS。
+    strict clone gateは既存87件・2.9%が1.0%閾値を超えるためnon-passingだが、production `src/`を
+    変更しておらず、既存baselineからcloneを増やしていない。
+
+### SDW-V7RT-T6 v7-owned read-only runtime views and inspection mount
+
+- 目的: FTL/ECC相関故障をRC media qualification制約として切り離したうえで、accepted v7 imageを
+  legacy/v6 wire assumptionで誤読せず、意味のあるread-only FUSE inspectionへadmitする。
+- 確認済みblocker:
+  - `src/kafs_block.h`のdescriptor runtime-view loaderはaccepted v7を`-EPROTONOSUPPORT`で拒否する。
+    単にgateを外すとv6 descriptor parser/shapeへ流れるため、v7-owned successful pathにならない。
+  - shared block readはlogical blockを`logical_block << log_blksize`でimage offsetへ直結するが、v7は
+    group descriptorによるlogical-to-physical mappingがauthoritativeである。
+  - v7 inode/indirect block referenceはzeroが未割当、`N+1`がlogical block `N`だが、shared pathは旧raw
+    block numberとして解釈する。
+  - shared `statfs`/counter pathはoffset 0のlegacy mutable fieldsを読むが、v7はselected `K7CP`の
+    recovered countsと`s_r_blkcnt`がauthoritativeである。
+  - accepted v7 specはinode payloadまで定義済みだが、filesystem directory payloadを明示していない。
+    空rootだけのmountではnested/block-backed readを証明できない。
+  - 現行v7 journal validatorは`checkpoint_seq == 0`かつempty segmentだけを受理する。
+- 変更:
+  - 実装前に既存`KDIR` version 1 payload shapeをv7が意図的に採用するdirectory wire contractとして
+    accepted raw-layoutへ明記する。暗黙のv4/v5/v6 compatibility shortcutにはしない。
+  - `kafs_v7_validate_image_fd()`が選んだdescriptor/checkpointを保持し、v7-owned inode shard map、
+    group data map、plus-one block-reference decoder、recovered-state viewをruntime contextへ構築する。
+  - 初回admissionは`checkpoint_seq == 0`/empty journalに限定し、それ以外は理由付きでfail closedにする。
+  - backing imageは`O_RDONLY`、mappingはread-only、FUSEは`ro`、runtime mutation guardは`EROFS`とする。
+  - accepted multi-group fixtureへnested directory、inline file、block-backed file/symlinkを配置し、
+    actual mount smokeでlookup/readdir/getattr/read/readlink/statfs/unmountを検証する。
+  - `kafs-v7 --help`と`man/kafs-v7.8`を、実際に有効なinspection surfaceとoffline-only制限へ揃える。
+- 完了条件:
+  - successful v7 pathがv6 public wire/layout entrypointへ依存せず、ownership checkを通過する。
+  - pristine multi-group imageのinline/block-backed dataを正しいgroup physical rangeから読める。
+  - selected `K7CP` recovered countsが`statfs`へ反映され、legacy zero countsを表示しない。
+  - single surviving recovery copyはdegraded inspection可能、same-generation divergence/malformed mapは
+    FUSE開始前にfail closedとなる。
+  - create/write/truncate/unlink/rename/link/mkdir/rmdir/chmod/chown/utimens/xattr/fallocate/copy-range等の
+    mutation surfaceが`EROFS`で、image hashがmount前後で不変である。
+  - dedicated mount regression、全v7 regression、full `make check -j2`、ownership/static gateがPASSする。
+- 対象外:
+  - non-empty journal replay、repair、controlled write、checkpoint publication、multi-group atomic mutation、
+    cross-group HRL、migration、FTL/ECC physical-failure-domain proof。
+- 実装結果:
+  - accepted raw-layoutへv7-owned `KDIR` version 1 contractを追加し、mkfsのroot inodeはcanonical empty
+    directory payloadを持つようにした。
+  - validatorが選択したdescriptor/checkpoint、inode shard map、group data map、recovered countersを
+    `kafs_v7_runtime_view`が保持し、successful admissionはv6 public wire/layout entrypointを通らない。
+  - `N+1` data referenceはlogical block 0をholeと区別するため物理offset解決まで保持し、group mapから
+    authoritative physical rangeへ解決する。`statfs`は`s_r_blkcnt`とselected `K7CP` counterを使う。
+  - inspection imageを`O_RDONLY`/read-only mapping/FUSE `ro`で扱い、shared mutation guardと低level
+    write defenseは`EROFS`を返す。controlled-write admissionは引き続きfail closedである。
+  - 4-group fixtureのactual FUSE mountでnested traversal、inline file、group 3のblock-backed file、symlink、
+    recovered `statfs`、mutation `EROFS`、unmount後image digest不変を確認した。primary descriptor/checkpoint
+    lossはdegraded mountでき、unpaired higher descriptor generationはFUSE開始前に拒否する。
+- 検証結果（2026-07-16）:
+  - `make -C tests -j2 v7_inspection_mount_smoketest`と専用test直接実行はPASSし、pristine/degradedの
+    2回とも実FUSE mountを通過した。
+  - v7回帰5本と`./scripts/check-v7-layout-ownership.sh`、`git diff --check`はPASSした。
+  - clean `bear -- make -j2`で`compile_commands.json`を更新し、v7 runtime view、shared FUSE runtime、
+    inspection mount testのclangd diagnosticsは0件だった。
+  - refactor前のfull `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`は34/34 PASS。最終codeでは
+    33 PASS / `stress_fs` 1 SKIPでexit 0となり、SKIP理由は一時的なmount失敗だった。直後の
+    `make -C tests check TESTS=stress_fs`はPASSし、全34 testのPASSを確認した。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、complexity、ownership、`git diff --check`はPASS。
+    `./scripts/static-checks.sh`はcloneだけnon-passingで、strict gateは既存baselineと同じ87件・2.9%が
+    1.0%閾値を超えた。実装中に増えた3 cloneはneutral helper抽出で解消し、baselineへ戻した。
+
+### SDW-V7RT-T7 group-local structured journal offline replay proof
+
+- 目的: selected `K7JH` prefix の非空 journal を v7-owned wire parser で検証し、元imageを書き換えずに
+  committed transaction の最終metadata/counterへ収束できることを crash fixture で証明する。
+- 変更:
+  - `src/kafs_v7_journal.*` が `K7JB/K7JM/K7JC/K7JA` record CRC、padding、control一致、mutation stream
+    CRC、group-local target identity/deltaを検証する。
+  - 各segment内のsequence単調増加とheaderのfirst/lastを検証し、filesystem-globalにbyte-identical duplicateを
+    dedupeする。checkpoint後のgap、同一sequenceのdivergence、commit/abort不一致はfail closedにする。
+  - committed mutationをtarget単位のbefore/after CRC chainへまとめ、current targetがinitialまたは任意の
+    after stateであることを確認して残りのpatchをmemory overlayへ適用する。aborted mutationはtransitionへ
+    加えず、そのbefore stateがcommitted chainと一致することだけを要求する。
+  - overlay後のbitmap/allocator、inode、HRLを既存v7 semantic validatorで再検証し、checkpoint counterへ
+    committed deltaを一度だけ加えたrecovered counterと照合する。元imageへのrepair/writeは行わない。
+  - `fsck.kafs`と`kafsdump`はnonempty segment、transaction、duplicate、commit/abort、already-applied/replay
+    mutation、checkpoint/recovered counterを報告する。
+  - runtime inspection admissionはselected nonempty segmentを引き続き`ENOTSUP`で拒否する。
+- 完了条件:
+  - 未適用、bitmapのみ適用、bitmap+allocator summary適用、全target適用の同一transaction fixtureが、同じ
+    recovered metadata/counterへoffline収束する。
+  - torn selected prefix、record CRC破損、sequence gap、divergent duplicate、targetの第三状態を確実に拒否する。
+  - byte-identical duplicateとabortはsequenceを正しく消費し、abortのdelta/patchをrecovered stateへ適用しない。
+  - v6 public wire/layout entrypointへ依存せず、nonempty runtime mount、repair、controlled writeを有効化しない。
+- 実装結果:
+  - v7-owned packed wire recordsとcompile-time size/offset assertion、offline parser、global replay planner、
+    memory overlayを追加した。
+  - dedicated `v7_journal_replay_smoketest`が上記crash/rejection matrixとruntime fail-closed、fsck/dump reportを
+    固定する。
+- 検証結果（2026-07-16）:
+  - `autoreconf -fi && ./configure && make -j2`: PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 35 PASS。
+  - v7 entrypoint/raw-layout/multi-group/replica-fault/inspection-mount/journal-replayの6 smoke test: PASS。
+  - `v7_journal_replay_smoketest`のValgrind definite/indirect leak gate: PASS。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`./scripts/check-v7-layout-ownership.sh`、
+    `git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ87件・2.81%が
+    1.0%閾値を超えたが、新規journal実装由来のcloneは検出されていない。
+
+### SDW-V7RT-T8 v7-owned mutation routing proof
+
+- 目的: journal encoderやruntime write admissionより先に、全v7 metadata targetをselected descriptorから
+  canonicalなgroup-local物理範囲へ解決し、cross-group operationをjournal begin前に拒否する。
+- 変更:
+  - `src/kafs_v7_mutation.*`がblock bitmap word、inode、allocator summary、HRL index、HRL entryの
+    global logical identityを、一意な`group_id`、shard、`physical_off`、`target_bytes`へ解決する。
+  - bitmap wordの64-block canonical alignment、allocator summaryのgroup bitmap start identity、各fixed
+    record幅、shard storage class、物理境界を検証する。
+  - transaction plannerは全requestが同じgroupに属する場合だけrouteをoutputへ確定し、cross-groupは
+    `EXDEV`、duplicate/overlapはfail closedにする。失敗時はroute/group出力を変更しない。
+  - journal parser/replayのtarget検証も同じv7-owned resolverへ統合し、readerと将来writerの解決規則を
+    分岐させない。
+  - image mutation、journal record生成、checkpoint更新、runtime controlled write admissionは有効化しない。
+- 完了条件:
+  - 4-group imageの全groupについて5 target typeの先頭/末尾identityが正しいgroup/shard/物理範囲へ
+    解決される。
+  - 同一groupの5 target transactionは成功し、cross-group、duplicate、非canonical bitmap、範囲外identity、
+    unknown typeを確実に拒否する。
+  - 既存journal replay matrixが同じresolverを使用した状態で回帰しない。
+- 実装結果:
+  - v7-owned target/transaction routing APIとdedicated `v7_mutation_routing_smoketest`を追加した。
+  - runtime mount/write境界は変更していない。
+- 検証結果（2026-07-16）:
+  - `autoreconf -fi && ./configure && make -j2`: PASS。
+  - `v7_mutation_routing_smoketest`と`v7_journal_replay_smoketest`: PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 34 PASS、FUSE権限依存の2 test SKIP。
+  - `v7_mutation_routing_smoketest`のValgrind definite/indirect leak gate: PASS。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`./scripts/check-v7-layout-ownership.sh`、
+    `git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ87件・2.79%が
+    1.0%閾値を超えたが、新規mutation router由来のcloneは検出されていない。
+
+### SDW-V7RT-T9 replicated K7CP publication
+
+- 目的: runtime write admissionを広げず、accepted raw-layoutの2-copy checkpoint publication順序と
+  power-loss再開規則をv7-owned APIで固定する。
+- 変更:
+  - `src/kafs_v7_checkpoint.*`がfresh validationから出版計画を作り、先行metadata/journalをflush後、
+    full checkpoint blockを1 copyずつwrite/flushする。
+  - canonical 2-copyでは両copyを更新する。3-copyではselected old generationを残したまま、循環順の
+    他2 copyへbyte-identicalな新世代を出版する。
+  - 各write後のflushと全replica再読込を行い、同一blockが2 copy以上確認できた時だけ成功する。
+  - power lossで新世代が1 copyだけ残った場合はgenerationを進めず、同じK7CP recordの2-copy目を
+    補完する。未適用journal mutation、generation overflow、read-only FDはfail closedにする。
+  - journal reclaim、concurrent writer locking、runtime controlled write admissionは有効化しない。
+- 完了条件:
+  - canonical 2-copyの通常出版後に新世代が2 copy一致し、image validatorが非degradedで再読込できる。
+  - 1-copy出版直後を模擬したimageがdegradedで選択され、publisherが同世代を2-copyへ復旧する。
+  - 3-copy出版ではold selected copyを保持したまま、他2 copyが新世代として選択される。
+  - guard matrixと既存descriptor/checkpoint fault matrixが回帰しない。
+- 実装結果:
+  - v7-owned plan/publish APIとdedicated `v7_checkpoint_publication_smoketest`を追加した。
+  - 既存`v7_replica_fault_smoketest`へ3-copy rotation proofを追加した。
+  - runtime mount/write境界は変更していない。
+- 検証結果（2026-07-16）:
+  - `autoreconf -fi && ./configure && make -j2`: PASS。
+  - `v7_checkpoint_publication_smoketest`と`v7_replica_fault_smoketest`: PASS。
+  - `v7_checkpoint_publication_smoketest`のValgrind definite/indirect leak gate: PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 37 PASS。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`./scripts/check-v7-layout-ownership.sh`、
+    `git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは87件・2.78%で、直前baselineの
+    87件・2.79%から件数増加はなく、新規checkpoint module由来のcloneは検出されていない。
+
+### SDW-V7RT-T10 ranked v7 write and checkpoint locking
+
+- 目的: runtime write admissionを広げず、v7 transactionとcheckpoint publicationを直列化する
+  v7-owned lock順序、bounded wait、stale-owner failureを固定する。
+- 変更:
+  - `src/kafs_v7_locks.*`が`v7_write_gate` rank 1、`v7_sequence` rank 2、`v7_group` rank 3を所有する。
+  - transaction composite APIはrank 1 -> 2 -> 3を取得し、逆順に解放する。groupはexactly oneに限定し、
+    nested/cross-group取得とunlock mismatchをfail closedにする。
+  - checkpoint publisherは`v7_write_gate`だけを取得し、進行中transactionと相互排他にする。
+  - lock待ちは設定可能なtimeoutと定期owner確認を持ち、contention/wait統計とtimeout診断を出す。
+    cancellationは保持中無効化し、Linux robust mutexのowner-deadはmutexを回復しても当該operationを
+    `EOWNERDEAD`で失敗させる。
+  - 正しさ優先のRC境界としてwrite gateは全transactionを直列化する。multi-group transaction、runtime
+    controlled write、journal encoderは有効化しない。
+  - v7 rank stackと既存metadata rank 10-50 stackは現時点で別管理であり、両familyを横断するadmitted pathは
+    ない。writer接続前にcross-family order checkと逆順拒否regressionを追加する。
+- 完了条件:
+  - composite lockの正順/逆順解放、invalid group、nested acquisition、wrong unlockを検証する。
+  - checkpoint holderとtransaction waiterのcontentionを実行し、待ち統計が増える。
+  - timeoutがboundedで`ETIMEDOUT`となり、owner-dead後は当該取得を`EOWNERDEAD`で失敗させた後に再取得
+    できる。
+  - checkpoint通常出版、1-copy resume、3-copy rotation、既存replica fault matrixが回帰しない。
+- 実装結果:
+  - v7-owned opaque lock state/composite APIとdedicated `v7_locks_smoketest`を追加した。
+  - checkpoint publisherはlock stateを必須とし、transaction中の再入を`EDEADLK`で拒否する。
+  - runtime mount/write境界は変更していない。
+- 検証結果（2026-07-16）:
+  - `autoreconf -fi && ./configure && make -j2`: PASS。
+  - `v7_locks_smoketest`、`v7_checkpoint_publication_smoketest`、
+    `v7_replica_fault_smoketest`: PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 38 PASS。
+  - `v7_locks_smoketest`と`v7_checkpoint_publication_smoketest`のValgrind definite/indirect leak gate:
+    PASS（0 error、0 leak）。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`./scripts/check-v7-layout-ownership.sh`、
+    `git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは87件・2.75%で件数増加はなく、
+    新規lock module由来のcloneは検出されていない。
+
+### SDW-V7RT-T11 filesystem-global sequence reservation and publication confirmation
+
+- 目的: journal encoderより先に、group-local journalへfilesystem-global sequenceをgapなく割り当て、
+  durable publicationを確認するstate machineをv7-owned APIで固定する。
+- 変更:
+  - `src/kafs_v7_sequence.*`はvalidated viewの`max(checkpoint_seq, journal.last_sequence)`から開始し、
+    composite transaction lockを保持したままexact next sequenceだけを予約する。
+  - 予約は同一threadで完了または取消する。完了はfresh image validationを行い、予約sequenceが予約groupの
+    selected journal prefixのlast sequenceとして見える場合だけ番号を消費する。
+  - header公開前の取消はfresh validationでvisible sequenceが変化していないことを証明し、同じ番号の再利用を
+    許す。確認不能、sequence/group不一致、validator failureはstateをpoisonし、後続予約を`EUCLEAN`で拒否する。
+  - process restart/reopenはfresh validated viewから次番号を再構築する。sequence/token overflowはfail closedに
+    する。
+  - `kafs_v7_journal_report_t`はselected global last sequenceのgroup idを保持し、checkpointだけの異常前進や
+    別groupへの誤出版をjournal公開成功と誤認しない。
+  - test fixtureのjournal publicationもdata write/flush -> header write/flush順へ強化した。
+  - journal record encoder、metadata apply、runtime controlled write admissionは有効化しない。
+- 完了条件:
+  - 未公開予約を取消すと同じsequenceを再予約できる。
+  - group 0のsequence 1を公開確認するまでgroup 1の予約はtimeoutし、確認後はgroup 1へsequence 2を予約・
+    公開できる。
+  - state再初期化後はdurable viewからsequence 3を予約できる。
+  - invalid group、sequence overflow、予約groupと公開groupの不一致をfail closedにし、不一致後のstateを
+    poisonする。
+- 実装結果:
+  - v7-owned sequence state/reservation APIを追加し、既存rank 1 -> 2 -> 3 composite lockと統合した。
+  - `v7_journal_replay_smoketest`へcancel/reuse、cross-group serialization、restart、overflow、poison matrixを
+    追加した。
+  - runtime mount/write境界は変更していない。
+- 検証結果（2026-07-16）:
+  - `autoreconf -fi && ./configure`と`kafs-v7`を含むbuild: PASS。
+  - `v7_journal_replay_smoketest`、`v7_raw_layout_smoketest`、
+    `v7_checkpoint_publication_smoketest`: PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 38 PASS。
+  - `v7_journal_replay_smoketest`のValgrind: PASS（0 error、0 leak）。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`./scripts/check-v7-layout-ownership.sh`、
+    `git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ87件・2.74%で、
+    新規sequence module由来のcloneは検出されていない。
+
+### SDW-V7RT-T12 journal encoder and data-before-header publication
+
+- 目的: active filesystem-global sequence reservationをgroup-local journalのcanonical wire recordへ変換し、
+  crash時に未flush dataやtorn headerをselected prefixとして誤認しない順序で公開する。
+- 変更:
+  - `src/kafs_v7_journal_writer.*`は既存journal overlay後の論理targetをbefore stateとして読み、partial patch後の
+    before/after CRC、mutation stream CRC、control deltaを含む`K7JB/K7JM/K7JC/K7JA`をencodeする。
+  - encoderは既存mutation routerとreader共通のdelta validatorを使い、single-group、非重複target、bitmap/inode
+    のexact free counter deltaをheader公開前に検証する。
+  - opaque transactionはactive sequence/token/groupとencode threadへbindし、取消済み、別token、別threadの
+    publicationを拒否する。
+  - reader/writer共通のsegment snapshotは各header blockからCRC-validなhighest generationだけを選ぶ。
+  - publisherはfresh replayでexact next sequenceを再検証し、容量のあるsegmentのうちselected header generationが
+    最小のものへappendする。transaction data write -> `fdatasync` -> rotated `K7JH` write -> `fdatasync`の順を固定する。
+  - metadata target apply、checkpoint連携、journal reclamation、cross-family runtime lock integration、controlled-write
+    admissionは有効化しない。
+- 完了条件:
+  - COMMIT/ABORTをwriterだけで生成・公開し、fresh readerがglobal sequence、group、mutation/counter、overlay stateを
+    byte-exactに復元できる。
+  - dataだけをflushしてheaderを公開しないcrash stateはempty journalとして扱われる。
+  - single-groupの2 segmentは連続publicationで異なるsegmentを選び、1-segment-per-group geometryではheader slotを
+    generation順に回す。
+  - wrong token、in-rangeだが不正なexact delta、cross-group target、stale sequenceをimage/output不変で拒否する。
+- 実装結果:
+  - v7-owned encoder/publisher API、共有segment selector、incremental CRC/delta helperを追加した。
+  - `v7_journal_replay_smoketest`へdata-only crash、writer round-trip、COMMIT/ABORT、overlay chaining、segment/header
+    rotation、multi-group sequence、token/delta/routing rejectionを追加した。
+  - runtime mount/write境界は変更していない。
+- 検証結果（2026-07-16）:
+  - `autoreconf -fi && ./configure`、`kafs-v7` build: PASS。
+  - `make -C tests check TESTS=v7_journal_replay_smoketest`: 1 PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 37 PASS、FUSE mount権限依存の
+    `stress_fs` 1 test SKIP。
+  - `v7_journal_replay_smoketest`のValgrind: PASS（0 error、0 leak）。
+  - clangd diagnostics（writer、journal/layout/mutation、test）: 0件。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`./scripts/check-v7-layout-ownership.sh`、
+    `git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ87件・2.69%で、
+    writer由来のcloneは0件。writerのcomplexity warningは責務分割後0件。
+
+### SDW-V7RT-T13 multi-group mutation fault matrix
+
+- 目的: group-local journalがfilesystem-global sequenceで連結される条件を4 groupで固定し、1 groupの
+  payload/header損失やforeign-group mutationを部分成功として扱わずfail closedにする。
+- 変更:
+  - group順`0,3,1,2`、sequence順`1,2,3,4`の正常interleaveを追加し、4 groupのrecovered counterと
+    last-sequence ownerを検証した。
+  - 異なるgroupに同一sequenceを置くcollisionと、groupをまたぐsequence gapを拒否するmatrixを追加した。
+  - sequence 1/2/3の中央groupについて、mutation payload corruptionとlatest header CRC corruptionを注入した。
+    header corruptionでは旧empty headerへのfallback後にglobal sequence gapとしてfail closedになることを固定した。
+  - mutationのgroup idをforeign groupへ変更し、mutation-stream/control/record CRCを再計算した入力も拒否する。
+  - cross-group atomic transactionは有効化せず、transactionは引き続きexactly one groupに限定する。
+- 完了条件:
+  - 正常interleaveだけがreplay可能で、collision、gap、中央group data/header loss、checksum-consistent foreign
+    mutationは全image validationを失敗させる。
+  - runtime mount/write境界とcross-group HRL policyは変更しない。
+- 検証結果（2026-07-16）:
+  - `v7_journal_replay_smoketest`: PASS。
+  - 同testのValgrind: PASS（0 error、0 leak、2,273 alloc/free）。
+  - clangd diagnostics: 0件。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`./scripts/check-v7-layout-ownership.sh`、
+    `git diff --check`: PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 38 PASS（`stress_fs`を含む）。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ
+    87件・2.69%で、production `src/`は変更していない。
+
+### SDW-V7RT-T14 metadata apply/checkpoint/reclamation closeout
+
+- 目的: flushed journal transactionをmetadataへ冪等適用し、2-copy checkpointがそのsequenceを覆った後だけ
+  group-local journalを再利用可能にするdurability closeoutをv7-owned APIとして固定する。
+- 変更:
+  - replay解析時に各targetの現在chain stageを保持し、apply直前のraw target CRCが同じstageか再確認する。
+    committed after-imageをtarget単位で書き、metadata全体を`fdatasync`した後にread-backする。
+  - checkpoint/write gateを1回だけ保持するcoordinatorを追加した。selected-generation checkpointが1コピーなら
+    metadata変更前に同世代2コピーへ復旧し、metadata apply後にjournal最終sequenceを覆う新checkpointを2コピー
+    publishする。
+  - 全segmentを先にpreflightし、checkpointより新しいsequenceが1件でもあれば無変更でreclaimを拒否する。
+    covered segmentはdataを消去せず、generationを進めたempty `K7JH`を1segmentずつflush/read-backする。
+  - commit、abort-only、metadata apply直後、checkpoint 1コピー直後、checkpoint前reclaim拒否、1segmentだけ
+    reset済みの再開をfocused smokeへ追加した。closeoutの再実行はcheckpoint generationを不要に進めない。
+  - runtime mount/write admissionとcross-group atomic transactionは有効化していない。
+- 完了条件:
+  - `journal data/header -> metadata -> checkpoint replica 2 copies -> empty journal header`のdurability順を維持する。
+  - crash後のraw targetはmutation chain上のstageだけを受理し、第三状態はfail closedにする。
+  - checkpoint 2コピーが`last_sequence`を覆う前はjournal dataをreclaimしない。
+- 検証結果（2026-07-16）:
+  - `v7_checkpoint_publication_smoketest`: PASS。
+  - 同testのValgrind: PASS（0 error、0 leak、3,597 alloc/free）。
+  - clangd diagnostics（journal、checkpoint、layout、test）: 0件。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`./scripts/check-v7-layout-ownership.sh`、
+    `git diff --check`: PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 37 PASS、1 SKIP
+    （`stress_fs`: FUSE mount permission不足）。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ
+    87件・2.67%で、closeout由来のcloneとcomplexity warningは0件。
+
+### SDW-V7RT-T15 cross-family lock order integration
+
+- 目的: v7 rank 1-3と既存metadata rank 10-50を同一thread-local stackで検証し、将来のruntime
+  mutation pathが`v7_write_gate -> v7_sequence -> v7_group -> metadata locks`の順序を外れた場合に
+  mutex取得前にfail closedできるようにする。
+- 変更:
+  - format-neutral `kafs_lock_order` trackerへrankとmutex identityを記録する。v7 wrapperと既存metadata
+    wrapperは別々のrank stackを持たず、同じLIFO stackでcross-family acquisition/releaseを検証する。
+  - v7 rankは同rankのnested acquisitionを拒否し、既存metadata側は複数inodeなどの同rank acquisitionを
+    維持する。stack overflow、underflow、identity/rank mismatchも拒否する。
+  - metadata rankを保持したthreadからのv7 acquisitionはmutexを触る前に`EDEADLK`を返す。v7 transaction
+    保持中のmetadata rank 10-50取得は許可し、逆順解放を共通trackerで検証する。
+  - `v7_locks_smoketest`で`hrl_global`、`inode_alloc`、`inode`、`hrl_bucket`、`bitmap`の全classについて
+    逆順拒否と正順取得を実行する。runtime controlled-write admissionは有効化しない。
+- 完了条件:
+  - metadata rank 10-50のいずれかを保持中はv7 checkpoint/transaction開始を`EDEADLK`で拒否する。
+  - v7 composite transaction中は既存metadata lockを正順に取得・解放でき、最終stack depthが0になる。
+  - production、v6/v7、offline tool、全test targetが同じneutral tracker implementationをlinkする。
+- 検証結果（2026-07-16）:
+  - `v7_locks_smoketest`: PASS（全metadata rank classのcross-family orderを含む）。
+  - `make -C src kafs-v7 -j2`: PASS。
+  - shared trackerの全体適用で検出した既存の同rank inode解放順違反は、directory block置換時の
+    HRL参照をoutermost inode unlockまでdeferし、2-inode copyを取得順の厳密な逆順で解放するよう修正した。
+    strict identity LIFO検証は緩和していない。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 38 PASS。
+  - `v7_locks_smoketest`のValgrind: PASS（0 error、0 leak）。
+  - clangd diagnostics（neutral tracker、既存/v7 wrapper、test）: 0件。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`./scripts/check-v7-layout-ownership.sh`、
+    `git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ87件・2.66%で、
+    neutral tracker/v7 wrapper由来のcloneとcomplexity warningは0件。
+
+### SDW-V7RT-T16 v7-owned runtime mutation/admission policy
+
+- 目的: v7 controlled-write context setupからv6-owned state/helper依存を除去し、write admissionを開く前に
+  v7固有のfail-closed policy境界を固定する。
+- 変更:
+  - `kafs_context`へ`c_v7_controlled_write_enabled`を追加し、`kafs_v7_runtime_admit_mount_context()`は
+    v6 flagを変更せず、v7-owned helperだけでpolicy stateを初期化・設定する。
+  - `kafs_v7_fuse_policy.h`はpolicy無効時を`EROFS`、未知operationを`EOPNOTSUPP`とし、将来接続する
+    surfaceを`create` / regular-file `write` / `fsync` / `release`の4操作だけに限定する。
+  - `check-v7-runtime-policy-ownership.sh`でv7 runtime/policyへのv6 controlled-write flag/helper/include再混入を
+    拒否する。v6の既存state/helper/entrypoint behaviorは変更しない。
+  - v7 controlled-write entrypointは引き続きFUSE開始前に拒否する。4操作のpolicy許可は将来の接続境界であり、
+    このticketではruntime image mutationを有効化しない。
+- 完了条件:
+  - v7 policy有効化がv6 flagを変更せず、無効・未知・許可対象のdecision matrixをfocused testで検証する。
+  - v7 runtime/policy ownership gate、v7/v6 admission regression、full regressionがPASSする。
+  - write admissionと未列挙mutation surfaceはfail closedのままとする。
+- 検証結果（2026-07-17）:
+  - `autoreconf -fi && ./configure && make -j2`: PASS（`-Wall -Werror` build）。
+  - `v7_entrypoint_smoketest v6_descriptor_smoketest`: 2/2 PASS。
+  - `v7_entrypoint_smoketest`のValgrind: PASS（0 error、0 leak、39 allocs/39 frees）。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 38/38 PASS。
+  - clangd diagnostics（v7 policy、v7 runtime、focused test）: 0件。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、`./scripts/check-v7-layout-ownership.sh`、
+    `./scripts/check-v7-runtime-policy-ownership.sh`、`git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineと同じ87件・2.66%で、
+    v7 policy由来のcloneとcomplexity warningは0件。
+
+### SDW-V7RT-T17 mount-lifetime transaction coordinator and fail-closed FUSE boundary
+
+- 目的: T10-T16で個別に固定したlock、sequence、journal publication、metadata closeoutをmount-lifetimeの
+  v7-owned serviceへ統合し、FUSE接続前にlegacy mutationへのfallthroughを閉じる。
+- 変更:
+  - `kafs_v7_runtime_transaction`はmountごとにrank 1-3 lock stateとfilesystem-global sequence stateを保持する。
+    transactionをexactly one groupへrouteし、journal publish/confirm後にmetadata apply、2-copy checkpoint、
+    covered journal reclamationまで完了してから成功を返す。read-onlyまたは`O_APPEND` FDは初期化時に拒否する。
+  - controlled-write service初期化からlegacy v4/v5 runtime journalを除去し、v7 coordinatorの生成・破棄を
+    `kafs-v7` adapter lifetimeへ接続した。production `kafs`とfrozen `kafs-v6`にはv7 source/macroをlinkしない。
+  - v7 controlled contextのshared FUSE legacy mutation guardは`EOPNOTSUPP`を返す。`O_TRUNC`、control-plane open、
+    `fsyncdir`もfail closedとし、regular-file `fsync` / `release`だけをv7 closeout barrierへ接続した。
+    `create` / regular-file `write`はv7 data/metadata plannerが完成するまでlegacy実装へ進めない。
+  - focused regressionは同一serviceでsequence 1/2を連続commitし、各commitのmetadata反映、checkpoint世代前進、
+    journal空化とbarrier冪等性を検証する。cross-group patchは`EXDEV`かつimage無変更に固定した。
+  - checkpointとcoordinatorに重複していたpositional-write FD条件を`kafs_v7_io.h`へ抽出し、新規clone増分を除去した。
+- 完了条件:
+  - single-group transactionのdurability順が
+    `journal data/header -> metadata -> 2-copy checkpoint -> journal reclaim`を外れない。
+  - 同一mountのsequence stateを継続利用でき、cross-group、read-only、append FDはpublication前にfail closedとなる。
+  - v7 controlled contextからlegacy mutation実装へ到達せず、v4/v5/v6 runtime behaviorを変更しない。
+  - controlled-write entrypointは引き続きFUSE開始前に拒否し、runtime data writeを有効化しない。
+- 検証結果（2026-07-17）:
+  - `autoreconf -fi && ./configure && make -j2`: PASS（`-Wall -Werror` build）。
+  - `v7_checkpoint_publication_smoketest v7_entrypoint_smoketest v6_descriptor_smoketest`: 3/3 PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 38/38 PASS。
+  - `v7_checkpoint_publication_smoketest`のValgrind: PASS（0 error、0 leak、5,151 allocs/frees）。
+  - clangd diagnostics（coordinator、policy、runtime/FUSE接続、focused tests）: 0件。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、両v7 ownership check、`git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineの87件・1,246行
+    （2.64%）で、新規v7 coordinator/IO helper由来のcloneとcomplexity warningは0件。
+
+### SDW-V7RT-T18 v7-owned data-block COW and allocator planner
+
+- 目的: v7 group-local data allocationとfull-block COWをT17 coordinatorのrank 1-3 reservation内で計画し、
+  new dataがmetadata pointer/allocator publicationより先にdurableとなる境界を固定する。
+- 変更:
+  - `kafs_v7_data_cow`はjournal overlay上のauthoritative bitmapとcomplete unpadded L1/L2 allocator summaryを
+    読み、両者の一致を検証してからgroup-local free blockをmount-lifetime cursor起点で巡回選択する。
+    bitmap wordとallocator summaryのafter-imageを1つのsingle-group transactionへ追加する。
+  - runtime coordinatorはallocation planningからfull-block write、`fdatasync`、read-back、metadata journal
+    publicationまで同じrank 1 -> 2 -> 3 reservationを保持する。publication直前にもstaged dataを再読し、
+    callerのdirect inode slot patchが選択blockを指すことを確認する。
+  - overwriteでは同じinode direct slotのbefore-imageが指定旧blockを指すことを確認する。旧blockはnew pointerを
+    覆う2-copy checkpoint後もallocatedのまま残し、このticketでは解放しない。abortまたはdata検証失敗時は
+    metadata/bitmapを変更せず、free data spanに残ったstaged bytesは参照不能のままとする。
+  - cursorはdata stage成功時に進めるため、abortやpublication前failureでも同一physical blockを繰り返し叩かない。
+    indirect reference、multi-block write、directory mutation、FUSE `create` / `write` admissionは有効化しない。
+  - 既存metadata-only transactionもreservation取得後にlayoutをfresh validateし直し、pre-lock viewをpublicationに
+    使用しないようにした。
+- 完了条件:
+  - data write/read-back/flush前にはbitmap、inode、checkpointが変化せず、commit後だけ選択blockとdirect inode
+    referenceが同じcovering checkpointで可視になる。
+  - abort、missing/wrong direct reference、cross-group retained block、publication前のstaged-data corruptionを
+    fail closedにし、journal/allocator counterを進めない。
+  - 成功overwrite後はnew/old両blockがallocatedで、旧blockの解放は次ticketの明示的retirementだけが行う。
+- 検証結果（2026-07-17）:
+  - `autoreconf -fi && ./configure && make -j2`: PASS（`-Wall -Werror` build）。
+  - `v7_checkpoint_publication_smoketest v7_entrypoint_smoketest v6_descriptor_smoketest`: 3/3 PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 38/38 PASS。
+  - `v7_checkpoint_publication_smoketest`のValgrind: PASS（0 error、0 leak、7,439 allocs/frees）。
+  - clangd-18 diagnostics（data COW、runtime transaction、公開header、focused test）: 0件。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、両v7 ownership check、`git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineの87件・1,246行
+    （2.60%）で、新規data COW/transaction module由来のcloneは0件。新規2 moduleのlizard threshold warningも0件。
+
+### SDW-V7RT-T19 retained data-block retirement and retry closeout
+
+- 目的: T18 overwrite後に保持した旧data blockを、covering checkpoint後の独立transactionで安全に解放し、
+  allocation/COW/retirement lifecycleを閉じる。
+- 変更:
+  - `kafs_v7_data_cow`のallocator after-image生成をallocation/retirementで共有し、retirementでは対象groupの
+    allocated bitだけをclearしてcomplete L1/L2 summaryを再構築する。bitmap patchは
+    `free_blocks_delta=+1`となり、既にfreeなら`EALREADY`、foreign-group blockなら`EXDEV`を返す。
+  - runtime retirementは最初に既存durable journal prefixをcloseoutし、rank 1 -> 2 -> 3 reservation下で
+    fresh layout/replayを検証する。journalが空で2-copy checkpointが揃う場合だけretirementを計画する。
+  - 全groupのinode tableとHRL entriesをjournal overlay経由で走査する。対象へのlive direct/HRL referenceは
+    `EBUSY`、どこかに非0 indirect rootがある場合はindirect traversal実装まで`EOPNOTSUPP`でfail closedとする。
+  - 参照なしを確認したbitmap/summary patchをsingle-group transactionとしてpublishし、metadata apply、
+    2-copy checkpoint、journal reclamationまで完了してから成功を返す。公開済みretirementを伴う再起動後の
+    retryはpreflight closeoutで収束し、その後`EALREADY`を返す。
+  - regressionはlive direct guard、indirect guard、cross-group guard、正常解放と空き数回復、同一process retry、
+    journal公開後かつcloseout前の再起動retryを固定する。FUSE controlled-write admissionは変更しない。
+- 完了条件:
+  - allocatedかつ全direct/HRL参照から外れたgroup-local blockだけが解放され、bitmap、summary、free counterが
+    同じcovering checkpointで一致する。
+  - live reference、indirect root、foreign-group、already-freeの各状態でallocator metadataを変更しない。
+  - retirement transaction公開後の中断を再起動時にcloseoutでき、二重解放やcounter二重加算が起きない。
+- 検証結果（2026-07-17）:
+  - `make -j2`: PASS（`-Wall -Werror` build）。
+  - `v7_checkpoint_publication_smoketest`: PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: 36 PASS / 2 SKIP。`min_git_hooks`と`stress_fs`は
+    この環境のFUSE mount権限不足でSKIPした。
+  - `v7_checkpoint_publication_smoketest`のValgrind: PASS（0 error、0 leak、12,471 allocs/frees）。
+  - clangd-18 diagnostics（allocator/retirement、runtime transaction、両header、focused test）: 0件。
+  - `./scripts/format.sh`、`./scripts/lint.sh`、両v7 ownership check、`git diff --check`: PASS。
+  - `./scripts/static-checks.sh`はcloneだけnon-passing。strict clone gateは既存baselineの87件・1,246行
+    （2.58%）で、今回変更したmodule由来のcloneは0件。新規retirement関数のlizard threshold warningも0件。
+
+### SDW-V7RT-T20 bounded aligned direct overwrite adapter
+
+- 目的: 既存regular fileのaligned full-block direct overwriteだけをv7-owned FUSE write surfaceからT17-T19
+  coordinatorへ接続し、partial writeや未実装のmetadata mutationを混入させない。
+- 変更:
+  - `kafs_v7_fuse_write` adapterを追加し、controlled-write contextで既存regular file、既存サイズ内、block境界、
+    direct slot、既存block参照の条件だけを受理する。
+  - T18のfull-block COW、inode direct-reference transaction、T19の旧block retirementを順序どおり接続した。
+  - shared FUSE `write`はv7 buildだけadapterへ分岐し、v4/v5/v6のwrite pathとhotplug pathは変更しない。
+  - focused smoke testで境界外write拒否、data read-back、direct reference更新、旧block解放、fsck整合性を固定した。
+- 完了条件:
+  - partial-block、growth、indirect/multi-block、createを`EOPNOTSUPP`で拒否する。
+  - data durability、metadata pointer、checkpoint、retirementの順序をT17-T19 API経由で維持する。
+  - `make check -j2` と focused v7 write test がPASSする。
+- 検証結果（2026-07-19）:
+  - `autoreconf -fi && ./configure && make -j2`: PASS（`-Wall -Werror`）。
+  - `v7_fuse_write_smoketest`、既存v7/v6 focused 4 tests: PASS。
+  - `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`: all 39 tests passed。
+
+### SDW-V7RT-T21 controlled-write FUSE admission matrix
+
+- 目的: T20 adapterを実際の`kafs-v7 --controlled-write-mount`から到達可能にし、FUSE境界と永続化を
+  end-to-endで検証する。
+- 変更:
+  - controlled-writeではimage FDをread-writeで開く一方、descriptor-backed mmapはread-onlyのまま保持する。
+  - shared FUSE initはv7 buildでv7-owned worker policyを検証し、通常ファイルwriteはlegacy mutation guardより
+    前にT20 adapterへrouteする。control-planeと未列挙mutationは引き続き`EOPNOTSUPP`で拒否する。
+  - inspection fixtureを複製して実マウントし、partial write拒否、aligned full-block overwrite、full fsync、
+    unmount、fsck、offline descriptor/inode/data read-backを検証する。
+  - write後のnonzero checkpoint sequenceは、journalが空でdescriptor/checkpoint validationが通るclean
+    closeout状態に限ってinspection再マウントを許可する。non-empty journalは引き続きfail closedとする。
+- 完了条件:
+  - explicit safe mount optionsなしではcontrolled-write admissionを拒否する。
+  - 実FUSE経由でT20の限定writeだけが成功し、unmount後のfsckとraw dataが一致する。
+  - v4/v5/v6 runtime behaviorとv7 inspection-only behaviorを変更しない。
+
+### SDW-V7RT-T22 controlled-write admission recovery
+
+- 目的: full-block overwriteのdurable journal publication後にprocess/power interruptionが発生したimageを、
+  次回controlled-write admissionで安全にcloseoutして再利用可能にする。
+- 変更:
+  - controlled-write admissionはruntime mmap構築前にraw v7 layoutを検証し、non-empty journalがある場合だけ
+    一時v7 lock state下でmetadata apply、checkpoint redundancy/publication、covered journal reclaimを再開する。
+  - closeout後にimageを再検証し、journalが空にならなければFUSE開始前にfail closedとする。inspection preflightは
+    read-onlyのままでnon-empty journalを変更せず拒否する。
+  - test-only crash hookでdata COW journal publication直後にFUSE serverを終了し、同じimageのcontrolled-write
+    再起動、fsck、raw inode/data read-backまでを実mount smokeで検証する。
+- 完了条件:
+  - committed journal prefixは次回controlled-write admissionでexactly-onceに収束する。
+  - incomplete/invalid journal、descriptor/checkpoint corruptionは修復対象にせずfail closedとする。
+  - recoveryを伴わないmountとv4/v5/v6 runtime behaviorを変更しない。
+
+### SDW-V7RT-T23 controlled-write closeout interruption matrix
+
+- 目的: T22の実FUSE recoveryをmetadata apply後とcheckpoint replica 1コピー後へ拡張し、closeoutの
+  durability境界をend-to-endで固定する。
+- 変更:
+  - test-only crash hookをmetadata applyのflush完了後と、最初のcheckpoint blockのwrite/flush完了後に追加する。
+  - pristine fixtureをケースごとに複製し、full-block write中のserver停止、controlled-write再起動、fsck、
+    raw inode/data read-backをjournal publication、metadata apply、checkpoint 1コピーの3境界で共通検証する。
+  - metadata apply済みmutationは再適用せず、checkpoint片側状態は同generationの不足replicaだけを補完してから
+    covered journalをreclaimする。
+- 完了条件:
+  - 3境界のいずれでもcommitted data/inode updateがexactly-onceに収束する。
+  - checkpoint generation/sequenceを不要に進めず、最終的に2-copy checkpointと空journalを得る。
+  - 通常mountではtest hookが無効で、既存durability順を変更しない。
+
+### SDW-V7RT-T24 multi-segment journal reclaim interruption
+
+- 目的: 複数groupのcovered journal segmentをreclaimしている途中のprocess interruptionを実FUSE admission
+  recoveryで再開し、durability matrixを閉じる。
+- 変更:
+  - inspection mount smokeへv7 sequence/journal writerをlinkし、production APIで異なる2 groupのinode patchを
+    committed journal transactionとしてpublishするfixtureを追加する。
+  - test-only hookで最初のnon-empty segmentをempty headerへflush/read-backした直後にserverを終了する。
+  - raw validatorでnon-empty segmentが2から1へ減ったことを確認し、次のcontrolled-write admissionで残り1件だけを
+    reclaimする。最終状態はjournal 0件とfsck PASSを要求する。
+- 完了条件:
+  - checkpointが全transactionをcoverする前はreclaimせず、cover後は各segmentを独立に再実行可能とする。
+  - 既にemptyのsegment generationを不要に進めず、残存segmentだけをresetする。
+  - journal publication、metadata apply、checkpoint 1コピー、partial reclaimの全境界が実FUSE再起動で収束する。
+
+### SDW-V7RT-T25 shared recovery fault-point API
+
+- 目的: T22-T24で各moduleへ個別追加したtest-only crash hookを共通contractへ統合し、stage選択と診断を
+  一貫させる。
+- 変更:
+  - `kafs_v7_test_fault.h`へ`journal_publish`、`checkpoint_copy`、`metadata_apply`、`journal_reclaim`のenum、
+    stable name、exit status 86-89、単一`KAFS_V7_TEST_CRASH_POINT` dispatcherを集約する。
+  - transaction/checkpoint/journal moduleは個別の環境変数解析と`_exit`を持たず、durability boundaryで共通
+    dispatcherだけを呼ぶ。
+  - mount testはwrite中断childとmount前admission中断childのexit statusを明示的に照合し、別stageでの偶発停止を
+    recovery成功として扱わない。
+- 完了条件:
+  - fault point名とexit statusの対応が1 headerだけで定義される。
+  - 未指定/未知stageではproduction pathに副作用がなく、全4stageの実FUSE matrixがPASSする。
+  - test helperはmount前early exit statusをcallerへ返せる。
+
+### SDW-V7RT-T26 machine-readable recovery diagnostics
+
+- 目的: controlled-write admission recoveryの再開位置と実行量を安定したkey/value診断へ集約し、
+  各durability boundaryが期待した経路だけを通ることを実FUSE testで固定する。
+- 変更:
+  - recovery完了時に`status`、`format`、`trigger`、`resume_from`、初期/最終checkpoint状態、metadata apply、
+    checkpoint publication/resume、journal reclaimの各counterを1行で出力する。
+  - checkpoint replica数、checkpoint sequence、journal replay結果から`checkpoint_copy`、`journal_publish`、
+    `metadata_apply`、`journal_reclaim`の再開位置を分類する。
+  - 全4 fault caseで独立したrecovery logを採取し、stage、apply済みmutation数、checkpoint resume数、
+    reclaim数、最終journal空状態を照合する。
+- 完了条件:
+  - recovery診断は機械的に解析できるstable key/value形式で、全4stageを区別できる。
+  - counterはidempotent replayを含む実際の処理量を表し、各fault caseの期待値と一致する。
+  - recoveryを伴わないmountの出力とdurability順を変更しない。
+
+### SDW-V7RT-T27 recovery diagnostic contract API
+
+- 目的: T26のmachine-readable recovery summaryをproductionとtestが共有する型付きcontractへ移し、
+  診断形式の意図しないdriftを検出する。
+- 変更:
+  - `kafs_v7_recovery_diagnostic`へresume stage enum、summary struct、writer、strict parserを集約する。
+  - parserは全必須key、固定status/format/trigger、resume stage、unsigned数値範囲を検証し、keyの重複、欠落、
+    未知key/value、不正tokenを拒否する。
+  - production recoveryは型付きsummaryをwriterへ渡し、実FUSE smokeはlogをparserで読み戻してcounterを照合する。
+    独立contract testはround-tripとmalformed input matrixを検証する。
+- 完了条件:
+  - productionとtestに診断key/valueの手書きparserまたはformatterを残さない。
+  - duplicate/missing/unknown/range overflowをfail closedで拒否する。
+  - T26の全4stage recovery logが同じAPIでparseされ、期待counterと一致する。
+
+### SDW-V7RT-T28 offline recovery log inspection
+
+- 目的: 保存したv7 controlled-write recovery logをoperatorがimageやmountを変更せず検証し、text/JSONで
+  再利用できるread-only診断経路を提供する。
+- 変更:
+  - `kafsdump [--json] --recovery-log <log>`を追加し、通常のoffline image inspectionとは排他的なinput modeにする。
+  - recovery diagnostic APIへstream readerを追加し、通常のmount出力からmachine-readable recordを探索して
+    strict parserへ渡す。record欠落、malformed、長すぎるrecord、I/O errorはfail closedとする。
+  - textはresume stageとinitial/apply/checkpoint/reclaim/final summaryを表示し、JSONはstable top-level
+    `recovery` objectへ全contract fieldを出力する。
+  - 実FUSEの全4 fault caseで保存されたlogを`kafsdump`のtext/JSON両方から再検証する。
+- 完了条件:
+  - logはread-onlyで開かれ、inspectionによる内容変更がない。
+  - valid recovery recordはtext/JSONで同じstage/counterを返し、不正recordはexit status 1になる。
+  - image inspectionの既存CLI、text/JSON schema、終了statusを変更しない。
+
+### SDW-V7RT-T29 v5-to-v7 migration target creation
+
+- 目的: clean v5 sourceからaccepted v7 destinationを作るoffline cutover入口を`kafsresize`へ追加し、
+  destination geometryとsource収容量を作成前に検証する。
+- 変更:
+  - v7 layout ownerへwrite-free `kafs_v7_mkfs_plan` APIを追加し、mkfsと同じgroup/replica/data capacity
+    計算をdry-runとpreflightで共有する。
+  - `kafsresize --migrate-create --src-image <v5> --format-version 7`を許可し、clean source、inode count、
+    source used data bytes、v7 descriptor/group/journal geometryをdestination overwrite前に検証する。
+  - dry-runはv7 descriptor bytes、replica count、group count、journal segment count、group placement policyを
+    出力し、destinationへ書き込まない。
+  - 実作成後にsource `kafsdump --json`不変、destination accepted v7 superblock、`kafsdump --json`、
+    `fsck.kafs --check`を回帰検証する。source未指定はdestinationを変更せずfail closedとする。
+- 完了条件:
+  - v7 migration planと`mkfs.kafs --format-version 7`のgeometryが同じv7-owned plannerから得られる。
+  - source/destination block sizeが異なる場合もdata capacityをbytesで比較する。
+  - 作成されたdestinationはaccepted offline/inspection surfaceで検証可能で、source imageを変更しない。
+
+### SDW-V7RT-T30 bounded partial-block overwrite
+
+- 目的: v7 controlled-writeを既存allocated direct block内のpartial overwriteへ拡張し、既存byteを保持した
+  read-modify-COWをfull-block transactionと同じdurability contractで実行する。
+- 変更:
+  - write validationは1 direct block内、現在のfile size内、nonzero existing referenceに限定してpartial rangeを許可する。
+    block境界跨ぎ、hole、indirect block、file growthは引き続き`EOPNOTSUPP`/`EFBIG`で拒否する。
+  - partial writeはretained blockをpositional readし、request rangeだけをmergeしたfull-block bufferをdata COWへstageする。
+    journal publication、inode reference replacement、checkpoint、retained block retirementの順序は変更しない。
+  - unit smokeでprefix/suffix保持、new logical block、old block retirement、full-block互換、境界拒否を検証する。
+  - 実FUSE smokeでpartial write/full fsync/offline readback/inspection remountを検証し、journal publication、
+    metadata apply、checkpoint copy、journal reclaimの全中断段階をpartial payloadで再実行する。
+- 完了条件:
+  - request外byteがretained blockと一致し、request内byteだけが置換される。
+  - partial transactionはpower interruption後もexactly-onceに収束し、fsckとrecovery diagnosticsがPASSする。
+  - full-block overwriteを維持し、file growth、multi-block、indirect writeを暗黙に許可しない。
+
+### SDW-V7RT-T31 atomic multi-block direct overwrite
+
+- 目的: v7 controlled-writeを既存allocated direct block間のmulti-block overwriteへ拡張し、全data COWと
+  inode reference replacementを単一journal transactionでpublishする。
+- 変更:
+  - batch allocator plannerは同一groupのoverlay bitmapへ最大12 direct blockの割当を累積し、重複する
+    bitmap wordを最終状態へ集約してallocator summaryとfree-block deltaを一度だけpublishする。
+  - batch runtime transactionは1 sequence reservation内で全replacement blockをstage、flush、readback検証し、
+    全new direct referencesを含むinode patchとallocator patchesをatomicにcommitする。
+  - FUSE writeは先頭・末尾のpartial rangeをretained blockからmergeし、中間blockを含むrequest全体をbatchへ渡す。
+    inode切替のcheckpoint完了後に旧blockを個別retirement transactionで解放する。
+  - smoke testは3-block fileを作成し、3 blockに跨るpartial/full/partial payload、全reference切替、payload保持、
+    retirement後のfsckを検証する。
+- 完了条件:
+  - crash前には旧references、journal publication後には全new referencesとして回復し、混在状態を公開しない。
+  - 同一bitmap wordへ複数割当した場合も全bitとsummary/free-block counterが一致する。
+  - file growth、hole、12 direct blocks外、indirect writeは引き続き拒否する。
+
+### SDW-V7RT-T32 multi-block interruption recovery
+
+- 目的: atomic multi-block direct overwriteを実FUSE経路の全closeout中断点で検証し、回復後に全referencesと
+  payloadが同じtransaction generationへ収束することを確認する。
+- 変更:
+  - inspection fixtureのregular fileを同一groupの3 allocated direct blocksへ拡張し、statfs、read-only mount、
+    offline reference解決を3-block layoutに対応させる。
+  - controlled-write smokeはpage-aligned 3-block requestを発行し、full fsync、offline fsck、全3 referencesの
+    positional readback、inspection remountを検証する。
+  - journal publication、metadata apply、checkpoint copy、journal reclaimの各fault caseを3-block payloadで実行し、
+    recovery diagnostic、fsck、全block readbackを検証する。
+  - `no_writeback_cache`では非整列の大きなapplication writeがkernel FUSE層で複数requestへ分割され得るため、
+    atomicity contractが1 FUSE write request単位であることを明記する。
+- 完了条件:
+  - 各中断点からのadmission recovery後にjournalが空になり、3 referencesすべてがnew blocksを指す。
+  - allocator bitmap/summary/free-block counterと3-block payloadがoffline fsck/readbackで一致する。
+  - request分割を跨ぐapplication syscall全体のatomicityを暗黙に保証しない。
+
+### SDW-V7RT-T33 FUSE atomic request negotiation
+
+- 目的: controlled-writeのatomicity上限をkernel FUSE negotiationへ反映し、実際に合意した値を安定した
+  startup diagnosticとしてoperatorとtestへ公開する。
+- 変更:
+  - FUSE initはkernel提示`max_write`を保存し、controlled-writeでは`12 * v7 block_size`との小さい方へ
+    `conn->max_write`を制限する。inspection mountはkernel値を変更せずatomic write上限を0とする。
+  - runtime contextへkernel max、negotiated max、atomic write maxを保持する。
+  - `kafs-v7-fuse-contract`診断はmode、3つのsize、block size、direct block数を1行で出力する。
+  - 実FUSE smokeはinspection/controlled-write両方のlogをparseし、negotiated値とatomic上限が計算規則に
+    一致することを検証する。
+- 完了条件:
+  - 1 FUSE write requestがv7 direct range上限を超えず、advertised atomic上限と実装上限が一致する。
+  - inspection modeは書き込みatomicityをadvertiseしない。
+  - kernelがさらに小さい上限を提示した場合はその値を尊重する。
+
+### SDW-V7RT-T34 bounded direct growth
+
+- 目的: 既存regular inodeを12 direct blocks内で連続的に拡張し、追加block allocationとinode size更新を
+  overwriteと同じatomic COW transactionへ載せる。
+- 変更:
+  - write開始位置を現在EOF以下に限定したままrequest endのgrowthを許可し、既存block間のholeとEOFより先から
+    始まるwriteは拒否する。
+  - 未割当の次direct slotsはzero-filled full blockとしてstageし、new references、inode size、blocks、allocator
+    bitmap/summary/free counterを同じsingle/batch transactionでpublishする。
+  - low-level smokeは既存末尾から未割当2 blocksへ跨るgrowthを検証し、実FUSE smokeと全4 interruption caseは
+    EOFへの1-block append、full fsync、recovery diagnostics、size/blocks、offline payload、fsckを検証する。
+- 完了条件:
+  - request外の新規block領域はzeroで、追加block数とinode blocks/free-block counterが一致する。
+  - crash recovery後にold sizeまたはnew sizeの混在しないtransaction stateへ収束する。
+  - hole、12 direct blocks外、indirect growthは引き続き拒否する。
+
+### SDW-V7RT-T35 bounded direct truncate
+
+- 目的: 既存regular inodeを12 direct blocks内で縮小し、partial-tail zeroingと参照解除をv7 transactionへ
+  接続する。
+- 変更:
+  - `truncate(2)` / `ftruncate(2)`の縮小をcontrolled-write FUSE入口からv7専用adapterへrouteする。
+  - 非block境界の末尾はCOWして切捨て領域をzero-fillし、new tail reference、inode size/blocks、allocator metadataを
+    同じtransactionでpublishする。block境界の縮小はinode reference更新を直接transaction commitする。
+  - checkpoint後に参照が外れたtail/whole blocksを既存data retirement transactionで解放する。
+  - low-level smokeはpartial/aligned両経路を検証し、実FUSE smokeは通常縮小と全4 closeout中断点からのrecovery、
+    offline payload、inode size/blocks、fsckを検証する。
+- 完了条件:
+  - partial tailのlogical EOF以降がzeroで、削除slot、inode blocks、allocator counterが一致する。
+  - crash recovery後にold inodeまたは縮小済みinodeの混在しないtransaction stateへ収束する。
+  - truncateによる拡張、hole/indirect fileは引き続き拒否する。
+
+### SDW-V7RT-T36 bounded open truncate
+
+- 目的: `open(2)`の`O_TRUNC`をbounded direct truncateへ接続し、handle公開前にsize-0 transactionを完了する。
+- 変更:
+  - v7 controlled-writeでは`O_TRUNC`をlegacy mutation guardから外し、write access確認後にdirect truncate adapterを
+    inode lock下で実行する。失敗時はfile handle/open countを公開しない。
+  - write accessを伴わない`O_TRUNC`は`EACCES`、direct-only regular file以外は既存adapterの境界で拒否する。
+  - 実FUSE smokeは`open(O_WRONLY|O_TRUNC)`後のsize/blocks/references、offline fsckを検証する。LinuxがOPEN内の
+    flagまたはSETATTR+OPENのどちらへ分解しても、同じsize-0 transaction contractへ収束する。
+- 完了条件:
+  - successful openの時点でinodeはsize 0かつblocks 0で、旧direct blocksはretirement済みである。
+  - journal/checkpoint recoveryはT35のsize-0を含むtruncate transaction contractを再利用する。
+
+### SDW-V7RT-T37 bounded empty regular-file create
+
+- 目的: 1 direct block内に追記余地がある親directoryへ空regular fileをatomicに作成する。
+- 変更:
+  - 親directoryと同じgroupの空inodeを選び、directory block COW、親inode reference/size、新regular inode、
+    `free_inodes_delta=-1`をsingle-group transactionでpublishする。
+  - handle/open countはtransaction完了後にのみ公開し、旧directory blockはcheckpoint後にretireする。
+  - 初期境界は1 direct blockの親、既存block内へのrecord追記、同group inode allocationに限定する。
+  - 実FUSE smokeは`O_CREAT|O_EXCL`、offline fsck、read-only remount後のdirectory entry、regular mode、size 0を
+    検証する。
+- 完了条件:
+  - directory record、新inode、free-inode counterの一部だけが可視になる状態を通常closeoutで残さない。
+  - inline directory、directory growth、cross-group inode allocation、mkdirは未対応とする。
+
+### SDW-V7RT-T38 create recovery and inline write chaining
+
+- 目的: empty create直後の同一handle writeを成立させ、create transaction固有の中断回復を固定する。
+- 変更:
+  - size 60 bytes以下かつblocks 0のregular inode writeはinode inline payloadを直接transaction commitする。
+    inlineからblock-backedへの表現移行は別境界として拒否する。
+  - 実FUSE smokeは`O_CREAT|O_EXCL`で得たhandleへwrite/full-fsyncし、read-only remountでsize/payloadを検証する。
+  - createの4 mutations（allocator bitmap/summary、親inode、子inode）についてjournal publish、metadata apply、
+    checkpoint copyの各中断点からdirectory entry、空inode、free counters、fsckが収束することを検証する。
+- 完了条件:
+  - create成功後のhandleが直ちにinline write可能で、block referenceをinline payloadとして誤読しない。
+  - 各中断点からcreate全体が復旧し、部分的なdirectory/inode visibilityを残さない。
+
+### SDW-V7RT-T39 inline-parent create and generic publish interruption
+
+- 目的: inline directoryへのcreateをinode-only transactionで成立させ、汎用transactionの中断モデルをCOWと揃える。
+- 変更:
+  - blocks 0かつsize 60 bytes以下の親directoryはinline payloadへrecordを追記し、親inodeと同group子inodeの
+    2 patchesをatomic commitする。inode allocation lockで同group free-inode選択も直列化する。
+  - 汎用`runtime_transaction_commit`へjournal publish直後のfault hookを追加し、COW以外のinode-only transactionも
+    durable publish時点で同じpower-interruption試験を受ける。
+  - 実FUSE smokeはinline parent通常createと、2-mutation transactionのjournal publish、metadata apply、
+    checkpoint copy中断回復を検証する。
+- 完了条件:
+  - inline directory record、子inode、free-inode counterがatomicに可視化される。
+  - block-backed/inline parentの両create recoveryが全closeout中断点からfsck cleanへ収束する。
+
+### SDW-V7RT-T40 inline-directory growth on create
+
+- 目的: record余地のないinline directoryを1 direct blockへ変換し、同じcreate transactionで公開する。
+- 変更:
+  - inline payloadを同groupの新data blockへコピーしてrecordを追記し、allocator bitmap/summary、親inodeの
+    block reference/size、同group子inodeを4 mutationsのCOW transactionでatomic commitする。
+  - 元のinline表現にはretire対象blockがないため、checkpoint後のretirementは行わない。
+  - 実FUSE smokeは余地内inline create後の成長create、read-only remount、journal publish、metadata apply、
+    checkpoint copyの各中断点からの回復とoffline fsckを検証する。
+- 完了条件:
+  - directory block allocation、親表現変換、子inode、free countersの一部だけが可視にならない。
+  - 初期境界はinlineから1 direct blockへの変換とし、満杯のdirect directoryを複数blockへ伸長する処理は未対応とする。
+
+### SDW-V7RT-T41 one-to-two-block directory growth on create
+
+- 目的: record余地のない1-block direct directoryを2 direct blocksへ伸長し、createとatomicに公開する。
+- 変更:
+  - 既存directory blockを置換するCOWと2番目の新規block割当をsame-group batchでstageし、親inodeの2 references、
+    size/blocks、同group子inodeをallocator bitmap/summaryと同じtransactionでpublishする。
+  - covering checkpoint後に旧directory blockのみをretireし、新しい2 blocksは親inodeから連続snapshotとして参照する。
+  - 実FUSE recovery smokeは1-block fixtureをtombstone recordsで満たし、journal publish、metadata apply、
+    checkpoint copyの各中断点から新entry、子inode、free counters、offline fsckが収束することを検証する。
+- 完了条件:
+  - 2つのdata block、親inode、子inode、allocator stateの部分的なvisibilityを残さない。
+  - 初期境界は1 blockから2 blocksへの成長に限定し、既存2-block directoryへの追記と追加成長は未対応とする。
+
+### SDW-V7RT-T42 two-block directory append on create
+
+- 目的: 既存2-block direct directoryの空き領域へrecordを追記し、createをatomicに公開する。
+- 変更:
+  - 既存2 blocksをsame-group batch COWで置換し、連続directory snapshotへrecordを追記して、親inodeの2 references、
+    size、同group子inode、allocator bitmap/summaryをsingle transactionでpublishする。
+  - covering checkpoint後に旧2 blocksを個別にretireし、retirement失敗はcreate成功と分離してdiagnosticへ返す。
+  - 実FUSE smokeはcleanな2-block directory imageを作成し、通常createとjournal publish、metadata apply、
+    checkpoint copyの各中断点から新entry、子inode、free counters、offline fsckが収束することを検証する。
+- 完了条件:
+  - 2-block directory追記が両data blocks、親inode、子inode、allocator stateの部分更新を残さない。
+  - 初期境界は既存2 blocks内の追記に限定し、2 blocksから3 blocksへの追加成長は未対応とする。
+
+### SDW-V7RT-T43 two-to-three-block directory growth on create
+
+- 目的: record余地のない2-block direct directoryを3 direct blocksへ伸長し、createとatomicに公開する。
+- 変更:
+  - 2-block追記の容量不足時に既存batch予約をabortし、旧2 blocksの置換と3番目の新規block割当を
+    same-group 3-block batchとして再計画する。
+  - 3 blocksをstageして親inodeの3 references、size/blocks、同group子inode、allocator bitmap/summaryを
+    single transactionでpublishし、covering checkpoint後に旧2 blocksのみをretireする。
+  - 実FUSE smokeはcleanな2-block directoryをtombstone recordsで満たし、通常createとjournal publish、
+    metadata apply、checkpoint copyの各中断点から新entry、子inode、free counters、offline fsckを検証する。
+- 完了条件:
+  - 3つの新data blocks、親inode、子inode、allocator stateの部分的なvisibilityを残さない。
+  - 初期境界は2 blocksから3 blocksへの成長に限定し、既存3-block directoryへの追記は未対応とする。
+
+### SDW-V7RT-T44 three-block directory append on create
+
+- 目的: 既存3-block direct directoryの空き領域へrecordを追記し、createをatomicに公開する。
+- 変更:
+  - 2-block専用batch経路を2または3 direct blocksの共通経路へ広げ、既存3 blocksをsame-group batch COWで
+    置換して親inode references/size、同group子inode、allocator bitmap/summaryをsingle transactionでpublishする。
+  - covering checkpoint後に旧3 blocksを個別にretireし、3-block容量不足時は追加成長を行わず`ENOSPC`を返す。
+  - 実FUSE smokeはcleanな3-block directory imageから通常createとjournal publish、metadata apply、
+    checkpoint copyの各中断点回復を行い、新entry、子inode、free counters、offline fsckを検証する。
+- 完了条件:
+  - 3-block directory追記がdata blocks、親inode、子inode、allocator stateの部分更新を残さない。
+  - 初期境界は既存3 blocks内の追記に限定し、3 blocksから4 blocksへの追加成長は未対応とする。
+
+### SDW-V7RT-T45 cardinality-independent direct mutation recovery wave
+
+- 目的: `KAFS-INC-2026-07-19-01`の是正として、direct directory createをblock数別分岐から
+  direct上限までのsemantic transitionへ置き換え、write/create/recoveryを同じbounded-`N` contractへ揃える。
+- 変更:
+  - direct/indirect inode reference roleをnamed constantsへ置き換え、work arrayをdirect reference上限から導出する。
+  - single COW APIをbatch lifecycleのadapterとし、direct writeとdirectory append/growthをcardinality-independentな
+    batch pathへ統合する。
+  - `inline -> inline`、`inline -> direct(1)`、`direct(N) -> direct(N)`、
+    `direct(N) -> direct(N + 1)`、direct上限拒否をtable-driven fixtureで検証する。
+  - journal publication、metadata apply、checkpoint copyの中断matrixにminimum、interior、limit-minus-one、limitの
+    representativeを含め、offline fsck/readbackで収束を確認する。
+- 完了条件:
+  - production control flowに1/2/3-block専用分岐または2/3要素専用arrayが残らない。
+  - direct上限拒否がtransaction、allocator、inode、directory、counter、retirement stateを変更しない。
+  - recovery-wave effectiveness replayがblock数ごとのfeature分割を拒否する。
+- 完了結果（2026-07-19）:
+  - `13cc9a0`でR1 closeout。詳細は
+    `docs/incidents/2026-07-19-v7-recovery-investigation-plan.md`を参照する。
+
+### SDW-V7RT-T46 recovery-surface structural and static closure
+
+- 目的: R1で固定したdirect mutation surfaceに対し、同原因clone、static finding、aggregate gate、ownership
+  exceptionをrepository-wideにdispositionし、能力再ベースラインの前提を閉じる。
+- 変更:
+  - aggregate static checkを全report収集後もconstituent failureでnonzeroにする。
+  - selector bounds、fsck read/portability、repair result、unsigned-zero、HRL release failureのsemantic findingを修正する。
+  - frozen v6だけをclone remediationから除外し、build/test/lint/complexity/cppcheck対象には残す。
+  - callerのないdescriptor wire pathを除去し、active-source cloneを同じ1% policyで再計測する。
+- 完了条件:
+  - enabled pathのcorrectness、data-integrity、durability findingをdeferしない。
+  - active-source clone gateが例外拡大なしでPASSする。
+  - build/test、static、ownership、Git evidenceと残存diagnosticのdispositionが明示される。
+- 完了結果（2026-07-21）:
+  - `460f7b0`時点でR2 closeout。active-source cloneは41件・409行・0.86%。
+  - cppcheckの残存28件はconst-style hygieneとしてowned。semantic/portability/unused-function findingは0件。
+
+### SDW-V7RT-T47 post-RCA capability rebaseline and product selection
+
+- 目的: R1/R2後のcurrent checkoutから、実装済み能力、fail-closed境界、未検証の実機証拠を再分類し、
+  M7/M8-C/M9/M10の順序をGoal And Critical Path Gateで再決定する。
+- 変更:
+  - current capability matrix、R2 closeout evidence、alternative ordering、next-task exit criteriaを
+    `docs/sd-card-wear-v7-capability-rebaseline-20260721.md`へ記録する。
+  - handoff、pivot、man page、ticket候補のstaleなM6.1/M8-B/current-limits記述をcurrent checkoutへ揃える。
+- 完了条件:
+  - current capabilityとinference、software evidenceとreal-media未検証領域が分離される。
+  - 次product sliceとnon-goalsが、acceptedなfault-tolerance/wear priorityから説明される。
+
+### SDW-V7RT-T48 controlled-write RC qualification gate
+
+- 目的: 現在有効なbounded direct controlled-write surfaceを、明示した実機matrix、controlled power
+  interruption、offline検証、独立reviewによりRC判定可能な証拠へ進める。
+- 変更:
+  - host、kernel、libfuse、SD card、reader/controller、power-cut方法、sample IDを固定するevidence schemaを追加する。
+  - format、mount、各enabled mutation class、full fsync、controlled interruption、remount、`fsck.kafs`、
+    `kafsdump`を再現可能なrepository procedureへする。
+  - raw log、digest、recovery outcome、skip/inconclusiveを保存し、filesystem placement evidenceと
+    NAND/FTL claimを分離する。
+  - 実device format/power interruptionはexact device/sample matrixと破壊的影響へのoperator明示承認後だけ実行する。
+- 完了条件:
+  - 全enabled mutation classにnormal pathとapproved matrix上のcontrolled-interruption evidenceがある。
+  - 中断sampleがallowed stateへ回復するかfail closedとなり、fsck/dump evidenceで裏付けられる。
+  - 独立reviewerがraw evidenceからbounded RC claimをacceptまたはrejectする。
+  - indirect/cross-group mutation、stable/GA、controller-independent wearはclaimしない。
+- current slice (`T48-A`):
+  - `docs/sd-card-wear-v7-controlled-write-qualification.md`でnon-destructive file-image
+    evidence contract、case matrix、status semantics、実媒体境界を固定する。
+  - v7実FUSE regressionをworkload engineにしてraw log、digest、fsck/dump、環境情報をreport化し、
+    独立validate-only gateで完全性を検証する。
+  - `/dev/*`とcaller-supplied imageは受け付けず、PASSでも`rc_eligible=false`とする。
+  - T48-A完了後にexact card/controller/power-cut matrixと破壊的影響のoperator承認へ進む。
+- T48-A完了結果（2026-07-21）:
+  - actual file-image dry-runはrequired case 23/23 PASS、digest検証済みartifact 84件となった。
+  - focused Automake gateは2/2 PASS、full `make check -j2`は41/41 PASS（既存FUSE test 1件は
+    mount timeoutでSKIP）、format/lint/static/ownership/wear placement gateはPASSした。
+  - `make dist`でrunner、validate-only gate、synthetic regressionの配布物収録を確認した。
+  - PASSでもRC、real-media、controller-independent wearのclaimはfalseのままであり、T48/M7は未完了。
+  - 次sliceは`T48-B`とし、exact card/controller/power-cut matrix、破壊的影響、raw evidence保持、
+    independent-review checklistを固定してoperator承認を求める。実媒体実行はまだ行わない。
+- current slice (`T48-B1`):
+  - current WSL2 hostのread-only discoveryではMicrosoft Virtual Disk 4台だけが見え、適格なremovable/SD
+    candidateは0台だったため、exact physical matrixの完成は`REPLAN`とした。
+  - `KAFS.V7RealMediaQualificationMatrix.v1`でhost、card unit、reader/controller、stable device identity、
+    isolated power-cut、workload/interruption cross product、retention、review境界を固定する。
+  - operator approvalは別recordとし、matrix ID、byte-for-byte SHA-256、authorized actions、破壊的影響確認、
+    有効期限へ束縛する。draft validationもapproval validationもdeviceをopenしない。
+  - repository matrixはmissing identityを`blocked_by`に残した`DRAFT`であり、raw-device executionとphysical
+    power cutは未承認である。exact identityを受領するまで`/dev/*` runnerは追加しない。
+- T48-B1完了結果（2026-07-21）:
+  - draft、synthetic ready/approved、negative matrix/approval regressionを実装し、Automake 2/2 PASS、lint、
+    Autotools refresh、`make dist`を確認した。
+  - approval-free execution、volatile device identity、system/host storage、digest mismatch、期限切れ、
+    draft承認をfail closedで拒否する。
+  - current draftは`DRAFT_VALID`だがexecution approvalではない。次のblockerはexact physical identityと
+    そのmatrix digestに対するoperator approvalである。
+
+### SDW-V7RT-T49 regular-file inline-to-direct promotion
+
+- 目的: 実媒体M7の準備待ち中に、public controlled-writeで作成した通常ファイルが60 bytesを越えられない
+  capability gapを、既存same-group direct COW境界内で閉じる。
+- Task Start/critical-path判断:
+  - M7の実媒体優先度は維持するが、exact SD card/reader/power-cut identityは外部待ちとして明示的に後回しとなった。
+  - M8-Cはindirect reachabilityとpath-copy、M9 cutoverはqualified runtime、M10はcross-group設計判断を必要とする。
+    T49は後日の実媒体matrix追加を1 workload classに限定できる最小のsoftware-only closureとして`PASS`とした。
+- 変更:
+  - `blocks=0`、size 60 bytes以下、holeなし、request終端が1 filesystem block以内のregular inodeだけを
+    inlineから1 direct blockへ昇格する。
+  - old inline bytesをzero初期化した新blockへ保持してwriteを適用し、allocator metadata、inode first direct
+    reference、size、blocksを既存data COW transactionでatomic publishする。旧data blockは存在しないためretireしない。
+  - low-level回帰でhole/1-block超の不変拒否、payload/zero tail、昇格後direct COW chainingを検証する。
+  - `size <= 60`は必ずinlineというwire/read不変条件を守るため、昇格後direct inodeの非zero inline範囲への
+    truncateをfail closedで拒否し、retirement参照走査は`blocks == 0`だけをinlineとして除外する。
+  - actual FUSEでcreate handleからinline write、昇格、full fsync、read-only remountを検証し、journal publish、
+    metadata apply、checkpoint copyの各中断点からreadback/fsck cleanへ収束させる。
+  - non-destructive qualification runner/gateとDRAFT real-media matrixに通常・recovery workloadを追加する。
+- 完了条件:
+  - inline bytes、inode representation、allocator stateの部分更新を残さず、通常時とprocess fault recovery後に
+    one-direct-block stateへ収束する。
+  - hole、1 block超、truncate growth、non-zero direct-to-inline conversion、indirect、cross-groupは引き続き
+    fail closedとする。
+  - file-image qualificationを新surfaceで再実行し、real-media/RC claimはfalseのまま維持する。
+- 完了結果（2026-07-21）:
+  - low-level smoke、actual FUSE normal/remount、3中断点recovery、offline fsckがPASSした。
+  - qualification dry runはrequired case 26/26 PASS、digest検証済みartifact 90件となり、synthetic gateもPASSした。
+  - DRAFT real-media matrixに`regular_file_inline_to_direct_promotion`を追加し、旧draft digestを無効化した。
+
+### SDW-V7RT-T50 v7 allocated-inode representation validation
+
+- 目的: accepted v7 wire contractに反するallocated inodeを共通image validatorでfail closedにし、runtime、
+  `fsck.kafs`、`kafsdump`のadmission判断を一致させる。
+- Task Start/critical-path判断:
+  - 実媒体M7はexact hardware identity待ちとして後回しのまま維持し、既存controlled-write surfaceの
+    correctnessを先に固めるsoftware-only safety sliceとして`PASS`とした。
+  - T49でinline/direct representation transitionを追加したため、wire contractと共通validatorのgapは
+    後続mutation拡張より先に閉じる。indirect/cross-group mutationやrepairは追加しない。
+- 変更:
+  - rootを含む全allocated inodeで14-byte disabled tailがzeroであることを検証する。
+  - `size <= 60`では`blocks == 0`かつinline payload後方の未使用byteがzeroであることを検証する。
+  - inline inodeのnon-zero block count、non-zero padding、rootのnon-zero disabled tailを作る破損fixtureを追加し、
+    共通validatorが全件を拒否することを確認する。
+  - 代表fixtureに対して`kafsdump`、detect-only `fsck`、`kafs-v7` inspection preflightがすべて拒否することを確認する。
+- 完了条件:
+  - accepted inline/direct imagesとruntime transaction regressionは引き続き通る。
+  - 破損表現はconsumer固有の後段処理へ進む前に共通validatorで拒否される。
+  - `size > 60`のblock tree/count semantics、namespace payload semantic validation、repair、real-media実行は本sliceに含めない。
+- 完了結果（2026-07-21）:
+  - focused raw-layout/checkpoint-publication regressionはPASSし、3種類の破損表現を共通validatorが拒否した。
+  - 代表fixtureは`kafsdump` exit 1、`fsck --check` exit 13、`kafs-v7` preflight exit 2でfail closedとなった。
+  - full `make check -j2`は41/41 PASS、既存FUSE test 2件はmount timeoutでSKIPとなった。v7 inspection、
+    controlled-write、checkpoint publicationを含む正当なinline/direct imageは引き続きPASSした。
+  - format、lint、clone、aggregate static gateはPASSし、active source cloneは41件、409 duplicated lines、0.86%だった。
+
+### SDW-V7RT-T51 v7 namespace payload structural validation
+
+- 目的: accepted v7 namespace wire contractに反するdirectory/symlink payloadを共通image validatorで
+  fail closedにし、runtime、`fsck.kafs`、`kafsdump`のadmission判断を一致させる。
+- Task Start/critical-path判断:
+  - 実媒体M7はexact hardware identity待ちとして後回しのまま維持し、T50に続いて既存controlled-write
+    surfaceのcorruption admission gapを閉じるsoftware-only safety sliceとして`PASS`とした。
+  - runtime固有のlookup/readdir parserは破損recordへ到達した時点で検査していたが、共通validatorはnamespace
+    payloadを検査していなかった。後続mutation拡張より先にこの差を閉じる。
+- 変更:
+  - rootがdirectoryであること、inlineまたは十二個以下のdirect referencesに収まる全allocated directoryの
+    `KDIR` header、gap-free record列、name長/文字/hash、flags、target inode、live-name uniqueness、header件数を
+    journal overlay込みで検証する。
+  - rootではstored `..`を拒否し、non-root directoryではallocated directoryを指すlive `..`をちょうど一件
+    要求する。stored `.`は拒否する。
+  - 同じbounded payload範囲のsymlinkについて、targetがnon-emptyかつNULを含まないことを検証する。
+  - direct KDIR hash、inline header count、non-root parent record、inline symlink targetの破損fixtureを追加し、
+    代表fixtureを三consumerが共通preflightで拒否することを確認する。
+  - 既存test fixtureのnon-root `..`、tombstone record/countをcanonical wire shapeへ修正し、inline appendと
+    inline-to-direct growthの境界を維持する。
+- 完了条件:
+  - accepted inline/direct namespace image、十二direct-block境界、journal recovery、controlled-write regressionが
+    引き続き通る。
+  - 破損namespaceはconsumer固有のlookup/readdirやFUSE初期化へ進む前に共通validatorで拒否される。
+  - whole-namespace reachability、parent/child graph一致、link count、indirect payload、repair、real-media実行は
+    本sliceに含めない。
+- 完了結果（2026-07-21）:
+  - focused raw-layout、checkpoint-publication、FUSE write、inspection regressionはPASSした。
+  - 四種類の破損payloadを共通validatorが拒否し、代表fixtureは`kafsdump` exit 1、`fsck --check` exit 13、
+    `kafs-v7` preflight exit 2でfail closedとなった。
+  - 統合コミット上のfull `make check -j2`は43/43 PASSした。
+  - format、lint、v7 ownership、clone、aggregate static gateはPASSした。active source cloneは41件、
+    409 duplicated lines、0.86%を維持し、新規validator関数はcomplexity warning閾値以下へ分割した。
+  - non-destructive file-image qualificationはrequired case 26/26 PASS、digest検証済みartifact 90件だった。
+    RC、real-media、controller-independent wearのclaimはfalseのままである。
+
+### SDW-V7RT-T53 dense single-indirect regular-file lifecycle
+
+- 目的: 実媒体準備が外部待ちの間に、direct上限で止まっていたregular-file controlled-writeを、
+  same-groupのdense single-indirect write/truncate/recoveryまで一つのcoherent lifecycleとして閉じる。
+- PERT/Task Start判断:
+  - [v7 indirect lifecycle PERT](sd-card-wear-v7-indirect-pert-20260721.md)で、`single ->
+    double/triple -> expanded software qualification`をreal-media qualification joinのrunnable software legとした。
+  - tentativeなdirectory-graph validationは直前validatorに隣接するがcritical pathを短縮しないため破棄した。
+    single-indirect lifecycleをrunnable zero-slack predecessorとして`SELECT`し、Task Start Gateは`PASS`した。
+- 変更:
+  - regular-file write/truncate APIをdirect名からregular名へ改め、direct-to-single crossing、single内overwrite、
+    contiguous growth、aligned/partial shrink、single-to-direct、zeroを許可する。
+  - request対象data blockとsingle rootを同じsame-group COW batchでstageし、inode reference、size、
+    data+root block count、bitmap/summaryを一transactionでpublishする。旧data/rootはcommit後にだけretireする。
+  - data COW commit proofをdirect slot検索からbefore/after block-tree reachabilityへ拡張し、全new blockがafter
+    graph、全retained blockがbefore graphから到達できることを要求する。
+  - 共通image validatorでdense single treeのroot/data allocation、block count、必須/未使用referenceを
+    journal overlay込みで検査する。
+  - low-level transition/negative validator testと、actual FUSE write/read/full-fsync、fsck、inspection remount、
+    journal publish/metadata apply/checkpoint copy recovery matrixを追加する。
+- 完了条件:
+  - direct-to-single、single内overwrite/growth、single partial/aligned shrink、single-to-direct、zeroがpayload、
+    reference、counter、retirementを壊さず完了する。
+  - fault recovery後はold stateまたはpublished new stateへ収束し、mixed root/data graphをadmitしない。
+  - holes、double/triple mutation、indirect directory、cross-group allocation、repair、real-media executionは
+    fail closedまたは明示的な非目標のままにする。
+- focused完了結果（2026-07-21）:
+  - low-level FUSE-write smokeとcheckpoint-publication smokeはPASSした。
+  - actual FUSE normal/remount/single-to-direct matrixと3中断点single recovery matrix、offline fsckはPASSした。
+  - unused single-root referenceを注入したimageは共通validatorが拒否し、復元後のfsckはPASSした。
+  - non-destructive file-image qualificationはrequired result 29/29 PASS、digest検証済みartifact 97件となり、
+    synthetic gateとDRAFT real-media approval gate regressionもPASSした。
+  - final `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`は43/43 PASSし、SKIPはなかった。
+  - format、lint、v7 layout/runtime ownership、clone、aggregate static gateはすべてPASSした。active sourceは
+    41 clones、409 duplicated lines、0.84%で、new cloneは0件だった。
+  - closeout PERTはsingle完了後のnetworkを再構築し、doubleとtripleを別のcapability edgeとして再評価した。
+    次のrunnable zero-slack frontierはdense same-group double-indirect lifecycle `D2`である。実装前には別途
+    current checkoutに対するTask Start Gateを要求する。
+
+### SDW-V7RT-T54 dense double-indirect regular-file lifecycle
+
+- 目的: T53で確立したsingle-root path-copyを二段treeへ拡張し、same-group dense regular fileの
+  double-indirect write/truncate/recoveryを独立したcapability boundaryとして閉じる。
+- PERT/Task Start判断:
+  - post-T53 PERTで`D2`は`CS -> D2 -> D3 -> Q -> R -> M`上の唯一のrunnable zero-slack software nodeである。
+  - branch `feat/v7-runtime-admission-foundation`、HEAD `e79b6e8`でTask Start Gateを再実行し、state space、
+    不変条件、exit criteria、非目標を再導出して`PASS`した。
+- 変更:
+  - single-to-double crossing、double内overwrite/contiguous growth、child-table crossingを、data、必要なleaf、
+    double root、必要時のsingle root、inodeを一つのsame-group COW batchとしてpublishする。
+  - partial/aligned shrink、child prune、double-to-single/direct/zeroを実装し、旧data/leaf/rootをpublish後に
+    retirementする。
+  - 共通image validatorをdense double treeへ拡張し、data+single root+double root+leafの正確なblock count、
+    必須referenceのallocation、未使用entryのzeroを検査する。
+  - low-levelのsingle/double境界、child-table境界、prune/縮退、破損reference testと、actual FUSEの
+    full-fsync/readback/fsck/remountおよび3中断点recovery matrixを追加する。
+  - file-image qualificationとDRAFT real-media matrixへdouble lifecycleを追加する。ただしRC、real-media、
+    controller-independent wearのclaimはfalseのままとする。
+- 完了条件:
+  - 上記normal transitionがpayload、reference、counter、retirementを壊さず完了する。
+  - journal publish、metadata apply、checkpoint copyの各中断後にpublished stateへ収束し、fsckとreadbackが
+    一致する。
+  - triple、sparse、indirect directory、cross-group、repair、real-media executionは非目標のままにする。
+- focused結果（2026-07-21）:
+  - low-level FUSE-write smokeはsingle-to-double、double overwrite/growth、child-table crossing、partial/aligned
+    shrink、child prune、double-to-single/direct/zeroを通過し、最終detect-only fsckもPASSした。
+  - actual FUSE normal/remount、double-to-single-to-direct-to-zero、journal publish/metadata apply/checkpoint copy
+    recoveryはPASSした。
+  - non-destructive file-image qualificationはrequired result 32/32 PASS、digest検証済みartifact 104件となった。
+  - synthetic file-image qualification gateとDRAFT real-media approval gate regressionはPASSした。
+  - full `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`は42 PASS、FUSE権限に依存する`stress_fs` 1件は
+    SKIPとなった。format、lint、v7 ownership、clone、aggregate static gateはPASSし、active-source cloneは
+    42件、422 duplicated lines、0.86%で1% limit内だった。
+  - closeout PERTでD2をcompleteへ移し、次のrunnable zero-slack frontierとしてdense same-group
+    triple-indirect regular-file lifecycle `D3`を選択した。D3着手前にはpost-T54 commit上でfresh Task Start
+    Gateを実施する。
+
+### SDW-V7RT-T55 dense triple-indirect regular-file lifecycle
+
+- 目的: T54の二段path-copyを最終regular-file depthへ拡張し、dense same-group triple-indirect
+  write/truncate/recoveryとexpanded software qualificationを閉じる。
+- PERT/Task Start判断:
+  - post-T54 PERTで`D3`は`CS -> D2 -> D3 -> Q -> R -> M`上の唯一のrunnable zero-slack software node。
+  - branch `feat/v7-runtime-admission-foundation`、HEAD `c62d426`でTask Start Gateを再実行し、1KiB blockの
+    256MiB sparse imageでdouble/triple境界と次のmiddle-table境界を実行可能と確認して`PASS`した。
+- 変更:
+  - double-to-triple crossingとtriple内writeを、touched data/leaf/middle/root/inodeのpath-local COWとして
+    一つのsame-group transactionへ収める。
+  - partial/aligned shrink、leaf/middle prune、triple-to-double/single/direct/zero contractionを実装し、
+    publish後に削除suffixをstreaming retirementする。
+  - 共通image validatorを三段treeへ拡張し、正確なblock count、必須referenceのallocation、root/middle/leaf
+    の未使用entry zeroを検査する。
+  - actual FUSEでdouble/triple境界、middle-table境界、全lower-depth縮退、negative unused-reference、
+    detect-only fsck、3中断点recoveryを検証する。
+  - file-image qualificationへ5 result、DRAFT real-media matrixへ
+    `regular_file_triple_indirect_lifecycle`を追加する。RC/real-media claimはfalseのまま。
+- focused結果（2026-07-21）:
+  - actual FUSE normal/contraction/middle-boundary/recovery matrixはPASSした。
+  - non-destructive qualificationはrequired result 37/37 PASS、digest検証済みartifact 116件。
+  - synthetic file-image qualification gateとDRAFT real-media approval gate regressionはPASSした。
+  - full `KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2`は42 PASS、FUSE権限に依存する`stress_fs` 1件は
+    SKIP。format、lint、v7 ownership、clone、aggregate static gateはPASSし、strict source cloneは48件、
+    490 duplicated lines、0.97%で1% limit内。
+- closeout判断:
+  - `D3`とexpanded qualification `Q`をcompleteへ移す。real-media recovery `R`の残るpredecessorはexact
+    hardware identityとdigest-bound approval `H`だけであり、whole-namespace graph validation `N`はrunnable
+    だがoff-pathなので代替選定しない。
+
+### SDW-V7RT-T56 Windows-host VHDX recovery harness
+
+- 目的: disposable SD cardを準備できない期間に、active Ubuntu VHDXをraw媒体として扱わず、そのext4上の
+  専用KAFS regular-file imageでWindows-host terminate/restart recoveryを実行できる安全・再開可能な
+  harnessを作る。
+- PERT/Task Start判断:
+  - `plans/current.pert`へphysical hardware branchを残したまま`VHDX_HARNESS -> VHDX_HOST_RECOVERY_RUN`を
+    real-media joinの追加predecessorとして導入した。
+  - `perttool`は`VHDX_HARNESS`だけをrunnable/zero-slack/precedence・resource criticalと判定し、Task Start
+    Gateはbranch `feat/v7-runtime-admission-foundation`、HEAD `60fb869`で`PASS`した。
+- 変更:
+  - 既存4 durability pointへ、通常のprocess-fault exitを変えないopt-in marker fsync + parent-directory fsync
+    + `SIGSTOP` hookを追加する。
+  - inspection smokeへfresh stateを作る`--vhdx-arm`と、既存imageを回復・fsck・payload/diagnostic検証する
+    `--vhdx-verify`を追加する。
+  - Linux runnerでstate rootをcurrent WSL home、repositoryと同じext4/sourceへ制限し、DrvFs、stale state、
+    claim昇格、不一致host evidenceをfail closedにする。
+  - native Windows controllerでregistryからexact distro VHDXを毎回発見し、`-Execute`とhigh-impact
+    `ShouldProcess`後だけmarker確認、`wsl.exe --terminate`、restart、verifyを行う。
+  - full fsck、kafsdump、host/WSL identity、image SHA-256、全artifact digestとfalse claimを保存する。
+- 完了結果（2026-07-21）:
+  - Windows/WSL preflightはcurrent Ubuntu `ext4.vhdx`、length `120680611840`、Linux `/dev/sdd` ext4を確認し、
+    terminateを実行せずPASSした。
+  - 4 faultすべてでdurable marker時の停止を確認し、KAFS process killによる代替中断後のarm/verify、payload、
+    recovery diagnostic、full fsck、kafsdump、artifact digestがPASSした。これはharness検証であり、実際の
+    WSL terminate evidenceではない。
+  - false real-media claim、DrvFs、WSL home外state rootは拒否された。通常のinspection smoke全caseもPASSし、
+    既存process-fault behaviorは維持された。
+  - full `make check -j2`初回は変更対象を含む42件がPASSし、既存`e2e_hotplug`だけがconnect timeoutでFAIL。
+    同一checkoutの単独再実行はPASSした。format、lint、clone、complexity、v7 ownership、shell analysis、
+    Autotools再生成/buildはPASSし、新規complexity warningは0件となった。
+- closeout判断:
+  - harnessをcomplete、`VHDX_HARNESS_READY`をreachedへ移す。更新後の`perttool dag next`は実際のnative
+    Windows 4点実行`VHDX_HOST_RECOVERY_RUN`を唯一の`RUNNABLE NOW`、zero-slack critical taskとして選択する。
+  - physical `HARDWARE_APPROVAL`はzero-slackのblocked parallel branchとして残り、VHDX結果で代替しない。
+
+### SDW-V7RT-T57 VHDX evidence audit gate
+
+- 目的: maintenance window中の4点terminate/restart実行を再実行せずに判定できる、read-onlyの集約証跡監査を
+  独立したcapabilityとして用意する。
+- PERT/依存:
+  - `VHDX_HARNESS_READY`をpredecessorとし、actual host runとは独立に実装できる。
+  - 着手前の2026-07-22再計算では`VHDX_EVIDENCE_AUDIT`として唯一の`RUNNABLE NOW`、TE 2.167日、
+    total float 0日、precedence/resource criticalとして`SELECT`された。
+- スコープ:
+  - 一つのrun IDにexact 4 fault directoryが重複なく揃うことを検査する。
+  - host/distro/VHDX identity、controllerのterminate/restart exit、時刻順序、false claim、各faultの
+    verify/fsck/dump/payload/recovery diagnostic、artifact SHA-256をmanifestから照合する。
+  - missing/duplicate fault、identity不一致、claim昇格、digest不一致、incomplete stateをfail closedにする。
+  - synthetic evidenceと既存process-kill substitute evidenceでpositive/negative regressionを作る。
+- 完了条件:
+  - validate-only commandが完全な4点証跡だけをPASSし、個別faultの成功をhost qualificationへ誤昇格しない。
+  - gate自体はimage/deviceへwrite、mount、WSL terminate/restartを行わない。
+- 非目標: native Windows host run、`wsl.exe --terminate`/`--shutdown`、raw VHDX access、real-media claim。
+- 完了結果（2026-07-22）:
+  - `v7-vhdx-evidence-audit-gate.sh`を追加し、controller形式のrun ID、exact 4 fault、per-fault schema、
+    共通distro/VHDX/WSL filesystem/Git identity、非重複時刻、zero exit、false claimを検証する。
+  - 全top-level regular artifactを`artifacts.sha256`と相互に完全一致させ、recovered image digest、
+    recovery diagnostic、full-fsck/kafsdump/payload manifest、clean format-v7 dumpを照合する。
+  - synthetic complete bundleをPASSし、missing/extra fault、identity drift、claim昇格、tamper/unlisted/incomplete
+    artifact、marker/diagnostic/dump mismatch、時刻重複、process-kill substituteを拒否する回帰を追加した。
+  - focused VHDX 2件とfull `make check` 44件がPASSし、`min_git_hooks`だけFUSE permissionでSKIPした。
+    format、lint、clone/static checks、build、`make dist`もPASSした。
+  - VHDX、mount、image write、PowerShell、WSL terminate/restart、実媒体操作は実施していない。
+- 状態: 完了。`VHDX_EVIDENCE_AUDIT_READY`をreachedとし、planから実装taskを除いた。actual host captureと
+  `VHDX_HOST_RECOVERY_QUALIFIED`は未完了のまま保持する。
+- 実証結果（2026-07-29）:
+  - native Windows run `20260729T124817Z-8b5a8ad9`が4 faultすべての
+    terminate/restart/recovery/verificationを完了した。
+  - 初回集約監査で.NETの7桁小数UTC時刻とsynthetic
+    `journal_publish` mutation countの契約driftを検出した。timezone/future/orderの
+    fail-closed性を保ったprecision対応とruntime verifier準拠の2 applied/1 already-appliedへ修正し、
+    negative regressionを追加した。
+  - retained runを変更せず再監査し
+    `KAFS_V7_VHDX_EVIDENCE_AUDIT PASS`。`VHDX_HOST_RECOVERY_QUALIFIED`を
+    reachedとした。physical-media、wear、RC、production claimは引き続きfalse。
+
+### SDW-V7RT-T58 real-media evidence review gate
+
+- 目的: destructive real-media executionより前に、artifact manifestと独立review decisionを機械検証できる
+  fail-closed contractを確立する。
+- PERT/依存:
+  - `SOFTWARE_QUALIFIED`をpredecessorとし、hardware identity/approval、physical device、VHDX maintenance
+    windowなしで完了できる。
+  - 着手前の2026-07-22再計算では`REAL_MEDIA_EVIDENCE_CONTRACT`として唯一の`RUNNABLE NOW`、
+    TE 4.167日、total float 0日、precedence/resource criticalとして`SELECT`された。
+- スコープ:
+  - exact approval/matrix digest、before/after device identity、reader/controllerとisolated-power identity、
+    workload/boundary/cycle、`PASS`/`FAIL`/`SKIP`/`INCONCLUSIVE`、artifact hashをschemaへ固定する。
+  - operatorとreviewerのidentityを分離し、reviewerが全必須resultとdigestを独立照合した
+    `ACCEPT`/`REJECT`/`INCONCLUSIVE` decisionだけを受理する。
+  - synthetic manifestによるpositive/negative regressionで、missing cycle、identity drift、approval digest
+    不一致、hash不一致、operator-self-review、claim昇格を拒否する。
+- 完了条件:
+  - execution前artifact contractとexecution後review contractがversioned schemaとvalidate-only gateで閉じる。
+  - DRAFT matrix/approval gateとのbindingが検証され、deviceを開かずに全regressionがPASSする。
+- 非目標: `/dev/*` open、format、mount、power interruption、cycle execution、actual reviewer承認、RC claim。
+- 完了結果（2026-07-22）:
+  - `KAFS.V7RealMediaQualificationEvidence.v1`と`KAFS.V7RealMediaQualificationReview.v1`、および
+    validate-only gateを追加した。matrix/approval/evidenceのbyte digest、run開始時approval、exact sample identity、
+    workload/boundary/cycle cross-product、artifact path/size/SHA-256、operator/reviewer分離をfail closedで検証する。
+  - `ACCEPT`は全resultが`PASS`かつ全review checkがtrueの場合だけ許可し、非PASSはfinding付きの
+    `REJECT`または`INCONCLUSIVE`として保持する。RC、real-media-qualified、controller-independent-wear claimは
+    evidence/reviewともfalseに固定した。
+  - synthetic positive/negative regression、focused Automake 3件、full `make check` 43件がPASSし、`stress_fs`だけ
+    FUSE環境制約でSKIPした。format、lint、clone/static checks、build、`make dist`もPASSした。
+  - device、mount、format、power、WSL terminate/shutdown操作は実施していない。
+- 状態: 完了。`REAL_MEDIA_EVIDENCE_CONTRACT_READY`をreachedとし、planから実装taskを除いた。
+
+### SDW-V7RT-T59-A migration lifecycle evidence contract
+
+- 目的: importer実装より先に、v5 source snapshot、v7 work destination、accepted destination、resume、rollback、
+  idempotenceをversioned evidence contractへ固定する。
+- 再計画根拠:
+  - 2026-07-22のTask Start再調査で、現行`kafs-v7` write surfaceはregular-file
+    create/write/truncateに限定され、`mkdir`、symlink作成、所有者・時刻変更、indirect-directory、
+    cross-group mutationはfail closedであることを確認した。
+  - 従ってT29 destination scaffoldから直接full rehearsalへ進む前提は不成立。単一fixtureをcopy capabilityへ
+    誤昇格しないため、contract、v7-owned offline importer、rehearsalを独立capabilityへ分解した。
+- PERT/依存:
+  - `V7_MIGRATION_TARGET_READY`をpredecessorとする。
+  - 再計算では`MIGRATION_EVIDENCE_CONTRACT`だけが`RUNNABLE NOW`、TE 4.167日、total float 0日、
+    precedence/resource criticalとして`SELECT`された。
+- スコープ:
+  - source identityとimmutable namespace/metadata/payload inventory、destination geometry/identity、copy ledger、
+    phase transition、digest、false cutover claimをschema化する。
+  - incomplete/failed destinationはacceptedにならず、resumeは同じsource/destination/planへbindし、rollbackは
+    sourceを変更せずfailed destinationを保存するcontractとする。
+  - validate-only gateとsynthetic positive/negative regressionを用意する。
+- 完了条件: completeなevidenceだけがaccepted stateを表現でき、identity drift、source mutation、欠落entry、
+  digest不一致、illegal phase transition、partial destination、claim昇格をfail closedにする。
+- 非目標: actual data import、runtime mutation拡張、mount、production source、physical media、cutover承認。
+- 実績:
+  - `KAFS.V5V7MigrationPlan.v1`、source/copy-ledger/destination/decisionの各schema、byte digest chain、
+    exact artifact inventoryを`v5-v7-migration-evidence-gate.sh`でfail closedに検証する。
+  - resumed `ACCEPT`、partial `RESUME_REQUIRED`、preserved `ROLLBACK`のpositive regressionと、identity/source
+    mutation、欠落・payload・phase・attempt・claim・resume・rollback・hardlink・artifact境界のnegative regressionを追加した。
+  - build、focused test、full `make check` 46件、format、lint、clone/static、`make dist`がPASSした。
+    新規テストはsynthetic JSONだけを使い、image/mount/PowerShell/VHDX/WSL/device操作は行っていない。
+- 状態: 完了。`MIGRATION_CONTRACT_READY`をreachedとし、planから実装taskを除いた。
+
+### SDW-V7RT-T59-B v7 offline migration import surface
+
+- 目的: T59-A contractに従い、v5のdirectory、regular file、symlink、metadata、payloadをdisposable v7 imageへ
+  取り込むv7-owned offline pathを実装する。
+- 依存: `MIGRATION_CONTRACT_READY`。
+- スコープ:
+  - v5/v6 runtime entrypointやbounded controlled-write FUSE surfaceを経由せず、v7 ownershipでdestinationを構築する。
+  - unsupported source type、uid/gid/mode/timeの表現不能、capacity不足、partial importをwrite前またはadmission前に拒否する。
+  - directory traversal、hardlink policy、dense/sparse payload、group assignment、source immutabilityをcontractから導出する。
+- 完了条件: 複数shapeのdisposable sourceをimportし、fsck/dumpとcontract inventoryが一致する。失敗destinationは
+  accepted/admittedされない。
+- 非目標: production cutover、in-place relocation、v6 compatibility、runtime metadata mutation拡張。
+- 実績:
+  - `kafsresize --migrate-import-v7`とv7-owned `kafs_v7_import` moduleを追加した。sourceはread-only
+    regular-file v5 imageに限定し、stable inode ID、directory、regular-file hardlink、symlink、mode、uid/gid、
+    time、dense payloadをnew v7 imageへ構築する。
+  - v5 KDIR、tail-only、direct/single/double/triple referenceをpreflightし、special type、pending reference、
+    sparse hole、namespace/link不整合、capacity不足、source identity/CRC driftをfail closedにする。
+  - destinationは`<dst>.kafs-import-partial`へprivate constructionし、bitmap/allocator/checkpointを更新して
+    full v7 validatorがPASSした後だけno-replaceでfinal pathをpublishする。失敗時はfinalを残さずpartialを保存する。
+  - disposable regressionでnested directory、inline/tail-only/single-/double-indirect file、empty file、symlink、2-path
+    hardlink、frozen-source metadata、two-group layout、fsck/dump/inspection mountとnegative casesを確認した。
+- 非目標の維持: WSL terminate/shutdown、PowerShell/VHDX、physical device、production source、cutover、v6
+  compatibility、in-place/runtime mutationは実施・追加していない。resume/rollback/idempotence evidenceはT59-C。
+- 状態: 完了。build、全47 test、format、lint、clone/static、distribution gateがPASSし、
+  `MIGRATION_IMPORT_READY`をreachedとしてresidual planから実装taskを除いた。
+
+#### SDW-V7RT-T59-B-F1 v5 mixed-tail pending-reference source finding
+
+- 観測: importer fixtureの`13 * 4096 + 73` byte mixed-tail fileで、source drain後にもpending reference 1件と
+  HRL mismatchが残り、full source fsck/import preflightが拒否した。exact `13 * 4096` indirect fixtureはclean。
+- 状態: `CONFIRMED`なのは当該fixtureの非importable persisted stateまで。一般的な発生条件、v5 runtime cause、
+  recovery方法は`UNKNOWN`であり、T59-B importer causeとはしない。
+- disposition/owner: v5 source-preparation backlogとしてowned、T59-Cでfail-closed rejection evidenceを保持する。
+  production sourceに同状態があればmigration eligibility blockerとして別途調査する。pendingをimport許可しない。
+
+#### SDW-V7RT-T59-B-F2 v5 indirect-index bitmap source finding
+
+- 観測: blockごとに同一内容を持つ1040-block fileのsource preparationで、inode 6のsingle-indirect rootが
+  block 720を参照したまま、そのblockがbitmap上freeとなるpersisted stateを1件確認した。default fsckと
+  `--full-check`はいずれもexit 0で、full-checkは`pending_refs=0`、`invalid_refs=0`、`mismatches=0`を報告したが、
+  importerのbitmap-aware traversalは`EUCLEAN`で拒否した。
+- 状態: raw reference/bitmap不一致とfsck検出欠落は`CONFIRMED`。高重複payload、background dedup、pending workerとの
+  相関はあるが、block-unique payload、background dedup off、full fsyncでも同じimporter拒否が再現したため、
+  それらは十分条件ではない。一般的な発生条件とcausal componentは`UNKNOWN`である。
+- disposition/owner: v5 source-preparation/full-fsck backlogとしてowned、T59-Cでfail-closed rejection evidenceを
+  保持する。double-indirect importer regressionはblockごとに一意なpayloadと、runtimeが許容するpending-log
+  region無しのv5同期write fixtureへ分離し、importerのbitmap checkを緩和せず、自動repairもしない。
+
+### SDW-V7RT-T59-C v5-to-v7 migration rehearsal
+
+- 目的: T59-A contractとT59-B importerをnormal/resume/rollback/idempotenceのdata-copy lifecycle全体で演習する。
+- 依存: `MIGRATION_IMPORT_READY`。qualified runtimeとのjoin後にだけproduction cutover evidenceを許可する。
+- スコープ:
+  - disposable v5 sourceとv7 destinationでsource freeze/immutability、namespace/payload/metadata equivalence、
+    geometry、fsck/dump evidenceを比較する。
+  - interruption後の再開、partial destination拒否、rollback、同じplan再実行のidempotenceを検証する。
+- 完了条件: normal/resume/rollback rehearsalがsource immutabilityとdestination completenessを証明し、失敗時に
+  incomplete destinationをmount/cutover対象へ昇格させない。
+- 非目標: production cutover、in-place metadata relocation、physical media、v6 compatibility、自動RC承認。
+- 実績:
+  - caller-supplied image/device/mountpointを受け取らない`v5-v7-migration-rehearsal.sh`を追加し、disposable v5
+    source、normal v7、attempt-1 partial、attempt-2 v7、rollback-preserved v7を生成・保存する。
+  - source/normal/attempt-2のread-only mounted semantic inventory一致、source identity/SHA-256不変、fsck/dump、
+    published destinationのno-replace idempotenceを確認する。
+  - attempt 1は2 object後に中断してpartialを保存し、attempt 2は同じfrozen sourceから全量replayする。
+    in-place partial continuationとは主張せず、4つのT59-A bundleを既存gateで検証する。
+  - T59-B-F1/F2 shapeのpending referenceとbitmap不整合はfinal destinationをpublishせずfail closedとなる。
+    root causeや一般発生条件は引き続き`UNKNOWN`のままowned backlogへ残す。
+- 状態: 完了。`MIGRATION_REHEARSAL_READY`をreachedとし、planから実装taskを除いた。PowerShell/VHDX、WSL
+  terminate/shutdown、physical device、production source、cutoverは実施していない。
+
+---
 ---
 
 ## 次に着手する候補
 
-1. v6 scaffold のうち、v7 継続作業で混乱しやすい内部名を neutral descriptor family 名へ分離する。
-2. `kafsresize --migrate-create --format-version 7` を追加し、v5 -> v7 offline migration path を
-   v7 entrypoint とつなぐ。
-3. `kafs-v7 --inspection-mount` の mount smoke を追加し、次に controlled-write proof へ進む。
+この節はhandoff用の開始候補であり、実装開始許可または最新の完了条件ではない。着手前に`AGENTS.md`の
+Task Start Gateでcurrent checkoutのevidenceを再確認し、`PASS`・`REPLAN`・`BLOCKED`を判定する。
+
+T49-T58とT59-A/T59-B/T59-Cは完了している。2026-07-22にblockerの前後をcapability単位で再調査し、T57-T59を登録した。
+`VHDX_HOST_RECOVERY_RUN`とexact physical hardware identity/approvalはcompleteや削除にせずblockedのまま
+残す。T59-C closeout後のvalid residual planには`RUNNABLE NOW`がなく、両external blockerがzero-slack
+`BLOCKED NOW`であるため、次wave選定は`BLOCKED`である。whole-namespace graph validation `N`と
+T59-B-F1/F2はowned dispositionを維持するが、accepted finishを短縮しないため代替選定しない。
+
+ユーザーが実施可能時期を明示した後に限り、native Windows PowerShellから次を行う。
+
+1. `scripts/v7-vhdx-host-recovery.ps1 -Distro Ubuntu`でread-only preflightを実行し、registryで発見した
+   exact VHDX path/length、Linux runner、state root、false claimを確認する。
+2. target Ubuntuの外側にあるnative Windows PowerShellから`-Execute -Confirm`を付けて、4 faultすべての
+   marker確認、distro terminate/restart、resume verifyを実行する。target WSL内のCodexからは実行しない。
+3. 4 state directoryのhost-controller、fsck、dump、payload/recovery diagnostic、manifest、SHA-256が揃えば
+   capture taskをcompleteとし、T57 gateの監査PASS後にだけVHDX qualification joinを閉じる。
+
+実媒体準備を再開できる時点では、並行するexternal blocker `H`について次を行う。
+
+1. `SDW-V7RT-T48-B1` matrixへexact host/card/reader/power-cut identityとcycle countを入力し、
+   `READY_FOR_APPROVAL` gateが返すSHA-256をoperatorへ提示する。
+2. そのexact digestに対する期限付きapprovalを得た後だけ、承認されたsampleを対象にreal-media runnerを
+   実装する。承認前はformat、mount、power interruption、`/dev/*` execution pathを追加しない。
+3. execution evidenceをT58 contractへ固定し、operatorと異なるreviewerのdecisionがPASSして初めて
+   `MEDIA_QUALIFIED`をclosedとする。
+
+現在の選定根拠と非目標は
+`docs/sd-card-wear-v7-indirect-pert-20260721.md`と
+`docs/sd-card-wear-v7-capability-rebaseline-20260721.md`を参照する。hardware blockerをgraphから外したり、
+局所着手容易性で`H`をoff-pathの`N`へ置換したりせず、各wave closeoutでPERTを再構築する。
+
+FTL/ECC相関fault injectionは通常のimplementation blockerにはせず、RC media qualificationとrelease noteの
+既知制約として扱う。これはsoftware recovery gateの免除ではなく、RCでは通常の実SD card上の
+format/mount/unmount/remount/fsckと独立reviewを必須とし、controlled writeを含むRCではさらに
+write/full-fsync/controlled power-interruption cycleを必須とする。stable/GAではphysical
+failure-domainの残存riskを再評価する。
+
+cross-group HRL と multi-group atomic mutation は、まず group-local placement と recovery replica の
+wear/fault proof を固めた後に段階的に扱う。
 
 履歴上の Phase 1/2 backlog は下記の直近実装メモに残す。現行の descriptor-backed format work は
 format v7 を入口にする。

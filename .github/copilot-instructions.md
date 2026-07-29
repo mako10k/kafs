@@ -6,6 +6,11 @@ Mandatory rules only.
 - Identity: reply `GitHub Copilot` when asked your name.
 - If tooling loads `.github/copilot-instruction.md`, treat it as an alias of this file and apply the same rules.
 - Follow repository rules in `.github/github-dev-rules.md`.
+- Before non-trivial implementation or refactoring, run the `AGENTS.md` Task
+  Start Gate and do not edit until the current-checkout evidence supports a
+  `PASS` decision.
+- Select implementation waves through the `AGENTS.md` Goal And Critical Path
+  Gate; do not prioritize by file, finding count, ticket order, or local cleanup.
 - Respect repository scripts and Makefile targets.
 - Build and run tests after code edits; report PASS/FAIL with deltas.
 - For implementation work, start from a GitHub issue on a new branch + worktree, open a PR, and clean up the worktree after merge to support parallel development.
@@ -53,6 +58,22 @@ When reporting findings, diagnoses, or causal explanations, the agent MUST expli
   - Facts: direct outputs, code references, measured counters.
   - Interpretation: hypotheses or causal conclusions drawn from those facts.
 - Do not present hypotheses as settled facts unless they are fully validated by reproducible evidence.
+
+## Diagnostic and causal reasoning (mandatory)
+
+- Follow the `AGENTS.md` Diagnostic And Causal-Reasoning Gate for diagnoses,
+  recovery recommendations, diagnostic mutations, RCAs, and retrospectives.
+- Confidence markers do not satisfy that gate by themselves. Preserve competing
+  hypotheses, discriminating checks, claim dependencies, and invalidation of
+  downstream conclusions when a premise is refuted.
+- Evaluate user objections and agent claims under the same evidence standard;
+  neither agreement nor disagreement is a substitute for verification.
+- Do not recommend a state change from an unverified causal story. Distinguish
+  workaround, containment, recovery, and root fix, and record what evidence a
+  change could destroy.
+- Build retrospectives from the contemporaneous chronology before thematic
+  grouping. Keep the technical failure chain separate from the agent's
+  reasoning and response chain.
 
 ## Decision checkpoints (must ask user)
 

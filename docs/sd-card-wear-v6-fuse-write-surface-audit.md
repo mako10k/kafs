@@ -1,5 +1,9 @@
 # KAFS format v6 FUSE write surface admission audit
 
+> **Historical v6 record:** This audit preserves the retired controlled-write investigation.
+> Its commands are not current operator guidance. See
+> [the current retirement plan](sd-card-wear-v6-retirement-plan.md).
+
 最終更新: 2026-06-26
 
 対象: `SDW-V6RT-T11 v6 FUSE write surface admission audit`

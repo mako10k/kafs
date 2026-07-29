@@ -13,8 +13,12 @@
 #include "kafs_core.h"
 #include "kafs_shared_fuse_runner.h"
 #include "kafs_tailmeta.h"
-#include "kafs_v6_fuse_init_policy.h"
-#include "kafs_v6_fuse_policy.h"
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+#include "kafs_v7_fuse_policy.h"
+#include "kafs_v7_runtime_view.h"
+#include "kafs_v7_runtime_transaction.h"
+#include "kafs_v7_fuse_write.h"
+#endif
 
 #include <fuse.h>
 #include <fuse_log.h>
@@ -894,11 +898,18 @@ __attribute_maybe_unused__ static int kafs_ref_pending_encode(uint64_t pending_i
 static int kafs_ref_resolve_data_blo(struct kafs_context *ctx, kafs_blkcnt_t ref,
                                      kafs_blkcnt_t *out_blo)
 {
-  if (!out_blo)
+  if (!ctx || !out_blo)
     return -EINVAL;
   if (ref == KAFS_BLO_NONE)
   {
     *out_blo = KAFS_BLO_NONE;
+    return 0;
+  }
+  if (ctx->c_superblock && kafs_sb_format_version_get(ctx->c_superblock) == KAFS_FORMAT_VERSION_V7)
+  {
+    if (!ctx->c_v7_runtime_view_enabled || (uint64_t)ref > kafs_sb_r_blkcnt_get(ctx->c_superblock))
+      return -EIO;
+    *out_blo = ref;
     return 0;
   }
   if (!kafs_ref_is_pending(ref))
@@ -2779,6 +2790,72 @@ static void kafs_bg_dedup_worker_stop(struct kafs_context *ctx)
 // BLOCK OPERATIONS
 // ---------------------------------------------------------
 
+static int kafs_blk_validate_ref(struct kafs_context *ctx, kafs_blkcnt_t blo, const char *caller,
+                                 int *v7_view_out, int *invalid_ref_out)
+{
+  if (!ctx || !ctx->c_superblock || !v7_view_out)
+    return -EINVAL;
+  if (invalid_ref_out)
+    *invalid_ref_out = 0;
+
+  kafs_blkcnt_t max_blo = kafs_sb_r_blkcnt_get(ctx->c_superblock);
+  int v7_view = ctx->c_v7_runtime_view_enabled &&
+                kafs_sb_format_version_get(ctx->c_superblock) == KAFS_FORMAT_VERSION_V7;
+  *v7_view_out = v7_view;
+  if (blo != KAFS_BLO_NONE && ((!v7_view && blo >= max_blo) || (v7_view && blo > max_blo)))
+  {
+    kafs_log(KAFS_LOG_ERR, "%s: invalid block ref blo=%" PRIuFAST32 " (max=%" PRIuFAST32 ")\n",
+             caller ? caller : __func__, blo, max_blo);
+    if (invalid_ref_out)
+      *invalid_ref_out = 1;
+    return -EIO;
+  }
+  return 0;
+}
+
+static int kafs_blk_resolve_offset(struct kafs_context *ctx, kafs_blkcnt_t blo, int v7_view,
+                                   uint64_t *off_out)
+{
+  if (!ctx || !off_out)
+    return -EINVAL;
+  *off_out = 0;
+  if (blo == KAFS_BLO_NONE)
+    return 0;
+  if (v7_view)
+    return kafs_ctx_v7_data_ref_physical_offset(ctx, blo, off_out);
+
+  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
+  *off_out = (uint64_t)blo << log_blksize;
+  return 0;
+}
+
+static int kafs_blk_resolve_physical_range(struct kafs_context *ctx, kafs_blkcnt_t blo,
+                                           const char *caller, uint64_t *off_out,
+                                           kafs_blksize_t *blksize_out, int *invalid_ref_out)
+{
+  if (!off_out || !blksize_out)
+    return -EINVAL;
+  int v7_view = 0;
+  int rc = kafs_blk_validate_ref(ctx, blo, caller, &v7_view, invalid_ref_out);
+  if (rc != 0)
+    return rc;
+
+  uint64_t off = 0;
+  rc = kafs_blk_resolve_offset(ctx, blo, v7_view, &off);
+  if (rc != 0)
+    return rc;
+  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+  if (blo != KAFS_BLO_NONE)
+  {
+    if (off > ctx->c_img_size || (uint64_t)blksize > ctx->c_img_size - off)
+      return -EIO;
+  }
+
+  *off_out = off;
+  *blksize_out = blksize;
+  return 0;
+}
+
 /// @brief ブロック単位でデータを読み出す
 /// @param ctx コンテキスト
 /// @param blo ブロック番号
@@ -2791,11 +2868,12 @@ static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
   kafs_dlog(3, "%s(blo = %" PRIuFAST32 ")\n", __func__, blo);
   assert(ctx != NULL);
   assert(buf != NULL);
-  kafs_blkcnt_t max_blo = kafs_sb_r_blkcnt_get(ctx->c_superblock);
-  if (blo != KAFS_BLO_NONE && blo >= max_blo)
+  uint64_t off = 0;
+  kafs_blksize_t blksize = 0;
+  int invalid_ref = 0;
+  int rc = kafs_blk_resolve_physical_range(ctx, blo, __func__, &off, &blksize, &invalid_ref);
+  if (invalid_ref)
   {
-    kafs_log(KAFS_LOG_ERR, "%s: invalid block ref blo=%" PRIuFAST32 " (max=%" PRIuFAST32 ")\n",
-             __func__, blo, max_blo);
 #ifdef __linux__
     uint32_t c = __atomic_fetch_add(&s_invalid_blkref_bt_emitted, 1u, __ATOMIC_RELAXED);
     if (c < 3u)
@@ -2811,19 +2889,15 @@ static int kafs_blk_read(struct kafs_context *ctx, kafs_blkcnt_t blo, void *buf)
       }
     }
 #endif
-    return -EIO;
   }
-  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
-  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+  if (rc != 0)
+    return rc;
   if (blo == KAFS_BLO_NONE)
   {
     memset(buf, 0, blksize);
     return KAFS_SUCCESS;
   }
-  off_t off = (off_t)blo << log_blksize;
-  if ((size_t)off + (size_t)blksize > ctx->c_img_size)
-    return -EIO;
-  memcpy(buf, kafs_img_ptr(ctx, off, (size_t)blksize), (size_t)blksize);
+  memcpy(buf, (const char *)ctx->c_img_base + (size_t)off, (size_t)blksize);
   return KAFS_SUCCESS;
 }
 
@@ -2911,22 +2985,17 @@ static int kafs_blk_write(struct kafs_context *ctx, kafs_blkcnt_t blo, const voi
   assert(ctx != NULL);
   assert(buf != NULL);
   assert(blo != KAFS_INO_NONE);
-  kafs_blkcnt_t max_blo = kafs_sb_r_blkcnt_get(ctx->c_superblock);
-  if (blo != KAFS_BLO_NONE && blo >= max_blo)
-  {
-    kafs_log(KAFS_LOG_ERR, "%s: invalid block ref blo=%" PRIuFAST32 " (max=%" PRIuFAST32 ")\n",
-             __func__, blo, max_blo);
-    return -EIO;
-  }
-  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
-  kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
+  if (ctx->c_runtime_read_only)
+    return -EROFS;
+  uint64_t off = 0;
+  kafs_blksize_t blksize = 0;
+  int rc = kafs_blk_resolve_physical_range(ctx, blo, __func__, &off, &blksize, NULL);
+  if (rc != 0)
+    return rc;
   if (blo == KAFS_BLO_NONE)
     return KAFS_SUCCESS;
-  off_t off = (off_t)blo << log_blksize;
-  if ((size_t)off + (size_t)blksize > ctx->c_img_size)
-    return -EIO;
   kafs_diag_log_live_dir_block0_write(ctx, blo, buf, (size_t)blksize);
-  memcpy(kafs_img_ptr(ctx, off, (size_t)blksize), buf, (size_t)blksize);
+  memcpy((char *)ctx->c_img_base + (size_t)off, buf, (size_t)blksize);
   return KAFS_SUCCESS;
 }
 
@@ -3444,6 +3513,9 @@ static int kafs_ino_ibrk_run(struct kafs_context *ctx, kafs_sinode_t *inoent, ka
   assert(ctx != NULL);
   assert(pblo != NULL);
   assert(inoent != NULL);
+  if (ctx->c_runtime_read_only && ifunc != KAFS_IBLKREF_FUNC_GET &&
+      ifunc != KAFS_IBLKREF_FUNC_GET_RAW)
+    return -EROFS;
   kafs_dlog(3, "ibrk_run: iblo=%" PRIuFAST32 " ifunc=%d (size=%" PRIuFAST64 ")\n", iblo, (int)ifunc,
             kafs_ino_size_get(inoent));
 
@@ -3672,8 +3744,6 @@ static int kafs_ino_iblk_write_legacy(struct kafs_context *ctx, kafs_sinode_t *i
 
   if (old_raw != KAFS_BLO_NONE)
   {
-    uint32_t ino_idx = (uint32_t)kafs_ctx_ino_no(ctx, inoent);
-    kafs_inode_unlock(ctx, ino_idx);
     kafs_blkcnt_t old_blo = KAFS_BLO_NONE;
     if (kafs_ref_resolve_data_blo(ctx, old_raw, &old_blo) == 0 && old_blo != KAFS_BLO_NONE &&
         old_blo != new_blo)
@@ -3683,7 +3753,6 @@ static int kafs_ino_iblk_write_legacy(struct kafs_context *ctx, kafs_sinode_t *i
       uint64_t t_dec1 = kafs_now_ns();
       __atomic_add_fetch(&ctx->c_stat_iblk_write_ns_dec_ref, t_dec1 - t_dec0, __ATOMIC_RELAXED);
     }
-    kafs_inode_lock(ctx, ino_idx);
   }
 
   return KAFS_SUCCESS;
@@ -3893,6 +3962,8 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
   assert(buf != NULL);
   assert(inoent != NULL);
   assert(kafs_ino_get_usage(inoent));
+  if (ctx->c_runtime_read_only)
+    return -EROFS;
   // Directory metadata is frequently rewritten and can cross the inline/block-backed boundary.
   // Keep that path synchronous so shrink-to-inline and unlink do not race with pendinglog writes.
   if (ctx->c_pendinglog_enabled && ctx->c_pending_worker_running &&
@@ -4820,11 +4891,7 @@ static int kafs_pwrite_commit_block(struct kafs_context *ctx, kafs_sinode_t *ino
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
 
   if (kafs_ino_size_get(inoent) > KAFS_INODE_DIRECT_BYTES && kafs_blk_is_zero(buf, blksize))
-  {
-    if (kafs_v6_controlled_write_preserve_zero_block(ctx))
-      return kafs_ino_iblk_write(ctx, inoent, iblo, buf);
     return kafs_ino_iblk_release(ctx, inoent, iblo);
-  }
 
   return kafs_ino_iblk_write(ctx, inoent, iblo, buf);
 }
@@ -4878,9 +4945,6 @@ static int kafs_pwrite_prepare_tail_layout(struct kafs_context *ctx, kafs_sinode
   const kafs_sinode_taildesc_v5_t *taildesc = kafs_ctx_inode_taildesc_v5_const(ctx, inoent);
 
   *completed_out = 0;
-  if (kafs_v6_controlled_write_skip_tail_layout(ctx))
-    return 0;
-
   if (taildesc &&
       kafs_ino_taildesc_v5_layout_kind_get(taildesc) == KAFS_TAIL_LAYOUT_MIXED_FULL_TAIL)
   {
@@ -4955,9 +5019,6 @@ static int kafs_pwrite_extend_inode_size(struct kafs_context *ctx, kafs_sinode_t
 static void kafs_pwrite_sync_regular_taildesc(struct kafs_context *ctx, kafs_sinode_t *inoent,
                                               kafs_off_t filesize)
 {
-  if (kafs_v6_controlled_write_skip_tail_layout(ctx))
-    return;
-
   if (!kafs_tailmeta_inode_is_regular_v5(ctx, inoent))
     return;
   if (filesize <= (kafs_off_t)KAFS_INODE_DIRECT_BYTES)
@@ -5025,6 +5086,8 @@ static ssize_t kafs_pwrite(struct kafs_context *ctx, kafs_sinode_t *inoent, cons
   assert(buf != NULL);
   assert(inoent != NULL);
   assert(kafs_ino_get_usage(inoent));
+  if (ctx->c_runtime_read_only)
+    return -EROFS;
 
   kafs_off_t filesize = kafs_ino_size_get(inoent);
   kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
@@ -5353,6 +5416,8 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
   assert(ctx != NULL);
   assert(inoent != NULL);
   assert(kafs_ino_get_usage(inoent));
+  if (ctx->c_runtime_read_only)
+    return -EROFS;
   kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(ctx->c_superblock);
   kafs_blksize_t blksize = kafs_sb_blksize_get(ctx->c_superblock);
   kafs_off_t filesize_orig = kafs_ino_size_get(inoent);
@@ -6922,7 +6987,7 @@ static void kafs_ctx_close_fd(kafs_context_t *ctx)
 
 static void kafs_ctx_reset_mapping(kafs_context_t *ctx)
 {
-  kafs_bitmap_descriptor_mapping_clear(ctx);
+  kafs_ctx_v7_runtime_view_clear(ctx);
   ctx->c_img_base = NULL;
   ctx->c_img_size = 0;
   ctx->c_superblock = NULL;
@@ -7057,8 +7122,7 @@ static void kafs_ctx_setup_meta_delta(kafs_context_t *ctx, kafs_blkcnt_t r_blkcn
 {
   if (!ctx)
     return;
-  if (ctx->c_superblock &&
-      kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(ctx->c_superblock)))
+  if (ctx->c_superblock && kafs_sb_format_version_get(ctx->c_superblock) == KAFS_FORMAT_VERSION_V7)
   {
     ctx->c_meta_delta_enabled = 0;
     ctx->c_meta_bitmap_words_enabled = 0;
@@ -7099,9 +7163,6 @@ void kafs_ctx_init_runtime_journal(kafs_context_t *ctx, const char *image_path,
   (void)kafs_journal_init(ctx, image_path);
   kafs_ctx_setup_meta_delta(ctx, r_blkcnt);
   (void)kafs_journal_replay(ctx, NULL, NULL);
-  if (ctx->c_v6_delayed_mutation_policy_applied)
-    return;
-
   (void)kafs_pendinglog_init_or_load(ctx);
   if (ctx->c_pendinglog_enabled)
   {
@@ -7200,7 +7261,6 @@ void kafs_core_close_image(kafs_context_t *ctx)
   kafs_pending_worker_stop(ctx);
   (void)kafs_journal_shutdown(ctx);
   (void)kafs_hrl_close(ctx);
-  kafs_bitmap_descriptor_mapping_clear(ctx);
   free(ctx->c_meta_bitmap_words);
   free(ctx->c_meta_bitmap_dirty);
   ctx->c_meta_bitmap_words = NULL;
@@ -7521,8 +7581,26 @@ static int kafs_is_ctl_path(const char *path);
 
 static int kafs_runtime_write_guard(const kafs_context_t *ctx)
 {
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  int v7_rc = kafs_v7_fuse_policy_reject_legacy_mutation(ctx);
+  if (v7_rc != 0)
+    return v7_rc;
+#endif
   return (ctx && ctx->c_runtime_read_only) ? -EROFS : 0;
 }
+
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+static int kafs_v7_fuse_closeout_barrier(kafs_context_t *ctx, kafs_v7_controlled_write_op_t op)
+{
+  if (!kafs_v7_fuse_policy_controlled_write_active(ctx))
+    return 0;
+  int rc = kafs_v7_fuse_policy_check_controlled_write(ctx, op);
+  if (rc != 0)
+    return rc;
+  kafs_v7_runtime_transaction_result_t result;
+  return kafs_v7_runtime_transaction_barrier_context(ctx, &result);
+}
+#endif
 
 static int kafs_mutation_path_context(const char *path, struct fuse_context **fctx_out,
                                       struct kafs_context **ctx_out)
@@ -7591,12 +7669,25 @@ static int kafs_op_statfs(const char *path, struct statvfs *st)
   memset(st, 0, sizeof(*st));
 
   const unsigned blksize = (unsigned)kafs_sb_blksize_get(ctx->c_superblock);
-  const kafs_blkcnt_t blocks = kafs_sb_blkcnt_get(ctx->c_superblock);
-  kafs_bitmap_lock(ctx);
-  const kafs_blkcnt_t bfree = kafs_sb_blkcnt_free_get(ctx->c_superblock);
-  kafs_bitmap_unlock(ctx);
+  kafs_blkcnt_t blocks;
+  kafs_blkcnt_t bfree;
   const kafs_inocnt_t files = kafs_sb_inocnt_get(ctx->c_superblock);
-  const kafs_inocnt_t ffree = (kafs_inocnt_t)kafs_sb_inocnt_free_get(ctx->c_superblock);
+  kafs_inocnt_t ffree;
+  if (ctx->c_v7_runtime_view_enabled &&
+      kafs_sb_format_version_get(ctx->c_superblock) == KAFS_FORMAT_VERSION_V7)
+  {
+    blocks = kafs_sb_r_blkcnt_get(ctx->c_superblock);
+    bfree = (kafs_blkcnt_t)ctx->c_v7_recovered_free_blocks;
+    ffree = (kafs_inocnt_t)ctx->c_v7_recovered_free_inodes;
+  }
+  else
+  {
+    blocks = kafs_sb_blkcnt_get(ctx->c_superblock);
+    kafs_bitmap_lock(ctx);
+    bfree = kafs_sb_blkcnt_free_get(ctx->c_superblock);
+    kafs_bitmap_unlock(ctx);
+    ffree = (kafs_inocnt_t)kafs_sb_inocnt_free_get(ctx->c_superblock);
+  }
 
   st->f_bsize = blksize;
   st->f_frsize = blksize;
@@ -8210,22 +8301,16 @@ static ssize_t kafs_copy_regular_range(kafs_context_t *ctx, kafs_sinode_t *ino_i
   if (ino_src == ino_dst)
     return 0;
 
-  if (ino_src < ino_dst)
-  {
-    kafs_inode_lock(ctx, ino_src);
-    kafs_inode_lock(ctx, ino_dst);
-  }
-  else
-  {
-    kafs_inode_lock(ctx, ino_dst);
-    kafs_inode_lock(ctx, ino_src);
-  }
+  uint32_t ino_first = ino_src < ino_dst ? ino_src : ino_dst;
+  uint32_t ino_second = ino_src < ino_dst ? ino_dst : ino_src;
+  kafs_inode_lock(ctx, ino_first);
+  kafs_inode_lock(ctx, ino_second);
 
   kafs_off_t src_size = kafs_ino_size_get(ino_in);
   if ((kafs_off_t)offset_in >= src_size)
   {
-    kafs_inode_unlock(ctx, ino_src);
-    kafs_inode_unlock(ctx, ino_dst);
+    kafs_inode_unlock(ctx, ino_second);
+    kafs_inode_unlock(ctx, ino_first);
     return 0;
   }
 
@@ -8243,8 +8328,8 @@ static ssize_t kafs_copy_regular_range(kafs_context_t *ctx, kafs_sinode_t *ino_i
   char *buf = (char *)malloc(bufsz);
   if (!buf)
   {
-    kafs_inode_unlock(ctx, ino_src);
-    kafs_inode_unlock(ctx, ino_dst);
+    kafs_inode_unlock(ctx, ino_second);
+    kafs_inode_unlock(ctx, ino_first);
     return -ENOMEM;
   }
 
@@ -8257,8 +8342,8 @@ static ssize_t kafs_copy_regular_range(kafs_context_t *ctx, kafs_sinode_t *ino_i
     if (src < 0)
     {
       free(buf);
-      kafs_inode_unlock(ctx, ino_src);
-      kafs_inode_unlock(ctx, ino_dst);
+      kafs_inode_unlock(ctx, ino_second);
+      kafs_inode_unlock(ctx, ino_first);
       return src;
     }
     if (src > 0)
@@ -8269,8 +8354,8 @@ static ssize_t kafs_copy_regular_range(kafs_context_t *ctx, kafs_sinode_t *ino_i
     if (w < 0)
     {
       free(buf);
-      kafs_inode_unlock(ctx, ino_src);
-      kafs_inode_unlock(ctx, ino_dst);
+      kafs_inode_unlock(ctx, ino_second);
+      kafs_inode_unlock(ctx, ino_first);
       return w;
     }
     if (w == 0)
@@ -8279,8 +8364,8 @@ static ssize_t kafs_copy_regular_range(kafs_context_t *ctx, kafs_sinode_t *ino_i
   }
 
   free(buf);
-  kafs_inode_unlock(ctx, ino_src);
-  kafs_inode_unlock(ctx, ino_dst);
+  kafs_inode_unlock(ctx, ino_second);
+  kafs_inode_unlock(ctx, ino_first);
   return (ssize_t)done;
 }
 
@@ -8880,9 +8965,6 @@ static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_
     int gate = kafs_runtime_write_guard(ctx);
     if (gate != 0)
       return gate;
-    gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_REFLINK);
-    if (gate != 0)
-      return gate;
     return kafs_ioctl_handle_ficlone(fctx, ctx, path, cmd, arg, fi, data);
   }
   if ((unsigned int)cmd == (unsigned int)FICLONERANGE)
@@ -8892,9 +8974,6 @@ static int kafs_op_ioctl(const char *path, int cmd, void *arg, struct fuse_file_
   if ((unsigned int)cmd == (unsigned int)KAFS_IOCTL_COPY)
   {
     int gate = kafs_runtime_write_guard(ctx);
-    if (gate != 0)
-      return gate;
-    gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_COPY);
     if (gate != 0)
       return gate;
     return kafs_ioctl_handle_copy(fctx, ctx, arg, data);
@@ -8913,11 +8992,6 @@ static ssize_t kafs_op_copy_file_range(const char *path_in, struct fuse_file_inf
   struct fuse_context *fctx = fuse_get_context();
   kafs_context_t *ctx = (kafs_context_t *)fctx->private_data;
   int gate = kafs_runtime_write_guard(ctx);
-  if (gate != 0)
-    return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, flags != 0
-                                                     ? KAFS_V6_CONTROLLED_WRITE_OP_REFLINK
-                                                     : KAFS_V6_CONTROLLED_WRITE_OP_COPY_FILE_RANGE);
   if (gate != 0)
     return gate;
 
@@ -8955,18 +9029,18 @@ static int kafs_op_open(const char *path, struct fuse_file_info *fi)
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
   int accmode = fi->flags & O_ACCMODE;
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (kafs_is_ctl_path(path))
+  {
+    int v7_rc = kafs_v7_fuse_policy_reject_legacy_mutation(ctx);
+    if (v7_rc != 0)
+      return v7_rc;
+  }
+#endif
   if (ctx && ctx->c_runtime_read_only &&
       (kafs_is_ctl_path(path) || accmode == O_WRONLY || accmode == O_RDWR ||
        (fi->flags & O_TRUNC) != 0))
     return -EROFS;
-  int gate = kafs_v6_controlled_write_reject_if_op(ctx, kafs_is_ctl_path(path),
-                                                   KAFS_V6_CONTROLLED_WRITE_OP_CONTROL_PLANE_OPEN);
-  if (gate != 0)
-    return gate;
-  gate = kafs_v6_controlled_write_reject_if_op(ctx, (fi->flags & O_TRUNC) != 0,
-                                               KAFS_V6_CONTROLLED_WRITE_OP_OPEN_TRUNC);
-  if (gate != 0)
-    return gate;
   if (kafs_is_ctl_path(path))
   {
     if (accmode != O_RDWR)
@@ -8985,16 +9059,41 @@ static int kafs_op_open(const char *path, struct fuse_file_info *fi)
     ok |= W_OK;
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, NULL, ok, &inoent);
-  fi->fh = kafs_ctx_ino_no(ctx, inoent);
-  if (ctx->c_open_cnt)
-    __atomic_add_fetch(&ctx->c_open_cnt[fi->fh], 1u, __ATOMIC_RELAXED);
+  kafs_inocnt_t ino = kafs_ctx_ino_no(ctx, inoent);
   // Handle O_TRUNC on open for existing files to match POSIX semantics
   if ((fi->flags & O_TRUNC) && (accmode == O_WRONLY || accmode == O_RDWR))
   {
-    kafs_inode_lock(ctx, (uint32_t)fi->fh);
-    (void)kafs_truncate(ctx, kafs_ctx_inode(ctx, fi->fh), 0);
-    kafs_inode_unlock(ctx, (uint32_t)fi->fh);
+    kafs_inode_lock(ctx, (uint32_t)ino);
+    int truncate_rc = 0;
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+    if (kafs_v7_fuse_policy_controlled_write_active(ctx))
+    {
+      truncate_rc =
+          kafs_v7_fuse_policy_check_controlled_write(ctx, KAFS_V7_CONTROLLED_WRITE_OP_OPEN_TRUNC);
+      if (truncate_rc == 0)
+      {
+        kafs_v7_fuse_truncate_result_t result;
+        truncate_rc = kafs_v7_fuse_truncate_regular(ctx, ino, 0u, &result);
+        if (truncate_rc == 0 && result.retirement_rc != 0)
+          kafs_log(KAFS_LOG_WARNING,
+                   "%s: v7 O_TRUNC block retirement deferred path=%s ino=%" PRIuFAST32 " rc=%d\n",
+                   __func__, path ? path : "(null)", (uint32_t)ino, result.retirement_rc);
+      }
+    }
+    else
+#endif
+      truncate_rc = kafs_truncate(ctx, inoent, 0);
+    kafs_inode_unlock(ctx, (uint32_t)ino);
+    if (truncate_rc != 0)
+      return truncate_rc;
   }
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  else if ((fi->flags & O_TRUNC) && kafs_v7_fuse_policy_controlled_write_active(ctx))
+    return -EACCES;
+#endif
+  fi->fh = ino;
+  if (ctx->c_open_cnt)
+    __atomic_add_fetch(&ctx->c_open_cnt[fi->fh], 1u, __ATOMIC_RELAXED);
   return 0;
 }
 
@@ -9271,10 +9370,61 @@ static int kafs_create(const char *path, kafs_mode_t mode, kafs_dev_t dev, kafs_
 
 static int kafs_op_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
+  struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = NULL;
-  int gate = kafs_mutation_path_context(path, NULL, &ctx);
+  ctx = fctx ? fctx->private_data : NULL;
+  int gate = 0;
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (!kafs_v7_fuse_policy_controlled_write_active(ctx))
+#endif
+    gate = kafs_mutation_path_context(path, NULL, &ctx);
   if (gate != 0)
     return gate;
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (kafs_v7_fuse_policy_controlled_write_active(ctx))
+  {
+    int policy =
+        kafs_v7_fuse_policy_check_controlled_write(ctx, KAFS_V7_CONTROLLED_WRITE_OP_CREATE);
+    if (policy != 0)
+      return policy;
+    if (!path || path[0] != '/' || path[1] == '\0' || kafs_is_ctl_path(path))
+      return -EINVAL;
+    int exists = kafs_access(fctx, ctx, path, NULL, F_OK, NULL);
+    if (exists == 0)
+      return -EEXIST;
+    if (exists != -ENOENT)
+      return exists;
+    char path_copy[strlen(path) + 1u];
+    strcpy(path_copy, path);
+    const char *dirpath = NULL;
+    char *basepath = NULL;
+    kafs_create_split_path(path_copy, &dirpath, &basepath);
+    kafs_sinode_t *parent = NULL;
+    int parent_rc = kafs_access(fctx, ctx, dirpath, NULL, W_OK, &parent);
+    if (parent_rc != 0)
+      return parent_rc;
+    if (!S_ISDIR(kafs_ino_mode_get(parent)))
+      return -ENOTDIR;
+    kafs_inocnt_t parent_ino = kafs_ctx_ino_no(ctx, parent);
+    kafs_inocnt_t ino_new = 0u;
+    int retirement_rc = 0;
+    kafs_inode_alloc_lock(ctx);
+    int create_rc = kafs_v7_fuse_create_in_direct_directory(
+        ctx, parent_ino, basepath, (uint16_t)mode, (uint16_t)fctx->uid, (uint16_t)fctx->gid,
+        &ino_new, &retirement_rc);
+    kafs_inode_alloc_unlock(ctx);
+    if (create_rc != 0)
+      return create_rc;
+    if (retirement_rc != 0)
+      kafs_log(KAFS_LOG_WARNING,
+               "%s: v7 directory block retirement deferred path=%s ino=%" PRIuFAST32 " rc=%d\n",
+               __func__, path, (uint32_t)parent_ino, retirement_rc);
+    fi->fh = ino_new;
+    if (ctx->c_open_cnt)
+      __atomic_add_fetch(&ctx->c_open_cnt[ino_new], 1u, __ATOMIC_RELAXED);
+    return 0;
+  }
+#endif
   kafs_inocnt_t ino_new;
   KAFS_CALL(kafs_create, path, mode | S_IFREG, 0, NULL, &ino_new);
   if (ctx)
@@ -9300,9 +9450,6 @@ static int kafs_op_mknod(const char *path, mode_t mode, dev_t dev)
   int gate = kafs_mutation_path_context(path, NULL, &ctx);
   if (gate != 0)
     return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_MKNOD);
-  if (gate != 0)
-    return gate;
   KAFS_CALL(kafs_create, path, mode, dev, NULL, NULL);
   return 0;
 }
@@ -9311,10 +9458,21 @@ static int kafs_op_truncate(const char *path, off_t size, struct fuse_file_info 
 {
   struct fuse_context *fctx = NULL;
   struct kafs_context *ctx = NULL;
-  int gate = kafs_mutation_path_context(path, &fctx, &ctx);
-  if (gate != 0)
-    return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_TRUNCATE);
+  struct fuse_context *current_fctx = fuse_get_context();
+  ctx = current_fctx ? current_fctx->private_data : NULL;
+  int gate = 0;
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (!kafs_v7_fuse_policy_controlled_write_active(ctx))
+#endif
+    gate = kafs_mutation_path_context(path, &fctx, &ctx);
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  else
+  {
+    fctx = current_fctx;
+    if (kafs_is_ctl_path(path))
+      gate = -EACCES;
+  }
+#endif
   if (gate != 0)
     return gate;
   kafs_sinode_t *inoent;
@@ -9322,6 +9480,26 @@ static int kafs_op_truncate(const char *path, off_t size, struct fuse_file_info 
   uint32_t ino = (uint32_t)kafs_ctx_ino_no(ctx, inoent);
   kafs_dlog(2, "%s: enter path=%s ino=%" PRIuFAST32 " size=%" PRIuFAST64 "\n", __func__,
             path ? path : "(null)", ino, (uint64_t)size);
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (kafs_v7_fuse_policy_controlled_write_active(ctx))
+  {
+    if (size < 0)
+      return -EINVAL;
+    int policy =
+        kafs_v7_fuse_policy_check_controlled_write(ctx, KAFS_V7_CONTROLLED_WRITE_OP_TRUNCATE);
+    if (policy != 0)
+      return policy;
+    kafs_v7_fuse_truncate_result_t result;
+    kafs_inode_lock(ctx, ino);
+    int truncate_rc = kafs_v7_fuse_truncate_regular(ctx, ino, (uint64_t)size, &result);
+    kafs_inode_unlock(ctx, ino);
+    if (truncate_rc == 0 && result.retirement_rc != 0)
+      kafs_log(KAFS_LOG_WARNING,
+               "%s: v7 truncate block retirement deferred path=%s ino=%" PRIuFAST32 " rc=%d\n",
+               __func__, path ? path : "(null)", ino, result.retirement_rc);
+    return truncate_rc;
+  }
+#endif
   int rc_hp = kafs_hotplug_call_truncate(fctx, ctx, inoent, size);
   if (rc_hp == 0)
   {
@@ -9496,9 +9674,6 @@ static int kafs_op_fallocate(const char *path, int mode, off_t offset, off_t len
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
   if (gate != 0)
     return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_FALLOCATE);
-  if (gate != 0)
-    return gate;
   kafs_off_t end_req;
   int rc = kafs_fallocate_validate_request(path, offset, length, &end_req);
   if (rc != 0)
@@ -9637,9 +9812,6 @@ static int kafs_op_mkdir(const char *path, mode_t mode)
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
   if (gate != 0)
     return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_MKDIR);
-  if (gate != 0)
-    return gate;
   uint64_t jseq = kafs_journal_begin(ctx, "MKDIR", "path=%s mode=%o", path, (unsigned)mode);
   kafs_inocnt_t ino_dir;
   kafs_inocnt_t ino_new;
@@ -9709,9 +9881,6 @@ static int kafs_op_rmdir(const char *path)
   struct fuse_context *fctx = NULL;
   struct kafs_context *ctx = NULL;
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
-  if (gate != 0)
-    return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_RMDIR);
   if (gate != 0)
     return gate;
   uint64_t jseq = kafs_journal_begin(ctx, "RMDIR", "path=%s", path);
@@ -9877,13 +10046,6 @@ static int kafs_op_write_fallback(struct kafs_context *ctx, const char *path, co
              (unsigned)mode);
     return -EISDIR;
   }
-  int gate = kafs_v6_controlled_write_require_regular_write(ctx, S_ISREG(mode));
-  if (gate != 0)
-  {
-    kafs_inode_unlock(ctx, (uint32_t)ino);
-    return gate;
-  }
-
   kafs_diag_write_scope_t write_scope =
       kafs_diag_write_scope_enter(path ? path : "(null)", (uint32_t)ino);
   int rc_write = kafs_pwrite(ctx, inoent, buf, size, offset);
@@ -9910,13 +10072,17 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
             size, (uint64_t)offset);
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx->private_data;
-  int gate = kafs_runtime_write_guard(ctx);
+  int gate = 0;
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (!kafs_v7_fuse_policy_controlled_write_active(ctx))
+#endif
+    gate = kafs_runtime_write_guard(ctx);
   if (gate != 0)
     return gate;
-  gate = kafs_v6_controlled_write_reject_if_op(ctx, kafs_is_ctl_path(path),
-                                               KAFS_V6_CONTROLLED_WRITE_OP_CONTROL_PLANE_WRITE);
-  if (gate != 0)
-    return gate;
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (kafs_v7_fuse_policy_controlled_write_active(ctx) && kafs_is_ctl_path(path))
+    return kafs_v7_fuse_policy_reject_legacy_mutation(ctx);
+#endif
   if (kafs_is_ctl_path(path))
     return kafs_op_write_ctl(ctx, fi, buf, size, offset);
   kafs_inocnt_t ino = fi->fh;
@@ -9927,13 +10093,30 @@ static int kafs_op_write(const char *path, const char *buf, size_t size, off_t o
     if (!fctx || fctx->pid != 0)
       return -EACCES;
   }
-  gate = kafs_v6_controlled_write_reject_if_op(ctx, ctx && ctx->c_hotplug_active,
-                                               KAFS_V6_CONTROLLED_WRITE_OP_HOTPLUG_DELEGATED_WRITE);
-  if (gate != 0)
-    return gate;
-  if (kafs_v6_controlled_write_use_local_write_path(ctx))
-    return kafs_op_write_fallback(ctx, path, buf, size, offset, ino);
-
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (kafs_v7_fuse_policy_controlled_write_active(ctx))
+  {
+    int policy = kafs_v7_fuse_policy_check_controlled_write(ctx, KAFS_V7_CONTROLLED_WRITE_OP_WRITE);
+    if (policy != 0)
+      return policy;
+    if (offset < 0)
+      return -EINVAL;
+    kafs_v7_fuse_write_result_t result;
+    int write_rc = kafs_v7_fuse_write_regular(ctx, ino, buf, size, (uint64_t)offset, &result);
+    if (write_rc < 0)
+      kafs_log(KAFS_LOG_WARNING,
+               "%s: v7 bounded write rejected path=%s ino=%" PRIuFAST32 " size=%zu offset=%" PRIu64
+               " rc=%d\n",
+               __func__, path ? path : "(null)", (uint32_t)ino, size, (uint64_t)offset, write_rc);
+    if (write_rc >= 0 && result.retirement_rc != 0)
+      kafs_log(KAFS_LOG_WARNING,
+               "%s: v7 retained block retirement deferred path=%s ino=%" PRIuFAST32
+               " block=%" PRIu64 " rc=%d\n",
+               __func__, path ? path : "(null)", (uint32_t)ino, result.retained_logical_block,
+               result.retirement_rc);
+    return write_rc;
+  }
+#endif
   ssize_t rc_hp = kafs_hotplug_call_write(fctx, ctx, ino, buf, size, offset);
   if (rc_hp >= 0)
   {
@@ -9961,9 +10144,6 @@ static int kafs_op_utimens(const char *path, const struct timespec tv[2], struct
   struct fuse_context *fctx = NULL;
   struct kafs_context *ctx = NULL;
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
-  if (gate != 0)
-    return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_UTIMENS);
   if (gate != 0)
     return gate;
   uint64_t t0_ns = kafs_now_ns();
@@ -10074,9 +10254,6 @@ static int kafs_op_unlink(const char *path)
   struct fuse_context *fctx = NULL;
   struct kafs_context *ctx = NULL;
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
-  if (gate != 0)
-    return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_UNLINK);
   if (gate != 0)
     return gate;
   uint64_t jseq = kafs_journal_begin(ctx, "UNLINK", "path=%s", path);
@@ -10486,9 +10663,6 @@ static int kafs_op_rename(const char *from, const char *to, unsigned int flags)
   int gate = kafs_runtime_write_guard(ctx);
   if (gate != 0)
     return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_RENAME);
-  if (gate != 0)
-    return gate;
   kafs_sinode_t *inoent_src;
   int src_is_dir = 0;
   int rc = kafs_rename_validate_request(from, to, flags);
@@ -10577,9 +10751,6 @@ static int kafs_op_chmod(const char *path, mode_t mode, struct fuse_file_info *f
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
   if (gate != 0)
     return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_CHMOD);
-  if (gate != 0)
-    return gate;
   uint64_t jseq = kafs_journal_begin(ctx, "CHMOD", "path=%s mode=%o", path, (unsigned)mode);
   kafs_sinode_t *inoent;
   KAFS_CALL(kafs_access, fctx, ctx, path, fi, F_OK, &inoent);
@@ -10597,9 +10768,6 @@ static int kafs_op_chown(const char *path, uid_t uid, gid_t gid, struct fuse_fil
   struct fuse_context *fctx = NULL;
   struct kafs_context *ctx = NULL;
   int gate = kafs_mutation_path_context(path, &fctx, &ctx);
-  if (gate != 0)
-    return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_CHOWN);
   if (gate != 0)
     return gate;
   uint64_t jseq =
@@ -10620,9 +10788,6 @@ static int kafs_op_symlink(const char *target, const char *linkpath)
   struct fuse_context *fctx = NULL;
   struct kafs_context *ctx = NULL;
   int gate = kafs_mutation_path_context(linkpath, &fctx, &ctx);
-  if (gate != 0)
-    return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_SYMLINK);
   if (gate != 0)
     return gate;
   uint64_t jseq = kafs_journal_begin(ctx, "SYMLINK", "target=%s linkpath=%s", target, linkpath);
@@ -10733,9 +10898,6 @@ static int kafs_op_link(const char *from, const char *to)
   int gate = kafs_runtime_write_guard(ctx);
   if (gate != 0)
     return gate;
-  gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_LINK);
-  if (gate != 0)
-    return gate;
 
   kafs_sinode_t *inoent_src;
   int rc = kafs_link_validate_source(fctx, ctx, from, &inoent_src);
@@ -10803,9 +10965,6 @@ static uint32_t kafs_fsync_resolve_inode(struct fuse_context *fctx, struct kafs_
 
 static int kafs_fsync_prepare_inode(struct kafs_context *ctx, const char *path, uint32_t ino)
 {
-  if (kafs_v6_controlled_write_skip_tail_layout(ctx))
-    return 0;
-
   kafs_inode_lock(ctx, ino);
   int nrc = kafs_tailmeta_normalize_block_layout(ctx, kafs_ctx_inode(ctx, ino));
   kafs_inode_unlock(ctx, ino);
@@ -10891,6 +11050,11 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
     kafs_dlog(2, "%s: exit rc=0 (no backing fd) path=%s\n", __func__, path ? path : "(null)");
     return 0;
   }
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  int v7_barrier = kafs_v7_fuse_closeout_barrier(ctx, KAFS_V7_CONTROLLED_WRITE_OP_FSYNC);
+  if (v7_barrier != 0 || kafs_v7_fuse_policy_controlled_write_active(ctx))
+    return v7_barrier;
+#endif
   if (ctx->c_runtime_read_only)
     return 0;
 
@@ -10924,15 +11088,34 @@ static int kafs_op_fsync(const char *path, int isdatasync, struct fuse_file_info
 
 static int kafs_op_fsyncdir(const char *path, int isdatasync, struct fuse_file_info *fi)
 {
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
   struct fuse_context *fctx = fuse_get_context();
   struct kafs_context *ctx = fctx ? fctx->private_data : NULL;
-  int gate = kafs_v6_controlled_write_reject_op(ctx, KAFS_V6_CONTROLLED_WRITE_OP_FSYNCDIR);
-  if (gate != 0)
-    return gate;
+  int v7_rc = kafs_v7_fuse_policy_reject_legacy_mutation(ctx);
+  if (v7_rc != 0)
+    return v7_rc;
+#endif
   return kafs_op_fsync(path, isdatasync, fi);
 }
 
 static int g_kafs_writeback_cache_enabled = 1;
+
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+static int kafs_v7_fuse_init_suppresses_background_workers(kafs_context_t *ctx)
+{
+  if (!ctx || !ctx->c_superblock ||
+      kafs_sb_format_version_get(ctx->c_superblock) != KAFS_FORMAT_VERSION_V7)
+    return 0;
+
+  int rc = kafs_v7_runtime_view_validate_policy(ctx);
+  if (rc != 0)
+    kafs_log(KAFS_LOG_ERR,
+             "kafs: invalid format v7 worker policy in FUSE init rc=%d; "
+             "delayed/background workers remain suppressed\n",
+             rc);
+  return 1;
+}
+#endif
 
 static void *kafs_op_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 {
@@ -10953,10 +11136,33 @@ static void *kafs_op_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 #endif
   struct fuse_context *fctx = fuse_get_context();
   kafs_context_t *ctx = fctx ? (kafs_context_t *)fctx->private_data : NULL;
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (ctx && conn)
+  {
+    const uint32_t direct_blocks = 12u;
+    uint64_t requested = (uint64_t)ctx->c_v7_block_size * direct_blocks;
+    if (requested > UINT32_MAX)
+      requested = UINT32_MAX;
+    ctx->c_v7_fuse_kernel_max_write = conn->max_write;
+    if (kafs_v7_fuse_policy_controlled_write_active(ctx) && conn->max_write > requested)
+      conn->max_write = (uint32_t)requested;
+    ctx->c_v7_fuse_negotiated_max_write = conn->max_write;
+    ctx->c_v7_atomic_write_max =
+        kafs_v7_fuse_policy_controlled_write_active(ctx) ? conn->max_write : 0u;
+    kafs_log(KAFS_LOG_INFO,
+             "kafs-v7-fuse-contract mode=%s kernel_max_write=%u negotiated_max_write=%u "
+             "atomic_write_max=%u block_size=%u direct_blocks=%u\n",
+             kafs_v7_fuse_policy_controlled_write_active(ctx) ? "controlled-write" : "inspection",
+             ctx->c_v7_fuse_kernel_max_write, ctx->c_v7_fuse_negotiated_max_write,
+             ctx->c_v7_atomic_write_max, ctx->c_v7_block_size, direct_blocks);
+  }
+#endif
   if (ctx && ctx->c_runtime_read_only)
     return ctx;
-  if (kafs_v6_fuse_init_suppresses_background_workers(ctx))
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (kafs_v7_fuse_init_suppresses_background_workers(ctx))
     return ctx;
+#endif
   if (ctx && ctx->c_pendinglog_enabled)
   {
     int prc = kafs_pending_worker_start(ctx);
@@ -11050,13 +11256,15 @@ static int kafs_op_release(const char *path, struct fuse_file_info *fi)
     return 0;
 
   kafs_inocnt_t ino = fi->fh;
-  if (ctx && ctx->c_runtime_read_only)
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if (kafs_v7_fuse_policy_controlled_write_active(ctx))
   {
     if (ctx->c_open_cnt)
       (void)__atomic_sub_fetch(&ctx->c_open_cnt[ino], 1u, __ATOMIC_RELAXED);
-    return kafs_op_flush(path, fi);
+    return kafs_v7_fuse_closeout_barrier(ctx, KAFS_V7_CONTROLLED_WRITE_OP_RELEASE);
   }
-  if (kafs_v6_controlled_write_skip_release_reclaim(ctx))
+#endif
+  if (ctx && ctx->c_runtime_read_only)
   {
     if (ctx->c_open_cnt)
       (void)__atomic_sub_fetch(&ctx->c_open_cnt[ino], 1u, __ATOMIC_RELAXED);
@@ -11423,7 +11631,6 @@ static void kafs_migrate_ctx_close(kafs_context_t *ctx)
   if (!ctx)
     return;
   (void)kafs_hrl_close(ctx);
-  kafs_bitmap_descriptor_mapping_clear(ctx);
   free(ctx->c_ino_epoch);
   ctx->c_ino_epoch = NULL;
   free(ctx->c_diag_create_seq);
@@ -12896,9 +13103,15 @@ static void kafs_main_validate_image_format(const char *image_path, uint32_t fmt
 {
   if (fmt_ver == KAFS_FORMAT_VERSION)
     return;
-  if (kafs_format_uses_layout_descriptor(fmt_ver))
+  if (fmt_ver == KAFS_FORMAT_VERSION_V6)
   {
-    const char *entrypoint = kafs_format_runtime_entrypoint(fmt_ver);
+    fprintf(stderr, "unsupported format version: v6 support has been retired.\n"
+                    "Recreate the image as format v7.\n");
+    exit(2);
+  }
+  if (fmt_ver == KAFS_FORMAT_VERSION_V7)
+  {
+    const char *entrypoint = "kafs-v7";
     fprintf(stderr,
             "unsupported format version: v%u runtime admission is owned by %s.\n"
             "Use %s --inspection-mount for read-only v%u inspection or "
@@ -13047,13 +13260,13 @@ static void kafs_main_open_runtime_context(kafs_context_t *ctx, const char *imag
   uint32_t fmt_ver = kafs_sb_format_version_get(&sbdisk);
   kafs_inocnt_t inocnt = 0;
   kafs_blkcnt_t r_blkcnt = 0;
-  if (kafs_format_uses_layout_descriptor(fmt_ver))
+  if (fmt_ver == KAFS_FORMAT_VERSION_V7)
   {
     if (mount_read_only_requested)
       fprintf(stderr,
               "format v%u inspection mount requires %s --inspection-mount with "
               "-o ro; -o ro through kafs keeps v%u unsupported.\n",
-              fmt_ver, kafs_format_runtime_entrypoint(fmt_ver), fmt_ver);
+              fmt_ver, "kafs-v7", fmt_ver);
   }
   kafs_main_validate_image_format(image_path, fmt_ver, auto_migrate, migrate_yes);
   kafs_main_map_runtime_image(ctx, &sbdisk, fmt_ver, &inocnt, &r_blkcnt);
@@ -13080,7 +13293,7 @@ static int kafs_shared_fuse_cleanup_after_run(kafs_context_t *ctx, const char *h
     pthread_cond_destroy(&ctx->c_hotplug_wait_cond);
     pthread_mutex_destroy(&ctx->c_hotplug_wait_lock);
   }
-  kafs_bitmap_descriptor_mapping_clear(ctx);
+  kafs_ctx_v7_runtime_view_clear(ctx);
   free(ctx->c_meta_bitmap_words);
   free(ctx->c_meta_bitmap_dirty);
   free(ctx->c_ino_epoch);

@@ -1,6 +1,5 @@
 #include "kafs_journal.h"
 #include "kafs_context.h"
-#include "kafs_descriptor_layout.h"
 #include "kafs_locks.h"
 #include "kafs_superblock.h"
 
@@ -452,8 +451,6 @@ static void kj_mutex_free(void *mtx)
 
 static uint64_t kj_header_slot_file_off(const kafs_journal_t *j, uint32_t slot)
 {
-  if (j->descriptor_backed)
-    return j->base_off;
   return kj_header_slot_offset(j->base_off, j->area_size, slot);
 }
 
@@ -657,7 +654,6 @@ static void kj_state_disable(struct kafs_context *ctx)
   g_state.j.seq = 0;
   g_state.j.mtx = NULL;
   g_state.j.use_inimage = 0;
-  g_state.j.descriptor_backed = 0;
   g_state.j.base_off = 0;
   g_state.j.data_off = 0;
   g_state.j.base_ptr = NULL;
@@ -671,51 +667,6 @@ static void kj_state_disable(struct kafs_context *ctx)
   g_state.j.gc_pending = 0;
 }
 
-static int kj_configure_descriptor_segment(struct kafs_context *ctx, kafs_journal_t *j)
-{
-  if (!ctx || !ctx->c_superblock || !j)
-    return -EINVAL;
-  if (!kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(ctx->c_superblock)))
-    return -ENOENT;
-  if (!kafs_ctx_descriptor_layout_desc(ctx) || kafs_ctx_descriptor_layout_desc_bytes(ctx) == 0u)
-    return -EPROTONOSUPPORT;
-
-  uint64_t file_size = 0;
-  int rc = kafs_offline_detect_file_size(ctx->c_fd, &file_size);
-  if (rc != 0)
-    return rc;
-
-  kafs_descriptor_journal_segment_report_t report;
-  rc = kafs_descriptor_journal_validate_segments_fd(ctx->c_fd, kafs_ctx_descriptor_layout_desc(ctx),
-                                                    kafs_ctx_descriptor_layout_desc_bytes(ctx),
-                                                    ctx->c_superblock, file_size, &report);
-  if (rc != 0)
-    return rc;
-
-  kafs_descriptor_journal_segment_lookup_t lookup;
-  rc = kafs_descriptor_journal_segment_lookup(kafs_ctx_descriptor_layout_desc(ctx),
-                                              kafs_ctx_descriptor_layout_desc_bytes(ctx),
-                                              report.selected_segment_id, &lookup);
-  if (rc != 0)
-    return rc;
-  if (lookup.header.group_id != lookup.data.group_id || lookup.data.data_bytes == 0u)
-    return -EINVAL;
-
-  j->descriptor_backed = 1;
-  j->segment_id = lookup.segment_id;
-  j->base_off = lookup.header.header_off;
-  j->data_off = lookup.data.data_off;
-  j->area_size = lookup.data.data_bytes;
-  j->header_slot_count = 1u;
-  j->active_header_slot = 0;
-  j->header_generation = 0;
-  j->base_ptr = NULL;
-  if (ctx->c_img_base && j->base_off <= (uint64_t)ctx->c_img_size &&
-      sizeof(kj_header_t) <= (uint64_t)ctx->c_img_size - j->base_off)
-    j->base_ptr = (char *)ctx->c_img_base + j->base_off;
-  return 0;
-}
-
 static int kj_configure_legacy_region(struct kafs_context *ctx, kafs_journal_t *j)
 {
   if (!ctx || !ctx->c_superblock || !j)
@@ -727,7 +678,6 @@ static int kj_configure_legacy_region(struct kafs_context *ctx, kafs_journal_t *
   if (joff == 0 || jsize < 4096)
     return -ENOENT;
 
-  j->descriptor_backed = 0;
   j->segment_id = 0;
   j->base_off = joff;
   j->header_slot_count = kj_header_slot_count(jflags, jsize);
@@ -744,9 +694,6 @@ static int kj_configure_context_journal(struct kafs_context *ctx, kafs_journal_t
   if (!ctx || !j)
     return -EINVAL;
 
-  int rc = kj_configure_descriptor_segment(ctx, j);
-  if (rc != -ENOENT)
-    return rc;
   return kj_configure_legacy_region(ctx, j);
 }
 

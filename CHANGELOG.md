@@ -1,18 +1,15 @@
 # Changelog
 
 ## Unreleased
-- `kafsresize --migrate-create --format-version 6` に clean v5 source precheck を追加し、通常実行でも
-  `--src-image` を必須にした。
-- v5 source / v6 destination の `kafsdump --json` pre/post summary と、v6 destination の
-  `fsck.kafs --balanced-check` regression を追加した。
-- v6 migration destination の runtime mount attempt が admission preflight 後に offline-only gate で
-  exit 2 になることを regression に追加した。
-- v6 destination image の検査用 runtime path として `-o ro,v6_inspection_mount` を追加した。
-  selected descriptor を read-only runtime context に保持し、write admission / production cutover は
-  引き続き無効にする。
-- Compatibility: v6 destination image は `kafsdump` / `fsck.kafs` に加えて inspection mount で検査できる。
-  v6 write mount / production cutover はまだ有効化しない。既存 v4/v5 image の runtime mount 互換と、
-  default v5 destination の挙動は維持する。
+- disposable file imageだけを使うv5-to-v7 lifecycle rehearsalを追加し、normal、2-object後の中断、
+  frozen sourceからの全量replay、rollback、idempotence、semantic inventory、source digest不変、
+  T59 evidence bundleを一括検証する。in-place resume、VHDX/WSL停止、実媒体、production cutoverは行わない。
+- `kafsresize --migrate-import-v7` に、frozen clean v5 image の directory、regular file、symlink、
+  hardlink、metadata、dense payload を v7-owned offline path で新規 v7 image へ取り込む機能を追加した。
+  unsupported/sparse/pending/capacity/partial state は final path を publish せず fail closed にする。
+- format v6 runtimeと通常のimage作成を退役し、`kafs-v6` は操作要求を拒否する一時的placeholderに
+  置き換えた。旧controlled-write operator scriptと現行運用案内を退役し、残るoffline診断、fixture、
+  共通source依存、最後のplaceholderは段階的source-retirement計画で追跡する。
 
 ## v0.4.0 - 2026-03-17
 - v2/v3 イメージを v4 へ変換する offline pre-start migration を追加し、共有 migrator を `kafsctl migrate` と `kafs --migrate` から利用可能にした。

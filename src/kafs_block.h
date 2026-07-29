@@ -4,8 +4,6 @@
 #include "kafs_context.h"
 #include "kafs_superblock.h"
 #include "kafs_locks.h"
-#include "kafs_descriptor_layout.h"
-#include "kafs_v7_layout.h"
 #include <assert.h>
 #include <stdio.h>
 #include <errno.h>
@@ -95,504 +93,6 @@ typedef struct kafs_bitmap_word_ref
   int count_block_bitmap_write;
 } kafs_bitmap_word_ref_t;
 
-static int kafs_bitmap_descriptor_mapping_enabled(const struct kafs_context *ctx)
-{
-  if (!ctx || !ctx->c_superblock)
-    return KAFS_FALSE;
-  if (!kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(ctx->c_superblock)))
-    return KAFS_FALSE;
-  if (!ctx->c_v6_bitmap_mapping_enabled || !ctx->c_v6_layout_desc ||
-      ctx->c_v6_layout_desc_bytes == 0u)
-    return KAFS_FALSE;
-  if (!ctx->c_img_base || ctx->c_img_size == 0u)
-    return KAFS_FALSE;
-  return KAFS_TRUE;
-}
-
-static void kafs_bitmap_descriptor_mapping_clear(struct kafs_context *ctx)
-{
-  if (!ctx)
-    return;
-  if (ctx->c_v6_layout_desc_owned && ctx->c_v6_layout_desc)
-    free((void *)ctx->c_v6_layout_desc);
-  free(ctx->c_v6_inode_shards);
-  free(ctx->c_v6_alloc_summary_shards);
-  free(ctx->c_v6_hrl_index_shards);
-  free(ctx->c_v6_hrl_entry_shards);
-  ctx->c_v6_bitmap_mapping_enabled = 0;
-  ctx->c_v6_inode_mapping_enabled = 0;
-  ctx->c_v6_alloc_summary_mapping_enabled = 0;
-  ctx->c_v6_hrl_mapping_enabled = 0;
-  ctx->c_v6_layout_desc = NULL;
-  ctx->c_v6_layout_desc_bytes = 0;
-  ctx->c_v6_layout_desc_owned = 0;
-  ctx->c_v6_inode_shards = NULL;
-  ctx->c_v6_inode_shard_count = 0;
-  ctx->c_v6_alloc_summary_shards = NULL;
-  ctx->c_v6_alloc_summary_shard_count = 0;
-  ctx->c_v6_hrl_index_shards = NULL;
-  ctx->c_v6_hrl_index_shard_count = 0;
-  ctx->c_v6_hrl_entry_shards = NULL;
-  ctx->c_v6_hrl_entry_shard_count = 0;
-}
-
-static int kafs_descriptor_inode_runtime_shards_build(
-    const void *desc, uint32_t desc_bytes, const kafs_ssuperblock_t *sb, uint64_t file_size,
-    kafs_descriptor_inode_runtime_shard_t *out_shards, uint32_t out_cap, uint32_t *out_count)
-{
-  if (!desc || !sb || !out_count || (out_cap > 0u && !out_shards))
-    return -EINVAL;
-
-  uint32_t descriptor_shard_count = 0;
-  const kafs_sdescriptor_shard_desc_t *descriptor_shards =
-      kafs_descriptor_shard_table(desc, desc_bytes, &descriptor_shard_count);
-  if (!descriptor_shards)
-    return -EINVAL;
-
-  uint32_t record_bytes = (uint32_t)kafs_inode_bytes_for_format(kafs_sb_format_version_get(sb));
-  if (record_bytes == 0u)
-    return -EINVAL;
-  uint32_t used = 0;
-  for (uint32_t i = 0; i < descriptor_shard_count; ++i)
-  {
-    if (le16toh(descriptor_shards[i].sd_type) != KAFS_META_REGION_INODE_TABLE)
-      continue;
-    if (used >= out_cap)
-      return -ERANGE;
-
-    uint64_t logical_start = kafs_u64_stoh(descriptor_shards[i].sd_logical_start);
-    uint64_t logical_count = kafs_u64_stoh(descriptor_shards[i].sd_logical_count);
-    uint64_t physical_off = kafs_u64_stoh(descriptor_shards[i].sd_physical_off);
-    uint64_t physical_bytes = kafs_u64_stoh(descriptor_shards[i].sd_physical_bytes);
-    uint32_t shard_record_bytes = kafs_u32_stoh(descriptor_shards[i].sd_record_bytes);
-    if (shard_record_bytes != record_bytes || record_bytes == 0u || logical_count == 0u)
-      return -EINVAL;
-    if (logical_count > UINT64_MAX / (uint64_t)record_bytes)
-      return -ERANGE;
-    uint64_t required_bytes = logical_count * (uint64_t)record_bytes;
-    if (required_bytes == 0u || required_bytes > physical_bytes)
-      return -ERANGE;
-    if (physical_off > UINT64_MAX - required_bytes)
-      return -ERANGE;
-    if (kafs_offline_check_bounds(physical_off, physical_bytes, file_size) != 0)
-      return -ERANGE;
-
-    out_shards[used].logical_start = logical_start;
-    out_shards[used].logical_count = logical_count;
-    out_shards[used].physical_off = physical_off;
-    out_shards[used].physical_end = physical_off + required_bytes;
-    out_shards[used].record_bytes = record_bytes;
-    used++;
-  }
-
-  *out_count = used;
-  return 0;
-}
-
-static int kafs_descriptor_alloc_summary_runtime_shards_build(
-    const void *desc, uint32_t desc_bytes, uint64_t file_size,
-    kafs_descriptor_alloc_summary_runtime_shard_t *out_shards, uint32_t out_cap,
-    uint32_t *out_count)
-{
-  if (!desc || !out_count || (out_cap > 0u && !out_shards))
-    return -EINVAL;
-
-  uint32_t descriptor_shard_count = 0;
-  const kafs_sdescriptor_shard_desc_t *descriptor_shards =
-      kafs_descriptor_shard_table(desc, desc_bytes, &descriptor_shard_count);
-  if (!descriptor_shards)
-    return -EINVAL;
-
-  uint32_t used = 0;
-  for (uint32_t i = 0; i < descriptor_shard_count; ++i)
-  {
-    if (le16toh(descriptor_shards[i].sd_type) != KAFS_META_REGION_ALLOCATOR_SUMMARY)
-      continue;
-    if (used >= out_cap)
-      return -ERANGE;
-
-    uint64_t logical_start = kafs_u64_stoh(descriptor_shards[i].sd_logical_start);
-    uint64_t logical_count = kafs_u64_stoh(descriptor_shards[i].sd_logical_count);
-    uint64_t physical_off = kafs_u64_stoh(descriptor_shards[i].sd_physical_off);
-    uint64_t physical_bytes = kafs_u64_stoh(descriptor_shards[i].sd_physical_bytes);
-    uint32_t record_bytes = kafs_u32_stoh(descriptor_shards[i].sd_record_bytes);
-    uint64_t l0_bytes = 0;
-    uint64_t l1_bytes = 0;
-    uint64_t l2_bytes = 0;
-    uint64_t summary_bytes = 0;
-    if (record_bytes != 0u)
-      return -EINVAL;
-    int rc = kafs_descriptor_allocator_summary_shape(logical_count, &l0_bytes, &l1_bytes, &l2_bytes,
-                                                     &summary_bytes);
-    if (rc != 0)
-      return rc;
-    if (summary_bytes == 0u || summary_bytes > physical_bytes)
-      return -ERANGE;
-    if (physical_off > UINT64_MAX - summary_bytes)
-      return -ERANGE;
-    if (kafs_offline_check_bounds(physical_off, physical_bytes, file_size) != 0)
-      return -ERANGE;
-
-    out_shards[used].logical_start = logical_start;
-    out_shards[used].logical_count = logical_count;
-    out_shards[used].physical_off = physical_off;
-    out_shards[used].physical_end = physical_off + summary_bytes;
-    out_shards[used].l0_bytes = l0_bytes;
-    out_shards[used].l1_bytes = l1_bytes;
-    out_shards[used].l2_bytes = l2_bytes;
-    used++;
-  }
-
-  *out_count = used;
-  return 0;
-}
-
-static int kafs_descriptor_hrl_runtime_shards_build(const void *desc, uint32_t desc_bytes,
-                                                    uint64_t file_size, uint16_t shard_type,
-                                                    uint32_t record_bytes,
-                                                    kafs_descriptor_hrl_runtime_shard_t *out_shards,
-                                                    uint32_t out_cap, uint32_t *out_count)
-{
-  if (!desc || !out_count || record_bytes == 0u || (out_cap > 0u && !out_shards))
-    return -EINVAL;
-
-  uint32_t descriptor_shard_count = 0;
-  const kafs_sdescriptor_shard_desc_t *descriptor_shards =
-      kafs_descriptor_shard_table(desc, desc_bytes, &descriptor_shard_count);
-  if (!descriptor_shards)
-    return -EINVAL;
-
-  uint32_t used = 0;
-  uint32_t index = 0;
-  for (;;)
-  {
-    kafs_descriptor_extent_shard_view_t shard;
-    int rc = kafs_descriptor_extent_next_shard(
-        descriptor_shards, descriptor_shard_count, shard_type, record_bytes,
-        KAFS_DESCRIPTOR_EXTENT_STORAGE_FIXED_RECORD, &index, &shard);
-    if (rc == -ENOENT)
-      break;
-    if (rc != 0)
-      return rc;
-    if (used >= out_cap)
-      return -ERANGE;
-    if (kafs_offline_check_bounds(shard.physical_off, shard.physical_bytes, file_size) != 0)
-      return -ERANGE;
-    if (shard.physical_off > UINT64_MAX - shard.required_bytes)
-      return -ERANGE;
-
-    out_shards[used].logical_start = shard.logical_start;
-    out_shards[used].logical_count = shard.logical_count;
-    out_shards[used].physical_off = shard.physical_off;
-    out_shards[used].physical_end = shard.physical_off + shard.required_bytes;
-    out_shards[used].record_bytes = record_bytes;
-    out_shards[used].group_id = shard.group_id;
-    used++;
-  }
-
-  *out_count = used;
-  return 0;
-}
-
-static int kafs_descriptor_mapping_read_fd(struct kafs_context *ctx, int fd, uint64_t file_size,
-                                           void **out_desc, uint32_t *out_desc_bytes)
-{
-  if (!ctx || !ctx->c_superblock || fd < 0 || !out_desc || !out_desc_bytes)
-    return -EINVAL;
-
-  uint32_t format_version = kafs_sb_format_version_get(ctx->c_superblock);
-  kafs_descriptor_layout_report_t layout;
-  int rc;
-  if (format_version == KAFS_FORMAT_VERSION_V6)
-    rc = kafs_v6_discover_layout(fd, ctx->c_superblock, file_size, &layout);
-  else if (format_version == KAFS_FORMAT_VERSION_V7)
-    rc = kafs_v7_discover_layout(fd, ctx->c_superblock, file_size, &layout);
-  else
-    return -EPROTONOSUPPORT;
-  if (rc == 0)
-    rc = kafs_descriptor_read_selected_descriptor(fd, &layout, out_desc, out_desc_bytes);
-  return rc;
-}
-
-static int
-kafs_bitmap_descriptor_mapping_admit_desc(struct kafs_context *ctx, void *desc, uint32_t desc_bytes,
-                                          uint64_t file_size,
-                                          kafs_descriptor_bitmap_coverage_report_t *out_report)
-{
-  if (!ctx || !ctx->c_superblock || !desc || desc_bytes == 0u)
-    return -EINVAL;
-  if (!kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(ctx->c_superblock)))
-    return -EPROTONOSUPPORT;
-
-  kafs_descriptor_bitmap_coverage_report_t report;
-  int rc = kafs_descriptor_bitmap_validate_coverage(desc, desc_bytes, ctx->c_superblock, file_size,
-                                                    &report);
-  if (out_report)
-    *out_report = report;
-  if (rc != 0)
-    return rc;
-
-  kafs_bitmap_descriptor_mapping_clear(ctx);
-
-  ctx->c_v6_layout_desc = desc;
-  ctx->c_v6_layout_desc_bytes = desc_bytes;
-  ctx->c_v6_layout_desc_owned = 1u;
-  ctx->c_v6_bitmap_mapping_enabled = 1u;
-  return 0;
-}
-
-static int kafs_descriptor_mapping_admit_desc(
-    struct kafs_context *ctx, void *desc, uint32_t desc_bytes, uint64_t file_size,
-    kafs_descriptor_bitmap_coverage_report_t *out_bitmap,
-    kafs_descriptor_inode_coverage_report_t *out_inode,
-    kafs_descriptor_allocator_summary_coverage_report_t *out_alloc_summary,
-    kafs_descriptor_hrl_index_coverage_report_t *out_hrl_index,
-    kafs_descriptor_hrl_entries_coverage_report_t *out_hrl_entries)
-{
-  if (!ctx || !ctx->c_superblock || !desc || desc_bytes == 0u)
-    return -EINVAL;
-  if (!kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(ctx->c_superblock)))
-    return -EPROTONOSUPPORT;
-
-  kafs_descriptor_bitmap_coverage_report_t bitmap_report;
-  int rc = kafs_descriptor_bitmap_validate_coverage(desc, desc_bytes, ctx->c_superblock, file_size,
-                                                    &bitmap_report);
-  if (out_bitmap)
-    *out_bitmap = bitmap_report;
-  if (rc != 0)
-    return rc;
-
-  kafs_descriptor_inode_coverage_report_t inode_report;
-  rc = kafs_descriptor_inode_validate_coverage(desc, desc_bytes, ctx->c_superblock, file_size,
-                                               &inode_report);
-  if (out_inode)
-    *out_inode = inode_report;
-  if (rc != 0)
-    return rc;
-
-  kafs_descriptor_allocator_summary_coverage_report_t alloc_summary_report;
-  rc = kafs_descriptor_allocator_summary_validate_coverage(desc, desc_bytes, ctx->c_superblock,
-                                                           file_size, &alloc_summary_report);
-  if (out_alloc_summary)
-    *out_alloc_summary = alloc_summary_report;
-  if (rc != 0)
-    return rc;
-
-  kafs_descriptor_hrl_index_coverage_report_t hrl_index_report;
-  rc = kafs_descriptor_hrl_index_validate_coverage(desc, desc_bytes, ctx->c_superblock, file_size,
-                                                   &hrl_index_report);
-  if (out_hrl_index)
-    *out_hrl_index = hrl_index_report;
-  if (rc != 0)
-    return rc;
-
-  kafs_descriptor_hrl_entries_coverage_report_t hrl_entries_report;
-  rc = kafs_descriptor_hrl_entries_validate_coverage(desc, desc_bytes, ctx->c_superblock, file_size,
-                                                     &hrl_entries_report);
-  if (out_hrl_entries)
-    *out_hrl_entries = hrl_entries_report;
-  if (rc != 0)
-    return rc;
-
-  kafs_descriptor_journal_header_coverage_report_t journal_header_report;
-  rc = kafs_descriptor_journal_header_validate_coverage(desc, desc_bytes, ctx->c_superblock,
-                                                        file_size, &journal_header_report);
-  if (rc != 0)
-    return rc;
-
-  kafs_descriptor_journal_data_coverage_report_t journal_data_report;
-  rc = kafs_descriptor_journal_data_validate_coverage(desc, desc_bytes, ctx->c_superblock,
-                                                      file_size, &journal_data_report);
-  if (rc != 0)
-    return rc;
-
-  kafs_descriptor_inode_runtime_shard_t *inode_shards =
-      calloc(inode_report.shard_count, sizeof(*inode_shards));
-  if (!inode_shards)
-    return -ENOMEM;
-
-  uint32_t inode_shard_count = 0;
-  rc = kafs_descriptor_inode_runtime_shards_build(desc, desc_bytes, ctx->c_superblock, file_size,
-                                                  inode_shards, inode_report.shard_count,
-                                                  &inode_shard_count);
-  if (rc == 0 && inode_shard_count != inode_report.shard_count)
-    rc = -EINVAL;
-  if (rc != 0)
-  {
-    free(inode_shards);
-    return rc;
-  }
-
-  kafs_descriptor_alloc_summary_runtime_shard_t *alloc_summary_shards =
-      calloc(alloc_summary_report.shard_count, sizeof(*alloc_summary_shards));
-  if (!alloc_summary_shards)
-  {
-    free(inode_shards);
-    return -ENOMEM;
-  }
-
-  uint32_t alloc_summary_shard_count = 0;
-  rc = kafs_descriptor_alloc_summary_runtime_shards_build(
-      desc, desc_bytes, file_size, alloc_summary_shards, alloc_summary_report.shard_count,
-      &alloc_summary_shard_count);
-  if (rc == 0 && alloc_summary_shard_count != alloc_summary_report.shard_count)
-    rc = -EINVAL;
-  if (rc != 0)
-  {
-    free(alloc_summary_shards);
-    free(inode_shards);
-    return rc;
-  }
-
-  kafs_descriptor_hrl_runtime_shard_t *hrl_index_shards =
-      calloc(hrl_index_report.shard_count, sizeof(*hrl_index_shards));
-  if (!hrl_index_shards)
-  {
-    free(alloc_summary_shards);
-    free(inode_shards);
-    return -ENOMEM;
-  }
-
-  uint32_t hrl_index_shard_count = 0;
-  rc = kafs_descriptor_hrl_runtime_shards_build(
-      desc, desc_bytes, file_size, KAFS_META_REGION_HRL_INDEX, sizeof(uint32_t), hrl_index_shards,
-      hrl_index_report.shard_count, &hrl_index_shard_count);
-  if (rc == 0 && hrl_index_shard_count != hrl_index_report.shard_count)
-    rc = -EINVAL;
-  if (rc != 0)
-  {
-    free(hrl_index_shards);
-    free(alloc_summary_shards);
-    free(inode_shards);
-    return rc;
-  }
-
-  kafs_descriptor_hrl_runtime_shard_t *hrl_entry_shards =
-      calloc(hrl_entries_report.shard_count, sizeof(*hrl_entry_shards));
-  if (!hrl_entry_shards)
-  {
-    free(hrl_index_shards);
-    free(alloc_summary_shards);
-    free(inode_shards);
-    return -ENOMEM;
-  }
-
-  uint32_t hrl_entry_shard_count = 0;
-  rc = kafs_descriptor_hrl_runtime_shards_build(
-      desc, desc_bytes, file_size, KAFS_META_REGION_HRL_ENTRIES, sizeof(kafs_hrl_entry_t),
-      hrl_entry_shards, hrl_entries_report.shard_count, &hrl_entry_shard_count);
-  if (rc == 0 && hrl_entry_shard_count != hrl_entries_report.shard_count)
-    rc = -EINVAL;
-  if (rc != 0)
-  {
-    free(hrl_entry_shards);
-    free(hrl_index_shards);
-    free(alloc_summary_shards);
-    free(inode_shards);
-    return rc;
-  }
-
-  if (hrl_index_report.expected_count > UINT32_MAX)
-  {
-    free(hrl_entry_shards);
-    free(hrl_index_shards);
-    free(alloc_summary_shards);
-    free(inode_shards);
-    return -ERANGE;
-  }
-
-  kafs_bitmap_descriptor_mapping_clear(ctx);
-
-  ctx->c_v6_layout_desc = desc;
-  ctx->c_v6_layout_desc_bytes = desc_bytes;
-  ctx->c_v6_layout_desc_owned = 1u;
-  ctx->c_v6_bitmap_mapping_enabled = 1u;
-  ctx->c_v6_inode_mapping_enabled = 1u;
-  ctx->c_v6_alloc_summary_mapping_enabled = 1u;
-  ctx->c_v6_hrl_mapping_enabled = 1u;
-  ctx->c_v6_inode_shards = inode_shards;
-  ctx->c_v6_inode_shard_count = inode_shard_count;
-  ctx->c_v6_alloc_summary_shards = alloc_summary_shards;
-  ctx->c_v6_alloc_summary_shard_count = alloc_summary_shard_count;
-  ctx->c_v6_hrl_index_shards = hrl_index_shards;
-  ctx->c_v6_hrl_index_shard_count = hrl_index_shard_count;
-  ctx->c_v6_hrl_entry_shards = hrl_entry_shards;
-  ctx->c_v6_hrl_entry_shard_count = hrl_entry_shard_count;
-  ctx->c_hrl_bucket_cnt = (uint32_t)hrl_index_report.expected_count;
-  return 0;
-}
-
-static int
-kafs_bitmap_descriptor_mapping_admit_fd(struct kafs_context *ctx, int fd, uint64_t file_size,
-                                        kafs_descriptor_bitmap_coverage_report_t *out_report)
-{
-  if (!ctx || !ctx->c_superblock || fd < 0)
-    return -EINVAL;
-  if (!kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(ctx->c_superblock)))
-    return -EPROTONOSUPPORT;
-
-  kafs_bitmap_descriptor_mapping_clear(ctx);
-
-  void *desc = NULL;
-  uint32_t desc_bytes = 0;
-  int rc = kafs_descriptor_mapping_read_fd(ctx, fd, file_size, &desc, &desc_bytes);
-  if (rc == 0)
-    rc = kafs_bitmap_descriptor_mapping_admit_desc(ctx, desc, desc_bytes, file_size, out_report);
-  if (rc != 0)
-    free(desc);
-  return rc;
-}
-
-static int kafs_descriptor_mapping_admit_fd(
-    struct kafs_context *ctx, int fd, uint64_t file_size,
-    kafs_descriptor_bitmap_coverage_report_t *out_bitmap,
-    kafs_descriptor_inode_coverage_report_t *out_inode,
-    kafs_descriptor_allocator_summary_coverage_report_t *out_alloc_summary,
-    kafs_descriptor_hrl_index_coverage_report_t *out_hrl_index,
-    kafs_descriptor_hrl_entries_coverage_report_t *out_hrl_entries)
-{
-  if (!ctx || !ctx->c_superblock || fd < 0)
-    return -EINVAL;
-  if (!kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(ctx->c_superblock)))
-    return -EPROTONOSUPPORT;
-
-  kafs_bitmap_descriptor_mapping_clear(ctx);
-
-  void *desc = NULL;
-  uint32_t desc_bytes = 0;
-  int rc = kafs_descriptor_mapping_read_fd(ctx, fd, file_size, &desc, &desc_bytes);
-  if (rc == 0)
-    rc = kafs_descriptor_mapping_admit_desc(ctx, desc, desc_bytes, file_size, out_bitmap, out_inode,
-                                            out_alloc_summary, out_hrl_index, out_hrl_entries);
-  if (rc != 0)
-    free(desc);
-  return rc;
-}
-
-static int
-kafs_v6_descriptor_mapping_admit_fd(struct kafs_context *ctx, int fd, uint64_t file_size,
-                                    kafs_v6_bitmap_coverage_report_t *out_bitmap,
-                                    kafs_v6_inode_coverage_report_t *out_inode,
-                                    kafs_v6_allocator_summary_coverage_report_t *out_alloc_summary,
-                                    kafs_v6_hrl_index_coverage_report_t *out_hrl_index,
-                                    kafs_v6_hrl_entries_coverage_report_t *out_hrl_entries)
-{
-  return kafs_descriptor_mapping_admit_fd(ctx, fd, file_size, out_bitmap, out_inode,
-                                          out_alloc_summary, out_hrl_index, out_hrl_entries);
-}
-
-static int kafs_v7_descriptor_mapping_admit_fd(
-    struct kafs_context *ctx, int fd, uint64_t file_size,
-    kafs_descriptor_bitmap_coverage_report_t *out_bitmap,
-    kafs_descriptor_inode_coverage_report_t *out_inode,
-    kafs_descriptor_allocator_summary_coverage_report_t *out_alloc_summary,
-    kafs_descriptor_hrl_index_coverage_report_t *out_hrl_index,
-    kafs_descriptor_hrl_entries_coverage_report_t *out_hrl_entries)
-{
-  return kafs_descriptor_mapping_admit_fd(ctx, fd, file_size, out_bitmap, out_inode,
-                                          out_alloc_summary, out_hrl_index, out_hrl_entries);
-}
-
 static int kafs_bitmap_word_ref_from_contiguous(struct kafs_context *ctx, kafs_blkcnt_t blo,
                                                 kafs_bitmap_word_ref_t *ref)
 {
@@ -620,44 +120,6 @@ static int kafs_bitmap_word_ref_from_contiguous(struct kafs_context *ctx, kafs_b
   return 0;
 }
 
-static int kafs_bitmap_word_ref_from_descriptor(struct kafs_context *ctx, kafs_blkcnt_t blo,
-                                                kafs_bitmap_word_ref_t *ref)
-{
-  if (!ctx || !ctx->c_superblock || !ref)
-    return -EINVAL;
-
-  kafs_descriptor_bitmap_lookup_t lookup;
-  int rc = kafs_descriptor_bitmap_lookup(ctx->c_v6_layout_desc, ctx->c_v6_layout_desc_bytes,
-                                         (uint64_t)blo, &lookup);
-  if (rc != 0)
-    return rc;
-
-  uint64_t bit_delta = (uint64_t)blo - lookup.logical_start;
-  uint64_t byte_delta = bit_delta >> 3;
-  uint64_t word_back = byte_delta & (uint64_t)(sizeof(kafs_blkmask_t) - 1u);
-  if (lookup.bitmap_byte_off < word_back)
-    return -ERANGE;
-
-  uint64_t word_off = lookup.bitmap_byte_off - word_back;
-  if (word_off > (uint64_t)ctx->c_img_size ||
-      (uint64_t)sizeof(kafs_blkmask_t) > (uint64_t)ctx->c_img_size - word_off)
-    return -ERANGE;
-  if ((word_off & (uint64_t)(sizeof(kafs_blkmask_t) - 1u)) != 0u)
-    return -ERANGE;
-
-  memset(ref, 0, sizeof(*ref));
-  ref->sb = ctx->c_superblock;
-  ref->dirty_word_index = (kafs_blkcnt_t)(bit_delta >> KAFS_BLKMASK_LOG_BITS);
-  ref->word_logical_start =
-      (kafs_blkcnt_t)(lookup.logical_start + (bit_delta & ~(uint64_t)KAFS_BLKMASK_MASK_BITS));
-  ref->bit = (kafs_blkmask_t)1 << (bit_delta & KAFS_BLKMASK_MASK_BITS);
-  ref->word_ptr = (kafs_blkmask_t *)((uint8_t *)ctx->c_img_base + word_off);
-  ref->word = *ref->word_ptr;
-  ref->meta_overlay = KAFS_FALSE;
-  ref->count_block_bitmap_write = KAFS_TRUE;
-  return 0;
-}
-
 static int kafs_bitmap_word_ref_init(struct kafs_context *ctx, kafs_blkcnt_t blo,
                                      kafs_bitmap_word_ref_t *ref)
 {
@@ -665,8 +127,6 @@ static int kafs_bitmap_word_ref_init(struct kafs_context *ctx, kafs_blkcnt_t blo
     return -EINVAL;
   assert(blo < kafs_sb_blkcnt_get(ctx->c_superblock));
 
-  if (kafs_bitmap_descriptor_mapping_enabled(ctx))
-    return kafs_bitmap_word_ref_from_descriptor(ctx, blo, ref);
   return kafs_bitmap_word_ref_from_contiguous(ctx, blo, ref);
 }
 
@@ -709,7 +169,6 @@ typedef struct kafs_alloc_v3_summary_view
   size_t l0_bytes;
   size_t l1_bytes;
   size_t l2_bytes;
-  int descriptor_backed;
 } kafs_alloc_v3_summary_view_t;
 
 static int kafs_alloc_v3_summary_contiguous_enabled(const struct kafs_context *ctx)
@@ -727,24 +186,9 @@ static int kafs_alloc_v3_summary_contiguous_enabled(const struct kafs_context *c
   return KAFS_TRUE;
 }
 
-static int kafs_alloc_v3_summary_descriptor_enabled(const struct kafs_context *ctx)
-{
-  if (!ctx || !ctx->c_superblock)
-    return KAFS_FALSE;
-  if (!kafs_format_uses_layout_descriptor(kafs_sb_format_version_get(ctx->c_superblock)))
-    return KAFS_FALSE;
-  if (!ctx->c_v6_alloc_summary_mapping_enabled || !ctx->c_v6_alloc_summary_shards ||
-      ctx->c_v6_alloc_summary_shard_count == 0u)
-    return KAFS_FALSE;
-  if (!ctx->c_img_base || ctx->c_img_size == 0u)
-    return KAFS_FALSE;
-  return KAFS_TRUE;
-}
-
 static int kafs_alloc_v3_summary_enabled(const struct kafs_context *ctx)
 {
-  return kafs_alloc_v3_summary_contiguous_enabled(ctx) ||
-         kafs_alloc_v3_summary_descriptor_enabled(ctx);
+  return kafs_alloc_v3_summary_contiguous_enabled(ctx);
 }
 
 static int kafs_alloc_v3_summary_view_contiguous(struct kafs_context *ctx,
@@ -782,58 +226,14 @@ static int kafs_alloc_v3_summary_view_contiguous(struct kafs_context *ctx,
   view->l0_bytes = (size_t)l0_bytes_u64;
   view->l1_bytes = (size_t)l1_bytes_u64;
   view->l2_bytes = (size_t)l2_bytes_u64;
-  view->descriptor_backed = KAFS_FALSE;
-  return 0;
-}
-
-static int
-kafs_alloc_v3_summary_view_from_v6_shard(struct kafs_context *ctx,
-                                         const kafs_descriptor_alloc_summary_runtime_shard_t *shard,
-                                         kafs_alloc_v3_summary_view_t *view)
-{
-  if (!ctx || !shard || !view)
-    return -EINVAL;
-  if (shard->l0_bytes > SIZE_MAX || shard->l1_bytes > SIZE_MAX || shard->l2_bytes > SIZE_MAX)
-    return -ERANGE;
-  if (shard->physical_off > (uint64_t)ctx->c_img_size ||
-      shard->physical_end > (uint64_t)ctx->c_img_size || shard->physical_end < shard->physical_off)
-    return -ERANGE;
-  if (shard->l1_bytes > UINT64_MAX - shard->l2_bytes ||
-      shard->physical_off > UINT64_MAX - shard->l1_bytes - shard->l2_bytes)
-    return -ERANGE;
-
-  memset(view, 0, sizeof(*view));
-  view->logical_start = shard->logical_start;
-  view->logical_count = shard->logical_count;
-  view->l1 = (uint8_t *)ctx->c_img_base + (size_t)shard->physical_off;
-  view->l2 = view->l1 + (size_t)shard->l1_bytes;
-  view->l0 = NULL;
-  view->l0_bytes = (size_t)shard->l0_bytes;
-  view->l1_bytes = (size_t)shard->l1_bytes;
-  view->l2_bytes = (size_t)shard->l2_bytes;
-  view->descriptor_backed = KAFS_TRUE;
   return 0;
 }
 
 static int kafs_alloc_v3_summary_view_for_blo(struct kafs_context *ctx, kafs_blkcnt_t blo,
                                               kafs_alloc_v3_summary_view_t *view)
 {
-  if (!ctx || !view)
+  if (!ctx || !view || blo >= kafs_sb_blkcnt_get(ctx->c_superblock))
     return -EINVAL;
-  if (kafs_alloc_v3_summary_descriptor_enabled(ctx))
-  {
-    uint64_t blo64 = (uint64_t)blo;
-    for (uint32_t i = 0; i < ctx->c_v6_alloc_summary_shard_count; ++i)
-    {
-      const kafs_descriptor_alloc_summary_runtime_shard_t *shard =
-          &ctx->c_v6_alloc_summary_shards[i];
-      uint64_t logical_end = shard->logical_start + shard->logical_count;
-      if (blo64 < shard->logical_start || blo64 >= logical_end)
-        continue;
-      return kafs_alloc_v3_summary_view_from_v6_shard(ctx, shard, view);
-    }
-    return -ENOENT;
-  }
   return kafs_alloc_v3_summary_view_contiguous(ctx, view);
 }
 
@@ -843,34 +243,7 @@ static int kafs_alloc_v3_summary_l0_byte(struct kafs_context *ctx,
 {
   if (!ctx || !view || !out_byte || l0_idx >= view->l0_bytes)
     return -EINVAL;
-  if (!view->descriptor_backed)
-  {
-    *out_byte = view->l0[l0_idx];
-    return 0;
-  }
-
-  if ((uint64_t)l0_idx > UINT64_MAX / 8u ||
-      view->logical_start > UINT64_MAX - ((uint64_t)l0_idx * 8u))
-    return -ERANGE;
-  uint64_t first_blo = view->logical_start + ((uint64_t)l0_idx * 8u);
-  uint64_t covered = (uint64_t)l0_idx * 8u;
-  uint64_t valid_bits = (covered < view->logical_count) ? (view->logical_count - covered) : 0u;
-  if (valid_bits > 8u)
-    valid_bits = 8u;
-
-  uint8_t byte = 0xFFu;
-  kafs_blkcnt_t blocnt = kafs_sb_blkcnt_get(ctx->c_superblock);
-  for (uint64_t bit = 0; bit < valid_bits; ++bit)
-  {
-    if (first_blo > UINT64_MAX - bit)
-      return -ERANGE;
-    uint64_t blo = first_blo + bit;
-    if (blo >= (uint64_t)blocnt)
-      continue;
-    if (!kafs_blk_get_usage(ctx, (kafs_blkcnt_t)blo))
-      byte &= (uint8_t) ~(1u << bit);
-  }
-  *out_byte = byte;
+  *out_byte = view->l0[l0_idx];
   return 0;
 }
 
@@ -1250,30 +623,13 @@ static int kafs_alloc_v3_rebuild_summary_if_dirty(struct kafs_context *ctx)
   if (!ctx->c_alloc_v3_summary_dirty)
     return 0;
 
-  if (kafs_alloc_v3_summary_descriptor_enabled(ctx))
-  {
-    for (uint32_t i = 0; i < ctx->c_v6_alloc_summary_shard_count; ++i)
-    {
-      kafs_alloc_v3_summary_view_t view;
-      int rc =
-          kafs_alloc_v3_summary_view_from_v6_shard(ctx, &ctx->c_v6_alloc_summary_shards[i], &view);
-      if (rc != 0)
-        return rc;
-      rc = kafs_alloc_v3_rebuild_summary_view(ctx, &view);
-      if (rc != 0)
-        return rc;
-    }
-  }
-  else
-  {
-    kafs_alloc_v3_summary_view_t view;
-    int rc = kafs_alloc_v3_summary_view_contiguous(ctx, &view);
-    if (rc != 0)
-      return rc;
-    rc = kafs_alloc_v3_rebuild_summary_view(ctx, &view);
-    if (rc != 0)
-      return rc;
-  }
+  kafs_alloc_v3_summary_view_t view;
+  int rc = kafs_alloc_v3_summary_view_contiguous(ctx, &view);
+  if (rc != 0)
+    return rc;
+  rc = kafs_alloc_v3_rebuild_summary_view(ctx, &view);
+  if (rc != 0)
+    return rc;
 
   ctx->c_alloc_v3_summary_dirty = 0u;
   return 0;

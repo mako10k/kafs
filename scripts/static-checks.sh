@@ -43,5 +43,7 @@ run_step complexity ./scripts/complexity.sh
 
 if [[ $FAILED_STEPS -gt 0 ]]; then
 	echo "[static-checks] completed with ${FAILED_STEPS} non-passing step(s)." >&2
+	echo "Static checks completed. Reports under ./report"
+	exit 1
 fi
 echo "Static checks completed. Reports under ./report"

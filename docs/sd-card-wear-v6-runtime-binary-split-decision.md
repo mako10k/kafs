@@ -1,5 +1,9 @@
 # KAFS format v6 runtime binary split decision
 
+> **Historical v6 decision:** The split explains how the now-retired runtime was isolated.
+> `kafs-v6` is currently a fail-closed placeholder, not the runtime described below. See
+> [the current retirement plan](sd-card-wear-v6-retirement-plan.md).
+
 Date: 2026-07-01
 Status: accepted
 

@@ -1,5 +1,9 @@
 # KAFS format v6 delayed/background mutation policy
 
+> **Historical v6 record:** This policy documents retired experimental behavior after its source
+> dependencies were removed. It is not a current runtime contract. See
+> [the current retirement plan](sd-card-wear-v6-retirement-plan.md).
+
 最終更新: 2026-06-26
 
 対象: `SDW-V6RT-T6 v6 delayed/background mutation policy`

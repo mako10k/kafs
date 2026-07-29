@@ -1,5 +1,9 @@
 # KAFS format v6 shared artifact boundary plan
 
+> **Historical v6 plan:** The v6-owned common artifacts described here have been removed. Its
+> runtime commands are retired; retain this document only as decision history. See
+> [the current retirement plan](sd-card-wear-v6-retirement-plan.md).
+
 Date: 2026-07-07
 Status: accepted; shared FUSE runtime source ownership reflected
 

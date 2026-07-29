@@ -1,5 +1,5 @@
 '.\" -*- nroff -*-
-.TH FSCK.KAFS 8 "2026-03-17" "kafs 0.4.0" "System Administration"
+.TH FSCK.KAFS 8 "2026-07-13" "kafs 0.4.0" "System Administration"
 .SH NAME
 fsck.kafs \- check and repair specific KAFS consistency layers
 .SH SYNOPSIS
@@ -33,12 +33,17 @@ By default it runs
 (equivalent to
 .BR --balanced-check )
 (journal validation + dirent->ino orphan scan).
-For descriptor-backed format version 6 or 7 scaffold images,
-.B fsck.kafs
-supports detect-only validation only.  It performs read-only layout descriptor
-discovery and bounds validation, reports all descriptor replicas, validates
-descriptor-backed metadata shard coverage and journal segment health, and
-rejects repair/write options fail-closed.
+Format version 6 offline checking has been retired.  Such images are rejected
+with recreate-as-v7 guidance; no descriptor discovery or repair is attempted.
+.PP
+For accepted format version 7 images, detect-only validation follows the
+K7SA root locators to independently validate and select K7LD descriptor and
+K7CP checkpoint replicas.  It then validates group/shard coverage, bitmap and
+allocator-summary agreement, canonical inode free records, HRL chain bounds,
+the two empty journal segments, and recovered free counters.  A surviving
+backup may be reported as degraded; same-generation non-byte-identical copies
+fail closed.  K7SA/K7LD version 1 is reported as a pre-specification boundary,
+not as an accepted v7 filesystem.  All v7 repair/write modes remain disabled.
 .SH OPTIONS
 .SS Preset Modes
 .TP
@@ -142,8 +147,8 @@ Journal replay operation failed.
 Punch-hole completed with partial failures.
 .TP
 .B 13
-Descriptor-backed format version 6 or 7 descriptor discovery, bounds validation, or bitmap shard
-coverage validation failed.
+Format version 6 was rejected as retired, or format version 7 discovery,
+replica selection, bounds, coverage, checkpoint, or metadata validation failed.
 .SH SEE ALSO
 .BR mkfs.kafs (8),
 .BR kafs (1),

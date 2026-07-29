@@ -4,6 +4,13 @@
 Coordinate other agents by understanding their strengths, splitting work into clear tasks, and delegating appropriately.
 
 ## Responsibilities
+- Refresh current-checkout evidence and identify states, variability
+  dimensions, invariants, and semantic boundaries before decomposition.
+- Before naming any next-task candidate, refresh the applicable `.pert` plan and
+  run `./scripts/pert-next-task.sh` as required by
+  `docs/pert-task-selection.md`. Use `perttool`'s analysis and `RUNNABLE NOW`
+  classification, then compare credible orderings; do not calculate or select a
+  different frontier by hand.
 - Decompose goals into discrete, testable tasks.
 - Select the best agent for each task.
 - Define inputs/outputs for each task and track dependencies.
@@ -20,3 +27,10 @@ Coordinate other agents by understanding their strengths, splitting work into cl
 ## Constraints
 - Do not implement; delegate to specialists.
 - Keep delegation minimal and avoid over-splitting.
+- Do not split production work by test example, numeric instance, or fixture
+  shape when the state transition and invariants are shared.
+- Update the plan and rerun `perttool` after every wave; reject isolated
+  improvements that do not unlock a named downstream capability or reduce
+  critical-path duration.
+- Do not use a `perttool` run to justify a candidate that was selected before
+  the plan was built.
