@@ -2,14 +2,26 @@
 
 ## 2026-07-29 execution resume
 
+- The first `journal_publish` capture attempt failed before the intended host
+  interruption because `src/kafs-v7` was stale and lacked the pause contract.
+  The controller issued one cleanup terminate; no later fault point ran.
+- Failed run `20260729T122245Z-017dbf61` is preserved. Do not reuse, delete, or
+  promote it to host-recovery evidence.
+- The recovery wave now rejects a runtime without both pause-contract markers,
+  binds the workload to the checked runtime, limits confirmation to the outer
+  high-impact action, and preserves background-job stderr without hiding the
+  controller exception.
+- All four fault points passed a fresh host-stop-free marker/SIGSTOP,
+  process-kill, recovery, full-fsck, and dump validation. The current runtime
+  build, native preflight, lint, and all Automake tests pass.
+- `VHDX_EXECUTION_GUARDS_READY` is reached. The refreshed plan again selects a
+  new `VHDX_HOST_RECOVERY_RUN`; only a fresh run ID is eligible.
 - The user supplied a safe Ubuntu maintenance window and explicitly resumed
   the qualification.
 - Native Windows preflight rediscovered the registered Ubuntu `ext4.vhdx`
   (201448226816 bytes), confirmed `/dev/sdd` ext4 and a fresh state root, and
   kept every out-of-scope claim false.
-- `plans/current.pert` now removes only the resolved
-  `VHDX_HOST_RECOVERY_RUN` scheduling blocker. `perttool 0.5.0` selects it as
-  the sole `RUNNABLE NOW` task; `HARDWARE_APPROVAL` remains blocked.
+- `HARDWARE_APPROVAL` remains blocked and is not replaced by the recovery wave.
 - The 2026-07-22 scheduling deferral below is historical and is superseded by
   this resume record. Capture still requires the native Windows `-Execute`
   confirmation and does not become qualification evidence until all four fault

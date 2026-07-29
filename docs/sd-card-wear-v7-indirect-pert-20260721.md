@@ -1212,3 +1212,116 @@ four-point native Windows terminate/restart capture under the documented false
 claim boundary. It does not authorize raw VHDX access, physical-media claims,
 hardware approval, production cutover, or marking either capture or
 qualification complete before evidence validation.
+
+## VHDX first-capture failure and execution-hardening selection (2026-07-29)
+
+- Record ID: `KAFS-PERTTOOL-20260729-VHDX-HARDENING`
+- Calculation time: 2026-07-29 21:28 JST
+- Branch and HEAD: `feat/v7-aligned-direct-overwrite`,
+  `77d58cd0cd2957a078e0547a5e9360aaa010814f`
+- Worktree at selection: tracked changes limited to `plans/current.pert`; the
+  known generated `tests/v7_inspection_mount_smoketest` remains untracked
+- Plan and tool: `plans/current.pert`, `perttool 0.5.0`
+- Accepted goal: unchanged; qualified v7 migration and production-cutover
+  evidence with host recovery, physical media, and review boundaries intact
+
+### Chronological evidence ledger
+
+1. Native Windows preflight passed against the registered Ubuntu `ext4.vhdx`,
+   `/dev/sdd` ext4, and a fresh state root. The decision was to execute the
+   selected four-point capture. Binary freshness was not checked.
+2. The controller requested the intended high-impact confirmation and an
+   unexpected internal `Set Alias` confirmation. The arm workload for
+   `journal_publish` completed without a `pause.marker`; the controller then
+   issued one cleanup `wsl.exe --terminate Ubuntu`.
+3. `Receive-Job` surfaced the arm stderr as a terminating PowerShell error,
+   hiding the controller's intended marker-failure exception. No later fault
+   point ran.
+4. After restart, run `20260729T122245Z-017dbf61` contained the arm context,
+   image, metadata, crash log, and an in-process recovery log, but no
+   `pause.marker`, host-controller record, verify marker, manifest, or digest
+   file. The run is retained unchanged as failed evidence.
+5. The built `src/kafs-v7` dated 2026-07-20 contained only the crash-point
+   contract. Current source and the rebuilt test driver contained the pause
+   contract, and `make -q -C src kafs-v7` reported the runtime target stale.
+
+The claim that host execution was ready is `REFUTED`. The primary causal link
+is `CONFIRMED`: the stale runtime could not honor the current pause contract,
+so the arm completed before host interruption. A pure environment-propagation
+failure is `REFUTED` for this run. Internal confirmation propagation and error
+masking are confirmed adjacent controller defects; they did not cause the
+missing runtime hook but weaken safe retry and diagnosis.
+
+### Replanned dependency and machine result
+
+The plan inserts `VHDX_EXECUTION_HARDENING` between the reached harness
+milestone and host capture. Its day-resolution estimate is O=1d, M=1d, P=2d
+with low-to-medium confidence; external waiting is excluded. The capability
+requires a fail-closed runtime pause-contract check, one outer confirmation,
+evidence-preserving job collection, a current rebuild, and a host-stop-free
+pause-marker validation.
+
+`./scripts/pert-next-task.sh plans/current.pert` passed `document check`,
+precedence and resource analysis, and `dag next`. Precedence makespan is 12
+implementation days. The sole precedence-critical path begins with
+`VHDX_EXECUTION_HARDENING`, then host capture, real-media execution,
+independent review, and cutover decision. The conditional resource makespan is
+13.167 days.
+
+- `ACTIVE`: empty
+- `RUNNABLE NOW`: `VHDX_EXECUTION_HARDENING`, TE 1.167d, TF 0d, precedence and
+  resource critical
+- `BLOCKED NOW`: `HARDWARE_APPROVAL`, TE 1.167d, TF 1.167d, pending exact
+  apparatus and digest-bound destructive approval
+- `UPCOMING`: `VHDX_HOST_RECOVERY_RUN`, `REAL_MEDIA_EXECUTION`,
+  `INDEPENDENT_REAL_MEDIA_REVIEW`, and `CUTOVER_EVIDENCE_DECISION`
+
+Rebuilding and immediately retrying would repair only the current workspace
+and leave recurrence and error masking possible. Hardware preparation remains
+necessary but cannot run without external apparatus. Unrelated runtime or
+namespace work does not shorten the new zero-slack path.
+
+Decision: `SELECT VHDX_EXECUTION_HARDENING`. Host capture is no longer
+authorized until this capability closes, the failed run remains preserved, and
+the refreshed plan selects a new run.
+
+### Execution-hardening closeout and refreshed frontier
+
+The Linux runner now resolves and exports the same `kafs-v7` used by the
+workload and rejects a binary without both pause-contract markers before arm.
+The PowerShell controller disables nested confirmations only after the outer
+high-impact `ShouldProcess` approval and collects job stderr with an explicit
+non-terminating error policy.
+
+The stale preflight negative case failed with RC 2. After `make -j2`, current
+runtime preflight and native Windows preflight passed, while a fake runtime was
+rejected. Fresh directories for all four fault points reached the durable
+marker with the runtime process in `SIGSTOP`; bounded process-group
+termination, recovery, full fsck, and dump then passed. The validation root is
+retained at
+`~/.local/state/kafs-v7-vhdx-validation.v8IIUw`. PowerShell background-job
+stderr preservation and `-Execute -WhatIf` also passed without host
+termination.
+
+`git diff --check` and `./scripts/lint.sh` passed. The first `make check -j2`
+attempt was externally terminated after 120 seconds without a test-suite
+result. Filesystem checks showed 789 GiB and sufficient inodes; no test
+processes remained. The bounded rerun
+`KAFS_TEST_MOUNT_TIMEOUT_MS=15000 make check -j2` completed in 272.2 seconds
+with exit 0.
+
+The residual plan marks `VHDX_EXECUTION_GUARDS_READY` reached, removes the
+completed hardening task and its superseded harness root, and preserves the
+failed host run as diagnostic evidence rather than capability evidence.
+`./scripts/pert-next-task.sh plans/current.pert` passes all three stages:
+
+- `RUNNABLE NOW`: `VHDX_HOST_RECOVERY_RUN`, TE 1.167d, TF 0d, precedence and
+  resource critical
+- `BLOCKED NOW`: `HARDWARE_APPROVAL`, TE 1.167d, TF 0d
+- `ACTIVE` and `READY / WAITING RESOURCE`: empty
+- `UPCOMING`: real-media execution, independent review, and cutover decision
+
+Closeout decision: the hardening dependency is closed. `SELECT
+VHDX_HOST_RECOVERY_RUN` for a fresh native Windows preflight and new run ID
+only. Failed run `20260729T122245Z-017dbf61` remains immutable and cannot be
+resumed or promoted.

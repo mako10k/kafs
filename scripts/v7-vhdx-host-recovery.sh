@@ -5,6 +5,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 WORKLOAD_BIN=${KAFS_V7_VHDX_WORKLOAD_BIN:-$ROOT_DIR/tests/v7_inspection_mount_smoketest}
 FSCK_BIN=${KAFS_TEST_FSCK:-$ROOT_DIR/src/fsck.kafs}
 KAFSDUMP_BIN=${KAFS_TEST_KAFSDUMP:-$ROOT_DIR/src/kafsdump}
+KAFS_V7_BIN=${KAFS_TEST_KAFS_V7:-$ROOT_DIR/src/kafs-v7}
 
 MODE=""
 FAULT=""
@@ -40,6 +41,15 @@ resolve_exe() {
   local label="$2"
   [[ -x "$value" ]] || die "$label is not executable: $value"
   (cd "$(dirname "$value")" && printf '%s/%s\n' "$(pwd)" "$(basename "$value")")
+}
+
+validate_runtime_pause_contract() {
+  local binary="$1"
+  local symbol
+  for symbol in KAFS_V7_TEST_PAUSE_POINT KAFS_V7_TEST_PAUSE_MARKER; do
+    LC_ALL=C grep -a -F -q -- "$symbol" "$binary" ||
+      die "kafs-v7 runtime lacks the required pause contract: $symbol"
+  done
 }
 
 canonical_future_path() {
@@ -274,25 +284,26 @@ command -v findmnt >/dev/null 2>&1 || die "findmnt is required"
 command -v python3 >/dev/null 2>&1 || die "python3 is required"
 command -v realpath >/dev/null 2>&1 || die "realpath is required"
 command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"
+command -v grep >/dev/null 2>&1 || die "grep is required"
 [[ "$(uname -r)" == *[Mm]icrosoft* ]] || die "this runner requires WSL2"
 validate_state_root
+WORKLOAD_BIN=$(resolve_exe "$WORKLOAD_BIN" "VHDX workload")
+FSCK_BIN=$(resolve_exe "$FSCK_BIN" "fsck.kafs")
+KAFSDUMP_BIN=$(resolve_exe "$KAFSDUMP_BIN" "kafsdump")
+KAFS_V7_BIN=$(resolve_exe "$KAFS_V7_BIN" "kafs-v7")
+validate_runtime_pause_contract "$KAFS_V7_BIN"
+export KAFS_TEST_KAFS_V7="$KAFS_V7_BIN"
 
 if [[ "$MODE" == preflight ]]; then
   [[ -z "$FAULT" && -z "$STATE_DIR" && -z "$HOST_EVIDENCE" ]] ||
     die "preflight accepts only --state-root"
-  WORKLOAD_BIN=$(resolve_exe "$WORKLOAD_BIN" "VHDX workload")
-  FSCK_BIN=$(resolve_exe "$FSCK_BIN" "fsck.kafs")
-  KAFSDUMP_BIN=$(resolve_exe "$KAFSDUMP_BIN" "kafsdump")
-  printf 'KAFS_V7_VHDX_PREFLIGHT PASS state_root=%s source=%s fstype=ext4\n' \
-    "$STATE_ROOT" "$(findmnt -T "$ROOT_DIR" -n -o SOURCE)"
+  printf 'KAFS_V7_VHDX_PREFLIGHT PASS state_root=%s source=%s fstype=ext4 runtime=%s\n' \
+    "$STATE_ROOT" "$(findmnt -T "$ROOT_DIR" -n -o SOURCE)" "$KAFS_V7_BIN"
   exit 0
 fi
 
 validate_fault "$FAULT"
 validate_state_dir_path
-WORKLOAD_BIN=$(resolve_exe "$WORKLOAD_BIN" "VHDX workload")
-FSCK_BIN=$(resolve_exe "$FSCK_BIN" "fsck.kafs")
-KAFSDUMP_BIN=$(resolve_exe "$KAFSDUMP_BIN" "kafsdump")
 
 if [[ "$MODE" == arm ]]; then
   [[ -z "$HOST_EVIDENCE" ]] || die "arm does not accept --host-evidence"
