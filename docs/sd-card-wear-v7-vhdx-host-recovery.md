@@ -1,7 +1,7 @@
 # KAFS v7 Windows-host VHDX recovery prequalification
 
-- Status: harness implemented; safe maintenance window and native Windows
-  preflight available as of 2026-07-29; host capture selected but not yet run
+- Status: first host capture failed on stale runtime; pause-contract and
+  failure-preservation hardening passed, and a fresh host retry is selected
 - Evidence-audit status: T57 read-only aggregate gate ready; it must validate
   the completed four-point capture before qualification can close
 - Scope: format-v7 controlled-write recovery on a dedicated regular-file image
@@ -92,8 +92,11 @@ KAFS_V7_VHDX_HOST_PREFLIGHT PASS (no distro termination requested)
 
 Preflight rejects a state root outside the current WSL home, on `/mnt/*`, on a
 non-ext4 root, or on a filesystem different from the repository's active Ubuntu
-filesystem. It also requires the already-built workload, `fsck.kafs`, and
-`kafsdump` executables.
+filesystem. It also requires the already-built workload, `fsck.kafs`,
+`kafsdump`, and `kafs-v7` executables. The exact `kafs-v7` selected for the
+workload must contain both runtime pause-contract markers; stale binaries that
+lack either marker fail before arm or host termination. The PASS line records
+the resolved runtime path.
 
 ## Execute from native Windows
 
@@ -181,8 +184,11 @@ or authorize host capture.
 
 T57 and T58 closed on 2026-07-22. The read-only aggregate gate is ready, but no
 actual four-point host run has passed it. On 2026-07-29 the user supplied a safe
-window and native Windows preflight passed. The refreshed PERT plan selects the
-host capture while preserving the physical-hardware blocker.
+window and native Windows preflight passed, but the first arm used a stale
+runtime without the pause contract. Failed run
+`20260729T122245Z-017dbf61` is retained unchanged. The refreshed PERT plan
+selects execution hardening before any host retry while preserving the
+physical-hardware blocker.
 
 ## Remaining physical-media gate
 

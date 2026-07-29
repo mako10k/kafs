@@ -78,7 +78,7 @@ function Receive-ArmJobBounded {
     if ($null -eq $completed) {
         Stop-Job -Job $Job
     }
-    $output = Receive-Job -Job $Job 2>&1 | Out-String
+    $output = Receive-Job -Job $Job -ErrorAction Continue 2>&1 | Out-String
     Remove-Job -Job $Job -Force
     return $output
 }
@@ -115,6 +115,7 @@ $target = "WSL distro '$Distro' backed by '$($vhdx.Path)'"
 if (-not $PSCmdlet.ShouldProcess($target, "terminate and restart at each durable KAFS fault marker")) {
     return
 }
+$ConfirmPreference = "None"
 
 $runId = [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssZ") + "-" +
     ([Guid]::NewGuid().ToString("N").Substring(0, 8))

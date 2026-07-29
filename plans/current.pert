@@ -7,8 +7,9 @@ project KAFS_CURRENT:
     2026-07-29; physical hardware remains blocked. The real-media evidence
     contract and independent VHDX audit are complete. The migration
     lifecycle/evidence contract, v7-owned offline import surface, and disposable
-    lifecycle rehearsal are complete. Only the runnable host-recovery and
-    externally blocked physical-media qualification legs remain before cutover.
+    lifecycle rehearsal and host-recovery execution guards are complete. The
+    host capture is runnable; physical-media qualification remains externally
+    blocked.
   as_of 2026-07-29
   duration_unit day
   finish PRODUCTION_CUTOVER_DECIDED
@@ -21,8 +22,8 @@ resource INDEPENDENT_REVIEW_STREAM:
   title "Reviewer independent from the qualification operator"
   capacity 1
 
-milestone VHDX_HARNESS_READY:
-  title "Resumable Windows-host VHDX recovery harness ready"
+milestone VHDX_EXECUTION_GUARDS_READY:
+  title "Windows-host pause-contract and failure-preservation guards ready"
   state reached
 
 milestone REAL_MEDIA_APPROVAL_CONTRACT_READY:
@@ -65,7 +66,7 @@ milestone CUTOVER_EXECUTION_READY:
 milestone PRODUCTION_CUTOVER_DECIDED:
   title "Migration and production cutover evidence accepted"
 
-task VHDX_HOST_RECOVERY_RUN VHDX_HARNESS_READY -> VHDX_HOST_RECOVERY_CAPTURED:
+task VHDX_HOST_RECOVERY_RUN VHDX_EXECUTION_GUARDS_READY -> VHDX_HOST_RECOVERY_CAPTURED:
   title "Capture VHDX-backed recovery across WSL terminate/restart"
   estimate:
     optimistic 1d
