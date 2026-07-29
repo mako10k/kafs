@@ -48,8 +48,8 @@ For each fault, the audit verifies:
 - `pause.marker`, `vhdx-recovery.meta`, and `vhdx-verify.ok` all name that exact
   fault;
 - `host-controller.json` records `wsl.exe --terminate`, exit code zero for
-  terminate/restart, positive VHDX lengths, ordered timezone-aware timestamps,
-  and false claims;
+  terminate/restart, positive VHDX lengths, ordered timezone-aware timestamps
+  including native .NET seven-digit fractional precision, and false claims;
 - `verification-manifest.json` follows restart, binds the recovered-image
   SHA-256, records host interruption/full-fsck/kafsdump/payload-diagnostic PASS,
   and keeps all out-of-scope claims false;
@@ -99,6 +99,11 @@ controller identity away from `wsl.exe --terminate` or clearing
 `host_terminate_restart_observed` fails the audit. The earlier substitute run
 remains useful harness evidence, but cannot close the host-interruption
 qualification edge.
+
+The controlled-write VHDX fixture contains three mutations. At
+`journal_publish`, one mutation is already durable and recovery applies the
+remaining two; the aggregate audit uses the same 2-applied/1-already-applied
+invariant as the runtime verifier.
 
 ## Closeout Evidence
 

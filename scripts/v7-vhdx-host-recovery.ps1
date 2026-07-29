@@ -169,11 +169,11 @@ foreach ($faultName in $Fault) {
         throw "durable marker mismatch for $faultName; cleanup terminate exit=$cleanupExit"
     }
 
-    $markerObservedUtc = [DateTime]::UtcNow.ToString("o")
+    $markerObservedUtc = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.ffffff'Z'")
     $lengthBefore = (Get-Item -LiteralPath $vhdx.Path).Length
     & wsl.exe --terminate $Distro
     $terminateExit = $LASTEXITCODE
-    $terminatedUtc = [DateTime]::UtcNow.ToString("o")
+    $terminatedUtc = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.ffffff'Z'")
     $armOutput = Receive-ArmJobBounded $armJob
     if ($terminateExit -ne 0) {
         throw "wsl --terminate failed for $faultName with exit code $terminateExit; arm=$armOutput"
@@ -181,7 +181,7 @@ foreach ($faultName in $Fault) {
 
     & wsl.exe -d $Distro --exec /usr/bin/true
     $restartExit = $LASTEXITCODE
-    $restartedUtc = [DateTime]::UtcNow.ToString("o")
+    $restartedUtc = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.ffffff'Z'")
     if ($restartExit -ne 0) {
         throw "WSL restart failed for $faultName with exit code $restartExit"
     }

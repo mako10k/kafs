@@ -1,5 +1,24 @@
 # KAFS v7 VHDX host-recovery WIP handoff (2026-07-21)
 
+## 2026-07-29 qualification closeout
+
+- Fresh run `20260729T124817Z-8b5a8ad9` completed all four native Windows
+  terminate/restart points with zero controller exit codes and per-point
+  recovery/verification PASS.
+- Every retained `artifacts.sha256` inventory passed.
+- The first aggregate audit exposed native .NET timestamp-precision and
+  synthetic recovery-count drift. The audit contract and regression were
+  reconciled without modifying the retained run.
+- The unchanged run then passed
+  `KAFS_V7_VHDX_EVIDENCE_AUDIT PASS`, bound to capture HEAD
+  `695ab3cb4fdf0a9964614c5abdcbfa00ab7c7e30`.
+- `VHDX_HOST_RECOVERY_QUALIFIED` is reached. This is VHDX-backed host-recovery
+  evidence only; every physical-media, wear, release-candidate, and production
+  claim remains false.
+- Failed run `20260729T122245Z-017dbf61` remains preserved and ineligible.
+- The remaining critical prerequisite is exact physical
+  `HARDWARE_APPROVAL`; no real-media execution is authorized by this closeout.
+
 ## 2026-07-29 execution resume
 
 - The first `journal_publish` capture attempt failed before the intended host

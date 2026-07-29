@@ -1325,3 +1325,77 @@ Closeout decision: the hardening dependency is closed. `SELECT
 VHDX_HOST_RECOVERY_RUN` for a fresh native Windows preflight and new run ID
 only. Failed run `20260729T122245Z-017dbf61` remains immutable and cannot be
 resumed or promoted.
+
+## VHDX capture closeout and aggregate-audit reconciliation (2026-07-29)
+
+- Record ID: `KAFS-PERTTOOL-20260729-VHDX-AUDIT-RECONCILIATION`
+- Branch and HEAD: `feat/v7-aligned-direct-overwrite`,
+  `695ab3cb4fdf0a9964614c5abdcbfa00ab7c7e30`
+- Worktree before replan: no tracked changes; known generated test executables
+  remain untracked
+- Evidence run: `20260729T124817Z-8b5a8ad9`
+- Accepted goal: unchanged; qualified v7 migration and production-cutover
+  evidence with host, physical-media, and independent-review boundaries intact
+
+The native Windows controller completed all four fault points. Each point
+reported zero terminate/restart exit codes and recovery/verification PASS, and
+every retained `artifacts.sha256` inventory verifies. The run is therefore a
+completed host capture, but not yet aggregate qualification.
+
+The required validate-only aggregate audit rejected twelve native PowerShell
+timestamps and one `journal_publish` recovery diagnostic. The timestamps use
+the valid seven-fractional-digit UTC form emitted by .NET round-trip format,
+while the Python parser accepts only six fractional digits. The diagnostic
+records three mutations as two applied and one already applied, matching the
+runtime C verifier; the synthetic audit fixture instead retained an obsolete
+three-applied/zero-already expectation. Recovery, payload, full fsck, dump, and
+artifact digests passed, so current evidence identifies contract/fixture drift
+rather than recovered-image corruption.
+
+The plan marks only `VHDX_HOST_RECOVERY_CAPTURED` reached and replaces the
+refuted ready-audit premise with `VHDX_EVIDENCE_RECONCILIATION`. Its estimate is
+O=1d, M=1d, P=2d with medium confidence. The capability must accept strict
+timezone-aware ISO-8601 input at native .NET precision, align the synthetic
+mutation invariant with the runtime verifier, retain negative coverage, and
+pass the unchanged retained run through the read-only aggregate audit. It does
+not authorize artifact rewriting, another host interruption, raw VHDX access,
+or any physical-media claim.
+
+### Reconciliation closeout
+
+The audit parser now accepts strict timezone-aware ISO-8601 timestamps at the
+seven-digit fractional precision emitted by native .NET while preserving
+timezone, future-time, and ordering rejection. Future controller records emit
+six-digit UTC fractions for direct Python compatibility. The synthetic
+`journal_publish` fixture and audit invariant now match the runtime verifier:
+three total mutations, two applied during recovery, and one already applied.
+Negative coverage rejects a missing timezone and a changed mutation count.
+
+The focused Automake regression, `./scripts/lint.sh`, and `git diff --check`
+passed. Without rewriting any retained artifact, the exact read-only command
+over run `20260729T124817Z-8b5a8ad9` emitted
+`KAFS_V7_VHDX_EVIDENCE_AUDIT PASS`; it bound all four faults to Ubuntu, the
+registered `ext4.vhdx`, and capture HEAD
+`695ab3cb4fdf0a9964614c5abdcbfa00ab7c7e30`.
+
+The residual plan marks `VHDX_HOST_RECOVERY_QUALIFIED` reached and removes the
+completed reconciliation task. This closes only the VHDX predecessor.
+`HARDWARE_APPROVAL` remains an external prerequisite; no raw VHDX access,
+physical power interruption, real-media, wear, release-candidate, or production
+claim is created.
+
+`./scripts/pert-next-task.sh plans/current.pert` then passed `document check`,
+precedence/resource analysis, and `dag next`. The residual precedence and
+resource critical path is `HARDWARE_APPROVAL -> REAL_MEDIA_EXECUTION ->
+INDEPENDENT_REAL_MEDIA_REVIEW -> CUTOVER_EVIDENCE_DECISION`, with a 10.833-day
+conditional makespan.
+
+- `RUNNABLE NOW`, `ACTIVE`, and `READY / WAITING RESOURCE`: empty
+- `BLOCKED NOW`: `HARDWARE_APPROVAL`, TE 1.167d, TF 0d, precedence and resource
+  critical
+- `UPCOMING`: real-media execution, independent review, and cutover decision
+
+Closeout decision: `BLOCKED`. The valid residual plan has no runnable critical
+or least-slack task. Resume only when the exact card, reader/controller,
+isolated power-cut apparatus, cycle count, matrix digest, and time-bounded
+destructive approval can be bound by the existing approval contract.
