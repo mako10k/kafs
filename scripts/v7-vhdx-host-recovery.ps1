@@ -67,12 +67,8 @@ function Resolve-StateRoot {
     if ($StateRoot) {
         return $StateRoot
     }
-    $home = Invoke-WslChecked @(
-        "/usr/bin/python3",
-        "-c",
-        'import os; print(os.path.expanduser("~"))'
-    )
-    return "$(([string]$home).Trim())/.local/state/kafs-v7-vhdx-recovery"
+    $wslHome = Invoke-WslChecked @("/usr/bin/printenv", "HOME")
+    return "$(([string]$wslHome).Trim())/.local/state/kafs-v7-vhdx-recovery"
 }
 
 function Receive-ArmJobBounded {
