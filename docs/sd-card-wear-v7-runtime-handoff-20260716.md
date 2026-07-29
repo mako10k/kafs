@@ -41,6 +41,13 @@ Relevant implementation checkpoints:
 - `1089fe3 feat: negotiate v7 atomic write requests`
 - `13cc9a0 test: replay v7 recovery-wave effectiveness`
 - `460f7b0 refactor: remove unused descriptor wire path`
+- `effa023 docs: require PERT before task selection`
+- `60fb869 chore: gate next-task selection with perttool`
+- `224de59 feat: add VHDX-backed host recovery harness`
+
+The current cross-host restart record is
+[sd-card-wear-v7-vhdx-handoff-20260721.md](sd-card-wear-v7-vhdx-handoff-20260721.md).
+It supersedes the older next-task wording below where they conflict.
 
 ## Current Runtime Boundary
 
@@ -373,16 +380,14 @@ T19 validation completed on 2026-07-17:
 
 ## Recommended Next Slice
 
-The post-T55 closeout PERT in
-`docs/sd-card-wear-v7-indirect-pert-20260721.md` closes dense same-group
-triple-indirect regular-file lifecycle `D3` and expanded software
-qualification `Q`. No software predecessor remains runnable on the accepted
-path to real-media recovery `R`: exact hardware identity and digest-bound
-approval `H` is the remaining join blocker. Whole-namespace graph validation
-`N` is still runnable but off-path and must not replace `H` merely because it
-can be performed locally.
+The post-T56 `plans/current.pert` marks the VHDX harness ready. Its machine
+frontier selects `VHDX_HOST_RECOVERY_RUN` as the only runnable zero-slack task.
+Tomorrow begins with its fresh Task Start Gate and read-only native Windows
+preflight, followed by the four-point terminate/restart matrix only after PASS.
+Use [the dated VHDX handoff](sd-card-wear-v7-vhdx-handoff-20260721.md) as the
+exact restart procedure.
 
-The hardware path remains in the same network as unknown-duration blocker `H`.
+The hardware path remains in the same network as blocked critical node `H`.
 When the required hardware becomes available, complete the `SDW-V7RT-T48-B1`
 draft matrix described in
 `docs/sd-card-wear-v7-real-media-qualification-approval.md`, validate
@@ -393,13 +398,16 @@ interruption before that approval.
 ## Resume Checklist
 
 1. Fetch and check out `origin/feat/v7-runtime-admission-foundation`.
-2. Confirm the T55 triple-indirect lifecycle commit is an ancestor and inspect
-   any commits after it.
-3. Confirm `git status --short --branch` is clean.
+2. Confirm `224de59` and the VHDX WIP handoff commit are ancestors and inspect
+   any later commits.
+3. Confirm `git status --short --branch` has no tracked changes. The known
+   generated test executables may remain untracked and must not be staged.
 4. Read, in order:
+   - [sd-card-wear-v7-vhdx-handoff-20260721.md](sd-card-wear-v7-vhdx-handoff-20260721.md);
+   - [sd-card-wear-v7-vhdx-host-recovery.md](sd-card-wear-v7-vhdx-host-recovery.md);
    - [sd-card-wear-v7-capability-rebaseline-20260721.md](sd-card-wear-v7-capability-rebaseline-20260721.md);
    - this handoff;
-   - [sd-card-wear-tickets.md](sd-card-wear-tickets.md) at T49-T55;
+   - [sd-card-wear-tickets.md](sd-card-wear-tickets.md) at T49-T56;
    - [sd-card-wear-v7-indirect-pert-20260721.md](sd-card-wear-v7-indirect-pert-20260721.md);
    - [sd-card-wear-format-v7-pivot.md](sd-card-wear-format-v7-pivot.md);
    - [.github/lock-policy.md](../.github/lock-policy.md).
@@ -412,10 +420,10 @@ interruption before that approval.
    make -C tests check TESTS='v7_fuse_write_smoketest v7_checkpoint_publication_smoketest v7_inspection_mount_smoketest'
    ```
 
-6. Rebuild the capability PERT from the refreshed checkout. If hardware
-   identity becomes available, update T48-B1 only with directly observed
-   identities and keep real-device actions behind explicit approval. If it is
-   still unavailable, report that the accepted path has no runnable software
-   node; do not substitute off-path namespace work without an explicit replan.
+6. Run `./scripts/pert-next-task.sh plans/current.pert`. Require
+   `VHDX_HOST_RECOVERY_RUN` to remain the runnable critical frontier, then run
+   the dated handoff's native Windows preflight and Task Start decision. Keep
+   real-device actions behind explicit approval and do not substitute off-path
+   namespace work.
 7. Follow the reviewed file/hunk WIP workflow in
    [github-dev-rules.md](../.github/github-dev-rules.md).
