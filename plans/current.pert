@@ -5,11 +5,11 @@ project KAFS_CURRENT:
     Residual network for qualified v7 migration and production-cutover evidence.
     The WSL maintenance window and native host preflight are available as of
     2026-07-29; physical hardware remains blocked. The real-media evidence
-    contract and independent VHDX audit are complete. The migration
+    contract is complete. The migration
     lifecycle/evidence contract, v7-owned offline import surface, and disposable
     lifecycle rehearsal and host-recovery execution guards are complete. The
-    host capture is runnable; physical-media qualification remains externally
-    blocked.
+    host capture and read-only aggregate qualification are complete.
+    Physical-media qualification remains externally blocked.
   as_of 2026-07-29
   duration_unit day
   finish PRODUCTION_CUTOVER_DECIDED
@@ -22,23 +22,13 @@ resource INDEPENDENT_REVIEW_STREAM:
   title "Reviewer independent from the qualification operator"
   capacity 1
 
-milestone VHDX_EXECUTION_GUARDS_READY:
-  title "Windows-host pause-contract and failure-preservation guards ready"
-  state reached
-
 milestone REAL_MEDIA_APPROVAL_CONTRACT_READY:
   title "Fail-closed real-media matrix and approval contract ready"
   state reached
 
-milestone VHDX_EVIDENCE_AUDIT_READY:
-  title "Offline VHDX four-point evidence audit gate ready"
-  state reached
-
-milestone VHDX_HOST_RECOVERY_CAPTURED:
-  title "Windows-host VHDX terminate/restart evidence captured"
-
 milestone VHDX_HOST_RECOVERY_QUALIFIED:
   title "Windows-host VHDX terminate/restart recovery qualified"
+  state reached
 
 milestone REAL_MEDIA_EVIDENCE_CONTRACT_READY:
   title "Real-media artifact and independent-review gate ready"
@@ -65,23 +55,6 @@ milestone CUTOVER_EXECUTION_READY:
 
 milestone PRODUCTION_CUTOVER_DECIDED:
   title "Migration and production cutover evidence accepted"
-
-task VHDX_HOST_RECOVERY_RUN VHDX_EXECUTION_GUARDS_READY -> VHDX_HOST_RECOVERY_CAPTURED:
-  title "Capture VHDX-backed recovery across WSL terminate/restart"
-  estimate:
-    optimistic 1d
-    most_likely 1d
-    pessimistic 2d
-  owner "Windows host operator and KAFS implementation stream"
-  source "docs/sd-card-wear-v7-vhdx-host-recovery.md"
-  requires:
-    PRIMARY_STREAM 1
-
-gate VHDX_AUDIT_REQUIRED VHDX_EVIDENCE_AUDIT_READY -> VHDX_HOST_RECOVERY_QUALIFIED:
-  reason "Captured host evidence must pass the offline audit gate"
-
-gate VHDX_CAPTURE_REQUIRED VHDX_HOST_RECOVERY_CAPTURED -> VHDX_HOST_RECOVERY_QUALIFIED:
-  reason "Qualification requires the actual four-point host interruption capture"
 
 task HARDWARE_APPROVAL REAL_MEDIA_APPROVAL_CONTRACT_READY -> MEDIA_AUTHORIZED:
   title "Bind exact card, reader, power-cut apparatus, cycle count, and approval"

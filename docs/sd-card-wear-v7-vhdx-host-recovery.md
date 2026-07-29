@@ -182,13 +182,16 @@ run directory and reads the retained files in place. A successful audit emits
 `KAFS_V7_VHDX_EVIDENCE_AUDIT PASS run_id=<run-id>`; it does not itself perform
 or authorize host capture.
 
-T57 and T58 closed on 2026-07-22. The read-only aggregate gate is ready, but no
-actual four-point host run has passed it. On 2026-07-29 the user supplied a safe
-window and native Windows preflight passed, but the first arm used a stale
-runtime without the pause contract. Failed run
-`20260729T122245Z-017dbf61` is retained unchanged. The refreshed PERT plan
-selects execution hardening before any host retry while preserving the
-physical-hardware blocker.
+T57 and T58 closed on 2026-07-22. On 2026-07-29 the user supplied a safe window.
+Failed first run `20260729T122245Z-017dbf61`, which used a stale runtime without
+the pause contract, remains retained unchanged. After execution hardening,
+fresh run `20260729T124817Z-8b5a8ad9` completed all four host interruption
+points. The aggregate audit contract was reconciled with native .NET timestamp
+precision and the runtime's 2-applied/1-already-applied `journal_publish`
+diagnostic, then the unchanged run passed
+`KAFS_V7_VHDX_EVIDENCE_AUDIT`. The plan may therefore mark
+`VHDX_HOST_RECOVERY_QUALIFIED` reached while preserving the physical-hardware
+blocker.
 
 ## Remaining physical-media gate
 

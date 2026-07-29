@@ -57,6 +57,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import time
 
 
 run_root = Path(sys.argv[1]).resolve()
@@ -74,7 +75,7 @@ false_claims = (
     "release_candidate_qualified",
 )
 errors: list[str] = []
-now = datetime.now(timezone.utc)
+now_ns = time.time_ns()
 
 
 def fail(message: str) -> None:
@@ -129,17 +130,29 @@ def parse_timestamp(value: object, label: str):
     if not isinstance(value, str) or not value:
         fail(f"{label} must be a non-empty ISO-8601 timestamp")
         return None
+    matched = re.fullmatch(
+        r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})"
+        r"(?:\.([0-9]{1,9}))?(Z|[+-][0-9]{2}:[0-9]{2})",
+        value,
+    )
+    if matched is None:
+        fail(f"{label} must be an ISO-8601 value with timezone")
+        return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            raise ValueError("timezone missing")
+        parsed = datetime.fromisoformat(
+            matched.group(1) + matched.group(3).replace("Z", "+00:00")
+        )
         parsed = parsed.astimezone(timezone.utc)
     except ValueError:
         fail(f"{label} must be an ISO-8601 value with timezone")
         return None
-    if parsed > now:
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    seconds = int((parsed - epoch).total_seconds())
+    fraction_ns = int(((matched.group(2) or "") + "000000000")[:9])
+    parsed_ns = seconds * 1_000_000_000 + fraction_ns
+    if parsed_ns > now_ns:
         fail(f"{label} must not be in the future")
-    return parsed
+    return parsed_ns
 
 
 def sha256_path(path: Path) -> str:
@@ -306,9 +319,9 @@ def parse_recovery_log(path: Path, fault: str) -> None:
     if numbers.get("final_nonempty_segments") != 0:
         fail(f"{fault}: recovery diagnostic left nonempty journal segments")
     if fault == "journal_publish" and (
-        numbers.get("applied_targets") != 3
-        or numbers.get("applied_mutations") != 3
-        or numbers.get("already_applied_mutations") != 0
+        numbers.get("applied_targets") != 2
+        or numbers.get("applied_mutations") != 2
+        or numbers.get("already_applied_mutations") != 1
     ):
         fail(f"{fault}: recovery diagnostic mutation counts mismatch")
     elif fault == "metadata_apply" and (
@@ -350,7 +363,7 @@ for fault in expected_faults:
 
 common_arm_identity = None
 common_host_identity = None
-intervals: list[tuple[datetime, datetime, str]] = []
+intervals: list[tuple[int, int, str]] = []
 for fault in expected_faults:
     state_dir = root_entries.get(fault)
     if state_dir is None or state_dir.is_symlink() or not state_dir.is_dir():

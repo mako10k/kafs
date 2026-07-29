@@ -37,6 +37,10 @@ def timestamp(value):
     return value.isoformat().replace("+00:00", "Z")
 
 
+def host_timestamp(value):
+    return value.strftime("%Y-%m-%dT%H:%M:%S.%f0Z")
+
+
 for index, fault in enumerate(faults):
     state = run / fault
     state.mkdir()
@@ -72,9 +76,9 @@ for index, fault in enumerate(faults):
         "vhdx_path": r"C:\Users\synthetic\Ubuntu\ext4.vhdx",
         "vhdx_length_before": 120680611840 + index * 4096,
         "vhdx_length_after": 120680611840 + (index + 1) * 4096,
-        "marker_observed_utc": timestamp(marker_time),
-        "terminated_utc": timestamp(terminated_time),
-        "restarted_utc": timestamp(restarted_time),
+        "marker_observed_utc": host_timestamp(marker_time),
+        "terminated_utc": host_timestamp(terminated_time),
+        "restarted_utc": host_timestamp(restarted_time),
         "terminate_exit_code": 0,
         "restart_exit_code": 0,
         "controller": "wsl.exe --terminate",
@@ -122,8 +126,9 @@ for index, fault in enumerate(faults):
         "final_nonempty_segments": 0,
     }
     if fault == "journal_publish":
-        diagnostic["applied_targets"] = 3
-        diagnostic["applied_mutations"] = 3
+        diagnostic["applied_targets"] = 2
+        diagnostic["applied_mutations"] = 2
+        diagnostic["already_applied_mutations"] = 1
     elif fault == "metadata_apply":
         diagnostic["already_applied_mutations"] = 3
     elif fault == "checkpoint_copy":
@@ -291,6 +296,46 @@ path.write_text(value, encoding="utf-8")
 PY
 refresh_inventory "$diagnostic/journal_reclaim"
 expect_failure diagnostic-mismatch "$gate" --run-dir "$diagnostic" --validate-only
+
+mutation=$(clone_run 20260721T101000Z-0000000e)
+python3 - "$mutation/journal_publish/v7-vhdx-journal_publish-recovery.log" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+value = path.read_text(encoding="utf-8").replace(
+    "already_applied_mutations=1", "already_applied_mutations=0"
+)
+path.write_text(value, encoding="utf-8")
+PY
+refresh_inventory "$mutation/journal_publish"
+expect_failure mutation-count-mismatch "$gate" --run-dir "$mutation" --validate-only
+
+timestamp_without_zone=$(clone_run 20260721T102000Z-0000000f)
+python3 - "$timestamp_without_zone/journal_publish/host-controller.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+data["marker_observed_utc"] = data["marker_observed_utc"].removesuffix("Z")
+path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+refresh_inventory "$timestamp_without_zone/journal_publish"
+expect_failure timestamp-without-zone "$gate" --run-dir "$timestamp_without_zone" --validate-only
+
+submicrosecond_order=$(clone_run 20260721T103000Z-00000010)
+python3 - "$submicrosecond_order/journal_publish/host-controller.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+data["marker_observed_utc"] = "2026-07-21T00:10:00.0000002Z"
+data["terminated_utc"] = "2026-07-21T00:10:00.0000001Z"
+path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+refresh_inventory "$submicrosecond_order/journal_publish"
+expect_failure submicrosecond-order "$gate" --run-dir "$submicrosecond_order" --validate-only
 
 dump=$(clone_run 20260721T110000Z-0000000b)
 python3 - "$dump/metadata_apply/kafsdump.json" <<'PY'

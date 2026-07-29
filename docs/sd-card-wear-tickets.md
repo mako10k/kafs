@@ -3727,6 +3727,16 @@
   - VHDX、mount、image write、PowerShell、WSL terminate/restart、実媒体操作は実施していない。
 - 状態: 完了。`VHDX_EVIDENCE_AUDIT_READY`をreachedとし、planから実装taskを除いた。actual host captureと
   `VHDX_HOST_RECOVERY_QUALIFIED`は未完了のまま保持する。
+- 実証結果（2026-07-29）:
+  - native Windows run `20260729T124817Z-8b5a8ad9`が4 faultすべての
+    terminate/restart/recovery/verificationを完了した。
+  - 初回集約監査で.NETの7桁小数UTC時刻とsynthetic
+    `journal_publish` mutation countの契約driftを検出した。timezone/future/orderの
+    fail-closed性を保ったprecision対応とruntime verifier準拠の2 applied/1 already-appliedへ修正し、
+    negative regressionを追加した。
+  - retained runを変更せず再監査し
+    `KAFS_V7_VHDX_EVIDENCE_AUDIT PASS`。`VHDX_HOST_RECOVERY_QUALIFIED`を
+    reachedとした。physical-media、wear、RC、production claimは引き続きfalse。
 
 ### SDW-V7RT-T58 real-media evidence review gate
 
