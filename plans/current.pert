@@ -3,12 +3,13 @@ project KAFS_CURRENT:
   title "KAFS accepted-goal residual plan"
   description |
     Residual network for qualified v7 migration and production-cutover evidence.
-    Hardware and WSL maintenance windows remain blocked. The real-media
-    evidence contract and independent VHDX audit are complete. The migration
-    lifecycle/evidence contract, v7-owned offline import surface, and
-    disposable lifecycle rehearsal are complete. Only the externally blocked
-    host-recovery and physical-media qualification legs remain before cutover.
-  as_of 2026-07-22
+    The WSL maintenance window and native host preflight are available as of
+    2026-07-29; physical hardware remains blocked. The real-media evidence
+    contract and independent VHDX audit are complete. The migration
+    lifecycle/evidence contract, v7-owned offline import surface, and disposable
+    lifecycle rehearsal are complete. Only the runnable host-recovery and
+    externally blocked physical-media qualification legs remain before cutover.
+  as_of 2026-07-29
   duration_unit day
   finish PRODUCTION_CUTOVER_DECIDED
 
@@ -70,11 +71,6 @@ task VHDX_HOST_RECOVERY_RUN VHDX_HARNESS_READY -> VHDX_HOST_RECOVERY_CAPTURED:
     optimistic 1d
     most_likely 1d
     pessimistic 2d
-  status blocked
-  blocked_reason |
-    The active Ubuntu distro runs other tasks. The user deferred every
-    wsl.exe --terminate/--shutdown recovery run until they identify a safe
-    maintenance window and explicitly resume this qualification.
   owner "Windows host operator and KAFS implementation stream"
   source "docs/sd-card-wear-v7-vhdx-host-recovery.md"
   requires:

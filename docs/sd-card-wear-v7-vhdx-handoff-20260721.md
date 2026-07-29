@@ -1,5 +1,20 @@
 # KAFS v7 VHDX host-recovery WIP handoff (2026-07-21)
 
+## 2026-07-29 execution resume
+
+- The user supplied a safe Ubuntu maintenance window and explicitly resumed
+  the qualification.
+- Native Windows preflight rediscovered the registered Ubuntu `ext4.vhdx`
+  (201448226816 bytes), confirmed `/dev/sdd` ext4 and a fresh state root, and
+  kept every out-of-scope claim false.
+- `plans/current.pert` now removes only the resolved
+  `VHDX_HOST_RECOVERY_RUN` scheduling blocker. `perttool 0.5.0` selects it as
+  the sole `RUNNABLE NOW` task; `HARDWARE_APPROVAL` remains blocked.
+- The 2026-07-22 scheduling deferral below is historical and is superseded by
+  this resume record. Capture still requires the native Windows `-Execute`
+  confirmation and does not become qualification evidence until all four fault
+  points and the independent audit pass.
+
 ## 2026-07-22 scheduling deferral
 
 - The active Ubuntu distro runs other tasks, so the user deferred every

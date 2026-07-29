@@ -1161,3 +1161,54 @@ The closeout decision is `BLOCKED`: the valid plan has no runnable critical or
 least-slack task. No next implementation wave is selected. Resume only after a
 safe WSL maintenance window or exact physical-media apparatus/approval is
 available, then refresh current evidence, the plan, and the Task Start Gate.
+
+## VHDX host-recovery resume selection (2026-07-29)
+
+- Record ID: `KAFS-PERTTOOL-20260729-VHDX-RESUME`
+- Calculation time: 2026-07-29 21:20 JST
+- Branch and HEAD: `feat/v7-aligned-direct-overwrite`,
+  `f14d1897b0ab8a964bf8d25efe55c6faaf100a67`
+- Worktree at selection: tracked changes limited to `plans/current.pert`; the
+  known generated `tests/v7_inspection_mount_smoketest` remains untracked
+- Plan and tool: `plans/current.pert`, `perttool 0.5.0`
+- Evidence freshness: native Windows and Linux preflight passed on 2026-07-29
+  against the currently registered Ubuntu `ext4.vhdx` (201448226816 bytes),
+  `/dev/sdd` ext4, and a fresh state-root path
+- Accepted goal: unchanged; produce qualified v7 migration and production
+  cutover evidence without collapsing host recovery, physical-media approval,
+  independent review, or migration boundaries
+
+The user supplied a safe maintenance window and explicitly resumed the
+qualification. The plan therefore clears only the scheduling status and reason
+from `VHDX_HOST_RECOVERY_RUN`, updates `as_of`, and preserves the blocked
+`HARDWARE_APPROVAL` branch. Task estimates are unchanged and remain medium
+confidence based on the implemented four-point harness. External waiting time
+is excluded from the implementation estimates.
+
+`./scripts/pert-next-task.sh plans/current.pert` passed `document check`,
+precedence and resource analysis, and `dag next` in order. The precedence
+makespan remains 10.833 implementation days. The two zero-slack precedence
+paths begin with `VHDX_HOST_RECOVERY_RUN` and `HARDWARE_APPROVAL`; the
+conditional resource path orders those primary-stream predecessors before
+real-media execution, independent review, and the cutover decision.
+
+- `ACTIVE`: empty
+- `RUNNABLE NOW`: `VHDX_HOST_RECOVERY_RUN`, TE 1.167d, TF 0d, precedence and
+  resource critical
+- `BLOCKED NOW`: `HARDWARE_APPROVAL`, TE 1.167d, TF 0d, pending exact apparatus
+  and digest-bound destructive approval
+- `UPCOMING`: `REAL_MEDIA_EXECUTION`, `INDEPENDENT_REAL_MEDIA_REVIEW`, and
+  `CUTOVER_EVIDENCE_DECISION`
+
+The selected task unlocks `VHDX_HOST_RECOVERY_CAPTURED`; the existing offline
+audit must still pass before `VHDX_HOST_RECOVERY_QUALIFIED` is reached.
+Preparing physical hardware is an equally necessary join predecessor but is
+not runnable without the apparatus and approval. Additional runtime mutation,
+namespace validation, or unrelated source findings do not shorten either
+remaining zero-slack path and would add qualification or recovery debt.
+
+Decision: `SELECT VHDX_HOST_RECOVERY_RUN`. This authorizes only the bounded
+four-point native Windows terminate/restart capture under the documented false
+claim boundary. It does not authorize raw VHDX access, physical-media claims,
+hardware approval, production cutover, or marking either capture or
+qualification complete before evidence validation.
