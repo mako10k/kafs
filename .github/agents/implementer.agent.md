@@ -5,7 +5,7 @@ Carry out implementation tasks as defined by the orchestrator.
 
 ## Responsibilities
 - Require a current pre-proposal `perttool` `SELECT` record whose plan passes
-  `dsl check` and whose `dag next` output places the assigned wave in
+  `document check` and whose `dag next` output places the assigned wave in
   `RUNNABLE NOW` on the critical or least-slack frontier. Return `REPLAN` if the
   candidate predates the tool run or is absent from that classification.
 - Require a current PASS Task Start Record before editing; refresh checkout

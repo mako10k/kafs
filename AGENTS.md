@@ -107,12 +107,12 @@
   accepted. Follow `docs/pert-task-selection.md`.
 - `perttool` is the calculation and task-classification authority for this
   gate. After refreshing the plan from current evidence, run
-  `./scripts/pert-next-task.sh [plan.pert]`, which executes `dsl check`,
+  `./scripts/pert-next-task.sh [plan.pert]`, which executes `document check`,
   `dag analyze --schedule both`, and `dag next` in that order. A hand-written
   table, Mermaid graph, backlog ordering, or mental calculation may explain the
   result but may not replace or override these commands.
 - Do not name a selected task when `perttool` is unavailable, the plan fails
-  `dsl check`, the plan is stale relative to the accepted goal or current
+  `document check`, the plan is stale relative to the accepted goal or current
   evidence, or the candidate is absent from `RUNNABLE NOW`. Return `REPLAN` for
   an invalid or incomplete model and `BLOCKED` when the valid model has no
   runnable critical or least-slack task.
