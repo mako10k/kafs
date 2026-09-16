@@ -69,6 +69,49 @@ failed to regenerate after its prefix changed because it retained absolute
 `/tmp` paths. A new build from the intact `/var/tmp` source passed, and only
 its library-only manifest was installed under the private prefix.
 
+## End-of-day handoff, 2026-09-16
+
+The scoped ARM32 portability, target qualification, side-by-side Moxa install,
+and installed-state readback are complete as recorded above and in
+`docs/kafs-arm32-portability-selection-20260916.md`. The installed KAFS source
+is exact WIP revision `f1f126c`; the repository branch is
+`fix/arm32-portability`. The final PERT check/analyze/next reported no active,
+runnable, blocked, or upcoming node for this scoped goal. This is not a
+published release, PR-ready history, or SD-card qualification.
+
+Closeout inspection found no active KAFS test/build process and no KAFS or
+`/dev/sda` mount. On the Moxa host `/tmp` had 126 MiB free and the root
+filesystem had 3.9 GiB free. Installed files under `/opt/kafs`, the 13 public
+KAFS command symlinks, and the retained target test/source evidence were left
+in place for immediate resumption. In particular, the passing v7 workdir is
+`/var/tmp/kafs-v7-inspection-mount-29649-E6IGC6`; the earlier failed-case
+evidence is `/var/tmp/kafs-v7-inspection-mount-21469-3efYlz`; the qualified
+source/build is `/var/tmp/kafs-arm32-f1f126c`. No cleanup deletion was needed
+or performed. The local worktree also retains the untracked `kafs-0.4.0/`
+distribution directory and generated `tests/v5_v7_import_smoketest`,
+`tests/v7_block_tree_smoketest`, `tests/v7_checkpoint_publication_smoketest`,
+`tests/v7_fuse_write_smoketest`, `tests/v7_inspection_mount_smoketest`,
+`tests/v7_journal_replay_smoketest`, `tests/v7_locks_smoketest`,
+`tests/v7_mutation_routing_smoketest`, and `tests/v7_recovery_diagnostic`
+binaries. They are not staged; do not discard them as a side effect of
+resuming or preparing a PR.
+
+Tomorrow, first inspect `worktimectl agent`, the branch/HEAD/worktree state,
+and the remote SHA of `origin/fix/arm32-portability`; read this handoff and the
+selection record before choosing more work. Recheck Moxa with source-bound SSH
+(`ssh -b 192.168.0.110 moxa@192.168.0.99`) if installed state matters; do
+not infer current runtime state from this dated record. Decide separately
+whether to perform a reviewed-scope finalization/PR or a real-SD qualification.
+The latter needs an exact-device, test-boundary, and destructive-write decision;
+the removable `/dev/sda` was not used today. A historical first native v5
+remount mismatch remains unexplained despite isolated and subsequent full
+reruns and target v5 testing passing. Do not silently treat that uncertainty as
+an SD-media result or as proof of a product defect.
+
+The user requested a WIP commit and push for this closeout. Verify the exact
+remote branch revision independently after that push; this handoff intentionally
+does not pre-claim a remote SHA before writeback.
+
 ## Accepted outcome and boundary
 
 The user selected a repository-level fix that builds warning-clean on the
