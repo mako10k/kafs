@@ -12,8 +12,62 @@
 - Original worktree and its unrelated untracked `NUL` were not modified.
 - No SD-card device was read, formatted, mounted, or tested.
 
-This is interrupted work, not a completed portability change, deployment
-candidate, or installable release.
+The preservation state and original restart instructions below describe the
+initial shutdown handoff. They are superseded by the continuation status that
+follows; this remains WIP repository history, not a
+published release.
+
+## 2026-09-16 continuation status
+
+The installed source candidate is WIP revision `f1f126c` on
+`fix/arm32-portability`; the scoped PERT and selection record have been
+refreshed for this continuation. Its product-code predecessor `7942fd8`
+built warning-clean with GCC 6.3 on
+`moxa@192.168.0.99` using the private FUSE 3.10.5 library. Target HRL and
+v5 mixed-tail mount tests passed. A full v7 inspection test advanced through
+many mount, controlled-write, and recovery cases, then exited 1 as retained
+temporary-image copies filled the target root filesystem. The late failed
+copy and logs are
+retained under `/var/tmp/kafs-v7-inspection-mount-21469-3efYlz`; the target
+rootfs was read back with 4.2 GiB available after exact temporary-copy
+cleanup. The capacity explanation was inferred because the old copy errno was
+not logged. The replacement `f1f126c` test later completed on ARMv7 with
+3.9 GiB rootfs free, including the formerly interrupted directory-recovery
+case. Shared FUSE 3.4.1 remains unchanged, and no SD device was accessed.
+
+The user chose side-by-side stable installation: keep shared FUSE 3.4.1,
+place private FUSE 3.10.5 and qualified KAFS under a dedicated `/opt/kafs`
+layout, and expose only KAFS commands. `/opt/kafs` and the proposed public
+KAFS command paths were absent on readback. Do not treat this choice as a
+waiver of target qualification. The prior storage-boundedness problem is
+addressed by the new test-local candidate below, not by rerunning the old
+test with only `TMPDIR=/var/tmp` changed.
+
+Revision `f1f126c` changes only the v7 inspection test's copy helper to
+preserve zero regions as sparse holes, adds copy size/digest verification, and
+prints copy errors with their source, destination, and return code. The
+complete native v7 test passed. Its source distribution was hash-verified on
+ARMv7 and built there with GCC 6.3, `-Wall -Werror`, and private FUSE 3.10.5;
+target HRL and v5 mixed-tail tests passed. The full target v7 test exited zero
+with `TMPDIR=/var/tmp`; image-copy integrity and directory-transition recovery
+passed. The target-qualification PERT edge is closed. The private FUSE 3.10.5
+library is installed under `/opt/kafs/fuse3-3.10.5`, and KAFS under
+`/opt/kafs/releases/f1f126c`, with 13 public KAFS command links. The final
+GCC 6.3 build passed; all 12 installed ARM32 executables match their build
+outputs byte-for-byte. The 11 FUSE-dependent commands resolve the private
+library without an environment override; `kafs-v6` is a FUSE-independent
+retirement placeholder. `kafs` and `kafs-v7` help commands executed from the
+public paths. Shared FUSE and `fusermount3` remain 3.4.1. Removable `/dev/sda`
+is present but unmounted and was not read or written. The final PERT readback
+node and goal milestone are closed; no SD-media qualification was performed.
+The first target build attempt for `f1f126c` failed because GCC used the
+still-full `/tmp`; the old first-failure workdir was moved intact to
+`/var/tmp/kafs-v7-inspection-mount-initial-6886-jyoWTz`, with both file
+hashes matching and `/tmp` free space restored to 126 MiB. The build retry
+used `TMPDIR=/var/tmp` and passed. The old relocated FUSE Meson build also
+failed to regenerate after its prefix changed because it retained absolute
+`/tmp` paths. A new build from the intact `/var/tmp` source passed, and only
+its library-only manifest was installed under the private prefix.
 
 ## Accepted outcome and boundary
 
@@ -64,9 +118,10 @@ access method, not a root-cause claim.
 - Adds an HRL smoke assertion that an entry region outside the mapping is
   rejected before access.
 
-These changes have not received the repository's reviewed-scope review and
-must remain under a `WIP:` commit until that review and the remaining
-validation are complete.
+At the initial interruption, these changes had not received the repository's
+reviewed-scope review and remained under a `WIP:` commit. The current
+continuation and validation status is recorded above and in the selection
+record; do not infer PR readiness from the target installation.
 
 ## Validation completed before interruption
 
@@ -100,7 +155,7 @@ Automake first began building every `check_PROGRAMS` target, so this command was
 interrupted to prioritize the requested handoff. It is not evidence of a test
 failure. The already-built `hrl_smoketest` was then run directly and passed.
 
-Not yet run:
+Not yet run at the initial interruption (superseded by later evidence):
 
 - `./scripts/lint.sh`, `./scripts/clones.sh`, and
   `./scripts/static-checks.sh`;
@@ -111,7 +166,7 @@ Not yet run:
 - target-side non-destructive tests;
 - install or installed-state readback.
 
-## Required restart sequence
+## Original restart sequence (historical)
 
 1. Fetch and check out `fix/arm32-portability`; confirm the remote WIP SHA and
    reread this handoff plus the selection record.
@@ -137,8 +192,9 @@ explicitly scoped instruction.
 
 ## User-value state
 
-Realized value for the intended target user remains zero: KAFS is not installed
-on the Moxa host. The evidenced future-value contribution is a locally
-buildable repository WIP, a bounded target environment, and an explicit path
-from source review through ARMv7 qualification to install and readback. The
-capability becomes usable only after those named gates pass.
+The Moxa operator can now invoke the installed KAFS commands from the public
+paths; previously KAFS was not installed on that host. This is realized
+command-availability value, evidenced by installed-link, byte-identity,
+linkage, and help-command readback. It does not establish use with the inserted
+SD card: that removable device remains unmounted and untested. Repository
+history is still WIP and was not pushed or released in this continuation.
