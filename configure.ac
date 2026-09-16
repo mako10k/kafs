@@ -8,7 +8,7 @@ AC_CONFIG_HEADERS([config.h])
 AM_INIT_AUTOMAKE([foreign])
 AC_USE_SYSTEM_EXTENSIONS
 AC_SYS_LARGEFILE
-PKG_CHECK_MODULES([KAFS], [fuse3])
+PKG_CHECK_MODULES([KAFS], [fuse3 >= 3.8.0])
 
 AC_ARG_ENABLE([lto],
     [AS_HELP_STRING([--enable-lto], [enable link-time optimization (-flto)])],

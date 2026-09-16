@@ -69,7 +69,10 @@ int main(void)
   assert(map != MAP_FAILED);
 
   kafs_context_t reopened = {0};
+  reopened.c_img_base = map;
+  reopened.c_img_size = (size_t)mapsize;
   reopened.c_superblock = (kafs_ssuperblock_t *)map;
+  reopened.c_mapsize = (size_t)mapsize;
   reopened.c_fd = fd;
   {
     off_t meta_off = (off_t)sizeof(kafs_ssuperblock_t);
@@ -87,6 +90,10 @@ int main(void)
     reopened.c_blo_search = 0;
     reopened.c_ino_search = 0;
   }
+  uint64_t valid_entry_offset = kafs_sb_hrl_entry_offset_get(reopened.c_superblock);
+  kafs_sb_hrl_entry_offset_set(reopened.c_superblock, (uint64_t)mapsize + 1u);
+  assert(kafs_hrl_open(&reopened) == -EIO);
+  kafs_sb_hrl_entry_offset_set(reopened.c_superblock, valid_entry_offset);
   assert(kafs_hrl_open(&reopened) == 0);
 
   memset(buf, 'B', bs);

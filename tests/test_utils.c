@@ -631,11 +631,11 @@ int kafs_test_mkimg(const char *path, size_t bytes, unsigned log_bs, unsigned in
   off_t mapsize = 0;
   mapsize += sizeof(kafs_ssuperblock_t);
   mapsize = (mapsize + bmask) & ~bmask;
-  void *blkmask_off = (void *)mapsize;
+  off_t blkmask_off = mapsize;
   mapsize += (blkcnt + 7) >> 3;
   mapsize = (mapsize + 7) & ~7;
   mapsize = (mapsize + bmask) & ~bmask;
-  void *inotbl_off = (void *)mapsize;
+  off_t inotbl_off = mapsize;
   mapsize += sizeof(kafs_sinode_t) * inodes;
   mapsize = (mapsize + bmask) & ~bmask;
 
@@ -680,8 +680,8 @@ int kafs_test_mkimg(const char *path, size_t bytes, unsigned log_bs, unsigned in
     close(fd);
     return err;
   }
-  memset((char *)sb + (intptr_t)blkmask_off, 0, ((size_t)blkcnt + 7) >> 3);
-  memset((char *)sb + (intptr_t)inotbl_off, 0, sizeof(kafs_sinode_t) * inodes);
+  memset((char *)sb + blkmask_off, 0, ((size_t)blkcnt + 7) >> 3);
+  memset((char *)sb + inotbl_off, 0, sizeof(kafs_sinode_t) * inodes);
 
   kafs_sb_log_blksize_set(sb, log_bs);
   kafs_sb_magic_set(sb, KAFS_MAGIC);
@@ -708,10 +708,13 @@ int kafs_test_mkimg(const char *path, size_t bytes, unsigned log_bs, unsigned in
   kafs_sb_blkcnt_free_set(sb, blkcnt - fdb);
 
   kafs_context_t c = {0};
+  c.c_img_base = sb;
+  c.c_img_size = (size_t)mapsize;
   c.c_superblock = sb;
   c.c_fd = fd;
-  c.c_blkmasktbl = (kafs_blkmask_t *)((char *)sb + (intptr_t)blkmask_off);
-  c.c_inotbl = (kafs_sinode_t *)((char *)sb + (intptr_t)inotbl_off);
+  c.c_mapsize = (size_t)mapsize;
+  c.c_blkmasktbl = (kafs_blkmask_t *)((char *)sb + blkmask_off);
+  c.c_inotbl = (kafs_sinode_t *)((char *)sb + inotbl_off);
   c.c_blo_search = 0;
   c.c_ino_search = 0;
   c.c_hrl_index = enable_hrl ? (void *)((char *)sb + hrl_index_off) : NULL;

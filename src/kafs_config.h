@@ -11,3 +11,9 @@
 #define _FILE_OFFSET_BITS 64
 #endif
 #endif
+
+#if defined(__GNUC__) || defined(__clang__)
+#define KAFS_MAYBE_UNUSED __attribute__((__unused__))
+#else
+#define KAFS_MAYBE_UNUSED
+#endif

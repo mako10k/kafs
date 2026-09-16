@@ -58,9 +58,10 @@ for cmd in pkg-config gcc make; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "[error] missing tool: $cmd" >&2; exit 127; }
 done
 
-# Check fuse3 headers/library
-if ! pkg-config --exists fuse3 ; then
-  echo "[warn] fuse3 not found via pkg-config; FUSE tests may fail" >&2
+# Check the minimum libfuse version required by the runtime API surface.
+if ! pkg-config --exists 'fuse3 >= 3.8.0'; then
+  echo "[error] libfuse3 >= 3.8.0 not found via pkg-config" >&2
+  exit 1
 fi
 
 # Optional FUSE capability check (non-fatal)

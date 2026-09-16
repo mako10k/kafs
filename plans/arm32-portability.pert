@@ -1,0 +1,81 @@
+project KAFS_ARM32_PORTABILITY:
+  version 1
+  title "KAFS ARM32 portability and Moxa deployment"
+  description |
+    Scoped residual network for the user-selected repository-level portability
+    fix and installation on the observed Debian 9 ARMv7 target 192.168.0.99.
+    The target build environment, isolated FUSE 3.10.5 build, and diagnostic
+    KAFS build are available. The repository source does not yet build
+    warning-clean with GCC 6 on ARM32. The accepted path fixes the repository
+    first, qualifies the resulting revision on the target, and only then
+    installs and reads it back. A target-only patch would duplicate work and
+    leave the deployed source unreproducible, so it is not a parallel goal path.
+    No task in this plan writes, formats, mounts, or tests the inserted SD card.
+  as_of 2026-09-16
+  duration_unit point
+  velocity 8p/1d
+  finish MOXA_KAFS_VERIFIED
+
+resource PRIMARY_STREAM:
+  title "Primary portability, qualification, and deployment stream"
+  capacity 1
+
+milestone TARGET_DIAGNOSTIC_READY:
+  title "ARMv7 target and complete diagnostic build evidence ready"
+  state reached
+
+milestone PORTABLE_SOURCE_READY:
+  title "Repository source is warning-clean portable for the observed ARM32 toolchain"
+
+milestone TARGET_BUILD_QUALIFIED:
+  title "Repository revision builds and passes proportional non-destructive tests on ARMv7"
+
+milestone MOXA_KAFS_INSTALLED:
+  title "Required FUSE and KAFS revision installed on the Moxa root filesystem"
+
+milestone MOXA_KAFS_VERIFIED:
+  title "Installed KAFS tools and runtime linkage independently read back on Moxa"
+
+task ARM32_PORTABILITY_IMPLEMENTED TARGET_DIAGNOSTIC_READY -> PORTABLE_SOURCE_READY:
+  title "Implement repository-owned GCC 6, FUSE API floor, and safe ARM32 offset portability"
+  estimate:
+    optimistic 1p
+    most_likely 2p
+    pessimistic 4p
+  owner "KAFS implementation stream"
+  source "User decision and ARMv7 diagnostic evidence, 2026-09-16"
+  requires:
+    PRIMARY_STREAM 1
+
+task ARM32_TARGET_QUALIFICATION PORTABLE_SOURCE_READY -> TARGET_BUILD_QUALIFIED:
+  title "Build warning-clean and run non-destructive qualification on the ARMv7 target"
+  estimate:
+    optimistic 1p
+    most_likely 2p
+    pessimistic 4p
+  owner "KAFS implementation stream"
+  source "Observed Debian 9 ARMv7 target 192.168.0.99"
+  requires:
+    PRIMARY_STREAM 1
+
+task MOXA_INSTALL TARGET_BUILD_QUALIFIED -> MOXA_KAFS_INSTALLED:
+  title "Install qualified FUSE 3.10.5 and KAFS revision on the Moxa root filesystem"
+  estimate:
+    optimistic 0.5p
+    most_likely 1p
+    pessimistic 2p
+  owner "KAFS deployment stream"
+  source "User-authorized installation outcome, 2026-09-16"
+  requires:
+    PRIMARY_STREAM 1
+
+task MOXA_INSTALL_READBACK MOXA_KAFS_INSTALLED -> MOXA_KAFS_VERIFIED:
+  title "Read back installed versions, architecture, linkage, commands, and unchanged SD-device state"
+  estimate:
+    optimistic 0.5p
+    most_likely 1p
+    pessimistic 2p
+  owner "KAFS deployment stream"
+  source "User-authorized installation outcome, 2026-09-16"
+  requires:
+    PRIMARY_STREAM 1

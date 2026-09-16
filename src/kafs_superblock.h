@@ -102,7 +102,7 @@ static kafs_blkcnt_t kafs_sb_blkcnt_get(const kafs_ssuperblock_t *sb)
   return kafs_blkcnt_stoh(sb->s_blkcnt);
 }
 
-__attribute_maybe_unused__ static int kafs_sb_inotbl_is_full(const kafs_ssuperblock_t *sb)
+KAFS_MAYBE_UNUSED static int kafs_sb_inotbl_is_full(const kafs_ssuperblock_t *sb)
 {
   assert(sb != NULL);
   // 下記は 0 のビット表現がエンディアンによって変わらない前提
@@ -169,8 +169,7 @@ static void kafs_sb_blkcnt_free_set(struct kafs_ssuperblock *sb, kafs_blkcnt_t b
   sb->s_blkcnt_free = kafs_blkcnt_htos(blkcnt_free);
 }
 
-__attribute_maybe_unused__ static kafs_blkcnt_t
-kafs_sb_blkcnt_free_incr(struct kafs_ssuperblock *sb)
+KAFS_MAYBE_UNUSED static kafs_blkcnt_t kafs_sb_blkcnt_free_incr(struct kafs_ssuperblock *sb)
 {
   assert(sb != NULL);
   kafs_blkcnt_t blkcnt_free = kafs_sb_blkcnt_free_get(sb);
@@ -190,8 +189,8 @@ static kafs_logblksize_t kafs_sb_log_blksize_get(const struct kafs_ssuperblock *
   return kafs_logblksize_stoh(sb->s_log_blksize) + 10;
 }
 
-__attribute_maybe_unused__ static void kafs_sb_log_blksize_set(struct kafs_ssuperblock *sb,
-                                                               kafs_logblksize_t log2_blksize)
+KAFS_MAYBE_UNUSED static void kafs_sb_log_blksize_set(struct kafs_ssuperblock *sb,
+                                                      kafs_logblksize_t log2_blksize)
 {
   assert(sb != NULL);
   // 引数は実ブロックサイズの log2 値（例: 4096=2^12 → 12）

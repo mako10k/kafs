@@ -6,6 +6,7 @@
 #include "kafs_block.h"
 #include "kafs_cli_opts.h"
 #include "kafs_tool_util.h"
+#include "kafs_legacy_map_layout.h"
 #include "kafs_v7_layout.h"
 /* jscpd:ignore-start */
 #include <errno.h>
@@ -438,55 +439,32 @@ static int fsck_handle_v7_raw_layout(const struct fsck_image_info *info)
 static int fsck_map_context(int fd, const kafs_ssuperblock_t *sb, int want_write,
                             kafs_context_t *ctx)
 {
+  kafs_legacy_map_layout_t layout;
+  int layout_rc;
+
   memset(ctx, 0, sizeof(*ctx));
   ctx->c_fd = fd;
-
-  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(sb);
-  kafs_blksize_t blksize = 1u << log_blksize;
-  kafs_blksize_t blksizemask = blksize - 1u;
-  kafs_inocnt_t inocnt = kafs_inocnt_stoh(sb->s_inocnt);
-  kafs_blkcnt_t r_blkcnt = kafs_blkcnt_stoh(sb->s_r_blkcnt);
-
-  off_t mapsize = sizeof(kafs_ssuperblock_t);
-  mapsize = (mapsize + blksizemask) & ~blksizemask;
-  void *blkmask_off = (void *)mapsize;
-  mapsize += (r_blkcnt + 7) >> 3;
-  mapsize = (mapsize + 7) & ~7;
-  mapsize = (mapsize + blksizemask) & ~blksizemask;
-  void *inotbl_off = (void *)mapsize;
-  mapsize += (off_t)kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(sb), inocnt);
-  mapsize = (mapsize + blksizemask) & ~blksizemask;
-
-  off_t imgsize = (off_t)r_blkcnt << log_blksize;
-  uint64_t idx_off = kafs_sb_hrl_index_offset_get(sb);
-  uint64_t idx_size = kafs_sb_hrl_index_size_get(sb);
-  uint64_t ent_off = kafs_sb_hrl_entry_offset_get(sb);
-  uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sb);
-  uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
-  uint64_t j_off = kafs_sb_journal_offset_get(sb);
-  uint64_t j_size = kafs_sb_journal_size_get(sb);
-  uint64_t max_end = (idx_off && idx_size) ? (idx_off + idx_size) : 0;
-  if (((ent_off && ent_size) ? (ent_off + ent_size) : 0) > max_end)
-    max_end = ent_off + ent_size;
-  if (((j_off && j_size) ? (j_off + j_size) : 0) > max_end)
-    max_end = j_off + j_size;
-  if ((off_t)max_end > imgsize)
-    imgsize = (off_t)max_end;
-  imgsize = (imgsize + blksizemask) & ~blksizemask;
+  layout_rc = kafs_legacy_map_layout_compute(sb, &layout);
+  if (layout_rc != 0)
+  {
+    errno = -layout_rc;
+    perror("image layout");
+    return -1;
+  }
 
   int prot = want_write ? (PROT_READ | PROT_WRITE) : PROT_READ;
-  ctx->c_img_base = mmap(NULL, (size_t)imgsize, prot, MAP_SHARED, fd, 0);
+  ctx->c_img_base = mmap(NULL, layout.image_size, prot, MAP_SHARED, fd, 0);
   if (ctx->c_img_base == MAP_FAILED)
   {
     perror("mmap");
     return -1;
   }
 
-  ctx->c_img_size = (size_t)imgsize;
+  ctx->c_img_size = layout.image_size;
   ctx->c_superblock = (kafs_ssuperblock_t *)ctx->c_img_base;
-  ctx->c_mapsize = (size_t)mapsize;
-  ctx->c_blkmasktbl = (void *)((char *)ctx->c_superblock + (intptr_t)blkmask_off);
-  ctx->c_inotbl = (void *)((char *)ctx->c_superblock + (intptr_t)inotbl_off);
+  ctx->c_mapsize = layout.metadata_size;
+  ctx->c_blkmasktbl = (kafs_blkmask_t *)((char *)ctx->c_img_base + layout.block_bitmap_offset);
+  ctx->c_inotbl = (kafs_sinode_t *)((char *)ctx->c_img_base + layout.inode_table_offset);
   return 0;
 }
 

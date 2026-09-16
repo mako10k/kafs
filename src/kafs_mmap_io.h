@@ -10,7 +10,9 @@ static inline void *kafs_img_ptr(struct kafs_context *ctx, off_t off, size_t len
 {
   assert(ctx != NULL);
   assert(ctx->c_img_base != NULL);
-  assert((size_t)off + len <= ctx->c_img_size);
+  assert(off >= 0);
+  assert((uint64_t)off <= (uint64_t)ctx->c_img_size);
+  assert(len <= ctx->c_img_size - (size_t)off);
   return (void *)((char *)ctx->c_img_base + off);
 }
 

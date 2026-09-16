@@ -7,6 +7,7 @@
 #include "kafs_hash.h"
 #include "kafs_journal.h"
 #include "kafs_tailmeta.h"
+#include "kafs_portability.h"
 #include "kafs_v7_layout.h"
 #include "kafs_cli_opts.h"
 #include "kafs_tool_util.h"
@@ -581,21 +582,35 @@ static int mkfs_map_metadata(kafs_context_t *ctx, off_t mapsize, kafs_blkcnt_t b
                              uint32_t format_version, kafs_inocnt_t inocnt,
                              const struct mkfs_layout *layout)
 {
-  ctx->c_superblock = mmap(NULL, mapsize, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->c_fd, 0);
-  if (ctx->c_superblock == MAP_FAILED)
+  size_t map_size;
+  size_t block_bitmap_offset;
+  size_t inode_table_offset;
+
+  if (kafs_off_to_size(mapsize, &map_size) != 0 ||
+      kafs_off_to_size(layout->blkmask_off, &block_bitmap_offset) != 0 ||
+      kafs_off_to_size(layout->inotbl_off, &inode_table_offset) != 0)
+  {
+    fprintf(stderr, "metadata layout is not representable on this host\n");
+    return 1;
+  }
+  ctx->c_img_base = mmap(NULL, map_size, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->c_fd, 0);
+  if (ctx->c_img_base == MAP_FAILED)
   {
     perror("mmap");
     return 1;
   }
 
-  memset(ctx->c_superblock, 0, (size_t)mapsize);
-  ctx->c_blkmasktbl = (kafs_blkmask_t *)((char *)ctx->c_superblock + (intptr_t)layout->blkmask_off);
-  ctx->c_inotbl = (kafs_sinode_t *)((char *)ctx->c_superblock + (intptr_t)layout->inotbl_off);
+  ctx->c_img_size = map_size;
+  ctx->c_superblock = (kafs_ssuperblock_t *)ctx->c_img_base;
+  ctx->c_mapsize = map_size;
+  memset(ctx->c_img_base, 0, map_size);
+  ctx->c_blkmasktbl = (kafs_blkmask_t *)((char *)ctx->c_img_base + block_bitmap_offset);
+  ctx->c_inotbl = (kafs_sinode_t *)((char *)ctx->c_img_base + inode_table_offset);
 
   size_t blkmask_bytes = ((size_t)blkcnt + 7) >> 3;
   size_t inotbl_bytes = (size_t)kafs_inode_table_bytes_for_format(format_version, inocnt);
   char *base = (char *)ctx->c_superblock;
-  char *end = base + mapsize;
+  char *end = base + map_size;
   char *bm_ptr = (char *)ctx->c_blkmasktbl;
   char *ino_ptr = (char *)ctx->c_inotbl;
   assert(bm_ptr >= base && bm_ptr + blkmask_bytes <= end);

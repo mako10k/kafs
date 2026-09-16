@@ -1,6 +1,7 @@
 #include "kafs_hash.h"
 #include "kafs_locks.h"
 #include "kafs_block.h"
+#include "kafs_portability.h"
 #include <inttypes.h>
 #include <string.h>
 #include <unistd.h>
@@ -15,14 +16,23 @@ extern uint32_t kafs_diag_current_write_ino(void) __attribute__((weak));
 
 static inline uint32_t *hrl_index_ptr(kafs_context_t *ctx, uint32_t bucket)
 {
+  if (!ctx || !ctx->c_hrl_index || bucket >= ctx->c_hrl_bucket_cnt)
+    return NULL;
   return &((uint32_t *)ctx->c_hrl_index)[bucket];
 }
 
 static inline kafs_hrl_entry_t *hrl_entry_ptr(kafs_context_t *ctx, uint32_t idx)
 {
-  uintptr_t base = (uintptr_t)ctx->c_superblock;
-  uintptr_t off = (uintptr_t)kafs_sb_hrl_entry_offset_get(ctx->c_superblock);
-  return (kafs_hrl_entry_t *)(base + off + (uintptr_t)idx * sizeof(kafs_hrl_entry_t));
+  uint64_t entry_offset;
+  uint64_t byte_offset;
+
+  if (!ctx || !ctx->c_superblock || idx >= kafs_sb_hrl_entry_cnt_get(ctx->c_superblock))
+    return NULL;
+  entry_offset = kafs_sb_hrl_entry_offset_get(ctx->c_superblock);
+  if (kafs_u64_add(entry_offset, (uint64_t)idx * sizeof(kafs_hrl_entry_t), &byte_offset) != 0)
+    return NULL;
+  return kafs_mapped_region(ctx->c_img_base, ctx->c_img_size, byte_offset,
+                            sizeof(kafs_hrl_entry_t));
 }
 
 static inline uint32_t hrl_capacity(kafs_context_t *ctx)
@@ -491,12 +501,14 @@ static int hrl_chain_remove(kafs_context_t *ctx, uint32_t idx, uint64_t fast)
 
 int kafs_hrl_open(kafs_context_t *ctx)
 {
+  void *index;
+  uint64_t entry_size;
+
   if (!ctx || !ctx->c_superblock)
     return -EINVAL;
-  uintptr_t base = (uintptr_t)ctx->c_superblock;
   uint64_t index_off = kafs_sb_hrl_index_offset_get(ctx->c_superblock);
   uint64_t index_size = kafs_sb_hrl_index_size_get(ctx->c_superblock);
-  if (index_off == 0 || index_size == 0)
+  if (index_off == 0 && index_size == 0)
   {
     ctx->c_hrl_index = NULL;
     ctx->c_hrl_bucket_cnt = 0;
@@ -504,7 +516,20 @@ int kafs_hrl_open(kafs_context_t *ctx)
     ctx->c_hrl_free_slot_count = 0;
     return 0;
   }
-  ctx->c_hrl_index = (void *)(base + index_off);
+  if (index_off == 0 || index_size == 0 || index_size % sizeof(uint32_t) != 0 ||
+      index_size / sizeof(uint32_t) > UINT32_MAX)
+    return -EIO;
+  index = kafs_mapped_region(ctx->c_img_base, ctx->c_img_size, index_off, index_size);
+  if (!index)
+    return -EIO;
+  entry_size = (uint64_t)hrl_capacity(ctx) * sizeof(kafs_hrl_entry_t);
+  if ((entry_size == 0u) != (kafs_sb_hrl_entry_offset_get(ctx->c_superblock) == 0u))
+    return -EIO;
+  if (entry_size != 0u &&
+      !kafs_mapped_region(ctx->c_img_base, ctx->c_img_size,
+                          kafs_sb_hrl_entry_offset_get(ctx->c_superblock), entry_size))
+    return -EIO;
+  ctx->c_hrl_index = index;
   ctx->c_hrl_bucket_cnt = (uint32_t)(index_size / sizeof(uint32_t));
   ctx->c_hrl_free_head_plus1 = 0;
   ctx->c_hrl_free_slot_count = 0;
@@ -531,22 +556,35 @@ int kafs_hrl_close(kafs_context_t *ctx)
 
 int kafs_hrl_format(kafs_context_t *ctx)
 {
+  void *index;
+  void *entries;
+  uint64_t entry_size;
+
+  if (!ctx || !ctx->c_superblock)
+    return -EINVAL;
   // Zero index and entries regions based on sb
-  uintptr_t base = (uintptr_t)ctx->c_superblock;
   uint64_t index_off = kafs_sb_hrl_index_offset_get(ctx->c_superblock);
   uint64_t index_size = kafs_sb_hrl_index_size_get(ctx->c_superblock);
   uint64_t entry_off = kafs_sb_hrl_entry_offset_get(ctx->c_superblock);
   uint32_t entry_cnt = kafs_sb_hrl_entry_cnt_get(ctx->c_superblock);
+  entry_size = (uint64_t)entry_cnt * sizeof(kafs_hrl_entry_t);
+  if ((index_off == 0u) != (index_size == 0u) || (entry_off == 0u) != (entry_size == 0u))
+    return -EIO;
   if (index_off && index_size)
   {
-    memset((void *)(base + index_off), 0, (size_t)index_size);
+    index = kafs_mapped_region(ctx->c_img_base, ctx->c_img_size, index_off, index_size);
+    if (!index)
+      return -EIO;
+    memset(index, 0, (size_t)index_size);
     kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_INDEX, index_size);
   }
   if (entry_off && entry_cnt)
   {
-    memset((void *)(base + entry_off), 0, (size_t)entry_cnt * sizeof(kafs_hrl_entry_t));
-    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES,
-                              (uint64_t)entry_cnt * (uint64_t)sizeof(kafs_hrl_entry_t));
+    entries = kafs_mapped_region(ctx->c_img_base, ctx->c_img_size, entry_off, entry_size);
+    if (!entries)
+      return -EIO;
+    memset(entries, 0, (size_t)entry_size);
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, entry_size);
   }
   if (ctx)
   {

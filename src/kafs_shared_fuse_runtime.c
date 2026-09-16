@@ -9,6 +9,7 @@
 #include "kafs_cli_opts.h"
 #include "kafs_ioctl.h"
 #include "kafs_mmap_io.h"
+#include "kafs_legacy_map_layout.h"
 #include "kafs_rpc.h"
 #include "kafs_core.h"
 #include "kafs_shared_fuse_runner.h"
@@ -884,8 +885,7 @@ static uint64_t kafs_ref_pending_id(kafs_blkcnt_t ref)
   return (uint64_t)(raw & KAFS_PENDING_REF_MASK);
 }
 
-__attribute_maybe_unused__ static int kafs_ref_pending_encode(uint64_t pending_id,
-                                                              kafs_blkcnt_t *out_ref)
+KAFS_MAYBE_UNUSED static int kafs_ref_pending_encode(uint64_t pending_id, kafs_blkcnt_t *out_ref)
 {
   if (!out_ref)
     return -EINVAL;
@@ -3992,8 +3992,8 @@ static int kafs_ino_iblk_write(struct kafs_context *ctx, kafs_sinode_t *inoent, 
   return kafs_ino_iblk_write_legacy(ctx, inoent, iblo, buf, 1);
 }
 
-__attribute_maybe_unused__ static int
-kafs_ino_iblk_release(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_iblkcnt_t iblo)
+KAFS_MAYBE_UNUSED static int kafs_ino_iblk_release(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                                   kafs_iblkcnt_t iblo)
 {
   kafs_dlog(3, "%s(ino = %d, iblo = %" PRIuFAST32 ")\n", __func__, kafs_ctx_ino_no(ctx, inoent),
             iblo);
@@ -5472,8 +5472,8 @@ static int kafs_truncate(struct kafs_context *ctx, kafs_sinode_t *inoent, kafs_o
   return rc;
 }
 
-__attribute_maybe_unused__ static int kafs_trim(struct kafs_context *ctx, kafs_sinode_t *inoent,
-                                                kafs_off_t off, kafs_off_t size)
+KAFS_MAYBE_UNUSED static int kafs_trim(struct kafs_context *ctx, kafs_sinode_t *inoent,
+                                       kafs_off_t off, kafs_off_t size)
 {
   kafs_dlog(2, "%s(ino = %d, off = %" PRIuFAST64 ", size = %" PRIuFAST64 ")\n", __func__,
             kafs_ctx_ino_no(ctx, inoent), off, size);
@@ -5525,7 +5525,7 @@ __attribute_maybe_unused__ static int kafs_trim(struct kafs_context *ctx, kafs_s
   return KAFS_SUCCESS;
 }
 
-__attribute_maybe_unused__ static int kafs_release(struct kafs_context *ctx, kafs_sinode_t *inoent)
+KAFS_MAYBE_UNUSED static int kafs_release(struct kafs_context *ctx, kafs_sinode_t *inoent)
 {
   // Requires: caller holds inode lock for inoent.
   if (kafs_ino_linkcnt_decr(inoent) == 0)
@@ -7014,66 +7014,18 @@ static int kafs_ctx_read_superblock_fd(kafs_context_t *ctx, kafs_ssuperblock_t *
   return err ? err : -EIO;
 }
 
-static void kafs_ctx_compute_map_layout(const kafs_ssuperblock_t *sbdisk, off_t *mapsize_out,
-                                        off_t *imgsize_out, intptr_t *blkmask_off_out,
-                                        intptr_t *inotbl_off_out)
-{
-  kafs_logblksize_t log_blksize = kafs_sb_log_blksize_get(sbdisk);
-  kafs_blksize_t blksize = 1u << log_blksize;
-  kafs_blksize_t blksizemask = blksize - 1u;
-  kafs_inocnt_t inocnt = kafs_inocnt_stoh(sbdisk->s_inocnt);
-  kafs_blkcnt_t r_blkcnt = kafs_blkcnt_stoh(sbdisk->s_r_blkcnt);
-
-  off_t mapsize = sizeof(kafs_ssuperblock_t);
-  mapsize = (mapsize + blksizemask) & ~blksizemask;
-  intptr_t blkmask_off = (intptr_t)mapsize;
-  mapsize += (r_blkcnt + 7) >> 3;
-  mapsize = (mapsize + 7) & ~7;
-  mapsize = (mapsize + blksizemask) & ~blksizemask;
-  intptr_t inotbl_off = (intptr_t)mapsize;
-  mapsize += (off_t)kafs_inode_table_bytes_for_format(kafs_sb_format_version_get(sbdisk), inocnt);
-  mapsize = (mapsize + blksizemask) & ~blksizemask;
-
-  off_t imgsize = (off_t)r_blkcnt << log_blksize;
-  uint64_t idx_off = kafs_sb_hrl_index_offset_get(sbdisk);
-  uint64_t idx_size = kafs_sb_hrl_index_size_get(sbdisk);
-  uint64_t ent_off = kafs_sb_hrl_entry_offset_get(sbdisk);
-  uint64_t ent_cnt = kafs_sb_hrl_entry_cnt_get(sbdisk);
-  uint64_t ent_size = ent_cnt * (uint64_t)sizeof(kafs_hrl_entry_t);
-  uint64_t j_off = kafs_sb_journal_offset_get(sbdisk);
-  uint64_t j_size = kafs_sb_journal_size_get(sbdisk);
-  uint64_t p_off = kafs_sb_pendinglog_offset_get(sbdisk);
-  uint64_t p_size = kafs_sb_pendinglog_size_get(sbdisk);
-  uint64_t end1 = (idx_off && idx_size) ? (idx_off + idx_size) : 0;
-  uint64_t end2 = (ent_off && ent_size) ? (ent_off + ent_size) : 0;
-  uint64_t end3 = (j_off && j_size) ? (j_off + j_size) : 0;
-  uint64_t end4 = (p_off && p_size) ? (p_off + p_size) : 0;
-  uint64_t max_end = end1;
-  if (end2 > max_end)
-    max_end = end2;
-  if (end3 > max_end)
-    max_end = end3;
-  if (end4 > max_end)
-    max_end = end4;
-  if ((off_t)max_end > imgsize)
-    imgsize = (off_t)max_end;
-  imgsize = (imgsize + blksizemask) & ~blksizemask;
-
-  *mapsize_out = mapsize;
-  *imgsize_out = imgsize;
-  *blkmask_off_out = blkmask_off;
-  *inotbl_off_out = inotbl_off;
-}
-
 static int kafs_ctx_map_image(kafs_context_t *ctx, const kafs_ssuperblock_t *sbdisk)
 {
-  off_t mapsize = 0;
-  off_t imgsize = 0;
-  intptr_t blkmask_off = 0;
-  intptr_t inotbl_off = 0;
-  kafs_ctx_compute_map_layout(sbdisk, &mapsize, &imgsize, &blkmask_off, &inotbl_off);
+  kafs_legacy_map_layout_t layout;
+  int rc = kafs_legacy_map_layout_compute(sbdisk, &layout);
+  if (rc != 0)
+  {
+    kafs_ctx_reset_mapping(ctx);
+    kafs_ctx_close_fd(ctx);
+    return rc;
+  }
 
-  ctx->c_img_base = mmap(NULL, imgsize, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->c_fd, 0);
+  ctx->c_img_base = mmap(NULL, layout.image_size, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->c_fd, 0);
   if (ctx->c_img_base == MAP_FAILED)
   {
     int err = -errno;
@@ -7082,11 +7034,11 @@ static int kafs_ctx_map_image(kafs_context_t *ctx, const kafs_ssuperblock_t *sbd
     return err;
   }
 
-  ctx->c_img_size = (size_t)imgsize;
+  ctx->c_img_size = layout.image_size;
   ctx->c_superblock = (kafs_ssuperblock_t *)ctx->c_img_base;
-  ctx->c_mapsize = (size_t)mapsize;
-  ctx->c_blkmasktbl = (void *)ctx->c_superblock + blkmask_off;
-  ctx->c_inotbl = (void *)ctx->c_superblock + inotbl_off;
+  ctx->c_mapsize = layout.metadata_size;
+  ctx->c_blkmasktbl = (kafs_blkmask_t *)((char *)ctx->c_img_base + layout.block_bitmap_offset);
+  ctx->c_inotbl = (kafs_sinode_t *)((char *)ctx->c_img_base + layout.inode_table_offset);
   return 0;
 }
 
@@ -13157,21 +13109,22 @@ static void kafs_main_validate_image_format(const char *image_path, uint32_t fmt
   }
 }
 
-static void kafs_main_map_runtime_memory(kafs_context_t *ctx, uint32_t fmt_ver, off_t imgsize,
-                                         off_t mapsize, intptr_t blkmask_off, intptr_t inotbl_off)
+static void kafs_main_map_runtime_memory(kafs_context_t *ctx, uint32_t fmt_ver,
+                                         const kafs_legacy_map_layout_t *layout)
 {
-  ctx->c_img_base = mmap(NULL, imgsize, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->c_fd, 0);
+  ctx->c_img_base =
+      mmap(NULL, layout->image_size, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->c_fd, 0);
   if (ctx->c_img_base == MAP_FAILED)
   {
     perror("mmap");
     exit(2);
   }
 
-  ctx->c_img_size = (size_t)imgsize;
+  ctx->c_img_size = layout->image_size;
   ctx->c_superblock = (kafs_ssuperblock_t *)ctx->c_img_base;
-  ctx->c_mapsize = (size_t)mapsize;
-  ctx->c_blkmasktbl = (void *)ctx->c_superblock + blkmask_off;
-  ctx->c_inotbl = (void *)ctx->c_superblock + inotbl_off;
+  ctx->c_mapsize = layout->metadata_size;
+  ctx->c_blkmasktbl = (kafs_blkmask_t *)((char *)ctx->c_img_base + layout->block_bitmap_offset);
+  ctx->c_inotbl = (kafs_sinode_t *)((char *)ctx->c_img_base + layout->inode_table_offset);
   if (!kafs_ctx_runtime_mount_supported(ctx))
   {
     fprintf(stderr, "unsupported format version: %u (runtime admission failed).\n", fmt_ver);
@@ -13190,13 +13143,16 @@ static void kafs_main_map_runtime_image(kafs_context_t *ctx, const kafs_ssuperbl
 {
   kafs_inocnt_t inocnt = kafs_inocnt_stoh(sbdisk->s_inocnt);
   kafs_blkcnt_t r_blkcnt = kafs_blkcnt_stoh(sbdisk->s_r_blkcnt);
-  off_t mapsize = 0;
-  off_t imgsize = 0;
-  intptr_t blkmask_off = 0;
-  intptr_t inotbl_off = 0;
+  kafs_legacy_map_layout_t layout;
+  int rc;
 
-  kafs_ctx_compute_map_layout(sbdisk, &mapsize, &imgsize, &blkmask_off, &inotbl_off);
-  kafs_main_map_runtime_memory(ctx, fmt_ver, imgsize, mapsize, blkmask_off, inotbl_off);
+  rc = kafs_legacy_map_layout_compute(sbdisk, &layout);
+  if (rc != 0)
+  {
+    fprintf(stderr, "image layout is not representable on this host: %s\n", strerror(-rc));
+    exit(2);
+  }
+  kafs_main_map_runtime_memory(ctx, fmt_ver, &layout);
 
   *inocnt_out = inocnt;
   *r_blkcnt_out = r_blkcnt;

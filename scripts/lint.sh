@@ -2,12 +2,15 @@
 set -euo pipefail
 # Lint using gcc/clang with -Wall -Wextra -Werror on a quick compile
 : "${CC:=gcc}"
-FUSE_CFLAGS=""
-if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists fuse3; then
-  FUSE_CFLAGS="$(pkg-config --cflags fuse3)"
-else
-  FUSE_CFLAGS="-I/usr/include/fuse3"
-fi
+command -v pkg-config >/dev/null 2>&1 || {
+  echo "pkg-config is required to locate libfuse3 >= 3.8.0" >&2
+  exit 127
+}
+pkg-config --exists 'fuse3 >= 3.8.0' || {
+  echo "libfuse3 >= 3.8.0 is required" >&2
+  exit 1
+}
+FUSE_CFLAGS="$(pkg-config --cflags fuse3)"
 CFLAGS_COMMON=( -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -std=c11 -include ./src/kafs_config.h -I./src ${FUSE_CFLAGS} )
 SRC=( src/*.c )
 if [[ ${#SRC[@]} -eq 0 ]]; then echo "No C sources"; exit 0; fi

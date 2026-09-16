@@ -28,6 +28,9 @@ implementation, tools, and tests.
 
 ## Build
 
+Build dependencies include a C compiler, Autotools, pkg-config, and libfuse3
+3.8.0 or newer.
+
 ```sh
 autoreconf -fi
 ./configure
