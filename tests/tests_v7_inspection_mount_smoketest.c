@@ -1390,6 +1390,7 @@ static int file_digest(const char *path, uint64_t *digest_out)
 
 static int copy_image(const char *src, const char *dst)
 {
+  static const uint8_t zero[65536] = {0};
   int in = open(src, O_RDONLY);
   int out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, 0600);
   if (in < 0 || out < 0)
@@ -1399,6 +1400,7 @@ static int copy_image(const char *src, const char *dst)
       close(in);
     if (out >= 0)
       close(out);
+    fprintf(stderr, "copy_image failed src=%s dst=%s rc=%d\n", src, dst, -saved);
     return -saved;
   }
   int rc = 0;
@@ -1414,13 +1416,38 @@ static int copy_image(const char *src, const char *dst)
     }
     if (n == 0)
       break;
-    rc = kafs_pwrite_all(out, buf, (size_t)n, off);
-    if (rc != 0)
-      break;
+    if (memcmp(buf, zero, (size_t)n) != 0)
+    {
+      rc = kafs_pwrite_all(out, buf, (size_t)n, off);
+      if (rc != 0)
+        break;
+    }
     off += n;
   }
+  if (rc == 0 && ftruncate(out, off) != 0)
+    rc = -errno;
   close(in);
   close(out);
+  if (rc != 0)
+    fprintf(stderr, "copy_image failed src=%s dst=%s rc=%d\n", src, dst, rc);
+  return rc;
+}
+
+static int check_copy_image_bytes(const char *source)
+{
+  const char *copy = "v7-copy-integrity.img";
+  int rc = copy_image(source, copy);
+  struct stat source_stat;
+  struct stat copy_stat;
+  uint64_t source_digest = 0u;
+  uint64_t copy_digest = 0u;
+  if (rc == 0 &&
+      (stat(source, &source_stat) != 0 || stat(copy, &copy_stat) != 0 ||
+       source_stat.st_size != copy_stat.st_size || file_digest(source, &source_digest) != 0 ||
+       file_digest(copy, &copy_digest) != 0 || source_digest != copy_digest))
+    rc = -1;
+  if (rc == 0 && unlink(copy) != 0)
+    rc = -errno;
   return rc;
 }
 
@@ -3376,6 +3403,12 @@ int main(int argc, char **argv)
     return 1;
   }
   qualification_case_pass("format_and_seed");
+  if (check_copy_image_bytes(image) != 0)
+  {
+    fprintf(stderr, "v7 image copy integrity failed\n");
+    return 1;
+  }
+  qualification_case_pass("image_copy_integrity");
   if (test_namespace_payload_faults(image, &fixture) != 0)
   {
     fprintf(stderr, "v7 namespace payload fault matrix failed\n");
