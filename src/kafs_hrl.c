@@ -570,19 +570,27 @@ int kafs_hrl_format(kafs_context_t *ctx)
   entry_size = (uint64_t)entry_cnt * sizeof(kafs_hrl_entry_t);
   if ((index_off == 0u) != (index_size == 0u) || (entry_off == 0u) != (entry_size == 0u))
     return -EIO;
+  index = NULL;
+  entries = NULL;
   if (index_off && index_size)
   {
     index = kafs_mapped_region(ctx->c_img_base, ctx->c_img_size, index_off, index_size);
     if (!index)
       return -EIO;
-    memset(index, 0, (size_t)index_size);
-    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_INDEX, index_size);
   }
   if (entry_off && entry_cnt)
   {
     entries = kafs_mapped_region(ctx->c_img_base, ctx->c_img_size, entry_off, entry_size);
     if (!entries)
       return -EIO;
+  }
+  if (index)
+  {
+    memset(index, 0, (size_t)index_size);
+    kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_INDEX, index_size);
+  }
+  if (entries)
+  {
     memset(entries, 0, (size_t)entry_size);
     kafs_ctx_meta_write_count(ctx, KAFS_META_REGION_HRL_ENTRIES, entry_size);
   }

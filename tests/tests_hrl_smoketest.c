@@ -3,6 +3,7 @@
 #include "kafs_context.h"
 #include "kafs_superblock.h"
 #include "kafs_hash.h"
+#include "kafs_legacy_map_layout.h"
 #include "test_utils.h"
 
 #include <assert.h>
@@ -91,9 +92,29 @@ int main(void)
     reopened.c_ino_search = 0;
   }
   uint64_t valid_entry_offset = kafs_sb_hrl_entry_offset_get(reopened.c_superblock);
+  uint64_t valid_index_offset = kafs_sb_hrl_index_offset_get(reopened.c_superblock);
+  uint32_t *first_index_word = (uint32_t *)((char *)map + valid_index_offset);
+  uint32_t saved_index_word = *first_index_word;
+  *first_index_word = UINT32_C(0x12345678);
   kafs_sb_hrl_entry_offset_set(reopened.c_superblock, (uint64_t)mapsize + 1u);
   assert(kafs_hrl_open(&reopened) == -EIO);
+  assert(kafs_hrl_format(&reopened) == -EIO);
+  assert(*first_index_word == UINT32_C(0x12345678));
   kafs_sb_hrl_entry_offset_set(reopened.c_superblock, valid_entry_offset);
+  *first_index_word = saved_index_word;
+
+  kafs_ssuperblock_t undersized = *reopened.c_superblock;
+  undersized.s_r_blkcnt = kafs_blkcnt_htos(1u);
+  kafs_sb_hrl_index_offset_set(&undersized, 0u);
+  kafs_sb_hrl_index_size_set(&undersized, 0u);
+  kafs_sb_hrl_entry_offset_set(&undersized, 0u);
+  kafs_sb_hrl_entry_cnt_set(&undersized, 0u);
+  kafs_sb_journal_offset_set(&undersized, 0u);
+  kafs_sb_journal_size_set(&undersized, 0u);
+  kafs_sb_pendinglog_offset_set(&undersized, 0u);
+  kafs_sb_pendinglog_size_set(&undersized, 0u);
+  kafs_legacy_map_layout_t undersized_layout;
+  assert(kafs_legacy_map_layout_compute(&undersized, &undersized_layout) == -EINVAL);
   assert(kafs_hrl_open(&reopened) == 0);
 
   memset(buf, 'B', bs);

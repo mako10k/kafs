@@ -84,6 +84,8 @@ static inline int kafs_legacy_map_layout_compute(const kafs_ssuperblock_t *sb,
     image_size = max_end;
   if (kafs_u64_align_up(image_size, block_size, &image_size) != 0)
     return -EOVERFLOW;
+  if (image_size < metadata_size)
+    return -EINVAL;
 
   if (kafs_u64_to_size(metadata_size, &out->metadata_size) != 0 ||
       kafs_u64_to_size(image_size, &out->image_size) != 0 ||
