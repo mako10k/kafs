@@ -97,9 +97,11 @@ kafs_back_SOURCES = kafs_back.c kafs_rpc.c kafs_shared_fuse_runtime.c kafs_hrl.c
 kafs_back_CFLAGS = $(KAFS_CFLAGS) -Wno-unused-function -Wno-unused-parameter -DKAFS_NO_MAIN
 kafs_back_LDADD = $(KAFS_LIBS)
 
-noinst_HEADERS = kafs_block.h kafs_config.h kafs_context.h kafs_dirent.h kafs_inode.h \
-	kafs_legacy_map_layout.h kafs_meta_region.h kafs_portability.h kafs_profile.h \
-	kafs_superblock.h kafs.h \
+noinst_HEADERS = kafs_back_server.h kafs_block.h kafs_cli_opts.h kafs_config.h \
+	kafs_context.h kafs_crash_diag.h kafs_dirent.h kafs_hash.h kafs_hotplug.h \
+	kafs_inode.h kafs_legacy_map_layout.h kafs_locks.h kafs_meta_region.h \
+	kafs_mmap_io.h kafs_offline_summary.h kafs_portability.h kafs_profile.h \
+	kafs_superblock.h kafs_tailmeta.h kafs_tool_util.h kafs.h \
 	kafs_ioctl.h kafs_journal.h kafs_lock_order.h kafs_rpc.h kafs_core.h kafs_shared_fuse_runner.h \
 	kafs_mount_options_common.h \
 	kafs_v7_admission.h kafs_v7_entrypoint_adapter.h \
