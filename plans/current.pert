@@ -1,120 +1,249 @@
+# Existing .pert plans should normally be maintained through perttool commands; direct DSL editing bypasses goal/DAG owner-confirmation checks.
 project KAFS_CURRENT:
-  version 1
-  title "KAFS accepted-goal residual plan"
+  version 9
+  title "KAFS v7 completion and release with physical power interruption untested"
   description |
-    Residual network for qualified v7 migration and production-cutover evidence.
-    The WSL maintenance window and native host preflight are available as of
-    2026-07-29; physical hardware remains blocked. The real-media evidence
-    contract is complete. The migration
-    lifecycle/evidence contract, v7-owned offline import surface, and disposable
-    lifecycle rehearsal and host-recovery execution guards are complete. The
-    host capture and read-only aggregate qualification are complete.
-    Physical-media qualification remains externally blocked.
-  as_of 2026-07-29
-  duration_unit day
-  finish PRODUCTION_CUTOVER_DECIDED
+    Accepted 2026-09-17 goal: complete v7 implementation, qualify software
+    recovery and non-power real-media behavior, then release while explicitly
+    disclosing that physical power-interruption behavior remains untested.
+    This plan does not authorize release, deployment, cutover, or card writes.
+    Physical power-interruption testing is retained as non-goal planning Work,
+    with no edge to the finish. Software crash/process-stop recovery, journal
+    durability, fsck agreement, and wear behavior remain on the goal path.
+    The current v7 runtime is bounded. HRL write-path integration, delayed
+    scan, operation coverage, and image-size-sensitive write-path locality
+    are incomplete or unproven. The KINGMAX run stopped after five of twelve
+    normal cases because of severe latency. Exact remaining operation scope,
+    performance threshold, release identity and channel, and work estimates
+    need review. Point ranges are low-confidence planning estimates, not a
+    delivery forecast or authority to select an implementation wave.
+  as_of 2026-09-17
+  duration_unit point
+  finish V7_RELEASED_WITH_POWERLOSS_UNTESTED
 
 resource PRIMARY_STREAM:
-  title "Primary implementation and qualification stream"
+  title "One KAFS implementation and qualification stream"
   capacity 1
 
 resource INDEPENDENT_REVIEW_STREAM:
-  title "Reviewer independent from the qualification operator"
+  title "Reviewer independent from the implementation operator"
   capacity 1
 
-milestone REAL_MEDIA_APPROVAL_CONTRACT_READY:
-  title "Fail-closed real-media matrix and approval contract ready"
+work PHYSICAL_POWER_INTERRUPTION_TEST:
+  title "Non-goal task: physical power-interruption test"
+  description |
+    Retained for a separately authorized later investigation if an isolated
+    reader-power apparatus and exact test scope become available. It is not
+    required for v7 implementation 100 percent, non-power qualification, or
+    release under the owner's 2026-09-17 decision. Its omission cannot prove
+    physical power-loss durability. Any field incident response is separate.
+
+work_order:
+  PHYSICAL_POWER_INTERRUPTION_TEST
+
+milestone CURRENT_V7_BASELINE:
+  title "Bounded v7 runtime, tools, and software evidence observed"
   state reached
-
-milestone VHDX_HOST_RECOVERY_QUALIFIED:
-  title "Windows-host VHDX terminate/restart recovery qualified"
-  state reached
-
-milestone REAL_MEDIA_EVIDENCE_CONTRACT_READY:
-  title "Real-media artifact and independent-review gate ready"
-  state reached
-
-milestone MEDIA_AUTHORIZED:
-  title "Exact media apparatus and destructive run authorized"
-
-milestone REAL_MEDIA_EXECUTION_READY:
-  title "All physical execution prerequisites ready"
-
-milestone REAL_MEDIA_EVIDENCE_CAPTURED:
-  title "Approved real-media recovery evidence captured"
-
-milestone MEDIA_QUALIFIED:
-  title "Independent review accepted bounded real-media evidence"
 
 milestone MIGRATION_REHEARSAL_READY:
-  title "v5-to-v7 data migration and rollback rehearsal ready"
+  title "v5-to-v7 offline migration and rollback rehearsal ready"
   state reached
 
-milestone CUTOVER_EXECUTION_READY:
-  title "Qualified runtime and rehearsed migration ready for cutover evidence"
+milestone V7_COMPLETION_SCOPE_FIXED:
+  title "Exact v7 implementation 100 percent contract accepted"
 
-milestone PRODUCTION_CUTOVER_DECIDED:
-  title "Migration and production cutover evidence accepted"
+milestone V7_LOCAL_WRITE_PATH_QUALIFIED:
+  title "Normal writes avoid repeated image-wide work with invariants proved"
 
-task HARDWARE_APPROVAL REAL_MEDIA_APPROVAL_CONTRACT_READY -> MEDIA_AUTHORIZED:
-  title "Bind exact card, reader, power-cut apparatus, cycle count, and approval"
+milestone V7_HRL_AND_DELAYED_SCAN_COMPLETE:
+  title "v7 runtime HRL and delayed scan conform to the accepted contract"
+
+milestone V7_OPERATION_SURFACE_COMPLETE:
+  title "Accepted v7 operation surface implemented without silent fallback"
+
+milestone V7_INTEGRATION_READY:
+  title "Implementation branches and migration path ready for proof"
+
+milestone V7_SOFTWARE_QUALIFIED:
+  title "Software recovery, fsck, wear, and operation evidence accepted"
+
+milestone V7_IMPLEMENTATION_100_PERCENT:
+  title "v7 implementation 100 percent against the accepted scope"
+
+milestone V7_NONPOWER_MEDIA_QUALIFIED:
+  title "Non-power real-media behavior accepted with stated limitations"
+
+milestone V7_RELEASE_SCOPE_AUTHORIZED:
+  title "Exact release scope and untested limitation authorized"
+
+milestone V7_RELEASE_READY:
+  title "Implementation, non-power evidence, and authorization joined"
+
+milestone V7_RELEASED_WITH_POWERLOSS_UNTESTED:
+  title "v7 released with physical power-interruption behavior untested"
+
+task V7_SCOPE_DECISION CURRENT_V7_BASELINE -> V7_COMPLETION_SCOPE_FIXED:
+  title "Accept exact v7 operation, HRL, performance, and completion boundaries"
+  description |
+    Fix the operation set and exclusions, HRL and delayed-scan behavior,
+    workload and latency budget, and evidence for 100 percent. Accepted
+    raw-layout and recovery requirements remain authoritative.
   estimate:
-    optimistic 1d
-    most_likely 1d
-    pessimistic 2d
+    optimistic 1p
+    most_likely 2p
+    pessimistic 4p
   status blocked
   blocked_reason |
-    Exact card, reader/controller, isolated power-cut apparatus, cycle count,
-    and digest-bound destructive approval are unavailable and deferred.
-  owner "external approver and KAFS operator"
-  source "docs/sd-card-wear-v7-real-media-qualification-approval.md"
+    The owner accepted the high-level finish, not the exact remaining
+    operation surface, performance threshold, or completion evidence.
+  owner "KAFS product owner and implementation stream"
+  source "Owner v7 completion and release decision, 2026-09-17"
   requires:
     PRIMARY_STREAM 1
 
-gate VHDX_QUALIFICATION_REQUIRED VHDX_HOST_RECOVERY_QUALIFIED -> REAL_MEDIA_EXECUTION_READY:
-  reason "Host-level virtual-media recovery evidence is required before physical execution"
-
-gate HARDWARE_APPROVAL_REQUIRED MEDIA_AUTHORIZED -> REAL_MEDIA_EXECUTION_READY:
-  reason "Physical execution requires disposable media and isolated-power approval"
-
-gate REAL_MEDIA_CONTRACT_REQUIRED REAL_MEDIA_EVIDENCE_CONTRACT_READY -> REAL_MEDIA_EXECUTION_READY:
-  reason "The evidence and review contract must exist before collecting destructive evidence"
-
-task REAL_MEDIA_EXECUTION REAL_MEDIA_EXECUTION_READY -> REAL_MEDIA_EVIDENCE_CAPTURED:
-  title "Run approved real-media recovery and wear qualification"
+task V7_LOCAL_WRITE_PATH CURRENT_V7_BASELINE -> V7_LOCAL_WRITE_PATH_QUALIFIED:
+  title "Replace repeated global normal-write work with proved local transitions"
+  description |
+    Address full-image validation, all-group journal analysis, repeated
+    retirement proof, file-tree reachability, and group-summary rebuilds
+    where measurement shows goal-relevant cost. Preserve journal, checkpoint,
+    fsck, and recovery semantics and qualify on real-size geometry.
   estimate:
-    optimistic 2d
-    most_likely 4d
-    pessimistic 7d
-  owner "KAFS operator"
-  source "docs/sd-card-wear-v7-controlled-write-qualification.md"
+    optimistic 16p
+    most_likely 32p
+    pessimistic 64p
+  status blocked
+  blocked_reason |
+    Workload and latency threshold, plus detection timing for unrelated
+    corruption, remain undecided. Local WIP is not accepted evidence.
+  owner "KAFS implementation stream"
+  source "plans/v7-local-validation-20260917.pert; docs/kafs-v7-global-ops-audit-20260917.md"
   requires:
     PRIMARY_STREAM 1
 
-task INDEPENDENT_REAL_MEDIA_REVIEW REAL_MEDIA_EVIDENCE_CAPTURED -> MEDIA_QUALIFIED:
-  title "Independently review bounded real-media evidence"
+task V7_HRL_DELAYED_SCAN V7_COMPLETION_SCOPE_FIXED -> V7_HRL_AND_DELAYED_SCAN_COMPLETE:
+  title "Integrate v7-owned HRL write path and delayed scan with recovery proof"
+  description |
+    Connect HRL sharing and reclamation and delayed scan to the accepted
+    layout, journal, and deterministic fsck contract. Re-estimate after the
+    scope decision; this range is provisional.
   estimate:
-    optimistic 1d
-    most_likely 1d
-    pessimistic 2d
-  owner "independent KAFS reviewer"
-  source "docs/sd-card-wear-v7-real-media-qualification-approval.md"
+    optimistic 16p
+    most_likely 32p
+    pessimistic 64p
+  owner "KAFS implementation stream"
+  source "docs/sd-card-wear-format-v7-inception-deck.md; docs/sd-card-wear-format-v7-raw-layout.md"
+  requires:
+    PRIMARY_STREAM 1
+
+task V7_OPERATION_COVERAGE V7_COMPLETION_SCOPE_FIXED -> V7_OPERATION_SURFACE_COMPLETE:
+  title "Complete the accepted v7 runtime and tool operation surface"
+  description |
+    Implement only the owner-accepted operation set, including required
+    mutation, inspection, offline validation, and migration behavior.
+    Unsupported operations fail closed, never through v5/v6 fallback.
+    Re-estimate after the operation matrix is fixed.
+  estimate:
+    optimistic 16p
+    most_likely 32p
+    pessimistic 64p
+  owner "KAFS implementation stream"
+  source "docs/sd-card-wear-v7-capability-rebaseline-20260721.md; owner scope decision pending"
+  requires:
+    PRIMARY_STREAM 1
+
+gate V7_LOCALITY_REQUIRED V7_LOCAL_WRITE_PATH_QUALIFIED -> V7_INTEGRATION_READY:
+  reason "Normal-write locality with preserved recovery invariants is required"
+
+gate V7_HRL_REQUIRED V7_HRL_AND_DELAYED_SCAN_COMPLETE -> V7_INTEGRATION_READY:
+  reason "HRL and delayed scan remain on the v7 goal path"
+
+gate V7_OPERATIONS_REQUIRED V7_OPERATION_SURFACE_COMPLETE -> V7_INTEGRATION_READY:
+  reason "The accepted v7 operation set must be implemented"
+
+gate V7_MIGRATION_REQUIRED MIGRATION_REHEARSAL_READY -> V7_INTEGRATION_READY:
+  reason "Offline migration and rollback evidence remains required"
+
+task V7_SOFTWARE_QUALIFICATION V7_INTEGRATION_READY -> V7_SOFTWARE_QUALIFIED:
+  title "Qualify integrated software recovery, fsck, and wear behavior"
+  description |
+    Verify process-interruption replay, fsck, mutation, geometry, and wear
+    placement against the completed implementation. Physical reader power
+    interruption is not included.
+  estimate:
+    optimistic 8p
+    most_likely 16p
+    pessimistic 32p
+  owner "KAFS validation stream"
+  source "Accepted v7 inception and raw-layout contracts"
+  requires:
+    PRIMARY_STREAM 1
+
+task V7_COMPLETION_REVIEW V7_SOFTWARE_QUALIFIED -> V7_IMPLEMENTATION_100_PERCENT:
+  title "Independently accept v7 implementation 100 percent against exact scope"
+  description |
+    Reconcile accepted behavior with code, tools, tests, defects, and explicit
+    exclusions. This is implementation completion, not release or a physical
+    power-loss durability claim.
+  estimate:
+    optimistic 2p
+    most_likely 4p
+    pessimistic 8p
+  owner "Independent KAFS reviewer"
+  source "Owner v7 implementation 100 percent goal, 2026-09-17"
   requires:
     INDEPENDENT_REVIEW_STREAM 1
 
-gate QUALIFIED_MEDIA_REQUIRED MEDIA_QUALIFIED -> CUTOVER_EXECUTION_READY:
-  reason "Production cutover evidence requires the accepted destination runtime qualification"
-
-gate MIGRATION_REHEARSAL_REQUIRED MIGRATION_REHEARSAL_READY -> CUTOVER_EXECUTION_READY:
-  reason "Production cutover evidence requires a validated migration and rollback rehearsal"
-
-task CUTOVER_EVIDENCE_DECISION CUTOVER_EXECUTION_READY -> PRODUCTION_CUTOVER_DECIDED:
-  title "Produce migration and production cutover decision evidence"
+task V7_NONPOWER_REAL_MEDIA V7_IMPLEMENTATION_100_PERCENT -> V7_NONPOWER_MEDIA_QUALIFIED:
+  title "Re-run and review bounded non-power real-media qualification"
+  description |
+    Re-run normal and process-stop cases on an exact approved target after
+    write-path corrections, with offline fsck and readback. Retain the prior
+    five-of-twelve interrupted run as diagnostic evidence, not a pass.
   estimate:
-    optimistic 2d
-    most_likely 4d
-    pessimistic 8d
-  owner "KAFS implementation stream"
-  source "docs/sd-card-wear-v7-indirect-pert-20260721.md"
+    optimistic 7p
+    most_likely 13p
+    pessimistic 26p
+  owner "KAFS operator and independent reviewer"
+  source "plans/v7-real-media-nonpower.pert; 2026-09-17 interrupted KINGMAX run"
+  requires:
+    PRIMARY_STREAM 1
+
+task V7_RELEASE_AUTHORIZATION V7_IMPLEMENTATION_100_PERCENT -> V7_RELEASE_SCOPE_AUTHORIZED:
+  title "Authorize exact release and disclose untested power-loss behavior"
+  description |
+    Decide version, channel, artifact, target audience, distribution route,
+    and user-facing limitation. This plan edit grants no publication authority.
+  estimate:
+    optimistic 1p
+    most_likely 2p
+    pessimistic 4p
+  status blocked
+  blocked_reason |
+    Exact release identity, channel, destination, and candidate-bound
+    publication approval have not been provided.
+  owner "KAFS release owner"
+  source "Owner release-without-power-cut decision, 2026-09-17"
+  requires:
+    PRIMARY_STREAM 1
+
+gate V7_MEDIA_REQUIRED V7_NONPOWER_MEDIA_QUALIFIED -> V7_RELEASE_READY:
+  reason "Non-power real-media evidence is required for the release path"
+
+gate V7_RELEASE_AUTH_REQUIRED V7_RELEASE_SCOPE_AUTHORIZED -> V7_RELEASE_READY:
+  reason "A separate exact release authorization is required"
+
+task V7_RELEASE V7_RELEASE_READY -> V7_RELEASED_WITH_POWERLOSS_UNTESTED:
+  title "Publish and independently read back the authorized v7 release"
+  description |
+    Execute only the separately authorized candidate and route, then verify
+    the artifact and disclosed physical power-loss limitation. Field incident
+    response remains outside this release task.
+  estimate:
+    optimistic 2p
+    most_likely 4p
+    pessimistic 8p
+  owner "KAFS release operator"
+  source "Owner accepted final release goal, 2026-09-17; publication scope pending"
   requires:
     PRIMARY_STREAM 1
