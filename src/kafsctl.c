@@ -2246,6 +2246,10 @@ static int kafsctl_stats_print_json(const kafs_stats_report_t *report)
   printf("  \"request_flags\": %" PRIu32 ",\n", st->request_flags);
   printf("  \"result_flags\": %" PRIu32 ",\n", st->result_flags);
   printf("  \"verbose_scan\": %s,\n", report->have_verbose_scan ? "true" : "false");
+  printf("  \"format_v7\": %s,\n",
+         (st->result_flags & KAFS_STATS_R_FORMAT_V7) != 0u ? "true" : "false");
+  printf("  \"legacy_write_path_metrics_supported\": %s,\n",
+         (st->result_flags & KAFS_STATS_R_FORMAT_V7) != 0u ? "false" : "true");
   printf("  \"sd_card_profile\": %" PRIu32 ",\n", st->sd_card_profile);
   printf("  \"sd_card_profile_str\": \"%s\",\n", kafs_sd_card_profile_name(st->sd_card_profile));
   printf("  \"trim_on_free\": %" PRIu32 ",\n", st->trim_on_free);
@@ -2447,6 +2451,9 @@ static int kafsctl_stats_print_text(const kafs_stats_report_t *report, kafs_unit
   const kafs_stats_t *st = &report->st;
   printf("kafs fsstat v%" PRIu32 "\n", st->version);
   printf("  mode: %s\n", report->have_verbose_scan ? "verbose" : "lightweight");
+  if ((st->result_flags & KAFS_STATS_R_FORMAT_V7) != 0u)
+    printf("  note: v7 legacy write-path metrics below are unsupported; zero is not a v7 "
+           "write-rate measurement.\n");
   printf("  sd_card_profile: %" PRIu32 " (%s)\n", st->sd_card_profile,
          kafs_sd_card_profile_name(st->sd_card_profile));
   printf("  runtime_config: trim_on_free=%s atime_policy=%s fsync_policy=%s\n",

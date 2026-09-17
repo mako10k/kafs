@@ -167,6 +167,7 @@ typedef struct kafs_stats kafs_stats_t;
 
 #define KAFS_STATS_F_VERBOSE_SCAN 0x00000001u
 #define KAFS_STATS_R_VERBOSE_SCAN 0x00000001u
+#define KAFS_STATS_R_FORMAT_V7 0x00000002u
 
 #define KAFS_IOCTL_GET_STATS _IOWR(KAFS_IOCTL_MAGIC, 1, struct kafs_stats)
 

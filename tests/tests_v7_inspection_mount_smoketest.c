@@ -1,5 +1,6 @@
 #include "test_utils.h"
 
+#include "kafs_ioctl.h"
 #include "kafs_offline_summary.h"
 #include "kafs_superblock.h"
 #include "kafs_v7_journal_writer.h"
@@ -14,6 +15,7 @@
 #include <endian.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <signal.h>
 #include <stddef.h>
@@ -21,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/types.h>
@@ -1564,6 +1567,53 @@ static int check_mutations_erofs(const char *mnt)
   return 0;
 }
 
+static int check_fsstat_capacity(const char *mnt, int verbose)
+{
+  struct statvfs filesystem;
+  if (statvfs(mnt, &filesystem) != 0)
+    return -1;
+
+  int fd = open(mnt, O_RDONLY | O_DIRECTORY);
+  if (fd < 0)
+    return -1;
+  kafs_stats_t stats;
+  memset(&stats, 0, sizeof(stats));
+  stats.struct_size = (uint32_t)sizeof(stats);
+  if (verbose)
+    stats.request_flags = KAFS_STATS_F_VERBOSE_SCAN;
+  int rc = ioctl(fd, KAFS_IOCTL_GET_STATS, &stats);
+  close(fd);
+  if (rc != 0 || stats.version == 0u ||
+      (stats.result_flags & KAFS_STATS_R_FORMAT_V7) == 0u || stats.hrl_entries_total == 0u ||
+      stats.blksize != (uint32_t)filesystem.f_frsize ||
+      stats.fs_blocks_total != (uint64_t)filesystem.f_blocks ||
+      stats.fs_blocks_free != (uint64_t)filesystem.f_bfree ||
+      stats.fs_inodes_total != (uint64_t)filesystem.f_files ||
+      stats.fs_inodes_free != (uint64_t)filesystem.f_ffree ||
+      ((stats.result_flags & KAFS_STATS_R_VERBOSE_SCAN) != 0u) != (verbose != 0))
+  {
+    fprintf(stderr, "v7 fsstat disagrees with statvfs: verbose=%d rc=%d errno=%d\n", verbose,
+            rc, errno);
+    return -1;
+  }
+  if (!verbose)
+  {
+    char output[4096];
+    char expected[80];
+    char *argv[] = {(char *)kafs_test_kafsctl_bin(), (char *)"fsstat", (char *)mnt,
+                    (char *)"--json", NULL};
+    snprintf(expected, sizeof(expected), "\"fs_blocks_free\": %" PRIu64 ",",
+             stats.fs_blocks_free);
+    if (run_command(argv, 0, output, sizeof(output)) != 0 || !strstr(output, expected) ||
+        !strstr(output, "\"legacy_write_path_metrics_supported\": false"))
+    {
+      fprintf(stderr, "v7 kafsctl fsstat JSON lacks recovered capacity or support marker\n");
+      return -1;
+    }
+  }
+  return 0;
+}
+
 static int check_mount(const char *image, const char *mnt, const char *log_path,
                        const v7_fixture_t *fixture, int check_mutations)
 {
@@ -1621,6 +1671,8 @@ static int check_mount(const char *image, const char *mnt, const char *log_path,
       (statvfs(mnt, &statfs) != 0 || statfs.f_blocks != fixture->total_blocks ||
        statfs.f_bfree != fixture->free_blocks || statfs.f_bavail != fixture->free_blocks ||
        statfs.f_ffree != fixture->free_inodes))
+    rc = -1;
+  if (rc == 0 && (check_fsstat_capacity(mnt, 0) != 0 || check_fsstat_capacity(mnt, 1) != 0))
     rc = -1;
   if (rc == 0 && check_mutations && check_mutations_erofs(mnt) != 0)
     rc = -1;
@@ -2071,6 +2123,8 @@ static int check_controlled_write_mount(const char *image, uint32_t ino, uint32_
     if (rc == 0)
       qualification_case_pass("directory_inline_growth");
   }
+  if (rc == 0 && check_fsstat_capacity(mnt, 0) != 0)
+    rc = -1;
   kafs_test_stop_kafs(mnt, pid);
   if (rc == 0 && check_fuse_contract_log(log_path, "controlled-write", block_size, 1) != 0)
   {

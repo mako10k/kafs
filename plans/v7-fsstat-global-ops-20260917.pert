@@ -1,0 +1,78 @@
+project KAFS_V7_FSSTAT_GLOBAL_OPS:
+  version 1
+  title "KAFS v7 operational statistics and global-operation assessment"
+  description |
+    Scoped to the owner's 2026-09-17 request following the interrupted
+    KINGMAX real-media workload. Deliver truthful v7 fsstat capacity and
+    bounded global-operation evidence with localization alternatives.
+    This plan does not authorize changing durability semantics, deploying to
+    Moxa, resuming the card test, or implementing an optimization proposal.
+  as_of 2026-09-17
+  duration_unit point
+  finish IMPROVEMENT_ASSESSMENT_REPORTED
+
+resource PRIMARY_STREAM:
+  title "One implementation and analysis stream"
+  capacity 1
+
+milestone V7_INCIDENT_BASELINE:
+  title "v7 fsstat mismatch and repeated image validation observed"
+  state reached
+
+milestone V7_FSSTAT_TRUTHFUL:
+  title "v7 fsstat reports supported statistics truthfully and passes regression"
+  state reached
+
+milestone GLOBAL_OPS_INVENTORIED:
+  title "v7 hot-path global operations and their costs are inventoried"
+  state reached
+
+milestone LOCALIZATION_OPTIONS_ASSESSED:
+  title "Bounded alternatives and integrity tradeoffs are assessed"
+  state reached
+
+milestone IMPROVEMENT_ASSESSMENT_REPORTED:
+  title "fsstat result and global-operation alternatives are reported"
+  state reached
+
+task V7_FSSTAT_REPAIR V7_INCIDENT_BASELINE -> V7_FSSTAT_TRUTHFUL:
+  title "Restore accurate supported v7 fsstat output with regression evidence"
+  status done
+  estimate:
+    optimistic 2p
+    most_likely 4p
+    pessimistic 6p
+  owner "KAFS implementation stream"
+  source "Owner request and 2026-09-17 fsstat/statfs code comparison"
+  requires:
+    PRIMARY_STREAM 1
+
+task GLOBAL_OPS_AUDIT V7_INCIDENT_BASELINE -> GLOBAL_OPS_INVENTORIED:
+  title "Inventory v7 request-path full-layout and other global operations"
+  status done
+  estimate:
+    optimistic 1p
+    most_likely 1p
+    pessimistic 2p
+  owner "KAFS analysis stream"
+  source "Owner request and 2026-09-17 controlled append observations"
+  requires:
+    PRIMARY_STREAM 1
+
+task LOCALIZATION_ASSESSMENT GLOBAL_OPS_INVENTORIED -> LOCALIZATION_OPTIONS_ASSESSED:
+  title "Compare localized alternatives against v7 integrity invariants"
+  status done
+  estimate:
+    optimistic 1p
+    most_likely 2p
+    pessimistic 3p
+  owner "KAFS analysis stream"
+  source "Owner request, conditional on global-operation findings"
+  requires:
+    PRIMARY_STREAM 1
+
+gate FSSTAT_RESULT_REQUIRED V7_FSSTAT_TRUTHFUL -> IMPROVEMENT_ASSESSMENT_REPORTED:
+  reason "The first requested outcome must be verified before completion"
+
+gate OPTIONS_RESULT_REQUIRED LOCALIZATION_OPTIONS_ASSESSED -> IMPROVEMENT_ASSESSMENT_REPORTED:
+  reason "The second and third requested outcomes must be reported"

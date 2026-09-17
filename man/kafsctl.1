@@ -64,6 +64,11 @@ or
 .B --verbose
 to enable the heavier scans, including tombstone inode count, oldest pending deletion
 timestamp, and HRL usage/refsum summaries.
+For v7 mounts, capacity and HRL totals use the v7 layout and recovered state.
+Legacy write-path counters do not measure v7 writes; text output notes this and
+JSON output sets
+.B legacy_write_path_metrics_supported
+to false.
 .B stats
 is an alias of
 .BR fsstat .

@@ -16,6 +16,7 @@
 #include "kafs_tailmeta.h"
 #ifdef KAFS_V7_RUNTIME_ENTRYPOINT
 #include "kafs_v7_fuse_policy.h"
+#include "kafs_v7_layout.h"
 #include "kafs_v7_runtime_view.h"
 #include "kafs_v7_runtime_transaction.h"
 #include "kafs_v7_fuse_write.h"
@@ -7703,27 +7704,103 @@ static inline kafs_hrl_entry_t *kafs_hrl_entries_tbl(kafs_context_t *ctx)
   return (kafs_hrl_entry_t *)(base + (uintptr_t)off);
 }
 
-static void kafs_stats_snapshot_fs(kafs_context_t *ctx, kafs_stats_t *out, uint32_t request_flags)
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+static int kafs_stats_snapshot_v7_hrl(kafs_context_t *ctx, kafs_stats_t *out, int verbose)
+{
+  const kafs_v7_layout_header_t *header = (const kafs_v7_layout_header_t *)ctx->c_v7_layout_desc;
+  if (!header || ctx->c_v7_layout_desc_bytes < sizeof(*header))
+    return -EUCLEAN;
+  uint32_t off = le32toh(header->shard_desc_off);
+  uint32_t shard_count = le32toh(header->shard_count);
+  if (le16toh(header->shard_desc_bytes) != sizeof(kafs_v7_shard_desc_t) ||
+      off > ctx->c_v7_layout_desc_bytes ||
+      shard_count > (ctx->c_v7_layout_desc_bytes - off) / sizeof(kafs_v7_shard_desc_t))
+    return -EUCLEAN;
+  const kafs_v7_shard_desc_t *shards =
+      (const kafs_v7_shard_desc_t *)((const uint8_t *)header + off);
+
+  uint64_t total = 0u;
+  uint64_t used = 0u;
+  uint64_t duplicated = 0u;
+  uint64_t refsum = 0u;
+  for (uint32_t shard_id = 0u; shard_id < shard_count; ++shard_id)
+  {
+    const kafs_v7_shard_desc_t *shard = &shards[shard_id];
+    if (le16toh(shard->type) != KAFS_V7_SHARD_HRL_ENTRIES)
+      continue;
+    uint64_t count = le64toh(shard->logical_count);
+    uint64_t physical_off = le64toh(shard->physical_off);
+    uint64_t physical_bytes = le64toh(shard->physical_bytes);
+    if (le32toh(shard->record_bytes) != sizeof(kafs_v7_hrl_entry_t) ||
+        count > physical_bytes / sizeof(kafs_v7_hrl_entry_t) || physical_off > ctx->c_img_size ||
+        physical_bytes > ctx->c_img_size - physical_off || count > UINT64_MAX - total)
+      return -EUCLEAN;
+    total += count;
+    if (!verbose)
+      continue;
+
+    const kafs_v7_hrl_entry_t *entries =
+        (const kafs_v7_hrl_entry_t *)((const uint8_t *)ctx->c_img_base + physical_off);
+    for (uint64_t entry_id = 0u; entry_id < count; ++entry_id)
+    {
+      uint32_t refcount = le32toh(entries[entry_id].ref_count);
+      if (refcount == 0u)
+        continue;
+      if (refcount > UINT64_MAX - refsum)
+        return -EOVERFLOW;
+      ++used;
+      refsum += refcount;
+      if (refcount > 1u)
+        ++duplicated;
+    }
+  }
+  out->hrl_entries_total = total;
+  if (verbose)
+  {
+    out->hrl_entries_used = used;
+    out->hrl_entries_duplicated = duplicated;
+    out->hrl_refcnt_sum = refsum;
+  }
+  return 0;
+}
+#endif
+
+static int kafs_stats_snapshot_fs(kafs_context_t *ctx, kafs_stats_t *out, uint32_t request_flags)
 {
   out->struct_size = (uint32_t)sizeof(*out);
   out->version = KAFS_STATS_VERSION;
   out->request_flags = request_flags;
 
   out->blksize = (uint32_t)kafs_sb_blksize_get(ctx->c_superblock);
-  out->fs_blocks_total = (uint64_t)kafs_sb_blkcnt_get(ctx->c_superblock);
-  kafs_bitmap_lock(ctx);
-  out->fs_blocks_free = (uint64_t)kafs_sb_blkcnt_free_get(ctx->c_superblock);
-  kafs_bitmap_unlock(ctx);
   out->fs_inodes_total = (uint64_t)kafs_sb_inocnt_get(ctx->c_superblock);
-  out->fs_inodes_free = (uint64_t)(kafs_inocnt_t)kafs_sb_inocnt_free_get(ctx->c_superblock);
+  if (ctx->c_v7_runtime_view_enabled &&
+      kafs_sb_format_version_get(ctx->c_superblock) == KAFS_FORMAT_VERSION_V7)
+  {
+    out->result_flags |= KAFS_STATS_R_FORMAT_V7;
+    out->fs_blocks_total = (uint64_t)kafs_sb_r_blkcnt_get(ctx->c_superblock);
+    out->fs_blocks_free = ctx->c_v7_recovered_free_blocks;
+    out->fs_inodes_free = ctx->c_v7_recovered_free_inodes;
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+    return kafs_stats_snapshot_v7_hrl(ctx, out, 0);
+#endif
+  }
+  else
+  {
+    out->fs_blocks_total = (uint64_t)kafs_sb_blkcnt_get(ctx->c_superblock);
+    kafs_bitmap_lock(ctx);
+    out->fs_blocks_free = (uint64_t)kafs_sb_blkcnt_free_get(ctx->c_superblock);
+    kafs_bitmap_unlock(ctx);
+    out->fs_inodes_free = (uint64_t)(kafs_inocnt_t)kafs_sb_inocnt_free_get(ctx->c_superblock);
+  }
   out->hrl_entries_total = (uint64_t)kafs_sb_hrl_entry_cnt_get(ctx->c_superblock);
+  return 0;
 }
 
-static void kafs_stats_snapshot_verbose_scan(kafs_context_t *ctx, kafs_stats_t *out,
-                                             uint32_t request_flags)
+static int kafs_stats_snapshot_verbose_scan(kafs_context_t *ctx, kafs_stats_t *out,
+                                            uint32_t request_flags)
 {
   if ((request_flags & KAFS_STATS_F_VERBOSE_SCAN) == 0)
-    return;
+    return 0;
 
   out->result_flags |= KAFS_STATS_R_VERBOSE_SCAN;
 
@@ -7759,10 +7836,15 @@ static void kafs_stats_snapshot_verbose_scan(kafs_context_t *ctx, kafs_stats_t *
     out->tombstone_oldest_dtime_nsec = (uint64_t)oldest_tombstone.tv_nsec;
   }
 
+#ifdef KAFS_V7_RUNTIME_ENTRYPOINT
+  if ((out->result_flags & KAFS_STATS_R_FORMAT_V7) != 0u)
+    return kafs_stats_snapshot_v7_hrl(ctx, out, 1);
+#endif
+
   uint32_t entry_cnt = kafs_sb_hrl_entry_cnt_get(ctx->c_superblock);
   kafs_hrl_entry_t *ents = kafs_hrl_entries_tbl(ctx);
   if (!ents)
-    return;
+    return 0;
 
   uint64_t used = 0;
   uint64_t dup = 0;
@@ -7780,6 +7862,7 @@ static void kafs_stats_snapshot_verbose_scan(kafs_context_t *ctx, kafs_stats_t *
   out->hrl_entries_used = used;
   out->hrl_entries_duplicated = dup;
   out->hrl_refcnt_sum = refsum;
+  return 0;
 }
 
 static void kafs_stats_snapshot_hrl(kafs_context_t *ctx, kafs_stats_t *out)
@@ -7966,11 +8049,15 @@ static void kafs_stats_snapshot_runtime_config(kafs_context_t *ctx, kafs_stats_t
   out->bg_dedup_worker_nice = ctx->c_bg_dedup_worker_nice;
 }
 
-static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out, uint32_t request_flags)
+static int kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out, uint32_t request_flags)
 {
   memset(out, 0, sizeof(*out));
-  kafs_stats_snapshot_fs(ctx, out, request_flags);
-  kafs_stats_snapshot_verbose_scan(ctx, out, request_flags);
+  int rc = kafs_stats_snapshot_fs(ctx, out, request_flags);
+  if (rc != 0)
+    return rc;
+  rc = kafs_stats_snapshot_verbose_scan(ctx, out, request_flags);
+  if (rc != 0)
+    return rc;
   kafs_stats_snapshot_hrl(ctx, out);
   kafs_stats_snapshot_locks(ctx, out);
   kafs_stats_snapshot_access(ctx, out);
@@ -7980,6 +8067,7 @@ static void kafs_stats_snapshot(kafs_context_t *ctx, kafs_stats_t *out, uint32_t
   kafs_stats_snapshot_pending_worker(ctx, out);
   kafs_stats_snapshot_metadata_regions(ctx, out);
   kafs_stats_snapshot_runtime_config(ctx, out);
+  return 0;
 }
 
 #ifdef __linux__
@@ -8898,7 +8986,9 @@ static int kafs_ioctl_handle_get_stats(kafs_context_t *ctx, int cmd, void *arg, 
   memcpy(&req, buf, sizeof(req));
 
   kafs_stats_t out;
-  kafs_stats_snapshot(ctx, &out, req.request_flags);
+  int rc = kafs_stats_snapshot(ctx, &out, req.request_flags);
+  if (rc != 0)
+    return rc;
   memcpy(buf, &out, sizeof(out));
   return 0;
 }
