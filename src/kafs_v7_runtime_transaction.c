@@ -180,8 +180,8 @@ static int kafs_v7_runtime_transaction_publish_reserved(
                                                 &result->publication);
   if (rc == 0)
   {
-    rc = kafs_v7_sequence_confirm_publication_fd(service->sequence, reservation, service->fd,
-                                                 &service->superblock, service->file_size);
+    rc = kafs_v7_sequence_confirm_publication_local_fd(service->sequence, reservation, service->fd,
+                                                       &result->publication);
   }
   else if (reservation->active)
   {

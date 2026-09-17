@@ -1,0 +1,62 @@
+project KAFS_V7_LOCAL_VALIDATION:
+  version 1
+  title "KAFS v7 bounded runtime validation"
+  description |
+    Replace repeated full-metadata validation on enabled v7 normal writes with
+    checked local transitions from fully validated admission state. Preserve
+    journal ordering, checkpoint redundancy, crash recovery and offline fsck.
+    This scoped goal does not enable background dedup, alter HRL semantics,
+    change fsync policy, deploy to Moxa or run real-media tests.
+  as_of 2026-09-17
+  duration_unit point
+  finish LOCAL_VALIDATION_QUALIFIED
+
+resource PRIMARY_STREAM:
+  title "One v7 implementation and validation stream"
+  capacity 1
+
+milestone V7_BASELINE:
+  title "Accepted v7 admission and recovery contract plus repeated runtime scans observed"
+  state reached
+
+milestone LOCAL_PUBLICATION_PROVED:
+  title "Enabled v7 transactions have locally checked publication transitions"
+
+milestone LOCAL_CLOSEOUT_PROVED:
+  title "Checkpoint and journal closeout use bounded checks on normal writes"
+
+milestone LOCAL_VALIDATION_QUALIFIED:
+  title "Local runtime path passes crash, fsck and geometry-sensitive validation"
+
+task LOCAL_PUBLICATION V7_BASELINE -> LOCAL_PUBLICATION_PROVED:
+  title "Preserve validated state through locally checked transaction publication"
+  estimate:
+    optimistic 6p
+    most_likely 12p
+    pessimistic 24p
+  owner "KAFS implementation stream"
+  source "Owner implementation request; accepted v7 inception and raw-layout contracts; 2026-09-17 code audit"
+  requires:
+    PRIMARY_STREAM 1
+
+task LOCAL_CLOSEOUT LOCAL_PUBLICATION_PROVED -> LOCAL_CLOSEOUT_PROVED:
+  title "Close normal-write checkpoints and journal without full metadata scans"
+  estimate:
+    optimistic 6p
+    most_likely 12p
+    pessimistic 24p
+  owner "KAFS implementation stream"
+  source "Owner implementation request; v7 checkpoint and journal recovery contract"
+  requires:
+    PRIMARY_STREAM 1
+
+task CRASH_FSCK_PERF_PROOF LOCAL_CLOSEOUT_PROVED -> LOCAL_VALIDATION_QUALIFIED:
+  title "Prove crash recovery, offline fsck agreement and reduced image-size read work"
+  estimate:
+    optimistic 4p
+    most_likely 8p
+    pessimistic 16p
+  owner "KAFS validation stream"
+  source "Owner implementation request; prior controlled file-image append and v7 recovery tests"
+  requires:
+    PRIMARY_STREAM 1

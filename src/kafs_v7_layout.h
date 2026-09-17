@@ -448,6 +448,13 @@ int kafs_v7_mkfs_plan(const kafs_v7_mkfs_options_t *options, kafs_v7_mkfs_plan_t
 int kafs_v7_validate_image_fd(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
                               kafs_v7_layout_report_t *report);
 
+/* For an already fully admitted controlled-write mount only. Recheck recovery
+ * roots, descriptor, checkpoint and journal state without an offline-style
+ * scan of all bitmap, inode, HRL and namespace payloads. Never use for mount
+ * admission, offline fsck, or recovery from an ambiguous failed write. */
+int kafs_v7_runtime_recovery_state_fd(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
+                                      kafs_v7_layout_report_t *report);
+
 const kafs_v7_layout_header_t *kafs_v7_report_header(const kafs_v7_layout_report_t *report);
 const kafs_v7_group_desc_t *kafs_v7_report_groups(const kafs_v7_layout_report_t *report);
 const kafs_v7_shard_desc_t *kafs_v7_report_shards(const kafs_v7_layout_report_t *report);

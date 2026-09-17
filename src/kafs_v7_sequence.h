@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 typedef struct kafs_v7_sequence_state kafs_v7_sequence_state_t;
+struct kafs_v7_journal_publication;
 
 typedef struct kafs_v7_sequence_reservation
 {
@@ -37,6 +38,13 @@ int kafs_v7_sequence_reserve(kafs_v7_sequence_state_t *state, uint32_t group_id,
 int kafs_v7_sequence_confirm_publication_fd(kafs_v7_sequence_state_t *state,
                                             kafs_v7_sequence_reservation_t *reservation, int fd,
                                             const kafs_ssuperblock_t *sb, uint64_t file_size);
+
+/* Runtime fast path: call only after the journal writer has flushed and read
+ * back the complete published transaction and header. Recheck the selected
+ * header locally, advance the reserved sequence, or poison on ambiguity. */
+int kafs_v7_sequence_confirm_publication_local_fd(
+    kafs_v7_sequence_state_t *state, kafs_v7_sequence_reservation_t *reservation, int fd,
+    const struct kafs_v7_journal_publication *publication);
 
 /*
  * Cancel before header publication. The image is revalidated to prove that

@@ -573,6 +573,27 @@ static int kafs_v7_writer_publish_plan(int fd, const kafs_v7_journal_transaction
     rc = kafs_pwrite_all(fd, &plan->header, sizeof(plan->header), (off_t)plan->header_write_off);
   if (rc == 0 && fdatasync(fd) != 0)
     rc = -errno;
+  if (rc == 0)
+  {
+    kafs_v7_journal_header_t actual_header;
+    rc = kafs_pread_all(fd, &actual_header, sizeof(actual_header), (off_t)plan->header_write_off);
+    if (rc == 0 && memcmp(&actual_header, &plan->header, sizeof(actual_header)) != 0)
+      rc = -EIO;
+  }
+  uint8_t actual_data[4096];
+  for (size_t off = 0; rc == 0 && off < transaction->bytes;)
+  {
+    size_t bytes = transaction->bytes - off;
+    if (bytes > sizeof(actual_data))
+      bytes = sizeof(actual_data);
+    if (off > (uint64_t)INT64_MAX - plan->data_write_off)
+      rc = -ERANGE;
+    else
+      rc = kafs_pread_all(fd, actual_data, bytes, (off_t)(plan->data_write_off + off));
+    if (rc == 0 && memcmp(actual_data, transaction->data + off, bytes) != 0)
+      rc = -EIO;
+    off += bytes;
+  }
   return rc;
 }
 

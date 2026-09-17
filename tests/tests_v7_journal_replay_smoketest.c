@@ -1295,12 +1295,77 @@ static int writer_publish_targets(replay_image_fixture_t *fixture,
   if (rc == 0)
   {
     phase = "confirm";
-    rc = kafs_v7_sequence_confirm_publication_fd(sequence_state, reservation, fixture->fd,
-                                                  &fixture->sb, fixture->file_size);
+    rc = kafs_v7_sequence_confirm_publication_local_fd(sequence_state, reservation, fixture->fd,
+                                                        publication);
   }
   if (rc != 0)
     fprintf(stderr, "v7 writer target %s failed: %d\n", phase, rc);
   kafs_v7_journal_transaction_destroy(transaction);
+  return rc;
+}
+
+static int test_local_confirmation_poison(void)
+{
+  const char *path = "v7-local-confirm-poison.img";
+  replay_image_fixture_t fixture;
+  if (open_fixture(path, &fixture) != 0)
+    return -1;
+  kafs_v7_lock_state_t *locks = NULL;
+  kafs_v7_sequence_state_t *state = NULL;
+  kafs_v7_sequence_reservation_t reservation;
+  replay_transaction_fixture_t targets;
+  kafs_v7_journal_transaction_t *transaction = NULL;
+  kafs_v7_journal_publication_t publication;
+  memset(&reservation, 0, sizeof(reservation));
+  memset(&targets, 0, sizeof(targets));
+  memset(&publication, 0, sizeof(publication));
+  int rc = kafs_v7_locks_init(fixture.layout.group_count, 50u, &locks);
+  if (rc == 0)
+    rc = kafs_v7_sequence_state_init(locks, &fixture.layout, &state);
+  if (rc == 0)
+    rc = kafs_v7_sequence_reserve(state, 0u, &reservation);
+  if (rc == 0)
+    rc = build_transaction(&fixture, 0u, reservation.sequence, KAFS_V7_JOURNAL_COMMIT_TAG,
+                           &targets);
+  kafs_v7_journal_patch_t patches[3];
+  if (rc == 0)
+  {
+    writer_patches_from_targets(&targets, patches);
+    rc = kafs_v7_journal_transaction_encode_fd(fixture.fd, &fixture.layout, &reservation, patches,
+                                                3u, KAFS_V7_JOURNAL_COMMIT_TAG, &transaction);
+  }
+  if (rc == 0)
+    rc = kafs_v7_journal_transaction_publish_fd(fixture.fd, &fixture.layout, &reservation,
+                                                 transaction, &publication);
+  if (rc == 0)
+  {
+    uint8_t byte;
+    off_t crc_off = (off_t)(publication.header_off +
+                            offsetof(kafs_v7_journal_header_t, crc32));
+    rc = kafs_pread_all(fixture.fd, &byte, sizeof(byte), crc_off);
+    if (rc == 0)
+    {
+      byte ^= 1u;
+      rc = kafs_pwrite_all(fixture.fd, &byte, sizeof(byte), crc_off);
+    }
+  }
+  if (rc == 0 && kafs_v7_sequence_confirm_publication_local_fd(state, &reservation, fixture.fd,
+                                                                 &publication) != -EUCLEAN)
+    rc = -1;
+  if (rc == 0 && kafs_v7_sequence_reserve(state, 0u, &reservation) != -EUCLEAN)
+    rc = -1;
+  if (reservation.active)
+  {
+    int cancel_rc = kafs_v7_sequence_cancel_reservation_fd(state, &reservation, fixture.fd,
+                                                            &fixture.sb, fixture.file_size);
+    if (rc == 0)
+      rc = cancel_rc;
+  }
+  kafs_v7_journal_transaction_destroy(transaction);
+  transaction_clear(&targets);
+  kafs_v7_sequence_state_destroy(state);
+  kafs_v7_locks_destroy(locks);
+  close_fixture(&fixture);
   return rc;
 }
 
@@ -1581,6 +1646,11 @@ int main(void)
   if (test_writer_publication_and_rotation() != 0)
   {
     fprintf(stderr, "v7 journal writer publication/rotation failed\n");
+    return 1;
+  }
+  if (test_local_confirmation_poison() != 0)
+  {
+    fprintf(stderr, "v7 local confirmation did not poison on damaged header\n");
     return 1;
   }
   if (test_writer_segment_distribution() != 0)

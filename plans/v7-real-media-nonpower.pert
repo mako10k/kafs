@@ -1,0 +1,98 @@
+project KAFS_V7_REAL_MEDIA_NONPOWER:
+  version 1
+  title "KAFS v7 bounded non-power real-media evidence"
+  description |
+    Scoped network for the owner-approved KINGMAX 2 GB / UGREEN / Moxa
+    experiment of 2026-09-17: one run of the twelve normal v7 workload
+    classes and one process-stop recovery run at each of four software fault
+    boundaries, with offline fsck, dump, and retained logs. Physical power
+    interruption, long-duration wear, full real-media qualification, and RC
+    acceptance are not outcomes of this plan. The basic raw-card smoke passed.
+    Existing automatic qualification is file-image-only, so a guarded raw-card
+    runner and exact write manifest precede any further card mutation. The
+    present 4096-byte geometry cannot reach the triple-indirect transition
+    within this 2013265920-byte card; a 1024-byte geometry is supported by
+    the v7 layout and makes that boundary reachable, but requires a separately
+    disclosed whole-card reformat before the next card run.
+  as_of 2026-09-17
+  duration_unit point
+  velocity 8p/1d
+  finish NONPOWER_EVIDENCE_REPORTED
+
+resource PRIMARY_STREAM:
+  title "Single raw-media implementation and test operator"
+  capacity 1
+
+milestone BASIC_CARD_SMOKE_VERIFIED:
+  title "One v7 format and file readback passed on the current card"
+  state reached
+
+milestone NORMAL_RUNNER_READY:
+  title "Guarded raw-card normal-workload runner and write manifest verified"
+
+milestone NORMAL_CARD_EVIDENCE_CAPTURED:
+  title "Twelve normal workloads run once with raw evidence and offline checks"
+
+milestone PROCESS_STOP_RUNNER_READY:
+  title "Four-boundary process-stop recovery mode verified without power control"
+
+milestone PROCESS_STOP_CARD_EVIDENCE_CAPTURED:
+  title "Four process-stop recovery boundaries run once on the card"
+
+milestone NONPOWER_EVIDENCE_REPORTED:
+  title "Bounded non-power result and limitations reported from raw artifacts"
+
+task NORMAL_RAW_RUNNER BASIC_CARD_SMOKE_VERIFIED -> NORMAL_RUNNER_READY:
+  title "Implement and validate exact-target normal workload execution and evidence capture"
+  estimate:
+    optimistic 2p
+    most_likely 4p
+    pessimistic 8p
+  owner "KAFS implementation stream"
+  source "Owner-approved non-power card test scope, 2026-09-17"
+  requires:
+    PRIMARY_STREAM 1
+
+task NORMAL_CARD_RUN NORMAL_RUNNER_READY -> NORMAL_CARD_EVIDENCE_CAPTURED:
+  title "Run normal v7 workloads once on the approved card and classify each result"
+  estimate:
+    optimistic 1p
+    most_likely 2p
+    pessimistic 4p
+  owner "KAFS test operator"
+  source "Owner-approved non-power card test scope, 2026-09-17"
+  requires:
+    PRIMARY_STREAM 1
+
+task PROCESS_STOP_RUNNER NORMAL_CARD_EVIDENCE_CAPTURED -> PROCESS_STOP_RUNNER_READY:
+  title "Add and validate process-stop injection and recovery evidence capture"
+  estimate:
+    optimistic 2p
+    most_likely 4p
+    pessimistic 8p
+  owner "KAFS implementation stream"
+  source "Owner-approved non-power card test scope, 2026-09-17"
+  requires:
+    PRIMARY_STREAM 1
+
+task PROCESS_STOP_CARD_RUN PROCESS_STOP_RUNNER_READY -> PROCESS_STOP_CARD_EVIDENCE_CAPTURED:
+  title "Run one process-stop recovery cycle at each four software boundary"
+  estimate:
+    optimistic 1p
+    most_likely 2p
+    pessimistic 4p
+  owner "KAFS test operator"
+  source "Owner-approved non-power card test scope, 2026-09-17"
+  requires:
+    PRIMARY_STREAM 1
+
+task NONPOWER_RESULT PROCESS_STOP_CARD_EVIDENCE_CAPTURED -> NONPOWER_EVIDENCE_REPORTED:
+  title "Reconcile all case evidence and report bounded non-power outcome"
+  estimate:
+    optimistic 1p
+    most_likely 1p
+    pessimistic 2p
+  owner "KAFS test operator"
+  source "Owner-approved non-power card test scope, 2026-09-17"
+  requires:
+    PRIMARY_STREAM 1

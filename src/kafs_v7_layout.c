@@ -2658,8 +2658,8 @@ static int kafs_v7_validate_payloads(int fd, const kafs_ssuperblock_t *sb,
   return rc;
 }
 
-int kafs_v7_validate_image_fd(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
-                              kafs_v7_layout_report_t *report)
+static int kafs_v7_image_report_fd(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
+                                   kafs_v7_layout_report_t *report, int full_payload_validation)
 {
   if (fd < 0 || !sb || !report || file_size < 2048u)
     return -EINVAL;
@@ -2695,12 +2695,37 @@ int kafs_v7_validate_image_fd(int fd, const kafs_ssuperblock_t *sb, uint64_t fil
   rc = kafs_v7_select_descriptors(fd, sb, file_size, report);
   if (rc == 0)
     rc = kafs_v7_select_checkpoints(fd, sb, file_size, report);
-  if (rc == 0)
+  if (rc == 0 && full_payload_validation)
     rc = kafs_v7_validate_payloads(fd, sb, report);
+  else if (rc == 0)
+  {
+    kafs_v7_journal_replay_t replay;
+    memset(&replay, 0, sizeof(replay));
+    rc = kafs_v7_journal_analyze_fd(fd, report, &replay);
+    if (rc == 0)
+    {
+      report->journal = replay.report;
+      report->free_blocks = replay.recovered_free_blocks;
+      report->free_inodes = replay.recovered_free_inodes;
+    }
+    kafs_v7_journal_replay_clear(&replay);
+  }
   if (rc != 0)
   {
     free(report->descriptor);
     report->descriptor = NULL;
   }
   return rc;
+}
+
+int kafs_v7_validate_image_fd(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
+                              kafs_v7_layout_report_t *report)
+{
+  return kafs_v7_image_report_fd(fd, sb, file_size, report, 1);
+}
+
+int kafs_v7_runtime_recovery_state_fd(int fd, const kafs_ssuperblock_t *sb, uint64_t file_size,
+                                      kafs_v7_layout_report_t *report)
+{
+  return kafs_v7_image_report_fd(fd, sb, file_size, report, 0);
 }

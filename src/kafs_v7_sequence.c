@@ -1,6 +1,11 @@
 #include "kafs_v7_sequence.h"
 
+#include "kafs_tool_util.h"
+#include "kafs_v7_journal_writer.h"
+
+#include <endian.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -116,6 +121,29 @@ static int kafs_v7_sequence_reservation_matches(const kafs_v7_sequence_state_t *
          reservation->token == state->active_token && reservation->group_id == state->active_group;
 }
 
+static int kafs_v7_sequence_finish_release(kafs_v7_sequence_state_t *state,
+                                           kafs_v7_sequence_reservation_t *reservation, int rc,
+                                           int published)
+{
+  if (rc == 0 && published)
+    state->visible_sequence = state->active_sequence;
+  if (rc != 0)
+    state->poisoned = 1u;
+  uint32_t group_id = state->active_group;
+  state->active = 0u;
+  state->active_group = 0u;
+  state->active_sequence = 0u;
+  state->active_token = 0u;
+  memset(reservation, 0, sizeof(*reservation));
+  int unlock_rc = kafs_v7_transaction_unlock(state->locks, group_id);
+  if (unlock_rc != 0)
+  {
+    fprintf(stderr, "v7 sequence transaction unlock failed: %d\n", unlock_rc);
+    abort();
+  }
+  return rc;
+}
+
 static int kafs_v7_sequence_finish_fd(kafs_v7_sequence_state_t *state,
                                       kafs_v7_sequence_reservation_t *reservation, int fd,
                                       const kafs_ssuperblock_t *sb, uint64_t file_size,
@@ -140,24 +168,44 @@ static int kafs_v7_sequence_finish_fd(kafs_v7_sequence_state_t *state,
       rc = -EUCLEAN;
   }
   kafs_v7_layout_report_clear(&layout);
+  return kafs_v7_sequence_finish_release(state, reservation, rc, published);
+}
 
-  if (rc == 0 && published)
-    state->visible_sequence = state->active_sequence;
-  if (rc != 0)
-    state->poisoned = 1u;
-  uint32_t group_id = state->active_group;
-  state->active = 0u;
-  state->active_group = 0u;
-  state->active_sequence = 0u;
-  state->active_token = 0u;
-  memset(reservation, 0, sizeof(*reservation));
-  int unlock_rc = kafs_v7_transaction_unlock(state->locks, group_id);
-  if (unlock_rc != 0)
+int kafs_v7_sequence_confirm_publication_local_fd(
+    kafs_v7_sequence_state_t *state, kafs_v7_sequence_reservation_t *reservation, int fd,
+    const struct kafs_v7_journal_publication *publication)
+{
+  if (!kafs_v7_sequence_reservation_matches(state, reservation) || fd < 0 || !publication)
+    return -EINVAL;
+  int rc = 0;
+  if (publication->sequence != state->active_sequence ||
+      publication->group_id != state->active_group ||
+      publication->header_off > INT64_MAX - sizeof(kafs_v7_journal_header_t) ||
+      publication->header_generation == 0u || publication->transaction_bytes == 0u ||
+      publication->previous_write_bytes > publication->published_write_bytes ||
+      publication->transaction_bytes !=
+          publication->published_write_bytes - publication->previous_write_bytes)
+    rc = -EUCLEAN;
+  kafs_v7_journal_header_t header;
+  if (rc == 0)
+    rc = kafs_pread_all(fd, &header, sizeof(header), (off_t)publication->header_off);
+  if (rc == 0)
   {
-    fprintf(stderr, "v7 sequence transaction unlock failed: %d\n", unlock_rc);
-    abort();
+    kafs_v7_journal_header_t checksum_header = header;
+    checksum_header.crc32 = 0u;
+    if (le32toh(header.magic) != KAFS_V7_JOURNAL_HEADER_MAGIC ||
+        le16toh(header.version) != KAFS_V7_JOURNAL_HEADER_VERSION || le16toh(header.flags) != 0u ||
+        le32toh(header.segment_id) != publication->segment_id ||
+        le32toh(header.slot_bytes) != KAFS_V7_JOURNAL_HEADER_BYTES ||
+        le64toh(header.generation) != publication->header_generation ||
+        le64toh(header.write_bytes) != publication->published_write_bytes ||
+        le64toh(header.last_sequence) != state->active_sequence ||
+        le64toh(header.first_sequence) == 0u ||
+        le64toh(header.first_sequence) > state->active_sequence ||
+        le32toh(header.crc32) != kafs_v7_crc32(&checksum_header, sizeof(checksum_header)))
+      rc = -EUCLEAN;
   }
-  return rc;
+  return kafs_v7_sequence_finish_release(state, reservation, rc, 1);
 }
 
 int kafs_v7_sequence_confirm_publication_fd(kafs_v7_sequence_state_t *state,
